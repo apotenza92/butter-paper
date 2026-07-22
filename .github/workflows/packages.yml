@@ -1,0 +1,128 @@
+name: Desktop packages
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: ${{ matrix.platform }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      BP_MACOS_CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
+      BP_MACOS_CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
+      BP_APPLE_ID: ${{ secrets.APPLE_ID }}
+      BP_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      BP_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macOS
+            arch: arm64
+            runner: macos-15
+          - platform: macOS
+            arch: x64
+            runner: macos-15-intel
+          - platform: Windows
+            arch: arm64
+            runner: windows-11-arm
+          - platform: Windows
+            arch: x64
+            runner: windows-2025
+          - platform: Linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - platform: Linux
+            arch: x64
+            runner: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.33.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Linux packaging tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build desktop application
+        run: pnpm build:desktop
+
+      - name: Require signing credentials for tagged macOS releases
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          CSC_LINK: ${{ env.BP_MACOS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ env.BP_MACOS_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ env.BP_APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ env.BP_APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ env.BP_APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          test -n "$CSC_LINK"
+          test -n "$CSC_KEY_PASSWORD"
+          test -n "$APPLE_ID"
+          test -n "$APPLE_APP_SPECIFIC_PASSWORD"
+          test -n "$APPLE_TEAM_ID"
+
+      - name: Build signed macOS package
+        if: runner.os == 'macOS' && env.BP_MACOS_CSC_LINK != ''
+        env:
+          CSC_LINK: ${{ env.BP_MACOS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ env.BP_MACOS_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ env.BP_APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ env.BP_APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ env.BP_APPLE_TEAM_ID }}
+        run: pnpm --dir apps/desktop exec electron-builder --config electron-builder.config.cjs --mac dmg zip --${{ matrix.arch }} --publish never
+
+      - name: Build unsigned macOS package
+        if: runner.os == 'macOS' && env.BP_MACOS_CSC_LINK == ''
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: pnpm --dir apps/desktop exec electron-builder --config electron-builder.config.cjs --mac dmg zip --${{ matrix.arch }} --publish never
+
+      - name: Build Windows package
+        if: runner.os == 'Windows'
+        run: pnpm --dir apps/desktop exec electron-builder --config electron-builder.config.cjs --win nsis --${{ matrix.arch }} --publish never
+
+      - name: Build Linux packages
+        if: runner.os == 'Linux'
+        run: pnpm --dir apps/desktop exec electron-builder --config electron-builder.config.cjs --linux AppImage deb rpm --${{ matrix.arch }} --publish never
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: butter-paper-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/*.deb
+            apps/desktop/release/*.rpm
+            apps/desktop/release/*.blockmap
+            apps/desktop/release/*.yml
+          if-no-files-found: error
+          retention-days: 14

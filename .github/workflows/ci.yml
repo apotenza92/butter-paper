@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches-ignore:
+      - 'experiment/**'
+      - 'checkpoint/**'
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.33.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate PDF fixtures
+        run: pnpm generate:fixtures
+
+      - name: Repository hygiene
+        run: pnpm check:repo
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build workspace
+        run: pnpm build
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Electron E2E tests
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            xvfb-run -a pnpm exec playwright test
+          else
+            pnpm exec playwright test
+          fi
+        shell: bash
+
+      - name: Desktop package smoke build
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: pnpm --dir apps/desktop package
+
+      - name: Smoke test packaged desktop
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            xvfb-run -a pnpm test:package:desktop
+          else
+            pnpm test:package:desktop
+          fi
+        shell: bash

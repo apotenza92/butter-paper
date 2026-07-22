@@ -1,0 +1,32 @@
+{
+  "name": "butter-paper",
+  "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "check:repo": "node scripts/check-repository-hygiene.mjs",
+    "test": "vitest run --config vitest.config.ts",
+    "test:e2e": "playwright test",
+    "test:package:desktop": "node scripts/smoke-packaged-desktop.mjs",
+    "check": "pnpm check:repo && pnpm typecheck && pnpm build && pnpm test && pnpm test:e2e",
+    "postinstall": "node scripts/ensure-native-deps.mjs",
+    "dev:desktop": "pnpm --filter @butter-paper/desktop dev",
+    "dev:cli": "pnpm --filter @butter-paper/cli dev",
+    "build:desktop": "pnpm --filter @butter-paper/desktop... build",
+    "package:desktop": "pnpm build:desktop && pnpm --dir apps/desktop package",
+    "make:desktop": "pnpm build:desktop && pnpm --dir apps/desktop make",
+    "make:desktop:mac": "pnpm build:desktop && pnpm --dir apps/desktop make:mac",
+    "make:desktop:windows": "pnpm build:desktop && pnpm --dir apps/desktop make:windows",
+    "make:desktop:linux": "pnpm build:desktop && pnpm --dir apps/desktop make:linux",
+    "generate:fixtures": "node scripts/generate-fixtures.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.59.1",
+    "@types/node": "25.6.0",
+    "typescript": "6.0.2",
+    "vitest": "4.1.4"
+  }
+}

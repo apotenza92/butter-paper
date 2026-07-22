@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@butter-paper/core": ["../../packages/core/src/index.ts"],
+      "@butter-paper/pdf": ["../../packages/pdf/src/index.ts"]
+    }
+  },
+  "include": [
+    "src/**/*.ts"
+  ]
+}

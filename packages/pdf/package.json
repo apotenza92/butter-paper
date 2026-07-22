@@ -1,0 +1,31 @@
+{
+  "name": "@butter-paper/pdf",
+  "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@butter-paper/core": "workspace:*",
+    "@napi-rs/canvas": "0.1.97",
+    "@pdf-lib/fontkit": "^1.1.1",
+    "pdf-lib": "1.17.1",
+    "pdfjs-dist": "5.6.205"
+  }
+}

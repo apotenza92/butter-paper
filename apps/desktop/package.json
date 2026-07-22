@@ -1,0 +1,55 @@
+{
+  "name": "@butter-paper/desktop",
+  "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
+  "description": "Cross-platform PDF review and markup for architecture, engineering, and construction.",
+  "author": {
+    "name": "Alex Potenza",
+    "email": "apotenza92@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/apotenza92/butter-paper",
+  "type": "module",
+  "main": ".vite/build/main.js",
+  "scripts": {
+    "dev": "electron-forge start",
+    "build": "vite build --config vite.renderer.config.ts && vite build --config vite.main.config.ts && vite build --config vite.preload.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "package": "electron-builder --config electron-builder.config.cjs --dir --publish never",
+    "make": "electron-builder --config electron-builder.config.cjs --publish never",
+    "make:mac": "electron-builder --config electron-builder.config.cjs --mac dmg zip --publish never",
+    "make:windows": "electron-builder --config electron-builder.config.cjs --win nsis --publish never",
+    "make:linux": "electron-builder --config electron-builder.config.cjs --linux AppImage deb rpm --publish never"
+  },
+  "dependencies": {
+    "@butter-paper/core": "workspace:*",
+    "@butter-paper/pdf": "workspace:*",
+    "@fontsource/dm-sans": "5.2.8",
+    "lucide-react": "^1.8.0",
+    "pdfjs-dist": "5.6.205",
+    "react": "19.2.5",
+    "react-dom": "19.2.5",
+    "zustand": "5.0.12"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "7.11.1",
+    "@electron-forge/plugin-vite": "7.11.1",
+    "@tailwindcss/vite": "4.2.2",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.1.4",
+    "electron": "39.8.7",
+    "electron-builder": "26.15.3",
+    "tailwindcss": "4.2.2",
+    "typescript": "6.0.2",
+    "vite": "8.0.8"
+  },
+  "optionalDependencies": {
+    "@napi-rs/canvas-darwin-arm64": "0.1.97",
+    "@napi-rs/canvas-darwin-x64": "0.1.97",
+    "@napi-rs/canvas-linux-arm64-gnu": "0.1.97",
+    "@napi-rs/canvas-linux-x64-gnu": "0.1.97",
+    "@napi-rs/canvas-win32-arm64-msvc": "0.1.97",
+    "@napi-rs/canvas-win32-x64-msvc": "0.1.97"
+  }
+}

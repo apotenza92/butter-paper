@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@butter-paper/core": ["../../packages/core/src/index.ts"],
+      "@butter-paper/pdf": ["../../packages/pdf/src/index.ts"],
+      "@butter-paper/pdf/browser": ["../../packages/pdf/src/browser.ts"]
+    },
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src", "forge.config.ts", "vite.*.config.ts"],
+  "references": []
+}

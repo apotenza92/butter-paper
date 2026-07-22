@@ -1,0 +1,17 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "./packages/core"
+    },
+    {
+      "path": "./packages/pdf"
+    },
+    {
+      "path": "./apps/cli"
+    },
+    {
+      "path": "./apps/desktop"
+    }
+  ]
+}
