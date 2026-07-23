@@ -610,7 +610,7 @@ Do not add signing merely to create activity. First stabilize the package bounda
 
 - Define the Electron/Rust packaged boundary and native sidecars.
 - Make packaged CalculiX fail closed to the reviewed bundled binary. Packaged tests must reject `FRAIA_CCX_PATH`, user-data runtimes, Homebrew locations, and `PATH` fallbacks rather than passing with an unbundled host installation.
-- Add and verify the six supported CalculiX payloads and their six matching `THIRD_PARTY_NOTICES.txt` files from an approved redistributable source.
+- Add and verify the five supported CalculiX payloads and their five matching reviewed provenance manifests, build recipes, and `THIRD_PARTY_NOTICES.txt` files from an approved redistributable source.
 - Add maintained `icon.icns`, `icon.ico`, and `icons/512x512.png` assets and reject Electron's default icon.
 - Add the repository-level MIT `LICENSE` file already declared by the package metadata.
 - Prove project save/reopen, the exact bundled CalculiX/backend launch, and packaged persistence.
