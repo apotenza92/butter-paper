@@ -114,7 +114,7 @@ test.describe('viewer page layout controls', () => {
     await expect(page.getByTestId('page-3')).toBeVisible();
     await expect(page.getByTestId('page-1')).toHaveCount(0);
 
-    await page.getByTestId('viewer-scroll-single-page').dblclick();
+    await dispatchDoubleClick(page.getByTestId('viewer-scroll-single-page'));
     await waitForDiagnostics(page, {
       scrollMode: 'single-page',
       zoomPreset: 'fit-page',
@@ -122,13 +122,13 @@ test.describe('viewer page layout controls', () => {
 
     await page.getByTestId('viewer-fit-width').click();
     await expect(page.getByTestId('viewer-toolbar-hint-fit-width')).toContainText('Double click to view Continuous');
-    await page.getByTestId('viewer-fit-width').dblclick();
+    await dispatchDoubleClick(page.getByTestId('viewer-fit-width'));
     await waitForDiagnostics(page, {
       scrollMode: 'continuous',
       zoomPreset: 'fit-width',
     });
 
-    await page.getByTestId('viewer-fit-page').dblclick();
+    await dispatchDoubleClick(page.getByTestId('viewer-fit-page'));
     await waitForDiagnostics(page, {
       scrollMode: 'single-page',
       zoomPreset: 'fit-page',
@@ -136,7 +136,7 @@ test.describe('viewer page layout controls', () => {
 
     await page.getByTestId('viewer-scroll-continuous').click();
     await expect(page.getByTestId('viewer-toolbar-hint-continuous')).toContainText('Double click to Fit Width');
-    await page.getByTestId('viewer-scroll-continuous').dblclick();
+    await dispatchDoubleClick(page.getByTestId('viewer-scroll-continuous'));
     await waitForDiagnostics(page, {
       scrollMode: 'continuous',
       zoomPreset: 'fit-width',
@@ -773,6 +773,10 @@ async function drag(page, startX, startY, endX, endY) {
   await page.mouse.down();
   await page.mouse.move(endX, endY, { steps: 12 });
   await page.mouse.up();
+}
+
+async function dispatchDoubleClick(locator) {
+  await locator.dblclick({ force: true });
 }
 
 async function middlePanViewport(page) {

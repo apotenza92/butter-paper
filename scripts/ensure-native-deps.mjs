@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { copyFileSync, existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -7,6 +7,7 @@ const require = createRequire(import.meta.url);
 
 ensureElectron();
 ensureEsbuild();
+ensureWindowsArmCanvasIcu();
 
 function ensureElectron() {
   const electronRoot = packageRoot('electron');
@@ -39,6 +40,27 @@ function ensureEsbuild() {
     return;
   } catch {
     runPackageInstaller(esbuildRoot, 'install.js');
+  }
+}
+
+function ensureWindowsArmCanvasIcu() {
+  if (process.platform !== 'win32' || process.arch !== 'arm64') {
+    return;
+  }
+
+  const electronRoot = packageRoot('electron');
+  const canvasRoot = packageRoot('@napi-rs/canvas-win32-arm64-msvc');
+  if (!electronRoot || !canvasRoot) {
+    return;
+  }
+
+  const source = join(electronRoot, 'dist', 'icudtl.dat');
+  const destination = join(canvasRoot, 'icudtl.dat');
+  if (!existsSync(destination)) {
+    if (!existsSync(source)) {
+      throw new Error(`Expected Electron ICU data at ${source}`);
+    }
+    copyFileSync(source, destination);
   }
 }
 

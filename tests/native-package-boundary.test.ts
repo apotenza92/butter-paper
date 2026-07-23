@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 
 describe('native release package boundaries', () => {
   it('keeps notarization credentials and public identifiers in their correct contexts', () => {
-    const workflow = readFileSync(resolve('.github/workflows/release.yml'), 'utf8');
+    const workflow = readWorkflow();
 
     expect(workflow).toContain(
       'APPLE_NOTARYTOOL_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARYTOOL_KEY_P8_BASE64 }}',
@@ -19,7 +19,7 @@ describe('native release package boundaries', () => {
   });
 
   it('proves release-source provenance and requires immutable-release policy before publication', () => {
-    const workflow = readFileSync(resolve('.github/workflows/release.yml'), 'utf8');
+    const workflow = readWorkflow();
     const policyJob = workflow.split('  verify-release-policy:', 2)[1].split('  publish:', 1)[0];
     const publishJob = workflow.split('  publish:', 2)[1].split('  verify-publication:', 1)[0];
 
@@ -40,7 +40,7 @@ describe('native release package boundaries', () => {
   });
 
   it('installs, feature-tests, and uninstalls the exact Windows NSIS package', () => {
-    const workflow = readFileSync(resolve('.github/workflows/release.yml'), 'utf8');
+    const workflow = readWorkflow();
     const verifier = readFileSync(resolve('scripts/test-windows-installer.ps1'), 'utf8');
 
     expect(workflow).toContain('./scripts/test-windows-installer.ps1');
@@ -53,7 +53,7 @@ describe('native release package boundaries', () => {
   });
 
   it('tests the AppImage, installed DEB, and extracted RPM on native Linux', () => {
-    const workflow = readFileSync(resolve('.github/workflows/release.yml'), 'utf8');
+    const workflow = readWorkflow();
     const verifier = readFileSync(resolve('scripts/test-linux-packages.sh'), 'utf8');
 
     expect(workflow).toContain('./scripts/test-linux-packages.sh');
@@ -67,7 +67,7 @@ describe('native release package boundaries', () => {
   });
 
   it('publishes update feeds only for the supported macOS updater', () => {
-    const workflow = readFileSync(resolve('.github/workflows/release.yml'), 'utf8');
+    const workflow = readWorkflow();
     const contract = readFileSync(resolve('scripts/release-asset-contract.mjs'), 'utf8');
 
     expect(workflow).not.toContain('update-${{ matrix.variant }}-win32');
@@ -75,4 +75,17 @@ describe('native release package boundaries', () => {
     expect(contract).not.toContain('update-${variant}-win32');
     expect(contract).not.toContain('update-${variant}-linux');
   });
+
+  it('supplies Electron ICU data to the native Windows ARM canvas module', () => {
+    const nativeDependencySetup = readFileSync(resolve('scripts/ensure-native-deps.mjs'), 'utf8');
+
+    expect(nativeDependencySetup).toContain("process.platform !== 'win32' || process.arch !== 'arm64'");
+    expect(nativeDependencySetup).toContain("packageRoot('@napi-rs/canvas-win32-arm64-msvc')");
+    expect(nativeDependencySetup).toContain("join(electronRoot, 'dist', 'icudtl.dat')");
+    expect(nativeDependencySetup).toContain('copyFileSync(source, destination)');
+  });
 });
+
+function readWorkflow(): string {
+  return readFileSync(resolve('.github/workflows/release.yml'), 'utf8').replaceAll('\r\n', '\n');
+}
