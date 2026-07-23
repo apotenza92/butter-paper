@@ -1,5 +1,4 @@
 import {
-  Check,
   ChevronDown,
   Expand,
   Grid2x2,
@@ -10,30 +9,37 @@ import {
   RotateCcw,
   Search,
   Shapes,
-  Square,
   VectorSquare,
   ZoomIn,
   ZoomOut,
   type LucideIcon,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState, type ComponentType, type Dispatch, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject, type SetStateAction } from 'react';
+import { useCallback, useEffect, useRef, useState, type ComponentProps, type ComponentType, type KeyboardEvent as ReactKeyboardEvent, type ReactElement, type ReactNode } from 'react';
+import { Button } from '@/components/ui/button';
+import { ButtonGroup } from '@/components/ui/button-group';
 import {
-  CONTROL_ACTIVE,
-  CONTROL_DEFAULT,
-  CONTROL_DISABLED,
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Input } from '@/components/ui/input';
+import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from '@/components/ui/popover';
+import { Tooltip as ShadcnTooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import {
   CONTROL_ICON_SIZE,
   CONTROL_ICON_SIZE_CLASS,
   CONTROL_ICON_STROKE_WIDTH,
-  MENU_DROPDOWN,
-  MENU_ITEM_DEFAULT,
   PRIMARY_BAND_HEIGHT,
-  SHELL_CONTROL_GAP,
-  SHELL_DIVIDER,
   SHELL_SURFACE_PANEL,
-  VIEWER_TOOLBAR_BUTTON_SIZE,
   VIEWER_TOOLBAR_INSET_X,
 } from './shellSpacing';
-import { Tooltip, useTooltipDelay } from './Tooltip';
+import { Tooltip } from './Tooltip';
 import type { CadViewOrganisation, ScrollWheelMode, SnapSettings, SnapTarget } from '../state/viewerStore';
 
 interface ViewerToolbarProps {
@@ -73,49 +79,27 @@ interface ToolbarIconProps {
 
 type ToolbarIconComponent = ComponentType<ToolbarIconProps>;
 
-function scaledIconSize(size: string | number, scale: number): string | number {
-  return typeof size === 'number' ? size * scale : size;
-}
-
 function FitWidthIcon({ size = 24, strokeWidth = 2, className, 'aria-hidden': ariaHidden }: ToolbarIconProps) {
   return (
-    <span
+    <MoveHorizontal
       aria-hidden={ariaHidden}
-      className={['relative inline-flex items-center justify-center', className].filter(Boolean).join(' ')}
-      style={{ width: size, height: size }}
-    >
-      <Square
-        size={size}
-        strokeWidth={strokeWidth}
-        className="absolute inset-0 h-full w-full"
-      />
-      <MoveHorizontal
-        size={scaledIconSize(size, 0.58)}
-        strokeWidth={strokeWidth}
-        className="absolute"
-      />
-    </span>
+      data-testid="icon-fit-width"
+      size={size}
+      strokeWidth={strokeWidth}
+      className={className}
+    />
   );
 }
 
 function FitPageIcon({ size = 24, strokeWidth = 2, className, 'aria-hidden': ariaHidden }: ToolbarIconProps) {
   return (
-    <span
+    <Expand
       aria-hidden={ariaHidden}
-      className={['relative inline-flex items-center justify-center', className].filter(Boolean).join(' ')}
-      style={{ width: size, height: size }}
-    >
-      <Square
-        size={size}
-        strokeWidth={strokeWidth}
-        className="absolute inset-0 h-full w-full"
-      />
-      <Expand
-        size={scaledIconSize(size, 0.48)}
-        strokeWidth={strokeWidth}
-        className="absolute"
-      />
-    </span>
+      data-testid="icon-fit-page"
+      size={size}
+      strokeWidth={strokeWidth}
+      className={className}
+    />
   );
 }
 
@@ -123,17 +107,18 @@ function ContinuousIcon({ size = 24, strokeWidth = 2, className, 'aria-hidden': 
   return (
     <span
       aria-hidden={ariaHidden}
+      data-testid="icon-continuous-view"
       className={['relative inline-flex items-center justify-center', className].filter(Boolean).join(' ')}
       style={{ width: size, height: size }}
     >
       <RectangleVertical
         size={size}
         strokeWidth={strokeWidth}
-        className="absolute inset-0 h-full w-full"
+        className="absolute inset-0 size-full"
       />
       <svg
         aria-hidden="true"
-        className="absolute inset-0 h-full w-full"
+        className="absolute inset-0 size-full"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
@@ -146,77 +131,58 @@ function ContinuousIcon({ size = 24, strokeWidth = 2, className, 'aria-hidden': 
   );
 }
 
+type ToolbarButtonProps = Omit<ComponentProps<typeof Button>, 'size' | 'variant'> & {
+  active?: boolean;
+  testId?: string;
+  ariaPressed?: boolean;
+};
+
 function ToolbarButton({
   active,
-  disabled,
-  children,
-  onClick,
-  onDoubleClick,
-  suppressTooltip,
-  testId,
-  title,
   ariaPressed,
   className,
-}: {
-  active?: boolean;
-  disabled?: boolean;
-  children: ReactNode;
-  onClick?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
-  onDoubleClick?: () => void;
-  suppressTooltip?: boolean;
-  testId?: string;
-  title?: string;
-  ariaPressed?: boolean;
-  className?: string;
-}) {
-  const buttonRef = useRef<HTMLButtonElement | null>(null);
-  const canShowTooltip = useCallback(() => {
-    const button = buttonRef.current;
-    if (!button) {
-      return false;
-    }
-
-    const activeElement = button.ownerDocument.activeElement;
-    return button.matches(':hover') || (activeElement instanceof Node && button.contains(activeElement));
-  }, []);
-  const tooltip = useTooltipDelay({ canShow: canShowTooltip, disabled, suppressed: suppressTooltip });
-  const tooltipVisible = tooltip.visible;
-  const showTooltip = Boolean(title && tooltipVisible && !disabled && !suppressTooltip);
-
+  disabled,
+  ref,
+  testId,
+  title,
+  ...props
+}: ToolbarButtonProps) {
   return (
-    <button
-      ref={buttonRef}
+    <Button
+      {...props}
+      ref={ref}
       type="button"
+      variant={active ? 'secondary' : 'ghost'}
+      size="sm"
       disabled={disabled}
       data-testid={testId}
       aria-label={title}
       aria-pressed={ariaPressed}
-      className={[
-        'relative inline-flex items-center justify-center rounded-[6px] border px-2 text-[12px] font-medium transition',
-        VIEWER_TOOLBAR_BUTTON_SIZE,
-        disabled ? CONTROL_DISABLED : active ? CONTROL_ACTIVE : CONTROL_DEFAULT,
-        className,
-      ].join(' ')}
-      onBlur={tooltip.hideTooltip}
-      onClick={(event) => {
-        tooltip.hideTooltip();
-        onClick?.(event);
-      }}
-      onDoubleClick={() => {
-        tooltip.hideTooltip();
-        onDoubleClick?.();
-      }}
-      onFocus={tooltip.showTooltip}
-      onPointerEnter={tooltip.showTooltipAfterDelay}
-      onPointerLeave={tooltip.hideTooltip}
-    >
-      {children}
-      {showTooltip ? (
-        <Tooltip testId={testId ? `${testId}-tooltip` : undefined}>
-          {title}
-        </Tooltip>
-      ) : null}
-    </button>
+      className={['relative h-8 rounded-2xl px-2 text-[12px]', className].filter(Boolean).join(' ')}
+    />
+  );
+}
+
+function ToolbarTriggerTooltip({
+  disabled,
+  label,
+  testId,
+  trigger,
+}: {
+  disabled?: boolean;
+  label: string;
+  testId?: string;
+  trigger: ReactElement;
+}) {
+  if (disabled) {
+    return trigger;
+  }
+
+  return (
+    <ShadcnTooltip>
+      <TooltipTrigger render={trigger} />
+      <TooltipContent data-testid={testId}>{label}</TooltipContent>
+    </ShadcnTooltip>
   );
 }
 
@@ -239,7 +205,7 @@ function ToolbarIconButton({
   suppressTooltip?: boolean;
   testId: string;
 }) {
-  return (
+  const button = (
     <ToolbarButton
       active={active}
       ariaPressed={active}
@@ -247,7 +213,6 @@ function ToolbarIconButton({
       disabled={disabled}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
-      suppressTooltip={suppressTooltip}
       testId={testId}
       title={label}
     >
@@ -259,33 +224,17 @@ function ToolbarIconButton({
       />
     </ToolbarButton>
   );
-}
 
-function useToolbarDropdown(): {
-  open: boolean;
-  setOpen: Dispatch<SetStateAction<boolean>>;
-  rootRef: RefObject<HTMLDivElement | null>;
-} {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
+  if (disabled || suppressTooltip) {
+    return button;
+  }
 
-  useEffect(() => {
-    if (!open) {
-      return undefined;
-    }
-
-    function handlePointerDown(event: PointerEvent): void {
-      if (rootRef.current?.contains(event.target as Node)) {
-        return;
-      }
-      setOpen(false);
-    }
-
-    window.addEventListener('pointerdown', handlePointerDown);
-    return () => window.removeEventListener('pointerdown', handlePointerDown);
-  }, [open]);
-
-  return { open, setOpen, rootRef };
+  return (
+    <ShadcnTooltip>
+      <TooltipTrigger render={button} />
+      <TooltipContent data-testid={`${testId}-tooltip`}>{label}</TooltipContent>
+    </ShadcnTooltip>
+  );
 }
 
 const snapTargetOptions: ReadonlyArray<{ target: SnapTarget; label: string; hint: string }> = [
@@ -331,8 +280,9 @@ function ZoomDropdown({
   zoom: number;
   onZoomChange: (zoom: number) => void;
 }) {
-  const { open, setOpen, rootRef } = useToolbarDropdown();
+  const [open, setOpen] = useState(false);
   const zoomLabel = formatZoomPercent(zoom);
+  const selectedZoom = zoomPresetOptions.find((option) => Math.abs(zoom - option) < 0.001);
 
   useEffect(() => {
     if (disabled) {
@@ -341,50 +291,43 @@ function ZoomDropdown({
   }, [disabled, setOpen]);
 
   return (
-    <div ref={rootRef} className="relative">
-      <ToolbarButton
-        active={open && !disabled}
-        className="min-w-[68px] gap-1.5 px-2 tabular-nums"
-        disabled={disabled}
-        onClick={() => setOpen((current) => !current)}
-        testId="viewer-zoom-menu"
-        title={`Zoom ${zoomLabel}`}
-        ariaPressed={open}
-      >
-        <span>{zoomLabel}</span>
-        <ChevronDown
-          size={CONTROL_ICON_SIZE}
-          strokeWidth={CONTROL_ICON_STROKE_WIDTH}
-          className={CONTROL_ICON_SIZE_CLASS}
-          aria-hidden="true"
-        />
-      </ToolbarButton>
-      {open ? (
-        <div className={['absolute left-0 top-[calc(100%+4px)] z-50 max-h-[calc(100vh-72px)] min-w-[112px] overflow-auto rounded-[6px] border p-1', MENU_DROPDOWN].join(' ')}>
-          {zoomPresetOptions.map((option) => {
-            const selected = Math.abs(zoom - option) < 0.001;
-            const label = formatZoomPercent(option);
-            return (
-              <button
-                key={option}
-                type="button"
-                className={['flex h-8 w-full items-center gap-2 rounded-[4px] px-2 text-left text-[12px] transition', MENU_ITEM_DEFAULT].join(' ')}
-                data-testid={`viewer-zoom-preset-${Math.round(option * 100)}`}
-                onClick={() => {
-                  onZoomChange(option);
-                  setOpen(false);
-                }}
-              >
-                <span className="flex h-4 w-4 items-center justify-center">
-                  {selected ? <Check size={14} strokeWidth={2} aria-hidden="true" /> : null}
-                </span>
-                <span className="whitespace-nowrap tabular-nums">{label}</span>
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-    </div>
+    <DropdownMenu open={open} onOpenChange={setOpen} disabled={disabled}>
+      <ShadcnTooltip disabled={disabled || open}>
+        <TooltipTrigger render={(
+          <DropdownMenuTrigger render={(
+            <ToolbarButton
+              active={open && !disabled}
+              className="min-w-[68px] gap-1.5 px-2 tabular-nums"
+              disabled={disabled}
+              testId="viewer-zoom-menu"
+              title={`Zoom ${zoomLabel}`}
+              ariaPressed={open}
+            >
+              <span>{zoomLabel}</span>
+              <ChevronDown size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} className={CONTROL_ICON_SIZE_CLASS} aria-hidden="true" />
+            </ToolbarButton>
+          )} />
+        )} />
+        <TooltipContent>{`Zoom ${zoomLabel}`}</TooltipContent>
+      </ShadcnTooltip>
+      <DropdownMenuContent align="start" className="min-w-[112px] text-xs">
+        <DropdownMenuRadioGroup
+          value={selectedZoom === undefined ? '' : String(selectedZoom)}
+          onValueChange={(value) => onZoomChange(Number(value))}
+        >
+          {zoomPresetOptions.map((option) => (
+            <DropdownMenuRadioItem
+              key={option}
+              value={String(option)}
+              className="text-xs tabular-nums"
+              data-testid={`viewer-zoom-preset-${Math.round(option * 100)}`}
+            >
+              {formatZoomPercent(option)}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -397,7 +340,7 @@ function SnapDropdown({
   snapSettings: SnapSettings;
   onSnapSettingsChange: (settings: Partial<SnapSettings>) => void;
 }) {
-  const { open, setOpen, rootRef } = useToolbarDropdown();
+  const [open, setOpen] = useState(false);
   const targets = snapSettings.snapTargets;
   const selectedTargets = new Set(targets);
 
@@ -415,40 +358,32 @@ function SnapDropdown({
   }, [disabled, setOpen]);
 
   return (
-    <div ref={rootRef} className="relative" data-testid="viewer-snap-controls">
-      <ToolbarButton
-        active={!disabled && (open || snapSettings.snapToContent || snapSettings.snapToMarkup)}
-        className="gap-1.5 px-2"
-        disabled={disabled}
-        onClick={() => setOpen((current) => !current)}
-        testId="viewer-snap-target-menu"
-        title="Snap"
-        ariaPressed={open}
-      >
-        <Magnet
-          size={CONTROL_ICON_SIZE}
-          strokeWidth={CONTROL_ICON_STROKE_WIDTH}
-          className={CONTROL_ICON_SIZE_CLASS}
-          aria-hidden="true"
-        />
-        <ChevronDown
-          size={CONTROL_ICON_SIZE}
-          strokeWidth={CONTROL_ICON_STROKE_WIDTH}
-          className={CONTROL_ICON_SIZE_CLASS}
-          aria-hidden="true"
-        />
-      </ToolbarButton>
-      {open ? (
-        <div className={['absolute left-0 top-[calc(100%+4px)] z-50 min-w-[240px] rounded-[6px] border p-1', MENU_DROPDOWN].join(' ')}>
-          <button
-            type="button"
-            className={['flex h-8 w-full items-center gap-2 rounded-[4px] px-2 text-left text-[12px] transition', MENU_ITEM_DEFAULT].join(' ')}
+    <div data-testid="viewer-snap-controls">
+      <DropdownMenu open={open} onOpenChange={setOpen} disabled={disabled}>
+        <ShadcnTooltip disabled={disabled || open}>
+          <TooltipTrigger render={(
+            <DropdownMenuTrigger render={(
+              <ToolbarButton
+                active={!disabled && (open || snapSettings.snapToContent || snapSettings.snapToMarkup)}
+                className="gap-1.5 px-2"
+                disabled={disabled}
+                testId="viewer-snap-target-menu"
+                title="Snap"
+                ariaPressed={open}
+              >
+                <Magnet size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} className={CONTROL_ICON_SIZE_CLASS} aria-hidden="true" />
+                <ChevronDown size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} className={CONTROL_ICON_SIZE_CLASS} aria-hidden="true" />
+              </ToolbarButton>
+            )} />
+          )} />
+          <TooltipContent>Snap</TooltipContent>
+        </ShadcnTooltip>
+        <DropdownMenuContent align="start" className="min-w-[240px] text-xs">
+          <DropdownMenuCheckboxItem
+            checked={snapSettings.snapToContent}
             data-testid="viewer-snap-content"
-            onClick={() => onSnapSettingsChange({ snapToContent: !snapSettings.snapToContent })}
+            onCheckedChange={(checked) => onSnapSettingsChange({ snapToContent: checked })}
           >
-            <span className="flex h-4 w-4 items-center justify-center">
-              {snapSettings.snapToContent ? <Check size={14} strokeWidth={2} aria-hidden="true" /> : null}
-            </span>
             <VectorSquare
               size={CONTROL_ICON_SIZE}
               strokeWidth={CONTROL_ICON_STROKE_WIDTH}
@@ -456,16 +391,12 @@ function SnapDropdown({
               aria-hidden="true"
             />
             <span>Content</span>
-          </button>
-          <button
-            type="button"
-            className={['flex h-8 w-full items-center gap-2 rounded-[4px] px-2 text-left text-[12px] transition', MENU_ITEM_DEFAULT].join(' ')}
+          </DropdownMenuCheckboxItem>
+          <DropdownMenuCheckboxItem
+            checked={snapSettings.snapToMarkup}
             data-testid="viewer-snap-markup"
-            onClick={() => onSnapSettingsChange({ snapToMarkup: !snapSettings.snapToMarkup })}
+            onCheckedChange={(checked) => onSnapSettingsChange({ snapToMarkup: checked })}
           >
-            <span className="flex h-4 w-4 items-center justify-center">
-              {snapSettings.snapToMarkup ? <Check size={14} strokeWidth={2} aria-hidden="true" /> : null}
-            </span>
             <Shapes
               size={CONTROL_ICON_SIZE}
               strokeWidth={CONTROL_ICON_STROKE_WIDTH}
@@ -473,30 +404,27 @@ function SnapDropdown({
               aria-hidden="true"
             />
             <span>Markup</span>
-          </button>
-          <div className={['my-1 h-px', SHELL_DIVIDER].join(' ')} />
+          </DropdownMenuCheckboxItem>
+          <DropdownMenuSeparator />
           {snapTargetOptions.map((option) => {
             const selected = selectedTargets.has(option.target);
             return (
-              <button
+              <DropdownMenuCheckboxItem
                 key={option.target}
-                type="button"
-                className={['flex h-8 w-full items-center gap-2 rounded-[4px] px-2 text-left text-[12px] transition', MENU_ITEM_DEFAULT].join(' ')}
+                checked={selected}
+                className="text-xs"
                 data-testid={`viewer-snap-target-${option.target}`}
-                onClick={() => toggleTarget(option.target)}
+                onCheckedChange={() => toggleTarget(option.target)}
               >
-                <span className="flex h-4 w-4 items-center justify-center">
-                  {selected ? <Check size={14} strokeWidth={2} aria-hidden="true" /> : null}
-                </span>
                 <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
                   <span>{option.label}</span>
-                  <span className="bp-text-muted text-[11px]">{option.hint}</span>
+                  <span className="text-[11px] text-muted-foreground">{option.hint}</span>
                 </span>
-              </button>
+              </DropdownMenuCheckboxItem>
             );
           })}
-        </div>
-      ) : null}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 }
@@ -508,6 +436,35 @@ const wheelModeOptions: ReadonlyArray<{ mode: ScrollWheelMode; label: string; ic
 const ACTIVE_VIEW_CHEVRON_CLASS = CONTROL_ICON_SIZE_CLASS;
 const INACTIVE_VIEW_CHEVRON_CLASS = `${CONTROL_ICON_SIZE_CLASS} opacity-35`;
 
+function nextSingleSelectValue<Value extends string>(
+  event: ReactKeyboardEvent,
+  values: readonly Value[],
+  currentValue: Value,
+  orientation: 'horizontal' | 'vertical',
+): Value | null {
+  if (event.altKey || event.ctrlKey || event.metaKey || values.length < 2) {
+    return null;
+  }
+
+  const currentIndex = Math.max(0, values.indexOf(currentValue));
+  if (event.key === 'Home') {
+    return values[0] ?? null;
+  }
+  if (event.key === 'End') {
+    return values.at(-1) ?? null;
+  }
+
+  const previousKey = orientation === 'horizontal' ? 'ArrowLeft' : 'ArrowUp';
+  const nextKey = orientation === 'horizontal' ? 'ArrowRight' : 'ArrowDown';
+  if (event.key === previousKey) {
+    return values[(currentIndex - 1 + values.length) % values.length] ?? null;
+  }
+  if (event.key === nextKey) {
+    return values[(currentIndex + 1) % values.length] ?? null;
+  }
+  return null;
+}
+
 function WheelBehaviourMenuItems({
   mode,
   testIdPrefix,
@@ -518,21 +475,16 @@ function WheelBehaviourMenuItems({
   onModeChange: (mode: ScrollWheelMode) => void;
 }) {
   return (
-    <>
+    <DropdownMenuRadioGroup value={mode} onValueChange={(value) => onModeChange(value as ScrollWheelMode)}>
       {wheelModeOptions.map((option) => {
-        const selected = mode === option.mode;
         const Icon = option.icon;
         return (
-          <button
+          <DropdownMenuRadioItem
             key={option.mode}
-            type="button"
-            className={['flex h-8 w-full items-center gap-2 rounded-[4px] px-2 text-left text-[12px] transition', MENU_ITEM_DEFAULT].join(' ')}
+            value={option.mode}
+            className="text-xs"
             data-testid={`${testIdPrefix}-wheel-${option.mode}`}
-            onClick={() => onModeChange(option.mode)}
           >
-            <span className="flex h-4 w-4 items-center justify-center">
-              {selected ? <Check size={14} strokeWidth={2} aria-hidden="true" /> : null}
-            </span>
             <Icon
               size={CONTROL_ICON_SIZE}
               strokeWidth={CONTROL_ICON_STROKE_WIDTH}
@@ -540,10 +492,10 @@ function WheelBehaviourMenuItems({
               aria-hidden="true"
             />
             <span className="whitespace-nowrap">{option.label}</span>
-          </button>
+          </DropdownMenuRadioItem>
         );
       })}
-    </>
+    </DropdownMenuRadioGroup>
   );
 }
 
@@ -572,7 +524,7 @@ function ViewWheelDropdown({
   onDoubleClick?: () => void;
   onModeChange: (mode: ScrollWheelMode) => void;
 }) {
-  const { open, setOpen, rootRef } = useToolbarDropdown();
+  const [open, setOpen] = useState(false);
   const dropdownOpenTimerRef = useRef<number | null>(null);
 
   const cancelPendingDropdownOpen = useCallback(() => {
@@ -595,64 +547,63 @@ function ViewWheelDropdown({
     return () => cancelPendingDropdownOpen();
   }, [cancelPendingDropdownOpen]);
 
-  return (
-    <div ref={rootRef} className="relative">
-      <ToolbarButton
-        active={!disabled && active}
-        ariaPressed={active}
-        className="gap-1 px-2"
-        disabled={disabled}
-        onClick={(event) => {
-          if (!active) {
-            onActivate();
+  function handleOpenChange(nextOpen: boolean, eventDetails: { event: Event }): void {
+    if (!nextOpen) {
+      cancelPendingDropdownOpen();
+      setOpen(false);
+      return;
+    }
+
+    if (!active) {
+      onActivate();
+      setOpen(false);
+      return;
+    }
+
+    cancelPendingDropdownOpen();
+    const isKeyboardOpen = eventDetails.event instanceof KeyboardEvent;
+    dropdownOpenTimerRef.current = window.setTimeout(() => {
+      dropdownOpenTimerRef.current = null;
+      setOpen(true);
+    }, isKeyboardOpen || !onDoubleClick ? 0 : VIEW_DROPDOWN_OPEN_DELAY_MS);
+  }
+
+  const trigger = (
+    <DropdownMenuTrigger
+      render={(
+        <ToolbarButton
+          active={!disabled && active}
+          ariaPressed={active}
+          className="w-14 gap-1 px-2"
+          disabled={disabled}
+          onDoubleClick={() => {
+            cancelPendingDropdownOpen();
             setOpen(false);
-            return;
-          }
+            onDoubleClick?.();
+          }}
+          testId={testId}
+          title={label}
+        >
+          <Icon size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} className={CONTROL_ICON_SIZE_CLASS} aria-hidden="true" />
+          <ChevronDown size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} className={active ? ACTIVE_VIEW_CHEVRON_CLASS : INACTIVE_VIEW_CHEVRON_CLASS} aria-hidden="true" />
+        </ToolbarButton>
+      )}
+    />
+  );
 
-          if (event.detail > 1) {
-            return;
-          }
-
-          cancelPendingDropdownOpen();
-          dropdownOpenTimerRef.current = window.setTimeout(() => {
-            dropdownOpenTimerRef.current = null;
-            setOpen((current) => !current);
-          }, onDoubleClick ? VIEW_DROPDOWN_OPEN_DELAY_MS : 0);
-        }}
-        onDoubleClick={() => {
-          cancelPendingDropdownOpen();
-          setOpen(false);
-          onDoubleClick?.();
-        }}
-        suppressTooltip={suppressTooltip}
-        testId={testId}
-        title={label}
-      >
-        <Icon
-          size={CONTROL_ICON_SIZE}
-          strokeWidth={CONTROL_ICON_STROKE_WIDTH}
-          className={CONTROL_ICON_SIZE_CLASS}
-          aria-hidden="true"
-        />
-        <ChevronDown
-          size={CONTROL_ICON_SIZE}
-          strokeWidth={CONTROL_ICON_STROKE_WIDTH}
-          className={active ? ACTIVE_VIEW_CHEVRON_CLASS : INACTIVE_VIEW_CHEVRON_CLASS}
-          aria-hidden="true"
-        />
-      </ToolbarButton>
-      {open ? (
-        <div className={['absolute left-0 top-[calc(100%+4px)] z-50 min-w-[190px] rounded-[6px] border p-1', MENU_DROPDOWN].join(' ')}>
-          <div className="bp-text-muted px-2 pb-1 pt-1 text-[11px] font-medium">Mousewheel Behaviour</div>
+  return (
+    <DropdownMenu open={open} onOpenChange={handleOpenChange} disabled={disabled}>
+      <ToolbarTriggerTooltip disabled={disabled || suppressTooltip || open} label={label} testId={`${testId}-tooltip`} trigger={trigger} />
+      <DropdownMenuContent align="start" className="min-w-[190px] text-xs">
+          <DropdownMenuLabel className="text-[11px]">Mousewheel Behaviour</DropdownMenuLabel>
           <WheelBehaviourMenuItems
             mode={mode}
             testIdPrefix={testIdPrefix}
             onModeChange={onModeChange}
           />
-          <div className="bp-text-muted px-2 pb-1 pt-1 text-[11px] leading-4">Ctrl + mousewheel does the opposite.</div>
-        </div>
-      ) : null}
-    </div>
+          <div className="px-2 py-1 text-[11px] leading-4 text-muted-foreground">Ctrl + mousewheel does the opposite.</div>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -681,7 +632,7 @@ function CadViewButton({
   onCadScrollWheelModeChange: (mode: ScrollWheelMode) => void;
   onPagesPerColumnChange: (count: number) => void;
 }) {
-  const { open, setOpen, rootRef } = useToolbarDropdown();
+  const [open, setOpen] = useState(false);
   const cadViewActive = scrollMode === 'continuous' && pageColumnsEnabled;
   const countLabel = cadViewOrganisation === 'columns' ? 'Pages/column' : 'Pages/row';
 
@@ -698,87 +649,132 @@ function CadViewButton({
     }
   }, [disabled, setOpen]);
 
-  return (
-    <div ref={rootRef} className="relative">
-      <ToolbarButton
-        active={!disabled && cadViewActive}
-        ariaPressed={cadViewActive}
-        className="gap-1 px-2"
-        disabled={disabled}
-        onClick={() => {
-          if (!cadViewActive) {
-            onScrollModeChange('continuous');
-            onPageColumnsEnabledChange(true);
-            setOpen(false);
-            return;
-          }
+  const trigger = (
+    <PopoverTrigger
+      render={(
+        <ToolbarButton
+          active={!disabled && cadViewActive}
+          ariaPressed={cadViewActive}
+          className="w-14 gap-1 px-2"
+          disabled={disabled}
+          testId="viewer-cad-view"
+          title="CAD View"
+        >
+          <Grid2x2 size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} className={CONTROL_ICON_SIZE_CLASS} aria-hidden="true" />
+          <ChevronDown size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} className={cadViewActive ? ACTIVE_VIEW_CHEVRON_CLASS : INACTIVE_VIEW_CHEVRON_CLASS} aria-hidden="true" />
+        </ToolbarButton>
+      )}
+    />
+  );
 
-          setOpen((current) => !current);
-        }}
-        testId="viewer-cad-view"
-        title="CAD View"
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (nextOpen && !cadViewActive) {
+          onScrollModeChange('continuous');
+          onPageColumnsEnabledChange(true);
+          setOpen(false);
+          return;
+        }
+        setOpen(nextOpen);
+      }}
+    >
+      <ToolbarTriggerTooltip disabled={disabled || open} label="CAD View" testId="viewer-cad-view-tooltip" trigger={trigger} />
+      <PopoverContent
+        align="start"
+        className="w-[230px] gap-3 p-3"
+        data-testid="viewer-cad-settings"
+        finalFocus={() => globalThis.document.querySelector<HTMLElement>('[data-testid="viewer-cad-view"]')}
       >
-        <Grid2x2
-          size={CONTROL_ICON_SIZE}
-          strokeWidth={CONTROL_ICON_STROKE_WIDTH}
-          className={CONTROL_ICON_SIZE_CLASS}
-          aria-hidden="true"
-        />
-        <ChevronDown
-          size={CONTROL_ICON_SIZE}
-          strokeWidth={CONTROL_ICON_STROKE_WIDTH}
-          className={cadViewActive ? ACTIVE_VIEW_CHEVRON_CLASS : INACTIVE_VIEW_CHEVRON_CLASS}
-          aria-hidden="true"
-        />
-      </ToolbarButton>
-      {open ? (
-        <div className={['absolute left-0 top-[calc(100%+4px)] z-50 min-w-[210px] rounded-[6px] border p-2', MENU_DROPDOWN].join(' ')}>
-          <div className="bp-text-muted px-2 pb-1 text-[11px] font-medium">Organise by</div>
-          <div className="grid grid-cols-2 gap-1">
+          <PopoverHeader>
+            <PopoverTitle className="text-sm">CAD View</PopoverTitle>
+            <PopoverDescription className="text-xs">Organise drawing sheets and choose mousewheel behaviour.</PopoverDescription>
+          </PopoverHeader>
+          <ToggleGroup
+            aria-label="Organise by"
+            className="grid w-full grid-cols-2"
+            value={[cadViewOrganisation]}
+            onKeyDown={(event) => {
+              const nextValue = nextSingleSelectValue(event, ['columns', 'rows'], cadViewOrganisation, 'horizontal');
+              if (nextValue) {
+                onCadViewOrganisationChange(nextValue);
+              }
+            }}
+            onValueChange={(values) => {
+              const nextValue = values[0] as CadViewOrganisation | undefined;
+              if (nextValue) {
+                onCadViewOrganisationChange(nextValue);
+              }
+            }}
+          >
             {([
               ['columns', 'Columns'],
               ['rows', 'Rows'],
             ] as const).map(([organisation, label]) => {
-              const selected = cadViewOrganisation === organisation;
               return (
-                <button
+                <ToggleGroupItem
                   key={organisation}
-                  type="button"
-                  className={[
-                    'flex h-8 items-center justify-center rounded-[4px] border px-2 text-[12px] transition',
-                    selected ? CONTROL_ACTIVE : `${MENU_ITEM_DEFAULT} border-transparent`,
-                  ].join(' ')}
+                  size="sm"
+                  value={organisation}
+                  className="w-full text-xs"
                   data-testid={`viewer-cad-organisation-${organisation}`}
-                  onClick={() => onCadViewOrganisationChange(organisation)}
                 >
                   {label}
-                </button>
+                </ToggleGroupItem>
               );
             })}
-          </div>
-          <label className="mt-2 flex items-center justify-between gap-3 px-2 text-[12px]">
-            <span className="bp-text-muted">{countLabel}</span>
-            <input
+          </ToggleGroup>
+          <label className="flex items-center justify-between gap-3 text-xs">
+            <span className="text-muted-foreground">{countLabel}</span>
+            <Input
               type="number"
               min={1}
               max={100}
               step={1}
               value={pagesPerColumn}
-              className="h-6 w-14 rounded-[4px] border border-neutral-300 bg-transparent px-1 text-right text-[12px] disabled:opacity-50"
+              className="h-7 w-16 text-right text-xs"
               data-testid={cadViewOrganisation === 'columns' ? 'viewer-pages-per-column' : 'viewer-pages-per-row'}
               onChange={(event) => handlePageCountChange(event.currentTarget.value)}
             />
           </label>
-          <div className="bp-text-muted mt-2 px-2 pb-1 pt-1 text-[11px] font-medium">Mousewheel Behaviour</div>
-          <WheelBehaviourMenuItems
-            mode={cadScrollWheelMode}
-            testIdPrefix="viewer-cad"
-            onModeChange={onCadScrollWheelModeChange}
-          />
-          <div className="bp-text-muted px-2 pb-1 pt-1 text-[11px] leading-4">Ctrl + mousewheel does the opposite.</div>
-        </div>
-      ) : null}
-    </div>
+          <ToggleGroup
+            aria-label="Mousewheel behaviour"
+            className="grid w-full gap-1"
+            orientation="vertical"
+            value={[cadScrollWheelMode]}
+            onKeyDown={(event) => {
+              const nextValue = nextSingleSelectValue(event, ['zoom', 'scroll'], cadScrollWheelMode, 'vertical');
+              if (nextValue) {
+                onCadScrollWheelModeChange(nextValue);
+              }
+            }}
+            onValueChange={(values) => {
+              const nextValue = values[0] as ScrollWheelMode | undefined;
+              if (nextValue) {
+                onCadScrollWheelModeChange(nextValue);
+              }
+            }}
+          >
+            {wheelModeOptions.map((option) => {
+              const Icon = option.icon;
+              return (
+                <ToggleGroupItem
+                  key={option.mode}
+                  size="sm"
+                  value={option.mode}
+                  className="w-full justify-start text-xs"
+                  data-testid={`viewer-cad-wheel-${option.mode}`}
+                >
+                  <Icon aria-hidden="true" />
+                  {option.label}
+                </ToggleGroupItem>
+              );
+            })}
+          </ToggleGroup>
+          <div className="text-[11px] leading-4 text-muted-foreground">Ctrl + mousewheel does the opposite.</div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -850,15 +846,15 @@ export function ViewerToolbar({
   return (
     <div
       className={[
-        'bp-border-bottom-inset flex items-center justify-center',
+        'bp-border-bottom-inset bp-native-scroll-hidden flex min-w-0 items-center overflow-x-auto [justify-content:safe_center]',
         PRIMARY_BAND_HEIGHT,
         VIEWER_TOOLBAR_INSET_X,
-        SHELL_CONTROL_GAP,
+        'gap-2',
         SHELL_SURFACE_PANEL,
       ].join(' ')}
       data-testid="viewer-toolbar"
     >
-      <div className={['flex items-center', SHELL_CONTROL_GAP].join(' ')}>
+      <ButtonGroup aria-label="Zoom controls" className="gap-1 rounded-2xl bg-muted/50 p-1 [&>[data-slot]]:rounded-xl!">
         <ToolbarIconButton
           disabled={disabled}
           icon={ZoomOut}
@@ -885,11 +881,9 @@ export function ViewerToolbar({
           onClick={onZoomReset}
           testId="viewer-zoom-reset"
         />
-      </div>
+      </ButtonGroup>
 
-      <div className={['h-5 w-px', SHELL_DIVIDER].join(' ')} />
-
-      <div className={['flex items-center', SHELL_CONTROL_GAP].join(' ')}>
+      <ButtonGroup aria-label="Fit controls" className="gap-1 rounded-2xl bg-muted/50 p-1 [&>[data-slot]]:rounded-xl!">
         <span className="relative inline-flex justify-center">
           <ToolbarIconButton
             active={zoomPreset === 'fit-width'}
@@ -928,11 +922,9 @@ export function ViewerToolbar({
           />
           {hintFor('fit-page')}
         </span>
-      </div>
+      </ButtonGroup>
 
-      <div className={['h-5 w-px', SHELL_DIVIDER].join(' ')} />
-
-      <div className={['flex items-center', SHELL_CONTROL_GAP].join(' ')}>
+      <ButtonGroup aria-label="Page view controls" className="gap-1 rounded-2xl bg-muted/50 p-1 [&>[data-slot]]:rounded-xl!">
         <span className="relative inline-flex justify-center">
           <ViewWheelDropdown
             active={scrollMode === 'continuous' && !pageColumnsEnabled}
@@ -986,15 +978,15 @@ export function ViewerToolbar({
           onCadScrollWheelModeChange={onCadScrollWheelModeChange}
           onPagesPerColumnChange={onPagesPerColumnChange}
         />
-      </div>
+      </ButtonGroup>
 
-      <div className={['h-5 w-px', SHELL_DIVIDER].join(' ')} />
-
-      <SnapDropdown
-        disabled={disabled}
-        snapSettings={snapSettings}
-        onSnapSettingsChange={onSnapSettingsChange}
-      />
+      <ButtonGroup aria-label="Snapping controls" className="gap-1 rounded-2xl bg-muted/50 p-1 [&>[data-slot]]:rounded-xl!">
+        <SnapDropdown
+          disabled={disabled}
+          snapSettings={snapSettings}
+          onSnapSettingsChange={onSnapSettingsChange}
+        />
+      </ButtonGroup>
     </div>
   );
 }

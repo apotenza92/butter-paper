@@ -3,7 +3,7 @@
 Butter Paper is a cross-platform desktop app for reviewing and marking up PDFs,
 with a focus on architecture, engineering, and construction workflows.
 
-The project is pre-release. Version 0.0.1 is being prepared; no public release
+The project is pre-release. Version 0.0.1-beta.1 is being prepared; no public release
 or updater channel is available yet.
 
 ## Development
@@ -33,8 +33,10 @@ pnpm --dir apps/desktop package
 pnpm test:package:desktop
 ```
 
-Packaging workflows target macOS, Windows, and Linux on both ARM64 and x64.
-Release publication and automatic updates are not enabled yet.
+The tagged release workflow targets macOS, Windows, and Linux on both ARM64
+and x64, but no public tag has been released yet. In-app stable/beta updates
+are currently supported only for signed and notarized macOS packages;
+Windows and Linux packages do not advertise updater feeds.
 
 ## License
 

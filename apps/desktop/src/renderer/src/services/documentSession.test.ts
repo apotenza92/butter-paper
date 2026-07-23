@@ -301,6 +301,69 @@ describe('LocalPdfSession', () => {
     expect(mockedOpenPdfDocumentFromBytes).not.toHaveBeenCalled();
   });
 
+  it('treats render requests during a save reopen as transient instead of session errors', async () => {
+    const firstHandle = createBackendHandle();
+    const secondHandle = createBackendHandle();
+    const reopenDeferred = createDeferred<Awaited<ReturnType<PdfSessionBackend['open']>>>();
+    const backend: PdfSessionBackend = {
+      kind: 'test-backend',
+      open: vi
+        .fn()
+        .mockResolvedValueOnce({
+          payload: createPayload('/tmp/injected.pdf'),
+          handle: firstHandle,
+          backendInfo: {
+            sessionBackendKind: 'pdfjs' as const,
+            surfaceTransportKind: 'pdfjs-blob-url' as const,
+          },
+          openStageTimings: {
+            mainPayloadMs: 1,
+            rendererFileReadMs: 2,
+            rendererBrowserOpenMs: 3,
+          },
+        })
+        .mockReturnValueOnce(reopenDeferred.promise),
+      save: vi.fn(async () => ({ path: '/tmp/saved.pdf' })),
+    };
+
+    const session = new LocalPdfSession('/tmp/injected.pdf', backend);
+    await session.open();
+
+    const savePromise = session.save([]);
+    await vi.waitFor(() => expect(backend.open).toHaveBeenCalledTimes(2));
+    const versionBeforeTransientRender = session.version;
+
+    await expect(session.renderPageBitmap(0, 1, 1, {
+      urgency: 'visible',
+      requestClass: 'target-page-hq',
+    })).rejects.toMatchObject({ name: 'RenderUnavailableError' });
+    expect(session.version).toBe(versionBeforeTransientRender);
+    expect(session.diagnostics()).toMatchObject({
+      pageRenderReady: false,
+      lastPageRenderError: null,
+    });
+
+    reopenDeferred.resolve({
+      payload: createPayload('/tmp/saved.pdf'),
+      handle: secondHandle,
+      backendInfo: {
+        sessionBackendKind: 'pdfjs',
+        surfaceTransportKind: 'pdfjs-blob-url',
+      },
+      openStageTimings: {
+        mainPayloadMs: 4,
+        rendererFileReadMs: 5,
+        rendererBrowserOpenMs: 6,
+      },
+    });
+
+    await expect(savePromise).resolves.toMatchObject({ filePath: '/tmp/saved.pdf' });
+    await expect(session.renderPageBitmap(0, 1, 1, {
+      urgency: 'visible',
+      requestClass: 'target-page-hq',
+    })).resolves.toMatchObject({ pageIndex: 0 });
+  });
+
   it('renders pages from an injected backend handle using only the abstract handle contract', async () => {
     let objectUrlCounter = 0;
     vi.stubGlobal('URL', {

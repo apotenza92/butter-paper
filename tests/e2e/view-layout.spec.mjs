@@ -648,14 +648,18 @@ async function activateCadView(page) {
 }
 
 async function openCadViewSettings(page) {
+  const settings = page.getByTestId('viewer-cad-settings');
+  const openSettings = page.locator('[data-testid="viewer-cad-settings"][data-open]');
   const columnsButton = page.getByTestId('viewer-cad-organisation-columns');
   const rowsButton = page.getByTestId('viewer-cad-organisation-rows');
-  if (await columnsButton.isVisible().catch(() => false)) {
+  if (await openSettings.isVisible().catch(() => false)) {
     return;
   }
 
+  await expect(settings).toHaveCount(0);
   await activateCadView(page);
   await page.getByTestId('viewer-cad-view').click();
+  await expect(openSettings).toBeVisible();
   await expect(columnsButton).toBeVisible();
   await expect(rowsButton).toBeVisible();
 }

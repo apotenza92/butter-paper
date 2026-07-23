@@ -24,6 +24,10 @@ test.describe('Butter Canvas workflows', () => {
     await expect(page.getByTestId('butter-canvas-toolbar')).toBeVisible();
     await expect(page.getByTestId('butter-canvas-viewport')).toBeVisible();
     await expect(page.getByTestId('viewer-toolbar')).toHaveCount(0);
+    const canvasZoomOut = page.getByRole('button', { name: 'Zoom Out' });
+    await canvasZoomOut.hover();
+    await expect(page.locator('[data-slot="tooltip-content"]').filter({ hasText: 'Zoom Out' })).toBeVisible();
+    await page.mouse.move(0, 0);
 
     const viewportBox = await page.getByTestId('butter-canvas-viewport').boundingBox();
     expect(viewportBox).not.toBeNull();
@@ -51,7 +55,9 @@ test.describe('Butter Canvas workflows', () => {
     await page.getByRole('button', { name: 'Trace Image' }).click();
     await expect(page.getByTestId('butter-canvas-trace-panel')).toBeVisible();
     await expect(page.getByTestId('butter-canvas-trace-zone-preview')).toBeVisible();
-    await page.getByTestId('butter-canvas-trace-sensitivity').fill('70');
+    const sensitivity = page.getByTestId('butter-canvas-trace-sensitivity');
+    await expect(sensitivity.locator('[data-slot="slider-thumb"]')).toHaveCount(1);
+    await sensitivity.locator('input[type="range"]').fill('70');
     await page.getByRole('button', { name: 'Cancel', exact: true }).click();
     await waitForCanvasDiagnostics(page, { markupCount: 1 });
 

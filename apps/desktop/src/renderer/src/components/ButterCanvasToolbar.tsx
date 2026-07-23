@@ -11,19 +11,18 @@ import {
   ZoomOut,
   type LucideIcon,
 } from 'lucide-react';
-import type { ReactNode } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import type { ButterCanvasDocument } from '@butter-paper/core';
+import { Button } from '@/components/ui/button';
+import { ButtonGroup } from '@/components/ui/button-group';
+import { Toggle } from '@/components/ui/toggle';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
-  CONTROL_ACTIVE,
-  CONTROL_DEFAULT,
-  CONTROL_DISABLED,
   CONTROL_ICON_SIZE,
   CONTROL_ICON_SIZE_CLASS,
   CONTROL_ICON_STROKE_WIDTH,
   PRIMARY_BAND_HEIGHT,
-  SHELL_CONTROL_GAP,
   SHELL_SURFACE_PANEL,
-  VIEWER_TOOLBAR_BUTTON_SIZE,
   VIEWER_TOOLBAR_INSET_X,
 } from './shellSpacing';
 
@@ -56,21 +55,47 @@ function ToolbarButton({
   children: ReactNode;
   onClick: () => void;
 }) {
+  const className = 'h-8 min-w-8 rounded-2xl px-2 text-[12px]';
+  let control: ReactElement;
+
+  if (active !== undefined) {
+    control = (
+      <Toggle
+        type="button"
+        variant="outline"
+        pressed={active}
+        aria-label={label}
+        disabled={disabled}
+        className={className}
+        onPressedChange={onClick}
+      >
+        {children}
+      </Toggle>
+    );
+  } else {
+    control = (
+      <Button
+        type="button"
+        variant="ghost"
+        aria-label={label}
+        disabled={disabled}
+        className={className}
+        onClick={onClick}
+      >
+        {children}
+      </Button>
+    );
+  }
+
+  if (disabled) {
+    return control;
+  }
+
   return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      disabled={disabled}
-      className={[
-        'inline-flex items-center justify-center rounded-[6px] border px-2 text-[12px] font-medium transition',
-        VIEWER_TOOLBAR_BUTTON_SIZE,
-        disabled ? CONTROL_DISABLED : active ? CONTROL_ACTIVE : CONTROL_DEFAULT,
-      ].join(' ')}
-      onClick={onClick}
-    >
-      {children}
-    </button>
+    <Tooltip>
+      <TooltipTrigger render={control} />
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -132,44 +157,52 @@ export function ButterCanvasToolbar({
         'bp-border-bottom-inset flex shrink-0 items-center overflow-x-auto',
         PRIMARY_BAND_HEIGHT,
         VIEWER_TOOLBAR_INSET_X,
-        SHELL_CONTROL_GAP,
+        'gap-2',
         SHELL_SURFACE_PANEL,
       ].join(' ')}
       data-testid="butter-canvas-toolbar"
     >
-      <ToolbarButton label="Insert Image" onClick={onInsertImage}>
-        <ToolbarIcon icon={FileImage} />
-      </ToolbarButton>
-      <ToolbarButton label="Insert PDF" onClick={onInsertPdf}>
-        <ToolbarIcon icon={FileText} />
-      </ToolbarButton>
-      <ToolbarButton label="Trace Image" disabled={document.assets.length === 0} onClick={onTraceImage}>
-        <ToolbarIcon icon={ScanLine} />
-      </ToolbarButton>
-      <ToolbarButton active={document.grid.visible} label="Show Grid" onClick={toggleGridVisible}>
-        <ToolbarIcon icon={Grid2x2} />
-      </ToolbarButton>
-      <ToolbarButton active={document.grid.snap || document.snap.grid} label="Snap to Grid" onClick={toggleGridSnap}>
-        <ToolbarIcon icon={Magnet} />
-      </ToolbarButton>
-      <ToolbarButton active={document.scale !== null} label="Canvas Scale" onClick={onSetScale}>
-        <ToolbarIcon icon={Ruler} />
-      </ToolbarButton>
-      <ToolbarButton label="Zoom Out" onClick={onZoomOut}>
-        <ToolbarIcon icon={ZoomOut} />
-      </ToolbarButton>
-      <ToolbarButton label={`Zoom ${zoomLabel}`} onClick={onFit}>
-        <span className="min-w-[52px] tabular-nums">{zoomLabel}</span>
-      </ToolbarButton>
-      <ToolbarButton label="Zoom In" onClick={onZoomIn}>
-        <ToolbarIcon icon={ZoomIn} />
-      </ToolbarButton>
-      <ToolbarButton disabled={!canUndo} label="Undo" onClick={onUndo}>
-        <ToolbarIcon icon={Undo2} />
-      </ToolbarButton>
-      <ToolbarButton disabled={!canRedo} label="Redo" onClick={onRedo}>
-        <ToolbarIcon icon={Redo2} />
-      </ToolbarButton>
+      <ButtonGroup aria-label="Insert controls" className="gap-1 rounded-2xl bg-muted/50 p-1 [&>[data-slot]]:rounded-xl!">
+        <ToolbarButton label="Insert Image" onClick={onInsertImage}>
+          <ToolbarIcon icon={FileImage} />
+        </ToolbarButton>
+        <ToolbarButton label="Insert PDF" onClick={onInsertPdf}>
+          <ToolbarIcon icon={FileText} />
+        </ToolbarButton>
+        <ToolbarButton label="Trace Image" disabled={document.assets.length === 0} onClick={onTraceImage}>
+          <ToolbarIcon icon={ScanLine} />
+        </ToolbarButton>
+      </ButtonGroup>
+      <ButtonGroup aria-label="Canvas controls" className="gap-1 rounded-2xl bg-muted/50 p-1 [&>[data-slot]]:rounded-xl!">
+        <ToolbarButton active={document.grid.visible} label="Show Grid" onClick={toggleGridVisible}>
+          <ToolbarIcon icon={Grid2x2} />
+        </ToolbarButton>
+        <ToolbarButton active={document.grid.snap || document.snap.grid} label="Snap to Grid" onClick={toggleGridSnap}>
+          <ToolbarIcon icon={Magnet} />
+        </ToolbarButton>
+        <ToolbarButton active={document.scale !== null} label="Canvas Scale" onClick={onSetScale}>
+          <ToolbarIcon icon={Ruler} />
+        </ToolbarButton>
+      </ButtonGroup>
+      <ButtonGroup aria-label="Zoom controls" className="gap-1 rounded-2xl bg-muted/50 p-1 [&>[data-slot]]:rounded-xl!">
+        <ToolbarButton label="Zoom Out" onClick={onZoomOut}>
+          <ToolbarIcon icon={ZoomOut} />
+        </ToolbarButton>
+        <ToolbarButton label={`Zoom ${zoomLabel}`} onClick={onFit}>
+          <span className="min-w-[52px] tabular-nums">{zoomLabel}</span>
+        </ToolbarButton>
+        <ToolbarButton label="Zoom In" onClick={onZoomIn}>
+          <ToolbarIcon icon={ZoomIn} />
+        </ToolbarButton>
+      </ButtonGroup>
+      <ButtonGroup aria-label="History controls" className="gap-1 rounded-2xl bg-muted/50 p-1 [&>[data-slot]]:rounded-xl!">
+        <ToolbarButton disabled={!canUndo} label="Undo" onClick={onUndo}>
+          <ToolbarIcon icon={Undo2} />
+        </ToolbarButton>
+        <ToolbarButton disabled={!canRedo} label="Redo" onClick={onRedo}>
+          <ToolbarIcon icon={Redo2} />
+        </ToolbarButton>
+      </ButtonGroup>
     </div>
   );
 }

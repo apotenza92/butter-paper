@@ -1,0 +1,11 @@
+# Changelog
+
+All notable Butter Paper changes are recorded here.
+
+## [0.0.1-beta.1]
+
+- Added the first cross-platform Butter Paper desktop beta for native Apple Silicon, Intel Mac, Windows ARM64/x64, and Linux ARM64/x64 packages.
+- Added separate stable and beta application identities, data directories, branding, and release channels so both variants can coexist.
+- Added signed and notarised macOS packages with configurable automatic update checks, dirty-document protection, channel isolation, and native N-1 verification.
+- Added deterministic package, release-asset, checksum, updater, accessibility, and document-persistence coverage while preserving the custom AEC, Fit Width, Fit Page, Continuous, and Butter Canvas icons.
+- Adopted the maintained shadcn/ui Base UI and Rhea component conventions for standard desktop controls.

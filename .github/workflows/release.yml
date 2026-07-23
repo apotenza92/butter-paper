@@ -1,0 +1,1051 @@
+name: Desktop release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-publication
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Validate release tag
+    runs-on: ubuntu-24.04
+    outputs:
+      channel: ${{ steps.release.outputs.channel }}
+      environment: ${{ steps.release.outputs.environment }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+      variants: ${{ steps.release.outputs.variants }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove tag commit belongs to the approved release source
+        env:
+          APPROVED_RELEASE_BRANCH: main
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$DEFAULT_BRANCH" != "$APPROVED_RELEASE_BRANCH" ]; then
+            echo "::error::Repository default branch $DEFAULT_BRANCH is not approved release source $APPROVED_RELEASE_BRANCH"
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(git rev-parse "${RELEASE_TAG}^{commit}")" = "$RELEASE_SHA"
+          git show-ref --verify --quiet "refs/remotes/origin/$APPROVED_RELEASE_BRANCH"
+          if ! git merge-base --is-ancestor "$RELEASE_SHA" "refs/remotes/origin/$APPROVED_RELEASE_BRANCH"; then
+            echo "::error::Release tag $RELEASE_TAG does not belong to $APPROVED_RELEASE_BRANCH"
+            exit 1
+          fi
+
+      - name: Validate tag and package versions
+        id: release
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const rootPackage = require('./package.json');
+          const desktopPackage = require('./apps/desktop/package.json');
+          const tag = process.env.GITHUB_REF_NAME;
+          const stable = /^v\d+\.\d+\.\d+$/.test(tag);
+          const beta = /^v\d+\.\d+\.\d+-beta\.[1-9]\d*$/.test(tag);
+          if (!stable && !beta) {
+            throw new Error(`Release tags must be vX.Y.Z or vX.Y.Z-beta.N with N >= 1; received ${tag}`);
+          }
+          const version = tag.slice(1);
+          if (rootPackage.version !== version || desktopPackage.version !== version) {
+            throw new Error(`Tag ${tag} must match root and desktop package versions (${rootPackage.version}, ${desktopPackage.version})`);
+          }
+          const lines = stable
+            ? ['channel=stable', 'environment=stable-release', 'prerelease=false', 'variants=["stable","beta"]']
+            : ['channel=beta', 'environment=beta-release', 'prerelease=true', 'variants=["beta"]'];
+          lines.push(`version=${version}`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `${lines.join('\n')}\n`);
+          NODE
+
+  validate:
+    name: Unprivileged release gate
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  package-macos:
+    name: macOS ${{ matrix.arch }} (${{ matrix.variant }})
+    needs: [prepare, validate]
+    runs-on: ${{ matrix.arch == 'arm64' && 'macos-15' || 'macos-15-intel' }}
+    environment: release-signing
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+        variant: ${{ fromJSON(needs.prepare.outputs.variants) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@008330803749db0355799c700092d9a85fd074e9 # v6.0.9
+        with:
+          version: 10.33.0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Verify native runner
+        shell: bash
+        run: |
+          test "$(node -p 'process.arch')" = "${{ matrix.arch }}"
+          EXPECTED_UNAME="${{ matrix.arch }}"
+          if [ "$EXPECTED_UNAME" = x64 ]; then EXPECTED_UNAME=x86_64; fi
+          test "$(uname -m)" = "$EXPECTED_UNAME"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate PDF fixtures
+        run: pnpm generate:fixtures
+
+      - name: Build desktop application without release credentials
+        run: pnpm build:desktop
+
+      - name: Build, sign, notarize, staple, and verify macOS package
+        env:
+          APPLE_NOTARYTOOL_ISSUER_ID: ${{ vars.APPLE_NOTARYTOOL_ISSUER_ID }}
+          APPLE_NOTARYTOOL_KEY_ID: ${{ vars.APPLE_NOTARYTOOL_KEY_ID }}
+          APPLE_NOTARYTOOL_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARYTOOL_KEY_P8_BASE64 }}
+          APPLE_SIGNING_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_SIGNING_CERTIFICATE_P12_BASE64 }}
+          APPLE_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_SIGNING_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_CERTIFICATE_SHA256: ${{ vars.APPLE_SIGNING_CERTIFICATE_SHA256 }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          BP_RELEASE_ARCH: ${{ matrix.arch }}
+          BP_RELEASE_CHANNEL: ${{ matrix.variant }}
+          BP_RELEASE_OUTPUT_DIR: ${{ github.workspace }}/apps/desktop/release/${{ matrix.variant }}/darwin/${{ matrix.arch }}
+          BP_RELEASE_PLATFORM: darwin
+        run: pnpm build:release:mac -- --arch ${{ matrix.arch }} --skip-build
+
+      - name: Verify and launch signed package without release credentials
+        env:
+          APPLE_SIGNING_CERTIFICATE_SHA256: ${{ vars.APPLE_SIGNING_CERTIFICATE_SHA256 }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          BP_RELEASE_CHANNEL: ${{ matrix.variant }}
+        shell: bash
+        run: |
+          OUTPUT="apps/desktop/release/${{ matrix.variant }}/darwin/${{ matrix.arch }}"
+          pnpm verify:release:mac -- \
+            --arch "${{ matrix.arch }}" \
+            --channel "$BP_RELEASE_CHANNEL" \
+            --output-dir "$OUTPUT" \
+            --require-checksums
+
+      - name: Assemble immutable update metadata
+        shell: bash
+        run: |
+          OUTPUT="apps/desktop/release/${{ matrix.variant }}/darwin/${{ matrix.arch }}"
+          mkdir -p ci-output/assets ci-output/feed
+          node scripts/assemble-update-metadata.mjs \
+            --input "$OUTPUT/latest-mac.yml" \
+            --artifact-dir "$OUTPUT" \
+            --output-root ci-output/feed \
+            --audit-output "ci-output/assets/update-${{ matrix.variant }}-darwin-${{ matrix.arch }}.yml" \
+            --channel "${{ matrix.variant }}" \
+            --platform darwin \
+            --arch "${{ matrix.arch }}" \
+            --tag "${{ github.ref_name }}" \
+            --repository "${{ github.repository }}"
+          find "$OUTPUT" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.blockmap' -o -name '*.sha256' -o -name 'notarization-*.json' \) -exec cp {} ci-output/assets/ \;
+
+      - name: Upload macOS release candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-darwin-${{ matrix.arch }}-${{ matrix.variant }}
+          path: ci-output
+          if-no-files-found: error
+          retention-days: 14
+
+  package-windows:
+    name: Windows ${{ matrix.arch }} (${{ matrix.variant }})
+    needs: [prepare, validate]
+    runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || 'windows-2025' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+        variant: ${{ fromJSON(needs.prepare.outputs.variants) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@008330803749db0355799c700092d9a85fd074e9 # v6.0.9
+        with:
+          version: 10.33.0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Verify native runner
+        shell: bash
+        run: test "$(node -p 'process.arch')" = "${{ matrix.arch }}"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate PDF fixtures
+        run: pnpm generate:fixtures
+
+      - name: Build desktop application
+        run: pnpm build:desktop
+
+      - name: Build Windows installer
+        env:
+          BP_RELEASE_ARCH: ${{ matrix.arch }}
+          BP_RELEASE_CHANNEL: ${{ matrix.variant }}
+          BP_RELEASE_OUTPUT_DIR: release/${{ matrix.variant }}/win32/${{ matrix.arch }}
+          BP_RELEASE_PLATFORM: win32
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: pnpm --dir apps/desktop exec electron-builder --config electron-builder.config.cjs --win nsis --${{ matrix.arch }} --publish never
+
+      - name: Install, launch, feature-test, and uninstall NSIS package
+        shell: pwsh
+        run: |
+          ./scripts/test-windows-installer.ps1 `
+            -Arch '${{ matrix.arch }}' `
+            -Channel '${{ matrix.variant }}' `
+            -ReleaseDirectory 'apps/desktop/release/${{ matrix.variant }}/win32/${{ matrix.arch }}'
+
+      - name: Collect Windows installer
+        shell: bash
+        run: |
+          OUTPUT="apps/desktop/release/${{ matrix.variant }}/win32/${{ matrix.arch }}"
+          mkdir -p ci-output/assets
+          find "$OUTPUT" -maxdepth 1 -type f -name '*.exe' -exec cp {} ci-output/assets/ \;
+
+      - name: Upload Windows release candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-win32-${{ matrix.arch }}-${{ matrix.variant }}
+          path: ci-output
+          if-no-files-found: error
+          retention-days: 14
+
+  package-linux:
+    name: Linux ${{ matrix.arch }} (${{ matrix.variant }})
+    needs: [prepare, validate]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+        variant: ${{ fromJSON(needs.prepare.outputs.variants) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@008330803749db0355799c700092d9a85fd074e9 # v6.0.9
+        with:
+          version: 10.33.0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Verify native runner
+        shell: bash
+        run: test "$(node -p 'process.arch')" = "${{ matrix.arch }}"
+
+      - name: Install Linux package and launch tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cpio \
+            fakeroot \
+            file \
+            rpm \
+            squashfs-tools \
+            xauth \
+            xvfb \
+            libatk-bridge2.0-0 \
+            libdrm2 \
+            libgbm1 \
+            libgtk-3-0 \
+            libnss3 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxkbcommon0 \
+            libxrandr2 \
+            libxss1
+          sudo apt-get install -y libasound2 || sudo apt-get install -y libasound2t64
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate PDF fixtures
+        run: pnpm generate:fixtures
+
+      - name: Build desktop application
+        run: pnpm build:desktop
+
+      - name: Build Linux packages
+        env:
+          BP_RELEASE_ARCH: ${{ matrix.arch }}
+          BP_RELEASE_CHANNEL: ${{ matrix.variant }}
+          BP_RELEASE_OUTPUT_DIR: release/${{ matrix.variant }}/linux/${{ matrix.arch }}
+          BP_RELEASE_PLATFORM: linux
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: pnpm --dir apps/desktop exec electron-builder --config electron-builder.config.cjs --linux AppImage deb rpm --${{ matrix.arch }} --publish never
+
+      - name: Extract or install, launch, feature-test, and remove Linux packages
+        shell: bash
+        run: >-
+          ./scripts/test-linux-packages.sh
+          'apps/desktop/release/${{ matrix.variant }}/linux/${{ matrix.arch }}'
+          '${{ matrix.variant }}'
+          '${{ matrix.arch }}'
+
+      - name: Collect Linux packages
+        shell: bash
+        run: |
+          OUTPUT="apps/desktop/release/${{ matrix.variant }}/linux/${{ matrix.arch }}"
+          mkdir -p ci-output/assets
+          find "$OUTPUT" -maxdepth 1 -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) -exec cp {} ci-output/assets/ \;
+
+      - name: Upload Linux release candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-linux-${{ matrix.arch }}-${{ matrix.variant }}
+          path: ci-output
+          if-no-files-found: error
+          retention-days: 14
+
+  test-macos-updater:
+    name: macOS updater ${{ matrix.scenario }} ${{ matrix.arch }} (${{ matrix.variant }})
+    needs: [prepare, package-macos]
+    runs-on: ${{ matrix.arch == 'arm64' && 'macos-15' || 'macos-15-intel' }}
+    environment:
+      name: ${{ matrix.variant }}-updater-verification
+    permissions:
+      attestations: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+        scenario: [channel, corrupt, signature, valid]
+        variant: ${{ fromJSON(needs.prepare.outputs.variants) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@008330803749db0355799c700092d9a85fd074e9 # v6.0.9
+        with:
+          version: 10.33.0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Verify native runner
+        shell: bash
+        run: |
+          test "$(node -p 'process.arch')" = "${{ matrix.arch }}"
+          EXPECTED_UNAME="${{ matrix.arch }}"
+          if [ "$EXPECTED_UNAME" = x64 ]; then EXPECTED_UNAME=x86_64; fi
+          test "$(uname -m)" = "$EXPECTED_UNAME"
+
+      - name: Install test dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download current signed candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: desktop-darwin-${{ matrix.arch }}-${{ matrix.variant }}
+          path: candidate
+
+      - name: Resolve previous public channel release
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VARIANT: ${{ matrix.variant }}
+          RELEASE_ARCH: ${{ matrix.arch }}
+          RELEASE_SCENARIO: ${{ matrix.scenario }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${{ github.repository }}/releases?per_page=100" > releases.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const releases = JSON.parse(fs.readFileSync('releases.json', 'utf8')).flat();
+          const variant = process.env.RELEASE_VARIANT;
+          const arch = process.env.RELEASE_ARCH;
+          const prefix = variant === 'beta' ? 'Butter-Paper-Beta' : 'Butter-Paper';
+          const asset = `${prefix}-macOS-${arch}.zip`;
+          const previous = releases
+            .filter(release => !release.draft)
+            .filter(release => variant === 'beta' || !release.prerelease)
+            .filter(release => release.tag_name !== process.env.GITHUB_REF_NAME)
+            .filter(release => release.assets.some(candidate => candidate.name === asset))
+            .sort((left, right) => String(right.published_at).localeCompare(String(left.published_at)))[0];
+          const output = process.env.GITHUB_OUTPUT;
+          if (previous == null) {
+            fs.appendFileSync(output, `available=false\nasset=${asset}\n`);
+          } else {
+            fs.appendFileSync(output, `available=true\ntag=${previous.tag_name}\nasset=${asset}\n`);
+          }
+          NODE
+
+      - name: Record first-channel bootstrap
+        if: steps.previous.outputs.available != 'true'
+        env:
+          RELEASE_VARIANT: ${{ matrix.variant }}
+          RELEASE_ARCH: ${{ matrix.arch }}
+          RELEASE_SCENARIO: ${{ matrix.scenario }}
+          UPDATER_BOOTSTRAP_TAG: ${{ vars.MACOS_UPDATER_BOOTSTRAP_TAG }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$UPDATER_BOOTSTRAP_TAG" ] || [ "$UPDATER_BOOTSTRAP_TAG" != "$GITHUB_REF_NAME" ]; then
+            echo "No prior $RELEASE_VARIANT/$RELEASE_ARCH package exists and this exact tag is not authorized by MACOS_UPDATER_BOOTSTRAP_TAG." >&2
+            exit 1
+          fi
+          mkdir -p updater-evidence
+          node <<'NODE'
+          const fs = require('node:fs');
+          const evidence = {
+            schemaVersion: 1,
+            result: 'bootstrap-no-prior-public-release',
+            channel: process.env.RELEASE_VARIANT,
+            architecture: process.env.RELEASE_ARCH,
+            scenario: process.env.RELEASE_SCENARIO,
+            candidateTag: process.env.GITHUB_REF_NAME,
+            authorizedBootstrapTag: process.env.UPDATER_BOOTSTRAP_TAG,
+          };
+          fs.writeFileSync(`updater-evidence/bootstrap-${evidence.scenario}-${evidence.channel}-${evidence.architecture}.json`, `${JSON.stringify(evidence, null, 2)}\n`);
+          NODE
+
+      - name: Download previous public channel package
+        if: steps.previous.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASSET="${{ steps.previous.outputs.asset }}"
+          mkdir -p previous
+          gh release download "${{ steps.previous.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "$ASSET" \
+            --pattern SHA256SUMS \
+            --dir previous
+
+          test "$(awk -v expected="$ASSET" '$2 == expected { count += 1 } END { print count + 0 }' previous/SHA256SUMS)" = 1
+          (cd previous && sha256sum --check --strict --ignore-missing SHA256SUMS)
+          gh attestation verify \
+            "previous/$ASSET" \
+            --repo "${{ github.repository }}"
+
+      - name: Verify updater scenario
+        if: steps.previous.outputs.available == 'true'
+        env:
+          APPLE_PRIOR_SIGNING_CERTIFICATE_SHA256: ${{ vars.APPLE_PRIOR_SIGNING_CERTIFICATE_SHA256 }}
+          APPLE_SIGNING_CERTIFICATE_SHA256: ${{ vars.APPLE_SIGNING_CERTIFICATE_SHA256 }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          RELEASE_VARIANT: ${{ matrix.variant }}
+          RELEASE_ARCH: ${{ matrix.arch }}
+          RELEASE_SCENARIO: ${{ matrix.scenario }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p updater-evidence adversarial
+          CANDIDATE="candidate/assets/${{ steps.previous.outputs.asset }}"
+          PRIOR="previous/${{ steps.previous.outputs.asset }}"
+          PRODUCT='Butter Paper'
+          if [ "$RELEASE_VARIANT" = beta ]; then PRODUCT='Butter Paper Beta'; fi
+          test -f "$CANDIDATE"
+          test -f "$PRIOR"
+          TEST_CANDIDATE="$CANDIDATE"
+          if [ "$RELEASE_SCENARIO" = signature ]; then
+            ditto -x -k "$CANDIDATE" adversarial/extracted
+            APP="adversarial/extracted/$PRODUCT.app"
+            test -d "$APP"
+            printf 'signature rejection fixture\n' > "$APP/Contents/Resources/update-signature-rejection.txt"
+            codesign --force --deep --sign - "$APP"
+            codesign --verify --deep --strict --verbose=2 "$APP"
+            codesign --display --verbose=4 "$APP" 2>&1 | grep -F 'Signature=adhoc'
+            TEST_CANDIDATE="adversarial/${{ steps.previous.outputs.asset }}"
+            ditto -c -k --sequesterRsrc --keepParent "$APP" "$TEST_CANDIDATE"
+          fi
+          pnpm test:macos-updater -- \
+            --prior-zip "$PRIOR" \
+            --candidate-zip "$TEST_CANDIDATE" \
+            --channel "$RELEASE_VARIANT" \
+            --expected-version "$RELEASE_VERSION" \
+            --scenario "$RELEASE_SCENARIO" \
+            --evidence "updater-evidence/$RELEASE_SCENARIO-$RELEASE_VARIANT-$RELEASE_ARCH.json"
+
+      - name: Upload updater evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: updater-darwin-${{ matrix.arch }}-${{ matrix.variant }}-${{ matrix.scenario }}
+          path: updater-evidence
+          if-no-files-found: warn
+          retention-days: 30
+
+  assemble:
+    name: Assemble release bundle
+    needs: [prepare, package-macos, package-windows, package-linux, test-macos-updater]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout release contract
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: source
+
+      - name: Download native release candidates
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: desktop-*
+          path: publish
+          merge-multiple: true
+
+      - name: Create Homebrew handoff manifest
+        shell: bash
+        run: |
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const tag = process.env.GITHUB_REF_NAME;
+          const version = tag.slice(1);
+          const assetsDir = path.resolve('publish/assets');
+          const variants = JSON.parse('${{ needs.prepare.outputs.variants }}');
+          const sha256 = (name) => crypto.createHash('sha256').update(fs.readFileSync(path.join(assetsDir, name))).digest('hex');
+          const channels = Object.fromEntries(variants.map((channel) => {
+            const prefix = channel === 'beta' ? 'Butter-Paper-Beta' : 'Butter-Paper';
+            const app = channel === 'beta' ? 'Butter Paper Beta.app' : 'Butter Paper.app';
+            const files = Object.fromEntries(['arm64', 'x64'].map((arch) => {
+              const name = `${prefix}-macOS-${arch}.zip`;
+              return [arch, {
+                url: `https://github.com/${process.env.GITHUB_REPOSITORY}/releases/download/${tag}/${name}`,
+                sha256: sha256(name),
+              }];
+            }));
+            return [channel, { app, cask: channel === 'beta' ? 'butter-paper@beta' : 'butter-paper', files }];
+          }));
+          fs.writeFileSync(path.join(assetsDir, 'homebrew-release.json'), `${JSON.stringify({ tag, version, channels }, null, 2)}\n`);
+          NODE
+
+      - name: Create release checksums
+        working-directory: publish/assets
+        shell: bash
+        run: |
+          CHECKSUM_FILE=$(mktemp)
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' \
+            | LC_ALL=C sort \
+            | xargs -r sha256sum > "$CHECKSUM_FILE"
+          mv "$CHECKSUM_FILE" SHA256SUMS
+
+      - name: Validate exact release asset contract
+        shell: bash
+        run: |
+          node source/scripts/release-asset-contract.mjs \
+            --channel "${{ needs.prepare.outputs.channel }}" \
+            --directory publish/assets \
+            > expected-assets.txt
+
+      - name: Upload verified release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-bundle
+          path: publish
+          if-no-files-found: error
+          retention-days: 30
+
+  attest:
+    name: Attest release bundle
+    needs: assemble
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download verified release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-bundle
+          path: publish
+
+      - name: Attest checksummed release assets
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: publish/assets/*
+
+  verify-release-policy:
+    name: Require immutable releases
+    needs: [prepare, assemble, attest]
+    runs-on: ubuntu-24.04
+    environment: release-policy
+    permissions:
+      contents: read
+    steps:
+      - name: Verify immutable releases are enabled
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.IMMUTABLE_RELEASES_READ_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          if ! enabled="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GH_REPO/immutable-releases" \
+            --jq '.enabled')"; then
+            echo '::error::Unable to confirm immutable releases with the Administration:read policy token'
+            exit 1
+          fi
+          if [ "$enabled" != true ]; then
+            echo '::error::Immutable releases must be enabled before publication'
+            exit 1
+          fi
+
+  publish:
+    name: Publish ${{ needs.prepare.outputs.channel }} release
+    needs: [prepare, assemble, attest, verify-release-policy]
+    runs-on: ubuntu-24.04
+    environment:
+      name: ${{ needs.prepare.outputs.environment }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          path: update-feed-worktree
+
+      - name: Download verified release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-bundle
+          path: publish
+
+      - name: Stage and verify exact draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          REPOSITORY="${{ github.repository }}"
+          node update-feed-worktree/scripts/release-asset-contract.mjs \
+            --channel "${{ needs.prepare.outputs.channel }}" \
+            --directory publish/assets \
+            > expected-assets.txt
+          TITLE="Butter Paper ${{ needs.prepare.outputs.version }}"
+          if [ "${{ needs.prepare.outputs.channel }}" = beta ]; then TITLE="Butter Paper Beta ${{ needs.prepare.outputs.version }}"; fi
+
+          RELEASE_EXISTS=false
+          RELEASE_IS_DRAFT=false
+          if gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            RELEASE_EXISTS=true
+            RELEASE_IS_DRAFT=$(gh release view "$TAG" --repo "$REPOSITORY" --json isDraft --jq .isDraft)
+          fi
+
+          if [ "$RELEASE_EXISTS" = false ]; then
+            if [ "${{ needs.prepare.outputs.channel }}" = beta ]; then
+              gh release create "$TAG" --repo "$REPOSITORY" --verify-tag --title "$TITLE" --generate-notes --prerelease --draft
+            else
+              gh release create "$TAG" --repo "$REPOSITORY" --verify-tag --title "$TITLE" --generate-notes --draft
+            fi
+            RELEASE_IS_DRAFT=true
+          fi
+
+          if [ "$RELEASE_IS_DRAFT" = true ]; then
+            gh api "repos/$REPOSITORY/releases/tags/$TAG" --jq '.assets[].name' | LC_ALL=C sort > existing-assets.txt
+            comm -23 existing-assets.txt expected-assets.txt > unexpected-assets.txt
+            if [ -s unexpected-assets.txt ]; then
+              echo 'Draft contains unexpected immutable assets:' >&2
+              cat unexpected-assets.txt >&2
+              exit 1
+            fi
+
+            rm -rf existing-release
+            mkdir existing-release
+            if [ -s existing-assets.txt ]; then
+              gh release download "$TAG" --repo "$REPOSITORY" --dir existing-release
+              while IFS= read -r asset_name; do
+                cmp "publish/assets/$asset_name" "existing-release/$asset_name"
+              done < existing-assets.txt
+            fi
+
+            comm -13 existing-assets.txt expected-assets.txt > missing-assets.txt
+            while IFS= read -r asset_name; do
+              gh release upload "$TAG" "publish/assets/$asset_name" --repo "$REPOSITORY"
+            done < missing-assets.txt
+          else
+            echo 'Published release already exists; verifying it without mutating assets.'
+          fi
+
+          rm -rf downloaded-release
+          mkdir downloaded-release
+          gh release download "$TAG" --repo "$REPOSITORY" --dir downloaded-release
+          find downloaded-release -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > actual-assets.txt
+          diff --unified expected-assets.txt actual-assets.txt
+          cmp publish/assets/SHA256SUMS downloaded-release/SHA256SUMS
+          (cd downloaded-release && sha256sum --check --strict SHA256SUMS)
+
+      - name: Publish verified GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          REPOSITORY="${{ github.repository }}"
+          TITLE="Butter Paper ${{ needs.prepare.outputs.version }}"
+          RELEASE_IS_DRAFT="$(gh release view "$TAG" --repo "$REPOSITORY" --json isDraft --jq .isDraft)"
+          RELEASE_IS_PRERELEASE="$(gh release view "$TAG" --repo "$REPOSITORY" --json isPrerelease --jq .isPrerelease)"
+          if [ "$RELEASE_IS_DRAFT" != true ]; then
+            test "$RELEASE_IS_PRERELEASE" = "${{ needs.prepare.outputs.prerelease }}" || {
+              echo 'Published release has the wrong stable/beta classification.' >&2
+              exit 1
+            }
+            echo 'Release is already public with the expected classification.'
+            exit 0
+          fi
+          if [ "${{ needs.prepare.outputs.channel }}" = beta ]; then
+            TITLE="Butter Paper Beta ${{ needs.prepare.outputs.version }}"
+            gh release edit "$TAG" --repo "$REPOSITORY" --title "$TITLE" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$TAG" --repo "$REPOSITORY" --title "$TITLE" --draft=false --prerelease=false --latest
+          fi
+
+      - name: Verify public assets before advancing the update feed
+        env:
+          EXPECTED_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_BASE="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
+          API_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}"
+          mkdir -p pre-feed-public-assets
+
+          download_with_retry() {
+            local url="$1"
+            local destination="$2"
+            for _ in {1..12}; do
+              if curl --fail --location --silent --show-error "$url" --output "$destination"; then
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+
+          find publish/assets -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > expected-public-assets.txt
+          immutable=false
+          for _ in {1..12}; do
+            download_with_retry "$API_URL" pre-feed-public-release.json
+            immutable="$(node -e "const release=require('./pre-feed-public-release.json'); process.stdout.write(String(release.immutable === true))")"
+            [ "$immutable" = true ] && break
+            sleep 5
+          done
+          node -e "const fs=require('fs'); const release=JSON.parse(fs.readFileSync('pre-feed-public-release.json')); if (release.draft) throw new Error('Release is still a draft'); if (String(release.prerelease) !== process.env.EXPECTED_PRERELEASE) throw new Error('Release prerelease classification is wrong'); if (release.immutable !== true) throw new Error('Published release is not immutable'); process.stdout.write(release.assets.map(({name})=>name).sort().join('\\n')+'\\n')" \
+            > actual-public-assets.txt
+          diff --unified expected-public-assets.txt actual-public-assets.txt
+
+          download_with_retry "$RELEASE_BASE/SHA256SUMS" pre-feed-public-assets/SHA256SUMS
+          cmp publish/assets/SHA256SUMS pre-feed-public-assets/SHA256SUMS
+          while read -r checksum filename; do
+            test -n "$checksum"
+            test -n "$filename"
+            download_with_retry "$RELEASE_BASE/$filename" "pre-feed-public-assets/$filename"
+            printf '%s  %s\n' "$checksum" "pre-feed-public-assets/$filename" | sha256sum --check --strict -
+          done < pre-feed-public-assets/SHA256SUMS
+
+      - name: Advance static update feed
+        working-directory: update-feed-worktree
+        shell: bash
+        run: |
+          if git fetch origin updates:refs/remotes/origin/updates; then
+            git switch --force-create updates refs/remotes/origin/updates
+          else
+            git switch --orphan updates
+            git rm -rf --ignore-unmatch .
+          fi
+
+          for CHANNEL in ${{ join(fromJSON(needs.prepare.outputs.variants), ' ') }}; do
+            rm -rf -- "$CHANNEL"
+            mkdir -p "$CHANNEL"
+            cp -R "../publish/feed/$CHANNEL/." "$CHANNEL/"
+          done
+          touch .nojekyll
+
+          git add --all
+          if git diff --cached --quiet; then
+            echo 'Update feed already matches this release.'
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "Publish update feed for ${{ github.ref_name }} [skip ci]"
+          git push origin HEAD:updates
+
+  verify-publication:
+    name: Verify public release and update feeds
+    needs: [prepare, publish]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Download expected update feeds
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-bundle
+          path: expected
+
+      - name: Verify unauthenticated release assets and feed hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_BASE="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
+          RAW_BASE="https://raw.githubusercontent.com/${{ github.repository }}/updates"
+          mkdir -p public-assets public-feed
+
+          download_with_retry() {
+            local url="$1"
+            local destination="$2"
+            for _ in 1 2 3 4 5; do
+              if curl --fail --location --silent --show-error "$url" --output "$destination"; then
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
+
+          find expected/assets -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > expected-public-assets.txt
+          download_with_retry \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}" \
+            public-release.json
+          node -e "const fs=require('fs'); const release=JSON.parse(fs.readFileSync('public-release.json')); process.stdout.write(release.assets.map(({name})=>name).sort().join('\n')+'\n')" \
+            > actual-public-assets.txt
+          diff --unified expected-public-assets.txt actual-public-assets.txt
+
+          download_with_retry "$RELEASE_BASE/SHA256SUMS" public-assets/SHA256SUMS
+          while read -r checksum filename; do
+            test -n "$checksum"
+            test -n "$filename"
+            download_with_retry "$RELEASE_BASE/$filename" "public-assets/$filename"
+            printf '%s  %s\n' "$checksum" "public-assets/$filename" | sha256sum --check --strict -
+          done < public-assets/SHA256SUMS
+
+          while IFS= read -r expected; do
+            relative="${expected#expected/feed/}"
+            mkdir -p "public-feed/$(dirname "$relative")"
+            download_with_retry "$RAW_BASE/$relative?release=${{ github.sha }}" "public-feed/$relative"
+            test "$(sha256sum "$expected" | cut -d' ' -f1)" = "$(sha256sum "public-feed/$relative" | cut -d' ' -f1)"
+          done < <(find expected/feed -type f | LC_ALL=C sort)
+
+  test-homebrew:
+    name: Test Homebrew casks (${{ matrix.arch }})
+    needs: [prepare, verify-publication]
+    runs-on: ${{ matrix.arch == 'arm64' && 'macos-15' || 'macos-15-intel' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - name: Checkout cask renderer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: source
+
+      - name: Download verified Homebrew manifest
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error \
+            "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/homebrew-release.json" \
+            --output homebrew-release.json
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: apotenza92/homebrew-tap
+          path: homebrew-tap
+          persist-credentials: false
+
+      - name: Render Homebrew casks from verified release metadata
+        run: node source/scripts/render-homebrew-casks.mjs homebrew-release.json homebrew-tap/Casks
+
+      - name: Test Homebrew casks
+        working-directory: homebrew-tap
+        shell: bash
+        run: |
+          set -euo pipefail
+          CASKS=()
+          if [ -f Casks/butter-paper.rb ]; then CASKS+=(Casks/butter-paper.rb); fi
+          CASKS+=('Casks/butter-paper@beta.rb')
+          git diff --check -- "${CASKS[@]}"
+          brew style "${CASKS[@]}"
+          brew audit --cask --strict --online "${CASKS[@]}"
+
+          for CASK_FILE in "${CASKS[@]}"; do
+            TOKEN=$(basename "$CASK_FILE" .rb)
+            PRODUCT='Butter Paper'
+            if [ "$TOKEN" = 'butter-paper@beta' ]; then PRODUCT='Butter Paper Beta'; fi
+            APP="/Applications/$PRODUCT.app"
+            EXECUTABLE="$APP/Contents/MacOS/$PRODUCT"
+            LOG="$RUNNER_TEMP/$TOKEN.log"
+
+            brew uninstall --cask --force "$TOKEN" >/dev/null 2>&1 || true
+            brew install --cask "$PWD/$CASK_FILE"
+            test -d "$APP"
+            test -x "$EXECUTABLE"
+            xcrun stapler validate "$APP"
+            spctl --assess --type execute --verbose "$APP"
+
+            env -i \
+              HOME="$HOME" PATH="$PATH" TMPDIR="$RUNNER_TEMP" USER="$USER" \
+              BP_TEST_MODE=1 BP_DISABLE_UPDATE_CHECKS=1 \
+              "$EXECUTABLE" >"$LOG" 2>&1 &
+            APP_PID=$!
+            sleep 8
+            if ! kill -0 "$APP_PID" 2>/dev/null; then
+              cat "$LOG"
+              echo "$PRODUCT did not remain running after launch." >&2
+              exit 1
+            fi
+            kill "$APP_PID"
+            wait "$APP_PID" 2>/dev/null || true
+
+            brew uninstall --cask "$TOKEN"
+            test ! -e "$APP"
+          done
+
+      - name: Collect validated casks
+        shell: bash
+        run: |
+          mkdir validated-casks
+          cp homebrew-tap/Casks/butter-paper*.rb validated-casks/
+
+      - name: Upload validated casks
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: homebrew-casks-${{ matrix.arch }}
+          path: validated-casks
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-homebrew:
+    name: Publish validated Homebrew casks
+    needs: [prepare, test-homebrew]
+    runs-on: macos-15
+    environment: homebrew-release
+    permissions:
+      contents: read
+    steps:
+      - name: Download ARM64 validated casks
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: homebrew-casks-arm64
+          path: validated/arm64
+
+      - name: Download Intel validated casks
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: homebrew-casks-x64
+          path: validated/x64
+
+      - name: Compare native validation outputs
+        run: diff --recursive --unified validated/arm64 validated/x64
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: apotenza92/homebrew-tap
+          path: homebrew-tap
+          persist-credentials: false
+
+      - name: Apply validated Homebrew casks
+        run: cp validated/arm64/butter-paper*.rb homebrew-tap/Casks/
+
+      - name: Publish Homebrew casks
+        working-directory: homebrew-tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          CASKS=('Casks/butter-paper@beta.rb')
+          if [ -f Casks/butter-paper.rb ]; then CASKS+=(Casks/butter-paper.rb); fi
+          git add -- "${CASKS[@]}"
+          if git diff --cached --quiet; then
+            echo 'Homebrew casks already match this release.'
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "Update Butter Paper casks to ${{ github.ref_name }}"
+          ASKPASS="$RUNNER_TEMP/butter-paper-homebrew-askpass"
+          cat > "$ASKPASS" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$HOMEBREW_TAP_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          SH
+          chmod 700 "$ASKPASS"
+          GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 git -c credential.helper= push origin HEAD
+          rm -f "$ASKPASS"

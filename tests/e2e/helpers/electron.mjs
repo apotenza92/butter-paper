@@ -73,6 +73,8 @@ export async function getDiagnostics(page) {
 
 export async function firstWindow(app) {
   const page = app.windows()[0] ?? await app.firstWindow({ timeout: 60_000 });
+  const browserWindow = await app.browserWindow(page);
+  await browserWindow.evaluate((window) => window.webContents.setZoomFactor(1));
   await page.waitForLoadState('domcontentloaded');
   return page;
 }

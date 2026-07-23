@@ -1,18 +1,15 @@
-import { Grip, Plus, Square } from 'lucide-react';
-import { useCallback, useRef } from 'react';
+import { Grip, Plus } from 'lucide-react';
+import { useRef, type KeyboardEvent } from 'react';
+import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
-  CONTROL_ACTIVE,
-  CONTROL_DEFAULT,
   CONTROL_ICON_SIZE,
   CONTROL_ICON_SIZE_CLASS,
   CONTROL_ICON_STROKE_WIDTH,
-  RAIL_BUTTON_SIZE,
   SHELL_CONTROL_GAP,
   SHELL_SURFACE_PANEL,
   TAB_BAR_HEIGHT,
-  VIEWER_TOOLBAR_BUTTON_SIZE,
 } from './shellSpacing';
-import { Tooltip, useTooltipDelay } from './Tooltip';
 
 export interface DocumentTabItem {
   id: string;
@@ -30,28 +27,42 @@ interface DocumentTabBarProps {
 }
 
 export function DocumentTabBar({ tabs, activeTabId, onSelectTab, onCloseTab, onOpenTab, onNewCanvas }: DocumentTabBarProps) {
-  const openButtonRef = useRef<HTMLButtonElement | null>(null);
-  const canvasButtonRef = useRef<HTMLButtonElement | null>(null);
-  const canShowOpenTooltip = useCallback(() => {
-    const button = openButtonRef.current;
-    if (!button) {
-      return false;
+  const tabRefs = useRef(new Map<string, HTMLButtonElement>());
+
+  function focusTabAt(index: number): void {
+    const tab = tabs[index];
+    if (!tab) {
+      return;
+    }
+    onSelectTab(tab.id);
+    tabRefs.current.get(tab.id)?.focus();
+  }
+
+  function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number): void {
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowLeft') {
+      nextIndex = (index - 1 + tabs.length) % tabs.length;
+    } else if (event.key === 'ArrowRight') {
+      nextIndex = (index + 1) % tabs.length;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = tabs.length - 1;
     }
 
-    const activeElement = button.ownerDocument.activeElement;
-    return button.matches(':hover') || (activeElement instanceof Node && button.contains(activeElement));
-  }, []);
-  const openTooltip = useTooltipDelay({ canShow: canShowOpenTooltip });
-  const canShowCanvasTooltip = useCallback(() => {
-    const button = canvasButtonRef.current;
-    if (!button) {
-      return false;
+    if (nextIndex !== null) {
+      event.preventDefault();
+      focusTabAt(nextIndex);
     }
+  }
 
-    const activeElement = button.ownerDocument.activeElement;
-    return button.matches(':hover') || (activeElement instanceof Node && button.contains(activeElement));
-  }, []);
-  const canvasTooltip = useTooltipDelay({ canShow: canShowCanvasTooltip });
+  function handleCloseTab(tabId: string, index: number): void {
+    const fallbackTab = tabs[index + 1] ?? tabs[index - 1];
+    onCloseTab(tabId);
+    if (tabId === activeTabId && fallbackTab) {
+      window.requestAnimationFrame(() => tabRefs.current.get(fallbackTab.id)?.focus());
+    }
+  }
 
   return (
     <div
@@ -64,113 +75,103 @@ export function DocumentTabBar({ tabs, activeTabId, onSelectTab, onCloseTab, onO
       ].join(' ')}
       data-testid="document-tab-bar"
     >
-      <div className={['flex min-w-0 flex-1 items-center overflow-x-auto', SHELL_CONTROL_GAP].join(' ')}>
+      <div
+        aria-label="Open documents"
+        className={['flex min-w-0 flex-1 items-center overflow-x-auto', SHELL_CONTROL_GAP].join(' ')}
+        role="tablist"
+      >
         {tabs.map((tab, index) => (
-          <button
-            key={tab.id}
-            type="button"
-            className={[
-              'inline-flex max-w-[280px] shrink-0 items-center justify-center rounded-[6px] border px-2 text-[12px] font-medium transition',
-              VIEWER_TOOLBAR_BUTTON_SIZE,
-              tab.id === activeTabId ? CONTROL_ACTIVE : CONTROL_DEFAULT,
-            ].join(' ')}
-            data-testid={`document-tab-${index}`}
-            aria-selected={tab.id === activeTabId}
-            onClick={() => onSelectTab(tab.id)}
-          >
-            <span className="truncate">{tab.documentName}</span>
-            {tab.dirty ? <span className="ml-1 text-amber-600">*</span> : null}
-            <span
-              role="button"
-              tabIndex={0}
-              className="ml-2 rounded px-1 text-[11px] opacity-70 hover:opacity-100"
+          <div key={tab.id} className="flex shrink-0 items-center rounded-2xl bg-muted p-[2px]">
+            <Button
+              ref={(node) => {
+                if (node) tabRefs.current.set(tab.id, node);
+                else tabRefs.current.delete(tab.id);
+              }}
+              type="button"
+              variant={tab.id === activeTabId ? 'secondary' : 'ghost'}
+              size="sm"
+              className="max-w-[250px] rounded-xl px-2 text-[12px]"
+              id={`document-tab-trigger-${index}`}
+              data-testid={`document-tab-${index}`}
+              role="tab"
+              aria-controls="document-tab-panel"
+              aria-selected={tab.id === activeTabId}
+              tabIndex={tab.id === activeTabId ? 0 : -1}
+              onClick={() => onSelectTab(tab.id)}
+              onKeyDown={(event) => handleTabKeyDown(event, index)}
+            >
+              <span className="truncate">{tab.documentName}</span>
+              {tab.dirty ? <span className="text-amber-600" aria-label="Unsaved changes">*</span> : null}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              className="rounded-xl"
               aria-label={`Close ${tab.documentName}`}
               data-testid={`document-tab-close-${index}`}
-              onClick={(event) => { event.stopPropagation(); onCloseTab(tab.id); }}
-              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); onCloseTab(tab.id); } }}
+              onClick={() => handleCloseTab(tab.id, index)}
             >
-              ×
-            </span>
-          </button>
+              <span aria-hidden="true">×</span>
+            </Button>
+          </div>
         ))}
       </div>
-      <button
-        ref={canvasButtonRef}
-        type="button"
-        className={[
-          'relative inline-flex shrink-0 items-center justify-center rounded-[6px] border transition',
-          RAIL_BUTTON_SIZE,
-          CONTROL_DEFAULT,
-        ].join(' ')}
-        aria-label="New Butter Canvas"
-        data-testid="document-tab-new-canvas"
-        onBlur={canvasTooltip.hideTooltip}
-        onClick={() => {
-          canvasTooltip.hideTooltip();
-          onNewCanvas();
-        }}
-        onFocus={canvasTooltip.showTooltip}
-        onPointerEnter={canvasTooltip.showTooltipAfterDelay}
-        onPointerLeave={canvasTooltip.hideTooltip}
-      >
-        <ButterCanvasIcon />
-        {canvasTooltip.visible ? (
-          <Tooltip testId="document-tab-new-canvas-tooltip">
-            New Butter Canvas
-          </Tooltip>
-        ) : null}
-      </button>
-      <button
-        ref={openButtonRef}
-        type="button"
-        className={[
-          'relative inline-flex shrink-0 items-center justify-center rounded-[6px] border transition',
-          RAIL_BUTTON_SIZE,
-          CONTROL_DEFAULT,
-        ].join(' ')}
-        aria-label="Open PDF"
-        data-testid="document-tab-open"
-        onBlur={openTooltip.hideTooltip}
-        onClick={() => {
-          openTooltip.hideTooltip();
-          onOpenTab();
-        }}
-        onFocus={openTooltip.showTooltip}
-        onPointerEnter={openTooltip.showTooltipAfterDelay}
-        onPointerLeave={openTooltip.hideTooltip}
-      >
-        <Plus
-          aria-hidden="true"
-          size={CONTROL_ICON_SIZE}
-          strokeWidth={CONTROL_ICON_STROKE_WIDTH}
-          absoluteStrokeWidth
-          className={CONTROL_ICON_SIZE_CLASS}
+      <Tooltip>
+        <TooltipTrigger
+          render={(
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8 shrink-0 rounded-2xl"
+              aria-label="New Butter Canvas"
+              data-testid="document-tab-new-canvas"
+              onClick={onNewCanvas}
+            >
+              <ButterCanvasIcon />
+            </Button>
+          )}
         />
-        {openTooltip.visible ? (
-          <Tooltip testId="document-tab-open-tooltip">
-            Open PDF
-          </Tooltip>
-        ) : null}
-      </button>
+        <TooltipContent data-testid="document-tab-new-canvas-tooltip">New Butter Canvas</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger
+          render={(
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8 shrink-0 rounded-2xl"
+              aria-label="Open PDF"
+              data-testid="document-tab-open"
+              onClick={onOpenTab}
+            >
+              <Plus
+                aria-hidden="true"
+                size={CONTROL_ICON_SIZE}
+                strokeWidth={CONTROL_ICON_STROKE_WIDTH}
+                absoluteStrokeWidth
+                className={CONTROL_ICON_SIZE_CLASS}
+              />
+            </Button>
+          )}
+        />
+        <TooltipContent data-testid="document-tab-open-tooltip">Open PDF</TooltipContent>
+      </Tooltip>
     </div>
   );
 }
 
 function ButterCanvasIcon() {
   return (
-    <span className={['relative inline-flex items-center justify-center', CONTROL_ICON_SIZE_CLASS].join(' ')} aria-hidden="true">
-      <Square
-        size={CONTROL_ICON_SIZE}
-        strokeWidth={CONTROL_ICON_STROKE_WIDTH}
-        absoluteStrokeWidth
-        className="absolute inset-0 h-[18px] w-[18px]"
-      />
-      <Grip
-        size={10}
-        strokeWidth={CONTROL_ICON_STROKE_WIDTH}
-        absoluteStrokeWidth
-        className="h-[10px] w-[10px]"
-      />
-    </span>
+    <Grip
+      aria-hidden="true"
+      data-testid="icon-butter-canvas"
+      size={CONTROL_ICON_SIZE}
+      strokeWidth={CONTROL_ICON_STROKE_WIDTH}
+      absoluteStrokeWidth
+      className={CONTROL_ICON_SIZE_CLASS}
+    />
   );
 }

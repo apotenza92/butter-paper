@@ -1,10 +1,7 @@
 import { PagesRailIcon } from './RailIcons';
 import { RailScrollArea } from './RailScrollArea';
+import { Toggle } from '@/components/ui/toggle';
 import {
-  CONTROL_ACTIVE,
-  CONTROL_DEFAULT,
-  CONTROL_DISABLED,
-  RAIL_BUTTON_SIZE,
   RAIL_INSET,
   RAIL_WIDTH,
   SHELL_SURFACE_APP,
@@ -26,22 +23,20 @@ export function LeftRail({ active, disabled = false, onToggle }: LeftRailProps) 
         overflowIndicatorTestId="left-rail-overflow-indicator"
         overflowSide="right"
       >
-        <button
+        <Toggle
           type="button"
+          variant="outline"
+          pressed={active}
           data-testid="left-rail-pages"
           data-rail-tooltip="Pages"
           aria-label="Pages"
           aria-expanded={active}
           disabled={disabled}
-          className={[
-            'group relative inline-flex shrink-0 items-center justify-center rounded-[6px] border transition',
-            RAIL_BUTTON_SIZE,
-            disabled ? CONTROL_DISABLED : active ? CONTROL_ACTIVE : CONTROL_DEFAULT,
-          ].join(' ')}
-          onClick={onToggle}
+          className="group relative size-8 shrink-0 rounded-2xl p-0"
+          onPressedChange={onToggle}
         >
           <PagesRailIcon />
-        </button>
+        </Toggle>
       </RailScrollArea>
     </aside>
   );

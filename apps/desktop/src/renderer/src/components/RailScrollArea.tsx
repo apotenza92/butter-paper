@@ -162,26 +162,30 @@ export function RailScrollArea({
         background: position === 'top' ? RAIL_OVERFLOW_TOP_FADE : RAIL_OVERFLOW_BOTTOM_FADE,
       }}
     >
-      <div
-        className={[
-          'bp-text-muted group relative inline-flex shrink-0 cursor-default items-center justify-center opacity-95 transition hover:opacity-100',
-          'pointer-events-auto',
-          RAIL_BUTTON_SIZE,
-        ].join(' ')}
-        data-testid={position === 'bottom' ? overflowIndicatorTestId : `${overflowIndicatorTestId}-top`}
-        aria-label={RAIL_OVERFLOW_TOOLTIP}
-        onWheel={handleIndicatorWheel}
+      <Tooltip
+        side={tooltipSide}
+        trigger={(
+          <div
+            className={[
+              'bp-text-muted relative inline-flex shrink-0 cursor-default items-center justify-center opacity-95 transition hover:opacity-100',
+              'pointer-events-auto',
+              RAIL_BUTTON_SIZE,
+            ].join(' ')}
+            data-testid={position === 'bottom' ? overflowIndicatorTestId : `${overflowIndicatorTestId}-top`}
+            aria-label={RAIL_OVERFLOW_TOOLTIP}
+            onWheel={handleIndicatorWheel}
+          >
+            <Ellipsis
+              size={RAIL_OVERFLOW_ICON_SIZE}
+              strokeWidth={CONTROL_ICON_STROKE_WIDTH}
+              className="h-[22px] w-[22px] shrink-0"
+              aria-hidden="true"
+            />
+          </div>
+        )}
       >
-        <Ellipsis
-          size={RAIL_OVERFLOW_ICON_SIZE}
-          strokeWidth={CONTROL_ICON_STROKE_WIDTH}
-          className="h-[22px] w-[22px] shrink-0"
-          aria-hidden="true"
-        />
-        <Tooltip side={tooltipSide} revealOnGroupHover>
-          {RAIL_OVERFLOW_TOOLTIP}
-        </Tooltip>
-      </div>
+        {RAIL_OVERFLOW_TOOLTIP}
+      </Tooltip>
     </div>
   );
 

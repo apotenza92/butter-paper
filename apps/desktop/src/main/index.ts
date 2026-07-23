@@ -1,8 +1,18 @@
 import electron from 'electron';
+import { isAbsolute } from 'node:path';
 import { bootstrapDesktop } from './window';
 
 const { app, BrowserWindow } = electron;
 const isTestMode = process.env.BP_TEST_MODE === '1';
+
+const testUserDataDir = process.env.BP_TEST_USER_DATA_DIR?.trim();
+if (testUserDataDir) {
+  if (!isTestMode || !isAbsolute(testUserDataDir)) {
+    throw new Error('BP_TEST_USER_DATA_DIR requires BP_TEST_MODE=1 and an absolute path.');
+  }
+  app.setPath('userData', testUserDataDir);
+  app.setPath('sessionData', testUserDataDir);
+}
 
 process.on('unhandledRejection', (error) => {
   console.error('Unhandled rejection in main process:', error);

@@ -23,6 +23,7 @@ export default defineConfig({
   resolve: {
     dedupe: ['react', 'react-dom'],
     alias: {
+      '@': resolve(__dirname, 'src/renderer/src'),
       '@butter-paper/core': resolve(__dirname, '../../packages/core/src/index.ts'),
       '@butter-paper/pdf/browser': resolve(__dirname, '../../packages/pdf/src/browser.ts'),
     },

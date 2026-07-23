@@ -1,6 +1,19 @@
 packages:
   - apps/*
   - packages/*
+supportedArchitectures:
+  os:
+    - current
+    - darwin
+    - linux
+    - win32
+  cpu:
+    - current
+    - arm64
+    - x64
+  libc:
+    - current
+    - glibc
 onlyBuiltDependencies:
   - electron
   - electron-winstaller

@@ -5,7 +5,16 @@
 - Butter Paper is a pnpm monorepo with an Electron/React desktop app, a CLI, and shared `core` and `pdf` packages.
 - The normal renderer uses PDF.js. The native Rust/PDFium render core under `native/pdfium-render-core` is an opt-in backend selected with `BP_DESKTOP_RENDER_BACKEND=pdfium`.
 - Electron Forge is used only for the development server. Electron Builder owns packaging and release configuration.
-- The renderer currently uses Tailwind CSS plus project CSS and React components. Do not assume another component system is configured.
+- The renderer uses official shadcn/ui components with Base UI primitives and the Rhea style. `apps/desktop/components.json` is the configuration source of truth.
+
+## UI conventions
+
+- Use components from `apps/desktop/src/renderer/src/components/ui` for standard controls. Add or refresh them with the official shadcn CLI; do not copy registry source by hand.
+- Keep `style: "base-rhea"`, Base UI (`base`), Lucide, DM Sans, and the existing Butter Paper semantic/domain tokens unless a task explicitly changes them.
+- Compose Base UI with `render`, never Radix `asChild`. Do not add Radix dependencies, APIs, CSS variables, or state selectors.
+- Preserve Butter Paper's custom AEC tool icons, Fit Width/Fit Page/Continuous icons, and Butter Canvas icon. Their explicit `size-*` classes prevent shadcn descendant SVG defaults from replacing their geometry.
+- The PDF/canvas renderers, annotation layers, resize handles, virtualized thumbnails, and two-axis `CustomScrollArea` are domain UI rather than generic controls. Preserve their behavior and regression coverage unless a task explicitly redesigns them.
+- Portaled menus, popovers, tooltips, selects, and dialogs must remain keyboard accessible, contained at constrained window sizes, and compatible with the application shortcut handler.
 
 ## Sources of truth
 
@@ -42,4 +51,8 @@ Do not update Playwright snapshots unless the task intentionally changes reviewe
 - Keep Electron context isolation intact. Do not expose filesystem or process access directly to the renderer.
 - Preserve import/export compatibility when changing markup models or appearance data.
 - Verify platform assumptions against macOS, Windows, and Linux behavior represented in CI.
+- In-app stable/beta updates are macOS-only until another platform has trusted signing and native N-1 coverage. Do not publish Windows or Linux updater metadata merely because Electron Builder can generate it.
+- Release tags must resolve to commits reachable from the repository's `main` default branch.
+- `release-policy` is tag-restricted and contains only `IMMUTABLE_RELEASES_READ_TOKEN`, scoped to repository Administration read. Only the read-only immutable-release policy job may use it.
+- `MACOS_UPDATER_BOOTSTRAP_TAG` is a one-time exact tag in the channel's updater-verification environment. Use it only when that channel has no prior public package; remove it after the bootstrap release and never advance it to bypass N-1 tests.
 - Do not stage, commit, push, open pull requests, alter remote settings, or create issues unless the user explicitly requests it.

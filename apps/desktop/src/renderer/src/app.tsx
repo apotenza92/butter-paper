@@ -24,13 +24,15 @@ import { LeftSidebar } from './components/LeftSidebar';
 import { PageScaleDialog } from './components/PageScaleDialog';
 import { RightRail } from './components/RightRail';
 import { RightSidebar } from './components/RightSidebar';
+import { UpdateDialog } from './components/UpdateDialog';
 import { ViewerToolbar } from './components/ViewerToolbar';
+import { useUpdater } from './hooks/useUpdater';
 import { LocalPdfSession, type DiagnosticsSnapshot } from './services/documentSession';
 import { getPerfSnapshot, initialisePerfTracking, recordComponentRender, recordWindowBounds, resetPerfTracking } from './services/perfTracker';
 import { getRenderCoordinatorDiagnostics } from './services/renderCoordinator';
 import { useViewerStore, type CadViewOrganisation, type LoadedDocumentState, type SnapSettings } from './state/viewerStore';
 import { subscribeToThemeMode } from './theme';
-import type { LoadedDocumentPayload, ScrollMode, ScrollWheelMode, ThemeMode, ToolMode, ViewerDiagnostics, ZoomPreset } from '../../shared/protocol';
+import type { ApplicationMetadata, LoadedDocumentPayload, ScrollMode, ScrollWheelMode, ThemeMode, ToolMode, ViewerDiagnostics, ZoomPreset } from '../../shared/protocol';
 import { PDF_TOOL_REGISTRY } from './pdf-tools/toolRegistry';
 import { traceImageToMarkups } from './utils/butterCanvasTrace';
 import { clampViewerZoom } from './utils/renderZoom';
@@ -38,6 +40,10 @@ import { clampViewerZoom } from './utils/renderZoom';
 const INACTIVE_TRIM_DELAY_MS = 5000;
 const SPACE_DOUBLE_TAP_MS = 300;
 const CANVAS_HISTORY_LIMIT = 50;
+const DEFAULT_APPLICATION_METADATA: ApplicationMetadata = {
+  channel: 'stable',
+  productName: 'Butter Paper',
+};
 const TOOL_SHORTCUTS = PDF_TOOL_REGISTRY
   .filter((tool) => tool.shortcut)
   .map((tool) => ({ tool: tool.id, shortcut: parseToolShortcut(tool.shortcut ?? '') }));
@@ -168,8 +174,39 @@ function isEditableShortcutTarget(target: EventTarget | null): boolean {
   return tagName === 'input' || tagName === 'textarea' || tagName === 'select';
 }
 
+function isInteractiveShortcutTarget(target: EventTarget | null): boolean {
+  if (isEditableShortcutTarget(target)) {
+    return true;
+  }
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  return Boolean(target.closest([
+    'button',
+    'a[href]',
+    '[role="button"]',
+    '[role="combobox"]',
+    '[role="checkbox"]',
+    '[role="dialog"]',
+    '[role="grid"]',
+    '[role="listbox"]',
+    '[role="menu"]',
+    '[role="menuitem"]',
+    '[role="menuitemcheckbox"]',
+    '[role="menuitemradio"]',
+    '[role="option"]',
+    '[role="radio"]',
+    '[role="slider"]',
+    '[role="switch"]',
+    '[role="tab"]',
+    '[role="textbox"]',
+    '[role="tree"]',
+  ].join(',')));
+}
+
 function toolForKeyboardEvent(event: KeyboardEvent): ToolMode | null {
-  if (event.metaKey || event.ctrlKey || isEditableShortcutTarget(event.target)) {
+  if (event.metaKey || event.ctrlKey || isInteractiveShortcutTarget(event.target)) {
     return null;
   }
 
@@ -453,8 +490,10 @@ function scheduleFirstVisibleWarmup(tab: DocumentTab, delayMs: number): void {
 
 export function App({ initialThemeMode }: AppProps) {
   recordComponentRender('App');
+  const updater = useUpdater();
   const [tabs, setTabs] = useState<WorkspaceTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [applicationMetadata, setApplicationMetadata] = useState<ApplicationMetadata>(DEFAULT_APPLICATION_METADATA);
   const [themeMode, setThemeMode] = useState<ThemeMode>(initialThemeMode);
   const [pageScaleDialogOpen, setPageScaleDialogOpen] = useState(false);
   const [pageScaleDialogInitialMode, setPageScaleDialogInitialMode] = useState<'preset' | 'custom' | 'calibrate'>('preset');
@@ -519,6 +558,21 @@ export function App({ initialThemeMode }: AppProps) {
   const lastSpaceTapAtRef = useRef(0);
 
   useEffect(() => subscribeToThemeMode(setThemeMode), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void window.butterPaper.application.getMetadata()
+      .then((metadata) => {
+        if (!cancelled) {
+          setApplicationMetadata(metadata);
+          document.title = metadata.productName;
+        }
+      })
+      .catch((error) => console.error('Unable to load application metadata.', error));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     activeToolRef.current = activeTool;
@@ -961,6 +1015,7 @@ export function App({ initialThemeMode }: AppProps) {
         const bytes = await window.butterPaper.files.readFile(filePath);
         await importPdfSnapshotsToActiveCanvas(filePath.split(/[/\\]/).pop() ?? filePath, bytes, pageSelection);
       },
+      getActiveDocument: () => documentState?.document ?? null,
       getActiveCanvasDocument: () => activeCanvasTab?.document.document ?? null,
       openFixturePdf: async (fixtureName: string) => { const filePath = await window.butterPaper.test?.resolveFixturePath(fixtureName); if (!filePath) throw new Error(`Fixture not found: ${fixtureName}`); await loadDocumentFromPath(filePath); },
       switchToTab: async (indexOrPath: number | string) => { const tab = typeof indexOrPath === 'number' ? tabs[indexOrPath] : tabs.find((candidate) => candidate.normalizedPath === normalizeDocumentPath(indexOrPath)); if (tab) activateTab(tab.id); },
@@ -973,7 +1028,12 @@ export function App({ initialThemeMode }: AppProps) {
           setStatusMessage(`Saved canvas to ${filePath.split(/[/\\]/).pop() ?? filePath}`);
           return;
         }
-        if (filePath && session && documentState) { const payload = await session.save(documentState.document.markups, filePath, documentState.document.pageScales); updateActiveTabAfterSave(payload); setStatusMessage(`Saved copy to ${filePath.split(/[/\\]/).pop() ?? filePath}`); return; }
+        if (filePath && session && documentState) {
+          const payload = await session.save(documentState.document.markups, filePath, documentState.document.pageScales);
+          updateActiveTabAfterSave(payload);
+          setStatusMessage(`Saved copy to ${filePath.split(/[/\\]/).pop() ?? filePath}`);
+          return;
+        }
         await handleSaveAs();
       },
       getDiagnostics: diagnostics,
@@ -1484,7 +1544,7 @@ export function App({ initialThemeMode }: AppProps) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const key = normalizeShortcutKey(event.key);
-      const isSpacePanShortcut = key === 'space' && !isEditableShortcutTarget(event.target);
+      const isSpacePanShortcut = key === 'space' && !isInteractiveShortcutTarget(event.target);
       if (event.defaultPrevented && !isSpacePanShortcut) {
         return;
       }
@@ -1531,14 +1591,14 @@ export function App({ initialThemeMode }: AppProps) {
         return;
       }
 
-      if ((key === 'delete' || key === 'backspace') && !isEditableShortcutTarget(event.target)) {
+      if ((key === 'delete' || key === 'backspace') && !isInteractiveShortcutTarget(event.target)) {
         if (deleteSelectedMarkups()) {
           event.preventDefault();
         }
         return;
       }
 
-      if (key === 'escape' && !isEditableShortcutTarget(event.target)) {
+      if (key === 'escape' && !isInteractiveShortcutTarget(event.target)) {
         event.preventDefault();
         handleToolChange('select');
         return;
@@ -1553,7 +1613,7 @@ export function App({ initialThemeMode }: AppProps) {
       handleToolChange(shortcutTool);
     };
     const onKeyUp = (event: KeyboardEvent) => {
-      if (normalizeShortcutKey(event.key) !== 'space') {
+      if (normalizeShortcutKey(event.key) !== 'space' || isInteractiveShortcutTarget(event.target)) {
         return;
       }
 
@@ -1578,15 +1638,33 @@ export function App({ initialThemeMode }: AppProps) {
 
   const pages = documentState?.document.pages ?? [];
   const canSave = Boolean((session && documentState) || activeCanvasTab);
+  const hasDirtyDocuments = tabs.some((tab) => tab.document.dirty);
   const viewerControlsDisabled = !documentState && !activeCanvasTab;
   const leftRailDisabled = !documentState;
   const activeTraceAsset = activeCanvasTab && canvasTraceSession
     ? activeCanvasTab.document.document.assets.find((asset) => asset.id === canvasTraceSession.assetId) ?? null
     : null;
 
+  useEffect(() => {
+    void window.butterPaper.updates.setRestartBlocked(hasDirtyDocuments)
+      .catch((error) => console.error('Unable to update the restart safety state.', error));
+  }, [hasDirtyDocuments]);
+
   return (
     <div className="bp-surface-app bp-text-primary flex h-screen flex-col" data-testid="app-root" onDragOver={handleDragOver} onDrop={handleDrop}>
-      <AppMenuBar canSave={canSave} onOpen={() => void handleOpen()} onOpenCanvas={() => void handleOpenCanvas()} onSave={() => void handleSave()} onSaveAs={() => void handleSaveAs()} onSetPageScale={() => openPageScaleDialog()} />
+      <AppMenuBar
+        canSave={canSave}
+        productName={applicationMetadata.productName}
+        updateStatus={updater.status}
+        onOpen={() => void handleOpen()}
+        onOpenCanvas={() => void handleOpenCanvas()}
+        onSave={() => void handleSave()}
+        onSaveAs={() => void handleSaveAs()}
+        onSetPageScale={() => openPageScaleDialog()}
+        onCheckForUpdates={() => void updater.actions.checkNow()}
+        onOpenReleasePage={() => void updater.actions.openReleasePage()}
+        onUpdateFrequencyChange={(frequency) => void updater.actions.setFrequency(frequency)}
+      />
       <DocumentTabBar
         tabs={tabs.map((tab) => ({ id: tab.id, documentName: tab.document.fileName, dirty: Boolean(tab.document.dirty) }))}
         activeTabId={activeTabId}
@@ -1634,7 +1712,12 @@ export function App({ initialThemeMode }: AppProps) {
               onWidthChange={setLeftSidebarWidth}
             />
           ) : null}
-          <div className="flex min-w-0 flex-1 flex-col">
+          <div
+            className="flex min-w-0 flex-1 flex-col"
+            id="document-tab-panel"
+            role={activeTabId ? 'tabpanel' : undefined}
+            aria-labelledby={activeTabId ? `document-tab-trigger-${tabs.findIndex((tab) => tab.id === activeTabId)}` : undefined}
+          >
             {activeCanvasTab ? (
               <>
                 <ButterCanvasToolbar
@@ -1715,6 +1798,13 @@ export function App({ initialThemeMode }: AppProps) {
           onClose={() => setPageScaleDialogOpen(false)}
         />
       ) : null}
+      <UpdateDialog
+        hasDirtyDocuments={hasDirtyDocuments}
+        productName={applicationMetadata.productName}
+        status={updater.status}
+        onInstall={() => void updater.actions.installDownloaded()}
+        onOpenReleasePage={() => void updater.actions.openReleasePage()}
+      />
     </div>
   );
 }

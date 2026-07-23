@@ -2,6 +2,7 @@ import type { ThemeMode } from '../../shared/protocol';
 
 export function applyThemeMode(mode: ThemeMode): void {
   document.documentElement.dataset.theme = mode;
+  document.documentElement.classList.toggle('dark', mode === 'dark');
   document.documentElement.style.colorScheme = mode;
 }
 

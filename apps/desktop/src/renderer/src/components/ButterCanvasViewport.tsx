@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Button } from '@/components/ui/button';
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
@@ -653,13 +654,15 @@ export function ButterCanvasViewport({
       </svg>
       {document.assets.length === 0 && document.markups.length === 0 ? (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <button
+          <Button
             type="button"
-            className="pointer-events-auto rounded-[6px] border bg-white/85 px-3 py-2 text-[12px] font-medium shadow-sm"
+            variant="secondary"
+            size="sm"
+            className="pointer-events-auto shadow-sm"
             onClick={onOpenDocument}
           >
             Insert PDF or Image
-          </button>
+          </Button>
         </div>
       ) : null}
     </div>

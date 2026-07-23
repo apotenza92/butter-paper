@@ -6,7 +6,7 @@ import {
   type PdfPoint,
   type Rect,
 } from '@butter-paper/core';
-import { isRenderBacklogIdle, type LocalPdfSession, type PageRenderSurface } from '../services/documentSession';
+import { isRenderBacklogIdle, isRenderUnavailableError, type LocalPdfSession, type PageRenderSurface } from '../services/documentSession';
 import {
   recordComponentRender,
   recordObsoleteRenderCompletion,
@@ -497,6 +497,9 @@ export function PageView({
           scheduleNextQuality(quality);
         }).catch((error) => {
           if (!cancelled) {
+            if (isRenderUnavailableError(error)) {
+              return;
+            }
             if (error instanceof Error && error.name === 'AbortError') {
               retryTargetQualityAfterAbort();
               return;
@@ -528,6 +531,9 @@ export function PageView({
         scheduleNextQuality(quality);
       }).catch((error) => {
         if (!cancelled) {
+          if (isRenderUnavailableError(error)) {
+            return;
+          }
           if (error instanceof Error && error.name === 'AbortError') {
             retryTargetQualityAfterAbort();
             return;
@@ -726,6 +732,9 @@ export function PageView({
               setDisplayedQuality('detail', fallbackSurface.renderedWidth);
               setRenderState('ready');
             }).catch((error) => {
+              if (!cancelled && isRenderUnavailableError(error)) {
+                return;
+              }
               if (!cancelled && !(error instanceof Error && error.name === 'AbortError')) {
                 setReplacementRenderError();
               } else if (!cancelled) {
@@ -744,6 +753,9 @@ export function PageView({
         }
         setRenderState('ready');
       }).catch((error) => {
+        if (!cancelled && isRenderUnavailableError(error)) {
+          return;
+        }
         if (!cancelled && !(error instanceof Error && error.name === 'AbortError')) {
           setReplacementRenderError();
         } else if (!cancelled) {
