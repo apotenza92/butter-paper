@@ -167,7 +167,7 @@ test.describe('Page scale foundation', () => {
     await page.keyboard.press('Enter');
     const allPagesOption = page.getByRole('option', { name: 'All Pages' });
     await expect(allPagesOption).toBeVisible();
-    await page.keyboard.press('a');
+    await page.keyboard.press('ArrowDown');
     await expect(allPagesOption).toHaveAttribute('data-highlighted', '');
     await page.keyboard.press('Enter');
     await expect(page.getByTestId('page-scale-pages')).toContainText('All Pages');
