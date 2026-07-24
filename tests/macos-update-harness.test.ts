@@ -11,8 +11,19 @@ import {
 import { resolvePriorSigningFingerprints } from '../scripts/verify-macos-package.mjs';
 
 describe('macOS updater integration harness', () => {
-  it('keeps ordinary CI native across the full six-platform architecture matrix', () => {
+  it('keeps ordinary CI deterministic and reserves GUI/package matrices for manual runs', () => {
     const workflow = readFileSync(resolve('.github/workflows/ci.yml'), 'utf8');
+    expect(workflow).toContain('deterministic:');
+    expect(workflow).toContain('name: Deterministic checks');
+    expect(workflow).toContain('run: pnpm check');
+    expect(workflow).toContain("if: github.event_name == 'workflow_dispatch'");
+    expect(workflow).toContain('name: Manual Electron E2E');
+    expect(workflow).toContain('name: Manual package smoke (${{ matrix.platform }} ${{ matrix.arch }})');
+    const ciTriggers = workflow.slice(workflow.indexOf('on:'), workflow.indexOf('permissions:'));
+    expect(ciTriggers).toContain('workflow_call:');
+    expect(ciTriggers).toContain('workflow_dispatch:');
+    expect(ciTriggers).not.toContain('push:');
+    expect(ciTriggers).not.toContain('pull_request:');
     for (const runner of [
       'macos-15',
       'macos-15-intel',
@@ -24,6 +35,12 @@ describe('macOS updater integration harness', () => {
       expect(workflow).toContain(`runner: ${runner}`);
     }
     expect(workflow).toContain("test \"$(node -p 'process.arch')\" = \"${{ matrix.arch }}\"");
+    const deterministicJob = workflow.slice(
+      workflow.indexOf('  deterministic:'),
+      workflow.indexOf('\n  manual-gui-e2e:'),
+    );
+    expect(deterministicJob).not.toContain('playwright');
+    expect(deterministicJob).not.toContain('test:package:desktop');
 
     const releaseWorkflow = readFileSync(resolve('.github/workflows/release.yml'), 'utf8');
     expect(releaseWorkflow).toContain('uses: ./.github/workflows/ci.yml');

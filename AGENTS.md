@@ -28,8 +28,14 @@
 1. Inspect `git status` before editing and preserve unrelated user changes.
 2. Make the smallest change that satisfies the task; do not revive archived experiments or add speculative infrastructure.
 3. Add or update deterministic tests for behavior changes.
-4. Run the narrowest relevant checks while iterating, then the required repository checks before handoff.
+4. Run the narrowest relevant checks while iterating, then `pnpm check` before handoff.
 5. Review the final diff for generated files, stale references, secrets, and unrelated changes.
+
+Do not run Playwright Electron E2E or the packaged desktop GUI smoke test as a
+default handoff step. Run a narrow E2E spec only when the task changes the
+interaction it covers or when reproducing a GUI failure. Reserve the full E2E
+suite and six-platform packaged smoke matrix for explicit requests, manual CI,
+and focused release verification.
 
 ## Commands
 
@@ -38,10 +44,11 @@
 - Typecheck: `pnpm typecheck`
 - Build: `pnpm build`
 - Deterministic tests: `pnpm test`
-- Electron E2E: `pnpm test:e2e`
+- Required deterministic gate: `pnpm check`
+- Targeted Electron E2E: `pnpm test:e2e -- tests/e2e/<spec>.spec.mjs`
+- Full Electron E2E, when explicitly warranted: `pnpm test:e2e`
 - Desktop development: `pnpm dev:desktop`
-- Desktop package smoke: `pnpm --dir apps/desktop package` then `pnpm test:package:desktop`
-- Full local gate: `pnpm check`
+- Desktop package smoke, for packaging/release work: `pnpm --dir apps/desktop package` then `pnpm test:package:desktop`
 
 Do not update Playwright snapshots unless the task intentionally changes reviewed UI output.
 
@@ -53,6 +60,7 @@ Do not update Playwright snapshots unless the task intentionally changes reviewe
 - Verify platform assumptions against macOS, Windows, and Linux behavior represented in CI.
 - In-app stable/beta updates are macOS-only until another platform has trusted signing and native N-1 coverage. Do not publish Windows or Linux updater metadata merely because Electron Builder can generate it.
 - Release tags must resolve to commits reachable from the repository's `main` default branch.
+- `.github/workflows/ci.yml` is manually dispatchable and reusable by the tag-only release workflow; routine pushes and pull requests do not start GitHub-hosted CI.
 - `release-policy` is tag-restricted and contains only `IMMUTABLE_RELEASES_READ_TOKEN`, scoped to repository Administration read. Only the read-only immutable-release policy job may use it.
 - `MACOS_UPDATER_BOOTSTRAP_TAG` is a one-time exact tag in the channel's updater-verification environment. Use it only when that channel has no prior public package; remove it after the bootstrap release and never advance it to bypass N-1 tests.
 - Do not stage, commit, push, open pull requests, alter remote settings, or create issues unless the user explicitly requests it.

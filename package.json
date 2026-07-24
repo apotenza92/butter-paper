@@ -13,7 +13,7 @@
     "test:package:desktop": "node scripts/smoke-packaged-desktop.mjs",
     "test:macos-verifier": "vitest run --config vitest.config.ts tests/macos-package-verifier.test.ts",
     "test:macos-updater": "node scripts/test-macos-update.mjs",
-    "check": "pnpm check:repo && pnpm typecheck && pnpm build && pnpm test && pnpm test:e2e",
+    "check": "pnpm check:repo && pnpm typecheck && pnpm build && pnpm test",
     "postinstall": "node scripts/ensure-native-deps.mjs",
     "dev:desktop": "pnpm --filter @butter-paper/desktop dev",
     "dev:cli": "pnpm --filter @butter-paper/cli dev",
