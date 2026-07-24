@@ -177,18 +177,18 @@ describe('macOS updater integration harness', () => {
     expect(harness).toContain('...trustExpectations()');
   });
 
-  it('makes the verified release public before advancing its update feed', () => {
+  it('makes the verified release public before sealing its update-feed bundle', () => {
     const workflow = readFileSync(resolve('.github/workflows/release.yml'), 'utf8');
     const publishJob = workflow.slice(
       workflow.indexOf('  publish:'),
       workflow.indexOf('\n  verify-publication:'),
     );
-    expect(publishJob.indexOf('- name: Advance static update feed')).toBeGreaterThan(-1);
-    expect(publishJob.indexOf('- name: Advance static update feed')).toBeGreaterThan(
+    expect(publishJob.indexOf('- name: Seal static update feed publication bundle')).toBeGreaterThan(-1);
+    expect(publishJob.indexOf('- name: Seal static update feed publication bundle')).toBeGreaterThan(
       publishJob.indexOf('- name: Publish verified GitHub release'),
     );
-    expect(publishJob.indexOf('- name: Advance static update feed')).toBeGreaterThan(
-      publishJob.indexOf('- name: Verify public assets before advancing the update feed'),
+    expect(publishJob.indexOf('- name: Seal static update feed publication bundle')).toBeGreaterThan(
+      publishJob.indexOf('- name: Verify public assets before sealing the update feed'),
     );
     expect(publishJob).toContain('Release is still a draft');
     expect(publishJob).toContain('Release prerelease classification is wrong');
@@ -197,5 +197,8 @@ describe('macOS updater integration harness', () => {
     expect(publishJob).toContain('Release is already public with the expected classification.');
     expect(publishJob).toContain('Published release has the wrong stable/beta classification.');
     expect(publishJob).toContain('sha256sum --check --strict');
+    expect(publishJob).toContain('Apply these exact reviewed bytes manually');
+    expect(publishJob).not.toContain('git commit');
+    expect(publishJob).not.toContain('git push');
   });
 });

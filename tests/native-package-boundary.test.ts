@@ -35,8 +35,10 @@ describe('native release package boundaries', () => {
     expect(publishJob).not.toContain('IMMUTABLE_RELEASES_READ_TOKEN');
     expect(publishJob).toContain('Published release is not immutable');
     expect(publishJob.indexOf('Published release is not immutable')).toBeLessThan(
-      publishJob.indexOf('- name: Advance static update feed'),
+      publishJob.indexOf('- name: Seal static update feed publication bundle'),
     );
+    expect(publishJob).not.toContain('git commit');
+    expect(publishJob).not.toContain('git push');
   });
 
   it('installs, feature-tests, and uninstalls the exact Windows NSIS package', () => {

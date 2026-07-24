@@ -32,23 +32,24 @@ describe('Homebrew cask renderer', () => {
     })).toThrow(/identity is invalid/);
   });
 
-  it('requires native ARM and Intel validation before the single publish job', () => {
+  it('requires native ARM and Intel validation before sealing the publication bundle', () => {
     const workflow = readFileSync('.github/workflows/release.yml', 'utf8');
     expect(workflow).toContain("runs-on: ${{ matrix.arch == 'arm64' && 'macos-15' || 'macos-15-intel' }}");
     expect(workflow).toContain('arch: [arm64, x64]');
     expect(workflow).toContain('beta\\.[1-9]\\d*');
     expect(workflow).toContain('needs: [prepare, test-homebrew]');
     expect(workflow).toContain('diff --recursive --unified validated/arm64 validated/x64');
-    expect(workflow).toContain('environment: homebrew-release');
+    expect(workflow).toContain('butter-paper-homebrew-publication-');
   });
 
-  it('exposes the Homebrew token only to the final authenticated push', () => {
+  it('never commits, pushes, or exposes a Homebrew token', () => {
     const workflow = readFileSync('.github/workflows/release.yml', 'utf8');
-    const publish = workflow.split('  publish-homebrew:', 2)[1];
-    const checkout = publish.split('      - name: Apply validated Homebrew casks', 1)[0];
-    expect(checkout).toContain('persist-credentials: false');
-    expect(checkout).not.toContain('HOMEBREW_TAP_TOKEN');
-    expect(publish.match(/secrets\.HOMEBREW_TAP_TOKEN/g)).toHaveLength(1);
-    expect(publish).toContain('GIT_ASKPASS="$ASKPASS"');
+    const publication = workflow.split('  prepare-homebrew-publication:', 2)[1];
+    expect(publication).toContain('actions/upload-artifact');
+    expect(publication).toContain('SHA256SUMS');
+    expect(publication).toContain('Apply these exact');
+    expect(publication).not.toContain('git commit');
+    expect(publication).not.toContain('git push');
+    expect(workflow).not.toContain('HOMEBREW_TAP_TOKEN');
   });
 });

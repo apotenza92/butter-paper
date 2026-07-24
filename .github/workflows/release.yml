@@ -668,6 +668,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
           path: update-feed-worktree
 
       - name: Download verified release bundle
@@ -767,7 +768,7 @@ jobs:
             gh release edit "$TAG" --repo "$REPOSITORY" --title "$TITLE" --draft=false --prerelease=false --latest
           fi
 
-      - name: Verify public assets before advancing the update feed
+      - name: Verify public assets before sealing the update feed
         env:
           EXPECTED_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
         shell: bash
@@ -810,36 +811,40 @@ jobs:
             printf '%s  %s\n' "$checksum" "pre-feed-public-assets/$filename" | sha256sum --check --strict -
           done < pre-feed-public-assets/SHA256SUMS
 
-      - name: Advance static update feed
-        working-directory: update-feed-worktree
+      - name: Seal static update feed publication bundle
         shell: bash
         run: |
-          if git fetch origin updates:refs/remotes/origin/updates; then
-            git switch --force-create updates refs/remotes/origin/updates
-          else
-            git switch --orphan updates
-            git rm -rf --ignore-unmatch .
-          fi
-
+          set -euo pipefail
+          mkdir -p feed-publication/feed
           for CHANNEL in ${{ join(fromJSON(needs.prepare.outputs.variants), ' ') }}; do
-            rm -rf -- "$CHANNEL"
-            mkdir -p "$CHANNEL"
-            cp -R "../publish/feed/$CHANNEL/." "$CHANNEL/"
+            mkdir -p "feed-publication/feed/$CHANNEL"
+            cp -R "publish/feed/$CHANNEL/." "feed-publication/feed/$CHANNEL/"
           done
-          touch .nojekyll
+          touch feed-publication/feed/.nojekyll
+          (
+            cd feed-publication
+            find feed -type f -print0 |
+              LC_ALL=C sort -z |
+              xargs -0 sha256sum > SHA256SUMS
+          )
+          printf '%s\n' \
+            "Butter Paper static update-feed publication bundle" \
+            "release-tag=${{ github.ref_name }}" \
+            "release-commit=${{ github.sha }}" \
+            "destination=${{ github.repository }}:updates" \
+            "Apply these exact reviewed bytes manually after the release approval gate." \
+            > feed-publication/PUBLICATION.txt
 
-          git add --all
-          if git diff --cached --quiet; then
-            echo 'Update feed already matches this release.'
-            exit 0
-          fi
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git commit -m "Publish update feed for ${{ github.ref_name }} [skip ci]"
-          git push origin HEAD:updates
+      - name: Upload static update feed publication bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: butter-paper-update-feed-publication-${{ github.ref_name }}
+          path: feed-publication
+          if-no-files-found: error
+          retention-days: 14
 
   verify-publication:
-    name: Verify public release and update feeds
+    name: Verify public release and update-feed bundle
     needs: [prepare, publish]
     runs-on: ubuntu-24.04
     permissions:
@@ -851,13 +856,18 @@ jobs:
           name: release-bundle
           path: expected
 
-      - name: Verify unauthenticated release assets and feed hashes
+      - name: Download sealed update-feed publication bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: butter-paper-update-feed-publication-${{ github.ref_name }}
+          path: feed-publication
+
+      - name: Verify unauthenticated release assets and sealed feed hashes
         shell: bash
         run: |
           set -euo pipefail
           RELEASE_BASE="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
-          RAW_BASE="https://raw.githubusercontent.com/${{ github.repository }}/updates"
-          mkdir -p public-assets public-feed
+          mkdir -p public-assets
 
           download_with_retry() {
             local url="$1"
@@ -887,11 +897,10 @@ jobs:
             printf '%s  %s\n' "$checksum" "public-assets/$filename" | sha256sum --check --strict -
           done < public-assets/SHA256SUMS
 
-          while IFS= read -r expected; do
-            relative="${expected#expected/feed/}"
-            mkdir -p "public-feed/$(dirname "$relative")"
-            download_with_retry "$RAW_BASE/$relative?release=${{ github.sha }}" "public-feed/$relative"
-            test "$(sha256sum "$expected" | cut -d' ' -f1)" = "$(sha256sum "public-feed/$relative" | cut -d' ' -f1)"
+          (cd feed-publication && sha256sum --check --strict SHA256SUMS)
+          while IFS= read -r expected_file; do
+            relative="${expected_file#expected/feed/}"
+            cmp "$expected_file" "feed-publication/feed/$relative"
           done < <(find expected/feed -type f | LC_ALL=C sort)
 
   test-homebrew:
@@ -987,11 +996,10 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  publish-homebrew:
-    name: Publish validated Homebrew casks
+  prepare-homebrew-publication:
+    name: Prepare validated Homebrew publication
     needs: [prepare, test-homebrew]
-    runs-on: macos-15
-    environment: homebrew-release
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -1010,42 +1018,36 @@ jobs:
       - name: Compare native validation outputs
         run: diff --recursive --unified validated/arm64 validated/x64
 
-      - name: Checkout Homebrew tap
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: apotenza92/homebrew-tap
-          path: homebrew-tap
-          persist-credentials: false
-
-      - name: Apply validated Homebrew casks
-        run: cp validated/arm64/butter-paper*.rb homebrew-tap/Casks/
-
-      - name: Publish Homebrew casks
-        working-directory: homebrew-tap
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      - name: Seal Homebrew publication bundle
         shell: bash
         run: |
           set -euo pipefail
-          CASKS=('Casks/butter-paper@beta.rb')
-          if [ -f Casks/butter-paper.rb ]; then CASKS+=(Casks/butter-paper.rb); fi
-          git add -- "${CASKS[@]}"
-          if git diff --cached --quiet; then
-            echo 'Homebrew casks already match this release.'
-            exit 0
+          mkdir -p publication/Casks
+          cp validated/arm64/butter-paper*.rb publication/Casks/
+          casks="$(find publication/Casks -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort | paste -sd ' ' -)"
+          if [ "${{ needs.prepare.outputs.channel }}" = beta ]; then
+            [[ "$casks" == 'butter-paper@beta.rb' ]]
+          else
+            [[ "$casks" == 'butter-paper.rb butter-paper@beta.rb' ]]
           fi
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git commit -m "Update Butter Paper casks to ${{ github.ref_name }}"
-          ASKPASS="$RUNNER_TEMP/butter-paper-homebrew-askpass"
-          cat > "$ASKPASS" <<'SH'
-          #!/bin/sh
-          case "$1" in
-            *Username*) printf '%s\n' x-access-token ;;
-            *Password*) printf '%s\n' "$HOMEBREW_TAP_TOKEN" ;;
-            *) exit 1 ;;
-          esac
-          SH
-          chmod 700 "$ASKPASS"
-          GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 git -c credential.helper= push origin HEAD
-          rm -f "$ASKPASS"
+          (
+            cd publication
+            find Casks -type f -name '*.rb' -print0 |
+              LC_ALL=C sort -z |
+              xargs -0 sha256sum > SHA256SUMS
+          )
+          printf '%s\n' \
+            "Butter Paper Homebrew publication bundle" \
+            "release-tag=${{ github.ref_name }}" \
+            "release-commit=${{ github.sha }}" \
+            "destination=apotenza92/homebrew-tap:Casks/" \
+            "Apply these exact natively validated bytes manually after the release approval gate." \
+            > publication/PUBLICATION.txt
+
+      - name: Upload Homebrew publication bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: butter-paper-homebrew-publication-${{ github.ref_name }}
+          path: publication
+          if-no-files-found: error
+          retention-days: 14
