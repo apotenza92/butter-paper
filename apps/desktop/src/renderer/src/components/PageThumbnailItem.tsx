@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Button } from '@/components/ui/button';
 import { createPageTransform, type Markup, type PageModel } from '@butter-paper/core';
-import type { LocalPdfSession, PageRenderSurface } from '../services/documentSession';
+import { isRenderUnavailableError, type LocalPdfSession, type PageRenderSurface } from '../services/documentSession';
 import { recordComponentRender, recordPlaceholderShow } from '../services/perfTracker';
 import { useRenderCoordinator } from '../services/renderCoordinator';
 import { capThumbnailPixelRatio } from '../utils/renderZoom';
@@ -209,7 +210,7 @@ export function PageThumbnailItem({
       })
       .catch((error) => {
         if (!cancelled) {
-          if (error instanceof Error && error.name === 'AbortError') {
+          if (isRenderUnavailableError(error) || (error instanceof Error && error.name === 'AbortError')) {
             return;
           }
           setHasError(true);
@@ -313,7 +314,7 @@ export function PageThumbnailItem({
         setHasError(false);
       })
       .catch((error) => {
-        if (!cancelled && !(error instanceof Error && error.name === 'AbortError')) {
+        if (!cancelled && !isRenderUnavailableError(error) && !(error instanceof Error && error.name === 'AbortError')) {
           setHasError(true);
         }
       });
@@ -350,9 +351,10 @@ export function PageThumbnailItem({
   }, [pageSurface]);
 
   return (
-    <button
+    <Button
       type="button"
-      className="absolute left-2 right-2 bg-transparent px-2 py-1 text-center focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
+      variant="ghost"
+      className="absolute left-2 right-2 flex-col bg-transparent px-2 py-1 text-center whitespace-normal focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
       data-testid={`page-thumbnail-item-${page.index + 1}`}
       onClick={() => onSelect(sourceUrlRef.current)}
       style={{ top: `${top}px`, height: `${itemHeight}px` }}
@@ -432,6 +434,6 @@ export function PageThumbnailItem({
       ].join(' ')}>
         Page {page.index + 1}
       </div>
-    </button>
+    </Button>
   );
 }

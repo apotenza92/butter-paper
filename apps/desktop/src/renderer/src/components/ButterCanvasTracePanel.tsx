@@ -6,6 +6,12 @@ import type {
 } from '@butter-paper/core';
 import { X } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
+import { Slider } from '@/components/ui/slider';
 import {
   DEFAULT_RIGHT_SIDEBAR_WIDTH,
   MAX_RIGHT_SIDEBAR_WIDTH,
@@ -14,8 +20,6 @@ import {
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import {
   PRIMARY_BAND_HEIGHT,
-  CONTROL_ACTIVE,
-  CONTROL_DEFAULT,
   CONTROL_ICON_SIZE,
   CONTROL_ICON_STROKE_WIDTH,
   SHELL_BORDER_SUBTLE,
@@ -81,9 +85,16 @@ export function ButterCanvasTracePanel({
         data-testid="butter-canvas-trace-panel-header"
       >
         <span>Trace Image</span>
-        <button type="button" aria-label="Cancel trace" className={['rounded-[6px] border p-1.5', CONTROL_DEFAULT].join(' ')} onClick={onCancel}>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Cancel trace"
+          className="size-[30px] rounded-2xl p-1.5"
+          onClick={onCancel}
+        >
           <X size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} aria-hidden="true" />
-        </button>
+        </Button>
       </header>
 
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 py-3">
@@ -93,38 +104,42 @@ export function ButterCanvasTracePanel({
         </div>
 
         <Field label="Sensitivity">
-          <input
-            type="range"
+          <Slider
+            aria-label="Sensitivity"
+            className="min-w-0 flex-1"
             min={0}
             max={100}
-            value={settings.sensitivity}
+            value={[settings.sensitivity]}
             data-testid="butter-canvas-trace-sensitivity"
-            onChange={(event) => onSettingsChange({ ...settings, sensitivity: Number(event.target.value) })}
+            onValueChange={(value) => onSettingsChange({
+              ...settings,
+              sensitivity: typeof value === 'number' ? value : (value[0] ?? settings.sensitivity),
+            })}
           />
           <span className="w-9 text-right text-[11px] tabular-nums">{settings.sensitivity}</span>
         </Field>
 
-        <label className="flex items-center gap-2 text-[12px]">
-          <input
-            type="checkbox"
+        <Label className="flex items-center gap-2 text-[12px] font-normal">
+          <Checkbox
             checked={settings.clearExistingInZone}
             data-testid="butter-canvas-trace-clear"
-            onChange={(event) => onSettingsChange({ ...settings, clearExistingInZone: event.target.checked })}
+            onCheckedChange={(checked) => onSettingsChange({ ...settings, clearExistingInZone: checked })}
           />
           Clear generated lines in zone
-        </label>
+        </Label>
 
         <Field label="Output">
-          <select
+          <NativeSelect
+            size="sm"
             value={settings.outputMode}
-            className="min-w-0 flex-1 rounded-[6px] border bg-transparent px-2 py-1.5 text-[12px]"
+            className="min-w-0 flex-1 [&_[data-slot=native-select]]:rounded-[6px] [&_[data-slot=native-select]]:text-[12px]"
             data-testid="butter-canvas-trace-output"
             onChange={(event) => onSettingsChange({ ...settings, outputMode: event.target.value as ButterCanvasTraceOutputMode })}
           >
             {OUTPUT_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
+              <NativeSelectOption key={option.value} value={option.value}>{option.label}</NativeSelectOption>
             ))}
-          </select>
+          </NativeSelect>
         </Field>
 
         <div className="space-y-2">
@@ -137,12 +152,12 @@ export function ButterCanvasTracePanel({
       </div>
 
       <footer className={['flex gap-2 border-t px-3 py-3', SHELL_BORDER_SUBTLE].join(' ')}>
-        <button type="button" className={['h-8 flex-1 rounded-[6px] border px-3 text-[12px] font-medium', CONTROL_DEFAULT].join(' ')} onClick={onCancel}>
+        <Button type="button" variant="outline" className="h-8 flex-1 text-[12px]" onClick={onCancel}>
           Cancel
-        </button>
-        <button type="button" className={['h-8 flex-1 rounded-[6px] border px-3 text-[12px] font-medium', CONTROL_ACTIVE].join(' ')} data-testid="butter-canvas-trace-apply" onClick={onApply}>
+        </Button>
+        <Button type="button" className="h-8 flex-1 text-[12px]" data-testid="butter-canvas-trace-apply" onClick={onApply}>
           Apply
-        </button>
+        </Button>
       </footer>
 
       <SidebarResizeHandle
@@ -161,10 +176,10 @@ export function ButterCanvasTracePanel({
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <label className="flex items-center gap-2 text-[12px]">
+    <Label className="flex items-center gap-2 text-[12px] font-normal">
       <span className="w-20 shrink-0">{label}</span>
       {children}
-    </label>
+    </Label>
   );
 }
 
@@ -180,20 +195,20 @@ function NumberField({
   onChange: (value: number) => void;
 }) {
   return (
-    <label className="flex items-center gap-2 text-[12px]">
+    <Label className="flex items-center gap-2 text-[12px] font-normal">
       <span className="w-6 shrink-0">{label}</span>
-      <input
+      <Input
         type="number"
         min={0}
         max={100}
         step={1}
         value={Math.round(value)}
-        className="min-w-0 flex-1 rounded-[6px] border bg-transparent px-2 py-1.5 text-[12px]"
+        className="h-8 min-w-0 flex-1 rounded-[6px] px-2 py-1.5 text-[12px]"
         data-testid={testId}
         onChange={(event) => onChange(Number(event.target.value))}
       />
       <span className={['text-[11px]', SHELL_TEXT_MUTED].join(' ')}>%</span>
-    </label>
+    </Label>
   );
 }
 

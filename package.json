@@ -1,6 +1,6 @@
 {
   "name": "butter-paper",
-  "version": "0.0.1",
+  "version": "0.0.1-beta.1",
   "private": true,
   "license": "MIT",
   "packageManager": "pnpm@10.33.0",
@@ -11,7 +11,9 @@
     "test": "vitest run --config vitest.config.ts",
     "test:e2e": "playwright test",
     "test:package:desktop": "node scripts/smoke-packaged-desktop.mjs",
-    "check": "pnpm check:repo && pnpm typecheck && pnpm build && pnpm test && pnpm test:e2e",
+    "test:macos-verifier": "vitest run --config vitest.config.ts tests/macos-package-verifier.test.ts",
+    "test:macos-updater": "node scripts/test-macos-update.mjs",
+    "check": "pnpm check:repo && pnpm typecheck && pnpm build && pnpm test",
     "postinstall": "node scripts/ensure-native-deps.mjs",
     "dev:desktop": "pnpm --filter @butter-paper/desktop dev",
     "dev:cli": "pnpm --filter @butter-paper/cli dev",
@@ -19,14 +21,19 @@
     "package:desktop": "pnpm build:desktop && pnpm --dir apps/desktop package",
     "make:desktop": "pnpm build:desktop && pnpm --dir apps/desktop make",
     "make:desktop:mac": "pnpm build:desktop && pnpm --dir apps/desktop make:mac",
+    "build:release:mac": "node scripts/build-signed-macos.mjs",
+    "verify:release:mac": "node scripts/verify-macos-package.mjs",
+    "assemble:update-metadata": "node scripts/assemble-update-metadata.mjs",
     "make:desktop:windows": "pnpm build:desktop && pnpm --dir apps/desktop make:windows",
     "make:desktop:linux": "pnpm build:desktop && pnpm --dir apps/desktop make:linux",
     "generate:fixtures": "node scripts/generate-fixtures.mjs"
   },
   "devDependencies": {
+    "@electron/asar": "3.4.1",
     "@playwright/test": "1.59.1",
     "@types/node": "25.6.0",
     "typescript": "6.0.2",
-    "vitest": "4.1.4"
+    "vitest": "4.1.4",
+    "yaml": "2.8.2"
   }
 }

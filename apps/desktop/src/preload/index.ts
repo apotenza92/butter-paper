@@ -12,6 +12,8 @@ import type {
   PageGeometryRequest,
   SaveDocumentRequest,
   ThemeSnapshot,
+  UpdateFrequency,
+  UpdateStatus,
 } from '../shared/protocol';
 
 const { contextBridge, ipcRenderer } = electron;
@@ -26,6 +28,9 @@ const bridge: ButterPaperBridge = {
     cadRenderExperiment: process.env.BP_CAD_RENDER_EXPERIMENT ?? null,
     renderCoordinatorV2: process.env.BP_RENDER_COORDINATOR_V2 === '1',
   },
+  application: {
+    getMetadata: async () => ipcRenderer.invoke(ipcChannels.applicationGetMetadata),
+  },
   theme: {
     getSnapshot: async () => ipcRenderer.invoke(ipcChannels.themeGetSnapshot),
     subscribe: (listener: (snapshot: ThemeSnapshot) => void) => {
@@ -36,6 +41,30 @@ const bridge: ButterPaperBridge = {
       ipcRenderer.on(ipcChannels.themeChanged, handleThemeChanged);
       return () => {
         ipcRenderer.off(ipcChannels.themeChanged, handleThemeChanged);
+      };
+    },
+  },
+  updates: {
+    getStatus: async () => ipcRenderer.invoke(ipcChannels.updatesGetStatus),
+    setFrequency: async (frequency: UpdateFrequency) => ipcRenderer.invoke(ipcChannels.updatesSetFrequency, frequency),
+    checkNow: async () => ipcRenderer.invoke(ipcChannels.updatesCheckNow),
+    installDownloaded: async () => {
+      await ipcRenderer.invoke(ipcChannels.updatesInstallDownloaded);
+    },
+    setRestartBlocked: async (blocked: boolean) => {
+      await ipcRenderer.invoke(ipcChannels.updatesSetRestartBlocked, blocked);
+    },
+    openReleasePage: async () => {
+      await ipcRenderer.invoke(ipcChannels.updatesOpenReleasePage);
+    },
+    onStatusChanged: (listener: (status: UpdateStatus) => void) => {
+      const handleStatusChanged = (_event: electron.IpcRendererEvent, status: UpdateStatus) => {
+        listener(status);
+      };
+
+      ipcRenderer.on(ipcChannels.updatesStatusChanged, handleStatusChanged);
+      return () => {
+        ipcRenderer.off(ipcChannels.updatesStatusChanged, handleStatusChanged);
       };
     },
   },

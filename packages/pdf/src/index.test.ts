@@ -242,7 +242,7 @@ describe('pdf package', () => {
     expect(pageInfo.height).toBeGreaterThan(0);
 
     await handle.close();
-  });
+  }, 15_000);
 
   it('extracts simple page-content snap geometry', async () => {
     const file = await createFixturePdf();

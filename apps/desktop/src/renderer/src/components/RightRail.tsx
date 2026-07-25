@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import type { ToolMode } from '../../../shared/protocol';
+import { Toggle } from '@/components/ui/toggle';
 import { PDF_TOOL_REGISTRY } from '../pdf-tools/toolRegistry';
 import {
   PanRailIcon,
@@ -26,10 +27,6 @@ import {
 } from './RailIcons';
 import { RailScrollArea } from './RailScrollArea';
 import {
-  CONTROL_ACTIVE,
-  CONTROL_DEFAULT,
-  CONTROL_DISABLED,
-  RAIL_BUTTON_SIZE,
   RAIL_INSET,
   RAIL_WIDTH,
   SHELL_SURFACE_APP,
@@ -84,22 +81,19 @@ function RailToolButton({
 }) {
   const accessibleLabel = shortcut ? `${label} (${shortcut})` : label;
   return (
-    <button
+    <Toggle
       type="button"
+      variant="outline"
+      pressed={active}
       data-testid={testId}
       data-rail-tooltip={accessibleLabel}
       aria-label={label}
-      aria-pressed={active}
       disabled={disabled}
-      className={[
-        'group relative inline-flex shrink-0 items-center justify-center rounded-[6px] border transition',
-        RAIL_BUTTON_SIZE,
-        disabled ? CONTROL_DISABLED : active ? CONTROL_ACTIVE : CONTROL_DEFAULT,
-      ].join(' ')}
-      onClick={onClick}
+      className="group relative size-8 shrink-0 rounded-2xl p-0"
+      onPressedChange={onClick}
     >
       {icon}
-    </button>
+    </Toggle>
   );
 }
 

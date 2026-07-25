@@ -5,6 +5,8 @@ import './styles.css';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './app';
+import { TOOLTIP_SHOW_DELAY_MS } from './components/Tooltip';
+import { TooltipProvider } from './components/ui/tooltip';
 import { bootstrapThemeMode } from './theme';
 
 async function bootstrap() {
@@ -13,7 +15,9 @@ async function bootstrap() {
 
   root.render(
     <StrictMode>
-      <App initialThemeMode={initialThemeMode} />
+      <TooltipProvider delay={TOOLTIP_SHOW_DELAY_MS}>
+        <App initialThemeMode={initialThemeMode} />
+      </TooltipProvider>
     </StrictMode>,
   );
 }

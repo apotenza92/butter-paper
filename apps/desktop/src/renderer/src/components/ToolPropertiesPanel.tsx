@@ -1,8 +1,9 @@
 import { getPageScale, type Markup, type ScaleUnit } from '@butter-paper/core';
+import { Label } from '@/components/ui/label';
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { useViewerStore } from '../state/viewerStore';
 import { CustomScrollArea } from './CustomScrollArea';
 import {
-  SHELL_BORDER_SUBTLE,
   SHELL_TEXT_MUTED,
   SHELL_TEXT_PRIMARY,
 } from './shellSpacing';
@@ -56,24 +57,20 @@ export function ToolPropertiesPanel() {
                 {measurementKindLabel(measurementMarkup.kind)}
               </div>
             </div>
-            <label className="block">
+            <Label className="block">
               <span className={['mb-1 block text-[11px] font-medium', SHELL_TEXT_MUTED].join(' ')}>Units</span>
-              <select
+              <NativeSelect
                 value={measurementMarkup.displayUnit ?? PAGE_SCALE_UNIT}
                 onChange={(event) => handleDisplayUnitChange(event.target.value)}
-                className={[
-                  'h-8 w-full rounded-[6px] border bg-transparent px-2 text-[12px] outline-none',
-                  SHELL_BORDER_SUBTLE,
-                  SHELL_TEXT_PRIMARY,
-                ].join(' ')}
+                className="w-full [&_[data-slot=native-select]]:rounded-[6px] [&_[data-slot=native-select]]:text-[12px]"
                 data-testid="measurement-display-unit"
               >
-                <option value={PAGE_SCALE_UNIT}>Page scale{pageScale ? ` (${pageScale.realUnits})` : ''}</option>
+                <NativeSelectOption value={PAGE_SCALE_UNIT}>Page scale{pageScale ? ` (${pageScale.realUnits})` : ''}</NativeSelectOption>
                 {DISPLAY_UNITS.map((unit) => (
-                  <option key={unit} value={unit}>{unit}</option>
+                  <NativeSelectOption key={unit} value={unit}>{unit}</NativeSelectOption>
                 ))}
-              </select>
-            </label>
+              </NativeSelect>
+            </Label>
           </section>
         ) : null}
       </div>

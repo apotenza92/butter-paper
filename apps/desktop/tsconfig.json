@@ -6,7 +6,7 @@
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"],
+      "@/*": ["src/renderer/src/*"],
       "@butter-paper/core": ["../../packages/core/src/index.ts"],
       "@butter-paper/pdf": ["../../packages/pdf/src/index.ts"],
       "@butter-paper/pdf/browser": ["../../packages/pdf/src/browser.ts"]

@@ -477,7 +477,7 @@ export class LocalPdfSession {
           this.bumpVersion();
           return objectUrl;
         } catch (error) {
-          if (!isAbortError(error) && this.isResourceEpochCurrent(requestEpoch)) {
+          if (!isExpectedRenderInterruption(error) && this.isResourceEpochCurrent(requestEpoch)) {
             this.lastPageRenderError = toErrorMessage(error, 'Unable to render page.');
             recordRasterError('page', requestClass);
             this.bumpVersion();
@@ -596,7 +596,7 @@ export class LocalPdfSession {
           if (renderedBitmap) {
             renderedBitmap.close();
           }
-          if (!isAbortError(error) && this.isResourceEpochCurrent(requestEpoch)) {
+          if (!isExpectedRenderInterruption(error) && this.isResourceEpochCurrent(requestEpoch)) {
             this.lastPageRenderError = toErrorMessage(error, 'Unable to render page.');
             recordRasterError('page', requestClass);
             this.bumpVersion();
@@ -702,7 +702,7 @@ export class LocalPdfSession {
           this.bumpVersion();
           return objectUrl;
         } catch (error) {
-          if (!isAbortError(error) && this.isResourceEpochCurrent(requestEpoch)) {
+          if (!isExpectedRenderInterruption(error) && this.isResourceEpochCurrent(requestEpoch)) {
             this.lastThumbnailRenderError = toErrorMessage(error, 'Unable to render thumbnail.');
             recordRasterError('thumbnail', requestClass);
             this.bumpVersion();
@@ -1326,7 +1326,7 @@ export class LocalPdfSession {
 
   private requireDocumentHandle(): PdfSessionDocumentHandle {
     if (!this.documentHandle) {
-      throw new Error('The PDF has not been opened yet.');
+      throw createRenderUnavailableError();
     }
 
     return this.documentHandle;
@@ -2531,6 +2531,20 @@ function createAbortError(): Error {
   return error;
 }
 
+function createRenderUnavailableError(): Error {
+  const error = new Error('The PDF render session is temporarily unavailable.');
+  error.name = 'RenderUnavailableError';
+  return error;
+}
+
+export function isRenderUnavailableError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'RenderUnavailableError';
+}
+
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
+}
+
+function isExpectedRenderInterruption(error: unknown): boolean {
+  return isAbortError(error) || isRenderUnavailableError(error);
 }

@@ -1,12 +1,13 @@
 import electron from 'electron';
 import { parseButterCanvasDocument, serializeButterCanvasDocument } from '@butter-paper/core';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { BrowserWindow as BrowserWindowInstance, Event as ElectronEvent, RenderProcessGoneDetails } from 'electron';
 import { ipcChannels } from '../shared/ipc';
 import type {
+  ApplicationMetadata,
   DesktopRenderBackend,
   DesktopRenderBackendConfig,
   DesktopRenderBackendSelection,
@@ -35,12 +36,15 @@ import type {
   RenderCoreWorkerPoolStats,
   ThemeMode,
   ThemeSnapshot,
+  UpdateFrequency,
 } from '../shared/protocol';
+import { resolveApplicationMetadata } from './applicationMetadata';
 import { loadDocumentPayload, loadPageGeometryIndex, saveDocumentPayload } from './pdfSession';
 import { getFocusedWindowState, isTestModeEnabled, resolveFixturePath, setFocusedWindowBounds } from './testMode';
 import { readBinaryFile, readTextFile, writeBinaryFile, writeTextFile } from './fileSystem';
+import { DesktopUpdaterService, loadElectronAutoUpdater } from './updater';
 
-const { app, BrowserWindow, ipcMain, dialog, nativeTheme } = electron;
+const { app, BrowserWindow, ipcMain, dialog, nativeTheme, shell } = electron;
 const require = createRequire(import.meta.url);
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const preloadPath = join(moduleDir, 'preload.cjs');
@@ -55,6 +59,9 @@ const pdfiumRenderCoreDebugPath = join(pdfiumRenderCoreDir, 'target/debug', pdfi
 let mainWindow: BrowserWindowInstance | null = null;
 let themeListenerRegistered = false;
 let pdfiumCliPathPromise: Promise<string> | null = null;
+let updaterService: DesktopUpdaterService | null = null;
+let unsubscribeUpdaterStatus: (() => void) | null = null;
+const releasePageUrl = 'https://github.com/apotenza92/butter-paper/releases';
 
 const documentRegistry = new Map<string, {
   ownerWebContentsId: number;
@@ -1656,6 +1663,7 @@ function escapeHtml(value: string): string {
 
 export function createMainWindow(): BrowserWindowInstance {
   const testMode = isTestModeEnabled();
+  const applicationMetadata = getApplicationMetadata();
   const rendererDevServerUrl =
     process.env.BP_DISABLE_RENDERER_DEV_SERVER === '1'
       ? undefined
@@ -1673,7 +1681,7 @@ export function createMainWindow(): BrowserWindowInstance {
       minWidth: 1100,
       minHeight: 720,
       backgroundColor: getWindowBackgroundColor(themeSnapshot.mode),
-      title: 'Butter Paper',
+      title: applicationMetadata.productName,
       show: testMode,
       webPreferences: {
         preload: preloadPath,
@@ -1739,6 +1747,43 @@ export function createMainWindow(): BrowserWindowInstance {
 }
 
 export function registerIpcHandlers(): void {
+  ipcMain.handle(ipcChannels.applicationGetMetadata, async () => {
+    return getApplicationMetadata();
+  });
+
+  ipcMain.handle(ipcChannels.updatesGetStatus, async () => {
+    return requireUpdaterService().getStatus();
+  });
+
+  ipcMain.handle(ipcChannels.updatesSetFrequency, async (_event, frequency: UpdateFrequency) => {
+    const service = requireUpdaterService();
+    await service.setFrequency(frequency);
+    return service.getStatus();
+  });
+
+  ipcMain.handle(ipcChannels.updatesCheckNow, async () => {
+    const service = requireUpdaterService();
+    await service.checkNow();
+    return service.getStatus();
+  });
+
+  ipcMain.handle(ipcChannels.updatesInstallDownloaded, async () => {
+    if (!requireUpdaterService().installDownloaded()) {
+      throw new Error('No downloaded Butter Paper update is ready to install.');
+    }
+  });
+
+  ipcMain.handle(ipcChannels.updatesSetRestartBlocked, async (_event, blocked: boolean) => {
+    if (typeof blocked !== 'boolean') {
+      throw new TypeError('Update restart-blocked state must be a boolean.');
+    }
+    requireUpdaterService().setRestartBlocked(blocked);
+  });
+
+  ipcMain.handle(ipcChannels.updatesOpenReleasePage, async () => {
+    await shell.openExternal(releasePageUrl);
+  });
+
   ipcMain.handle(ipcChannels.dialogOpenPdf, async () => {
     const window = BrowserWindow.getFocusedWindow();
     const result = window
@@ -1924,11 +1969,23 @@ export function registerIpcHandlers(): void {
 
 export async function bootstrapDesktop(): Promise<void> {
   await app.whenReady();
+  updaterService = createUpdaterService();
   registerThemeListener();
   registerIpcHandlers();
   createMainWindow();
+  unsubscribeUpdaterStatus = updaterService.subscribe((status) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send(ipcChannels.updatesStatusChanged, status);
+      }
+    }
+  });
+  await updaterService.start();
 
   app.on('before-quit', () => {
+    unsubscribeUpdaterStatus?.();
+    unsubscribeUpdaterStatus = null;
+    updaterService?.stop();
     shutdownRenderPageWorkerPool();
     clearRenderCoreRegistries();
   });
@@ -1938,4 +1995,35 @@ export async function bootstrapDesktop(): Promise<void> {
       createMainWindow();
     }
   });
+}
+
+function createUpdaterService(): DesktopUpdaterService {
+  return new DesktopUpdaterService({
+    updater: loadElectronAutoUpdater(),
+    isPackaged: app.isPackaged,
+    userDataPath: app.getPath('userData'),
+    currentVersion: app.getVersion(),
+    platform: process.platform,
+    buildMetadata: readDesktopPackageMetadata(),
+  });
+}
+
+function requireUpdaterService(): DesktopUpdaterService {
+  if (updaterService == null) {
+    throw new Error('Butter Paper updater has not been initialised.');
+  }
+  return updaterService;
+}
+
+function readDesktopPackageMetadata(): unknown {
+  try {
+    return JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')) as unknown;
+  } catch (error) {
+    console.warn('Unable to read packaged update channel metadata.', error);
+    return null;
+  }
+}
+
+function getApplicationMetadata(): ApplicationMetadata {
+  return resolveApplicationMetadata(readDesktopPackageMetadata());
 }

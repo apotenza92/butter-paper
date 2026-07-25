@@ -1,4 +1,9 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from 'react';
+import {
+  Tooltip as ShadcnTooltip,
+  TooltipContent as ShadcnTooltipContent,
+  TooltipTrigger as ShadcnTooltipTrigger,
+} from './ui/tooltip';
 
 type TooltipSide = 'top' | 'right' | 'bottom' | 'left';
 export const TOOLTIP_SHOW_DELAY_MS = 180;
@@ -9,8 +14,8 @@ interface TooltipProps {
   side?: TooltipSide;
   style?: CSSProperties;
   testId?: string;
+  trigger?: ReactElement;
   visible?: boolean;
-  revealOnGroupHover?: boolean;
 }
 
 interface TooltipDelayOptions {
@@ -26,13 +31,6 @@ interface TooltipDelayControls {
   showTooltip: () => void;
   showTooltipAfterDelay: () => void;
 }
-
-const SIDE_CLASSES: Record<TooltipSide, string> = {
-  top: 'bottom-full left-1/2 mb-2 -translate-x-1/2',
-  right: 'top-1/2 left-full ml-2 -translate-y-1/2',
-  bottom: 'top-full left-1/2 mt-2 -translate-x-1/2',
-  left: 'top-1/2 right-full mr-2 -translate-y-1/2',
-};
 
 export function useTooltipDelay({
   canShow,
@@ -99,21 +97,32 @@ export function Tooltip({
   side = 'bottom',
   style,
   testId,
-  visible = true,
-  revealOnGroupHover = false,
+  trigger,
+  visible,
 }: TooltipProps) {
+  const usesCompatibilityAnchor = !trigger;
+  const controlledOpen = visible ?? (usesCompatibilityAnchor ? true : undefined);
+
   return (
-    <span
-      className={[
-        'bp-tooltip pointer-events-none absolute z-50 inline-flex items-center whitespace-nowrap border px-2 py-1 text-[11px] leading-none font-medium',
-        SIDE_CLASSES[side],
-        revealOnGroupHover ? 'bp-tooltip-group-hover opacity-0' : visible ? 'opacity-100' : 'opacity-0',
-        className,
-      ].join(' ')}
-      data-testid={testId}
-      style={style}
-    >
-      {children}
-    </span>
+    <ShadcnTooltip open={controlledOpen}>
+      <ShadcnTooltipTrigger
+        delay={TOOLTIP_SHOW_DELAY_MS}
+        render={trigger ?? (
+          <span
+            aria-hidden="true"
+            className={style ? 'pointer-events-none absolute inset-x-0 h-px' : 'pointer-events-none absolute inset-0'}
+            style={style}
+          />
+        )}
+      />
+      <ShadcnTooltipContent
+        className={className}
+        data-testid={testId}
+        side={side}
+        sideOffset={8}
+      >
+        {children}
+      </ShadcnTooltipContent>
+    </ShadcnTooltip>
   );
 }

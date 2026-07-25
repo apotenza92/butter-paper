@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Button } from '@/components/ui/button';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { PageModel, PdfPoint, Rect } from '@butter-paper/core';
 import type { ToolMode, ZoomPreset } from '../../../shared/protocol';
@@ -20,10 +21,6 @@ import { resolveSinglePageWheelNavigation } from '../utils/singlePageWheelNaviga
 import { recordComponentRender, recordEvent, recordOverviewFocusPreviewQuality, recordOverviewVisiblePreviewFill } from '../services/perfTracker';
 import { CustomScrollArea } from './CustomScrollArea';
 import { PageView, shouldRetryBrokenPageImageSource } from './PageView';
-import {
-  CONTROL_DEFAULT,
-  VIEWER_TOOLBAR_BUTTON_SIZE,
-} from './shellSpacing';
 
 const DOCUMENT_VISIBLE_OVERSCAN_PX = 1200;
 const COLUMN_VISIBLE_OVERSCAN_PX = 320;
@@ -1417,18 +1414,16 @@ export function DocumentViewport({
     return (
       <section className="bp-surface-app bp-text-muted flex h-full items-center justify-center">
         <div className="flex flex-col items-center text-center">
-          <button
+          <Button
             type="button"
-            className={[
-              'mb-3 inline-flex items-center justify-center rounded-[6px] border px-2 text-[12px] font-medium transition',
-              VIEWER_TOOLBAR_BUTTON_SIZE,
-              CONTROL_DEFAULT,
-            ].join(' ')}
+            variant="secondary"
+            size="sm"
+            className="mb-3"
             data-testid="viewport-open-document"
             onClick={onOpenDocument}
           >
             Open
-          </button>
+          </Button>
           <div className="bp-text-primary text-[14px] font-medium">Open a PDF to begin</div>
         </div>
       </section>
@@ -1559,9 +1554,9 @@ export function DocumentViewport({
       {calibrationPick?.active ? (
         <div className="pointer-events-auto absolute left-1/2 top-4 z-30 flex -translate-x-1/2 items-center gap-3 rounded-[6px] border border-blue-200 bg-blue-50 px-3 py-2 text-[12px] text-blue-900 shadow-sm" data-testid="page-scale-calibration-instructions">
           <span>{calibrationPick.pointCount === 0 ? 'Click the first point of a known distance.' : 'Click the second point of the same distance.'}</span>
-          <button type="button" className="rounded-[4px] border border-blue-300 px-2 py-0.5" onClick={onCancelCalibrationPick}>
+          <Button type="button" variant="outline" size="xs" onClick={onCancelCalibrationPick}>
             Cancel
-          </button>
+          </Button>
         </div>
       ) : null}
     </div>

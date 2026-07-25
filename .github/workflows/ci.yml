@@ -1,35 +1,37 @@
 name: CI
 
 on:
-  push:
-    branches-ignore:
-      - 'experiment/**'
-      - 'checkpoint/**'
-  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+  deterministic:
+    name: Deterministic checks
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@008330803749db0355799c700092d9a85fd074e9 # v6.0.9
         with:
           version: 10.33.0
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-          cache: 'pnpm'
+          cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -37,37 +39,110 @@ jobs:
       - name: Generate PDF fixtures
         run: pnpm generate:fixtures
 
-      - name: Repository hygiene
-        run: pnpm check:repo
+      - name: Required deterministic gate
+        run: pnpm check
 
-      - name: Typecheck
-        run: pnpm typecheck
+  manual-gui-e2e:
+    name: Manual Electron E2E
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@008330803749db0355799c700092d9a85fd074e9 # v6.0.9
+        with:
+          version: 10.33.0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate PDF fixtures
+        run: pnpm generate:fixtures
+
+      - name: Electron E2E tests
+        run: pnpm test:e2e
+
+  manual-package-smoke:
+    name: Manual package smoke (${{ matrix.platform }} ${{ matrix.arch }})
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin
+            arch: arm64
+            runner: macos-15
+          - platform: darwin
+            arch: x64
+            runner: macos-15-intel
+          - platform: win32
+            arch: x64
+            runner: windows-2025
+          - platform: win32
+            arch: arm64
+            runner: windows-11-arm
+          - platform: linux
+            arch: x64
+            runner: ubuntu-24.04
+          - platform: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@008330803749db0355799c700092d9a85fd074e9 # v6.0.9
+        with:
+          version: 10.33.0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Verify native runner
+        shell: bash
+        run: test "$(node -p 'process.arch')" = "${{ matrix.arch }}"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate PDF fixtures
+        run: pnpm generate:fixtures
 
       - name: Build workspace
         run: pnpm build
 
-      - name: Unit tests
-        run: pnpm test
-
-      - name: Electron E2E tests
-        run: |
-          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
-            xvfb-run -a pnpm exec playwright test
-          else
-            pnpm exec playwright test
-          fi
-        shell: bash
-
       - name: Desktop package smoke build
         env:
+          BP_RELEASE_ARCH: ${{ matrix.arch }}
+          BP_RELEASE_CHANNEL: stable
+          BP_RELEASE_PLATFORM: ${{ matrix.platform }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: pnpm --dir apps/desktop package
 
       - name: Smoke test packaged desktop
+        shell: bash
         run: |
           if [ "${{ runner.os }}" = "Linux" ]; then
             xvfb-run -a pnpm test:package:desktop
           else
             pnpm test:package:desktop
           fi
-        shell: bash

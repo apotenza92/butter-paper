@@ -12,6 +12,44 @@ export interface ThemeSnapshot {
   mode: ThemeMode;
 }
 
+export type UpdateChannel = 'stable' | 'beta';
+export interface ApplicationMetadata {
+  productName: 'Butter Paper' | 'Butter Paper Beta';
+  channel: UpdateChannel;
+}
+export type UpdateFrequency =
+  | 'never'
+  | 'startup'
+  | 'hourly'
+  | 'sixHours'
+  | 'twelveHours'
+  | 'daily'
+  | 'weekly'
+  | 'monthly';
+export type UpdatePhase =
+  | 'disabled'
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error';
+export type UpdateDisabledReason = 'development' | 'test-mode' | 'configuration' | 'platform-policy';
+
+export interface UpdateStatus {
+  phase: UpdatePhase;
+  channel: UpdateChannel | null;
+  frequency: UpdateFrequency;
+  enabled: boolean;
+  automaticChecksEnabled: boolean;
+  currentVersion: string;
+  availableVersion: string | null;
+  downloadPercent: number | null;
+  lastSuccessfulCheckAt: string | null;
+  disabledReason: UpdateDisabledReason | null;
+  errorMessage: string | null;
+}
+
 export interface WindowBounds {
   x: number;
   y: number;
@@ -416,9 +454,21 @@ export interface ButterPaperBridge {
     readonly cadRenderExperiment: string | null;
     readonly renderCoordinatorV2: boolean;
   };
+  readonly application: {
+    getMetadata(): Promise<ApplicationMetadata>;
+  };
   readonly theme: {
     getSnapshot(): Promise<ThemeSnapshot>;
     subscribe(listener: (snapshot: ThemeSnapshot) => void): () => void;
+  };
+  readonly updates: {
+    getStatus(): Promise<UpdateStatus>;
+    setFrequency(frequency: UpdateFrequency): Promise<UpdateStatus>;
+    checkNow(): Promise<UpdateStatus>;
+    installDownloaded(): Promise<void>;
+    setRestartBlocked(blocked: boolean): Promise<void>;
+    openReleasePage(): Promise<void>;
+    onStatusChanged(listener: (status: UpdateStatus) => void): () => void;
   };
   readonly dialogs: {
     openPdfDialog(): Promise<string[] | null>;
