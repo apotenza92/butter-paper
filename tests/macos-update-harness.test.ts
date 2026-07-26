@@ -18,7 +18,9 @@ describe('macOS updater integration harness', () => {
     expect(workflow).toContain('run: pnpm check');
     expect(workflow).toContain("if: github.event_name == 'workflow_dispatch'");
     expect(workflow).toContain('name: Manual Electron E2E');
-    expect(workflow).toContain('name: Manual package smoke (${{ matrix.platform }} ${{ matrix.arch }})');
+    expect(workflow).toContain(
+      'name: Manual package smoke (${{ matrix.platform }} ${{ matrix.arch }}, ${{ matrix.variant }})',
+    );
     const ciTriggers = workflow.slice(workflow.indexOf('on:'), workflow.indexOf('permissions:'));
     expect(ciTriggers).toContain('workflow_call:');
     expect(ciTriggers).toContain('workflow_dispatch:');

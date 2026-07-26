@@ -3,7 +3,7 @@
 Butter Paper is a cross-platform desktop app for reviewing and marking up PDFs,
 with a focus on architecture, engineering, and construction workflows.
 
-The current release is version 0.0.2. Stable and beta desktop variants are
+The current release is version 0.0.3. Stable and beta desktop variants are
 published for macOS, Windows, and Linux.
 
 ## Development

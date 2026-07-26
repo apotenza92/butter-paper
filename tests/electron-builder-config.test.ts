@@ -13,8 +13,11 @@ const inspectScript = `
     feed: config.publish?.[0] ?? null,
     macArtifact: config.mac.artifactName,
     windowsArtifact: config.win.artifactName,
+    compression: config.compression,
+    nsisInclude: config.nsis.include,
     linuxArtifact: config.linux.artifactName,
     files: config.files,
+    arm64UnpackedDir: process.env.BP_NSIS_ARM64_UNPACKED_DIR ?? null,
   }));
 `;
 
@@ -56,6 +59,8 @@ describe('Electron Builder release identity', () => {
       macArtifact: 'Butter-Paper-macOS-${arch}.${ext}',
       windowsArtifact: 'Butter-Paper-Windows-${arch}-Setup.${ext}',
       linuxArtifact: 'Butter-Paper-Linux-arm64.${ext}',
+      compression: 'maximum',
+      nsisInclude: 'build/installer.nsh',
     });
     expect(config.files).toContain('!node_modules/@napi-rs/canvas-darwin-x64/**/*');
     expect(config.files).not.toContain('!node_modules/@napi-rs/canvas-darwin-arm64/**/*');
@@ -74,9 +79,25 @@ describe('Electron Builder release identity', () => {
       channel: 'beta',
       feed: null,
       windowsArtifact: 'Butter-Paper-Beta-Windows-${arch}-Setup.${ext}',
+      compression: 'maximum',
+      nsisInclude: 'build/installer.nsh',
     });
     expect(config.files).toContain('!node_modules/@napi-rs/canvas-win32-arm64-msvc/**/*');
     expect(config.files).not.toContain('!node_modules/@napi-rs/canvas-win32-x64-msvc/**/*');
+  });
+
+  it('uses the standard Windows ARM64 NSIS payload with the executable restore include', () => {
+    const config = loadConfig({
+      BP_RELEASE_CHANNEL: 'stable',
+      BP_RELEASE_PLATFORM: 'win32',
+      BP_RELEASE_ARCH: 'arm64',
+    });
+    expect(config).toMatchObject({
+      compression: 'maximum',
+      nsisInclude: 'build/installer.nsh',
+      windowsArtifact: 'Butter-Paper-Windows-${arch}-Setup.${ext}',
+    });
+    expect(config.arm64UnpackedDir).toMatch(/release[/\\]win-arm64-unpacked$/);
   });
 
   it('rejects an undeclared release channel', () => {

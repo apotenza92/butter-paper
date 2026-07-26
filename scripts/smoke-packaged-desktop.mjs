@@ -5,7 +5,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const repoRoot = resolve(import.meta.dirname, '..');
-const releaseDir = resolve(repoRoot, 'apps/desktop/release');
+const configuredReleaseDir = process.env.BP_RELEASE_OUTPUT_DIR?.trim();
+const releaseDir = configuredReleaseDir
+  ? resolve(repoRoot, 'apps/desktop', configuredReleaseDir)
+  : resolve(repoRoot, 'apps/desktop/release');
 const fixturePath = resolve(repoRoot, 'tests/fixtures/generated/multi-page.pdf');
 const releaseChannel = process.env.BP_RELEASE_CHANNEL || 'stable';
 const expectedProductName = releaseChannel === 'beta' ? 'Butter Paper Beta' : 'Butter Paper';

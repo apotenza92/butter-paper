@@ -722,7 +722,7 @@ function shellQuote(value) {
   return `'${String(value).replaceAll("'", `'"'"'`)}'`;
 }
 
-function launchPackagedApp(executablePath, temporaryDirectory) {
+function launchPackagedApp(executablePath, temporaryDirectory, channel) {
   const userDataPath = join(temporaryDirectory, 'user-data');
   const wrapperPath = join(temporaryDirectory, 'launch-butter-paper');
   mkdirSync(userDataPath, { recursive: true, mode: 0o700 });
@@ -735,6 +735,7 @@ function launchPackagedApp(executablePath, temporaryDirectory) {
   run('pnpm', ['test:package:desktop'], {
     env: createSmokeEnvironment(process.env, {
       BP_ELECTRON_EXECUTABLE_PATH: wrapperPath,
+      BP_RELEASE_CHANNEL: channel,
       BP_TEST_USER_DATA_DIR: userDataPath,
     }),
   });
@@ -846,7 +847,7 @@ export function main() {
       dmgPath,
     ]);
     if (!skipLaunch) {
-      launchPackagedApp(zipApp.executablePath, temporaryDirectory);
+      launchPackagedApp(zipApp.executablePath, temporaryDirectory, contract.channel);
     }
     console.log(
       `macOS ${contract.channel}/${expectedArch} package verification passed `

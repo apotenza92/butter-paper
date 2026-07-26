@@ -62,6 +62,23 @@ try {
     throw "NSIS did not install the expected application: $application"
   }
   Assert-PeMachine $application $expectedMachine
+  $runtimeLibraries = @(
+    'd3dcompiler_47.dll',
+    'dxcompiler.dll',
+    'dxil.dll',
+    'ffmpeg.dll',
+    'libEGL.dll',
+    'libGLESv2.dll',
+    'vk_swiftshader.dll',
+    'vulkan-1.dll'
+  )
+  foreach ($runtimeLibrary in $runtimeLibraries) {
+    $runtimePath = Join-Path $installRoot $runtimeLibrary
+    if (-not (Test-Path -LiteralPath $runtimePath -PathType Leaf)) {
+      throw "NSIS did not install required Electron runtime library: $runtimePath"
+    }
+    Assert-PeMachine $runtimePath $expectedMachine
+  }
   $unexpectedUpdateConfig = Join-Path $installRoot 'resources/app-update.yml'
   if (Test-Path -LiteralPath $unexpectedUpdateConfig) {
     throw "Unsigned Windows package unexpectedly contains updater configuration: $unexpectedUpdateConfig"
@@ -73,9 +90,11 @@ try {
   }
 
   $previousExecutable = $env:BP_ELECTRON_EXECUTABLE_PATH
+  $previousReleaseChannel = $env:BP_RELEASE_CHANNEL
   $previousUserData = $env:BP_TEST_USER_DATA_DIR
   try {
     $env:BP_ELECTRON_EXECUTABLE_PATH = $application
+    $env:BP_RELEASE_CHANNEL = $Channel
     $env:BP_TEST_USER_DATA_DIR = $userDataRoot
     & pnpm test:package:desktop
     if ($LASTEXITCODE -ne 0) {
@@ -83,6 +102,7 @@ try {
     }
   } finally {
     $env:BP_ELECTRON_EXECUTABLE_PATH = $previousExecutable
+    $env:BP_RELEASE_CHANNEL = $previousReleaseChannel
     $env:BP_TEST_USER_DATA_DIR = $previousUserData
   }
 
