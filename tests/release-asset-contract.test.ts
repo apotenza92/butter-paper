@@ -44,7 +44,10 @@ describe('release asset contract', () => {
       workflow.indexOf('\n  verify-publication:'),
     );
     expect(publishJob).toContain('release-asset-contract.mjs');
-    expect(publishJob).toContain('cmp "publish/assets/$asset_name" "existing-release/$asset_name"');
+    expect(publishJob).toContain('comm -13 existing-assets.txt expected-assets.txt > missing-assets.txt');
+    expect(publishJob).toContain('test "$remote_size" = "$local_size"');
+    expect(publishJob).toContain('test "$remote_digest" = "$local_digest"');
+    expect(publishJob).toContain('releases/$RELEASE_ID/assets?name=$encoded_name');
     expect(publishJob).not.toContain('--clobber');
     expect(publishJob).not.toContain('--method DELETE');
   });
