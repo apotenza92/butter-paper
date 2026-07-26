@@ -61,6 +61,5 @@ Do not update Playwright snapshots unless the task intentionally changes reviewe
 - In-app stable/beta updates are macOS-only until another platform has trusted signing and native N-1 coverage. Do not publish Windows or Linux updater metadata merely because Electron Builder can generate it.
 - Release tags must resolve to commits reachable from the repository's `main` default branch.
 - `.github/workflows/ci.yml` is manually dispatchable and reusable by the tag-only release workflow; routine pushes and pull requests do not start GitHub-hosted CI.
-- `release-policy` is tag-restricted and contains only `IMMUTABLE_RELEASES_READ_TOKEN`, scoped to repository Administration read. Only the read-only immutable-release policy job may use it.
 - `MACOS_UPDATER_BOOTSTRAP_TAG` is a one-time exact tag in the channel's updater-verification environment. Use it only when that channel has no prior public package; remove it after the bootstrap release and never advance it to bypass N-1 tests.
 - Do not stage, commit, push, open pull requests, alter remote settings, or create issues unless the user explicitly requests it.
