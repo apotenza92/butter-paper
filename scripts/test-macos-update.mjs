@@ -39,14 +39,15 @@ function trustExpectations({ prior = false } = {}) {
 }
 
 export function parseMacUpdateArguments(argv) {
+  const argumentsToParse = argv[0] === '--' ? argv.slice(1) : argv;
   const values = new Map();
-  for (let index = 0; index < argv.length; index += 1) {
-    const argument = argv[index];
+  for (let index = 0; index < argumentsToParse.length; index += 1) {
+    const argument = argumentsToParse[index];
     if (!argument.startsWith('--')) {
       throw new Error(`Unexpected positional argument: ${argument}`);
     }
     const name = argument.slice(2);
-    const value = argv[index + 1];
+    const value = argumentsToParse[index + 1];
     if (!value || value.startsWith('--')) {
       throw new Error(`Missing value for --${name}.`);
     }
