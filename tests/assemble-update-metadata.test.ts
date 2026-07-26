@@ -29,7 +29,7 @@ async function fixture() {
 }
 
 describe('assembleUpdateMetadata', () => {
-  it('writes architecture-isolated metadata with immutable release asset URLs', async () => {
+  it('writes architecture-isolated metadata with versioned release asset URLs', async () => {
     const { root, artifacts, artifactName, input } = await fixture();
     const outputRoot = path.join(root, 'feed');
     const auditOutput = path.join(root, 'audit', 'beta-win32-arm64.yml');

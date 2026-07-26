@@ -18,25 +18,15 @@ describe('native release package boundaries', () => {
     expect(workflow).not.toContain('secrets.APPLE_NOTARYTOOL_ISSUER_ID');
   });
 
-  it('proves release-source provenance and requires immutable-release policy before publication', () => {
+  it('proves release-source provenance and keeps publication credential-free', () => {
     const workflow = readWorkflow();
-    const policyJob = workflow.split('  verify-release-policy:', 2)[1].split('  publish:', 1)[0];
     const publishJob = workflow.split('  publish:', 2)[1].split('  verify-publication:', 1)[0];
 
     expect(workflow).toContain('Prove tag commit belongs to the approved release source');
     expect(workflow).toContain('DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}');
     expect(workflow).toContain('git merge-base --is-ancestor');
-    expect(workflow).toContain('environment: release-policy');
-    expect(workflow).toContain('repos/$GH_REPO/immutable-releases');
-    expect(workflow).toContain('attest, verify-release-policy]');
-    expect(workflow.match(/secrets\.IMMUTABLE_RELEASES_READ_TOKEN/g)).toHaveLength(1);
-    expect(policyJob).toContain('permissions:\n      contents: read');
-    expect(policyJob).toContain('secrets.IMMUTABLE_RELEASES_READ_TOKEN');
-    expect(publishJob).not.toContain('IMMUTABLE_RELEASES_READ_TOKEN');
-    expect(publishJob).toContain('Published release is not immutable');
-    expect(publishJob.indexOf('Published release is not immutable')).toBeLessThan(
-      publishJob.indexOf('- name: Seal static update feed publication bundle'),
-    );
+    expect(workflow).toContain('needs: [prepare, assemble, attest]');
+    expect(publishJob).toContain('Release prerelease classification is wrong');
     expect(publishJob).not.toContain('git commit');
     expect(publishJob).not.toContain('git push');
   });

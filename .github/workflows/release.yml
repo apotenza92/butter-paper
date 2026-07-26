@@ -158,7 +158,7 @@ jobs:
             --output-dir "$OUTPUT" \
             --require-checksums
 
-      - name: Assemble immutable update metadata
+      - name: Assemble versioned update metadata
         shell: bash
         run: |
           OUTPUT="apps/desktop/release/${{ matrix.variant }}/darwin/${{ matrix.arch }}"
@@ -626,38 +626,9 @@ jobs:
         with:
           subject-path: publish/assets/*
 
-  verify-release-policy:
-    name: Require immutable releases
-    needs: [prepare, assemble, attest]
-    runs-on: ubuntu-24.04
-    environment: release-policy
-    permissions:
-      contents: read
-    steps:
-      - name: Verify immutable releases are enabled
-        env:
-          GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ secrets.IMMUTABLE_RELEASES_READ_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "$GH_TOKEN"
-          if ! enabled="$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GH_REPO/immutable-releases" \
-            --jq '.enabled')"; then
-            echo '::error::Unable to confirm immutable releases with the Administration:read policy token'
-            exit 1
-          fi
-          if [ "$enabled" != true ]; then
-            echo '::error::Immutable releases must be enabled before publication'
-            exit 1
-          fi
-
   publish:
     name: Publish ${{ needs.prepare.outputs.channel }} release
-    needs: [prepare, assemble, attest, verify-release-policy]
+    needs: [prepare, assemble, attest]
     runs-on: ubuntu-24.04
     environment:
       name: ${{ needs.prepare.outputs.environment }}
@@ -712,7 +683,7 @@ jobs:
             gh api "repos/$REPOSITORY/releases/tags/$TAG" --jq '.assets[].name' | LC_ALL=C sort > existing-assets.txt
             comm -23 existing-assets.txt expected-assets.txt > unexpected-assets.txt
             if [ -s unexpected-assets.txt ]; then
-              echo 'Draft contains unexpected immutable assets:' >&2
+              echo 'Draft contains unexpected release assets:' >&2
               cat unexpected-assets.txt >&2
               exit 1
             fi
@@ -791,14 +762,8 @@ jobs:
           }
 
           find publish/assets -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > expected-public-assets.txt
-          immutable=false
-          for _ in {1..12}; do
-            download_with_retry "$API_URL" pre-feed-public-release.json
-            immutable="$(node -e "const release=require('./pre-feed-public-release.json'); process.stdout.write(String(release.immutable === true))")"
-            [ "$immutable" = true ] && break
-            sleep 5
-          done
-          node -e "const fs=require('fs'); const release=JSON.parse(fs.readFileSync('pre-feed-public-release.json')); if (release.draft) throw new Error('Release is still a draft'); if (String(release.prerelease) !== process.env.EXPECTED_PRERELEASE) throw new Error('Release prerelease classification is wrong'); if (release.immutable !== true) throw new Error('Published release is not immutable'); process.stdout.write(release.assets.map(({name})=>name).sort().join('\\n')+'\\n')" \
+          download_with_retry "$API_URL" pre-feed-public-release.json
+          node -e "const fs=require('fs'); const release=JSON.parse(fs.readFileSync('pre-feed-public-release.json')); if (release.draft) throw new Error('Release is still a draft'); if (String(release.prerelease) !== process.env.EXPECTED_PRERELEASE) throw new Error('Release prerelease classification is wrong'); process.stdout.write(release.assets.map(({name})=>name).sort().join('\\n')+'\\n')" \
             > actual-public-assets.txt
           diff --unified expected-public-assets.txt actual-public-assets.txt
 

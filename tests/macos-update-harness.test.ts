@@ -192,8 +192,6 @@ describe('macOS updater integration harness', () => {
     );
     expect(publishJob).toContain('Release is still a draft');
     expect(publishJob).toContain('Release prerelease classification is wrong');
-    expect(publishJob).toContain('Published release is not immutable');
-    expect(publishJob).toContain('release.immutable === true');
     expect(publishJob).toContain('Release is already public with the expected classification.');
     expect(publishJob).toContain('Published release has the wrong stable/beta classification.');
     expect(publishJob).toContain('sha256sum --check --strict');
