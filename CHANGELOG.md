@@ -2,6 +2,10 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.6]
+
+- Canonicalized temporary macOS executable paths before detecting an updater-started replacement process.
+
 ## [0.0.5]
 
 - Accepted the conventional standalone argument separator in the native macOS updater harness across pnpm forwarding behaviors.
