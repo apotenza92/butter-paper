@@ -7,6 +7,7 @@ import {
   expectedMacIdentity,
   parseMacUpdateArguments,
   parseExecutableProcessIds,
+  resolveExecutableProcessPath,
 } from '../scripts/test-macos-update.mjs';
 import { resolvePriorSigningFingerprints } from '../scripts/verify-macos-package.mjs';
 
@@ -142,6 +143,17 @@ describe('macOS updater integration harness', () => {
       '103 /Applications/Other.app/Contents/MacOS/Other',
       `104 ${executable} Helper`,
     ].join('\n'), executable)).toEqual([101, 102, 104]);
+
+    const temporaryExecutable = '/var/folders/example/Butter Paper.app/Contents/MacOS/Butter Paper';
+    const canonicalExecutable = `/private${temporaryExecutable}`;
+    expect(resolveExecutableProcessPath(
+      temporaryExecutable,
+      path => `/private${path}`,
+    )).toBe(canonicalExecutable);
+    expect(parseExecutableProcessIds(
+      `105 ${canonicalExecutable}`,
+      resolveExecutableProcessPath(temporaryExecutable, path => `/private${path}`),
+    )).toEqual([105]);
 
     const harness = readFileSync(resolve('scripts/test-macos-update.mjs'), 'utf8');
     expect(harness.indexOf('await automaticRelaunch')).toBeLessThan(

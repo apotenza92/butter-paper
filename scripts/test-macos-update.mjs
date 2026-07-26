@@ -1,6 +1,6 @@
 import { _electron as electron } from '@playwright/test';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -180,6 +180,14 @@ export function parseExecutableProcessIds(output, executablePath) {
     }
     return [Number(match[1])];
   });
+}
+
+export function resolveExecutableProcessPath(executablePath, realpath = realpathSync.native) {
+  try {
+    return realpath(executablePath);
+  } catch {
+    return executablePath;
+  }
 }
 
 async function main() {
@@ -433,10 +441,13 @@ function run(command, args) {
 }
 
 async function waitForRelaunchedProcess(executablePath, excludedPid, timeoutMs) {
+  // macOS reports processes below /var through the canonical /private/var
+  // path. Resolve the temporary app executable before comparing it with ps.
+  const processExecutablePath = resolveExecutableProcessPath(executablePath);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const processList = run('ps', ['-axo', 'pid=,command=']);
-    const relaunchedPid = parseExecutableProcessIds(processList, executablePath)
+    const relaunchedPid = parseExecutableProcessIds(processList, processExecutablePath)
       .find((pid) => pid !== excludedPid);
     if (relaunchedPid != null) {
       return relaunchedPid;
