@@ -19,7 +19,10 @@ describe('Homebrew cask renderer', () => {
     expect(Object.keys(casks).sort()).toEqual(['butter-paper.rb', 'butter-paper@beta.rb']);
     expect(casks['butter-paper.rb']).toContain('on_arm do');
     expect(casks['butter-paper.rb']).toContain('on_intel do');
-    expect(casks['butter-paper.rb']).toContain('depends_on :macos');
+    expect(casks['butter-paper.rb']).toContain('depends_on macos: :monterey');
+    expect(casks['butter-paper.rb']).toContain(
+      'releases/download/v#{version}/Butter-Paper-macOS-arm64.zip',
+    );
     expect(casks['butter-paper.rb']).toContain(`${'a'.repeat(64)}"\n\n    url`);
     expect(casks['butter-paper@beta.rb']).toContain('Butter Paper Beta.app');
   });

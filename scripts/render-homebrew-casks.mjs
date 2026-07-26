@@ -27,9 +27,16 @@ export function renderCasks(manifest) {
     const appId = beta ? 'com.butterpaper.desktop.beta' : 'com.butterpaper.desktop';
     const architecture = (arch) => {
       const file = info.files[arch];
-      return `  on_${arch === 'arm64' ? 'arm' : 'intel'} do\n    sha256 "${file.sha256}"\n\n    url "${file.url}"\n  end\n`;
+      const versionedUrl = file.url.replace(
+        `/releases/download/${manifest.tag}/`,
+        '/releases/download/v#{version}/',
+      );
+      if (versionedUrl === file.url) {
+        throw new Error(`Homebrew ${channel}/${arch} URL does not match the release tag`);
+      }
+      return `  on_${arch === 'arm64' ? 'arm' : 'intel'} do\n    sha256 "${file.sha256}"\n\n    url "${versionedUrl}"\n  end\n`;
     };
-    const content = `cask "${token}" do\n  version "${manifest.version}"\n\n${architecture('arm64')}${architecture('x64')}\n  name "${name}"\n  desc "Cross-platform PDF review and markup${beta ? ' (beta channel)' : ''}"\n  homepage "https://github.com/apotenza92/butter-paper"\n\n  livecheck do\n    skip "Updated by the Butter Paper release workflow"\n  end\n\n  auto_updates true\n  depends_on :macos\n\n  app "${info.app}"\n\n  zap trash: [\n    "~/Library/Application Support/${name}",\n    "~/Library/Caches/${appId}",\n    "~/Library/Caches/${appId}.ShipIt",\n    "~/Library/Preferences/${appId}.plist",\n    "~/Library/Saved Application State/${appId}.savedState",\n  ]\nend\n`;
+    const content = `cask "${token}" do\n  version "${manifest.version}"\n\n${architecture('arm64')}${architecture('x64')}\n  name "${name}"\n  desc "Cross-platform PDF review and markup${beta ? ' (beta channel)' : ''}"\n  homepage "https://github.com/apotenza92/butter-paper"\n\n  livecheck do\n    skip "Updated by the Butter Paper release workflow"\n  end\n\n  auto_updates true\n  depends_on macos: :monterey\n\n  app "${info.app}"\n\n  zap trash: [\n    "~/Library/Application Support/${name}",\n    "~/Library/Caches/${appId}",\n    "~/Library/Caches/${appId}.ShipIt",\n    "~/Library/Preferences/${appId}.plist",\n    "~/Library/Saved Application State/${appId}.savedState",\n  ]\nend\n`;
     return [`${token}.rb`, content];
   }));
 }
