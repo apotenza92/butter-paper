@@ -663,24 +663,35 @@ jobs:
           TITLE="Butter Paper ${{ needs.prepare.outputs.version }}"
           if [ "${{ needs.prepare.outputs.channel }}" = beta ]; then TITLE="Butter Paper Beta ${{ needs.prepare.outputs.version }}"; fi
 
-          RELEASE_EXISTS=false
+          RELEASE_ID=
           RELEASE_IS_DRAFT=false
-          if gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
-            RELEASE_EXISTS=true
-            RELEASE_IS_DRAFT=$(gh release view "$TAG" --repo "$REPOSITORY" --json isDraft --jq .isDraft)
+          RELEASE_RECORD="$(
+            gh api "repos/$REPOSITORY/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$TAG\") | [.id, .draft] | @tsv" |
+              head -n 1
+          )"
+          if [ -n "$RELEASE_RECORD" ]; then
+            IFS=$'\t' read -r RELEASE_ID RELEASE_IS_DRAFT <<< "$RELEASE_RECORD"
           fi
 
-          if [ "$RELEASE_EXISTS" = false ]; then
+          if [ -z "$RELEASE_ID" ]; then
             if [ "${{ needs.prepare.outputs.channel }}" = beta ]; then
               gh release create "$TAG" --repo "$REPOSITORY" --verify-tag --title "$TITLE" --generate-notes --prerelease --draft
             else
               gh release create "$TAG" --repo "$REPOSITORY" --verify-tag --title "$TITLE" --generate-notes --draft
             fi
+            RELEASE_RECORD="$(
+              gh api "repos/$REPOSITORY/releases?per_page=100" \
+                --jq ".[] | select(.tag_name == \"$TAG\") | [.id, .draft] | @tsv" |
+                head -n 1
+            )"
+            test -n "$RELEASE_RECORD"
+            IFS=$'\t' read -r RELEASE_ID RELEASE_IS_DRAFT <<< "$RELEASE_RECORD"
             RELEASE_IS_DRAFT=true
           fi
 
           if [ "$RELEASE_IS_DRAFT" = true ]; then
-            gh api "repos/$REPOSITORY/releases/tags/$TAG" --jq '.assets[].name' | LC_ALL=C sort > existing-assets.txt
+            gh api "repos/$REPOSITORY/releases/$RELEASE_ID" --jq '.assets[].name' | LC_ALL=C sort > existing-assets.txt
             comm -23 existing-assets.txt expected-assets.txt > unexpected-assets.txt
             if [ -s unexpected-assets.txt ]; then
               echo 'Draft contains unexpected release assets:' >&2
@@ -688,28 +699,42 @@ jobs:
               exit 1
             fi
 
-            rm -rf existing-release
-            mkdir existing-release
-            if [ -s existing-assets.txt ]; then
-              gh release download "$TAG" --repo "$REPOSITORY" --dir existing-release
-              while IFS= read -r asset_name; do
-                cmp "publish/assets/$asset_name" "existing-release/$asset_name"
-              done < existing-assets.txt
-            fi
-
             comm -13 existing-assets.txt expected-assets.txt > missing-assets.txt
             while IFS= read -r asset_name; do
-              gh release upload "$TAG" "publish/assets/$asset_name" --repo "$REPOSITORY"
+              encoded_name="$(jq -rn --arg value "$asset_name" '$value | @uri')"
+              gh api \
+                --method POST \
+                --header 'Content-Type: application/octet-stream' \
+                --input "publish/assets/$asset_name" \
+                "https://uploads.github.com/repos/$REPOSITORY/releases/$RELEASE_ID/assets?name=$encoded_name" \
+                >/dev/null
             done < missing-assets.txt
           else
             echo 'Published release already exists; verifying it without mutating assets.'
           fi
 
+          gh api "repos/$REPOSITORY/releases/$RELEASE_ID" --jq '.assets[].name' |
+            LC_ALL=C sort > actual-assets.txt
+          diff --unified expected-assets.txt actual-assets.txt
+          while IFS=$'\t' read -r asset_name remote_size remote_digest remote_state; do
+            local_size="$(stat --format=%s "publish/assets/$asset_name")"
+            local_digest="sha256:$(sha256sum "publish/assets/$asset_name" | cut -d' ' -f1)"
+            test "$remote_state" = uploaded
+            test "$remote_size" = "$local_size"
+            test "$remote_digest" = "$local_digest"
+          done < <(
+            gh api "repos/$REPOSITORY/releases/$RELEASE_ID" \
+              --jq '.assets[] | [.name, (.size | tostring), .digest, .state] | @tsv'
+          )
+
+          if [ "$RELEASE_IS_DRAFT" = true ]; then
+            echo 'Draft release assets match the verified bundle by name, size, and SHA-256.'
+            exit 0
+          fi
+
           rm -rf downloaded-release
           mkdir downloaded-release
           gh release download "$TAG" --repo "$REPOSITORY" --dir downloaded-release
-          find downloaded-release -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > actual-assets.txt
-          diff --unified expected-assets.txt actual-assets.txt
           cmp publish/assets/SHA256SUMS downloaded-release/SHA256SUMS
           (cd downloaded-release && sha256sum --check --strict SHA256SUMS)
 
@@ -722,8 +747,13 @@ jobs:
           TAG="${{ github.ref_name }}"
           REPOSITORY="${{ github.repository }}"
           TITLE="Butter Paper ${{ needs.prepare.outputs.version }}"
-          RELEASE_IS_DRAFT="$(gh release view "$TAG" --repo "$REPOSITORY" --json isDraft --jq .isDraft)"
-          RELEASE_IS_PRERELEASE="$(gh release view "$TAG" --repo "$REPOSITORY" --json isPrerelease --jq .isPrerelease)"
+          RELEASE_RECORD="$(
+            gh api "repos/$REPOSITORY/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$TAG\") | [.id, .draft, .prerelease] | @tsv" |
+              head -n 1
+          )"
+          test -n "$RELEASE_RECORD"
+          IFS=$'\t' read -r RELEASE_ID RELEASE_IS_DRAFT RELEASE_IS_PRERELEASE <<< "$RELEASE_RECORD"
           if [ "$RELEASE_IS_DRAFT" != true ]; then
             test "$RELEASE_IS_PRERELEASE" = "${{ needs.prepare.outputs.prerelease }}" || {
               echo 'Published release has the wrong stable/beta classification.' >&2
@@ -734,10 +764,21 @@ jobs:
           fi
           if [ "${{ needs.prepare.outputs.channel }}" = beta ]; then
             TITLE="Butter Paper Beta ${{ needs.prepare.outputs.version }}"
-            gh release edit "$TAG" --repo "$REPOSITORY" --title "$TITLE" --draft=false --prerelease --latest=false
-          else
-            gh release edit "$TAG" --repo "$REPOSITORY" --title "$TITLE" --draft=false --prerelease=false --latest
           fi
+          jq -n \
+            --arg title "$TITLE" \
+            --argjson prerelease "${{ needs.prepare.outputs.prerelease }}" \
+            '{
+              name: $title,
+              draft: false,
+              prerelease: $prerelease,
+              make_latest: (if $prerelease then "false" else "true" end)
+            }' |
+            gh api \
+              --method PATCH \
+              "repos/$REPOSITORY/releases/$RELEASE_ID" \
+              --input - \
+              >/dev/null
 
       - name: Verify public assets before sealing the update feed
         env:
@@ -805,6 +846,7 @@ jobs:
         with:
           name: butter-paper-update-feed-publication-${{ github.ref_name }}
           path: feed-publication
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
 
@@ -912,7 +954,27 @@ jobs:
           CASKS+=('Casks/butter-paper@beta.rb')
           git diff --check -- "${CASKS[@]}"
           brew style "${CASKS[@]}"
-          brew audit --cask --strict --online "${CASKS[@]}"
+          TEST_TAP='apotenza92/butter-paper-release-test'
+          TEST_TAP_REPO="$RUNNER_TEMP/homebrew-butter-paper-release-test"
+          mkdir -p "$TEST_TAP_REPO/Casks"
+          cp "${CASKS[@]}" "$TEST_TAP_REPO/Casks/"
+          git -C "$TEST_TAP_REPO" init
+          git -C "$TEST_TAP_REPO" add -- Casks
+          git -C "$TEST_TAP_REPO" \
+            -c user.name='Butter Paper Release' \
+            -c user.email='release@butterpaper.invalid' \
+            commit -m 'Stage casks for audit'
+          brew tap "$TEST_TAP" "$TEST_TAP_REPO" --custom-remote
+          cleanup_test_tap() {
+            brew uninstall --cask --force "$TEST_TAP/butter-paper@beta" >/dev/null 2>&1 || true
+            brew uninstall --cask --force "$TEST_TAP/butter-paper" >/dev/null 2>&1 || true
+            brew untap "$TEST_TAP" >/dev/null 2>&1 || true
+          }
+          trap cleanup_test_tap EXIT
+          TOKENS=()
+          if [ -f Casks/butter-paper.rb ]; then TOKENS+=("$TEST_TAP/butter-paper"); fi
+          TOKENS+=("$TEST_TAP/butter-paper@beta")
+          brew audit --cask --strict --online "${TOKENS[@]}"
 
           for CASK_FILE in "${CASKS[@]}"; do
             TOKEN=$(basename "$CASK_FILE" .rb)
@@ -921,9 +983,10 @@ jobs:
             APP="/Applications/$PRODUCT.app"
             EXECUTABLE="$APP/Contents/MacOS/$PRODUCT"
             LOG="$RUNNER_TEMP/$TOKEN.log"
+            FULL_TOKEN="$TEST_TAP/$TOKEN"
 
-            brew uninstall --cask --force "$TOKEN" >/dev/null 2>&1 || true
-            brew install --cask "$PWD/$CASK_FILE"
+            brew uninstall --cask --force "$FULL_TOKEN" >/dev/null 2>&1 || true
+            brew install --cask "$FULL_TOKEN"
             test -d "$APP"
             test -x "$EXECUTABLE"
             xcrun stapler validate "$APP"
@@ -943,7 +1006,7 @@ jobs:
             kill "$APP_PID"
             wait "$APP_PID" 2>/dev/null || true
 
-            brew uninstall --cask "$TOKEN"
+            brew uninstall --cask "$FULL_TOKEN"
             test ! -e "$APP"
           done
 
