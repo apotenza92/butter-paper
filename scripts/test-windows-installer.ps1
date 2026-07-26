@@ -52,7 +52,13 @@ try {
   # NSIS requires /D= to be the final argument. The controlled path has no spaces.
   Invoke-And-Wait $installer @('/S', "/D=$installRoot")
   $application = Join-Path $installRoot "$product.exe"
+  $installDeadline = [DateTime]::UtcNow.AddSeconds(60)
+  while ((-not (Test-Path -LiteralPath $application -PathType Leaf)) -and [DateTime]::UtcNow -lt $installDeadline) {
+    Start-Sleep -Milliseconds 500
+  }
   if (-not (Test-Path -LiteralPath $application -PathType Leaf)) {
+    Get-ChildItem -LiteralPath $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue |
+      ForEach-Object { Write-Host $_.FullName }
     throw "NSIS did not install the expected application: $application"
   }
   Assert-PeMachine $application $expectedMachine

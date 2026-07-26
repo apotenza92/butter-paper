@@ -55,7 +55,7 @@ describe('Electron Builder release identity', () => {
       },
       macArtifact: 'Butter-Paper-macOS-${arch}.${ext}',
       windowsArtifact: 'Butter-Paper-Windows-${arch}-Setup.${ext}',
-      linuxArtifact: 'Butter-Paper-Linux-${arch}.${ext}',
+      linuxArtifact: 'Butter-Paper-Linux-arm64.${ext}',
     });
     expect(config.files).toContain('!node_modules/@napi-rs/canvas-darwin-x64/**/*');
     expect(config.files).not.toContain('!node_modules/@napi-rs/canvas-darwin-arm64/**/*');

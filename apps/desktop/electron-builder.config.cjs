@@ -115,7 +115,7 @@ module.exports = {
       { target: 'deb', arch: ['arm64', 'x64'] },
       { target: 'rpm', arch: ['arm64', 'x64'] },
     ],
-    artifactName: `${artifactPrefix}-Linux-\${arch}.\${ext}`,
+    artifactName: `${artifactPrefix}-Linux-${releaseArch}.\${ext}`,
   },
   ...(releasePlatform === 'darwin' ? {
     publish: [{

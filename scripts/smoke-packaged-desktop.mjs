@@ -53,6 +53,7 @@ function findPackagedExecutable() {
 const executablePath = findPackagedExecutable();
 const appErrors = [];
 let app;
+let page;
 let temporaryDirectory;
 
 function assert(condition, message) {
@@ -160,11 +161,11 @@ try {
 
   app.process().stderr?.on('data', (chunk) => appErrors.push(String(chunk)));
 
-  const page = await app.firstWindow({ timeout: 60_000 });
+  page = await app.firstWindow({ timeout: 60_000 });
   await page.waitForFunction(
     (productName) => document.title === productName,
     expectedProductName,
-    { timeout: 30_000 },
+    { timeout: 60_000 },
   );
   assert(
     await page.getByRole('menuitem', { name: expectedProductName, exact: true }).count() === 1,
@@ -192,6 +193,9 @@ try {
     `Packaged ${expectedProductName} smoke test passed: channel identity, PDF annotation round-trip, custom icons, fit controls, and Butter Canvas (${diagnostics.sessionBackendKind} backend).`,
   );
 } catch (error) {
+  if (page) {
+    console.error(`Packaged app page at failure: title=${JSON.stringify(await page.title())} url=${page.url()}`);
+  }
   const stderr = appErrors.join('').trim();
   if (stderr) {
     console.error(`Packaged app stderr:\n${stderr}`);

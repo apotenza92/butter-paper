@@ -17,6 +17,7 @@ import {
   resolveConfiguredReleaseContract,
   resolveReleaseContract,
 } from './verify-macos-package.mjs';
+import { resolvePkcs12OpenSsl } from './resolve-openssl.mjs';
 import { refreshUpdateMetadataArtifact } from './update-metadata-contract.mjs';
 
 const repoRoot = resolve(import.meta.dirname, '..');
@@ -264,7 +265,8 @@ try {
     : decodeBase64(p8Value, 'App Store Connect private key');
   writeFileSync(apiKeyPath, p8Contents, { mode: 0o600 });
 
-  run('openssl', [
+  const openssl = resolvePkcs12OpenSsl();
+  run(openssl, [
     'pkcs12',
     '-legacy',
     '-in', originalP12Path,
@@ -272,7 +274,7 @@ try {
     '-nodes',
     '-out', combinedPemPath,
   ]);
-  run('openssl', [
+  run(openssl, [
     'pkcs12',
     '-legacy',
     '-export',

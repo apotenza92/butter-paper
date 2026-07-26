@@ -2,6 +2,10 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.2]
+
+- Corrected native release packaging for macOS OpenSSL 3 signing, canonical Linux architecture filenames, Windows ARM64 installation readiness, and slower hosted beta launches.
+
 ## [0.0.1]
 
 - Added the first cross-platform Butter Paper desktop release for native Apple Silicon, Intel Mac, Windows ARM64/x64, and Linux ARM64/x64 packages.
