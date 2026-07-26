@@ -1,0 +1,207 @@
+name: Verify public release Homebrew casks
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Immutable public release tag to verify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate immutable public release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout cask renderer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release and Homebrew manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
+          git merge-base --is-ancestor "$RELEASE_TAG^{commit}" origin/main
+
+          RELEASE_RECORD="$(
+            gh release view "$RELEASE_TAG" \
+              --repo "${{ github.repository }}" \
+              --json isDraft,isImmutable,isPrerelease,tagName \
+              --jq '[.isDraft, .isImmutable, .isPrerelease, .tagName] | @tsv'
+          )"
+          test "$RELEASE_RECORD" = $'false\ttrue\tfalse\t'"$RELEASE_TAG"
+
+          curl --fail --location --silent --show-error \
+            "https://github.com/${{ github.repository }}/releases/download/$RELEASE_TAG/homebrew-release.json" \
+            --output homebrew-release.json
+          jq -e \
+            --arg tag "$RELEASE_TAG" \
+            '.tag == $tag and .version == ($tag | sub("^v"; "")) and (.channels | keys | sort) == ["beta", "stable"]' \
+            homebrew-release.json \
+            >/dev/null
+
+  test-homebrew:
+    name: Test Homebrew casks (${{ matrix.arch }})
+    needs: validate
+    runs-on: ${{ matrix.arch == 'arm64' && 'macos-15' || 'macos-15-intel' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - name: Checkout cask renderer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: source
+
+      - name: Download verified Homebrew manifest
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error \
+            "https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/homebrew-release.json" \
+            --output homebrew-release.json
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: apotenza92/homebrew-tap
+          path: homebrew-tap
+          persist-credentials: false
+
+      - name: Render Homebrew casks from verified release metadata
+        run: node source/scripts/render-homebrew-casks.mjs homebrew-release.json homebrew-tap/Casks
+
+      - name: Test Homebrew casks
+        working-directory: homebrew-tap
+        shell: bash
+        run: |
+          set -euo pipefail
+          CASKS=(Casks/butter-paper.rb 'Casks/butter-paper@beta.rb')
+          git diff --check -- "${CASKS[@]}"
+          brew style "${CASKS[@]}"
+          TEST_TAP='apotenza92/butter-paper-release-test'
+          TEST_TAP_REPO="$RUNNER_TEMP/homebrew-butter-paper-release-test"
+          mkdir -p "$TEST_TAP_REPO/Casks"
+          cp "${CASKS[@]}" "$TEST_TAP_REPO/Casks/"
+          git -C "$TEST_TAP_REPO" init
+          git -C "$TEST_TAP_REPO" add -- Casks
+          git -C "$TEST_TAP_REPO" \
+            -c user.name='Butter Paper Release' \
+            -c user.email='release@butterpaper.invalid' \
+            commit -m 'Stage casks for audit'
+          brew tap "$TEST_TAP" "$TEST_TAP_REPO" --custom-remote
+          cleanup_test_tap() {
+            brew uninstall --cask --force "$TEST_TAP/butter-paper@beta" >/dev/null 2>&1 || true
+            brew uninstall --cask --force "$TEST_TAP/butter-paper" >/dev/null 2>&1 || true
+            brew untap "$TEST_TAP" >/dev/null 2>&1 || true
+          }
+          trap cleanup_test_tap EXIT
+
+          TOKENS=("$TEST_TAP/butter-paper" "$TEST_TAP/butter-paper@beta")
+          brew audit --cask --strict --online "${TOKENS[@]}"
+
+          for TOKEN in butter-paper butter-paper@beta; do
+            PRODUCT='Butter Paper'
+            if [ "$TOKEN" = 'butter-paper@beta' ]; then PRODUCT='Butter Paper Beta'; fi
+            APP="/Applications/$PRODUCT.app"
+            EXECUTABLE="$APP/Contents/MacOS/$PRODUCT"
+            LOG="$RUNNER_TEMP/$TOKEN.log"
+            FULL_TOKEN="$TEST_TAP/$TOKEN"
+
+            brew uninstall --cask --force "$FULL_TOKEN" >/dev/null 2>&1 || true
+            brew install --cask "$FULL_TOKEN"
+            test -d "$APP"
+            test -x "$EXECUTABLE"
+            xcrun stapler validate "$APP"
+            spctl --assess --type execute --verbose "$APP"
+
+            env -i \
+              HOME="$HOME" PATH="$PATH" TMPDIR="$RUNNER_TEMP" USER="$USER" \
+              BP_TEST_MODE=1 BP_DISABLE_UPDATE_CHECKS=1 \
+              "$EXECUTABLE" >"$LOG" 2>&1 &
+            APP_PID=$!
+            sleep 8
+            if ! kill -0 "$APP_PID" 2>/dev/null; then
+              cat "$LOG"
+              echo "$PRODUCT did not remain running after launch." >&2
+              exit 1
+            fi
+            kill "$APP_PID"
+            wait "$APP_PID" 2>/dev/null || true
+
+            brew uninstall --cask "$FULL_TOKEN"
+            test ! -e "$APP"
+          done
+
+      - name: Collect validated casks
+        shell: bash
+        run: |
+          mkdir validated-casks
+          cp homebrew-tap/Casks/butter-paper*.rb validated-casks/
+
+      - name: Upload validated casks
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: homebrew-casks-${{ matrix.arch }}
+          path: validated-casks
+          if-no-files-found: error
+          retention-days: 14
+
+  prepare-publication:
+    name: Prepare validated Homebrew publication
+    needs: test-homebrew
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download ARM64 validated casks
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: homebrew-casks-arm64
+          path: validated/arm64
+
+      - name: Download Intel validated casks
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: homebrew-casks-x64
+          path: validated/x64
+
+      - name: Compare native validation outputs
+        run: diff --recursive --unified validated/arm64 validated/x64
+
+      - name: Seal Homebrew publication bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p publication/Casks
+          cp validated/arm64/butter-paper*.rb publication/Casks/
+          (
+            cd publication
+            find Casks -type f -name '*.rb' -print0 |
+              LC_ALL=C sort -z |
+              xargs -0 sha256sum > SHA256SUMS
+          )
+          printf '%s\n' \
+            "Butter Paper Homebrew publication bundle" \
+            "release-tag=${{ inputs.tag }}" \
+            "renderer-commit=${{ github.sha }}" \
+            "destination=apotenza92/homebrew-tap:Casks/" \
+            "Apply these exact natively validated bytes manually." \
+            > publication/PUBLICATION.txt
+
+      - name: Upload Homebrew publication bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: butter-paper-homebrew-publication-${{ inputs.tag }}
+          path: publication
+          if-no-files-found: error
+          retention-days: 14
