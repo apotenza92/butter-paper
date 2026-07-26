@@ -56,6 +56,7 @@ describe('macOS updater integration harness', () => {
 
   it('parses an explicit scenario without accepting unknown options', () => {
     const parsed = parseMacUpdateArguments([
+      '--',
       '--prior-zip', 'prior.zip',
       '--candidate-zip', 'candidate.zip',
       '--channel', 'beta',

@@ -2,6 +2,10 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.5]
+
+- Accepted the conventional standalone argument separator in the native macOS updater harness across pnpm forwarding behaviors.
+
 ## [0.0.4]
 
 - Hardened draft release staging with numeric release IDs and exact remote size and SHA-256 verification before publication.
