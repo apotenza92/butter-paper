@@ -2,6 +2,12 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.4]
+
+- Hardened draft release staging with numeric release IDs and exact remote size and SHA-256 verification before publication.
+- Preserved hidden static update-feed files in sealed publication artifacts.
+- Updated Homebrew cask rendering, auditing, installation, and cleanup for current Homebrew behavior.
+
 ## [0.0.3]
 
 - Passed the selected stable or beta identity through every native package verifier.
