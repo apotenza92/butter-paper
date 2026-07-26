@@ -80,6 +80,7 @@ smoke_executable() {
   assert_native_executable "$(realpath "$executable")"
   assert_no_update_config "$executable"
   BP_ELECTRON_EXECUTABLE_PATH="$executable" \
+    BP_RELEASE_CHANNEL="$channel" \
     BP_TEST_USER_DATA_DIR="$work_root/user-data-$label" \
     xvfb-run -a pnpm test:package:desktop
 }
@@ -98,6 +99,7 @@ appimage_executable="$(find "$work_root/appimage/squashfs-root" -type f -name "$
 assert_native_executable "$appimage_executable"
 assert_no_update_config "$appimage_executable"
 BP_ELECTRON_EXECUTABLE_PATH="$app_run" \
+  BP_RELEASE_CHANNEL="$channel" \
   BP_TEST_USER_DATA_DIR="$work_root/user-data-appimage" \
   xvfb-run -a pnpm test:package:desktop
 

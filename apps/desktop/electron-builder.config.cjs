@@ -1,3 +1,5 @@
+const path = require('node:path');
+
 const releaseChannel = process.env.BP_RELEASE_CHANNEL || 'stable';
 const releasePlatform = process.env.BP_RELEASE_PLATFORM || process.platform;
 const releaseArch = process.env.BP_RELEASE_ARCH || process.arch;
@@ -19,6 +21,13 @@ const productName = isBeta ? 'Butter Paper Beta' : 'Butter Paper';
 const packageName = isBeta ? 'butter-paper-beta' : 'butter-paper';
 const artifactPrefix = isBeta ? 'Butter-Paper-Beta' : 'Butter-Paper';
 const updateFeedUrl = `${updateFeedBaseUrl}/${releaseChannel}/${releasePlatform}/${releaseArch}`;
+if (releasePlatform === 'win32' && releaseArch === 'arm64') {
+  process.env.BP_NSIS_ARM64_UNPACKED_DIR = path.resolve(
+    __dirname,
+    process.env.BP_RELEASE_OUTPUT_DIR || 'release',
+    'win-arm64-unpacked',
+  );
+}
 
 const hasAppleNotarizationCredentials = Boolean(
   process.env.APPLE_API_KEY
@@ -99,6 +108,7 @@ module.exports = {
     perMachine: false,
     allowElevation: true,
     allowToChangeInstallationDirectory: true,
+    include: 'build/installer.nsh',
     deleteAppDataOnUninstall: false,
     installerIcon: 'assets/icon.ico',
     uninstallerIcon: 'assets/icon.ico',

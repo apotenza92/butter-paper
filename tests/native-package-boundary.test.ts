@@ -34,14 +34,20 @@ describe('native release package boundaries', () => {
   it('installs, feature-tests, and uninstalls the exact Windows NSIS package', () => {
     const workflow = readWorkflow();
     const verifier = readFileSync(resolve('scripts/test-windows-installer.ps1'), 'utf8');
+    const installerInclude = readFileSync(resolve('apps/desktop/build/installer.nsh'), 'utf8');
 
     expect(workflow).toContain('./scripts/test-windows-installer.ps1');
     expect(workflow).not.toContain("-path '*unpacked*'");
     expect(verifier).toContain('Assert-PeMachine $application $expectedMachine');
+    expect(verifier).toContain('Assert-PeMachine $runtimePath $expectedMachine');
+    expect(verifier).toContain('$env:BP_RELEASE_CHANNEL = $Channel');
     expect(verifier).toContain('& pnpm test:package:desktop');
     expect(verifier).toContain('unexpectedly contains updater configuration');
     expect(verifier).toContain("Invoke-And-Wait $uninstaller.FullName @('/S')");
     expect(verifier).toContain('NSIS uninstall left the install directory behind');
+    expect(installerInclude).toContain('!macro customFiles_arm64');
+    expect(installerInclude).toContain('!ifdef APP_ARM64');
+    expect(installerInclude).toContain('$%BP_NSIS_ARM64_UNPACKED_DIR%\\*.dll');
   });
 
   it('tests the AppImage, installed DEB, and extracted RPM on native Linux', () => {
@@ -54,6 +60,7 @@ describe('native release package boundaries', () => {
     expect(verifier).toContain('sudo apt-get purge -y "$installed_deb_package"');
     expect(verifier).toContain('rpm2cpio "$rpm"');
     expect(verifier.match(/pnpm test:package:desktop/g)).toHaveLength(2);
+    expect(verifier.match(/BP_RELEASE_CHANNEL="\$channel"/g)).toHaveLength(2);
     expect(verifier).toContain('Package verification requires native');
     expect(verifier).toContain('assert_no_update_config');
   });
@@ -75,6 +82,13 @@ describe('native release package boundaries', () => {
     expect(nativeDependencySetup).toContain("packageRoot('@napi-rs/canvas-win32-arm64-msvc')");
     expect(nativeDependencySetup).toContain("join(electronRoot, 'dist', 'icudtl.dat')");
     expect(nativeDependencySetup).toContain('copyFileSync(source, destination)');
+  });
+
+  it('locates unpacked packages in the configured release directory', () => {
+    const smokeHarness = readFileSync(resolve('scripts/smoke-packaged-desktop.mjs'), 'utf8');
+
+    expect(smokeHarness).toContain('process.env.BP_RELEASE_OUTPUT_DIR?.trim()');
+    expect(smokeHarness).toContain("resolve(repoRoot, 'apps/desktop', configuredReleaseDir)");
   });
 });
 

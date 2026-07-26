@@ -2,6 +2,12 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.3]
+
+- Passed the selected stable or beta identity through every native package verifier.
+- Restored the Windows ARM64 executable and Electron runtime libraries after NSIS archive extraction so the native assisted installer contains the complete packaged application.
+- Expanded manual package CI to exercise both release channels at native package boundaries before tagging.
+
 ## [0.0.2]
 
 - Corrected native release packaging for macOS OpenSSL 3 signing, canonical Linux architecture filenames, Windows ARM64 installation readiness, and slower hosted beta launches.
