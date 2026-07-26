@@ -84,6 +84,8 @@ jobs:
 
       - name: Test Homebrew casks
         working-directory: homebrew-tap
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail

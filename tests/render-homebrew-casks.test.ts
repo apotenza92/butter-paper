@@ -47,6 +47,7 @@ describe('Homebrew cask renderer', () => {
     expect(workflow).toContain('butter-paper-homebrew-publication-');
     expect(workflow).toContain('include-hidden-files: true');
     expect(workflow).toContain('brew tap "$TEST_TAP" "$TEST_TAP_REPO" --custom-remote');
+    expect(workflow).toContain('HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}');
     expect(workflow).toContain('$TEST_TAP/butter-paper@beta');
     expect(workflow).toContain('brew install --cask "$FULL_TOKEN"');
     expect(workflow).toContain('releases/$RELEASE_ID/assets?name=$encoded_name');
