@@ -12,6 +12,7 @@ import {
   validateChecksumText,
   validateEntitlements,
   validateExactArchitecture,
+  validateIconGroupCanvas,
   validateIconStackSystemBackground,
   validateSignatureMetadata,
   validateZipEntries,
@@ -53,7 +54,7 @@ describe('macOS release contract', () => {
     expect(verifier).toContain('validateIconStackSystemBackground');
     expect(verifier).toContain('Icon_Assets/system-dark');
     expect(verifier).toContain('Icon_Assets/01-artwork-dark');
-    expect(verifier).toContain('does not fill the 1024x1024 icon canvas');
+    expect(verifier).toContain('validateIconGroupCanvas');
   });
 
   it('allowlists smoke variables without passing release credentials to the app', () => {
@@ -186,6 +187,21 @@ describe('macOS release contract', () => {
       'Icon_Assets/system-light',
       'light appearance',
     )).toThrow(/missing Icon_Assets\/system-light/);
+  });
+
+  it('accepts native vector and explicit full-canvas Icon Composer dimensions', () => {
+    expect(() => validateIconGroupCanvas({
+      Layers: [{ LayerPosition: '0,0', LayerSize: '0,0' }],
+    }, 'native vector')).not.toThrow();
+    expect(() => validateIconGroupCanvas({
+      Layers: [{ LayerPosition: '0,0', LayerSize: '1024,1024' }],
+    }, 'explicit canvas')).not.toThrow();
+    expect(() => validateIconGroupCanvas({
+      Layers: [{ LayerPosition: '1,0', LayerSize: '1024,1024' }],
+    }, 'offset canvas')).toThrow(/offset from the icon origin/);
+    expect(() => validateIconGroupCanvas({
+      Layers: [{ LayerPosition: '0,0', LayerSize: '512,512' }],
+    }, 'undersized canvas')).toThrow(/does not fill the native icon canvas/);
   });
 
   it('rejects unknown channels and architectures', () => {

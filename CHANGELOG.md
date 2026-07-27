@@ -2,6 +2,11 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.9]
+
+- Preserved the native adaptive stable and beta icons introduced for 0.0.7.
+- Accepted both native-vector and explicit full-canvas Icon Composer dimensions when verifying signed macOS packages across supported Apple runners.
+
 ## [0.0.8]
 
 - Preserved the native adaptive stable and beta icons introduced for 0.0.7.
