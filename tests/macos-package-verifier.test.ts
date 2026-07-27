@@ -12,6 +12,7 @@ import {
   validateChecksumText,
   validateEntitlements,
   validateExactArchitecture,
+  validateIconStackSystemBackground,
   validateSignatureMetadata,
   validateZipEntries,
 } from '../scripts/verify-macos-package.mjs';
@@ -49,7 +50,7 @@ describe('macOS release contract', () => {
     expect(verifier).toContain("readPlistValue(infoPlistPath, 'CFBundleIconName')");
     expect(verifier).toContain('packaged Icon Composer catalog is missing');
     expect(verifier).toContain('Icon Composer catalog is missing its dark appearance');
-    expect(verifier).toContain('appearance is missing ${expectedBackground}');
+    expect(verifier).toContain('validateIconStackSystemBackground');
     expect(verifier).toContain('Icon_Assets/system-dark');
     expect(verifier).toContain('Icon_Assets/01-artwork-dark');
     expect(verifier).toContain('does not fill the 1024x1024 icon canvas');
@@ -167,6 +168,24 @@ describe('macOS release contract', () => {
         }
       }
     }
+  });
+
+  it('accepts implicit native system backgrounds but rejects the wrong explicit appearance', () => {
+    expect(() => validateIconStackSystemBackground(
+      { Layers: [{ Name: 'Icon/Group' }] },
+      'Icon_Assets/system-light',
+      'light appearance',
+    )).not.toThrow();
+    expect(() => validateIconStackSystemBackground(
+      { Layers: [{ Name: 'Icon_Assets/system-light' }, { Name: 'Icon/Group' }] },
+      'Icon_Assets/system-light',
+      'light appearance',
+    )).not.toThrow();
+    expect(() => validateIconStackSystemBackground(
+      { Layers: [{ Name: 'Icon_Assets/system-dark' }, { Name: 'Icon/Group' }] },
+      'Icon_Assets/system-light',
+      'light appearance',
+    )).toThrow(/missing Icon_Assets\/system-light/);
   });
 
   it('rejects unknown channels and architectures', () => {

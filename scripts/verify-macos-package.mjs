@@ -510,6 +510,19 @@ function readPlistValue(plistPath, key) {
   return run('plutil', ['-extract', key, 'raw', '-o', '-', plistPath]).stdout.trim();
 }
 
+export function validateIconStackSystemBackground(stack, expectedBackground, label) {
+  const explicitSystemBackgrounds = (stack.Layers ?? []).filter((layer) => (
+    typeof layer.Name === 'string'
+    && layer.Name.startsWith('Icon_Assets/system-')
+  ));
+  if (
+    explicitSystemBackgrounds.length > 0
+    && !explicitSystemBackgrounds.some((layer) => layer.Name === expectedBackground)
+  ) {
+    fail(`${label} is missing ${expectedBackground}`);
+  }
+}
+
 function validateIconAssetCatalog(assetCatalogPath, iconName, label) {
   const catalog = JSON.parse(run('xcrun', ['assetutil', '--info', assetCatalogPath]).stdout);
   const findRendition = (assetType, appearance) => catalog.find((entry) => (
@@ -536,9 +549,11 @@ function validateIconAssetCatalog(assetCatalogPath, iconName, label) {
     expectedBackground,
     expectedArtwork,
   ] of expectedSystemBackgrounds) {
-    if (!stack.Layers?.some((layer) => layer.Name === expectedBackground)) {
-      fail(`${label} Icon Composer ${appearance} appearance is missing ${expectedBackground}`);
-    }
+    validateIconStackSystemBackground(
+      stack,
+      expectedBackground,
+      `${label} Icon Composer ${appearance} appearance`,
+    );
     const iconGroup = findRendition('IconGroup', appearanceName);
     if (
       !iconGroup?.Layers?.length
