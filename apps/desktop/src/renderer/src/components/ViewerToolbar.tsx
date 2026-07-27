@@ -7,6 +7,7 @@ import {
   MoveVertical,
   RectangleVertical,
   RotateCcw,
+  Ruler,
   Search,
   Shapes,
   VectorSquare,
@@ -68,6 +69,7 @@ interface ViewerToolbarProps {
   onCadViewOrganisationChange: (organisation: CadViewOrganisation) => void;
   onPagesPerColumnChange: (count: number) => void;
   onSnapSettingsChange: (settings: Partial<SnapSettings>) => void;
+  onSetPageScale: () => void;
 }
 
 interface ToolbarIconProps {
@@ -804,6 +806,7 @@ export function ViewerToolbar({
   onCadViewOrganisationChange,
   onPagesPerColumnChange,
   onSnapSettingsChange,
+  onSetPageScale,
 }: ViewerToolbarProps) {
   const [gestureHint, setGestureHint] = useState<{ id: string; text: string; nonce: number } | null>(null);
   const hintTimerRef = useRef<number | null>(null);
@@ -985,6 +988,16 @@ export function ViewerToolbar({
           disabled={disabled}
           snapSettings={snapSettings}
           onSnapSettingsChange={onSnapSettingsChange}
+        />
+      </ButtonGroup>
+
+      <ButtonGroup aria-label="Document controls" className="gap-1 rounded-2xl bg-muted/50 p-1 [&>[data-slot]]:rounded-xl!">
+        <ToolbarIconButton
+          disabled={disabled}
+          icon={Ruler}
+          label="Set Page Scale"
+          onClick={onSetPageScale}
+          testId="viewer-set-page-scale"
         />
       </ButtonGroup>
     </div>

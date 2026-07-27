@@ -34,10 +34,12 @@ test.describe('Butter Paper electron workflows', () => {
     await expect(page.getByTestId('app-menu-bar')).toBeVisible();
     await expect(page.getByTestId('menu-trigger-butter-paper')).toBeVisible();
     await expect(page.getByTestId('menu-trigger-file')).toBeVisible();
-    await expect(page.getByTestId('menu-trigger-edit')).toBeVisible();
-    await expect(page.getByTestId('menu-trigger-view')).toBeVisible();
+    await expect(page.getByTestId('menu-trigger-edit')).toHaveCount(0);
+    await expect(page.getByTestId('menu-trigger-view')).toHaveCount(0);
+    await expect(page.getByTestId('menu-trigger-document')).toHaveCount(0);
     await expect(page.getByTestId('document-tab-bar')).toBeVisible();
     await expect(page.getByTestId('viewer-toolbar')).toBeVisible();
+    await expect(page.getByTestId('viewer-set-page-scale')).toBeDisabled();
     await expect(page.getByTestId('left-rail')).toBeVisible();
     await expect(page.getByTestId('right-rail')).toBeVisible();
     await expectShellSizing(page);
@@ -67,6 +69,7 @@ test.describe('Butter Paper electron workflows', () => {
       lastPageRenderError: null,
       lastThumbnailRenderError: null,
     });
+    await expect(fixturePage.getByTestId('viewer-set-page-scale')).toBeEnabled();
     const openElapsedMs = performance.now() - openStartedAt;
     expect(openElapsedMs).toBeLessThan(OPEN_BUDGET_MS);
 
