@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="100%" height="100%" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="page" x1="76" y1="512" x2="948" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0a5e9d"/>
+      <stop offset="0.18" stop-color="#147ebe"/>
+      <stop offset="0.5" stop-color="#168bcb"/>
+      <stop offset="0.8" stop-color="#0d6cae"/>
+      <stop offset="1" stop-color="#043f6f"/>
+    </linearGradient>
+    <linearGradient id="fold" x1="112" y1="112" x2="292" y2="292" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#40bbe6"/>
+      <stop offset="0.36" stop-color="#259fd5"/>
+      <stop offset="0.72" stop-color="#1d8fcb"/>
+      <stop offset="1" stop-color="#0d5e9e"/>
+    </linearGradient>
+    <linearGradient id="roll" x1="786" y1="512" x2="948" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#043f6f"/>
+      <stop offset="0.12" stop-color="#1478b5"/>
+      <stop offset="0.3" stop-color="#35b1de"/>
+      <stop offset="0.5" stop-color="#46c3e9"/>
+      <stop offset="0.7" stop-color="#35b1de"/>
+      <stop offset="0.88" stop-color="#1478b5"/>
+      <stop offset="1" stop-color="#043f6f"/>
+    </linearGradient>
+    <clipPath id="page-clip">
+      <path d="M306 76H758C863 76 948 161 948 266V758C948 863 863 948 758 948H266C161 948 76 863 76 758V306L306 76Z"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#page-clip)">
+    <path d="M306 76H758C863 76 948 161 948 266V758C948 863 863 948 758 948H266C161 948 76 863 76 758V306L306 76Z" fill="url(#page)"/>
+    <path d="M76 306L306 76C286 144 286 224 306 306C226 286 144 286 76 306Z" fill="url(#fold)"/>
+    <rect x="786" y="76" width="162" height="872" fill="url(#roll)"/>
+    <path d="M790 76V948" fill="none" stroke="#043f6f" stroke-opacity="0.52" stroke-width="14"/>
+    <path d="M944 76V948" fill="none" stroke="#043f6f" stroke-opacity="0.52" stroke-width="14"/>
+  </g>
+
+  <path d="M306 76H758C863 76 948 161 948 266V758C948 863 863 948 758 948H266C161 948 76 863 76 758V306L306 76Z" fill="none" stroke="#032f55" stroke-opacity="0.48" stroke-width="2"/>
+  <path d="M286 700L632 354M470 354H632V516" fill="none" stroke="#e5f7ff" stroke-width="86" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -28,8 +28,8 @@ describe('macOS updater integration harness', () => {
     expect(ciTriggers).not.toContain('push:');
     expect(ciTriggers).not.toContain('pull_request:');
     for (const runner of [
-      'macos-15',
-      'macos-15-intel',
+      'macos-26',
+      'macos-26-intel',
       'windows-2025',
       'windows-11-arm',
       'ubuntu-24.04',

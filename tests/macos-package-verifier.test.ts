@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -46,8 +46,13 @@ describe('macOS release contract', () => {
     expect(checksumDmg).toBeGreaterThan(refreshDmgMetadata);
 
     const verifier = readFileSync('scripts/verify-macos-package.mjs', 'utf8');
-    expect(verifier).toContain("readPlistValue(infoPlistPath, 'CFBundleIconFile')");
-    expect(verifier).toContain('packaged icon does not match the maintained release icon');
+    expect(verifier).toContain("readPlistValue(infoPlistPath, 'CFBundleIconName')");
+    expect(verifier).toContain('packaged Icon Composer catalog is missing');
+    expect(verifier).toContain('Icon Composer catalog is missing its dark appearance');
+    expect(verifier).toContain('appearance is missing ${expectedBackground}');
+    expect(verifier).toContain('Icon_Assets/system-dark');
+    expect(verifier).toContain('Icon_Assets/01-artwork-dark');
+    expect(verifier).toContain('does not fill the 1024x1024 icon canvas');
   });
 
   it('allowlists smoke variables without passing release credentials to the app', () => {
@@ -83,15 +88,85 @@ describe('macOS release contract', () => {
   });
 
   it('derives the active contract from Electron Builder configuration', () => {
-    expect(resolveConfiguredReleaseContract('beta', 'x64', '/tmp/butter-paper-beta-test')).toMatchObject({
+    const stableContract = resolveConfiguredReleaseContract('stable', 'arm64', '/tmp/butter-paper-stable-test');
+    const betaContract = resolveConfiguredReleaseContract('beta', 'x64', '/tmp/butter-paper-beta-test');
+    expect(stableContract).toMatchObject({
+      appName: 'Butter Paper.app',
+      iconName: 'Icon',
+    });
+    expect(stableContract.iconSourcePath).toMatch(/apps\/desktop\/assets\/macos\/Butter Paper\.icon$/);
+    expect(stableContract.legacyIconSourcePath).toMatch(/apps\/desktop\/assets\/icon\.icns$/);
+    expect(betaContract).toMatchObject({
       appName: 'Butter Paper Beta.app',
       artifactPrefix: 'Butter-Paper-Beta-macOS',
       bundleId: 'com.butterpaper.desktop.beta',
       executableName: 'Butter Paper Beta',
-      iconFile: 'icon.icns',
+      iconName: 'Icon',
       packageName: 'butter-paper-beta',
       updateFeedUrl: 'https://raw.githubusercontent.com/apotenza92/butter-paper/updates/beta/darwin/x64',
     });
+    expect(betaContract.iconSourcePath).toMatch(/apps\/desktop\/assets\/beta\/macos\/Butter Paper Beta\.icon$/);
+    expect(betaContract.legacyIconSourcePath).toMatch(/apps\/desktop\/assets\/beta\/icon\.icns$/);
+  });
+
+  it('maintains complete light and dark Icon Composer sources for both channels', () => {
+    for (const channel of ['stable', 'beta'] as const) {
+      const contract = resolveConfiguredReleaseContract(channel, 'arm64', `/tmp/butter-paper-${channel}-icon-test`);
+      const definition = JSON.parse(readFileSync(join(contract.iconSourcePath, 'icon.json'), 'utf8'));
+      expect(definition['fill-specializations']).toEqual([
+        { value: 'system-light' },
+        { appearance: 'dark', value: 'system-dark' },
+      ]);
+      const layers = definition.groups.flatMap((group: { layers: Array<{
+        'fill-specializations': Array<{ appearance?: string }>;
+        'image-name-specializations': Array<{ appearance?: string; value: string }>;
+      }> }) => group.layers);
+      expect(layers).toHaveLength(1);
+      for (const layer of layers) {
+        expect(layer['fill-specializations']).toEqual([
+          { value: 'none' },
+          { appearance: 'dark', value: 'none' },
+        ]);
+        expect(layer['image-name-specializations']).toEqual([
+          { value: '01-artwork.svg' },
+          { appearance: 'dark', value: '01-artwork-dark.svg' },
+        ]);
+        for (const image of layer['image-name-specializations']) {
+          const layerPath = join(contract.iconSourcePath, 'Assets', image.value);
+          expect(existsSync(layerPath)).toBe(true);
+          const layerSource = readFileSync(layerPath, 'utf8');
+          expect(layerSource).toContain('viewBox="0 0 1024 1024"');
+          expect(layerSource).toContain('linearGradient id="roll-edge"');
+          expect(layerSource).toContain('fill="url(#roll-edge)"');
+          expect(layerSource).toContain('d="M839 0V1024"');
+          expect(layerSource).toContain('d="M1019 0V1024"');
+          expect(layerSource).toContain('id="fold-shadow"');
+          expect(layerSource).toContain(
+            'id="fold" d="M0 0H270C237 49 244 226 244 226C244 226 39 246 0 270V0Z"',
+          );
+          const rollGradient = layerSource.match(
+            /<linearGradient id="roll"[\s\S]*?<\/linearGradient>/,
+          )?.[0];
+          expect(rollGradient).toBeDefined();
+          const edgeColor = image.appearance === 'dark'
+            ? (channel === 'stable' ? '#050505' : '#010507')
+            : (channel === 'stable' ? '#d69f3e' : '#043f6f');
+          expect(rollGradient).toContain(`<stop offset="0" stop-color="${edgeColor}"/>`);
+          expect(rollGradient).toContain(`<stop offset="1" stop-color="${edgeColor}"/>`);
+          if (channel === 'stable') {
+            expect(layerSource).toContain('stroke="#e2433d"');
+            expect(layerSource).toContain(
+              image.appearance === 'dark' ? 'fill="#090909"' : 'fill="#e3ab53"',
+            );
+          } else {
+            expect(layerSource).toContain('stroke="#e5f7ff"');
+            expect(layerSource).toContain(
+              image.appearance === 'dark' ? 'fill="#02070b"' : 'fill="#043f6f"',
+            );
+          }
+        }
+      }
+    }
   });
 
   it('rejects unknown channels and architectures', () => {

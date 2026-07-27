@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "source": "assets/butter-paper-icon.svg",
+  "sourceSha256": "0d3d6fdcdd2db7d11f63822735d8288734169aa21ca848fc22466918f3d3118c",
+  "outputs": {
+    "icon.icns": {
+      "sha256": "45ac7db36dfb79757dfa7d496dcc21300e936fa0aa71258586357c7fa9fd365f",
+      "size": 77433
+    },
+    "icon.ico": {
+      "sha256": "2a7795672b2fe3fffc685804ea05b82e338467ee0b395460b961a339232ce655",
+      "size": 10038
+    },
+    "icon.png": {
+      "sha256": "461a4f255456f6c3cf92312e9cd7bab1791be831e509fb6d3564778f6428f34c",
+      "size": 13293
+    },
+    "linux/1024x1024.png": {
+      "sha256": "0ee0cbe9750ff9eeab5a5ff202d4e2b8230c1d082e8c177a363d9e890c67a754",
+      "size": 35816
+    },
+    "linux/128x128.png": {
+      "sha256": "87b1a81bf76f1cfffc66ca33334fd68316a530dc8c29e8b5904cb93f5ffb60e2",
+      "size": 2193
+    },
+    "linux/16x16.png": {
+      "sha256": "df767835be95c682f28a0747ec0e0ad627175226cecfbeb193c75d9242b51509",
+      "size": 314
+    },
+    "linux/22x22.png": {
+      "sha256": "13750bdc57e994c3a1339b1c6e38778249f06cde47c3234035563ea992d4689b",
+      "size": 356
+    },
+    "linux/24x24.png": {
+      "sha256": "baf1fb110a31275e9fe1ab62b5b54d9d8c38602626542b006d42ca16fc4e82ff",
+      "size": 393
+    },
+    "linux/256x256.png": {
+      "sha256": "35e2a8766b80e25b944ab65802a67055cd6f9f4afde9b17ce733dd14a976ceba",
+      "size": 4742
+    },
+    "linux/32x32.png": {
+      "sha256": "266d78639d2c71abf04cdcc773a6f3e05b19283ec6f0d485a9c9a868756d0df4",
+      "size": 521
+    },
+    "linux/48x48.png": {
+      "sha256": "bfd45c9191b5a2462db6bd8fa08896b338594e1b7f49b8aeee53a3b37e98bf1d",
+      "size": 806
+    },
+    "linux/512x512.png": {
+      "sha256": "461a4f255456f6c3cf92312e9cd7bab1791be831e509fb6d3564778f6428f34c",
+      "size": 13293
+    },
+    "linux/64x64.png": {
+      "sha256": "13dc3268d367666937aae672bcb0c792292d74c5435d6fe6b383fa90da8acc21",
+      "size": 951
+    },
+    "linux/72x72.png": {
+      "sha256": "8150ba1868c8e8409b67ebe40eba46f2bf973c87dc8c0e418d4e3ac197a5f933",
+      "size": 1293
+    },
+    "linux/96x96.png": {
+      "sha256": "137facae9ce1bbe0191a69374b7fd9ba1d5906f9e796be1b3c3e980a2ddba0a7",
+      "size": 1537
+    }
+  }
+}

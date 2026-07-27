@@ -135,8 +135,9 @@ export function resolveConfiguredReleaseContract(channel, arch, outputDirectory)
       bundleId: config.appId,
       channel,
       executableName: config.productName,
-      iconFile: basename(config.mac.icon),
+      iconName: 'Icon',
       iconSourcePath: resolve(dirname(configPath), config.mac.icon),
+      legacyIconSourcePath: resolve(dirname(configPath), config.dmg.icon),
       packageName: config.extraMetadata.name,
       productName: config.productName,
       updateFeedUrl: config.publish[0].url,
@@ -509,6 +510,54 @@ function readPlistValue(plistPath, key) {
   return run('plutil', ['-extract', key, 'raw', '-o', '-', plistPath]).stdout.trim();
 }
 
+function validateIconAssetCatalog(assetCatalogPath, iconName, label) {
+  const catalog = JSON.parse(run('xcrun', ['assetutil', '--info', assetCatalogPath]).stdout);
+  const findRendition = (assetType, appearance) => catalog.find((entry) => (
+    entry.AssetType === assetType
+    && entry.Name === iconName
+    && (appearance === undefined || entry.Appearance === appearance)
+  ));
+  const lightStack = findRendition('IconImageStack', 'NSAppearanceNameAqua');
+  const darkStack = findRendition('IconImageStack', 'NSAppearanceNameDarkAqua');
+  if (!lightStack) {
+    fail(`${label} Icon Composer catalog is missing its light appearance`);
+  }
+  if (!darkStack) {
+    fail(`${label} Icon Composer catalog is missing its dark appearance`);
+  }
+  const expectedSystemBackgrounds = [
+    ['light', 'NSAppearanceNameAqua', lightStack, 'Icon_Assets/system-light', 'Icon_Assets/01-artwork'],
+    ['dark', 'NSAppearanceNameDarkAqua', darkStack, 'Icon_Assets/system-dark', 'Icon_Assets/01-artwork-dark'],
+  ];
+  for (const [
+    appearance,
+    appearanceName,
+    stack,
+    expectedBackground,
+    expectedArtwork,
+  ] of expectedSystemBackgrounds) {
+    if (!stack.Layers?.some((layer) => layer.Name === expectedBackground)) {
+      fail(`${label} Icon Composer ${appearance} appearance is missing ${expectedBackground}`);
+    }
+    const iconGroup = findRendition('IconGroup', appearanceName);
+    if (
+      !iconGroup?.Layers?.length
+      || iconGroup.Layers.some((layer) => (
+        layer.LayerPosition !== '0,0'
+        || layer.LayerSize !== '1024,1024'
+      ))
+    ) {
+      fail(`${label} Icon Composer ${appearance} artwork does not fill the 1024x1024 icon canvas`);
+    }
+    if (!iconGroup.Layers.some((layer) => layer.Name === expectedArtwork)) {
+      fail(`${label} Icon Composer ${appearance} appearance is missing ${expectedArtwork}`);
+    }
+  }
+  if (!findRendition('MultiSized Image')) {
+    fail(`${label} Icon Composer catalog is missing its legacy fallback`);
+  }
+}
+
 function verifyApp(appPath, context) {
   const resolvedAppPath = realpathSync(appPath);
   const executablePath = join(resolvedAppPath, 'Contents', 'MacOS', context.contract.executableName);
@@ -528,16 +577,31 @@ function verifyApp(appPath, context) {
       fail(`${context.containerLabel} ${key} is ${actual}, expected ${expected}`);
     }
   }
-  const packagedIconFile = readPlistValue(infoPlistPath, 'CFBundleIconFile');
-  if (packagedIconFile !== context.contract.iconFile) {
-    fail(`${context.containerLabel} CFBundleIconFile is ${packagedIconFile}, expected ${context.contract.iconFile}`);
+  const packagedIconName = readPlistValue(infoPlistPath, 'CFBundleIconName');
+  if (packagedIconName !== context.contract.iconName) {
+    fail(`${context.containerLabel} CFBundleIconName is ${packagedIconName}, expected ${context.contract.iconName}`);
   }
-  const packagedIconPath = join(resolvedAppPath, 'Contents', 'Resources', packagedIconFile);
+  const packagedFallbackIconFile = readPlistValue(infoPlistPath, 'CFBundleIconFile');
+  if (packagedFallbackIconFile !== 'icon.icns') {
+    fail(`${context.containerLabel} CFBundleIconFile is ${packagedFallbackIconFile}, expected icon.icns`);
+  }
+  const packagedIconPath = join(resolvedAppPath, 'Contents', 'Resources', 'Assets.car');
   if (!existsSync(packagedIconPath) || !statSync(packagedIconPath).isFile()) {
-    fail(`${context.containerLabel} packaged icon is missing: ${packagedIconPath}`);
+    fail(`${context.containerLabel} packaged Icon Composer catalog is missing: ${packagedIconPath}`);
   }
-  if (hashFile(packagedIconPath) !== hashFile(context.contract.iconSourcePath)) {
-    fail(`${context.containerLabel} packaged icon does not match the maintained release icon`);
+  validateIconAssetCatalog(packagedIconPath, context.contract.iconName, context.containerLabel);
+  const packagedFallbackIconPath = join(
+    resolvedAppPath,
+    'Contents',
+    'Resources',
+    packagedFallbackIconFile,
+  );
+  if (!existsSync(packagedFallbackIconPath) || !statSync(packagedFallbackIconPath).isFile()) {
+    fail(`${context.containerLabel} packaged icon fallback is missing: ${packagedFallbackIconPath}`);
+  }
+  const iconSourceManifest = join(context.contract.iconSourcePath, 'icon.json');
+  if (!existsSync(iconSourceManifest) || !statSync(iconSourceManifest).isFile()) {
+    fail(`${context.containerLabel} maintained Icon Composer source is missing: ${iconSourceManifest}`);
   }
   validateEmbeddedUpdateContract(resolvedAppPath, context);
 
