@@ -1,12 +1,12 @@
-version: 0.0.6
+version: 0.0.10
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.6/Butter-Paper-Beta-macOS-x64.zip
-    sha512: mecz6ULGmKDZkgBAei5lQzFA008/YsnATFFry5QnO6U0e8xjG7daodHS8vtLuGbfKy9S60DTnEeIUP1GuI+4+A==
-    size: 154192986
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.6/Butter-Paper-Beta-macOS-x64.dmg
-    sha512: w7TikQ8TYV+UhdIgXy23e0ckVMw7dc2dw8+GnrtB7EP13STMLBzLXCW86nxO5xEaO8C/P+H9/Qhv6GgP47O7eA==
-    size: 138735971
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.6/Butter-Paper-Beta-macOS-x64.zip
-sha512: mecz6ULGmKDZkgBAei5lQzFA008/YsnATFFry5QnO6U0e8xjG7daodHS8vtLuGbfKy9S60DTnEeIUP1GuI+4+A==
-releaseDate: 2026-07-26T15:27:33.887Z
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.10/Butter-Paper-Beta-macOS-x64.zip
+    sha512: bT9Gc7fPV8xXRLylulTVdDcXR0y1FVgkXT4lpJllvqMZVMGJ2oXjkuu12XgBuzGa0WgoJ88yqVbIcXdwFbp5jg==
+    size: 155962211
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.10/Butter-Paper-Beta-macOS-x64.dmg
+    sha512: k/mSucj9g0eBtN3CHMw99kqVDBPl08Lx/wcYJ5exonLlIwL580RRkuVWMYnxsAprLQRqdgUsmMk+XtqYTJKPXQ==
+    size: 140526208
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.10/Butter-Paper-Beta-macOS-x64.zip
+sha512: bT9Gc7fPV8xXRLylulTVdDcXR0y1FVgkXT4lpJllvqMZVMGJ2oXjkuu12XgBuzGa0WgoJ88yqVbIcXdwFbp5jg==
+releaseDate: 2026-07-27T10:35:48.660Z
 butterPaperChannel: beta
