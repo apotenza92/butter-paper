@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="page" x1="0" y1="512" x2="1024" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#272727"/>
+      <stop offset="0.2" stop-color="#232323"/>
+      <stop offset="0.52" stop-color="#1d1d1d"/>
+      <stop offset="0.82" stop-color="#171717"/>
+      <stop offset="1" stop-color="#101010"/>
+    </linearGradient>
+    <linearGradient id="fold" x1="42" y1="42" x2="254" y2="254" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#444444"/>
+      <stop offset="0.34" stop-color="#383838"/>
+      <stop offset="0.72" stop-color="#2d2d2d"/>
+      <stop offset="1" stop-color="#222222"/>
+    </linearGradient>
+    <linearGradient id="roll" x1="834" y1="512" x2="1024" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#050505"/>
+      <stop offset="0.12" stop-color="#111111"/>
+      <stop offset="0.3" stop-color="#303030"/>
+      <stop offset="0.5" stop-color="#3a3a3a"/>
+      <stop offset="0.7" stop-color="#303030"/>
+      <stop offset="0.88" stop-color="#111111"/>
+      <stop offset="1" stop-color="#050505"/>
+    </linearGradient>
+    <linearGradient id="roll-edge" x1="834" y1="512" x2="1024" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#050505" stop-opacity="0.72"/>
+      <stop offset="0.04" stop-color="#050505" stop-opacity="0.3"/>
+      <stop offset="0.16" stop-color="#050505" stop-opacity="0"/>
+      <stop offset="0.84" stop-color="#050505" stop-opacity="0"/>
+      <stop offset="0.96" stop-color="#050505" stop-opacity="0.3"/>
+      <stop offset="1" stop-color="#050505" stop-opacity="0.72"/>
+    </linearGradient>
+  </defs>
+  <path d="M270 0H1024V1024H0V270L270 0Z" fill="url(#page)"/>
+  <path id="fold-shadow" d="M0 270L270 0C237 49 281 254 281 254C281 254 39 246 0 270Z" fill="#090909"/>
+  <path id="fold" d="M0 0H270C237 49 244 226 244 226C244 226 39 246 0 270V0Z" fill="url(#fold)"/>
+  <path d="M834 0H1024V1024H834Z" fill="url(#roll)"/>
+  <path d="M834 0H1024V1024H834Z" fill="url(#roll-edge)"/>
+  <path d="M839 0V1024" fill="none" stroke="#080808" stroke-opacity="0.78" stroke-width="16.5"/>
+  <path d="M1019 0V1024" fill="none" stroke="#080808" stroke-opacity="0.78" stroke-width="16.5"/>
+  <path d="M247 733L653 327M463 327H653V517" fill="none" stroke="#e2433d" stroke-width="101" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,6 +1,6 @@
 {
   "name": "butter-paper",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "private": true,
   "license": "MIT",
   "packageManager": "pnpm@10.33.0",
@@ -8,12 +8,13 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "check:repo": "node scripts/check-repository-hygiene.mjs",
+    "check:icons": "node scripts/generate-icons.mjs --check",
     "test": "vitest run --config vitest.config.ts",
     "test:e2e": "playwright test",
     "test:package:desktop": "node scripts/smoke-packaged-desktop.mjs",
     "test:macos-verifier": "vitest run --config vitest.config.ts tests/macos-package-verifier.test.ts",
     "test:macos-updater": "node scripts/test-macos-update.mjs",
-    "check": "pnpm check:repo && pnpm typecheck && pnpm build && pnpm test",
+    "check": "pnpm check:repo && pnpm check:icons && pnpm typecheck && pnpm build && pnpm test",
     "postinstall": "node scripts/ensure-native-deps.mjs",
     "dev:desktop": "pnpm --filter @butter-paper/desktop dev",
     "dev:cli": "pnpm --filter @butter-paper/cli dev",
@@ -26,7 +27,8 @@
     "assemble:update-metadata": "node scripts/assemble-update-metadata.mjs",
     "make:desktop:windows": "pnpm build:desktop && pnpm --dir apps/desktop make:windows",
     "make:desktop:linux": "pnpm build:desktop && pnpm --dir apps/desktop make:linux",
-    "generate:fixtures": "node scripts/generate-fixtures.mjs"
+    "generate:fixtures": "node scripts/generate-fixtures.mjs",
+    "generate:icons": "node scripts/generate-icons.mjs"
   },
   "devDependencies": {
     "@electron/asar": "3.4.1",

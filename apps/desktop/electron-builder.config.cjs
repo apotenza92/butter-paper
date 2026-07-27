@@ -20,6 +20,10 @@ const isBeta = releaseChannel === 'beta';
 const productName = isBeta ? 'Butter Paper Beta' : 'Butter Paper';
 const packageName = isBeta ? 'butter-paper-beta' : 'butter-paper';
 const artifactPrefix = isBeta ? 'Butter-Paper-Beta' : 'Butter-Paper';
+const iconAssetsDirectory = isBeta ? 'assets/beta' : 'assets';
+const macIcon = isBeta
+  ? 'assets/beta/macos/Butter Paper Beta.icon'
+  : 'assets/macos/Butter Paper.icon';
 const updateFeedUrl = `${updateFeedBaseUrl}/${releaseChannel}/${releasePlatform}/${releaseArch}`;
 if (releasePlatform === 'win32' && releaseArch === 'arm64') {
   process.env.BP_NSIS_ARM64_UNPACKED_DIR = path.resolve(
@@ -81,7 +85,7 @@ module.exports = {
   ],
   mac: {
     category: 'public.app-category.productivity',
-    icon: 'assets/icon.icns',
+    icon: macIcon,
     hardenedRuntime: true,
     gatekeeperAssess: false,
     entitlements: 'build/entitlements.mac.plist',
@@ -94,10 +98,11 @@ module.exports = {
     artifactName: `${artifactPrefix}-macOS-\${arch}.\${ext}`,
   },
   dmg: {
+    icon: `${iconAssetsDirectory}/icon.icns`,
     sign: hasMacSigningCredentials,
   },
   win: {
-    icon: 'assets/icon.ico',
+    icon: `${iconAssetsDirectory}/icon.ico`,
     target: [
       { target: 'nsis', arch: ['arm64', 'x64'] },
     ],
@@ -110,11 +115,11 @@ module.exports = {
     allowToChangeInstallationDirectory: true,
     include: 'build/installer.nsh',
     deleteAppDataOnUninstall: false,
-    installerIcon: 'assets/icon.ico',
-    uninstallerIcon: 'assets/icon.ico',
+    installerIcon: `${iconAssetsDirectory}/icon.ico`,
+    uninstallerIcon: `${iconAssetsDirectory}/icon.ico`,
   },
   linux: {
-    icon: 'assets/linux',
+    icon: `${iconAssetsDirectory}/linux`,
     category: 'Office',
     maintainer: 'Alex Potenza <apotenza92@users.noreply.github.com>',
     executableName: packageName,

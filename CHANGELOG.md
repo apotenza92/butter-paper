@@ -2,6 +2,12 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.7]
+
+- Added native macOS Icon Composer artwork with separate light and dark stable/beta appearances that fill the complete adaptive icon canvas.
+- Added distinct generated light stable/beta icon assets for Windows and Linux while preserving each platform's native package formats.
+- Added deterministic icon generation and packaged-catalog verification, and moved native macOS packaging to the macOS 26 runners required by Icon Composer.
+
 ## [0.0.6]
 
 - Canonicalized temporary macOS executable paths before detecting an updater-started replacement process.
