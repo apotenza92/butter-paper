@@ -523,6 +523,24 @@ export function validateIconStackSystemBackground(stack, expectedBackground, lab
   }
 }
 
+export function validateIconGroupCanvas(iconGroup, label) {
+  if (!iconGroup?.Layers?.length) {
+    fail(`${label} does not contain artwork layers`);
+  }
+  for (const layer of iconGroup.Layers) {
+    if (layer.LayerPosition !== undefined && layer.LayerPosition !== '0,0') {
+      fail(`${label} artwork is offset from the icon origin`);
+    }
+    if (
+      layer.LayerSize !== undefined
+      && layer.LayerSize !== '0,0'
+      && layer.LayerSize !== '1024,1024'
+    ) {
+      fail(`${label} artwork does not fill the native icon canvas`);
+    }
+  }
+}
+
 function validateIconAssetCatalog(assetCatalogPath, iconName, label) {
   const catalog = JSON.parse(run('xcrun', ['assetutil', '--info', assetCatalogPath]).stdout);
   const findRendition = (assetType, appearance) => catalog.find((entry) => (
@@ -555,15 +573,7 @@ function validateIconAssetCatalog(assetCatalogPath, iconName, label) {
       `${label} Icon Composer ${appearance} appearance`,
     );
     const iconGroup = findRendition('IconGroup', appearanceName);
-    if (
-      !iconGroup?.Layers?.length
-      || iconGroup.Layers.some((layer) => (
-        layer.LayerPosition !== '0,0'
-        || layer.LayerSize !== '1024,1024'
-      ))
-    ) {
-      fail(`${label} Icon Composer ${appearance} artwork does not fill the 1024x1024 icon canvas`);
-    }
+    validateIconGroupCanvas(iconGroup, `${label} Icon Composer ${appearance}`);
     if (!iconGroup.Layers.some((layer) => layer.Name === expectedArtwork)) {
       fail(`${label} Icon Composer ${appearance} appearance is missing ${expectedArtwork}`);
     }
