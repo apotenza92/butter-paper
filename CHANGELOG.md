@@ -2,6 +2,11 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.8]
+
+- Preserved the native adaptive stable and beta icons introduced for 0.0.7.
+- Accepted both explicit and implicit native Icon Composer system-background layers when verifying signed macOS packages across supported Apple runners.
+
 ## [0.0.7]
 
 - Added native macOS Icon Composer artwork with separate light and dark stable/beta appearances that fill the complete adaptive icon canvas.
