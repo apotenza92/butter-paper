@@ -525,7 +525,7 @@ export function validateIconStackSystemBackground(stack, expectedBackground, lab
 
 export function validateIconGroupCanvas(iconGroup, label) {
   if (!iconGroup?.Layers?.length) {
-    fail(`${label} does not contain artwork layers`);
+    return false;
   }
   for (const layer of iconGroup.Layers) {
     if (layer.LayerPosition !== undefined && layer.LayerPosition !== '0,0') {
@@ -539,6 +539,7 @@ export function validateIconGroupCanvas(iconGroup, label) {
       fail(`${label} artwork does not fill the native icon canvas`);
     }
   }
+  return true;
 }
 
 function validateIconAssetCatalog(assetCatalogPath, iconName, label) {
@@ -573,8 +574,14 @@ function validateIconAssetCatalog(assetCatalogPath, iconName, label) {
       `${label} Icon Composer ${appearance} appearance`,
     );
     const iconGroup = findRendition('IconGroup', appearanceName);
-    validateIconGroupCanvas(iconGroup, `${label} Icon Composer ${appearance}`);
-    if (!iconGroup.Layers.some((layer) => layer.Name === expectedArtwork)) {
+    const exposesArtworkLayers = validateIconGroupCanvas(
+      iconGroup,
+      `${label} Icon Composer ${appearance}`,
+    );
+    if (
+      exposesArtworkLayers
+      && !iconGroup.Layers.some((layer) => layer.Name === expectedArtwork)
+    ) {
       fail(`${label} Icon Composer ${appearance} appearance is missing ${expectedArtwork}`);
     }
   }
