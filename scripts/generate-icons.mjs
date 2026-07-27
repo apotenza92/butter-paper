@@ -3,8 +3,14 @@ import {
   readFile,
   writeFile,
 } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { dirname, join, resolve } from 'node:path';
+import {
+  dirname,
+  join,
+  relative,
+  resolve,
+} from 'node:path';
 
 const repositoryRoot = resolve(import.meta.dirname, '..');
 const require = createRequire(join(repositoryRoot, 'packages/pdf/package.json'));
@@ -44,44 +50,16 @@ const variants = [
   },
 ];
 
-const generatedFiles = new Map();
-
-for (const variant of variants) {
-  const source = await loadImage(variant.source);
-  const pngBySize = new Map();
-  const requiredSizes = new Set([...linuxSizes, ...icoSizes, ...icnsEntries.map(([, size]) => size)]);
-
-  for (const size of requiredSizes) {
-    pngBySize.set(size, renderIcon(source, size));
-  }
-
-  generatedFiles.set(join(variant.output, 'icon.png'), pngBySize.get(512));
-  generatedFiles.set(join(variant.output, 'icon.ico'), buildIco(icoSizes, pngBySize));
-  generatedFiles.set(join(variant.output, 'icon.icns'), buildIcns(icnsEntries, pngBySize));
-
-  for (const size of linuxSizes) {
-    generatedFiles.set(join(variant.output, 'linux', `${size}x${size}.png`), pngBySize.get(size));
-  }
-}
-
 const mismatches = [];
-for (const [filePath, expected] of generatedFiles) {
+let generatedFileCount = 0;
+for (const variant of variants) {
   if (checkOnly) {
-    let actual;
-    try {
-      actual = await readFile(filePath);
-    } catch {
-      mismatches.push(`${filePath}: missing`);
-      continue;
-    }
-    if (!actual.equals(expected)) {
-      mismatches.push(`${filePath}: does not match generated icon`);
-    }
+    await verifyGeneratedVariant(variant, mismatches);
+    generatedFileCount += expectedOutputPaths().length;
     continue;
   }
 
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, expected);
+  generatedFileCount += await generateVariant(variant);
 }
 
 if (mismatches.length > 0) {
@@ -94,9 +72,166 @@ if (mismatches.length > 0) {
 
 console.log(
   checkOnly
-    ? `Generated desktop icon check passed (${generatedFiles.size} files).`
-    : `Generated ${generatedFiles.size} desktop icon files for stable and beta.`,
+    ? `Generated desktop icon check passed (${generatedFileCount} files).`
+    : `Generated ${generatedFileCount} desktop icon files for stable and beta.`,
 );
+
+async function generateVariant(variant) {
+  const source = await loadImage(variant.source);
+  const pngBySize = new Map();
+  const requiredSizes = new Set([...linuxSizes, ...icoSizes, ...icnsEntries.map(([, size]) => size)]);
+
+  for (const size of requiredSizes) {
+    pngBySize.set(size, renderIcon(source, size));
+  }
+
+  const generatedFiles = new Map([
+    ['icon.png', pngBySize.get(512)],
+    ['icon.ico', buildIco(icoSizes, pngBySize)],
+    ['icon.icns', buildIcns(icnsEntries, pngBySize)],
+  ]);
+  for (const size of linuxSizes) {
+    generatedFiles.set(`linux/${size}x${size}.png`, pngBySize.get(size));
+  }
+
+  for (const [relativePath, contents] of generatedFiles) {
+    const filePath = join(variant.output, relativePath);
+    await mkdir(dirname(filePath), { recursive: true });
+    await writeFile(filePath, contents);
+  }
+
+  const sourceContents = await readFile(variant.source);
+  const manifest = {
+    schemaVersion: 1,
+    source: repositoryRelativePath(variant.source),
+    sourceSha256: sha256(sourceContents),
+    outputs: Object.fromEntries(
+      [...generatedFiles]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([relativePath, contents]) => [
+          relativePath,
+          {
+            sha256: sha256(contents),
+            size: contents.length,
+          },
+        ]),
+    ),
+  };
+  await writeFile(
+    join(variant.output, 'generated-icon-manifest.json'),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
+
+  return generatedFiles.size;
+}
+
+async function verifyGeneratedVariant(variant, variantMismatches) {
+  const manifestPath = join(variant.output, 'generated-icon-manifest.json');
+  let manifest;
+  try {
+    manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  } catch {
+    variantMismatches.push(`${manifestPath}: missing or invalid`);
+    return;
+  }
+
+  const sourceContents = await readFile(variant.source);
+  const expectedPaths = expectedOutputPaths();
+  if (manifest.schemaVersion !== 1) {
+    variantMismatches.push(`${manifestPath}: unsupported schema version`);
+  }
+  if (manifest.source !== repositoryRelativePath(variant.source)) {
+    variantMismatches.push(`${manifestPath}: source path does not match`);
+  }
+  if (manifest.sourceSha256 !== sha256(sourceContents)) {
+    variantMismatches.push(`${manifestPath}: source hash does not match`);
+  }
+  const manifestPaths = Object.keys(manifest.outputs ?? {}).sort();
+  if (JSON.stringify(manifestPaths) !== JSON.stringify(expectedPaths)) {
+    variantMismatches.push(`${manifestPath}: output paths do not match`);
+    return;
+  }
+
+  for (const relativePath of expectedPaths) {
+    const filePath = join(variant.output, relativePath);
+    let contents;
+    try {
+      contents = await readFile(filePath);
+    } catch {
+      variantMismatches.push(`${filePath}: missing`);
+      continue;
+    }
+    const record = manifest.outputs[relativePath];
+    if (record.size !== contents.length || record.sha256 !== sha256(contents)) {
+      variantMismatches.push(`${filePath}: does not match generated icon manifest`);
+      continue;
+    }
+    const validationError = validateNativeIcon(relativePath, contents);
+    if (validationError) {
+      variantMismatches.push(`${filePath}: ${validationError}`);
+    }
+  }
+}
+
+function expectedOutputPaths() {
+  return [
+    'icon.icns',
+    'icon.ico',
+    'icon.png',
+    ...linuxSizes.map(size => `linux/${size}x${size}.png`),
+  ].sort();
+}
+
+function validateNativeIcon(relativePath, contents) {
+  if (relativePath.endsWith('.png')) {
+    const signature = contents.subarray(0, 8).toString('hex');
+    if (signature !== '89504e470d0a1a0a') {
+      return 'invalid PNG signature';
+    }
+    const expectedSize = relativePath === 'icon.png'
+      ? 512
+      : Number.parseInt(relativePath.match(/\/(\d+)x\d+\.png$/)?.[1] ?? '', 10);
+    if (
+      contents.readUInt32BE(16) !== expectedSize
+      || contents.readUInt32BE(20) !== expectedSize
+    ) {
+      return `PNG dimensions do not match ${expectedSize}x${expectedSize}`;
+    }
+    return null;
+  }
+  if (relativePath === 'icon.ico') {
+    if (contents.readUInt16LE(0) !== 0 || contents.readUInt16LE(2) !== 1) {
+      return 'invalid ICO header';
+    }
+    const count = contents.readUInt16LE(4);
+    const actualSizes = Array.from({ length: count }, (_, index) => {
+      const value = contents.readUInt8(6 + (index * 16));
+      return value === 0 ? 256 : value;
+    });
+    if (JSON.stringify(actualSizes) !== JSON.stringify(icoSizes)) {
+      return 'ICO sizes do not match the release contract';
+    }
+    return null;
+  }
+  if (relativePath === 'icon.icns') {
+    if (
+      contents.subarray(0, 4).toString('ascii') !== 'icns'
+      || contents.readUInt32BE(4) !== contents.length
+    ) {
+      return 'invalid ICNS header';
+    }
+    return null;
+  }
+  return 'unsupported generated icon format';
+}
+
+function repositoryRelativePath(filePath) {
+  return relative(repositoryRoot, filePath).split('\\').join('/');
+}
+
+function sha256(contents) {
+  return createHash('sha256').update(contents).digest('hex');
+}
 
 function renderIcon(source, size) {
   const canvas = createCanvas(size, size);
