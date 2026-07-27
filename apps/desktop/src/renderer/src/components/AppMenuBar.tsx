@@ -22,7 +22,7 @@ import {
   SHELL_SURFACE_PANEL,
 } from './shellSpacing';
 
-type MenuKey = 'butter-paper' | 'file' | 'edit' | 'view' | 'document';
+type MenuKey = 'butter-paper' | 'file';
 
 interface AppMenuItem {
   label: string;
@@ -39,7 +39,6 @@ interface AppMenuBarProps {
   onOpenCanvas: () => void;
   onSave: () => void;
   onSaveAs: () => void;
-  onSetPageScale: () => void;
   onCheckForUpdates: () => void;
   onOpenReleasePage: () => void;
   onUpdateFrequencyChange: (frequency: UpdateFrequency) => void;
@@ -56,9 +55,7 @@ const UPDATE_FREQUENCIES: Array<{ value: UpdateFrequency; label: string }> = [
   { value: 'monthly', label: 'Monthly' },
 ];
 
-export function AppMenuBar({ canSave, productName, updateStatus, onOpen, onOpenCanvas, onSave, onSaveAs, onSetPageScale, onCheckForUpdates, onOpenReleasePage, onUpdateFrequencyChange }: AppMenuBarProps) {
-  const placeholderItems = useMemo<AppMenuItem[]>(() => [{ label: 'Coming soon', disabled: true }], []);
-
+export function AppMenuBar({ canSave, productName, updateStatus, onOpen, onOpenCanvas, onSave, onSaveAs, onCheckForUpdates, onOpenReleasePage, onUpdateFrequencyChange }: AppMenuBarProps) {
   const fileItems = useMemo<AppMenuItem[]>(() => {
     return [
       {
@@ -86,23 +83,9 @@ export function AppMenuBar({ canSave, productName, updateStatus, onOpen, onOpenC
     ];
   }, [canSave, onOpen, onOpenCanvas, onSave, onSaveAs]);
 
-  const documentItems = useMemo<AppMenuItem[]>(() => {
-    return [
-      {
-        label: 'Set Page Scale...',
-        disabled: !canSave,
-        onSelect: canSave ? onSetPageScale : undefined,
-        testId: 'menu-document-set-page-scale',
-      },
-    ];
-  }, [canSave, onSetPageScale]);
-
   const menus: Array<{ key: MenuKey; label: string; items: AppMenuItem[] }> = [
     { key: 'butter-paper', label: productName, items: [] },
     { key: 'file', label: 'File', items: fileItems },
-    { key: 'edit', label: 'Edit', items: placeholderItems },
-    { key: 'view', label: 'View', items: placeholderItems },
-    { key: 'document', label: 'Document', items: documentItems },
   ];
 
   return (

@@ -1660,7 +1660,6 @@ export function App({ initialThemeMode }: AppProps) {
         onOpenCanvas={() => void handleOpenCanvas()}
         onSave={() => void handleSave()}
         onSaveAs={() => void handleSaveAs()}
-        onSetPageScale={() => openPageScaleDialog()}
         onCheckForUpdates={() => void updater.actions.checkNow()}
         onOpenReleasePage={() => void updater.actions.openReleasePage()}
         onUpdateFrequencyChange={(frequency) => void updater.actions.setFrequency(frequency)}
@@ -1765,7 +1764,7 @@ export function App({ initialThemeMode }: AppProps) {
               </>
             ) : (
               <>
-                <ViewerToolbar disabled={viewerControlsDisabled} zoom={zoom} zoomPreset={zoomPreset} scrollMode={scrollMode} continuousScrollWheelMode={continuousScrollWheelMode} singlePageScrollWheelMode={singlePageScrollWheelMode} cadScrollWheelMode={cadScrollWheelMode} pageColumnsEnabled={pageColumnsEnabled} cadViewOrganisation={cadViewOrganisation} pagesPerColumn={pagesPerColumn} snapSettings={snapSettings} onSnapSettingsChange={setSnapSettings} onFitPage={() => setZoomPreset('fit-page')} onFitWidth={() => setZoomPreset('fit-width')} onScrollModeChange={setScrollMode} onContinuousScrollWheelModeChange={setContinuousScrollWheelMode} onSinglePageScrollWheelModeChange={setSinglePageScrollWheelMode} onCadScrollWheelModeChange={setCadScrollWheelMode} onPageColumnsEnabledChange={setPageColumnsEnabled} onCadViewOrganisationChange={setCadViewOrganisation} onPagesPerColumnChange={setPagesPerColumn} onZoomIn={() => updateZoom(zoom * 1.1)} onZoomOut={() => updateZoom(zoom / 1.1)} onZoomReset={() => updateZoom(1)} onZoomChange={updateZoom} />
+                <ViewerToolbar disabled={viewerControlsDisabled} zoom={zoom} zoomPreset={zoomPreset} scrollMode={scrollMode} continuousScrollWheelMode={continuousScrollWheelMode} singlePageScrollWheelMode={singlePageScrollWheelMode} cadScrollWheelMode={cadScrollWheelMode} pageColumnsEnabled={pageColumnsEnabled} cadViewOrganisation={cadViewOrganisation} pagesPerColumn={pagesPerColumn} snapSettings={snapSettings} onSnapSettingsChange={setSnapSettings} onSetPageScale={() => openPageScaleDialog()} onFitPage={() => setZoomPreset('fit-page')} onFitWidth={() => setZoomPreset('fit-width')} onScrollModeChange={setScrollMode} onContinuousScrollWheelModeChange={setContinuousScrollWheelMode} onSinglePageScrollWheelModeChange={setSinglePageScrollWheelMode} onCadScrollWheelModeChange={setCadScrollWheelMode} onPageColumnsEnabledChange={setPageColumnsEnabled} onCadViewOrganisationChange={setCadViewOrganisation} onPagesPerColumnChange={setPagesPerColumn} onZoomIn={() => updateZoom(zoom * 1.1)} onZoomOut={() => updateZoom(zoom / 1.1)} onZoomReset={() => updateZoom(1)} onZoomChange={updateZoom} />
                 <div className="min-h-0 flex-1">
                   <DocumentViewport session={session} onOpenDocument={() => void handleOpen()} calibrationPick={pageScaleCalibrationPick ? { active: true, pointCount: pageScaleCalibrationPick.points.length } : null} onCalibrationPoint={handlePageScaleCalibrationPoint} onCancelCalibrationPick={cancelPageScaleCalibrationPick} />
                 </div>

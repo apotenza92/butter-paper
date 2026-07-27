@@ -370,7 +370,7 @@ function readPositiveOrZero(value: string, label: string): number {
 }
 
 function getPageScaleReturnFocus(): HTMLElement | null {
-  return globalThis.document.querySelector<HTMLElement>('[data-testid="menu-trigger-document"]');
+  return globalThis.document.querySelector<HTMLElement>('[data-testid="viewer-set-page-scale"]');
 }
 
 function LabeledField({ label, controlId, children }: { label: string; controlId: string; children: ReactNode }) {

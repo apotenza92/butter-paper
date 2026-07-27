@@ -2,6 +2,11 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.11]
+
+- Removed the unused Edit, View, and Document menus from the application menu bar.
+- Moved Set Page Scale into the PDF viewer toolbar so preset, custom, and calibrated page scaling remains directly accessible.
+
 ## [0.0.10]
 
 - Preserved the native adaptive stable and beta icons introduced for 0.0.7.
