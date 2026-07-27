@@ -190,12 +190,13 @@ describe('macOS release contract', () => {
   });
 
   it('accepts native vector and explicit full-canvas Icon Composer dimensions', () => {
-    expect(() => validateIconGroupCanvas({
+    expect(validateIconGroupCanvas(undefined, 'undisclosed catalog')).toBe(false);
+    expect(validateIconGroupCanvas({
       Layers: [{ LayerPosition: '0,0', LayerSize: '0,0' }],
-    }, 'native vector')).not.toThrow();
-    expect(() => validateIconGroupCanvas({
+    }, 'native vector')).toBe(true);
+    expect(validateIconGroupCanvas({
       Layers: [{ LayerPosition: '0,0', LayerSize: '1024,1024' }],
-    }, 'explicit canvas')).not.toThrow();
+    }, 'explicit canvas')).toBe(true);
     expect(() => validateIconGroupCanvas({
       Layers: [{ LayerPosition: '1,0', LayerSize: '1024,1024' }],
     }, 'offset canvas')).toThrow(/offset from the icon origin/);

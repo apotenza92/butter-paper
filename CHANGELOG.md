@@ -2,6 +2,11 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.10]
+
+- Preserved the native adaptive stable and beta icons introduced for 0.0.7.
+- Kept strict signed-package verification compatible with macOS asset catalogs that expose light/dark stacks without separate artwork-layer metadata.
+
 ## [0.0.9]
 
 - Preserved the native adaptive stable and beta icons introduced for 0.0.7.
