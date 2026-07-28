@@ -1,4 +1,7 @@
 const path = require('node:path');
+const { readFileSync } = require('node:fs');
+const { extractReleaseNotes } = require('../../scripts/release-notes.cjs');
+const desktopPackage = require('./package.json');
 
 const releaseChannel = process.env.BP_RELEASE_CHANNEL || 'stable';
 const releasePlatform = process.env.BP_RELEASE_PLATFORM || process.platform;
@@ -26,6 +29,10 @@ const macIcon = isBeta
   ? 'assets/beta/macos/Butter Paper Beta.icon'
   : 'assets/macos/Butter Paper.icon';
 const updateFeedUrl = `${updateFeedBaseUrl}/${releaseChannel}/${releasePlatform}/${releaseArch}`;
+const releaseNotes = extractReleaseNotes(
+  readFileSync(path.resolve(__dirname, '../../CHANGELOG.md'), 'utf8'),
+  desktopPackage.version,
+);
 if (releasePlatform === 'win32' && releaseArch === 'arm64') {
   process.env.BP_NSIS_ARM64_UNPACKED_DIR = path.resolve(
     __dirname,
@@ -59,12 +66,33 @@ const canvasPlatformSuffixes = [
   'win32-arm64-msvc',
   'win32-x64-msvc',
 ];
+const rendererBundledPackages = [
+  '@babel',
+  '@base-ui',
+  '@floating-ui',
+  '@fontsource',
+  'class-variance-authority',
+  'clsx',
+  'lucide-react',
+  'react',
+  'react-dom',
+  'reselect',
+  'scheduler',
+  'tailwind-merge',
+  'tw-animate-css',
+  'use-sync-external-store',
+  'zustand',
+];
 
 module.exports = {
   appId: isBeta ? 'com.butterpaper.desktop.beta' : 'com.butterpaper.desktop',
   productName,
   asar: true,
   compression: 'maximum',
+  electronLanguages: ['en-US'],
+  releaseInfo: {
+    releaseNotes,
+  },
   extraMetadata: {
     name: packageName,
     productName,
@@ -79,6 +107,8 @@ module.exports = {
   files: [
     '.vite/**/*',
     'package.json',
+    '!**/*.map',
+    ...rendererBundledPackages.map((packageName) => `!node_modules/${packageName}/**/*`),
     ...canvasPlatformSuffixes
       .filter((suffix) => suffix !== targetCanvasSuffix)
       .map((suffix) => `!node_modules/@napi-rs/canvas-${suffix}/**/*`),

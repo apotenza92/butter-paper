@@ -24,6 +24,7 @@ let settingsWriteSequence = 0;
 interface UpdateInfoLike {
   version?: string;
   butterPaperChannel?: string;
+  releaseNotes?: string | Array<{ version?: string; note?: string }> | null;
 }
 
 interface DownloadProgressLike {
@@ -174,6 +175,7 @@ export class DesktopUpdaterService {
       automaticChecksEnabled: disabledReason == null,
       currentVersion: options.currentVersion,
       availableVersion: null,
+      releaseNotes: null,
       downloadPercent: null,
       lastSuccessfulCheckAt: null,
       disabledReason,
@@ -342,6 +344,7 @@ export class DesktopUpdaterService {
       this.patchStatus({
         phase: 'idle',
         availableVersion: null,
+        releaseNotes: null,
         downloadPercent: null,
         errorMessage: null,
       });
@@ -356,6 +359,7 @@ export class DesktopUpdaterService {
       this.patchStatus({
         phase: 'downloaded',
         availableVersion: normaliseVersion(info?.version) ?? this.status.availableVersion,
+        releaseNotes: normaliseReleaseNotes(info?.releaseNotes) ?? this.status.releaseNotes,
         downloadPercent: 100,
         errorMessage: null,
       });
@@ -377,6 +381,7 @@ export class DesktopUpdaterService {
     this.patchStatus({
       phase: 'available',
       availableVersion: normaliseVersion(info?.version),
+      releaseNotes: normaliseReleaseNotes(info?.releaseNotes),
       downloadPercent: null,
       errorMessage: null,
     });
@@ -498,6 +503,25 @@ function updateWorkPending(phase: UpdateStatus['phase']): boolean {
 
 function normaliseVersion(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
+function normaliseReleaseNotes(value: UpdateInfoLike['releaseNotes']): string | null {
+  if (typeof value === 'string') {
+    const notes = value.trim();
+    return notes === '' ? null : notes;
+  }
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const notes = value
+    .map(entry => {
+      const note = typeof entry?.note === 'string' ? entry.note.trim() : '';
+      const version = typeof entry?.version === 'string' ? entry.version.trim() : '';
+      return note === '' ? '' : `${version === '' ? '' : `${version}\n`}${note}`;
+    })
+    .filter(Boolean)
+    .join('\n\n');
+  return notes === '' ? null : notes;
 }
 
 function normalisePercent(value: unknown): number | null {

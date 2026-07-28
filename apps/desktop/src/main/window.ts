@@ -45,6 +45,7 @@ import { loadDocumentPayload, loadPageGeometryIndex, saveDocumentPayload } from 
 import { getFocusedWindowState, isTestModeEnabled, resolveFixturePath, setFocusedWindowBounds } from './testMode';
 import { readBinaryFile, readTextFile, writeBinaryFile, writeTextFile } from './fileSystem';
 import { DesktopUpdaterService, loadElectronAutoUpdater } from './updater';
+import { resolveReleasePageUrl } from './releasePage';
 
 const { app, BrowserWindow, ipcMain, dialog, nativeTheme, shell } = electron;
 const require = createRequire(import.meta.url);
@@ -63,8 +64,6 @@ let themeListenerRegistered = false;
 let pdfiumCliPathPromise: Promise<string> | null = null;
 let updaterService: DesktopUpdaterService | null = null;
 let unsubscribeUpdaterStatus: (() => void) | null = null;
-const releasePageUrl = 'https://github.com/apotenza92/butter-paper/releases';
-
 const documentRegistry = new Map<string, {
   ownerWebContentsId: number;
   filePath: string;
@@ -1802,7 +1801,8 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(ipcChannels.updatesOpenReleasePage, async () => {
-    await shell.openExternal(releasePageUrl);
+    const availableVersion = requireUpdaterService().getStatus().availableVersion;
+    await shell.openExternal(resolveReleasePageUrl(availableVersion));
   });
 
   ipcMain.handle(ipcChannels.dialogOpenPdf, async () => {
