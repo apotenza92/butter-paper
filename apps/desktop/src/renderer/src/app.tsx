@@ -556,8 +556,22 @@ export function App({ initialThemeMode }: AppProps) {
   const heldPanRestoreToolRef = useRef<ToolMode | null>(null);
   const activeToolRef = useRef<ToolMode>(activeTool);
   const lastSpaceTapAtRef = useRef(0);
+  const openDocumentPathsRef = useRef<(filePaths: string[]) => Promise<void>>(async () => {});
 
   useEffect(() => subscribeToThemeMode(setThemeMode), []);
+
+  useEffect(() => {
+    const openPaths = (filePaths: string[]) => {
+      void openDocumentPathsRef.current(filePaths).catch((error) => {
+        setErrorMessage(error instanceof Error ? error.message : 'Unable to open the selected PDF.');
+      });
+    };
+    const unsubscribe = window.butterPaper.application.onOpenPdfPaths(openPaths);
+    void window.butterPaper.application.takePendingPdfPaths().then(openPaths).catch((error) => {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to read pending PDF paths.');
+    });
+    return unsubscribe;
+  }, [setErrorMessage]);
 
   useEffect(() => {
     let cancelled = false;
@@ -716,6 +730,7 @@ export function App({ initialThemeMode }: AppProps) {
     });
     setStatusMessage(created.length > 1 ? `Loaded ${created.length} documents` : created.length === 1 ? `Loaded ${created[0].document.fileName}` : 'Focused existing document');
   }
+  openDocumentPathsRef.current = openDocumentPaths;
 
   async function loadDocumentFromPath(filePath: string) { await openDocumentPaths([filePath]); }
 
@@ -1070,6 +1085,16 @@ export function App({ initialThemeMode }: AppProps) {
   }, [activeTabId, tabs]);
 
   async function handleOpen() { const paths = await window.butterPaper.dialogs.openPdfDialog(); if (paths?.length) await openDocumentPaths(paths); }
+
+  async function handleSetAsDefaultPdfApp(): Promise<void> {
+    try {
+      const result = await window.butterPaper.application.setAsDefaultPdfApp();
+      setErrorMessage(null);
+      setStatusMessage(result.message);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to change the default PDF app.');
+    }
+  }
 
   function updateActiveTabAfterSave(payload: LoadedDocumentPayload): void {
     const currentDocument = useViewerStore.getState().document?.document;
@@ -1660,6 +1685,7 @@ export function App({ initialThemeMode }: AppProps) {
         onOpenCanvas={() => void handleOpenCanvas()}
         onSave={() => void handleSave()}
         onSaveAs={() => void handleSaveAs()}
+        onSetAsDefaultPdfApp={() => void handleSetAsDefaultPdfApp()}
         onCheckForUpdates={() => void updater.actions.checkNow()}
         onOpenReleasePage={() => void updater.actions.openReleasePage()}
         onUpdateFrequencyChange={(frequency) => void updater.actions.setFrequency(frequency)}

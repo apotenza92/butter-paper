@@ -39,6 +39,7 @@ interface AppMenuBarProps {
   onOpenCanvas: () => void;
   onSave: () => void;
   onSaveAs: () => void;
+  onSetAsDefaultPdfApp: () => void;
   onCheckForUpdates: () => void;
   onOpenReleasePage: () => void;
   onUpdateFrequencyChange: (frequency: UpdateFrequency) => void;
@@ -55,7 +56,7 @@ const UPDATE_FREQUENCIES: Array<{ value: UpdateFrequency; label: string }> = [
   { value: 'monthly', label: 'Monthly' },
 ];
 
-export function AppMenuBar({ canSave, productName, updateStatus, onOpen, onOpenCanvas, onSave, onSaveAs, onCheckForUpdates, onOpenReleasePage, onUpdateFrequencyChange }: AppMenuBarProps) {
+export function AppMenuBar({ canSave, productName, updateStatus, onOpen, onOpenCanvas, onSave, onSaveAs, onSetAsDefaultPdfApp, onCheckForUpdates, onOpenReleasePage, onUpdateFrequencyChange }: AppMenuBarProps) {
   const fileItems = useMemo<AppMenuItem[]>(() => {
     return [
       {
@@ -111,6 +112,14 @@ export function AppMenuBar({ canSave, productName, updateStatus, onOpen, onOpenC
           <MenubarContent className="min-w-[168px]">
             {menu.key === 'butter-paper' ? (
               <>
+                <MenubarItem
+                  className="h-7 py-0 text-[12px]"
+                  data-testid="menu-set-default-pdf-app"
+                  onClick={onSetAsDefaultPdfApp}
+                >
+                  Set as Default PDF App...
+                </MenubarItem>
+                <MenubarSeparator />
                 <MenubarItem
                   className="h-7 py-0 text-[12px]"
                   data-testid="menu-check-for-updates"

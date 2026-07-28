@@ -39,6 +39,8 @@ import type {
   UpdateFrequency,
 } from '../shared/protocol';
 import { resolveApplicationMetadata } from './applicationMetadata';
+import { setAsDefaultPdfApp } from './defaultPdfApp';
+import { takePendingPdfPaths } from './pendingPdfPaths';
 import { loadDocumentPayload, loadPageGeometryIndex, saveDocumentPayload } from './pdfSession';
 import { getFocusedWindowState, isTestModeEnabled, resolveFixturePath, setFocusedWindowBounds } from './testMode';
 import { readBinaryFile, readTextFile, writeBinaryFile, writeTextFile } from './fileSystem';
@@ -1749,6 +1751,25 @@ export function createMainWindow(): BrowserWindowInstance {
 export function registerIpcHandlers(): void {
   ipcMain.handle(ipcChannels.applicationGetMetadata, async () => {
     return getApplicationMetadata();
+  });
+
+  ipcMain.handle(ipcChannels.applicationSetDefaultPdfApp, async () => {
+    const metadata = getApplicationMetadata();
+    return setAsDefaultPdfApp({
+      platform: process.platform,
+      isPackaged: app.isPackaged,
+      productName: metadata.productName,
+      packageName: metadata.channel === 'beta' ? 'butter-paper-beta' : 'butter-paper',
+      executablePath: app.getPath('exe'),
+      resourcesPath: process.resourcesPath,
+      openExternal: async (url) => {
+        await shell.openExternal(url);
+      },
+    });
+  });
+
+  ipcMain.handle(ipcChannels.applicationTakePendingPdfPaths, async () => {
+    return takePendingPdfPaths();
   });
 
   ipcMain.handle(ipcChannels.updatesGetStatus, async () => {

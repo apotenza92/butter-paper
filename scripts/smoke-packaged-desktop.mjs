@@ -150,7 +150,10 @@ try {
   temporaryDirectory = await mkdtemp(join(tmpdir(), 'butter-paper-packaged-smoke-'));
   app = await electron.launch({
     executablePath,
-    args: process.platform === 'linux' ? ['--no-sandbox'] : [],
+    args: [
+      ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
+      fixturePath,
+    ],
     env: {
       ...process.env,
       BP_TEST_MODE: '1',
@@ -174,14 +177,13 @@ try {
     await page.getByRole('menuitem', { name: expectedProductName, exact: true }).count() === 1,
     `Packaged app menu did not expose the ${expectedProductName} identity`,
   );
+  await page.getByTestId('menu-trigger-butter-paper').click();
+  await page.getByTestId('menu-set-default-pdf-app').waitFor({ state: 'visible' });
+  await page.keyboard.press('Escape');
   await page.waitForFunction(
     () => Boolean(window.__butterPaperTestHooks?.openDocumentPath),
     undefined,
     { timeout: 30_000 },
-  );
-  await page.evaluate(
-    async (path) => window.__butterPaperTestHooks.openDocumentPath(path),
-    fixturePath,
   );
   await page.waitForFunction(
     () => window.__butterPaperTestHooks?.getDiagnostics()?.pageCount === 6,

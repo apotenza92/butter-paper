@@ -20,6 +20,16 @@ const { contextBridge, ipcRenderer } = electron;
 
 const isTestMode = process.env.BP_TEST_MODE === '1';
 const defaultSamplePdfPath = resolveDefaultSamplePdfPath();
+let openPdfPathsListener: ((filePaths: string[]) => void) | null = null;
+const pendingOpenPdfPaths: string[][] = [];
+
+ipcRenderer.on(ipcChannels.applicationOpenPdfPaths, (_event, filePaths: string[]) => {
+  if (openPdfPathsListener) {
+    openPdfPathsListener(filePaths);
+  } else {
+    pendingOpenPdfPaths.push(filePaths);
+  }
+});
 
 const bridge: ButterPaperBridge = {
   environment: {
@@ -30,6 +40,19 @@ const bridge: ButterPaperBridge = {
   },
   application: {
     getMetadata: async () => ipcRenderer.invoke(ipcChannels.applicationGetMetadata),
+    setAsDefaultPdfApp: async () => ipcRenderer.invoke(ipcChannels.applicationSetDefaultPdfApp),
+    takePendingPdfPaths: async () => ipcRenderer.invoke(ipcChannels.applicationTakePendingPdfPaths),
+    onOpenPdfPaths: (listener: (filePaths: string[]) => void) => {
+      openPdfPathsListener = listener;
+      for (const filePaths of pendingOpenPdfPaths.splice(0)) {
+        listener(filePaths);
+      }
+      return () => {
+        if (openPdfPathsListener === listener) {
+          openPdfPathsListener = null;
+        }
+      };
+    },
   },
   theme: {
     getSnapshot: async () => ipcRenderer.invoke(ipcChannels.themeGetSnapshot),

@@ -17,6 +17,10 @@ export interface ApplicationMetadata {
   productName: 'Butter Paper' | 'Butter Paper Beta';
   channel: UpdateChannel;
 }
+export interface DefaultPdfAppResult {
+  outcome: 'changed' | 'requires-confirmation';
+  message: string;
+}
 export type UpdateFrequency =
   | 'never'
   | 'startup'
@@ -456,6 +460,9 @@ export interface ButterPaperBridge {
   };
   readonly application: {
     getMetadata(): Promise<ApplicationMetadata>;
+    setAsDefaultPdfApp(): Promise<DefaultPdfAppResult>;
+    takePendingPdfPaths(): Promise<string[]>;
+    onOpenPdfPaths(listener: (filePaths: string[]) => void): () => void;
   };
   readonly theme: {
     getSnapshot(): Promise<ThemeSnapshot>;
