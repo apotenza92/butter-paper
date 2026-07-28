@@ -60,39 +60,12 @@ importers:
       '@butter-paper/pdf':
         specifier: workspace:*
         version: link:../../packages/pdf
-      '@fontsource/dm-sans':
-        specifier: 5.2.8
-        version: 5.2.8
-      class-variance-authority:
-        specifier: ^0.7.1
-        version: 0.7.1
-      clsx:
-        specifier: ^2.1.1
-        version: 2.1.1
       electron-updater:
         specifier: 6.8.9
         version: 6.8.9
-      lucide-react:
-        specifier: ^1.8.0
-        version: 1.8.0(react@19.2.5)
       pdfjs-dist:
         specifier: 5.6.205
         version: 5.6.205
-      react:
-        specifier: 19.2.5
-        version: 19.2.5
-      react-dom:
-        specifier: 19.2.5
-        version: 19.2.5(react@19.2.5)
-      tailwind-merge:
-        specifier: ^3.6.0
-        version: 3.6.0
-      tw-animate-css:
-        specifier: ^1.4.0
-        version: 1.4.0
-      zustand:
-        specifier: 5.0.12
-        version: 5.0.12(@types/react@19.2.14)(react@19.2.5)(use-sync-external-store@1.6.0(react@19.2.5))
     devDependencies:
       '@electron-forge/cli':
         specifier: 7.11.1
@@ -100,6 +73,9 @@ importers:
       '@electron-forge/plugin-vite':
         specifier: 7.11.1
         version: 7.11.1
+      '@fontsource/dm-sans':
+        specifier: 5.2.8
+        version: 5.2.8
       '@tailwindcss/vite':
         specifier: 4.2.2
         version: 4.2.2(vite@8.0.8(@types/node@25.6.0)(jiti@2.6.1)(terser@5.46.1)(tsx@4.20.6)(yaml@2.8.2))
@@ -112,24 +88,48 @@ importers:
       '@vitejs/plugin-react':
         specifier: 5.1.4
         version: 5.1.4(vite@8.0.8(@types/node@25.6.0)(jiti@2.6.1)(terser@5.46.1)(tsx@4.20.6)(yaml@2.8.2))
+      class-variance-authority:
+        specifier: ^0.7.1
+        version: 0.7.1
+      clsx:
+        specifier: ^2.1.1
+        version: 2.1.1
       electron:
         specifier: 39.8.7
         version: 39.8.7
       electron-builder:
         specifier: 26.15.3
         version: 26.15.3(electron-builder-squirrel-windows@26.15.3)
+      lucide-react:
+        specifier: ^1.8.0
+        version: 1.8.0(react@19.2.5)
+      react:
+        specifier: 19.2.5
+        version: 19.2.5
+      react-dom:
+        specifier: 19.2.5
+        version: 19.2.5(react@19.2.5)
       shadcn:
         specifier: ^4.13.1
         version: 4.13.1(typescript@6.0.2)
+      tailwind-merge:
+        specifier: ^3.6.0
+        version: 3.6.0
       tailwindcss:
         specifier: 4.2.2
         version: 4.2.2
+      tw-animate-css:
+        specifier: ^1.4.0
+        version: 1.4.0
       typescript:
         specifier: 6.0.2
         version: 6.0.2
       vite:
         specifier: 8.0.8
         version: 8.0.8(@types/node@25.6.0)(jiti@2.6.1)(terser@5.46.1)(tsx@4.20.6)(yaml@2.8.2)
+      zustand:
+        specifier: 5.0.12
+        version: 5.0.12(@types/react@19.2.14)(react@19.2.5)(use-sync-external-store@1.6.0(react@19.2.5))
     optionalDependencies:
       '@napi-rs/canvas-darwin-arm64':
         specifier: 0.1.97

@@ -42,6 +42,11 @@ export function UpdateDialog({ hasDirtyDocuments, productName, status, onInstall
               : `The signed update has downloaded. Restart ${productName} to install it.`}
           </DialogDescription>
         </DialogHeader>
+        {status?.releaseNotes ? (
+          <div className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md border p-3 text-sm">
+            {status.releaseNotes}
+          </div>
+        ) : null}
         <DialogFooter>
           <Button variant="outline" onClick={onOpenReleasePage}>Release notes</Button>
           <Button disabled={hasDirtyDocuments} onClick={onInstall}>Restart and update</Button>

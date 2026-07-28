@@ -2,6 +2,13 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.12]
+
+- Added native PDF file registration and a user-controlled Set as Default PDF App command on macOS, Windows, and Linux.
+- Opened PDFs delivered at startup, through macOS open-file events, or to an existing application instance.
+- Made this changelog the source for GitHub release notes and the automatic updater's in-app release notes.
+- Reduced packaged-app overhead by retaining only the English Electron locale, excluding source maps, and keeping renderer-only libraries out of production dependencies.
+
 ## [0.0.11]
 
 - Removed the unused Edit, View, and Document menus from the application menu bar.

@@ -14,6 +14,7 @@ async function fixture() {
   await writeFile(path.join(artifacts, artifactName), bytes);
   const metadata = {
     version: '1.2.3-beta.4',
+    releaseNotes: '- Added updater-facing release notes.',
     files: [{
       url: artifactName,
       sha512: createHash('sha512').update(bytes).digest('base64'),
@@ -52,6 +53,7 @@ describe('assembleUpdateMetadata', () => {
     expect(parsed.files[0].url).toBe(expectedUrl);
     expect(parsed.path).toBe(expectedUrl);
     expect(parsed.butterPaperChannel).toBe('beta');
+    expect(parsed.releaseNotes).toBe('- Added updater-facing release notes.');
     expect(await readFile(auditOutput, 'utf8')).toBe(await readFile(result.outputPath, 'utf8'));
   });
 

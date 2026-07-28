@@ -17,6 +17,8 @@ const inspectScript = `
     windowsArtifact: config.win.artifactName,
     windowsFileAssociations: config.win.fileAssociations ?? null,
     compression: config.compression,
+    electronLanguages: config.electronLanguages,
+    releaseNotes: config.releaseInfo?.releaseNotes,
     nsisInclude: config.nsis.include,
     linuxArtifact: config.linux.artifactName,
     linuxFileAssociations: config.linux.fileAssociations,
@@ -81,8 +83,14 @@ describe('Electron Builder release identity', () => {
       linuxSyncDesktopName: true,
       afterPack: 'build/after-pack.cjs',
       compression: 'maximum',
+      electronLanguages: ['en-US'],
+      releaseNotes: expect.stringContaining('Added native PDF file registration'),
       nsisInclude: 'build/installer.nsh',
     });
+    expect(config.files).toContain('!**/*.map');
+    expect(config.files).toContain('!node_modules/@base-ui/**/*');
+    expect(config.files).toContain('!node_modules/react/**/*');
+    expect(config.files).toContain('!node_modules/lucide-react/**/*');
     expect(config.files).toContain('!node_modules/@napi-rs/canvas-darwin-x64/**/*');
     expect(config.files).not.toContain('!node_modules/@napi-rs/canvas-darwin-arm64/**/*');
   });

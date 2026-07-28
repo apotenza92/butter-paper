@@ -285,7 +285,11 @@ describe('DesktopUpdaterService', () => {
     await service.start();
 
     expect(service.installDownloaded()).toBe(false);
-    updater.emit('update-available', { version: '0.0.2', butterPaperChannel: 'stable' });
+    updater.emit('update-available', {
+      version: '0.0.2',
+      butterPaperChannel: 'stable',
+      releaseNotes: '- Added release notes to the updater.',
+    });
     await vi.waitFor(() => expect(updater.downloadUpdate).toHaveBeenCalledTimes(1));
     updater.emit('download-progress', { percent: 42.5 });
     updater.emit('update-downloaded', { version: '0.0.2' });
@@ -293,6 +297,7 @@ describe('DesktopUpdaterService', () => {
     expect(service.getStatus()).toMatchObject({
       phase: 'downloaded',
       availableVersion: '0.0.2',
+      releaseNotes: '- Added release notes to the updater.',
       downloadPercent: 100,
       lastSuccessfulCheckAt: fixedNow.toISOString(),
     });

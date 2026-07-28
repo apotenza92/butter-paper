@@ -48,6 +48,7 @@ export interface UpdateStatus {
   automaticChecksEnabled: boolean;
   currentVersion: string;
   availableVersion: string | null;
+  releaseNotes: string | null;
   downloadPercent: number | null;
   lastSuccessfulCheckAt: string | null;
   disabledReason: UpdateDisabledReason | null;

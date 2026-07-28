@@ -660,6 +660,10 @@ jobs:
             --channel "${{ needs.prepare.outputs.channel }}" \
             --directory publish/assets \
             > expected-assets.txt
+          node update-feed-worktree/scripts/release-notes.cjs \
+            "${{ needs.prepare.outputs.version }}" \
+            update-feed-worktree/CHANGELOG.md \
+            > release-notes.md
           TITLE="Butter Paper ${{ needs.prepare.outputs.version }}"
           if [ "${{ needs.prepare.outputs.channel }}" = beta ]; then TITLE="Butter Paper Beta ${{ needs.prepare.outputs.version }}"; fi
 
@@ -676,9 +680,9 @@ jobs:
 
           if [ -z "$RELEASE_ID" ]; then
             if [ "${{ needs.prepare.outputs.channel }}" = beta ]; then
-              gh release create "$TAG" --repo "$REPOSITORY" --verify-tag --title "$TITLE" --generate-notes --prerelease --draft
+              gh release create "$TAG" --repo "$REPOSITORY" --verify-tag --title "$TITLE" --notes-file release-notes.md --prerelease --draft
             else
-              gh release create "$TAG" --repo "$REPOSITORY" --verify-tag --title "$TITLE" --generate-notes --draft
+              gh release create "$TAG" --repo "$REPOSITORY" --verify-tag --title "$TITLE" --notes-file release-notes.md --draft
             fi
             RELEASE_RECORD="$(
               gh api "repos/$REPOSITORY/releases?per_page=100" \
