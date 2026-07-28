@@ -1,5 +1,8 @@
 export const ipcChannels = {
   applicationGetMetadata: 'application:get-metadata',
+  applicationSetDefaultPdfApp: 'application:set-default-pdf-app',
+  applicationOpenPdfPaths: 'application:open-pdf-paths',
+  applicationTakePendingPdfPaths: 'application:take-pending-pdf-paths',
   themeGetSnapshot: 'theme:get-snapshot',
   themeChanged: 'theme:changed',
   updatesGetStatus: 'updates:get-status',

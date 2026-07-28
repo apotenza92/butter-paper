@@ -21,6 +21,7 @@ const productName = isBeta ? 'Butter Paper Beta' : 'Butter Paper';
 const packageName = isBeta ? 'butter-paper-beta' : 'butter-paper';
 const artifactPrefix = isBeta ? 'Butter-Paper-Beta' : 'Butter-Paper';
 const iconAssetsDirectory = isBeta ? 'assets/beta' : 'assets';
+const desktopFileName = `${packageName}.desktop`;
 const macIcon = isBeta
   ? 'assets/beta/macos/Butter Paper Beta.icon'
   : 'assets/macos/Butter Paper.icon';
@@ -67,8 +68,10 @@ module.exports = {
   extraMetadata: {
     name: packageName,
     productName,
+    desktopName: desktopFileName,
     butterPaperChannel: releaseChannel,
   },
+  afterPack: 'build/after-pack.cjs',
   directories: {
     output: process.env.BP_RELEASE_OUTPUT_DIR || 'release',
     buildResources: 'assets',
@@ -86,6 +89,12 @@ module.exports = {
   mac: {
     category: 'public.app-category.productivity',
     icon: macIcon,
+    fileAssociations: [{
+      ext: 'pdf',
+      name: 'PDF document',
+      role: 'Viewer',
+      rank: 'Alternate',
+    }],
     hardenedRuntime: true,
     gatekeeperAssess: false,
     entitlements: 'build/entitlements.mac.plist',
@@ -121,8 +130,14 @@ module.exports = {
   linux: {
     icon: `${iconAssetsDirectory}/linux`,
     category: 'Office',
+    syncDesktopName: true,
     maintainer: 'Alex Potenza <apotenza92@users.noreply.github.com>',
     executableName: packageName,
+    fileAssociations: [{
+      ext: 'pdf',
+      name: 'PDF document',
+      mimeType: 'application/pdf',
+    }],
     synopsis: 'Cross-platform PDF review and markup',
     description: 'Cross-platform PDF review and markup for architecture, engineering, and construction.',
     target: [
