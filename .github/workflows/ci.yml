@@ -246,3 +246,29 @@ jobs:
           'apps/desktop/release/${{ matrix.variant }}/${{ matrix.platform }}/${{ matrix.arch }}'
           '${{ matrix.variant }}'
           '${{ matrix.arch }}'
+
+  manual-production-tuf-signing-audit:
+    name: Manual production TUF signing audit
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/tuf-signing-audit.yml
+    secrets: inherit
+
+  manual-nonmac-updater-audit:
+    name: Manual ${{ matrix.channel }} updater audit (${{ matrix.target }})
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        channel:
+          - stable
+          - beta
+        target:
+          - win32-arm64
+          - win32-x64
+          - linux-arm64
+          - linux-x64
+    uses: ./.github/workflows/nonmac-updater-audit.yml
+    with:
+      channel: ${{ matrix.channel }}
+      target: ${{ matrix.target }}
+      previous_version: 0.0.11
