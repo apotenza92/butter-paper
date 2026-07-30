@@ -118,7 +118,7 @@ function extractElectronArchive(electronRoot, archivePath, distDirectory) {
   const args = process.platform === 'darwin'
     ? ['-x', '-k', archivePath, distDirectory]
     : process.platform === 'win32'
-      ? ['-xf', archivePath, '-C', distDirectory]
+      ? ['--force-local', '-xf', archivePath, '-C', distDirectory]
       : ['-q', archivePath, '-d', distDirectory];
   execFileSync(command, args, {
     cwd: electronRoot,

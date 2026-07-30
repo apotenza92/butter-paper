@@ -31,11 +31,18 @@ function artifactName(value) {
   return decoded;
 }
 
-function prepareTarget({ baseUrl, candidateDirectory, candidateMetadata }) {
+function prepareTarget({ baseUrl, candidateDirectory, candidateMetadata, channel }) {
   const metadata = YAML.parse(fs.readFileSync(candidateMetadata, 'utf8'));
   if (!metadata?.version || !Array.isArray(metadata.files) || metadata.files.length === 0) {
     throw new Error('Candidate updater metadata is incomplete.');
   }
+  if (!['stable', 'beta'].includes(channel)) {
+    throw new Error('Candidate updater metadata requires a stable or beta channel.');
+  }
+  if (metadata.butterPaperChannel !== undefined && metadata.butterPaperChannel !== channel) {
+    throw new Error(`Candidate updater metadata channel does not match ${channel}.`);
+  }
+  metadata.butterPaperChannel = channel;
   const names = new Set();
   metadata.files = metadata.files.map((entry) => {
     const name = artifactName(entry.url);
@@ -102,6 +109,7 @@ function serveFile(request, response, filePath) {
 async function createServer({
   candidateDirectory,
   candidateMetadata,
+  channel,
   privateKeyPath,
   rootPath,
   scenario,
@@ -155,7 +163,7 @@ async function createServer({
     server.listen(0, '127.0.0.1', resolve);
   });
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
-  target = prepareTarget({ baseUrl, candidateDirectory, candidateMetadata });
+  target = prepareTarget({ baseUrl, candidateDirectory, candidateMetadata, channel });
   metadata = createTestRepositoryMetadata({
     privateKeyPath,
     rootPath,
@@ -391,6 +399,7 @@ async function main(argv = process.argv.slice(2)) {
       const server = await createServer({
         candidateDirectory,
         candidateMetadata,
+        channel,
         privateKeyPath,
         rootPath,
         scenario: scenarioName,

@@ -15,6 +15,7 @@ const {
     baseUrl: string;
     candidateDirectory: string;
     candidateMetadata: string;
+    channel: 'stable' | 'beta';
   }): {
     bytes: Buffer;
     version: string;
@@ -41,12 +42,14 @@ describe('native Windows and Linux updater audit', () => {
         baseUrl: 'http://127.0.0.1:43127',
         candidateDirectory: directory,
         candidateMetadata: metadataPath,
+        channel: 'stable',
       });
       const rewritten = YAML.parse(prepared.bytes.toString('utf8'));
       expect(rewritten.files[0].url).toBe(
         'http://127.0.0.1:43127/assets/Butter-Paper-Windows-x64-Setup.exe',
       );
       expect(rewritten.path).toBe(rewritten.files[0].url);
+      expect(rewritten.butterPaperChannel).toBe('stable');
       expect(prepared.version).toBe('0.0.12');
 
       writeFileSync(artifactPath, 'tampered');
@@ -54,6 +57,7 @@ describe('native Windows and Linux updater audit', () => {
         baseUrl: 'http://127.0.0.1:43127',
         candidateDirectory: directory,
         candidateMetadata: metadataPath,
+        channel: 'stable',
       })).toThrow(/SHA-512 does not match/);
     } finally {
       rmSync(directory, { recursive: true, force: true });
