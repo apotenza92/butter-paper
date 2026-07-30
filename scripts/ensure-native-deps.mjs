@@ -113,12 +113,20 @@ function extractElectronArchive(electronRoot, archivePath, distDirectory) {
   const command = process.platform === 'darwin'
     ? '/usr/bin/ditto'
     : process.platform === 'win32'
-      ? 'tar.exe'
+      ? 'powershell.exe'
       : 'unzip';
   const args = process.platform === 'darwin'
     ? ['-x', '-k', archivePath, distDirectory]
     : process.platform === 'win32'
-      ? ['--force-local', '-xf', archivePath, '-C', distDirectory]
+      ? [
+          '-NoLogo',
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          '& { param($archive, $destination) Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force }',
+          archivePath,
+          distDirectory,
+        ]
       : ['-q', archivePath, '-d', distDirectory];
   execFileSync(command, args, {
     cwd: electronRoot,

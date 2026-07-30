@@ -90,6 +90,8 @@ describe('native release package boundaries', () => {
     expect(nativeDependencySetup).toContain("packageRoot('@napi-rs/canvas-win32-arm64-msvc')");
     expect(nativeDependencySetup).toContain("join(electronRoot, 'dist', 'icudtl.dat')");
     expect(nativeDependencySetup).toContain('copyFileSync(source, destination)');
+    expect(nativeDependencySetup).toContain("'powershell.exe'");
+    expect(nativeDependencySetup).toContain('Expand-Archive -LiteralPath');
   });
 
   it('locates unpacked packages in the configured release directory', () => {
