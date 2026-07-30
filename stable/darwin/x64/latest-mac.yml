@@ -1,12 +1,37 @@
-version: 0.0.11
+version: 0.0.13
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.11/Butter-Paper-macOS-x64.zip
-    sha512: yFvR9EyPiGGd11li/zb52jg41zbr4NYxLCpKKZNa83trWcslBNe1HkuWw6bzk1XfrtmrIUN49M6o4Uz0PFX27g==
-    size: 155793546
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.11/Butter-Paper-macOS-x64.dmg
-    sha512: dz1adL4ZIyaAJb+HnWlSlVmcrjrTvUW8aQ2ArBevPO8Bsoz4QxSqq9p2bEoYy9InOJ0QH2Sc64XW94M81XfdBw==
-    size: 140377937
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.11/Butter-Paper-macOS-x64.zip
-sha512: yFvR9EyPiGGd11li/zb52jg41zbr4NYxLCpKKZNa83trWcslBNe1HkuWw6bzk1XfrtmrIUN49M6o4Uz0PFX27g==
-releaseDate: 2026-07-27T12:20:04.395Z
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.13/Butter-Paper-macOS-x64.zip
+    sha512: XHRm857kJfR3HPRrPyGsO0iMgpyn9i70NT0E0181jD66lKA2M/bscUmGtRJDB+0x9sGF60kX8U0WgM8jk7D0Gw==
+    size: 131325901
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.13/Butter-Paper-macOS-x64.dmg
+    sha512: jph+vwGr/XGNr4IlsKGvFUN5L7HoszKV8z6zHMRNmsOJ9VCTkeJIBgo1+3l8S0+4R95xVXBKr4Ln/H5iSXpDCA==
+    size: 120024558
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.13/Butter-Paper-macOS-x64.zip
+sha512: XHRm857kJfR3HPRrPyGsO0iMgpyn9i70NT0E0181jD66lKA2M/bscUmGtRJDB+0x9sGF60kX8U0WgM8jk7D0Gw==
+releaseNotes: |-
+  - Added authenticated automatic updates on native Windows ARM64/x64 and Linux
+    ARM64/x64 AppImages using an embedded, reviewed TUF root. Windows and Linux
+    users upgrading from 0.0.11 must install 0.0.13 manually once to bootstrap
+    the new updater; later releases can update automatically.
+  - Added fail-closed update verification for corrupt, expired, incorrectly
+    signed, missing, redirected, mismatched, and path-escaping metadata, while
+    preserving any newer TUF root already trusted by an installed application.
+  - Added native Windows install/update/restart/data-preservation/uninstall and
+    Linux AppImage update/restart/data-preservation release gates on matching
+    ARM64 and x64 hosts. DEB and RPM upgrades remain managed by the system
+    package manager.
+  - Added an offline-root/three-online-key TUF signing ceremony, protected
+    metadata refresh workflow, deterministic release projections, and
+    independent public-feed verification.
+  - Windows installers and Linux packages remain unsigned in this release.
+    Published SHA-256 checksums, GitHub provenance, and TUF-authenticated
+    automatic-update metadata protect distribution without implying platform
+    code signing.
+  - Added native PDF file registration and a user-controlled Set as Default PDF App command on macOS, Windows, and Linux.
+  - Opened PDFs delivered at startup, through macOS open-file events, or to an existing application instance.
+  - Made this changelog the source for GitHub release notes and the automatic updater's in-app release notes.
+  - Reduced packaged-app overhead by retaining only the English Electron locale, excluding source maps, and keeping renderer-only libraries out of production dependencies.
+  - Kept Electron E2E, packaged-app smoke, and updater GUI verification off local
+    macOS desktops; these checks now run only on disposable GitHub Actions hosts.
+releaseDate: 2026-07-30T09:19:32.132Z
 butterPaperChannel: stable

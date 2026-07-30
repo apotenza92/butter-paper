@@ -1,13 +1,17 @@
 version: 0.0.13
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.13/Butter-Paper-Beta-macOS-arm64.zip
-    sha512: lGm+YfOuqsfcA3JHe4c4m+YtuldZO06dLEipudDQa9AqpCKvMYG7yLAoQsbesnJZDr58NSQbvNU8NdkKhU1T7A==
-    size: 121663468
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.13/Butter-Paper-Beta-macOS-arm64.dmg
-    sha512: C9CoW8Jkm5Ca0F34sxa3AnJYuN1BJeuNCf1xdAyz+KZQxGKCdsPKj8aZuSBa1oy/fUZaR93pVWA7wfNBGfhDMQ==
-    size: 111692941
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.13/Butter-Paper-Beta-macOS-arm64.zip
-sha512: lGm+YfOuqsfcA3JHe4c4m+YtuldZO06dLEipudDQa9AqpCKvMYG7yLAoQsbesnJZDr58NSQbvNU8NdkKhU1T7A==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.13/Butter-Paper-Linux-arm64.AppImage
+    sha512: XYJJLmrlFrMPBJe8xaoJzpMIOaZmiliXIEfCEqkBibUeKVhRwD70kaLXxLI0KHoojwVgZpyIf52FJvBcBP/FdQ==
+    size: 92603918
+    blockMapSize: 98650
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.13/Butter-Paper-Linux-arm64.deb
+    sha512: NEF/B9gjs+wNgjNp2/6bekpVssfjxJnJSBGWWjEbJvEBs4mxbJDvx/kve1RWTcVDXWDa0eSfDClCQdMGvFG5Jg==
+    size: 92283660
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.13/Butter-Paper-Linux-arm64.rpm
+    sha512: ql40fc8Xt4HMvXfkTXnHjn+SxF3GVeMh+dZ0uIa6dqwIV7hHyXaGKyneeGBUI+INHt/y0rawalroR4G3LfzMag==
+    size: 80366193
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.13/Butter-Paper-Linux-arm64.AppImage
+sha512: XYJJLmrlFrMPBJe8xaoJzpMIOaZmiliXIEfCEqkBibUeKVhRwD70kaLXxLI0KHoojwVgZpyIf52FJvBcBP/FdQ==
 releaseNotes: |-
   - Added authenticated automatic updates on native Windows ARM64/x64 and Linux
     ARM64/x64 AppImages using an embedded, reviewed TUF root. Windows and Linux
@@ -33,5 +37,5 @@ releaseNotes: |-
   - Reduced packaged-app overhead by retaining only the English Electron locale, excluding source maps, and keeping renderer-only libraries out of production dependencies.
   - Kept Electron E2E, packaged-app smoke, and updater GUI verification off local
     macOS desktops; these checks now run only on disposable GitHub Actions hosts.
-releaseDate: 2026-07-30T09:15:30.741Z
-butterPaperChannel: beta
+releaseDate: 2026-07-30T09:15:05.681Z
+butterPaperChannel: stable

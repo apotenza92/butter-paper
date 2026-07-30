@@ -1,0 +1,56 @@
+version: 0.0.13
+files:
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.13/Butter-Paper-Windows-x64-Setup.exe
+    sha512: pEDUxQqUyv6UeuariqwT7w6gdywpR1TGvezWdSugGkPBjYplTnFyYXW0qzeF7EXKo8YBn5BC9AnAvZWqjn68tw==
+    size: 103347316
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.13/Butter-Paper-Windows-x64-Setup.exe
+sha512: pEDUxQqUyv6UeuariqwT7w6gdywpR1TGvezWdSugGkPBjYplTnFyYXW0qzeF7EXKo8YBn5BC9AnAvZWqjn68tw==
+releaseNotes: "- Added authenticated automatic updates on native Windows ARM64/x64 and Linux\r
+
+  \  ARM64/x64 AppImages using an embedded, reviewed TUF root. Windows and Linux\r
+
+  \  users upgrading from 0.0.11 must install 0.0.13 manually once to bootstrap\r
+
+  \  the new updater; later releases can update automatically.\r
+
+  - Added fail-closed update verification for corrupt, expired, incorrectly\r
+
+  \  signed, missing, redirected, mismatched, and path-escaping metadata, while\r
+
+  \  preserving any newer TUF root already trusted by an installed application.\r
+
+  - Added native Windows install/update/restart/data-preservation/uninstall and\r
+
+  \  Linux AppImage update/restart/data-preservation release gates on matching\r
+
+  \  ARM64 and x64 hosts. DEB and RPM upgrades remain managed by the system\r
+
+  \  package manager.\r
+
+  - Added an offline-root/three-online-key TUF signing ceremony, protected\r
+
+  \  metadata refresh workflow, deterministic release projections, and\r
+
+  \  independent public-feed verification.\r
+
+  - Windows installers and Linux packages remain unsigned in this release.\r
+
+  \  Published SHA-256 checksums, GitHub provenance, and TUF-authenticated\r
+
+  \  automatic-update metadata protect distribution without implying platform\r
+
+  \  code signing.\r
+
+  - Added native PDF file registration and a user-controlled Set as Default PDF App command on macOS, Windows, and Linux.\r
+
+  - Opened PDFs delivered at startup, through macOS open-file events, or to an existing application instance.\r
+
+  - Made this changelog the source for GitHub release notes and the automatic updater's in-app release notes.\r
+
+  - Reduced packaged-app overhead by retaining only the English Electron locale, excluding source maps, and keeping renderer-only libraries out of production dependencies.\r
+
+  - Kept Electron E2E, packaged-app smoke, and updater GUI verification off local\r
+
+  \  macOS desktops; these checks now run only on disposable GitHub Actions hosts."
+releaseDate: 2026-07-30T09:12:43.243Z
+butterPaperChannel: stable
