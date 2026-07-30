@@ -75,6 +75,9 @@ importers:
       '@butter-paper/pdf':
         specifier: workspace:*
         version: link:../../packages/pdf
+      brace-expansion:
+        specifier: 5.0.9
+        version: 5.0.9
       electron-updater:
         specifier: 6.8.9
         version: 6.8.9

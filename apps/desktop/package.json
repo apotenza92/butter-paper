@@ -25,6 +25,7 @@
     "@base-ui/react": "^1.6.0",
     "@butter-paper/core": "workspace:*",
     "@butter-paper/pdf": "workspace:*",
+    "brace-expansion": "5.0.9",
     "electron-updater": "6.8.9",
     "minimatch": "10.2.6",
     "pdfjs-dist": "5.6.205",
