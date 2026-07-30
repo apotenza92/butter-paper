@@ -207,10 +207,13 @@ function installedArchive(executable) {
   return path.join(path.dirname(executable), 'resources', 'app.asar');
 }
 
-function installedVersion(executable) {
-  const archive = installedArchive(executable);
+function archiveVersion(archive) {
   asar.uncache(archive);
   return JSON.parse(asar.extractFile(archive, 'package.json').toString('utf8')).version;
+}
+
+function installedVersion(executable) {
+  return archiveVersion(installedArchive(executable));
 }
 
 function isPidAlive(pid) {
@@ -278,7 +281,90 @@ function restrictedEnvironment(overrides) {
   ]);
 }
 
-async function waitForWindowsReplacement(executable, candidateArchive, version) {
+function findWindowsArchives(root, depth = 0) {
+  if (depth > 5 || !fs.statSync(root, { throwIfNoEntry: false })?.isDirectory()) return [];
+  const archives = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const candidate = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      archives.push(...findWindowsArchives(candidate, depth + 1));
+    } else if (entry.isFile() && entry.name === 'app.asar') {
+      try {
+        archives.push({
+          path: candidate,
+          sha256: digest(candidate),
+          version: archiveVersion(candidate),
+        });
+      } catch (error) {
+        archives.push({ path: candidate, error: error.message });
+      }
+    }
+  }
+  return archives;
+}
+
+function powershellJson(command) {
+  const result = spawnSync('powershell.exe', [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    command,
+  ], { encoding: 'utf8' });
+  if (result.error) return { error: result.error.message };
+  if (result.status !== 0) {
+    return { error: result.stderr.trim() || `PowerShell exited with status ${result.status}` };
+  }
+  try {
+    return JSON.parse(result.stdout.trim() || '[]');
+  } catch (error) {
+    return { error: error.message, stdout: result.stdout.trim() };
+  }
+}
+
+function windowsReplacementSnapshot(executable, candidateArchive, version, appPid) {
+  let installed;
+  try {
+    const archive = installedArchive(executable);
+    installed = {
+      executableExists: fs.existsSync(executable),
+      archive,
+      archiveExists: fs.existsSync(archive),
+      sha256: fs.existsSync(archive) ? digest(archive) : null,
+      version: fs.existsSync(archive) ? archiveVersion(archive) : null,
+    };
+  } catch (error) {
+    installed = { error: error.message };
+  }
+  return {
+    expected: {
+      archive: candidateArchive,
+      sha256: digest(candidateArchive),
+      version,
+    },
+    installed,
+    appPid,
+    appPidAlive: isPidAlive(appPid),
+    archivesUnderLocalPrograms: findWindowsArchives(
+      path.join(process.env.LOCALAPPDATA, 'Programs'),
+    ),
+    processes: powershellJson(
+      '$items=@(Get-CimInstance Win32_Process | '
+      + "Where-Object {$_.Name -match 'Butter|Setup|Uninstall' -or "
+      + "$_.ExecutablePath -like \"$env:LOCALAPPDATA\\Programs\\*\"} | "
+      + 'Select-Object Name,ProcessId,ParentProcessId,ExecutablePath,CommandLine); '
+      + 'ConvertTo-Json -Compress -Depth 3 -InputObject $items',
+    ),
+    uninstallEntries: powershellJson(
+      "$items=@(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' "
+      + "| Where-Object {$_.DisplayName -like 'Butter Paper*'} "
+      + '| Select-Object DisplayName,DisplayVersion,InstallLocation,UninstallString); '
+      + 'ConvertTo-Json -Compress -Depth 3 -InputObject $items',
+    ),
+  };
+}
+
+async function waitForWindowsReplacement(executable, candidateArchive, version, appPid) {
   const expected = digest(candidateArchive);
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline) {
@@ -291,7 +377,10 @@ async function waitForWindowsReplacement(executable, candidateArchive, version) 
     }
     await new Promise(resolve => setTimeout(resolve, 500));
   }
-  throw new Error('Timed out waiting for byte-exact Windows N-1 replacement.');
+  const snapshot = windowsReplacementSnapshot(executable, candidateArchive, version, appPid);
+  throw new Error(
+    `Timed out waiting for byte-exact Windows N-1 replacement.\n${JSON.stringify(snapshot, null, 2)}`,
+  );
 }
 
 function writeEvidence({
@@ -455,7 +544,12 @@ async function main(argv = process.argv.slice(2)) {
       if (process.platform === 'win32') {
         const unpacked = arch === 'x64' ? 'win-unpacked' : `win-${arch}-unpacked`;
         const candidateArchive = path.join(candidateDirectory, unpacked, 'resources', 'app.asar');
-        await waitForWindowsReplacement(installedExecutable, candidateArchive, server.version);
+        await waitForWindowsReplacement(
+          installedExecutable,
+          candidateArchive,
+          server.version,
+          child.pid,
+        );
         const relaunched = await waitForEvent(
           eventPath,
           new Set(['updated-runtime-launched', 'error']),

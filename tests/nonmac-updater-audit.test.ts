@@ -94,6 +94,8 @@ describe('native Windows and Linux updater audit', () => {
     expect(script).toContain("path.join(userData, 'update-trust', 'metadata', 'root.json')");
     expect(script).toContain('AppImage updater did not replace the installed bytes');
     expect(script).toContain('waitForWindowsReplacement');
+    expect(script).toContain('archivesUnderLocalPrograms');
+    expect(script).toContain('uninstallEntries');
     expect(script).toContain('Updated Windows runtime did not relaunch at the candidate version');
     expect(script).toContain('PACKAGE_SHA256SUMS');
     expect(script).not.toContain('copyFileSync(privateKeyPath');
