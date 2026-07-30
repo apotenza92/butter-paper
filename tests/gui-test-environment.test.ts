@@ -5,7 +5,7 @@ describe('GUI test environment', () => {
   it('rejects GUI test launches on a local macOS desktop', () => {
     expect(() => assertIsolatedGuiTestEnvironment('Drawing test', {
       platform: 'darwin',
-      githubActions: undefined,
+      githubActions: '',
     })).toThrow(/disabled on local macOS/);
   });
 
