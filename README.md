@@ -3,7 +3,7 @@
 Butter Paper is a cross-platform desktop app for reviewing and marking up PDFs,
 with a focus on architecture, engineering, and construction workflows.
 
-The current release candidate is version 0.0.13. Stable and beta are
+The current release candidate is version 0.0.14. Stable and beta are
 intentionally maintained as separate application identities, so both can be
 installed at once without sharing settings or updater trust.
 
@@ -45,10 +45,12 @@ Windows, and Linux:
   TUF-authenticated path. DEB and RPM upgrades remain the responsibility of the
   system package manager.
 
-Windows and Linux users on 0.0.11 need to install 0.0.13 manually once because
+Windows and Linux users on 0.0.11 need to install 0.0.14 manually once because
 those older packages did not contain the TUF updater. Automatic updates apply
-after that bootstrap install. A stable install remains stable and a beta
-install remains beta.
+after that bootstrap install. Existing 0.0.13 installations update
+automatically. A stable release advances both the stable and beta feeds, while
+a beta prerelease advances only the beta feed. A stable install remains stable
+and a beta install remains beta.
 
 Every release publishes SHA-256 checksums, GitHub build provenance, exact
 updater metadata, and release notes extracted from [CHANGELOG.md](CHANGELOG.md).

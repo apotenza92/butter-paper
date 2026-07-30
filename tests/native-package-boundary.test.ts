@@ -45,11 +45,12 @@ describe('native release package boundaries', () => {
     expect(verifier).toContain('& pnpm test:package:desktop');
     expect(verifier).toContain('missing TUF-gated updater configuration');
     expect(verifier).toContain('missing the reviewed TUF root');
+    expect(verifier).toContain('verify-packaged-runtime-dependencies.cjs');
     expect(verifier).toContain("Invoke-And-Wait $uninstaller.FullName @('/S')");
     expect(verifier).toContain('NSIS uninstall left the install directory behind');
-    expect(installerInclude).toContain('!macro customFiles_arm64');
-    expect(installerInclude).toContain('!ifdef APP_ARM64');
-    expect(installerInclude).toContain('$%BP_NSIS_ARM64_UNPACKED_DIR%\\*.dll');
+    expect(installerInclude).not.toContain('customFiles_arm64');
+    expect(installerInclude).not.toContain('BP_NSIS_ARM64_UNPACKED_DIR');
+    expect(workflow).toContain('verify-release-package-sizes.mjs');
   });
 
   it('tests the AppImage, installed DEB, and extracted RPM on native Linux', () => {
@@ -65,6 +66,7 @@ describe('native release package boundaries', () => {
     expect(verifier.match(/BP_RELEASE_CHANNEL="\$channel"/g)).toHaveLength(2);
     expect(verifier).toContain('Package verification requires native');
     expect(verifier).toContain('assert_update_contract');
+    expect(verifier).toContain('verify-packaged-runtime-dependencies.cjs');
     expect(verifier).toContain('maximum_glibc=\'2.35\'');
     expect(verifier).toContain('assert_elf_contract');
     expect(verifier).toContain('ldd "$candidate"');
@@ -82,6 +84,19 @@ describe('native release package boundaries', () => {
     expect(contract).toContain('update-${variant}-win32');
     expect(contract).toContain('update-${variant}-linux');
     expect(workflow).toContain('uses: ./.github/workflows/nonmac-updater-audit.yml');
+  });
+
+  it('promotes stable code to both isolated products while beta releases remain beta-only', () => {
+    const workflow = readWorkflow();
+
+    expect(workflow).toContain(
+      "['channel=stable', 'environment=stable-release', 'prerelease=false', 'variants=[\"stable\",\"beta\"]']",
+    );
+    expect(workflow).toContain(
+      "['channel=beta', 'environment=beta-release', 'prerelease=true', 'variants=[\"beta\"]']",
+    );
+    expect(workflow).toContain("const app = channel === 'beta' ? 'Butter Paper Beta.app' : 'Butter Paper.app'");
+    expect(workflow).toContain("variant === 'beta' || !release.prerelease");
   });
 
   it('supplies Electron ICU data to the native Windows ARM canvas module', () => {

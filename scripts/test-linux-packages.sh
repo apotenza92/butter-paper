@@ -209,6 +209,8 @@ assert_update_contract() {
     echo "Linux package contains private TUF key material: $trust_root" >&2
     exit 1
   }
+  node scripts/verify-packaged-runtime-dependencies.cjs \
+    "$(dirname "$executable")/resources/app.asar"
 }
 
 smoke_executable() {
