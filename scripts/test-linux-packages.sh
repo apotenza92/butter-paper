@@ -153,8 +153,12 @@ assert_desktop_integration() {
     echo "$label desktop entry is invalid: $desktop" >&2
     exit 1
   }
-  grep -E '^Exec=.*'"$executable_name" "$desktop" >/dev/null || {
-    echo "$label desktop entry does not launch $executable_name:" >&2
+  local desktop_executable="$executable_name"
+  if [[ "$label" == AppImage ]]; then
+    desktop_executable='AppRun'
+  fi
+  grep -E '^Exec=.*'"$desktop_executable" "$desktop" >/dev/null || {
+    echo "$label desktop entry does not launch $desktop_executable:" >&2
     grep -E '^Exec=' "$desktop" >&2 || true
     exit 1
   }

@@ -70,6 +70,7 @@ describe('native release package boundaries', () => {
     expect(verifier).toContain('ldd "$candidate"');
     expect(verifier).toContain('assert_desktop_integration');
     expect(verifier).toContain('desktop-file-validate');
+    expect(verifier).toContain("desktop_executable='AppRun'");
   });
 
   it('publishes authenticated update metadata for all supported updater packages', () => {
