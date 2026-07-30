@@ -1,10 +1,12 @@
 import { _electron as electron } from '@playwright/test';
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(moduleDir, '../../..');
+const require = createRequire(import.meta.url);
 
 export function resolveDesktopEntryPoint() {
   const explicit = process.env.BP_DESKTOP_ENTRY;
@@ -26,7 +28,16 @@ export async function launchButterPaper(options = {}) {
   if (!entryPoint) {
     return null;
   }
-  const executablePath = process.env.BP_ELECTRON_EXECUTABLE_PATH;
+  const explicitExecutablePath = process.env.BP_ELECTRON_EXECUTABLE_PATH;
+  const installedElectronPath = require('electron');
+  const executablePath = explicitExecutablePath && existsSync(explicitExecutablePath)
+    ? explicitExecutablePath
+    : typeof installedElectronPath === 'string' && existsSync(installedElectronPath)
+      ? installedElectronPath
+      : undefined;
+  const launchArgs = explicitExecutablePath && executablePath === explicitExecutablePath
+    ? []
+    : [entryPoint];
 
   const env = {
     ...process.env,
@@ -38,8 +49,8 @@ export async function launchButterPaper(options = {}) {
   delete env.ELECTRON_RUN_AS_NODE;
 
   return await electron.launch({
-    ...(executablePath && existsSync(executablePath) ? { executablePath } : {}),
-    args: executablePath && existsSync(executablePath) ? [] : [entryPoint],
+    ...(executablePath ? { executablePath } : {}),
+    args: launchArgs,
     env,
     timeout: 60_000,
   });
