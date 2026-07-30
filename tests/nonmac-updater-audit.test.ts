@@ -95,6 +95,10 @@ describe('native Windows and Linux updater audit', () => {
     expect(script).toContain('AppImage updater did not replace the installed bytes');
     expect(script).toContain('waitForWindowsReplacement');
     expect(script).toContain('waitForWindowsRelaunch');
+    expect(script).toContain('windowsUpdatedProcessIds');
+    expect(script).toContain("source: 'native-process'");
+    expect(script).toContain('path.join(process.env.APPDATA, productName)');
+    expect(script).toContain("BP_TEST_USER_DATA_DIR: process.platform === 'linux'");
     expect(script).toContain('Windows replacement is still pending after 180 seconds');
     expect(script).toContain('Date.now() + 600_000');
     expect(script).toContain('archivesUnderLocalPrograms');

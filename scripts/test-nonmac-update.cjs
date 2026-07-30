@@ -258,6 +258,28 @@ function windowsProcessIds(executable) {
     .filter(pid => Number.isInteger(pid) && pid > 0);
 }
 
+function windowsUpdatedProcessIds(executable) {
+  const result = spawnSync('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    "$p=@(Get-CimInstance Win32_Process | Where-Object {"
+      + "$_.ExecutablePath -eq $env:BP_AUDIT_EXECUTABLE -and "
+      + "$_.CommandLine -match '(?:^|\\s)--updated(?:\\s|$)'"
+      + '} | Select-Object -ExpandProperty ProcessId); '
+      + 'ConvertTo-Json -Compress -InputObject $p',
+  ], {
+    encoding: 'utf8',
+    env: { ...process.env, BP_AUDIT_EXECUTABLE: executable },
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error('Could not inspect updated Butter Paper processes.');
+  const parsed = JSON.parse(result.stdout.trim() || '[]');
+  return (Array.isArray(parsed) ? parsed : [parsed])
+    .map(Number)
+    .filter(pid => Number.isInteger(pid) && pid > 0);
+}
+
 async function waitForPathRemoval(target, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
   while (fs.existsSync(target) && Date.now() < deadline) {
@@ -384,13 +406,30 @@ async function waitForWindowsReplacement(executable, candidateArchive, version, 
 }
 
 async function waitForWindowsRelaunch(eventPath, executable, candidateArchive, version, appPid) {
+  const acceptedEvents = new Set(['updated-runtime-launched', 'error']);
+  const expectedArchiveDigest = digest(candidateArchive);
   const deadline = Date.now() + 600_000;
   const diagnosticDeadline = Date.now() + 180_000;
   let diagnosticCaptured = false;
   while (Date.now() < deadline) {
-    const event = readEvents(eventPath)
-      .find(candidate => new Set(['updated-runtime-launched', 'error']).has(candidate.name));
+    const event = readEvents(eventPath).find(candidate => acceptedEvents.has(candidate.name));
     if (event) return event;
+    const updatedPids = windowsUpdatedProcessIds(executable);
+    if (updatedPids.length > 0) {
+      try {
+        if (digest(installedArchive(executable)) === expectedArchiveDigest
+          && installedVersion(executable) === version) {
+          return {
+            name: 'updated-runtime-launched',
+            currentVersion: version,
+            pid: updatedPids[0],
+            source: 'native-process',
+          };
+        }
+      } catch {
+        // The updated process can become visible before NSIS releases app.asar.
+      }
+    }
     if (!diagnosticCaptured && Date.now() >= diagnosticDeadline) {
       diagnosticCaptured = true;
       process.stderr.write(
@@ -404,7 +443,7 @@ async function waitForWindowsRelaunch(eventPath, executable, candidateArchive, v
         }\n`,
       );
     }
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await new Promise(resolve => setTimeout(resolve, 1_000));
   }
   const snapshot = windowsReplacementSnapshot(executable, candidateArchive, version, appPid);
   throw new Error(
@@ -479,7 +518,12 @@ async function main(argv = process.argv.slice(2)) {
     ? 'latest.yml'
     : arch === 'arm64' ? 'latest-linux-arm64.yml' : 'latest-linux.yml';
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'butter-paper-updater-'));
-  const userData = path.join(temporaryRoot, 'user-data');
+  const userData = process.platform === 'win32'
+    ? path.join(process.env.APPDATA, productName)
+    : path.join(temporaryRoot, 'user-data');
+  if (process.platform === 'win32' && fs.existsSync(userData)) {
+    throw new Error(`Windows updater audit requires an unused product data directory: ${userData}`);
+  }
   const markerPath = path.join(userData, 'preservation-marker.bin');
   const settingsPath = path.join(userData, 'update-settings.json');
   const marker = Buffer.from('Butter Paper preserved updater data\n');
@@ -533,7 +577,7 @@ async function main(argv = process.argv.slice(2)) {
         APPIMAGE: process.platform === 'linux' ? installedAppImage : undefined,
         APPIMAGE_EXTRACT_AND_RUN: process.platform === 'linux' ? '1' : undefined,
         BP_TEST_MODE: '1',
-        BP_TEST_USER_DATA_DIR: userData,
+        BP_TEST_USER_DATA_DIR: process.platform === 'linux' ? userData : undefined,
         BP_TUF_REPOSITORY_URL: `${server.baseUrl}/tuf`,
         BP_UPDATE_EVENT_PATH: eventPath,
         BP_UPDATE_EXPECT_VERSION: scenarioName === 'valid' ? server.version : undefined,
@@ -659,6 +703,9 @@ async function main(argv = process.argv.slice(2)) {
       rootPath,
       scenarios,
     });
+    if (process.platform === 'win32') {
+      fs.rmSync(userData, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    }
     fs.rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
     if (!failure && cleanupFailure) throw cleanupFailure;
   }
