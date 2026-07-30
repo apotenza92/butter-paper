@@ -34,8 +34,6 @@ const releaseNotes = extractReleaseNotes(
   desktopPackage.version,
 );
 const tufRootPath = path.join(__dirname, 'build', 'update-trust', 'root.json');
-const assistedNsisMigrationFixture = process.env.BP_UPDATE_TEST_MODE === '1'
-  && process.env.BP_NSIS_ASSISTED_MIGRATION_FIXTURE === '1';
 if (process.env.BP_REQUIRE_TUF_ROOT === '1' && !existsSync(tufRootPath)) {
   throw new Error(`A reviewed Butter Paper TUF trust root is required at ${tufRootPath}.`);
 }
@@ -164,10 +162,10 @@ module.exports = {
     artifactName: `${artifactPrefix}-Windows-\${arch}-Setup.\${ext}`,
   },
   nsis: {
-    oneClick: !assistedNsisMigrationFixture,
+    oneClick: false,
     perMachine: false,
-    allowElevation: assistedNsisMigrationFixture,
-    allowToChangeInstallationDirectory: assistedNsisMigrationFixture,
+    allowElevation: true,
+    allowToChangeInstallationDirectory: true,
     include: 'build/installer.nsh',
     deleteAppDataOnUninstall: false,
     installerIcon: `${iconAssetsDirectory}/icon.ico`,

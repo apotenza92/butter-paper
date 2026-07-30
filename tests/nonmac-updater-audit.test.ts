@@ -84,7 +84,7 @@ describe('native Windows and Linux updater audit', () => {
     expect(workflow).toContain('BP_REQUIRE_TUF_ROOT: \'1\'');
     expect(workflow).toContain('create-test-tuf-repository.cjs');
     expect(workflow).toContain('test-nonmac-update.cjs');
-    expect(workflow).toContain('BP_NSIS_ASSISTED_MIGRATION_FIXTURE=1');
+    expect(workflow).not.toContain('BP_NSIS_ASSISTED_MIGRATION_FIXTURE');
     expect(workflow).toContain('--linux AppImage');
     expect(workflow).not.toContain('secrets.');
     expect(script).toContain("['wrong-signature', 'corrupt-payload', 'valid']");

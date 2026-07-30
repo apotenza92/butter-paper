@@ -104,7 +104,7 @@ describe('Electron Builder release identity', () => {
       electronLanguages: ['en-US'],
       releaseNotes: expect.stringContaining('Added native PDF file registration'),
       nsisInclude: 'build/installer.nsh',
-      nsisOneClick: true,
+      nsisOneClick: false,
       macMinimumSystemVersion: '12.0',
     });
     expect(config.files).toContain('!**/*.map');
@@ -138,9 +138,9 @@ describe('Electron Builder release identity', () => {
       windowsArtifact: 'Butter-Paper-Beta-Windows-${arch}-Setup.${ext}',
       compression: 'maximum',
       nsisInclude: 'build/installer.nsh',
-      nsisOneClick: true,
-      nsisAllowElevation: false,
-      nsisAllowToChangeInstallationDirectory: false,
+      nsisOneClick: false,
+      nsisAllowElevation: true,
+      nsisAllowToChangeInstallationDirectory: true,
     });
     expect(config.files).toContain('!node_modules/@napi-rs/canvas-win32-arm64-msvc/**/*');
     expect(config.files).not.toContain('!node_modules/@napi-rs/canvas-win32-x64-msvc/**/*');

@@ -139,11 +139,8 @@ jobs:
           set_version "$PREVIOUS_VERSION"
           export BP_RELEASE_OUTPUT_DIR=ci-updater/previous
           if [ "$BP_AUDIT_PLATFORM" = win32 ]; then
-            export BP_UPDATE_TEST_MODE=1
-            export BP_NSIS_ASSISTED_MIGRATION_FIXTURE=1
             pnpm --dir apps/desktop exec electron-builder \
               --config electron-builder.config.cjs --win nsis "--$BP_AUDIT_ARCH" --publish never
-            unset BP_UPDATE_TEST_MODE BP_NSIS_ASSISTED_MIGRATION_FIXTURE
           else
             pnpm --dir apps/desktop exec electron-builder \
               --config electron-builder.config.cjs --linux AppImage "--$BP_AUDIT_ARCH" --publish never
