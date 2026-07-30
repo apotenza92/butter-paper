@@ -2,11 +2,11 @@
 
 All notable Butter Paper changes are recorded here.
 
-## [0.0.12]
+## [0.0.13]
 
 - Added authenticated automatic updates on native Windows ARM64/x64 and Linux
   ARM64/x64 AppImages using an embedded, reviewed TUF root. Windows and Linux
-  users upgrading from 0.0.11 must install 0.0.12 manually once to bootstrap
+  users upgrading from 0.0.11 must install 0.0.13 manually once to bootstrap
   the new updater; later releases can update automatically.
 - Added fail-closed update verification for corrupt, expired, incorrectly
   signed, missing, redirected, mismatched, and path-escaping metadata, while
@@ -26,6 +26,8 @@ All notable Butter Paper changes are recorded here.
 - Opened PDFs delivered at startup, through macOS open-file events, or to an existing application instance.
 - Made this changelog the source for GitHub release notes and the automatic updater's in-app release notes.
 - Reduced packaged-app overhead by retaining only the English Electron locale, excluding source maps, and keeping renderer-only libraries out of production dependencies.
+- Kept Electron E2E, packaged-app smoke, and updater GUI verification off local
+  macOS desktops; these checks now run only on disposable GitHub Actions hosts.
 
 ## [0.0.11]
 
