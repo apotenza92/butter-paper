@@ -366,7 +366,7 @@ function windowsReplacementSnapshot(executable, candidateArchive, version, appPi
 
 async function waitForWindowsReplacement(executable, candidateArchive, version, appPid) {
   const expected = digest(candidateArchive);
-  const deadline = Date.now() + 180_000;
+  const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     try {
       if (digest(installedArchive(executable)) === expected && installedVersion(executable) === version) {
@@ -380,6 +380,35 @@ async function waitForWindowsReplacement(executable, candidateArchive, version, 
   const snapshot = windowsReplacementSnapshot(executable, candidateArchive, version, appPid);
   throw new Error(
     `Timed out waiting for byte-exact Windows N-1 replacement.\n${JSON.stringify(snapshot, null, 2)}`,
+  );
+}
+
+async function waitForWindowsRelaunch(eventPath, executable, candidateArchive, version, appPid) {
+  const deadline = Date.now() + 600_000;
+  const diagnosticDeadline = Date.now() + 180_000;
+  let diagnosticCaptured = false;
+  while (Date.now() < deadline) {
+    const event = readEvents(eventPath)
+      .find(candidate => new Set(['updated-runtime-launched', 'error']).has(candidate.name));
+    if (event) return event;
+    if (!diagnosticCaptured && Date.now() >= diagnosticDeadline) {
+      diagnosticCaptured = true;
+      process.stderr.write(
+        `Windows replacement is still pending after 180 seconds.\n${
+          JSON.stringify(windowsReplacementSnapshot(
+            executable,
+            candidateArchive,
+            version,
+            appPid,
+          ), null, 2)
+        }\n`,
+      );
+    }
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  const snapshot = windowsReplacementSnapshot(executable, candidateArchive, version, appPid);
+  throw new Error(
+    `Timed out waiting for updated Windows runtime to relaunch.\n${JSON.stringify(snapshot, null, 2)}`,
   );
 }
 
@@ -544,10 +573,14 @@ async function main(argv = process.argv.slice(2)) {
       if (process.platform === 'win32') {
         const unpacked = arch === 'x64' ? 'win-unpacked' : `win-${arch}-unpacked`;
         const candidateArchive = path.join(candidateDirectory, unpacked, 'resources', 'app.asar');
-        const relaunched = await waitForEvent(
+        // Wait on the event log while NSIS replaces the installation. Avoid
+        // repeatedly opening app.asar during the previous uninstaller's atomic removal.
+        const relaunched = await waitForWindowsRelaunch(
           eventPath,
-          new Set(['updated-runtime-launched', 'error']),
-          180_000,
+          installedExecutable,
+          candidateArchive,
+          server.version,
+          child.pid,
         );
         if (relaunched.name === 'error') {
           throw new Error(`Updated Windows runtime failed: ${relaunched.message || '<missing>'}`);
@@ -558,8 +591,6 @@ async function main(argv = process.argv.slice(2)) {
           throw new Error('Updated Windows runtime did not relaunch at the candidate version.');
         }
         relaunchedPid = relaunched.pid;
-        // Do not read app.asar while NSIS is uninstalling the previous version.
-        // On Windows, continuous hash polling can contend with the old uninstaller.
         await waitForWindowsReplacement(
           installedExecutable,
           candidateArchive,

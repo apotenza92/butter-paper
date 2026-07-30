@@ -29,5 +29,7 @@
   DeleteRegKey SHELL_CONTEXT "Software\Classes\Applications\${APP_EXECUTABLE_FILENAME}"
   DeleteRegKey SHELL_CONTEXT "${BP_CAPABILITIES_KEY}"
   DeleteRegValue SHELL_CONTEXT "Software\RegisteredApplications" "${PRODUCT_NAME}"
-  System::Call "shell32::SHChangeNotify(i, i, i, i) v (0x08000000, 0, 0, 0)"
+  ${ifNot} ${isUpdated}
+    System::Call "shell32::SHChangeNotify(i, i, i, i) v (0x08000000, 0, 0, 0)"
+  ${endIf}
 !macroend

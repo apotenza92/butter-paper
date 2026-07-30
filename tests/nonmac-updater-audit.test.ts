@@ -94,10 +94,13 @@ describe('native Windows and Linux updater audit', () => {
     expect(script).toContain("path.join(userData, 'update-trust', 'metadata', 'root.json')");
     expect(script).toContain('AppImage updater did not replace the installed bytes');
     expect(script).toContain('waitForWindowsReplacement');
+    expect(script).toContain('waitForWindowsRelaunch');
+    expect(script).toContain('Windows replacement is still pending after 180 seconds');
+    expect(script).toContain('Date.now() + 600_000');
     expect(script).toContain('archivesUnderLocalPrograms');
     expect(script).toContain('uninstallEntries');
     expect(script).toContain('Updated Windows runtime did not relaunch at the candidate version');
-    expect(script.indexOf("new Set(['updated-runtime-launched', 'error'])")).toBeLessThan(
+    expect(script.indexOf('await waitForWindowsRelaunch(')).toBeLessThan(
       script.lastIndexOf('await waitForWindowsReplacement('),
     );
     expect(script).toContain('PACKAGE_SHA256SUMS');

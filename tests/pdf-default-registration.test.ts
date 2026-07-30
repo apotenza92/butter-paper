@@ -20,4 +20,10 @@ describe('Windows PDF handler registration', () => {
     );
     expect(installerSource).not.toMatch(/DeleteRegKey SHELL_CONTEXT "Software\\Classes\\\.pdf"/);
   });
+
+  it('defers the shell association refresh to the new installer during updates', () => {
+    const uninstall = installerSource.split('!macro customUnInstall', 2)[1];
+    expect(uninstall).toContain('${ifNot} ${isUpdated}');
+    expect(uninstall).toContain('SHChangeNotify');
+  });
 });
