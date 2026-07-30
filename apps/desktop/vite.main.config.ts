@@ -4,6 +4,7 @@ const external = [
   'electron',
   'node:fs',
   'node:fs/promises',
+  'node:http',
   'node:module',
   'node:path',
   'node:url',
@@ -12,7 +13,9 @@ const external = [
   '@napi-rs/canvas',
   'pdf-lib',
   'pdfjs-dist',
+  'tuf-js',
   /^pdfjs-dist\//,
+  /^tuf-js\//,
 ];
 
 export default defineConfig({

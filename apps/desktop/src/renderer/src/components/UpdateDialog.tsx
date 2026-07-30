@@ -39,7 +39,7 @@ export function UpdateDialog({ hasDirtyDocuments, productName, status, onInstall
           <DialogDescription>
             {hasDirtyDocuments
               ? 'Save or close every modified document before restarting to install the update.'
-              : `The signed update has downloaded. Restart ${productName} to install it.`}
+              : `The authenticated update has downloaded. Restart ${productName} to install it.`}
           </DialogDescription>
         </DialogHeader>
         {status?.releaseNotes ? (

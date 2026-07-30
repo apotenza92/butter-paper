@@ -18,17 +18,18 @@ describe('native release package boundaries', () => {
     expect(workflow).not.toContain('secrets.APPLE_NOTARYTOOL_ISSUER_ID');
   });
 
-  it('proves release-source provenance and keeps publication credential-free', () => {
+  it('proves release-source provenance and gates release plus feed publication together', () => {
     const workflow = readWorkflow();
     const publishJob = workflow.split('  publish:', 2)[1].split('  verify-publication:', 1)[0];
 
     expect(workflow).toContain('Prove tag commit belongs to the approved release source');
     expect(workflow).toContain('DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}');
     expect(workflow).toContain('git merge-base --is-ancestor');
-    expect(workflow).toContain('needs: [prepare, assemble, attest]');
+    expect(workflow).toContain('needs: [prepare, seal-tuf, attest]');
     expect(publishJob).toContain('Release prerelease classification is wrong');
-    expect(publishJob).not.toContain('git commit');
-    expect(publishJob).not.toContain('git push');
+    expect(publishJob).toContain('Publish authenticated updater feeds atomically');
+    expect(publishJob).toContain('git commit -m "Publish Butter Paper');
+    expect(publishJob).toContain('git push origin HEAD:updates');
   });
 
   it('installs, feature-tests, and uninstalls the exact Windows NSIS package', () => {
@@ -42,7 +43,8 @@ describe('native release package boundaries', () => {
     expect(verifier).toContain('Assert-PeMachine $runtimePath $expectedMachine');
     expect(verifier).toContain('$env:BP_RELEASE_CHANNEL = $Channel');
     expect(verifier).toContain('& pnpm test:package:desktop');
-    expect(verifier).toContain('unexpectedly contains updater configuration');
+    expect(verifier).toContain('missing TUF-gated updater configuration');
+    expect(verifier).toContain('missing the reviewed TUF root');
     expect(verifier).toContain("Invoke-And-Wait $uninstaller.FullName @('/S')");
     expect(verifier).toContain('NSIS uninstall left the install directory behind');
     expect(installerInclude).toContain('!macro customFiles_arm64');
@@ -62,17 +64,23 @@ describe('native release package boundaries', () => {
     expect(verifier.match(/pnpm test:package:desktop/g)).toHaveLength(2);
     expect(verifier.match(/BP_RELEASE_CHANNEL="\$channel"/g)).toHaveLength(2);
     expect(verifier).toContain('Package verification requires native');
-    expect(verifier).toContain('assert_no_update_config');
+    expect(verifier).toContain('assert_update_contract');
+    expect(verifier).toContain('maximum_glibc=\'2.35\'');
+    expect(verifier).toContain('assert_elf_contract');
+    expect(verifier).toContain('ldd "$candidate"');
+    expect(verifier).toContain('assert_desktop_integration');
+    expect(verifier).toContain('desktop-file-validate');
   });
 
-  it('publishes update feeds only for the supported macOS updater', () => {
+  it('publishes authenticated update metadata for all supported updater packages', () => {
     const workflow = readWorkflow();
     const contract = readFileSync(resolve('scripts/release-asset-contract.mjs'), 'utf8');
 
-    expect(workflow).not.toContain('update-${{ matrix.variant }}-win32');
-    expect(workflow).not.toContain('update-${{ matrix.variant }}-linux');
-    expect(contract).not.toContain('update-${variant}-win32');
-    expect(contract).not.toContain('update-${variant}-linux');
+    expect(workflow).toContain('update-${{ matrix.variant }}-win32');
+    expect(workflow).toContain('update-${{ matrix.variant }}-linux');
+    expect(contract).toContain('update-${variant}-win32');
+    expect(contract).toContain('update-${variant}-linux');
+    expect(workflow).toContain('uses: ./.github/workflows/nonmac-updater-audit.yml');
   });
 
   it('supplies Electron ICU data to the native Windows ARM canvas module', () => {

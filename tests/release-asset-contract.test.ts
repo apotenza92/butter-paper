@@ -10,14 +10,15 @@ describe('release asset contract', () => {
   it('defines an exact stable superset and beta-only contract', () => {
     const stable = expectedReleaseAssetNames('stable');
     const beta = expectedReleaseAssetNames('beta');
-    expect(stable).toHaveLength(50);
-    expect(beta).toHaveLength(26);
+    expect(stable).toHaveLength(62);
+    expect(beta).toHaveLength(32);
     expect(stable).toEqual(expect.arrayContaining(beta));
     expect(beta).toContain('Butter-Paper-Beta-macOS-arm64.zip');
     expect(beta).toContain('Butter-Paper-Beta-Windows-arm64-Setup.exe');
     expect(beta).toContain('Butter-Paper-Beta-Linux-arm64.AppImage');
-    expect(beta).not.toContain('update-beta-win32-arm64.yml');
-    expect(beta).not.toContain('update-beta-linux-arm64.yml');
+    expect(beta).toContain('update-beta-win32-arm64.yml');
+    expect(beta).toContain('update-beta-linux-arm64.yml');
+    expect(beta).toContain('Butter-Paper-Beta-Windows-arm64-Setup.exe.blockmap');
     expect(beta).not.toContain('Butter-Paper-macOS-arm64.zip');
     expect(() => expectedReleaseAssetNames('nightly')).toThrow(/stable or beta/);
   });

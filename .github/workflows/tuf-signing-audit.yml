@@ -1,0 +1,68 @@
+name: Production TUF signing audit
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: butter-paper-tuf-signing-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Match protected online keys to the reviewed root
+    runs-on: ubuntu-24.04
+    environment: update-signing
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@008330803749db0355799c700092d9a85fd074e9 # v6.0.9
+        with:
+          version: 10.33.0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.16.0
+          cache: pnpm
+
+      - name: Install signing dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Sign and verify a disposable public target
+        env:
+          BUTTER_PAPER_TUF_SNAPSHOT_PRIVATE_KEY_PEM: ${{ secrets.BUTTER_PAPER_TUF_SNAPSHOT_PRIVATE_KEY_PEM }}
+          BUTTER_PAPER_TUF_TARGETS_PRIVATE_KEY_PEM: ${{ secrets.BUTTER_PAPER_TUF_TARGETS_PRIVATE_KEY_PEM }}
+          BUTTER_PAPER_TUF_TIMESTAMP_PRIVATE_KEY_PEM: ${{ secrets.BUTTER_PAPER_TUF_TIMESTAMP_PRIVATE_KEY_PEM }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export BUTTER_PAPER_TUF_METADATA_NOW
+          BUTTER_PAPER_TUF_METADATA_NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          TARGET="$RUNNER_TEMP/latest.yml"
+          OUTPUT="$RUNNER_TEMP/butter-paper-production-tuf-audit"
+          printf '%s\n' \
+            'version: 0.0.0' \
+            'audit: protected Butter Paper production signing keys' > "$TARGET"
+          node scripts/sign-tuf-update-repository.cjs \
+            --root apps/desktop/build/update-trust/root.json \
+            --target "$TARGET" \
+            --target-name latest.yml \
+            --output "$OUTPUT"
+          (cd "$OUTPUT" && sha256sum --check --strict SHA256SUMS)
+          ! grep -R -F 'PRIVATE KEY' "$OUTPUT"
+
+      - name: Upload independently reviewable public evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: butter-paper-production-tuf-signing-audit
+          path: ${{ runner.temp }}/butter-paper-production-tuf-audit
+          if-no-files-found: error
+          retention-days: 14

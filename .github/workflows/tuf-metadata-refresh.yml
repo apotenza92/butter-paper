@@ -1,0 +1,110 @@
+name: TUF metadata refresh
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-publication
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Refresh published Windows and Linux trust metadata
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: update-signing
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout trusted source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: source
+          ref: main
+
+      - name: Checkout updater feed
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          path: update-site
+          ref: updates
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@008330803749db0355799c700092d9a85fd074e9 # v6.0.9
+        with:
+          version: 10.33.0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.16.0
+          cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+
+      - name: Install signing dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+
+      - name: Refresh current target metadata without changing update bytes
+        env:
+          BUTTER_PAPER_TUF_SNAPSHOT_PRIVATE_KEY_PEM: ${{ secrets.BUTTER_PAPER_TUF_SNAPSHOT_PRIVATE_KEY_PEM }}
+          BUTTER_PAPER_TUF_TARGETS_PRIVATE_KEY_PEM: ${{ secrets.BUTTER_PAPER_TUF_TARGETS_PRIVATE_KEY_PEM }}
+          BUTTER_PAPER_TUF_TIMESTAMP_PRIVATE_KEY_PEM: ${{ secrets.BUTTER_PAPER_TUF_TIMESTAMP_PRIVATE_KEY_PEM }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t EXISTING < <(find update-site/{stable,beta}/{win32,linux}/{arm64,x64} -type d -path '*/tuf/metadata' 2>/dev/null | LC_ALL=C sort)
+          if [ "${#EXISTING[@]}" = 0 ]; then
+            echo 'No published Butter Paper TUF repositories exist yet; nothing to refresh.'
+            exit 0
+          fi
+          test "${#EXISTING[@]}" = 8
+
+          export BUTTER_PAPER_TUF_METADATA_NOW
+          BUTTER_PAPER_TUF_METADATA_NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          ROOT="$GITHUB_WORKSPACE/source/apps/desktop/build/update-trust/root.json"
+          for CHANNEL in stable beta; do
+            for PLATFORM in win32 linux; do
+              for ARCH in arm64 x64; do
+                FEED="$GITHUB_WORKSPACE/update-site/$CHANNEL/$PLATFORM/$ARCH"
+                if [ "$PLATFORM" = win32 ]; then
+                  TARGET_NAME=latest.yml
+                elif [ "$ARCH" = arm64 ]; then
+                  TARGET_NAME=latest-linux-arm64.yml
+                else
+                  TARGET_NAME=latest-linux.yml
+                fi
+                test -f "$FEED/$TARGET_NAME"
+                test -d "$FEED/tuf/metadata"
+                OUTPUT="$RUNNER_TEMP/$CHANNEL-$PLATFORM-$ARCH-tuf"
+                node "$GITHUB_WORKSPACE/source/scripts/sign-tuf-update-repository.cjs" \
+                  --root "$ROOT" \
+                  --target "$FEED/$TARGET_NAME" \
+                  --target-name "$TARGET_NAME" \
+                  --previous-metadata "$FEED/tuf/metadata" \
+                  --output "$OUTPUT"
+                (cd "$OUTPUT" && sha256sum --check --strict SHA256SUMS)
+                rm -rf "$FEED/tuf"
+                mv "$OUTPUT" "$FEED/tuf"
+              done
+            done
+          done
+
+      - name: Publish only refreshed trust metadata
+        working-directory: update-site
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- stable/win32 stable/linux beta/win32 beta/linux
+          if ! git diff --cached --quiet; then
+            git commit -m "Refresh Butter Paper TUF metadata"
+            git push origin HEAD:updates
+          fi

@@ -148,8 +148,10 @@ describe('assembleUpdateMetadata', () => {
   });
 
   it('uses the updater filename expected by each platform', () => {
-    expect(metadataFileName('darwin')).toBe('latest-mac.yml');
-    expect(() => metadataFileName('win32')).toThrow('Unsupported update platform');
-    expect(() => metadataFileName('linux')).toThrow('Unsupported update platform');
+    expect(metadataFileName('darwin', 'arm64')).toBe('latest-mac.yml');
+    expect(metadataFileName('win32', 'x64')).toBe('latest.yml');
+    expect(metadataFileName('linux', 'arm64')).toBe('latest-linux-arm64.yml');
+    expect(metadataFileName('linux', 'x64')).toBe('latest-linux.yml');
+    expect(() => metadataFileName('freebsd', 'x64')).toThrow('platform must be one of');
   });
 });

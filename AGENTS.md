@@ -58,7 +58,12 @@ Do not update Playwright snapshots unless the task intentionally changes reviewe
 - Keep Electron context isolation intact. Do not expose filesystem or process access directly to the renderer.
 - Preserve import/export compatibility when changing markup models or appearance data.
 - Verify platform assumptions against macOS, Windows, and Linux behavior represented in CI.
-- In-app stable/beta updates are macOS-only until another platform has trusted signing and native N-1 coverage. Do not publish Windows or Linux updater metadata merely because Electron Builder can generate it.
+- Stable and beta are explicitly maintained as separate products with distinct application IDs, package names, user-data directories, updater caches, and feeds.
+- macOS updates require Developer ID signing plus native N-1 verification. Windows NSIS and Linux AppImage updates additionally require the embedded reviewed TUF root, successful deterministic rejection tests, and native N-1 replacement on matching ARM64/x64 hosts. DEB and RPM upgrades remain package-manager controlled.
+- The TUF root private key stays offline. `update-signing` holds only distinct targets, snapshot, and timestamp private keys and must permit the `v*` release tag policy plus `main` for scheduled metadata refresh. Never log, copy into artifacts, or commit any private key.
+- Windows and Linux 0.0.11 packages have no updater bootstrap. Release notes for the first TUF-enabled release must state that a one-time manual install is required; do not pretend synthetic N-1 coverage changes that public compatibility fact.
+- Production updater repositories use HTTPS. Loopback HTTP is allowed only with `BP_UPDATE_TEST_MODE=1`; direct non-macOS feed overrides must never bypass TUF.
+- Update-feed publication occurs only inside the approved stable/beta release environment after the exact public release assets have been independently downloaded and verified. Preserve `.nojekyll`, never replace published assets, and publish a corrected higher version or restore the prior feed commit for rollback.
 - Release tags must resolve to commits reachable from the repository's `main` default branch.
 - `.github/workflows/ci.yml` is manually dispatchable and reusable by the tag-only release workflow; routine pushes and pull requests do not start GitHub-hosted CI.
 - `MACOS_UPDATER_BOOTSTRAP_TAG` is a one-time exact tag in the channel's updater-verification environment. Use it only when that channel has no prior public package; remove it after the bootstrap release and never advance it to bypass N-1 tests.

@@ -1788,7 +1788,7 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(ipcChannels.updatesInstallDownloaded, async () => {
-    if (!requireUpdaterService().installDownloaded()) {
+    if (!await requireUpdaterService().installDownloaded()) {
       throw new Error('No downloaded Butter Paper update is ready to install.');
     }
   });
@@ -2006,7 +2006,7 @@ export async function bootstrapDesktop(): Promise<void> {
   app.on('before-quit', () => {
     unsubscribeUpdaterStatus?.();
     unsubscribeUpdaterStatus = null;
-    updaterService?.stop();
+    void updaterService?.stop();
     shutdownRenderPageWorkerPool();
     clearRenderCoreRegistries();
   });
@@ -2024,6 +2024,7 @@ function createUpdaterService(): DesktopUpdaterService {
     isPackaged: app.isPackaged,
     userDataPath: app.getPath('userData'),
     currentVersion: app.getVersion(),
+    resourcesPath: process.resourcesPath,
     platform: process.platform,
     buildMetadata: readDesktopPackageMetadata(),
   });

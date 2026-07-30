@@ -79,9 +79,22 @@ try {
     }
     Assert-PeMachine $runtimePath $expectedMachine
   }
-  $unexpectedUpdateConfig = Join-Path $installRoot 'resources/app-update.yml'
-  if (Test-Path -LiteralPath $unexpectedUpdateConfig) {
-    throw "Unsigned Windows package unexpectedly contains updater configuration: $unexpectedUpdateConfig"
+  $updateConfig = Join-Path $installRoot 'resources/app-update.yml'
+  if (-not (Test-Path -LiteralPath $updateConfig -PathType Leaf)) {
+    throw "Windows package is missing TUF-gated updater configuration: $updateConfig"
+  }
+  $expectedFeed = "https://raw.githubusercontent.com/apotenza92/butter-paper/updates/$Channel/win32/$Arch"
+  $updateConfigContents = Get-Content -LiteralPath $updateConfig -Raw
+  if ($updateConfigContents -notmatch [regex]::Escape("provider: generic") -or
+      $updateConfigContents -notmatch [regex]::Escape("url: $expectedFeed")) {
+    throw "Windows updater configuration does not match the reviewed feed: $updateConfig"
+  }
+  $trustRoot = Join-Path $installRoot 'resources/update-trust/root.json'
+  if (-not (Test-Path -LiteralPath $trustRoot -PathType Leaf)) {
+    throw "Windows package is missing the reviewed TUF root: $trustRoot"
+  }
+  if ((Get-Content -LiteralPath $trustRoot -Raw) -match 'PRIVATE KEY') {
+    throw "Windows package contains private TUF key material: $trustRoot"
   }
 
   $uninstaller = Get-ChildItem -LiteralPath $installRoot -File -Filter 'Uninstall*.exe' | Select-Object -First 1

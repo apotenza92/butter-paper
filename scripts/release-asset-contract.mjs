@@ -25,13 +25,18 @@ export function expectedReleaseAssetNames(channel) {
       );
 
       const windowsStem = `${prefix}-Windows-${arch}-Setup.exe`;
-      names.push(windowsStem);
+      names.push(
+        windowsStem,
+        `${windowsStem}.blockmap`,
+        `update-${variant}-win32-${arch}.yml`,
+      );
 
       const linuxStem = `${prefix}-Linux-${arch}`;
       names.push(
         `${linuxStem}.AppImage`,
         `${linuxStem}.deb`,
         `${linuxStem}.rpm`,
+        `update-${variant}-linux-${arch}.yml`,
       );
     }
   }
