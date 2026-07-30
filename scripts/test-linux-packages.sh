@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+
+report_failure() {
+  local exit_code="$?"
+  local line_number="$1"
+  local command="$2"
+  echo "Linux package verification failed at line $line_number: $command" >&2
+  exit "$exit_code"
+}
+trap 'report_failure "$LINENO" "$BASH_COMMAND"' ERR
 
 if [[ $# -ne 3 ]]; then
   echo 'Usage: test-linux-packages.sh <release-directory> <stable|beta> <x64|arm64>' >&2
@@ -61,7 +70,12 @@ trap cleanup EXIT
 assert_native_executable() {
   local executable="$1"
   [[ -x "$executable" ]] || { echo "Executable is missing or not executable: $executable" >&2; exit 1; }
-  file "$executable" | grep -F "$expected_file" >/dev/null
+  local file_description
+  file_description="$(file "$executable")"
+  grep -F "$expected_file" <<<"$file_description" >/dev/null || {
+    echo "Executable has the wrong native architecture: $file_description" >&2
+    exit 1
+  }
 }
 
 assert_elf_contract() {
@@ -135,9 +149,20 @@ assert_desktop_integration() {
     echo "$label is missing $executable_name.desktop" >&2
     exit 1
   }
-  desktop-file-validate "$desktop"
-  grep -E '^Exec=.*'"$executable_name" "$desktop" >/dev/null
-  grep -E '^MimeType=.*application/pdf' "$desktop" >/dev/null
+  desktop-file-validate "$desktop" || {
+    echo "$label desktop entry is invalid: $desktop" >&2
+    exit 1
+  }
+  grep -E '^Exec=.*'"$executable_name" "$desktop" >/dev/null || {
+    echo "$label desktop entry does not launch $executable_name:" >&2
+    grep -E '^Exec=' "$desktop" >&2 || true
+    exit 1
+  }
+  grep -E '^MimeType=.*application/pdf' "$desktop" >/dev/null || {
+    echo "$label desktop entry does not register application/pdf:" >&2
+    grep -E '^MimeType=' "$desktop" >&2 || true
+    exit 1
+  }
   local icon
   icon="$(sed -n 's/^Icon=//p' "$desktop" | head -n 1)"
   [[ -n "$icon" ]] || {
@@ -161,8 +186,15 @@ assert_update_contract() {
     exit 1
   }
   local expected_feed="https://raw.githubusercontent.com/apotenza92/butter-paper/updates/$channel/linux/$arch"
-  grep -F 'provider: generic' "$update_config" >/dev/null
-  grep -F "url: $expected_feed" "$update_config" >/dev/null
+  grep -F 'provider: generic' "$update_config" >/dev/null || {
+    echo "Linux updater configuration does not use the generic TUF-gated provider: $update_config" >&2
+    exit 1
+  }
+  grep -F "url: $expected_feed" "$update_config" >/dev/null || {
+    echo "Linux updater configuration has the wrong feed; expected $expected_feed:" >&2
+    sed -n '1,20p' "$update_config" >&2
+    exit 1
+  }
   local trust_root
   trust_root="$(dirname "$executable")/resources/update-trust/root.json"
   [[ -f "$trust_root" ]] || {
