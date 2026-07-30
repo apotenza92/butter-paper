@@ -31,11 +31,10 @@
 4. Run the narrowest relevant checks while iterating, then `pnpm check` before handoff.
 5. Review the final diff for generated files, stale references, secrets, and unrelated changes.
 
-Do not run Playwright Electron E2E or the packaged desktop GUI smoke test as a
-default handoff step. Run a narrow E2E spec only when the task changes the
-interaction it covers or when reproducing a GUI failure. Reserve the full E2E
-suite and six-platform packaged smoke matrix for explicit requests, manual CI,
-and focused release verification.
+Do not run Playwright Electron E2E, the packaged desktop GUI smoke test, or the
+macOS updater harness on a local macOS desktop. Their launch boundaries reject
+local macOS execution. Run GUI coverage only on disposable GitHub Actions
+runners through manual CI and focused release verification.
 
 ## Commands
 
@@ -45,10 +44,10 @@ and focused release verification.
 - Build: `pnpm build`
 - Deterministic tests: `pnpm test`
 - Required deterministic gate: `pnpm check`
-- Targeted Electron E2E: `pnpm test:e2e -- tests/e2e/<spec>.spec.mjs`
-- Full Electron E2E, when explicitly warranted: `pnpm test:e2e`
+- Targeted Electron E2E: manual GitHub Actions workflow only
+- Full Electron E2E: manual GitHub Actions workflow only
 - Desktop development: `pnpm dev:desktop`
-- Desktop package smoke, for packaging/release work: `pnpm --dir apps/desktop package` then `pnpm test:package:desktop`
+- Desktop package smoke: release or manual GitHub Actions workflow only
 
 Do not update Playwright snapshots unless the task intentionally changes reviewed UI output.
 

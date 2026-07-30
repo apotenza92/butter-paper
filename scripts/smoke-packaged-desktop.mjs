@@ -3,6 +3,9 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { assertIsolatedGuiTestEnvironment } from './gui-test-environment.mjs';
+
+assertIsolatedGuiTestEnvironment('Packaged desktop smoke test');
 
 const repoRoot = resolve(import.meta.dirname, '..');
 const configuredReleaseDir = process.env.BP_RELEASE_OUTPUT_DIR?.trim();

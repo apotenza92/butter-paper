@@ -27,12 +27,9 @@ Start the desktop app:
 pnpm dev:desktop
 ```
 
-Create an unpacked desktop package and smoke-test it:
-
-```sh
-pnpm --dir apps/desktop package
-pnpm test:package:desktop
-```
+GUI-driven Electron E2E, packaged-app smoke, and updater tests run only on
+disposable GitHub Actions runners. Local macOS quality checks remain headless
+and do not open application windows.
 
 ## Releases and automatic updates
 
