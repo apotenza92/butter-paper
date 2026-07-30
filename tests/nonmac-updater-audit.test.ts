@@ -97,6 +97,9 @@ describe('native Windows and Linux updater audit', () => {
     expect(script).toContain('archivesUnderLocalPrograms');
     expect(script).toContain('uninstallEntries');
     expect(script).toContain('Updated Windows runtime did not relaunch at the candidate version');
+    expect(script.indexOf("new Set(['updated-runtime-launched', 'error'])")).toBeLessThan(
+      script.lastIndexOf('await waitForWindowsReplacement('),
+    );
     expect(script).toContain('PACKAGE_SHA256SUMS');
     expect(script).not.toContain('copyFileSync(privateKeyPath');
     expect(release).toContain('uses: ./.github/workflows/nonmac-updater-audit.yml');

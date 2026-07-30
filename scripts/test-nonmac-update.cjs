@@ -544,12 +544,6 @@ async function main(argv = process.argv.slice(2)) {
       if (process.platform === 'win32') {
         const unpacked = arch === 'x64' ? 'win-unpacked' : `win-${arch}-unpacked`;
         const candidateArchive = path.join(candidateDirectory, unpacked, 'resources', 'app.asar');
-        await waitForWindowsReplacement(
-          installedExecutable,
-          candidateArchive,
-          server.version,
-          child.pid,
-        );
         const relaunched = await waitForEvent(
           eventPath,
           new Set(['updated-runtime-launched', 'error']),
@@ -564,6 +558,14 @@ async function main(argv = process.argv.slice(2)) {
           throw new Error('Updated Windows runtime did not relaunch at the candidate version.');
         }
         relaunchedPid = relaunched.pid;
+        // Do not read app.asar while NSIS is uninstalling the previous version.
+        // On Windows, continuous hash polling can contend with the old uninstaller.
+        await waitForWindowsReplacement(
+          installedExecutable,
+          candidateArchive,
+          server.version,
+          child.pid,
+        );
       } else {
         if (event.currentVersion !== server.version) throw new Error('Updated AppImage runtime reported the wrong version.');
         relaunchedPid = event.pid;
