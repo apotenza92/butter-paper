@@ -7,6 +7,7 @@ import {
   isUpdateFrequency,
   parseUpdateSettings,
   resolveLoopbackFeedOverride,
+  resolveLoopbackTufRepositoryOverride,
   resolveUpdateChannel,
   updaterNetworkDisabled,
 } from './updatePolicy';
@@ -96,5 +97,29 @@ describe('update policy', () => {
       BP_UPDATE_TEST_MODE: '1',
       BP_UPDATE_FEED_URL: 'http://127.0.0.1/updates',
     })).toThrow(/explicit port/);
+  });
+
+  it('permits only an explicitly gated IPv4 loopback TUF repository', () => {
+    expect(resolveLoopbackTufRepositoryOverride({})).toBeNull();
+    expect(resolveLoopbackTufRepositoryOverride({
+      BP_UPDATE_TEST_MODE: '1',
+      BP_TUF_REPOSITORY_URL: 'http://127.0.0.1:4317/tuf/',
+    })).toBe('http://127.0.0.1:4317/tuf');
+
+    expect(() => resolveLoopbackTufRepositoryOverride({
+      BP_TUF_REPOSITORY_URL: 'http://127.0.0.1:4317/tuf',
+    })).toThrow(/only allowed/);
+    expect(() => resolveLoopbackTufRepositoryOverride({
+      BP_UPDATE_TEST_MODE: '1',
+      BP_TUF_REPOSITORY_URL: 'https://127.0.0.1:4317/tuf',
+    })).toThrow(/must use http/);
+    expect(() => resolveLoopbackTufRepositoryOverride({
+      BP_UPDATE_TEST_MODE: '1',
+      BP_TUF_REPOSITORY_URL: 'http://localhost:4317/tuf',
+    })).toThrow(/must use http/);
+    expect(() => resolveLoopbackTufRepositoryOverride({
+      BP_UPDATE_TEST_MODE: '1',
+      BP_TUF_REPOSITORY_URL: 'http://127.0.0.1:4317/tuf?bypass=true',
+    })).toThrow(/must use http/);
   });
 });

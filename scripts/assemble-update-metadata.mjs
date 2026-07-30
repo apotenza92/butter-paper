@@ -5,14 +5,15 @@ import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 
 const CHANNELS = new Set(['stable', 'beta']);
-const PLATFORMS = new Set(['darwin']);
+const PLATFORMS = new Set(['darwin', 'win32', 'linux']);
 const ARCHITECTURES = new Set(['arm64', 'x64']);
 
-export function metadataFileName(platform) {
-  if (platform !== 'darwin') {
-    throw new Error(`Unsupported update platform: ${platform}`);
-  }
-  return 'latest-mac.yml';
+export function metadataFileName(platform, arch) {
+  requireChoice('platform', platform, PLATFORMS);
+  requireChoice('arch', arch, ARCHITECTURES);
+  if (platform === 'darwin') return 'latest-mac.yml';
+  if (platform === 'win32') return 'latest.yml';
+  return arch === 'arm64' ? 'latest-linux-arm64.yml' : 'latest-linux.yml';
 }
 
 function requireChoice(label, value, choices) {
@@ -161,7 +162,7 @@ export async function assembleUpdateMetadata({
   }
 
   const contents = YAML.stringify(rewritten, { lineWidth: 0 }).trimEnd() + '\n';
-  const outputPath = path.join(outputRoot, channel, platform, arch, metadataFileName(platform));
+  const outputPath = path.join(outputRoot, channel, platform, arch, metadataFileName(platform, arch));
   await mkdir(path.dirname(outputPath), { recursive: true });
   await writeFile(outputPath, contents, 'utf8');
 

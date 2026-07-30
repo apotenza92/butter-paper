@@ -1,5 +1,5 @@
 const path = require('node:path');
-const { readFileSync } = require('node:fs');
+const { existsSync, readFileSync } = require('node:fs');
 const { extractReleaseNotes } = require('../../scripts/release-notes.cjs');
 const desktopPackage = require('./package.json');
 
@@ -33,6 +33,10 @@ const releaseNotes = extractReleaseNotes(
   readFileSync(path.resolve(__dirname, '../../CHANGELOG.md'), 'utf8'),
   desktopPackage.version,
 );
+const tufRootPath = path.join(__dirname, 'build', 'update-trust', 'root.json');
+if (process.env.BP_REQUIRE_TUF_ROOT === '1' && !existsSync(tufRootPath)) {
+  throw new Error(`A reviewed Butter Paper TUF trust root is required at ${tufRootPath}.`);
+}
 if (releasePlatform === 'win32' && releaseArch === 'arm64') {
   process.env.BP_NSIS_ARM64_UNPACKED_DIR = path.resolve(
     __dirname,
@@ -98,6 +102,9 @@ module.exports = {
     productName,
     desktopName: desktopFileName,
     butterPaperChannel: releaseChannel,
+    butterPaperTufRepositoryUrl: `${updateFeedUrl}/tuf`,
+    butterPaperUpdateFeedUrl: updateFeedUrl,
+    butterPaperUpdateTargetName: metadataFileName(releasePlatform, releaseArch),
   },
   afterPack: 'build/after-pack.cjs',
   directories: {
@@ -116,6 +123,12 @@ module.exports = {
   asarUnpack: [
     '**/*.node',
   ],
+  extraResources: [
+    ...(existsSync(tufRootPath) ? [{
+      from: tufRootPath,
+      to: 'update-trust/root.json',
+    }] : []),
+  ],
   mac: {
     category: 'public.app-category.productivity',
     icon: macIcon,
@@ -126,6 +139,7 @@ module.exports = {
       rank: 'Alternate',
     }],
     hardenedRuntime: true,
+    minimumSystemVersion: '12.0',
     gatekeeperAssess: false,
     entitlements: 'build/entitlements.mac.plist',
     entitlementsInherit: 'build/entitlements.mac.plist',
@@ -177,11 +191,15 @@ module.exports = {
     ],
     artifactName: `${artifactPrefix}-Linux-${releaseArch}.\${ext}`,
   },
-  ...(releasePlatform === 'darwin' ? {
-    publish: [{
-      provider: 'generic',
-      url: updateFeedUrl,
-      channel: 'latest',
-    }],
-  } : {}),
+  publish: [{
+    provider: 'generic',
+    url: updateFeedUrl,
+    channel: 'latest',
+  }],
 };
+
+function metadataFileName(platform, arch) {
+  if (platform === 'darwin') return 'latest-mac.yml';
+  if (platform === 'win32') return 'latest.yml';
+  return arch === 'arm64' ? 'latest-linux-arm64.yml' : 'latest-linux.yml';
+}

@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const desktopDir = resolve(import.meta.dirname, '../apps/desktop');
@@ -12,6 +13,9 @@ const inspectScript = `
     channel: config.extraMetadata.butterPaperChannel,
     output: config.directories.output,
     feed: config.publish?.[0] ?? null,
+    tufRepository: config.extraMetadata.butterPaperTufRepositoryUrl,
+    updateFeedUrl: config.extraMetadata.butterPaperUpdateFeedUrl,
+    updateTargetName: config.extraMetadata.butterPaperUpdateTargetName,
     macArtifact: config.mac.artifactName,
     macFileAssociations: config.mac.fileAssociations,
     windowsArtifact: config.win.artifactName,
@@ -20,10 +24,15 @@ const inspectScript = `
     electronLanguages: config.electronLanguages,
     releaseNotes: config.releaseInfo?.releaseNotes,
     nsisInclude: config.nsis.include,
+    nsisOneClick: config.nsis.oneClick,
+    nsisAllowElevation: config.nsis.allowElevation,
+    nsisAllowToChangeInstallationDirectory: config.nsis.allowToChangeInstallationDirectory,
     linuxArtifact: config.linux.artifactName,
     linuxFileAssociations: config.linux.fileAssociations,
     linuxSyncDesktopName: config.linux.syncDesktopName,
     afterPack: config.afterPack,
+    macMinimumSystemVersion: config.mac.minimumSystemVersion,
+    extraResources: config.extraResources,
     files: config.files,
     arm64UnpackedDir: process.env.BP_NSIS_ARM64_UNPACKED_DIR ?? null,
   }));
@@ -46,6 +55,12 @@ function loadConfig(environment: Record<string, string>) {
 }
 
 describe('Electron Builder release identity', () => {
+  it('keeps the Node-based TUF runtime external to the browser-oriented Vite bundle', () => {
+    const mainConfig = readFileSync(resolve(desktopDir, 'vite.main.config.ts'), 'utf8');
+    expect(mainConfig).toContain("'tuf-js'");
+    expect(mainConfig).toContain('/^tuf-js\\//');
+  });
+
   it('bakes an isolated stable ARM64 macOS feed and product identity', () => {
     const config = loadConfig({
       BP_RELEASE_CHANNEL: 'stable',
@@ -65,6 +80,9 @@ describe('Electron Builder release identity', () => {
         url: 'https://raw.githubusercontent.com/apotenza92/butter-paper/updates/stable/darwin/arm64',
         channel: 'latest',
       },
+      tufRepository: 'https://raw.githubusercontent.com/apotenza92/butter-paper/updates/stable/darwin/arm64/tuf',
+      updateFeedUrl: 'https://raw.githubusercontent.com/apotenza92/butter-paper/updates/stable/darwin/arm64',
+      updateTargetName: 'latest-mac.yml',
       macArtifact: 'Butter-Paper-macOS-${arch}.${ext}',
       macFileAssociations: [{
         ext: 'pdf',
@@ -86,6 +104,8 @@ describe('Electron Builder release identity', () => {
       electronLanguages: ['en-US'],
       releaseNotes: expect.stringContaining('Added native PDF file registration'),
       nsisInclude: 'build/installer.nsh',
+      nsisOneClick: false,
+      macMinimumSystemVersion: '12.0',
     });
     expect(config.files).toContain('!**/*.map');
     expect(config.files).toContain('!node_modules/@base-ui/**/*');
@@ -95,7 +115,7 @@ describe('Electron Builder release identity', () => {
     expect(config.files).not.toContain('!node_modules/@napi-rs/canvas-darwin-arm64/**/*');
   });
 
-  it('keeps the beta Windows identity separate without claiming unsupported updater feeds', () => {
+  it('keeps the beta Windows identity separate with an authenticated update feed', () => {
     const config = loadConfig({
       BP_RELEASE_CHANNEL: 'beta',
       BP_RELEASE_PLATFORM: 'win32',
@@ -107,10 +127,20 @@ describe('Electron Builder release identity', () => {
       packageName: 'butter-paper-beta',
       desktopName: 'butter-paper-beta.desktop',
       channel: 'beta',
-      feed: null,
+      feed: {
+        provider: 'generic',
+        url: 'https://raw.githubusercontent.com/apotenza92/butter-paper/updates/beta/win32/x64',
+        channel: 'latest',
+      },
+      tufRepository: 'https://raw.githubusercontent.com/apotenza92/butter-paper/updates/beta/win32/x64/tuf',
+      updateFeedUrl: 'https://raw.githubusercontent.com/apotenza92/butter-paper/updates/beta/win32/x64',
+      updateTargetName: 'latest.yml',
       windowsArtifact: 'Butter-Paper-Beta-Windows-${arch}-Setup.${ext}',
       compression: 'maximum',
       nsisInclude: 'build/installer.nsh',
+      nsisOneClick: false,
+      nsisAllowElevation: true,
+      nsisAllowToChangeInstallationDirectory: true,
     });
     expect(config.files).toContain('!node_modules/@napi-rs/canvas-win32-arm64-msvc/**/*');
     expect(config.files).not.toContain('!node_modules/@napi-rs/canvas-win32-x64-msvc/**/*');
@@ -130,6 +160,23 @@ describe('Electron Builder release identity', () => {
     expect(config.arm64UnpackedDir).toMatch(/release[/\\]win-arm64-unpacked$/);
   });
 
+  it('configures only AppImage runtime updates for Linux packages', () => {
+    const config = loadConfig({
+      BP_RELEASE_CHANNEL: 'stable',
+      BP_RELEASE_PLATFORM: 'linux',
+      BP_RELEASE_ARCH: 'arm64',
+    });
+    expect(config).toMatchObject({
+      feed: {
+        provider: 'generic',
+        url: 'https://raw.githubusercontent.com/apotenza92/butter-paper/updates/stable/linux/arm64',
+        channel: 'latest',
+      },
+      tufRepository: 'https://raw.githubusercontent.com/apotenza92/butter-paper/updates/stable/linux/arm64/tuf',
+      updateTargetName: 'latest-linux-arm64.yml',
+    });
+  });
+
   it('rejects an undeclared release channel', () => {
     const result = spawnSync(process.execPath, ['-e', "require('./electron-builder.config.cjs')"], {
       cwd: desktopDir,
@@ -138,5 +185,11 @@ describe('Electron Builder release identity', () => {
     });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('BP_RELEASE_CHANNEL must be stable or beta');
+  });
+
+  it('fails release packaging when the reviewed TUF root is absent', () => {
+    const builderConfig = readFileSync(resolve(desktopDir, 'electron-builder.config.cjs'), 'utf8');
+    expect(builderConfig).toContain("process.env.BP_REQUIRE_TUF_ROOT === '1'");
+    expect(builderConfig).toContain('A reviewed Butter Paper TUF trust root is required');
   });
 });

@@ -28,6 +28,12 @@ export default async function globalSetup() {
       env: process.env,
     });
   }
+
+  execFileSync(process.execPath, [resolve(repoRoot, 'scripts/ensure-native-deps.mjs')], {
+    cwd: repoRoot,
+    stdio: 'inherit',
+    env: process.env,
+  });
 }
 
 function ensurePnpmShim() {

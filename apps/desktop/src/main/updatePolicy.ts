@@ -138,6 +138,36 @@ export function resolveLoopbackFeedOverride(environment: NodeJS.ProcessEnv): str
   return url.toString();
 }
 
+export function resolveLoopbackTufRepositoryOverride(environment: NodeJS.ProcessEnv): string | null {
+  const rawUrl = environment.BP_TUF_REPOSITORY_URL?.trim();
+  if (!rawUrl) {
+    return null;
+  }
+
+  if (environment.BP_UPDATE_TEST_MODE !== '1') {
+    throw new Error('BP_TUF_REPOSITORY_URL is only allowed when BP_UPDATE_TEST_MODE=1.');
+  }
+
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new Error('BP_TUF_REPOSITORY_URL must be a valid loopback URL.');
+  }
+
+  if (url.protocol !== 'http:'
+    || url.hostname !== '127.0.0.1'
+    || url.port === ''
+    || url.username !== ''
+    || url.password !== ''
+    || url.search !== ''
+    || url.hash !== '') {
+    throw new Error('BP_TUF_REPOSITORY_URL must use http://127.0.0.1 with an explicit port.');
+  }
+
+  return url.toString().replace(/\/$/, '');
+}
+
 function isNullableIsoTimestamp(value: unknown): value is string | null {
   if (value === null) {
     return true;

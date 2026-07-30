@@ -4,6 +4,24 @@ All notable Butter Paper changes are recorded here.
 
 ## [0.0.12]
 
+- Added authenticated automatic updates on native Windows ARM64/x64 and Linux
+  ARM64/x64 AppImages using an embedded, reviewed TUF root. Windows and Linux
+  users upgrading from 0.0.11 must install 0.0.12 manually once to bootstrap
+  the new updater; later releases can update automatically.
+- Added fail-closed update verification for corrupt, expired, incorrectly
+  signed, missing, redirected, mismatched, and path-escaping metadata, while
+  preserving any newer TUF root already trusted by an installed application.
+- Added native Windows install/update/restart/data-preservation/uninstall and
+  Linux AppImage update/restart/data-preservation release gates on matching
+  ARM64 and x64 hosts. DEB and RPM upgrades remain managed by the system
+  package manager.
+- Added an offline-root/three-online-key TUF signing ceremony, protected
+  metadata refresh workflow, deterministic release projections, and
+  independent public-feed verification.
+- Windows installers and Linux packages remain unsigned in this release.
+  Published SHA-256 checksums, GitHub provenance, and TUF-authenticated
+  automatic-update metadata protect distribution without implying platform
+  code signing.
 - Added native PDF file registration and a user-controlled Set as Default PDF App command on macOS, Windows, and Linux.
 - Opened PDFs delivered at startup, through macOS open-file events, or to an existing application instance.
 - Made this changelog the source for GitHub release notes and the automatic updater's in-app release notes.

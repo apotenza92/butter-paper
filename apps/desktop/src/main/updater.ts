@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFileSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import type {
   UpdateDisabledReason,
   UpdateFrequency,
@@ -13,10 +14,16 @@ import {
   isUpdateFrequency,
   parseUpdateSettings,
   resolveLoopbackFeedOverride,
+  resolveLoopbackTufRepositoryOverride,
   resolveUpdateChannel,
   updaterNetworkDisabled,
   type UpdateSettings,
 } from './updatePolicy';
+import {
+  createTufVerifiedUpdateFeed,
+  type CreateTufVerifiedUpdateFeedOptions,
+  type TufVerifiedUpdateFeed,
+} from './tufUpdateFeed';
 
 export const UPDATE_SETTINGS_FILE_NAME = 'update-settings.json';
 let settingsWriteSequence = 0;
@@ -39,6 +46,7 @@ export interface ElectronUpdaterLike {
   allowDowngrade: boolean;
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
+  disableWebInstaller?: boolean;
   checkForUpdates(): Promise<unknown>;
   downloadUpdate(): Promise<unknown>;
   quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean): void;
@@ -61,12 +69,16 @@ export interface DesktopUpdaterServiceOptions {
   isPackaged: boolean;
   userDataPath: string;
   currentVersion: string;
+  resourcesPath?: string;
   platform?: NodeJS.Platform;
   buildMetadata: unknown;
   environment?: NodeJS.ProcessEnv;
   now?: () => Date;
   scheduler?: UpdaterScheduler;
   logger?: UpdaterLogger;
+  createVerifiedFeed?: (
+    options: CreateTufVerifiedUpdateFeedOptions,
+  ) => Promise<TufVerifiedUpdateFeed>;
 }
 
 export interface LoadedUpdateSettings {
@@ -144,6 +156,11 @@ export class DesktopUpdaterService {
   private readonly scheduler: UpdaterScheduler;
   private readonly logger: UpdaterLogger;
   private readonly platform: NodeJS.Platform;
+  private readonly resourcesPath: string;
+  private readonly userDataPath: string;
+  private readonly buildMetadata: unknown;
+  private readonly createVerifiedFeed;
+  private readonly currentVersion: string;
   private readonly listeners = new Set<(status: UpdateStatus) => void>();
   private readonly updaterListeners = new Map<string, UpdaterEventListener>();
   private readonly channel;
@@ -154,6 +171,7 @@ export class DesktopUpdaterService {
   private checkInFlight = false;
   private restartBlocked = false;
   private persistenceQueue: Promise<void> = Promise.resolve();
+  private verifiedFeed: TufVerifiedUpdateFeed | null = null;
 
   constructor(options: DesktopUpdaterServiceOptions) {
     this.updater = options.updater;
@@ -163,6 +181,11 @@ export class DesktopUpdaterService {
     this.scheduler = options.scheduler ?? defaultScheduler;
     this.logger = options.logger ?? defaultLogger;
     this.platform = options.platform ?? process.platform;
+    this.resourcesPath = options.resourcesPath ?? process.resourcesPath;
+    this.userDataPath = options.userDataPath;
+    this.buildMetadata = options.buildMetadata;
+    this.createVerifiedFeed = options.createVerifiedFeed ?? createTufVerifiedUpdateFeed;
+    this.currentVersion = options.currentVersion;
     this.channel = resolveUpdateChannel(options.buildMetadata);
     this.settingsPath = join(options.userDataPath, UPDATE_SETTINGS_FILE_NAME);
 
@@ -220,7 +243,7 @@ export class DesktopUpdaterService {
     }
 
     try {
-      this.configureUpdater();
+      await this.configureUpdater();
     } catch (error) {
       this.disableForConfiguration(error);
       return;
@@ -228,6 +251,11 @@ export class DesktopUpdaterService {
 
     this.attachUpdaterListeners();
     this.reschedule();
+    if (this.environment.BP_UPDATE_TEST_MODE === '1'
+      && this.environment.BP_UPDATE_EXPECT_VERSION === this.currentVersion) {
+      this.recordTestEvent('updated-runtime-launched');
+      return;
+    }
 
     if (this.settings.frequency === 'startup'
       || isAutomaticCheckDue(
@@ -239,7 +267,7 @@ export class DesktopUpdaterService {
     }
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.schedulerHandle != null) {
       this.scheduler.clearInterval(this.schedulerHandle);
       this.schedulerHandle = null;
@@ -250,6 +278,7 @@ export class DesktopUpdaterService {
     }
     this.updaterListeners.clear();
     this.started = false;
+    await this.closeVerifiedFeed();
   }
 
   async setFrequency(frequency: UpdateFrequency): Promise<void> {
@@ -272,13 +301,15 @@ export class DesktopUpdaterService {
     return this.runCheck();
   }
 
-  installDownloaded(): boolean {
+  async installDownloaded(): Promise<boolean> {
     if (this.status.phase !== 'downloaded' || this.restartBlocked) {
       return false;
     }
 
     try {
-      this.updater.quitAndInstall(false, true);
+      await this.closeVerifiedFeed();
+      this.recordTestEvent('update-install-started');
+      this.updater.quitAndInstall(this.platform !== 'darwin', true);
       return true;
     } catch (error) {
       this.handleUpdaterError(error);
@@ -297,7 +328,12 @@ export class DesktopUpdaterService {
     if (updaterNetworkDisabled(this.environment)) {
       return 'test-mode';
     }
-    if (this.platform !== 'darwin') {
+    if (!['darwin', 'win32', 'linux'].includes(this.platform)) {
+      return 'platform-policy';
+    }
+    if (this.platform === 'linux'
+      && !this.environment.APPIMAGE
+      && this.environment.BP_UPDATE_TEST_MODE !== '1') {
       return 'platform-policy';
     }
     if (this.channel == null) {
@@ -306,7 +342,7 @@ export class DesktopUpdaterService {
     return null;
   }
 
-  private configureUpdater(): void {
+  private async configureUpdater(): Promise<void> {
     if (this.channel == null) {
       throw new Error('Packaged build metadata must declare butterPaperChannel.');
     }
@@ -322,14 +358,38 @@ export class DesktopUpdaterService {
     // the installed application.
     this.updater.autoDownload = false;
     this.updater.autoInstallOnAppQuit = false;
+    if (this.platform === 'win32') {
+      this.updater.disableWebInstaller = true;
+    }
 
     const feedOverride = resolveLoopbackFeedOverride(this.environment);
-    if (feedOverride != null) {
-      if (this.updater.setFeedURL == null) {
-        throw new Error('The updater does not support the loopback test feed override.');
+    if (this.platform === 'darwin') {
+      if (feedOverride != null) {
+        this.setFeedUrl(feedOverride);
       }
-      this.updater.setFeedURL({ provider: 'generic', url: feedOverride });
+      return;
     }
+    if (feedOverride != null) {
+      throw new Error('Windows and Linux updater tests must use TUF-authenticated metadata.');
+    }
+
+    const metadata = readPackagedUpdateMetadata(this.buildMetadata);
+    const repositoryOverride = resolveLoopbackTufRepositoryOverride(this.environment);
+    const repositoryUrl = repositoryOverride ?? metadata?.butterPaperTufRepositoryUrl;
+    const targetName = metadata?.butterPaperUpdateTargetName;
+    if (repositoryUrl == null || targetName == null) {
+      throw new Error('Packaged Butter Paper TUF updater metadata is invalid.');
+    }
+
+    this.verifiedFeed = await this.createVerifiedFeed({
+      embeddedRootPath: join(this.resourcesPath, 'update-trust', 'root.json'),
+      expectedChannel: this.channel,
+      repositoryUrl,
+      targetName,
+      trustDirectory: join(this.userDataPath, 'update-trust'),
+      allowLoopbackHttp: repositoryOverride != null,
+    });
+    this.setFeedUrl(this.verifiedFeed.feedUrl);
   }
 
   private attachUpdaterListeners(): void {
@@ -337,9 +397,11 @@ export class DesktopUpdaterService {
       this.patchStatus({ phase: 'checking', errorMessage: null });
     });
     this.addUpdaterListener('update-available', (info: UpdateInfoLike) => {
+      this.recordTestEvent('update-available', { version: info?.version ?? null });
       void this.handleUpdateAvailable(info);
     });
     this.addUpdaterListener('update-not-available', () => {
+      this.recordTestEvent('update-not-available');
       this.recordSuccessfulCheck();
       this.patchStatus({
         phase: 'idle',
@@ -363,6 +425,13 @@ export class DesktopUpdaterService {
         downloadPercent: 100,
         errorMessage: null,
       });
+      this.recordTestEvent('update-downloaded', { version: info?.version ?? null });
+      if (this.environment.BP_UPDATE_TEST_MODE === '1'
+        && this.environment.BP_UPDATE_INSTALL === '1') {
+        setTimeout(() => {
+          void this.installDownloaded();
+        }, 100).unref();
+      }
     });
     this.addUpdaterListener('error', (error: unknown) => {
       this.handleUpdaterError(error);
@@ -370,7 +439,9 @@ export class DesktopUpdaterService {
   }
 
   private async handleUpdateAvailable(info: UpdateInfoLike): Promise<void> {
-    if (info?.butterPaperChannel !== this.channel) {
+    if (this.platform === 'darwin'
+      && info?.butterPaperChannel != null
+      && info.butterPaperChannel !== this.channel) {
       this.handleUpdaterError(new Error(
         `Rejected update metadata for channel ${String(info?.butterPaperChannel ?? '<missing>')}; expected ${this.channel}.`,
       ));
@@ -408,6 +479,9 @@ export class DesktopUpdaterService {
     this.checkInFlight = true;
     this.patchStatus({ phase: 'checking', errorMessage: null });
     try {
+      if (this.verifiedFeed != null) {
+        await this.verifiedFeed.refresh();
+      }
       await this.updater.checkForUpdates();
       return true;
     } catch (error) {
@@ -467,6 +541,10 @@ export class DesktopUpdaterService {
   }
 
   private disableForConfiguration(error: unknown): void {
+    this.recordTestEvent('error', {
+      message: errorMessage(error),
+      phase: 'configuration',
+    });
     this.patchStatus({
       phase: 'disabled',
       enabled: false,
@@ -476,13 +554,50 @@ export class DesktopUpdaterService {
     });
   }
 
+  private setFeedUrl(url: string): void {
+    if (this.updater.setFeedURL == null) {
+      throw new Error('The updater does not support an explicit generic feed.');
+    }
+    this.updater.setFeedURL({ provider: 'generic', url });
+  }
+
+  private async closeVerifiedFeed(): Promise<void> {
+    const feed = this.verifiedFeed;
+    this.verifiedFeed = null;
+    await feed?.close();
+  }
+
   private handleUpdaterError(error: unknown): void {
     this.logger.error('Butter Paper updater error.', error);
+    this.recordTestEvent('error', { message: errorMessage(error) });
     this.patchStatus({
       phase: 'error',
       downloadPercent: null,
       errorMessage: errorMessage(error),
     });
+  }
+
+  private recordTestEvent(name: string, details: Record<string, unknown> = {}): void {
+    if (this.environment.BP_UPDATE_TEST_MODE !== '1') {
+      return;
+    }
+    const eventPath = this.environment.BP_UPDATE_EVENT_PATH?.trim();
+    if (!eventPath || !isAbsolute(eventPath)) {
+      return;
+    }
+    const event = {
+      name,
+      channel: this.channel,
+      currentVersion: this.currentVersion,
+      executablePath: process.execPath,
+      pid: process.pid,
+      ...details,
+    };
+    mkdirSync(dirname(eventPath), { recursive: true, mode: 0o700 });
+    appendFileSync(`${eventPath}.jsonl`, `${JSON.stringify(event)}\n`, { mode: 0o600 });
+    const temporaryPath = `${eventPath}.${process.pid}.tmp`;
+    writeFileSync(temporaryPath, `${JSON.stringify(event)}\n`, { mode: 0o600 });
+    renameSync(temporaryPath, eventPath);
   }
 
   private patchStatus(patch: Partial<UpdateStatus>): void {
@@ -537,4 +652,29 @@ function errorMessage(error: unknown): string {
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error;
+}
+
+function readPackagedUpdateMetadata(value: unknown): {
+  butterPaperTufRepositoryUrl: string;
+  butterPaperUpdateTargetName: string;
+} | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const repositoryUrl = value.butterPaperTufRepositoryUrl;
+  const targetName = value.butterPaperUpdateTargetName;
+  if (typeof repositoryUrl !== 'string'
+    || repositoryUrl.trim() === ''
+    || typeof targetName !== 'string'
+    || targetName.trim() === '') {
+    return null;
+  }
+  return {
+    butterPaperTufRepositoryUrl: repositoryUrl,
+    butterPaperUpdateTargetName: targetName,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

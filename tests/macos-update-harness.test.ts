@@ -167,7 +167,9 @@ describe('macOS updater integration harness', () => {
     expect(workflow).toContain('runs-on: ${{ matrix.arch == \'arm64\' && \'macos-15\' || \'macos-15-intel\' }}');
     expect(workflow).toContain('scenario: [channel, corrupt, signature, valid]');
     expect(workflow).toContain('--scenario "$RELEASE_SCENARIO"');
-    expect(workflow).toContain('needs: [prepare, package-macos, package-windows, package-linux, test-macos-updater]');
+    expect(workflow).toContain(
+      'needs: [prepare, package-macos, package-windows, package-linux, test-macos-updater, test-nonmac-updater]',
+    );
 
     const updaterJob = workflow.slice(
       workflow.indexOf('  test-macos-updater:'),
@@ -210,8 +212,8 @@ describe('macOS updater integration harness', () => {
     expect(publishJob).toContain('Release is already public with the expected classification.');
     expect(publishJob).toContain('Published release has the wrong stable/beta classification.');
     expect(publishJob).toContain('sha256sum --check --strict');
-    expect(publishJob).toContain('Apply these exact reviewed bytes manually');
-    expect(publishJob).not.toContain('git commit');
-    expect(publishJob).not.toContain('git push');
+    expect(publishJob).toContain('Publish authenticated updater feeds atomically');
+    expect(publishJob).toContain('git commit -m "Publish Butter Paper');
+    expect(publishJob).toContain('git push origin HEAD:updates');
   });
 });

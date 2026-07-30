@@ -3,6 +3,9 @@
   "version": "0.0.12",
   "private": true,
   "license": "MIT",
+  "engines": {
+    "node": "24.16.0"
+  },
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "build": "pnpm -r build",
@@ -33,6 +36,7 @@
   "devDependencies": {
     "@electron/asar": "3.4.1",
     "@playwright/test": "1.59.1",
+    "@tufjs/canonical-json": "2.0.0",
     "@types/node": "25.6.0",
     "typescript": "6.0.2",
     "vitest": "4.1.4",

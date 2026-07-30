@@ -8,6 +8,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import YAML from 'yaml';
+import { assertIsolatedGuiTestEnvironment } from './gui-test-environment.mjs';
 import {
   BUTTER_PAPER_SIGNING_CERTIFICATE_SHA256,
   createSmokeEnvironment,
@@ -611,5 +612,6 @@ async function waitForInstalledVersion(appPath, expectedVersion, timeoutMs) {
 const invokedDirectly = process.argv[1] != null
   && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 if (invokedDirectly) {
+  assertIsolatedGuiTestEnvironment('macOS updater test');
   await main();
 }

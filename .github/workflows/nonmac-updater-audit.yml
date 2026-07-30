@@ -1,0 +1,203 @@
+name: Native Windows and Linux updater audit
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: Stable or beta product identity
+        required: true
+        type: string
+      target:
+        description: Native updater target to exercise
+        required: true
+        type: string
+      previous_version:
+        description: Synthetic installed N-1 version
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Stable or beta product identity
+        required: true
+        type: choice
+        default: stable
+        options:
+          - stable
+          - beta
+      target:
+        description: Native updater target to exercise
+        required: true
+        type: choice
+        default: win32-x64
+        options:
+          - win32-arm64
+          - win32-x64
+          - linux-arm64
+          - linux-x64
+      previous_version:
+        description: Synthetic installed N-1 version
+        required: true
+        type: string
+        default: 0.0.11
+
+permissions:
+  contents: read
+
+concurrency:
+  group: butter-paper-nonmac-updater-${{ inputs.channel }}-${{ inputs.target }}
+  cancel-in-progress: true
+
+jobs:
+  updater:
+    name: ${{ inputs.channel }} updater (${{ inputs.target }})
+    runs-on: ${{ inputs.target == 'win32-arm64' && 'windows-11-arm' || inputs.target == 'win32-x64' && 'windows-2025' || inputs.target == 'linux-arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 90
+    env:
+      BP_AUDIT_ARCH: ${{ endsWith(inputs.target, '-arm64') && 'arm64' || 'x64' }}
+      BP_AUDIT_PLATFORM: ${{ startsWith(inputs.target, 'win32-') && 'win32' || 'linux' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@008330803749db0355799c700092d9a85fd074e9 # v6.0.9
+        with:
+          version: 10.33.0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.16.0
+          cache: pnpm
+
+      - name: Require the matching native runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node -p 'process.arch')" = "$BP_AUDIT_ARCH"
+          test "$(node -p 'process.platform')" = "$BP_AUDIT_PLATFORM"
+
+      - name: Install Linux AppImage dependencies
+        if: ${{ startsWith(inputs.target, 'linux-') }}
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libatk-bridge2.0-0 libdrm2 libgbm1 libgtk-3-0 libnss3 \
+            libxcomposite1 libxdamage1 libxkbcommon0 libxrandr2 libxss1 \
+            xauth xvfb
+          sudo apt-get install -y libasound2 || sudo apt-get install -y libasound2t64
+
+      - name: Install and build from public source
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm generate:fixtures
+          pnpm build:desktop
+
+      - name: Create disposable loopback-only TUF trust
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f apps/desktop/build/update-trust/root.json
+          mkdir -p '${{ runner.temp }}/butter-paper-updater-trust'
+          cp apps/desktop/build/update-trust/root.json \
+            '${{ runner.temp }}/butter-paper-updater-trust/production-root.json'
+          rm apps/desktop/build/update-trust/root.json
+          node scripts/create-test-tuf-repository.cjs \
+            --root apps/desktop/build/update-trust/root.json \
+            --private-key '${{ runner.temp }}/butter-paper-updater-trust/private-key.pem'
+
+      - name: Build synthetic N-1 and candidate packages
+        shell: bash
+        env:
+          BP_RELEASE_ARCH: ${{ endsWith(inputs.target, '-arm64') && 'arm64' || 'x64' }}
+          BP_RELEASE_CHANNEL: ${{ inputs.channel }}
+          BP_RELEASE_PLATFORM: ${{ startsWith(inputs.target, 'win32-') && 'win32' || 'linux' }}
+          BP_REQUIRE_TUF_ROOT: '1'
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          set -euo pipefail
+          CANDIDATE_VERSION="$(node -p 'require("./apps/desktop/package.json").version')"
+          PREVIOUS_VERSION='${{ inputs.previous_version }}'
+          [[ "$PREVIOUS_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$PREVIOUS_VERSION" != "$CANDIDATE_VERSION"
+          set_version() {
+            node -e '
+              const fs = require("fs");
+              for (const file of ["package.json", "apps/desktop/package.json"]) {
+                const value = JSON.parse(fs.readFileSync(file));
+                value.version = process.argv[1];
+                fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n");
+              }
+            ' "$1"
+          }
+          set_version "$PREVIOUS_VERSION"
+          export BP_RELEASE_OUTPUT_DIR=ci-updater/previous
+          if [ "$BP_AUDIT_PLATFORM" = win32 ]; then
+            pnpm --dir apps/desktop exec electron-builder \
+              --config electron-builder.config.cjs --win nsis "--$BP_AUDIT_ARCH" --publish never
+          else
+            pnpm --dir apps/desktop exec electron-builder \
+              --config electron-builder.config.cjs --linux AppImage "--$BP_AUDIT_ARCH" --publish never
+          fi
+          set_version "$CANDIDATE_VERSION"
+          export BP_RELEASE_OUTPUT_DIR=ci-updater/candidate
+          if [ "$BP_AUDIT_PLATFORM" = win32 ]; then
+            pnpm --dir apps/desktop exec electron-builder \
+              --config electron-builder.config.cjs --win nsis "--$BP_AUDIT_ARCH" --publish never
+          else
+            pnpm --dir apps/desktop exec electron-builder \
+              --config electron-builder.config.cjs --linux AppImage "--$BP_AUDIT_ARCH" --publish never
+          fi
+          test "$(node -p 'require("./apps/desktop/package.json").version')" = "$CANDIDATE_VERSION"
+
+      - name: Exercise authenticated native N-1 replacement
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix='Butter-Paper'
+          if [ '${{ inputs.channel }}' = beta ]; then prefix='Butter-Paper-Beta'; fi
+          if [ "$BP_AUDIT_PLATFORM" = win32 ]; then
+            node scripts/test-nonmac-update.cjs \
+              --arch "$BP_AUDIT_ARCH" \
+              --channel '${{ inputs.channel }}' \
+              --previous-artifact "apps/desktop/ci-updater/previous/${prefix}-Windows-${BP_AUDIT_ARCH}-Setup.exe" \
+              --candidate-directory apps/desktop/ci-updater/candidate \
+              --candidate-metadata apps/desktop/ci-updater/candidate/latest.yml \
+              --root apps/desktop/build/update-trust/root.json \
+              --private-key '${{ runner.temp }}/butter-paper-updater-trust/private-key.pem' \
+              --evidence '${{ runner.temp }}/butter-paper-updater-evidence'
+          else
+            metadata=latest-linux.yml
+            if [ "$BP_AUDIT_ARCH" = arm64 ]; then metadata=latest-linux-arm64.yml; fi
+            xvfb-run -a node scripts/test-nonmac-update.cjs \
+              --arch "$BP_AUDIT_ARCH" \
+              --channel '${{ inputs.channel }}' \
+              --previous-artifact "apps/desktop/ci-updater/previous/${prefix}-Linux-${BP_AUDIT_ARCH}.AppImage" \
+              --candidate-directory apps/desktop/ci-updater/candidate \
+              --candidate-metadata "apps/desktop/ci-updater/candidate/$metadata" \
+              --root apps/desktop/build/update-trust/root.json \
+              --private-key '${{ runner.temp }}/butter-paper-updater-trust/private-key.pem' \
+              --evidence '${{ runner.temp }}/butter-paper-updater-evidence'
+          fi
+
+      - name: Upload review evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: butter-paper-${{ inputs.channel }}-${{ inputs.target }}-updater-evidence
+          path: ${{ runner.temp }}/butter-paper-updater-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Remove disposable private key and package outputs
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          rm -rf '${{ runner.temp }}/butter-paper-updater-trust'
+          rm -rf apps/desktop/ci-updater apps/desktop/build/update-trust

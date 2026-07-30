@@ -3,6 +3,7 @@ import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { UpdateStatus } from '../shared/protocol';
+import type { TufVerifiedUpdateFeed } from './tufUpdateFeed';
 import {
   DesktopUpdaterService,
   UPDATE_SETTINGS_FILE_NAME,
@@ -18,6 +19,7 @@ class FakeUpdater extends EventEmitter implements ElectronUpdaterLike {
   allowDowngrade = false;
   autoDownload = false;
   autoInstallOnAppQuit = true;
+  disableWebInstaller?: boolean;
   checkForUpdates = vi.fn<() => Promise<unknown>>(async () => undefined);
   downloadUpdate = vi.fn<() => Promise<unknown>>(async () => []);
   quitAndInstall = vi.fn();
@@ -63,6 +65,8 @@ function createService(options: {
   isPackaged?: boolean;
   buildMetadata?: unknown;
   environment?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  createVerifiedFeed?: () => Promise<TufVerifiedUpdateFeed>;
 }): { service: DesktopUpdaterService; updater: FakeUpdater; scheduler: FakeScheduler } {
   const updater = options.updater ?? new FakeUpdater();
   const scheduler = options.scheduler ?? new FakeScheduler();
@@ -75,12 +79,25 @@ function createService(options: {
       userDataPath: options.userDataPath,
       isPackaged: options.isPackaged ?? true,
       currentVersion: '0.0.1',
-      platform: 'darwin',
+      platform: options.platform ?? 'darwin',
+      resourcesPath: join(options.userDataPath, 'resources'),
       buildMetadata: options.buildMetadata ?? { butterPaperChannel: 'stable' },
       environment: options.environment ?? {},
       now: () => fixedNow,
       logger: silentLogger,
+      createVerifiedFeed: options.createVerifiedFeed,
     }),
+  };
+}
+
+function createFakeVerifiedFeed(): TufVerifiedUpdateFeed {
+  return {
+    close: vi.fn(async () => undefined),
+    feedUrl: 'http://127.0.0.1:4317',
+    refresh: vi.fn(async () => '/tmp/latest.yml'),
+    targetPath: '/tmp/latest.yml',
+    trustInitialized: true,
+    trustedRootPath: '/tmp/root.json',
   };
 }
 
@@ -182,26 +199,95 @@ describe('DesktopUpdaterService', () => {
     }
   });
 
-  it('keeps unsigned Windows and Linux updater downloads disabled by platform policy', async () => {
+  it('records fail-closed configuration errors for the native updater harness', async () => {
+    const userDataPath = await createUserDataDirectory();
+    const eventPath = join(userDataPath, 'events', 'configuration-error.json');
+    const { service } = createService({
+      userDataPath,
+      platform: 'linux',
+      buildMetadata: {
+        butterPaperChannel: 'stable',
+        butterPaperTufRepositoryUrl: 'https://updates.example/linux/tuf',
+        butterPaperUpdateTargetName: 'latest-linux.yml',
+      },
+      environment: {
+        APPIMAGE: '/tmp/Butter-Paper.AppImage',
+        BP_UPDATE_EVENT_PATH: eventPath,
+        BP_UPDATE_TEST_MODE: '1',
+      },
+      createVerifiedFeed: async () => {
+        throw new Error('rejected test metadata');
+      },
+    });
+
+    await service.start();
+
+    expect(service.getStatus()).toMatchObject({
+      phase: 'disabled',
+      disabledReason: 'configuration',
+      errorMessage: 'rejected test metadata',
+    });
+    expect(JSON.parse(await readFile(`${eventPath}.jsonl`, 'utf8'))).toMatchObject({
+      name: 'error',
+      phase: 'configuration',
+      message: 'rejected test metadata',
+    });
+  });
+
+  it('enables Windows and AppImage updates only through a TUF-verified local feed', async () => {
     for (const platform of ['win32', 'linux'] as const) {
-      const updater = new FakeUpdater();
-      const service = new DesktopUpdaterService({
-        updater,
-        isPackaged: true,
-        userDataPath: await createUserDataDirectory(),
-        currentVersion: '0.0.1',
+      const feed = createFakeVerifiedFeed();
+      const userDataPath = await createUserDataDirectory();
+      const createVerifiedFeed = vi.fn(async () => feed);
+      const { service, updater } = createService({
+        userDataPath,
         platform,
-        buildMetadata: { butterPaperChannel: 'stable' },
-        environment: {},
+        buildMetadata: {
+          butterPaperChannel: 'stable',
+          butterPaperTufRepositoryUrl: `https://updates.example/${platform}/tuf`,
+          butterPaperUpdateTargetName: platform === 'win32' ? 'latest.yml' : 'latest-linux.yml',
+        },
+        environment: platform === 'linux' ? { APPIMAGE: '/tmp/Butter-Paper.AppImage' } : {},
+        createVerifiedFeed,
       });
 
       await service.start();
       expect(service.getStatus()).toMatchObject({
-        phase: 'disabled',
-        disabledReason: 'platform-policy',
+        phase: 'checking',
+        disabledReason: null,
+        enabled: true,
       });
-      expect(updater.checkForUpdates).not.toHaveBeenCalled();
+      expect(createVerifiedFeed).toHaveBeenCalledWith(expect.objectContaining({
+        embeddedRootPath: join(userDataPath, 'resources', 'update-trust', 'root.json'),
+        expectedChannel: 'stable',
+        repositoryUrl: `https://updates.example/${platform}/tuf`,
+        targetName: platform === 'win32' ? 'latest.yml' : 'latest-linux.yml',
+        trustDirectory: join(userDataPath, 'update-trust'),
+      }));
+      expect(updater.setFeedURL).toHaveBeenCalledWith({
+        provider: 'generic',
+        url: feed.feedUrl,
+      });
+      expect(feed.refresh).toHaveBeenCalledTimes(1);
+      if (platform === 'win32') {
+        expect(updater.disableWebInstaller).toBe(true);
+      }
+      await service.stop();
     }
+  });
+
+  it('leaves DEB and RPM upgrades to the Linux package manager', async () => {
+    const { service, updater } = createService({
+      userDataPath: await createUserDataDirectory(),
+      platform: 'linux',
+      environment: {},
+    });
+    await service.start();
+    expect(service.getStatus()).toMatchObject({
+      phase: 'disabled',
+      disabledReason: 'platform-policy',
+    });
+    expect(updater.checkForUpdates).not.toHaveBeenCalled();
   });
 
   it('allows only a gated loopback feed override and disables invalid overrides', async () => {
@@ -284,7 +370,7 @@ describe('DesktopUpdaterService', () => {
     service.subscribe(status => snapshots.push(status));
     await service.start();
 
-    expect(service.installDownloaded()).toBe(false);
+    await expect(service.installDownloaded()).resolves.toBe(false);
     updater.emit('update-available', {
       version: '0.0.2',
       butterPaperChannel: 'stable',
@@ -303,10 +389,10 @@ describe('DesktopUpdaterService', () => {
     });
     expect(snapshots.some(status => status.phase === 'downloading' && status.downloadPercent === 42.5)).toBe(true);
     service.setRestartBlocked(true);
-    expect(service.installDownloaded()).toBe(false);
+    await expect(service.installDownloaded()).resolves.toBe(false);
     expect(updater.quitAndInstall).not.toHaveBeenCalled();
     service.setRestartBlocked(false);
-    expect(service.installDownloaded()).toBe(true);
+    await expect(service.installDownloaded()).resolves.toBe(true);
     expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
 
     await vi.waitFor(async () => {
@@ -315,20 +401,64 @@ describe('DesktopUpdaterService', () => {
     });
   });
 
-  it('rejects missing or cross-channel metadata before downloading', async () => {
-    for (const butterPaperChannel of [undefined, 'beta']) {
-      const { service, updater } = createService({
-        userDataPath: await createUserDataDirectory(),
-      });
-      await service.start();
+  it('closes the authenticated loopback feed before handing off to a Windows installer', async () => {
+    const feed = createFakeVerifiedFeed();
+    const updater = new FakeUpdater();
+    const { service } = createService({
+      userDataPath: await createUserDataDirectory(),
+      platform: 'win32',
+      updater,
+      buildMetadata: {
+        butterPaperChannel: 'stable',
+        butterPaperTufRepositoryUrl: 'https://updates.example/win32/tuf',
+        butterPaperUpdateTargetName: 'latest.yml',
+      },
+      createVerifiedFeed: async () => feed,
+    });
+    await service.start();
+    updater.emit('update-available', {
+      version: '0.0.2',
+      butterPaperChannel: 'stable',
+    });
+    await vi.waitFor(() => expect(updater.downloadUpdate).toHaveBeenCalledTimes(1));
+    updater.emit('update-downloaded', { version: '0.0.2' });
 
-      updater.emit('update-available', { version: '0.0.2', butterPaperChannel });
+    await expect(service.installDownloaded()).resolves.toBe(true);
+    expect(feed.close).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(feed.close).mock.invocationCallOrder[0]).toBeLessThan(
+      updater.quitAndInstall.mock.invocationCallOrder[0]!,
+    );
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
+  });
 
-      await vi.waitFor(() => expect(service.getStatus().phase).toBe('error'));
-      expect(service.getStatus().errorMessage).toMatch(/Rejected update metadata for channel/);
-      expect(updater.downloadUpdate).not.toHaveBeenCalled();
-      expect(updater.quitAndInstall).not.toHaveBeenCalled();
-    }
+  it('rejects an explicit cross-channel macOS update before downloading', async () => {
+    const { service, updater } = createService({
+      userDataPath: await createUserDataDirectory(),
+    });
+    await service.start();
+
+    updater.emit('update-available', { version: '0.0.2', butterPaperChannel: 'beta' });
+
+    await vi.waitFor(() => expect(service.getStatus().phase).toBe('error'));
+    expect(service.getStatus().errorMessage).toMatch(/Rejected update metadata for channel/);
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+  });
+
+  it('accepts macOS update info when electron-updater omits unknown metadata fields', async () => {
+    const { service, updater } = createService({
+      userDataPath: await createUserDataDirectory(),
+    });
+    await service.start();
+
+    updater.emit('update-available', { version: '0.0.2' });
+
+    await vi.waitFor(() => expect(updater.downloadUpdate).toHaveBeenCalledTimes(1));
+    expect(service.getStatus()).toMatchObject({
+      phase: 'available',
+      availableVersion: '0.0.2',
+      errorMessage: null,
+    });
   });
 
   it('removes updater and scheduler listeners when stopped', async () => {
@@ -337,7 +467,7 @@ describe('DesktopUpdaterService', () => {
     });
     await service.start();
     const statusBeforeStop = service.getStatus();
-    service.stop();
+    await service.stop();
 
     expect(scheduler.cleared).toHaveLength(1);
     updater.emit('update-downloaded', { version: '9.9.9' });

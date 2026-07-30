@@ -30,7 +30,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: 24.16.0
           cache: pnpm
 
       - name: Install dependencies
@@ -61,7 +61,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: 24.16.0
           cache: pnpm
 
       - name: Install dependencies
@@ -144,7 +144,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: 24.16.0
           cache: pnpm
 
       - name: Verify native runner
@@ -158,6 +158,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             cpio \
+            binutils \
+            desktop-file-utils \
             fakeroot \
             file \
             rpm \
@@ -192,6 +194,7 @@ jobs:
           BP_RELEASE_CHANNEL: ${{ matrix.variant }}
           BP_RELEASE_PLATFORM: ${{ matrix.platform }}
           BP_RELEASE_OUTPUT_DIR: release/${{ matrix.variant }}/${{ matrix.platform }}/${{ matrix.arch }}
+          BP_REQUIRE_TUF_ROOT: '1'
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: pnpm --dir apps/desktop package
 
@@ -211,6 +214,7 @@ jobs:
           BP_RELEASE_CHANNEL: ${{ matrix.variant }}
           BP_RELEASE_OUTPUT_DIR: release/${{ matrix.variant }}/${{ matrix.platform }}/${{ matrix.arch }}
           BP_RELEASE_PLATFORM: ${{ matrix.platform }}
+          BP_REQUIRE_TUF_ROOT: '1'
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: pnpm --dir apps/desktop exec electron-builder --config electron-builder.config.cjs --win nsis --${{ matrix.arch }} --publish never
 
@@ -230,6 +234,7 @@ jobs:
           BP_RELEASE_CHANNEL: ${{ matrix.variant }}
           BP_RELEASE_OUTPUT_DIR: release/${{ matrix.variant }}/${{ matrix.platform }}/${{ matrix.arch }}
           BP_RELEASE_PLATFORM: ${{ matrix.platform }}
+          BP_REQUIRE_TUF_ROOT: '1'
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: pnpm --dir apps/desktop exec electron-builder --config electron-builder.config.cjs --linux AppImage deb rpm --${{ matrix.arch }} --publish never
 
@@ -241,3 +246,29 @@ jobs:
           'apps/desktop/release/${{ matrix.variant }}/${{ matrix.platform }}/${{ matrix.arch }}'
           '${{ matrix.variant }}'
           '${{ matrix.arch }}'
+
+  manual-production-tuf-signing-audit:
+    name: Manual production TUF signing audit
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/tuf-signing-audit.yml
+    secrets: inherit
+
+  manual-nonmac-updater-audit:
+    name: Manual ${{ matrix.channel }} updater audit (${{ matrix.target }})
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        channel:
+          - stable
+          - beta
+        target:
+          - win32-arm64
+          - win32-x64
+          - linux-arm64
+          - linux-x64
+    uses: ./.github/workflows/nonmac-updater-audit.yml
+    with:
+      channel: ${{ matrix.channel }}
+      target: ${{ matrix.target }}
+      previous_version: 0.0.11
