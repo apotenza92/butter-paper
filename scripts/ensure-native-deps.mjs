@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync } from 'node:fs';
+import { copyFileSync, existsSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -58,7 +58,14 @@ function ensureWindowsArmCanvasIcu() {
   const destination = join(canvasRoot, 'icudtl.dat');
   if (!existsSync(destination)) {
     if (!existsSync(source)) {
-      throw new Error(`Expected Electron ICU data at ${source}`);
+      // Electron's installer considers the payload complete when its executable and
+      // version marker exist. Requiring a fresh marker check repairs rare partial
+      // extractions that omit ICU data while leaving electron.exe behind.
+      rmSync(join(electronRoot, 'dist', 'version'), { force: true });
+      runPackageInstaller(electronRoot, 'install.js');
+    }
+    if (!existsSync(source)) {
+      throw new Error(`Expected Electron ICU data at ${source} after reinstalling Electron`);
     }
     copyFileSync(source, destination);
   }
