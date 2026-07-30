@@ -35,6 +35,7 @@ const inspectScript = `
     macMinimumSystemVersion: config.mac.minimumSystemVersion,
     extraResources: config.extraResources,
     files: config.files,
+    arm64UnpackedDir: process.env.BP_NSIS_ARM64_UNPACKED_DIR ?? null,
   }));
 `;
 
@@ -157,12 +158,11 @@ describe('Electron Builder release identity', () => {
       nsisInclude: 'build/installer.nsh',
       windowsArtifact: 'Butter-Paper-Windows-${arch}-Setup.${ext}',
     });
+    expect(config.arm64UnpackedDir).toMatch(/release[/\\]win-arm64-unpacked$/);
     const installerInclude = readFileSync(resolve(desktopDir, 'build/installer.nsh'), 'utf8');
     expect(config.nsisUseZip).toBeUndefined();
     expect(installerInclude).toContain('customFiles_arm64');
-    expect(installerInclude).toContain('Nsis7z::Extract "$PLUGINSDIR\\app-arm64.7z"');
-    expect(installerInclude).not.toMatch(/^\s*File\s/m);
-    expect(installerInclude).not.toContain('BP_NSIS_ARM64_UNPACKED_DIR');
+    expect(installerInclude).toContain('$%BP_NSIS_ARM64_UNPACKED_DIR%\\*.dll');
   });
 
   it('configures only AppImage runtime updates for Linux packages', () => {

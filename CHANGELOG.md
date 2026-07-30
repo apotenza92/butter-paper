@@ -9,12 +9,8 @@ All notable Butter Paper changes are recorded here.
 - Refreshed the development and packaging toolchain to patched releases.
 - Corrected the packaged TUF dependency graph and patched its glob-matching
   dependency so delegated update metadata can be evaluated safely.
-- Removed an obsolete Windows ARM64 NSIS workaround that duplicated the
-  executable and Electron runtime libraries inside the installer. The installer
-  now reuses its single embedded archive when applying the ARM64 extraction
-  fallback.
-- Added package-boundary checks for the packaged TUF runtime and a release gate
-  that rejects unexpectedly oversized Windows ARM64 installers.
+- Added package-boundary checks that execute delegated TUF path matching from
+  the actual packaged application archive on macOS, Windows, and Linux.
 - Preserved isolated stable and beta application identities and updater feeds.
   Stable releases advance both feeds; beta prereleases advance only beta.
 - Windows and Linux users upgrading directly from 0.0.11 still need one manual

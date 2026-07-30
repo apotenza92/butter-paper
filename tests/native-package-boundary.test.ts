@@ -49,10 +49,8 @@ describe('native release package boundaries', () => {
     expect(verifier).toContain("Invoke-And-Wait $uninstaller.FullName @('/S')");
     expect(verifier).toContain('NSIS uninstall left the install directory behind');
     expect(installerInclude).toContain('customFiles_arm64');
-    expect(installerInclude).toContain('Nsis7z::Extract "$PLUGINSDIR\\app-arm64.7z"');
-    expect(installerInclude).not.toMatch(/^\s*File\s/m);
-    expect(installerInclude).not.toContain('BP_NSIS_ARM64_UNPACKED_DIR');
-    expect(workflow).toContain('verify-release-package-sizes.mjs');
+    expect(installerInclude).toContain('!ifdef APP_ARM64');
+    expect(installerInclude).toContain('$%BP_NSIS_ARM64_UNPACKED_DIR%\\*.dll');
   });
 
   it('tests the AppImage, installed DEB, and extracted RPM on native Linux', () => {
