@@ -8,6 +8,7 @@ import { canonicalize } from '@tufjs/canonical-json';
 import {
   createTufVerifiedUpdateFeed,
   initializeTrustedRoot,
+  validateAuthenticatedUpdateChannel,
   validateTufRepositoryUrl,
   validateTufTargetName,
   type TufVerifiedUpdateFeed,
@@ -50,7 +51,7 @@ function tufFixture(options: {
   const expires = options.expires ?? '2035-01-01T00:00:00Z';
   const role = { keyids: [keyID], threshold: 1 };
   const targetName = options.targetName ?? 'latest.yml';
-  const targetBytes = Buffer.from('version: 0.0.12\nfiles: []\n');
+  const targetBytes = Buffer.from('version: 0.0.12\nbutterPaperChannel: stable\nfiles: []\n');
   const targetsSigner = options.wrongTargetsSignature
     ? generateKeyPairSync('ed25519').privateKey
     : privateKey;
@@ -184,6 +185,25 @@ describe('TUF repository boundary', () => {
     expect(() => validateTufTargetName('nested/latest.yml')).toThrow(/Unsafe/);
   });
 
+  it('requires exactly one authenticated stable or beta channel declaration', () => {
+    expect(() => validateAuthenticatedUpdateChannel(
+      Buffer.from('version: 0.0.12\nbutterPaperChannel: stable\n'),
+      'stable',
+    )).not.toThrow();
+    expect(() => validateAuthenticatedUpdateChannel(
+      Buffer.from('version: 0.0.12\nbutterPaperChannel: beta\n'),
+      'stable',
+    )).toThrow(/expected stable/);
+    expect(() => validateAuthenticatedUpdateChannel(
+      Buffer.from('version: 0.0.12\n'),
+      'stable',
+    )).toThrow(/missing or duplicated/);
+    expect(() => validateAuthenticatedUpdateChannel(
+      Buffer.from('butterPaperChannel: stable\nbutterPaperChannel: stable\n'),
+      'stable',
+    )).toThrow(/missing or duplicated/);
+  });
+
   it('initializes trust once and never replaces an advanced persisted root', () => {
     const root = mkdtempSync(join(tmpdir(), 'butter-paper-tuf-root-'));
     try {
@@ -212,6 +232,7 @@ describe('TUF repository boundary', () => {
       writeFileSync(embeddedRootPath, fixture.metadata['root.json']!);
       feed = await createTufVerifiedUpdateFeed({
         embeddedRootPath,
+        expectedChannel: 'stable',
         repositoryUrl: repository.url,
         targetName: fixture.targetName,
         trustDirectory: join(root, 'trust'),
@@ -274,6 +295,7 @@ describe('TUF repository boundary', () => {
       writeFileSync(embeddedRootPath, fixture.metadata['root.json']!);
       await expect(createTufVerifiedUpdateFeed({
         embeddedRootPath,
+        expectedChannel: 'stable',
         repositoryUrl: repository.url,
         targetName: fixture.targetName,
         trustDirectory: join(root, 'trust'),

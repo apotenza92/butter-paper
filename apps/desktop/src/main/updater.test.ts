@@ -259,6 +259,7 @@ describe('DesktopUpdaterService', () => {
       });
       expect(createVerifiedFeed).toHaveBeenCalledWith(expect.objectContaining({
         embeddedRootPath: join(userDataPath, 'resources', 'update-trust', 'root.json'),
+        expectedChannel: 'stable',
         repositoryUrl: `https://updates.example/${platform}/tuf`,
         targetName: platform === 'win32' ? 'latest.yml' : 'latest-linux.yml',
         trustDirectory: join(userDataPath, 'update-trust'),
@@ -430,20 +431,34 @@ describe('DesktopUpdaterService', () => {
     expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
   });
 
-  it('rejects missing or cross-channel metadata before downloading', async () => {
-    for (const butterPaperChannel of [undefined, 'beta']) {
-      const { service, updater } = createService({
-        userDataPath: await createUserDataDirectory(),
-      });
-      await service.start();
+  it('rejects an explicit cross-channel macOS update before downloading', async () => {
+    const { service, updater } = createService({
+      userDataPath: await createUserDataDirectory(),
+    });
+    await service.start();
 
-      updater.emit('update-available', { version: '0.0.2', butterPaperChannel });
+    updater.emit('update-available', { version: '0.0.2', butterPaperChannel: 'beta' });
 
-      await vi.waitFor(() => expect(service.getStatus().phase).toBe('error'));
-      expect(service.getStatus().errorMessage).toMatch(/Rejected update metadata for channel/);
-      expect(updater.downloadUpdate).not.toHaveBeenCalled();
-      expect(updater.quitAndInstall).not.toHaveBeenCalled();
-    }
+    await vi.waitFor(() => expect(service.getStatus().phase).toBe('error'));
+    expect(service.getStatus().errorMessage).toMatch(/Rejected update metadata for channel/);
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+  });
+
+  it('accepts macOS update info when electron-updater omits unknown metadata fields', async () => {
+    const { service, updater } = createService({
+      userDataPath: await createUserDataDirectory(),
+    });
+    await service.start();
+
+    updater.emit('update-available', { version: '0.0.2' });
+
+    await vi.waitFor(() => expect(updater.downloadUpdate).toHaveBeenCalledTimes(1));
+    expect(service.getStatus()).toMatchObject({
+      phase: 'available',
+      availableVersion: '0.0.2',
+      errorMessage: null,
+    });
   });
 
   it('removes updater and scheduler listeners when stopped', async () => {

@@ -12,6 +12,7 @@ import { createServer, type Server } from 'node:http';
 import { join, posix } from 'node:path';
 import { BaseFetcher, Updater, type Fetcher } from 'tuf-js';
 import { DownloadHTTPError } from 'tuf-js/dist/error.js';
+import type { UpdateChannel } from '../shared/protocol';
 
 export interface TufUpdaterLike {
   refresh(): Promise<void>;
@@ -41,6 +42,7 @@ export interface TufVerifiedUpdateFeed {
 
 export interface CreateTufVerifiedUpdateFeedOptions {
   embeddedRootPath: string;
+  expectedChannel: UpdateChannel;
   repositoryUrl: string;
   targetName: string;
   trustDirectory: string;
@@ -121,6 +123,21 @@ export function validateTufTargetName(value: string): string {
     throw new Error(`Unsafe Butter Paper TUF update target name: ${value}`);
   }
   return value;
+}
+
+export function validateAuthenticatedUpdateChannel(
+  targetBytes: Buffer,
+  expectedChannel: UpdateChannel,
+): void {
+  const matches = [...targetBytes.toString('utf8').matchAll(
+    /^butterPaperChannel:\s*(stable|beta)\s*$/gm,
+  )];
+  if (matches.length !== 1 || matches[0]?.[1] !== expectedChannel) {
+    const actual = matches.length === 1 ? matches[0]?.[1] : '<missing or duplicated>';
+    throw new Error(
+      `Rejected authenticated update metadata for channel ${actual}; expected ${expectedChannel}.`,
+    );
+  }
 }
 
 export function initializeTrustedRoot(options: {
@@ -220,6 +237,7 @@ export async function createTufVerifiedUpdateFeed(
         rmSync(temporaryTargetPath, { force: true });
       }
       targetBytes = readFileSync(targetPath);
+      validateAuthenticatedUpdateChannel(targetBytes, options.expectedChannel);
       return targetPath;
     })().finally(() => {
       refreshPromise = null;

@@ -383,6 +383,7 @@ export class DesktopUpdaterService {
 
     this.verifiedFeed = await this.createVerifiedFeed({
       embeddedRootPath: join(this.resourcesPath, 'update-trust', 'root.json'),
+      expectedChannel: this.channel,
       repositoryUrl,
       targetName,
       trustDirectory: join(this.userDataPath, 'update-trust'),
@@ -438,7 +439,9 @@ export class DesktopUpdaterService {
   }
 
   private async handleUpdateAvailable(info: UpdateInfoLike): Promise<void> {
-    if (info?.butterPaperChannel !== this.channel) {
+    if (this.platform === 'darwin'
+      && info?.butterPaperChannel != null
+      && info.butterPaperChannel !== this.channel) {
       this.handleUpdaterError(new Error(
         `Rejected update metadata for channel ${String(info?.butterPaperChannel ?? '<missing>')}; expected ${this.channel}.`,
       ));
