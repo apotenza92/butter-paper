@@ -538,6 +538,10 @@ export class DesktopUpdaterService {
   }
 
   private disableForConfiguration(error: unknown): void {
+    this.recordTestEvent('error', {
+      message: errorMessage(error),
+      phase: 'configuration',
+    });
     this.patchStatus({
       phase: 'disabled',
       enabled: false,

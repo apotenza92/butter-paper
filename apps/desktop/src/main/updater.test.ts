@@ -199,6 +199,41 @@ describe('DesktopUpdaterService', () => {
     }
   });
 
+  it('records fail-closed configuration errors for the native updater harness', async () => {
+    const userDataPath = await createUserDataDirectory();
+    const eventPath = join(userDataPath, 'events', 'configuration-error.json');
+    const { service } = createService({
+      userDataPath,
+      platform: 'linux',
+      buildMetadata: {
+        butterPaperChannel: 'stable',
+        butterPaperTufRepositoryUrl: 'https://updates.example/linux/tuf',
+        butterPaperUpdateTargetName: 'latest-linux.yml',
+      },
+      environment: {
+        APPIMAGE: '/tmp/Butter-Paper.AppImage',
+        BP_UPDATE_EVENT_PATH: eventPath,
+        BP_UPDATE_TEST_MODE: '1',
+      },
+      createVerifiedFeed: async () => {
+        throw new Error('rejected test metadata');
+      },
+    });
+
+    await service.start();
+
+    expect(service.getStatus()).toMatchObject({
+      phase: 'disabled',
+      disabledReason: 'configuration',
+      errorMessage: 'rejected test metadata',
+    });
+    expect(JSON.parse(await readFile(`${eventPath}.jsonl`, 'utf8'))).toMatchObject({
+      name: 'error',
+      phase: 'configuration',
+      message: 'rejected test metadata',
+    });
+  });
+
   it('enables Windows and AppImage updates only through a TUF-verified local feed', async () => {
     for (const platform of ['win32', 'linux'] as const) {
       const feed = createFakeVerifiedFeed();
