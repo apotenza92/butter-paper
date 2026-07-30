@@ -25,6 +25,7 @@ const inspectScript = `
     releaseNotes: config.releaseInfo?.releaseNotes,
     nsisInclude: config.nsis.include,
     nsisOneClick: config.nsis.oneClick,
+    nsisUseZip: config.nsis.useZip,
     nsisAllowElevation: config.nsis.allowElevation,
     nsisAllowToChangeInstallationDirectory: config.nsis.allowToChangeInstallationDirectory,
     linuxArtifact: config.linux.artifactName,
@@ -104,6 +105,7 @@ describe('Electron Builder release identity', () => {
       releaseNotes: expect.stringContaining('Updated Electron to the supported 43 release line'),
       nsisInclude: 'build/installer.nsh',
       nsisOneClick: false,
+      nsisUseZip: false,
       macMinimumSystemVersion: '12.0',
     });
     expect(config.files).toContain('!**/*.map');
@@ -155,6 +157,7 @@ describe('Electron Builder release identity', () => {
       compression: 'maximum',
       nsisInclude: 'build/installer.nsh',
       windowsArtifact: 'Butter-Paper-Windows-${arch}-Setup.${ext}',
+      nsisUseZip: true,
     });
     const installerInclude = readFileSync(resolve(desktopDir, 'build/installer.nsh'), 'utf8');
     expect(installerInclude).not.toContain('customFiles_arm64');

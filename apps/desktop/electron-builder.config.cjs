@@ -155,6 +155,7 @@ module.exports = {
   },
   nsis: {
     oneClick: false,
+    useZip: releasePlatform === 'win32' && releaseArch === 'arm64',
     perMachine: false,
     allowElevation: true,
     allowToChangeInstallationDirectory: true,

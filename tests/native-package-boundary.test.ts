@@ -51,6 +51,8 @@ describe('native release package boundaries', () => {
     expect(installerInclude).not.toContain('customFiles_arm64');
     expect(installerInclude).not.toContain('BP_NSIS_ARM64_UNPACKED_DIR');
     expect(workflow).toContain('verify-release-package-sizes.mjs');
+    expect(readFileSync(resolve('apps/desktop/electron-builder.config.cjs'), 'utf8'))
+      .toContain("useZip: releasePlatform === 'win32' && releaseArch === 'arm64'");
   });
 
   it('tests the AppImage, installed DEB, and extracted RPM on native Linux', () => {
