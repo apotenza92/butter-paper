@@ -48,11 +48,11 @@ describe('native release package boundaries', () => {
     expect(verifier).toContain('verify-packaged-runtime-dependencies.cjs');
     expect(verifier).toContain("Invoke-And-Wait $uninstaller.FullName @('/S')");
     expect(verifier).toContain('NSIS uninstall left the install directory behind');
-    expect(installerInclude).not.toContain('customFiles_arm64');
+    expect(installerInclude).toContain('customFiles_arm64');
+    expect(installerInclude).toContain('Nsis7z::Extract "$PLUGINSDIR\\app-arm64.7z"');
+    expect(installerInclude).not.toMatch(/^\s*File\s/m);
     expect(installerInclude).not.toContain('BP_NSIS_ARM64_UNPACKED_DIR');
     expect(workflow).toContain('verify-release-package-sizes.mjs');
-    expect(readFileSync(resolve('apps/desktop/electron-builder.config.cjs'), 'utf8'))
-      .toContain("useZip: releasePlatform === 'win32' && releaseArch === 'arm64'");
   });
 
   it('tests the AppImage, installed DEB, and extracted RPM on native Linux', () => {

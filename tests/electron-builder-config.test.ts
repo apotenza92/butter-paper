@@ -105,7 +105,6 @@ describe('Electron Builder release identity', () => {
       releaseNotes: expect.stringContaining('Updated Electron to the supported 43 release line'),
       nsisInclude: 'build/installer.nsh',
       nsisOneClick: false,
-      nsisUseZip: false,
       macMinimumSystemVersion: '12.0',
     });
     expect(config.files).toContain('!**/*.map');
@@ -157,10 +156,12 @@ describe('Electron Builder release identity', () => {
       compression: 'maximum',
       nsisInclude: 'build/installer.nsh',
       windowsArtifact: 'Butter-Paper-Windows-${arch}-Setup.${ext}',
-      nsisUseZip: true,
     });
     const installerInclude = readFileSync(resolve(desktopDir, 'build/installer.nsh'), 'utf8');
-    expect(installerInclude).not.toContain('customFiles_arm64');
+    expect(config.nsisUseZip).toBeUndefined();
+    expect(installerInclude).toContain('customFiles_arm64');
+    expect(installerInclude).toContain('Nsis7z::Extract "$PLUGINSDIR\\app-arm64.7z"');
+    expect(installerInclude).not.toMatch(/^\s*File\s/m);
     expect(installerInclude).not.toContain('BP_NSIS_ARM64_UNPACKED_DIR');
   });
 

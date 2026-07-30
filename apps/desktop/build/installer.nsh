@@ -1,3 +1,10 @@
+!ifdef APP_ARM64
+!macro customFiles_arm64
+  SetOutPath "$INSTDIR"
+  Nsis7z::Extract "$PLUGINSDIR\app-arm64.7z"
+!macroend
+!endif
+
 !define BP_PDF_PROG_ID "${APP_ID}.pdf"
 !define BP_CAPABILITIES_KEY "Software\${APP_ID}\Capabilities"
 
