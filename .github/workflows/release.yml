@@ -996,7 +996,7 @@ jobs:
             "release-tag=${{ github.ref_name }}" \
             "release-commit=${{ github.sha }}" \
             "destination=${{ github.repository }}:updates" \
-            "Publication: tag workflow, after explicit release-environment approval." \
+            "Publication: tag workflow, after tag-source and native release verification gates." \
             > feed-publication/PUBLICATION.txt
           (
             cd feed-publication
