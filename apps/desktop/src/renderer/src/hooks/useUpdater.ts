@@ -1,15 +1,28 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { UpdateFrequency, UpdateStatus } from '../../../shared/protocol';
+import type { ManualUpdateCheckState } from '../components/updateDialogState';
 
 export interface UpdaterActions {
   checkNow(): Promise<void>;
+  dismissManualCheck(): void;
   installDownloaded(): Promise<void>;
   openReleasePage(): Promise<void>;
   setFrequency(frequency: UpdateFrequency): Promise<void>;
 }
 
-export function useUpdater(): { status: UpdateStatus | null; actions: UpdaterActions } {
+const closedManualCheck: ManualUpdateCheckState = {
+  open: false,
+  pending: false,
+  errorMessage: null,
+};
+
+export function useUpdater(): {
+  status: UpdateStatus | null;
+  manualCheck: ManualUpdateCheckState;
+  actions: UpdaterActions;
+} {
   const [status, setStatus] = useState<UpdateStatus | null>(null);
+  const [manualCheck, setManualCheck] = useState<ManualUpdateCheckState>(closedManualCheck);
 
   useEffect(() => {
     let active = true;
@@ -34,11 +47,28 @@ export function useUpdater(): { status: UpdateStatus | null; actions: UpdaterAct
   }, []);
 
   const checkNow = useCallback(async () => {
+    setManualCheck({ open: true, pending: true, errorMessage: null });
     try {
       setStatus(await window.butterPaper.updates.checkNow());
+      setManualCheck(current => current.open
+        ? { ...current, pending: false }
+        : current);
     } catch (error) {
       console.error('Unable to check for updates.', error);
+      setManualCheck(current => current.open
+        ? {
+            ...current,
+            pending: false,
+            errorMessage: error instanceof Error
+              ? error.message
+              : 'Unable to contact the update service.',
+          }
+        : current);
     }
+  }, []);
+
+  const dismissManualCheck = useCallback(() => {
+    setManualCheck(closedManualCheck);
   }, []);
 
   const installDownloaded = useCallback(async () => {
@@ -67,6 +97,13 @@ export function useUpdater(): { status: UpdateStatus | null; actions: UpdaterAct
 
   return {
     status,
-    actions: { checkNow, installDownloaded, openReleasePage, setFrequency },
+    manualCheck,
+    actions: {
+      checkNow,
+      dismissManualCheck,
+      installDownloaded,
+      openReleasePage,
+      setFrequency,
+    },
   };
 }

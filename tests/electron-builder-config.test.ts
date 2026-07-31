@@ -102,7 +102,7 @@ describe('Electron Builder release identity', () => {
       afterPack: 'build/after-pack.cjs',
       compression: 'maximum',
       electronLanguages: ['en-US'],
-      releaseNotes: expect.stringContaining('Updated Electron to the supported 43 release line'),
+      releaseNotes: expect.stringContaining('Added immediate, accessible in-app feedback for manual update checks'),
       nsisInclude: 'build/installer.nsh',
       nsisOneClick: false,
       macMinimumSystemVersion: '12.0',

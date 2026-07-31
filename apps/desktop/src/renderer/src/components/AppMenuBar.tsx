@@ -123,10 +123,21 @@ export function AppMenuBar({ canSave, productName, updateStatus, onOpen, onOpenC
                 <MenubarItem
                   className="h-7 py-0 text-[12px]"
                   data-testid="menu-check-for-updates"
-                  disabled={!updateStatus?.enabled || updateStatus.phase === 'checking' || updateStatus.phase === 'downloading'}
+                  disabled={!updateStatus?.enabled
+                    || updateStatus.phase === 'checking'
+                    || updateStatus.phase === 'available'
+                    || updateStatus.phase === 'downloading'}
                   onClick={onCheckForUpdates}
                 >
-                  {updateStatus?.phase === 'checking' ? 'Checking for Updates...' : 'Check for Updates...'}
+                  {updateStatus?.phase === 'checking'
+                    ? 'Checking for Updates...'
+                    : updateStatus?.phase === 'available' || updateStatus?.phase === 'downloading'
+                      ? `Downloading Update${updateStatus.downloadPercent == null
+                        ? '...'
+                        : ` (${Math.round(updateStatus.downloadPercent)}%)`}`
+                      : updateStatus?.phase === 'downloaded'
+                        ? 'Update Ready...'
+                        : 'Check for Updates...'}
                 </MenubarItem>
                 <MenubarSub>
                   <MenubarSubTrigger
