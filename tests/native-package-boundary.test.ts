@@ -99,10 +99,19 @@ describe('native release package boundaries', () => {
     const workflow = readWorkflow();
 
     expect(workflow).toContain(
-      "['channel=stable', 'environment=stable-release', 'prerelease=false', 'variants=[\"stable\",\"beta\"]']",
+      'process.env.GITHUB_ACTOR === process.env.GITHUB_REPOSITORY_OWNER',
     );
     expect(workflow).toContain(
-      "['channel=beta', 'environment=beta-release', 'prerelease=true', 'variants=[\"beta\"]']",
+      "ownerRelease ? 'stable-release-self' : 'stable-release'",
+    );
+    expect(workflow).toContain(
+      "ownerRelease ? 'beta-release-self' : 'beta-release'",
+    );
+    expect(workflow).toContain(
+      "['channel=stable', `environment=${environment}`, 'prerelease=false', 'variants=[\"stable\",\"beta\"]']",
+    );
+    expect(workflow).toContain(
+      "['channel=beta', `environment=${environment}`, 'prerelease=true', 'variants=[\"beta\"]']",
     );
     expect(workflow).toContain("const app = channel === 'beta' ? 'Butter Paper Beta.app' : 'Butter Paper.app'");
     expect(workflow).toContain("variant === 'beta' || !release.prerelease");
