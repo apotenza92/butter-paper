@@ -2,6 +2,20 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.15]
+
+- Added immediate, accessible in-app feedback for manual update checks,
+  including checking, authenticated download progress, up-to-date,
+  failure/retry, and ready-to-install states.
+- Kept automatic checks quiet until an update is ready, while ensuring every
+  manual check ends with visible success, no-update, or error feedback.
+- Allowed the update progress window to close without cancelling its background
+  download; the ready-to-install prompt still appears when that download
+  completes.
+- Preserved isolated stable and beta application identities and feeds. This
+  stable release advances both products without converting beta installations
+  into the stable app.
+
 ## [0.0.14]
 
 - Updated Electron to the supported 43 release line while preserving macOS 12

@@ -1825,8 +1825,11 @@ export function App({ initialThemeMode }: AppProps) {
       ) : null}
       <UpdateDialog
         hasDirtyDocuments={hasDirtyDocuments}
+        manualCheck={updater.manualCheck}
         productName={applicationMetadata.productName}
         status={updater.status}
+        onCheckAgain={() => void updater.actions.checkNow()}
+        onDismissManualCheck={updater.actions.dismissManualCheck}
         onInstall={() => void updater.actions.installDownloaded()}
         onOpenReleasePage={() => void updater.actions.openReleasePage()}
       />
