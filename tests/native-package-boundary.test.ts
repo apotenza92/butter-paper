@@ -34,10 +34,18 @@ describe('native release package boundaries', () => {
 
   it('installs, feature-tests, and uninstalls the exact Windows NSIS package', () => {
     const workflow = readWorkflow();
+    const ciWorkflow = readFileSync(resolve('.github/workflows/ci.yml'), 'utf8');
     const verifier = readFileSync(resolve('scripts/test-windows-installer.ps1'), 'utf8');
     const installerInclude = readFileSync(resolve('apps/desktop/build/installer.nsh'), 'utf8');
+    const desktopPackage = JSON.parse(
+      readFileSync(resolve('apps/desktop/package.json'), 'utf8'),
+    ) as { devDependencies: Record<string, string> };
 
     expect(workflow).toContain('./scripts/test-windows-installer.ps1');
+    expect(workflow).toContain('scripts/verify-release-package-sizes.mjs');
+    expect(workflow).toContain('--arm64-installer');
+    expect(ciWorkflow).toContain('scripts/verify-release-package-sizes.mjs');
+    expect(ciWorkflow).toContain('--arm64-installer');
     expect(workflow).not.toContain("-path '*unpacked*'");
     expect(verifier).toContain('Assert-PeMachine $application $expectedMachine');
     expect(verifier).toContain('Assert-PeMachine $runtimePath $expectedMachine');
@@ -48,9 +56,9 @@ describe('native release package boundaries', () => {
     expect(verifier).toContain('verify-packaged-runtime-dependencies.cjs');
     expect(verifier).toContain("Invoke-And-Wait $uninstaller.FullName @('/S')");
     expect(verifier).toContain('NSIS uninstall left the install directory behind');
-    expect(installerInclude).toContain('customFiles_arm64');
-    expect(installerInclude).toContain('!ifdef APP_ARM64');
-    expect(installerInclude).toContain('$%BP_NSIS_ARM64_UNPACKED_DIR%\\*.dll');
+    expect(desktopPackage.devDependencies['electron-builder']).toBe('26.15.7');
+    expect(installerInclude).not.toContain('customFiles_arm64');
+    expect(installerInclude).not.toContain('BP_NSIS_ARM64_UNPACKED_DIR');
   });
 
   it('tests the AppImage, installed DEB, and extracted RPM on native Linux', () => {
@@ -79,6 +87,7 @@ describe('native release package boundaries', () => {
     const workflow = readWorkflow();
     const contract = readFileSync(resolve('scripts/release-asset-contract.mjs'), 'utf8');
 
+    expect(workflow).toContain('Reject unexpectedly oversized Windows ARM64 installers');
     expect(workflow).toContain('update-${{ matrix.variant }}-win32');
     expect(workflow).toContain('update-${{ matrix.variant }}-linux');
     expect(contract).toContain('update-${variant}-win32');

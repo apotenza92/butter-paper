@@ -11,6 +11,9 @@ All notable Butter Paper changes are recorded here.
   dependency so delegated update metadata can be evaluated safely.
 - Added package-boundary checks that execute delegated TUF path matching from
   the actual packaged application archive on macOS, Windows, and Linux.
+- Updated electron-builder to use an NSIS-compatible ARM64 payload filter,
+  removing the duplicated Windows executable and DLL workaround and adding
+  package-size regression gates.
 - Preserved isolated stable and beta application identities and updater feeds.
   Stable releases advance both feeds; beta prereleases advance only beta.
 - Windows and Linux users upgrading directly from 0.0.11 still need one manual

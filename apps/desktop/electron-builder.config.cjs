@@ -37,13 +37,6 @@ const tufRootPath = path.join(__dirname, 'build', 'update-trust', 'root.json');
 if (process.env.BP_REQUIRE_TUF_ROOT === '1' && !existsSync(tufRootPath)) {
   throw new Error(`A reviewed Butter Paper TUF trust root is required at ${tufRootPath}.`);
 }
-if (releasePlatform === 'win32' && releaseArch === 'arm64') {
-  process.env.BP_NSIS_ARM64_UNPACKED_DIR = path.resolve(
-    __dirname,
-    process.env.BP_RELEASE_OUTPUT_DIR || 'release',
-    'win-arm64-unpacked',
-  );
-}
 const hasAppleNotarizationCredentials = Boolean(
   process.env.APPLE_API_KEY
   && process.env.APPLE_API_KEY_ID
