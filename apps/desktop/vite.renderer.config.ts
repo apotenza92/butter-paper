@@ -23,9 +23,9 @@ export default defineConfig({
   resolve: {
     dedupe: ['react', 'react-dom'],
     alias: {
-      '@': resolve(__dirname, 'src/renderer/src'),
-      '@butter-paper/core': resolve(__dirname, '../../packages/core/src/index.ts'),
-      '@butter-paper/pdf/browser': resolve(__dirname, '../../packages/pdf/src/browser.ts'),
+      '@': resolve(import.meta.dirname, 'src/renderer/src'),
+      '@butter-paper/core': resolve(import.meta.dirname, '../../packages/core/src/index.ts'),
+      '@butter-paper/pdf/browser': resolve(import.meta.dirname, '../../packages/pdf/src/browser.ts'),
     },
   },
   build: {
@@ -35,7 +35,7 @@ export default defineConfig({
 });
 
 function pdfJsWasmAssets(): Plugin {
-  const sourceDir = resolve(__dirname, '../../node_modules/pdfjs-dist/wasm');
+  const sourceDir = resolve(import.meta.dirname, '../../node_modules/pdfjs-dist/wasm');
   const filePaths = pdfJsWasmFileNames.map((fileName) => join(sourceDir, fileName));
 
   return {

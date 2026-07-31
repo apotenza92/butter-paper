@@ -96,6 +96,10 @@ try {
   if ((Get-Content -LiteralPath $trustRoot -Raw) -match 'PRIVATE KEY') {
     throw "Windows package contains private TUF key material: $trustRoot"
   }
+  & node scripts/verify-packaged-runtime-dependencies.cjs (Join-Path $installRoot 'resources/app.asar')
+  if ($LASTEXITCODE -ne 0) {
+    throw "Windows package has an invalid packaged TUF runtime"
+  }
 
   $uninstaller = Get-ChildItem -LiteralPath $installRoot -File -Filter 'Uninstall*.exe' | Select-Object -First 1
   if (-not $uninstaller) {

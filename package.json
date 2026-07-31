@@ -1,21 +1,35 @@
 {
   "name": "butter-paper",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "private": true,
   "license": "MIT",
   "engines": {
     "node": "24.16.0"
   },
   "packageManager": "pnpm@10.33.0",
+  "pnpm": {
+    "overrides": {
+      "@babel/core": "7.29.6",
+      "@hono/node-server": "2.0.10",
+      "@xmldom/xmldom": "0.8.13",
+      "brace-expansion@1": "1.1.16",
+      "brace-expansion@2": "2.1.2",
+      "brace-expansion@5": "5.0.9",
+      "fast-uri": "3.1.4",
+      "postcss": "8.5.18",
+      "tar": "7.5.22",
+      "tmp": "0.2.7"
+    }
+  },
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "check:repo": "node scripts/check-repository-hygiene.mjs",
     "check:icons": "node scripts/generate-icons.mjs --check",
-    "test": "vitest run --config vitest.config.ts",
+    "test": "vitest run --config vitest.config.mts",
     "test:e2e": "playwright test",
     "test:package:desktop": "node scripts/smoke-packaged-desktop.mjs",
-    "test:macos-verifier": "vitest run --config vitest.config.ts tests/macos-package-verifier.test.ts",
+    "test:macos-verifier": "vitest run --config vitest.config.mts tests/macos-package-verifier.test.ts",
     "test:macos-updater": "node scripts/test-macos-update.mjs",
     "check": "pnpm check:repo && pnpm check:icons && pnpm typecheck && pnpm build && pnpm test",
     "postinstall": "node scripts/ensure-native-deps.mjs",
@@ -34,12 +48,12 @@
     "generate:icons": "node scripts/generate-icons.mjs"
   },
   "devDependencies": {
-    "@electron/asar": "3.4.1",
+    "@electron/asar": "4.2.1",
     "@playwright/test": "1.59.1",
     "@tufjs/canonical-json": "2.0.0",
     "@types/node": "25.6.0",
     "typescript": "6.0.2",
     "vitest": "4.1.4",
-    "yaml": "2.8.2"
+    "yaml": "2.9.0"
   }
 }

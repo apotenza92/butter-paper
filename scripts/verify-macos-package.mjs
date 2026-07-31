@@ -74,6 +74,9 @@ const signedBundleExtensions = ['.app', '.framework', '.xpc', '.appex', '.bundle
 const repoRoot = resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
 const { extractFile: extractAsarFile } = require('@electron/asar');
+const {
+  verifyPackagedRuntimeDependencies,
+} = require('./verify-packaged-runtime-dependencies.cjs');
 const YAML = require('yaml');
 
 export function resolveReleaseContract(channel, arch) {
@@ -728,6 +731,11 @@ function validateEmbeddedUpdateContract(appPath, context) {
     if (packageMetadata?.[key] !== expected) {
       fail(`${context.containerLabel} packaged ${key} is ${String(packageMetadata?.[key])}, expected ${expected}`);
     }
+  }
+  try {
+    verifyPackagedRuntimeDependencies(asarPath);
+  } catch (error) {
+    fail(`${context.containerLabel} has an invalid packaged TUF runtime: ${error.message}`);
   }
 
   let updateConfig;

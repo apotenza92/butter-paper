@@ -2,6 +2,24 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.14]
+
+- Updated Electron to the supported 43 release line while preserving macOS 12
+  compatibility.
+- Refreshed the development and packaging toolchain to patched releases.
+- Corrected the packaged TUF dependency graph and patched its glob-matching
+  dependency so delegated update metadata can be evaluated safely.
+- Added package-boundary checks that execute delegated TUF path matching from
+  the actual packaged application archive on macOS, Windows, and Linux.
+- Updated electron-builder to use an NSIS-compatible ARM64 payload filter,
+  removing the duplicated Windows executable and DLL workaround and adding
+  package-size regression gates.
+- Preserved isolated stable and beta application identities and updater feeds.
+  Stable releases advance both feeds; beta prereleases advance only beta.
+- Windows and Linux users upgrading directly from 0.0.11 still need one manual
+  install to bootstrap authenticated updates. Existing 0.0.13 installations
+  update automatically.
+
 ## [0.0.13]
 
 - Added authenticated automatic updates on native Windows ARM64/x64 and Linux

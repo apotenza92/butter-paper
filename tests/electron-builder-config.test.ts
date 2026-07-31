@@ -25,6 +25,7 @@ const inspectScript = `
     releaseNotes: config.releaseInfo?.releaseNotes,
     nsisInclude: config.nsis.include,
     nsisOneClick: config.nsis.oneClick,
+    nsisUseZip: config.nsis.useZip,
     nsisAllowElevation: config.nsis.allowElevation,
     nsisAllowToChangeInstallationDirectory: config.nsis.allowToChangeInstallationDirectory,
     linuxArtifact: config.linux.artifactName,
@@ -34,7 +35,6 @@ const inspectScript = `
     macMinimumSystemVersion: config.mac.minimumSystemVersion,
     extraResources: config.extraResources,
     files: config.files,
-    arm64UnpackedDir: process.env.BP_NSIS_ARM64_UNPACKED_DIR ?? null,
   }));
 `;
 
@@ -102,7 +102,7 @@ describe('Electron Builder release identity', () => {
       afterPack: 'build/after-pack.cjs',
       compression: 'maximum',
       electronLanguages: ['en-US'],
-      releaseNotes: expect.stringContaining('Added native PDF file registration'),
+      releaseNotes: expect.stringContaining('Updated Electron to the supported 43 release line'),
       nsisInclude: 'build/installer.nsh',
       nsisOneClick: false,
       macMinimumSystemVersion: '12.0',
@@ -146,7 +146,7 @@ describe('Electron Builder release identity', () => {
     expect(config.files).not.toContain('!node_modules/@napi-rs/canvas-win32-x64-msvc/**/*');
   });
 
-  it('uses the standard Windows ARM64 NSIS payload with the executable restore include', () => {
+  it('uses the standard Windows ARM64 NSIS payload without duplicating runtime files', () => {
     const config = loadConfig({
       BP_RELEASE_CHANNEL: 'stable',
       BP_RELEASE_PLATFORM: 'win32',
@@ -157,7 +157,12 @@ describe('Electron Builder release identity', () => {
       nsisInclude: 'build/installer.nsh',
       windowsArtifact: 'Butter-Paper-Windows-${arch}-Setup.${ext}',
     });
-    expect(config.arm64UnpackedDir).toMatch(/release[/\\]win-arm64-unpacked$/);
+    const builderConfig = readFileSync(resolve(desktopDir, 'electron-builder.config.cjs'), 'utf8');
+    const installerInclude = readFileSync(resolve(desktopDir, 'build/installer.nsh'), 'utf8');
+    expect(config.nsisUseZip).toBeUndefined();
+    expect(builderConfig).not.toContain('BP_NSIS_ARM64_UNPACKED_DIR');
+    expect(installerInclude).not.toContain('customFiles_arm64');
+    expect(installerInclude).not.toContain('BP_NSIS_ARM64_UNPACKED_DIR');
   });
 
   it('configures only AppImage runtime updates for Linux packages', () => {

@@ -34,10 +34,18 @@ describe('native release package boundaries', () => {
 
   it('installs, feature-tests, and uninstalls the exact Windows NSIS package', () => {
     const workflow = readWorkflow();
+    const ciWorkflow = readFileSync(resolve('.github/workflows/ci.yml'), 'utf8');
     const verifier = readFileSync(resolve('scripts/test-windows-installer.ps1'), 'utf8');
     const installerInclude = readFileSync(resolve('apps/desktop/build/installer.nsh'), 'utf8');
+    const desktopPackage = JSON.parse(
+      readFileSync(resolve('apps/desktop/package.json'), 'utf8'),
+    ) as { devDependencies: Record<string, string> };
 
     expect(workflow).toContain('./scripts/test-windows-installer.ps1');
+    expect(workflow).toContain('scripts/verify-release-package-sizes.mjs');
+    expect(workflow).toContain('--arm64-installer');
+    expect(ciWorkflow).toContain('scripts/verify-release-package-sizes.mjs');
+    expect(ciWorkflow).toContain('--arm64-installer');
     expect(workflow).not.toContain("-path '*unpacked*'");
     expect(verifier).toContain('Assert-PeMachine $application $expectedMachine');
     expect(verifier).toContain('Assert-PeMachine $runtimePath $expectedMachine');
@@ -45,11 +53,12 @@ describe('native release package boundaries', () => {
     expect(verifier).toContain('& pnpm test:package:desktop');
     expect(verifier).toContain('missing TUF-gated updater configuration');
     expect(verifier).toContain('missing the reviewed TUF root');
+    expect(verifier).toContain('verify-packaged-runtime-dependencies.cjs');
     expect(verifier).toContain("Invoke-And-Wait $uninstaller.FullName @('/S')");
     expect(verifier).toContain('NSIS uninstall left the install directory behind');
-    expect(installerInclude).toContain('!macro customFiles_arm64');
-    expect(installerInclude).toContain('!ifdef APP_ARM64');
-    expect(installerInclude).toContain('$%BP_NSIS_ARM64_UNPACKED_DIR%\\*.dll');
+    expect(desktopPackage.devDependencies['electron-builder']).toBe('26.15.7');
+    expect(installerInclude).not.toContain('customFiles_arm64');
+    expect(installerInclude).not.toContain('BP_NSIS_ARM64_UNPACKED_DIR');
   });
 
   it('tests the AppImage, installed DEB, and extracted RPM on native Linux', () => {
@@ -65,6 +74,7 @@ describe('native release package boundaries', () => {
     expect(verifier.match(/BP_RELEASE_CHANNEL="\$channel"/g)).toHaveLength(2);
     expect(verifier).toContain('Package verification requires native');
     expect(verifier).toContain('assert_update_contract');
+    expect(verifier).toContain('verify-packaged-runtime-dependencies.cjs');
     expect(verifier).toContain('maximum_glibc=\'2.35\'');
     expect(verifier).toContain('assert_elf_contract');
     expect(verifier).toContain('ldd "$candidate"');
@@ -77,11 +87,25 @@ describe('native release package boundaries', () => {
     const workflow = readWorkflow();
     const contract = readFileSync(resolve('scripts/release-asset-contract.mjs'), 'utf8');
 
+    expect(workflow).toContain('Reject unexpectedly oversized Windows ARM64 installers');
     expect(workflow).toContain('update-${{ matrix.variant }}-win32');
     expect(workflow).toContain('update-${{ matrix.variant }}-linux');
     expect(contract).toContain('update-${variant}-win32');
     expect(contract).toContain('update-${variant}-linux');
     expect(workflow).toContain('uses: ./.github/workflows/nonmac-updater-audit.yml');
+  });
+
+  it('promotes stable code to both isolated products while beta releases remain beta-only', () => {
+    const workflow = readWorkflow();
+
+    expect(workflow).toContain(
+      "['channel=stable', 'environment=stable-release', 'prerelease=false', 'variants=[\"stable\",\"beta\"]']",
+    );
+    expect(workflow).toContain(
+      "['channel=beta', 'environment=beta-release', 'prerelease=true', 'variants=[\"beta\"]']",
+    );
+    expect(workflow).toContain("const app = channel === 'beta' ? 'Butter Paper Beta.app' : 'Butter Paper.app'");
+    expect(workflow).toContain("variant === 'beta' || !release.prerelease");
   });
 
   it('supplies Electron ICU data to the native Windows ARM canvas module', () => {

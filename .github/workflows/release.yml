@@ -235,6 +235,15 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: pnpm --dir apps/desktop exec electron-builder --config electron-builder.config.cjs --win nsis --${{ matrix.arch }} --publish never
 
+      - name: Reject an unexpectedly oversized Windows ARM64 installer
+        if: matrix.arch == 'arm64'
+        shell: bash
+        run: >-
+          node scripts/verify-release-package-sizes.mjs
+          --arm64-installer
+          "apps/desktop/release/${{ matrix.variant }}/win32/${{ matrix.arch }}/${{ matrix.variant == 'beta' && 'Butter-Paper-Beta' || 'Butter-Paper' }}-Windows-arm64-Setup.exe"
+          --label "${{ matrix.variant }} ARM64 release candidate"
+
       - name: Install, launch, feature-test, and uninstall NSIS package
         shell: pwsh
         run: |
@@ -597,6 +606,13 @@ jobs:
           pattern: desktop-*
           path: publish
           merge-multiple: true
+
+      - name: Reject unexpectedly oversized Windows ARM64 installers
+        shell: bash
+        run: |
+          node source/scripts/verify-release-package-sizes.mjs \
+            --directory publish/assets \
+            --variants "${{ join(fromJSON(needs.prepare.outputs.variants), ',') }}"
 
       - name: Create Homebrew handoff manifest
         shell: bash
