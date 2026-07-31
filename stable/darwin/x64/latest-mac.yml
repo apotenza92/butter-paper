@@ -1,37 +1,28 @@
-version: 0.0.13
+version: 0.0.14
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.13/Butter-Paper-macOS-x64.zip
-    sha512: XHRm857kJfR3HPRrPyGsO0iMgpyn9i70NT0E0181jD66lKA2M/bscUmGtRJDB+0x9sGF60kX8U0WgM8jk7D0Gw==
-    size: 131325901
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.13/Butter-Paper-macOS-x64.dmg
-    sha512: jph+vwGr/XGNr4IlsKGvFUN5L7HoszKV8z6zHMRNmsOJ9VCTkeJIBgo1+3l8S0+4R95xVXBKr4Ln/H5iSXpDCA==
-    size: 120024558
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.13/Butter-Paper-macOS-x64.zip
-sha512: XHRm857kJfR3HPRrPyGsO0iMgpyn9i70NT0E0181jD66lKA2M/bscUmGtRJDB+0x9sGF60kX8U0WgM8jk7D0Gw==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.14/Butter-Paper-macOS-x64.zip
+    sha512: a+2Sx16ZULvgPPWReQrcHbydPLiKpKddbjclUkp7woNOOz63gxfwXcuaxv3oLTN5E/LdzFhRcMrwG5pOX4+VGg==
+    size: 132578354
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.14/Butter-Paper-macOS-x64.dmg
+    sha512: JcfZ4pqwdpqVvZenlCHeqSTd6jOHhMX+nrISayugDFJIk5SLWmXbXCxAS1tGdp6v2zszNB33qiNBLEeD+X13Wg==
+    size: 125141717
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.14/Butter-Paper-macOS-x64.zip
+sha512: a+2Sx16ZULvgPPWReQrcHbydPLiKpKddbjclUkp7woNOOz63gxfwXcuaxv3oLTN5E/LdzFhRcMrwG5pOX4+VGg==
 releaseNotes: |-
-  - Added authenticated automatic updates on native Windows ARM64/x64 and Linux
-    ARM64/x64 AppImages using an embedded, reviewed TUF root. Windows and Linux
-    users upgrading from 0.0.11 must install 0.0.13 manually once to bootstrap
-    the new updater; later releases can update automatically.
-  - Added fail-closed update verification for corrupt, expired, incorrectly
-    signed, missing, redirected, mismatched, and path-escaping metadata, while
-    preserving any newer TUF root already trusted by an installed application.
-  - Added native Windows install/update/restart/data-preservation/uninstall and
-    Linux AppImage update/restart/data-preservation release gates on matching
-    ARM64 and x64 hosts. DEB and RPM upgrades remain managed by the system
-    package manager.
-  - Added an offline-root/three-online-key TUF signing ceremony, protected
-    metadata refresh workflow, deterministic release projections, and
-    independent public-feed verification.
-  - Windows installers and Linux packages remain unsigned in this release.
-    Published SHA-256 checksums, GitHub provenance, and TUF-authenticated
-    automatic-update metadata protect distribution without implying platform
-    code signing.
-  - Added native PDF file registration and a user-controlled Set as Default PDF App command on macOS, Windows, and Linux.
-  - Opened PDFs delivered at startup, through macOS open-file events, or to an existing application instance.
-  - Made this changelog the source for GitHub release notes and the automatic updater's in-app release notes.
-  - Reduced packaged-app overhead by retaining only the English Electron locale, excluding source maps, and keeping renderer-only libraries out of production dependencies.
-  - Kept Electron E2E, packaged-app smoke, and updater GUI verification off local
-    macOS desktops; these checks now run only on disposable GitHub Actions hosts.
-releaseDate: 2026-07-30T09:19:32.132Z
+  - Updated Electron to the supported 43 release line while preserving macOS 12
+    compatibility.
+  - Refreshed the development and packaging toolchain to patched releases.
+  - Corrected the packaged TUF dependency graph and patched its glob-matching
+    dependency so delegated update metadata can be evaluated safely.
+  - Added package-boundary checks that execute delegated TUF path matching from
+    the actual packaged application archive on macOS, Windows, and Linux.
+  - Updated electron-builder to use an NSIS-compatible ARM64 payload filter,
+    removing the duplicated Windows executable and DLL workaround and adding
+    package-size regression gates.
+  - Preserved isolated stable and beta application identities and updater feeds.
+    Stable releases advance both feeds; beta prereleases advance only beta.
+  - Windows and Linux users upgrading directly from 0.0.11 still need one manual
+    install to bootstrap authenticated updates. Existing 0.0.13 installations
+    update automatically.
+releaseDate: 2026-07-31T03:01:41.459Z
 butterPaperChannel: stable

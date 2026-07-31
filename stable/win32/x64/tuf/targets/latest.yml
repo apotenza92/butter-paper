@@ -1,56 +1,38 @@
-version: 0.0.13
+version: 0.0.14
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.13/Butter-Paper-Windows-x64-Setup.exe
-    sha512: pEDUxQqUyv6UeuariqwT7w6gdywpR1TGvezWdSugGkPBjYplTnFyYXW0qzeF7EXKo8YBn5BC9AnAvZWqjn68tw==
-    size: 103347316
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.13/Butter-Paper-Windows-x64-Setup.exe
-sha512: pEDUxQqUyv6UeuariqwT7w6gdywpR1TGvezWdSugGkPBjYplTnFyYXW0qzeF7EXKo8YBn5BC9AnAvZWqjn68tw==
-releaseNotes: "- Added authenticated automatic updates on native Windows ARM64/x64 and Linux\r
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.14/Butter-Paper-Windows-x64-Setup.exe
+    sha512: RrqAunDTQC7AF+fa5uq+DGJjQj3Kc/1ex/SY199r7z4aF+Efj16Z21e8UsgTjmi4TQsz4mnBqNZlVafUypMd3A==
+    size: 116766006
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.14/Butter-Paper-Windows-x64-Setup.exe
+sha512: RrqAunDTQC7AF+fa5uq+DGJjQj3Kc/1ex/SY199r7z4aF+Efj16Z21e8UsgTjmi4TQsz4mnBqNZlVafUypMd3A==
+releaseNotes: "- Updated Electron to the supported 43 release line while preserving macOS 12\r
 
-  \  ARM64/x64 AppImages using an embedded, reviewed TUF root. Windows and Linux\r
+  \  compatibility.\r
 
-  \  users upgrading from 0.0.11 must install 0.0.13 manually once to bootstrap\r
+  - Refreshed the development and packaging toolchain to patched releases.\r
 
-  \  the new updater; later releases can update automatically.\r
+  - Corrected the packaged TUF dependency graph and patched its glob-matching\r
 
-  - Added fail-closed update verification for corrupt, expired, incorrectly\r
+  \  dependency so delegated update metadata can be evaluated safely.\r
 
-  \  signed, missing, redirected, mismatched, and path-escaping metadata, while\r
+  - Added package-boundary checks that execute delegated TUF path matching from\r
 
-  \  preserving any newer TUF root already trusted by an installed application.\r
+  \  the actual packaged application archive on macOS, Windows, and Linux.\r
 
-  - Added native Windows install/update/restart/data-preservation/uninstall and\r
+  - Updated electron-builder to use an NSIS-compatible ARM64 payload filter,\r
 
-  \  Linux AppImage update/restart/data-preservation release gates on matching\r
+  \  removing the duplicated Windows executable and DLL workaround and adding\r
 
-  \  ARM64 and x64 hosts. DEB and RPM upgrades remain managed by the system\r
+  \  package-size regression gates.\r
 
-  \  package manager.\r
+  - Preserved isolated stable and beta application identities and updater feeds.\r
 
-  - Added an offline-root/three-online-key TUF signing ceremony, protected\r
+  \  Stable releases advance both feeds; beta prereleases advance only beta.\r
 
-  \  metadata refresh workflow, deterministic release projections, and\r
+  - Windows and Linux users upgrading directly from 0.0.11 still need one manual\r
 
-  \  independent public-feed verification.\r
+  \  install to bootstrap authenticated updates. Existing 0.0.13 installations\r
 
-  - Windows installers and Linux packages remain unsigned in this release.\r
-
-  \  Published SHA-256 checksums, GitHub provenance, and TUF-authenticated\r
-
-  \  automatic-update metadata protect distribution without implying platform\r
-
-  \  code signing.\r
-
-  - Added native PDF file registration and a user-controlled Set as Default PDF App command on macOS, Windows, and Linux.\r
-
-  - Opened PDFs delivered at startup, through macOS open-file events, or to an existing application instance.\r
-
-  - Made this changelog the source for GitHub release notes and the automatic updater's in-app release notes.\r
-
-  - Reduced packaged-app overhead by retaining only the English Electron locale, excluding source maps, and keeping renderer-only libraries out of production dependencies.\r
-
-  - Kept Electron E2E, packaged-app smoke, and updater GUI verification off local\r
-
-  \  macOS desktops; these checks now run only on disposable GitHub Actions hosts."
-releaseDate: 2026-07-30T09:12:43.243Z
+  \  update automatically."
+releaseDate: 2026-07-31T02:43:02.134Z
 butterPaperChannel: stable
