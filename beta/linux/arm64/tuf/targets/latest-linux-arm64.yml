@@ -1,32 +1,28 @@
-version: 0.0.14
+version: 0.0.15
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.14/Butter-Paper-Beta-Linux-arm64.AppImage
-    sha512: Bny56dLKH9qGQSM5F9NAxWEeby6+JFlhT5leJJhfWxjgetIqSRslah/u/OaZU0HlC7y6JPMCLkspj/jBUJUbtw==
-    size: 100581561
-    blockMapSize: 105477
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.14/Butter-Paper-Beta-Linux-arm64.deb
-    sha512: 7wmsogs/2GByyGtRWb84FsGiWD1c2oAiNy7BtAmg85WTY1EdbFvWaVc49gXAAO5v+6dLuOMYitHgGEOlsJ8AdQ==
-    size: 99937744
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.14/Butter-Paper-Beta-Linux-arm64.rpm
-    sha512: oM4s59oIv37daVG/36DkNoQhwpByNZe/KKDR8gcUWaGvbvi1LtkN2njBHcJAMzNzpHaqppDFkBEruCQp07WBAg==
-    size: 86998973
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.14/Butter-Paper-Beta-Linux-arm64.AppImage
-sha512: Bny56dLKH9qGQSM5F9NAxWEeby6+JFlhT5leJJhfWxjgetIqSRslah/u/OaZU0HlC7y6JPMCLkspj/jBUJUbtw==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.15/Butter-Paper-Beta-Linux-arm64.AppImage
+    sha512: IZ8aiG8hAv/8ABsgZ7/U7wxIDjUHbcAM3E7EzOG6vvtheZdwNNwnbJ5Z04UW8GR3CmkCjNSR2nkteaCf2c2gBg==
+    size: 100585768
+    blockMapSize: 105588
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.15/Butter-Paper-Beta-Linux-arm64.deb
+    sha512: Qq4Le1u8MaEe7y/IEztt7CghNZYyqZqWkvDklLQn9U3G/O6tNn0fvMAEiowd/WAM+yRd+bX6o2w1SP2EGGkMNg==
+    size: 99938924
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.15/Butter-Paper-Beta-Linux-arm64.rpm
+    sha512: yLtVp/3jzImK6s8fe3l11QsUaqOg3beUDUro6HuQrEhmGrMGoj5iAIba3n5W/0H3SIJYyxNMgHtQWnNdrIxZeg==
+    size: 86995581
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.15/Butter-Paper-Beta-Linux-arm64.AppImage
+sha512: IZ8aiG8hAv/8ABsgZ7/U7wxIDjUHbcAM3E7EzOG6vvtheZdwNNwnbJ5Z04UW8GR3CmkCjNSR2nkteaCf2c2gBg==
 releaseNotes: |-
-  - Updated Electron to the supported 43 release line while preserving macOS 12
-    compatibility.
-  - Refreshed the development and packaging toolchain to patched releases.
-  - Corrected the packaged TUF dependency graph and patched its glob-matching
-    dependency so delegated update metadata can be evaluated safely.
-  - Added package-boundary checks that execute delegated TUF path matching from
-    the actual packaged application archive on macOS, Windows, and Linux.
-  - Updated electron-builder to use an NSIS-compatible ARM64 payload filter,
-    removing the duplicated Windows executable and DLL workaround and adding
-    package-size regression gates.
-  - Preserved isolated stable and beta application identities and updater feeds.
-    Stable releases advance both feeds; beta prereleases advance only beta.
-  - Windows and Linux users upgrading directly from 0.0.11 still need one manual
-    install to bootstrap authenticated updates. Existing 0.0.13 installations
-    update automatically.
-releaseDate: 2026-07-31T02:45:24.524Z
+  - Added immediate, accessible in-app feedback for manual update checks,
+    including checking, authenticated download progress, up-to-date,
+    failure/retry, and ready-to-install states.
+  - Kept automatic checks quiet until an update is ready, while ensuring every
+    manual check ends with visible success, no-update, or error feedback.
+  - Allowed the update progress window to close without cancelling its background
+    download; the ready-to-install prompt still appears when that download
+    completes.
+  - Preserved isolated stable and beta application identities and feeds. This
+    stable release advances both products without converting beta installations
+    into the stable app.
+releaseDate: 2026-07-31T07:01:58.613Z
 butterPaperChannel: beta

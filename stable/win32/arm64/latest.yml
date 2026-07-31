@@ -1,38 +1,30 @@
-version: 0.0.14
+version: 0.0.15
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.14/Butter-Paper-Windows-arm64-Setup.exe
-    sha512: kxypL0JlKtcfI9DtjLGuFY0AFYmDT/l+ZhT6nEgN9kIJHhKldUSAn7tczHg+NOLsrYoO6h/HsleVUcCR/yO/fA==
-    size: 109438980
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.14/Butter-Paper-Windows-arm64-Setup.exe
-sha512: kxypL0JlKtcfI9DtjLGuFY0AFYmDT/l+ZhT6nEgN9kIJHhKldUSAn7tczHg+NOLsrYoO6h/HsleVUcCR/yO/fA==
-releaseNotes: "- Updated Electron to the supported 43 release line while preserving macOS 12\r
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.15/Butter-Paper-Windows-arm64-Setup.exe
+    sha512: 1opFkhdowXQZT+yasq+aJNI9woOtmD5QsGrovsILh1WmQ1QC+79blyuR8AKLn3NoockDPNrWLMSVYnDWu6zgDA==
+    size: 109440830
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.15/Butter-Paper-Windows-arm64-Setup.exe
+sha512: 1opFkhdowXQZT+yasq+aJNI9woOtmD5QsGrovsILh1WmQ1QC+79blyuR8AKLn3NoockDPNrWLMSVYnDWu6zgDA==
+releaseNotes: "- Added immediate, accessible in-app feedback for manual update checks,\r
 
-  \  compatibility.\r
+  \  including checking, authenticated download progress, up-to-date,\r
 
-  - Refreshed the development and packaging toolchain to patched releases.\r
+  \  failure/retry, and ready-to-install states.\r
 
-  - Corrected the packaged TUF dependency graph and patched its glob-matching\r
+  - Kept automatic checks quiet until an update is ready, while ensuring every\r
 
-  \  dependency so delegated update metadata can be evaluated safely.\r
+  \  manual check ends with visible success, no-update, or error feedback.\r
 
-  - Added package-boundary checks that execute delegated TUF path matching from\r
+  - Allowed the update progress window to close without cancelling its background\r
 
-  \  the actual packaged application archive on macOS, Windows, and Linux.\r
+  \  download; the ready-to-install prompt still appears when that download\r
 
-  - Updated electron-builder to use an NSIS-compatible ARM64 payload filter,\r
+  \  completes.\r
 
-  \  removing the duplicated Windows executable and DLL workaround and adding\r
+  - Preserved isolated stable and beta application identities and feeds. This\r
 
-  \  package-size regression gates.\r
+  \  stable release advances both products without converting beta installations\r
 
-  - Preserved isolated stable and beta application identities and updater feeds.\r
-
-  \  Stable releases advance both feeds; beta prereleases advance only beta.\r
-
-  - Windows and Linux users upgrading directly from 0.0.11 still need one manual\r
-
-  \  install to bootstrap authenticated updates. Existing 0.0.13 installations\r
-
-  \  update automatically."
-releaseDate: 2026-07-31T02:43:48.570Z
+  \  into the stable app."
+releaseDate: 2026-07-31T07:01:31.089Z
 butterPaperChannel: stable

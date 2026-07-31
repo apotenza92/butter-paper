@@ -1,28 +1,24 @@
-version: 0.0.14
+version: 0.0.15
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.14/Butter-Paper-macOS-x64.zip
-    sha512: a+2Sx16ZULvgPPWReQrcHbydPLiKpKddbjclUkp7woNOOz63gxfwXcuaxv3oLTN5E/LdzFhRcMrwG5pOX4+VGg==
-    size: 132578354
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.14/Butter-Paper-macOS-x64.dmg
-    sha512: JcfZ4pqwdpqVvZenlCHeqSTd6jOHhMX+nrISayugDFJIk5SLWmXbXCxAS1tGdp6v2zszNB33qiNBLEeD+X13Wg==
-    size: 125141717
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.14/Butter-Paper-macOS-x64.zip
-sha512: a+2Sx16ZULvgPPWReQrcHbydPLiKpKddbjclUkp7woNOOz63gxfwXcuaxv3oLTN5E/LdzFhRcMrwG5pOX4+VGg==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.15/Butter-Paper-macOS-x64.zip
+    sha512: 0JQA6RLGUD+F+97l7YVgNZkVJRtdW6NmnSLXkL4iPOBOzm2skePUGjXPAe0ZBet42pWYCqJxPOC04YOPHROWwg==
+    size: 132579942
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.15/Butter-Paper-macOS-x64.dmg
+    sha512: D38eVuM5P8gdxZmbHW/zLJP9JMNxNmwf7nyD56bz4knYStflZcR6+7FTRVsKO0HDQHs2dcK3RX0p2IkLoq8VEQ==
+    size: 125151912
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.15/Butter-Paper-macOS-x64.zip
+sha512: 0JQA6RLGUD+F+97l7YVgNZkVJRtdW6NmnSLXkL4iPOBOzm2skePUGjXPAe0ZBet42pWYCqJxPOC04YOPHROWwg==
 releaseNotes: |-
-  - Updated Electron to the supported 43 release line while preserving macOS 12
-    compatibility.
-  - Refreshed the development and packaging toolchain to patched releases.
-  - Corrected the packaged TUF dependency graph and patched its glob-matching
-    dependency so delegated update metadata can be evaluated safely.
-  - Added package-boundary checks that execute delegated TUF path matching from
-    the actual packaged application archive on macOS, Windows, and Linux.
-  - Updated electron-builder to use an NSIS-compatible ARM64 payload filter,
-    removing the duplicated Windows executable and DLL workaround and adding
-    package-size regression gates.
-  - Preserved isolated stable and beta application identities and updater feeds.
-    Stable releases advance both feeds; beta prereleases advance only beta.
-  - Windows and Linux users upgrading directly from 0.0.11 still need one manual
-    install to bootstrap authenticated updates. Existing 0.0.13 installations
-    update automatically.
-releaseDate: 2026-07-31T03:01:41.459Z
+  - Added immediate, accessible in-app feedback for manual update checks,
+    including checking, authenticated download progress, up-to-date,
+    failure/retry, and ready-to-install states.
+  - Kept automatic checks quiet until an update is ready, while ensuring every
+    manual check ends with visible success, no-update, or error feedback.
+  - Allowed the update progress window to close without cancelling its background
+    download; the ready-to-install prompt still appears when that download
+    completes.
+  - Preserved isolated stable and beta application identities and feeds. This
+    stable release advances both products without converting beta installations
+    into the stable app.
+releaseDate: 2026-07-31T07:14:14.612Z
 butterPaperChannel: stable
