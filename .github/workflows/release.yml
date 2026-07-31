@@ -819,13 +819,15 @@ jobs:
           TITLE="Butter Paper ${{ needs.prepare.outputs.version }}"
           if [ "${{ needs.prepare.outputs.channel }}" = beta ]; then TITLE="Butter Paper Beta ${{ needs.prepare.outputs.version }}"; fi
 
-          RELEASE_ID=
-          RELEASE_IS_DRAFT=false
-          RELEASE_RECORD="$(
+          find_release_record() {
             gh api "repos/$REPOSITORY/releases?per_page=100" \
               --jq ".[] | select(.tag_name == \"$TAG\") | [.id, .draft] | @tsv" |
               head -n 1
-          )"
+          }
+
+          RELEASE_ID=
+          RELEASE_IS_DRAFT=false
+          RELEASE_RECORD="$(find_release_record)"
           if [ -n "$RELEASE_RECORD" ]; then
             IFS=$'\t' read -r RELEASE_ID RELEASE_IS_DRAFT <<< "$RELEASE_RECORD"
           fi
@@ -836,12 +838,18 @@ jobs:
             else
               gh release create "$TAG" --repo "$REPOSITORY" --verify-tag --title "$TITLE" --notes-file release-notes.md --draft
             fi
-            RELEASE_RECORD="$(
-              gh api "repos/$REPOSITORY/releases?per_page=100" \
-                --jq ".[] | select(.tag_name == \"$TAG\") | [.id, .draft] | @tsv" |
-                head -n 1
-            )"
-            test -n "$RELEASE_RECORD"
+            for attempt in {1..10}; do
+              RELEASE_RECORD="$(find_release_record)"
+              if [ -n "$RELEASE_RECORD" ]; then
+                break
+              fi
+              echo "Waiting for GitHub to return the new draft release (attempt $attempt/10)."
+              sleep 1
+            done
+            if [ -z "$RELEASE_RECORD" ]; then
+              echo "GitHub did not return the newly created draft release for $TAG." >&2
+              exit 1
+            fi
             IFS=$'\t' read -r RELEASE_ID RELEASE_IS_DRAFT <<< "$RELEASE_RECORD"
             RELEASE_IS_DRAFT=true
           fi
