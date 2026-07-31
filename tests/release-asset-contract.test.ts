@@ -49,6 +49,9 @@ describe('release asset contract', () => {
     expect(publishJob).toContain('test "$remote_size" = "$local_size"');
     expect(publishJob).toContain('test "$remote_digest" = "$local_digest"');
     expect(publishJob).toContain('releases/$RELEASE_ID/assets?name=$encoded_name');
+    expect(publishJob).toContain('find_release_record()');
+    expect(publishJob).toContain('for attempt in {1..10}; do');
+    expect(publishJob).toContain('Waiting for GitHub to return the new draft release');
     expect(publishJob).not.toContain('--clobber');
     expect(publishJob).not.toContain('--method DELETE');
   });
