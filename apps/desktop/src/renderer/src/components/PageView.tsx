@@ -26,6 +26,7 @@ import {
 import { resolveCadRenderExperimentConfig } from '../utils/cadRenderExperiment';
 import type { PageLayout } from '../utils/virtualisation';
 import { AnnotationLayer } from './AnnotationLayer';
+import { Spinner } from '@/components/ui/spinner';
 
 interface PageViewProps {
   session: LocalPdfSession;
@@ -1027,17 +1028,12 @@ export function PageView({
           {renderState === 'error' ? (
             <div className="text-[12px] text-neutral-400">Unable to render page</div>
           ) : (
-            <div
-              className={[
-                'rounded-full border-neutral-300 border-t-neutral-500',
-                placeholderSpinner.animated ? 'animate-spin' : '',
-              ].join(' ')}
+            <Spinner
+              className={placeholderSpinner.animated ? undefined : 'animate-none'}
               style={{
                 width: placeholderSpinner.size,
                 height: placeholderSpinner.size,
-                borderWidth: placeholderSpinner.borderWidth,
               }}
-              aria-hidden="true"
               data-render-placeholder="page"
             />
           )}

@@ -1,7 +1,7 @@
 import electron from 'electron';
 import { ipcChannels } from '../shared/ipc';
-import type { ButterCanvasDocument } from '@butter-paper/core';
 import type {
+  BlankPdfCreateRequest,
   ButterPaperBridge,
   RenderCoreCloseDocumentRequest,
   RenderCoreGetPageInfoRequest,
@@ -21,6 +21,7 @@ const { contextBridge, ipcRenderer } = electron;
 const isTestMode = process.env.BP_TEST_MODE === '1';
 const defaultSamplePdfPath = resolveDefaultSamplePdfPath();
 let openPdfPathsListener: ((filePaths: string[]) => void) | null = null;
+let closeRequestedListener: (() => void) | null = null;
 const pendingOpenPdfPaths: string[][] = [];
 
 ipcRenderer.on(ipcChannels.applicationOpenPdfPaths, (_event, filePaths: string[]) => {
@@ -29,6 +30,10 @@ ipcRenderer.on(ipcChannels.applicationOpenPdfPaths, (_event, filePaths: string[]
   } else {
     pendingOpenPdfPaths.push(filePaths);
   }
+});
+
+ipcRenderer.on(ipcChannels.applicationCloseRequested, () => {
+  closeRequestedListener?.();
 });
 
 const bridge: ButterPaperBridge = {
@@ -52,6 +57,23 @@ const bridge: ButterPaperBridge = {
           openPdfPathsListener = null;
         }
       };
+    },
+    setCloseBlocked: async (blocked: boolean) => {
+      await ipcRenderer.invoke(ipcChannels.applicationSetCloseBlocked, blocked);
+    },
+    onCloseRequested: (listener: () => void) => {
+      closeRequestedListener = listener;
+      return () => {
+        if (closeRequestedListener === listener) {
+          closeRequestedListener = null;
+        }
+      };
+    },
+    confirmClose: async () => {
+      await ipcRenderer.invoke(ipcChannels.applicationConfirmClose);
+    },
+    cancelClose: async () => {
+      await ipcRenderer.invoke(ipcChannels.applicationCancelClose);
     },
   },
   theme: {
@@ -94,8 +116,6 @@ const bridge: ButterPaperBridge = {
   dialogs: {
     openPdfDialog: async () => ipcRenderer.invoke(ipcChannels.dialogOpenPdf),
     savePdfAsDialog: async (defaultPath?: string) => ipcRenderer.invoke(ipcChannels.dialogSavePdfAs, defaultPath),
-    openCanvasDialog: async () => ipcRenderer.invoke(ipcChannels.dialogOpenCanvas),
-    saveCanvasAsDialog: async (defaultPath?: string) => ipcRenderer.invoke(ipcChannels.dialogSaveCanvasAs, defaultPath),
   },
   files: {
     readFile: async (filePath: string) => {
@@ -107,15 +127,13 @@ const bridge: ButterPaperBridge = {
     },
   },
   pdf: {
+    createBlankDocument: async (request: BlankPdfCreateRequest) => ipcRenderer.invoke(ipcChannels.pdfCreateBlankDocument, request),
+    releaseTemporaryDocument: async (temporarySourcePath: string) => {
+      await ipcRenderer.invoke(ipcChannels.pdfReleaseTemporaryDocument, temporarySourcePath);
+    },
     loadDocument: async (filePath: string) => ipcRenderer.invoke(ipcChannels.pdfLoadDocument, filePath),
     getPageGeometry: async (request: PageGeometryRequest) => ipcRenderer.invoke(ipcChannels.pdfGetPageGeometry, request),
     saveDocument: async (request: SaveDocumentRequest) => ipcRenderer.invoke(ipcChannels.pdfSaveDocument, request),
-  },
-  canvas: {
-    readDocument: async (filePath: string) => ipcRenderer.invoke(ipcChannels.canvasReadDocument, filePath),
-    writeDocument: async (filePath: string, document: ButterCanvasDocument) => {
-      await ipcRenderer.invoke(ipcChannels.canvasWriteDocument, filePath, document);
-    },
   },
   renderCore: {
     getBackendConfig: async () => ipcRenderer.invoke(ipcChannels.renderCoreGetBackendConfig),

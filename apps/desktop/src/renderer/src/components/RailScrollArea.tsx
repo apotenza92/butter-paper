@@ -10,25 +10,49 @@ import { Tooltip, useTooltipDelay } from './Tooltip';
 const RAIL_OVERFLOW_FADE_HEIGHT = 56;
 const RAIL_OVERFLOW_ICON_SIZE = 22;
 const RAIL_OVERFLOW_TOOLTIP = 'Scroll to see other tools';
-const RAIL_OVERFLOW_BOTTOM_FADE = 'linear-gradient(to top, var(--bp-surface-app) 0%, var(--bp-surface-app) 72%, transparent 100%)';
-const RAIL_OVERFLOW_TOP_FADE = 'linear-gradient(to bottom, var(--bp-surface-app) 0%, var(--bp-surface-app) 72%, transparent 100%)';
+const RAIL_OVERFLOW_BOTTOM_FADE = 'linear-gradient(to top, var(--background) 0%, var(--background) 72%, transparent 100%)';
+const RAIL_OVERFLOW_TOP_FADE = 'linear-gradient(to bottom, var(--background) 0%, var(--background) 72%, transparent 100%)';
 const RAIL_TOOLTIP_ATTRIBUTE = 'data-rail-tooltip';
 
 interface RailTooltipState {
   label: string;
+  left: number;
   top: number;
+  width: number;
+}
+
+interface RailTooltipRect {
+  height: number;
+  left: number;
+  top: number;
+  width: number;
+}
+
+export function resolveRailTooltipAnchor(
+  triggerRect: RailTooltipRect,
+  rootRect: Pick<RailTooltipRect, 'left' | 'top'>,
+): Omit<RailTooltipState, 'label'> {
+  return {
+    left: triggerRect.left - rootRect.left,
+    top: triggerRect.top - rootRect.top + triggerRect.height / 2,
+    width: triggerRect.width,
+  };
 }
 
 interface RailScrollAreaProps {
   children: ReactNode;
   overflowIndicatorTestId: string;
   overflowSide: 'left' | 'right';
+  tooltipsDisabled?: boolean;
+  viewportTestId?: string;
 }
 
 export function RailScrollArea({
   children,
   overflowIndicatorTestId,
   overflowSide,
+  tooltipsDisabled = false,
+  viewportTestId,
 }: RailScrollAreaProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -39,19 +63,19 @@ export function RailScrollArea({
   const activeTooltipTriggerRef = useRef<HTMLElement | null>(null);
   const canShowTooltip = useCallback(() => {
     const trigger = activeTooltipTriggerRef.current;
-    if (!trigger) {
+    if (!trigger || tooltipsDisabled) {
       return false;
     }
 
     const activeElement = trigger.ownerDocument.activeElement;
     return trigger.matches(':hover') || (activeElement instanceof Node && trigger.contains(activeElement));
-  }, []);
+  }, [tooltipsDisabled]);
   const {
     visible: tooltipVisible,
     hideTooltip: hideDelayedTooltip,
     showTooltip,
     showTooltipAfterDelay,
-  } = useTooltipDelay({ canShow: canShowTooltip });
+  } = useTooltipDelay({ canShow: canShowTooltip, disabled: tooltipsDisabled });
 
   const hideTooltip = useCallback(() => {
     activeTooltipTriggerRef.current = null;
@@ -60,6 +84,10 @@ export function RailScrollArea({
   }, [hideDelayedTooltip]);
 
   const updateTooltip = useCallback((target: EventTarget | null, clearWhenMissing = true, immediate = false) => {
+    if (tooltipsDisabled) {
+      hideTooltip();
+      return;
+    }
     if (!(target instanceof HTMLElement)) {
       if (clearWhenMissing) {
         hideTooltip();
@@ -89,7 +117,7 @@ export function RailScrollArea({
     activeTooltipTriggerRef.current = trigger;
     setTooltip({
       label,
-      top: triggerRect.top - rootRect.top + triggerRect.height / 2,
+      ...resolveRailTooltipAnchor(triggerRect, rootRect),
     });
     if (!canShowTooltip()) {
       hideTooltip();
@@ -98,7 +126,7 @@ export function RailScrollArea({
     } else if (!isSameTrigger) {
       showTooltipAfterDelay();
     }
-  }, [canShowTooltip, hideTooltip, showTooltip, showTooltipAfterDelay]);
+  }, [canShowTooltip, hideTooltip, showTooltip, showTooltipAfterDelay, tooltipsDisabled]);
 
   const updateOverflow = useCallback(() => {
     const viewport = viewportRef.current;
@@ -138,6 +166,12 @@ export function RailScrollArea({
     updateOverflow();
   }, [children, updateOverflow]);
 
+  useEffect(() => {
+    if (tooltipsDisabled) {
+      hideTooltip();
+    }
+  }, [hideTooltip, tooltipsDisabled]);
+
   const handleIndicatorWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
     const viewport = viewportRef.current;
     if (!viewport) {
@@ -167,7 +201,7 @@ export function RailScrollArea({
         trigger={(
           <div
             className={[
-              'bp-text-muted relative inline-flex shrink-0 cursor-default items-center justify-center opacity-95 transition hover:opacity-100',
+              'relative inline-flex shrink-0 cursor-default items-center justify-center text-muted-foreground opacity-95 transition hover:opacity-100',
               'pointer-events-auto',
               RAIL_BUTTON_SIZE,
             ].join(' ')}
@@ -191,7 +225,11 @@ export function RailScrollArea({
 
   return (
     <div ref={rootRef} className="relative min-h-0 w-full flex-1 overflow-visible">
-      <div ref={viewportRef} className="bp-native-scroll-hidden h-full overflow-y-auto overflow-x-hidden">
+      <div
+        ref={viewportRef}
+        className="bp-native-scroll-hidden h-full overflow-y-auto overflow-x-hidden"
+        data-testid={viewportTestId}
+      >
         <div
           ref={contentRef}
           className={['flex flex-col items-center', RAIL_BUTTON_GAP].join(' ')}
@@ -211,7 +249,7 @@ export function RailScrollArea({
       {tooltip && tooltipVisible ? (
         <Tooltip
           side={tooltipSide}
-          style={{ top: tooltip.top }}
+          style={{ left: tooltip.left, top: tooltip.top, width: tooltip.width }}
         >
           {tooltip.label}
         </Tooltip>

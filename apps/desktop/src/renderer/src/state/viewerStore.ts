@@ -45,7 +45,6 @@ interface ViewerState {
   scrollMode: ScrollMode;
   continuousScrollWheelMode: ScrollWheelMode;
   singlePageScrollWheelMode: ScrollWheelMode;
-  cadScrollWheelMode: ScrollWheelMode;
   pageColumnsEnabled: boolean;
   cadViewOrganisation: CadViewOrganisation;
   pagesPerColumn: number;
@@ -74,7 +73,6 @@ interface ViewerState {
   setScrollMode: (mode: ScrollMode) => void;
   setContinuousScrollWheelMode: (mode: ScrollWheelMode) => void;
   setSinglePageScrollWheelMode: (mode: ScrollWheelMode) => void;
-  setCadScrollWheelMode: (mode: ScrollWheelMode) => void;
   setPageColumnsEnabled: (enabled: boolean) => void;
   setCadViewOrganisation: (organisation: CadViewOrganisation) => void;
   setPagesPerColumn: (count: number) => void;
@@ -134,7 +132,6 @@ const initialState = {
   scrollMode: 'continuous' as ScrollMode,
   continuousScrollWheelMode: 'scroll' as ScrollWheelMode,
   singlePageScrollWheelMode: 'zoom' as ScrollWheelMode,
-  cadScrollWheelMode: 'zoom' as ScrollWheelMode,
   pageColumnsEnabled: false,
   cadViewOrganisation: 'columns' as CadViewOrganisation,
   pagesPerColumn: DEFAULT_PAGES_PER_COLUMN,
@@ -172,7 +169,6 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
       scrollMode: 'continuous',
       continuousScrollWheelMode: 'scroll',
       singlePageScrollWheelMode: 'zoom',
-      cadScrollWheelMode: 'zoom',
       pageColumnsEnabled: false,
       cadViewOrganisation: 'columns',
       pagesPerColumn: DEFAULT_PAGES_PER_COLUMN,
@@ -212,7 +208,6 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
   setScrollMode: (scrollMode) => set({ scrollMode }),
   setContinuousScrollWheelMode: (continuousScrollWheelMode) => set({ continuousScrollWheelMode }),
   setSinglePageScrollWheelMode: (singlePageScrollWheelMode) => set({ singlePageScrollWheelMode }),
-  setCadScrollWheelMode: (cadScrollWheelMode) => set({ cadScrollWheelMode }),
   setPageColumnsEnabled: (pageColumnsEnabled) =>
     set((state) => ({
       pageColumnsEnabled,

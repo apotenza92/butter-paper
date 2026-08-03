@@ -24,10 +24,11 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Field as FormField, FieldLabel, FieldLegend, FieldSet } from '@/components/ui/field';
+import { Field as FormField, FieldGroup, FieldLabel, FieldLegend, FieldSet } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { cn } from '@/lib/utils';
 
 type ScaleMode = 'preset' | 'custom' | 'calibrate';
 type PagesMode = 'current' | 'all' | 'custom';
@@ -174,11 +175,11 @@ export function PageScaleDialog({
         }
       }}
     >
-      <DialogContent className="max-h-[calc(100vh-2rem)] w-[520px] max-w-[calc(100%-2rem)] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden rounded-2xl p-0 sm:max-w-[520px]" data-testid="page-scale-dialog" finalFocus={() => getPageScaleReturnFocus()} showCloseButton={false}>
-        <DialogHeader className="flex-row items-center justify-between gap-4 border-b border-border px-4 py-3">
+      <DialogContent className="max-h-[calc(100vh-2rem)] w-[520px] max-w-[calc(100%-2rem)] overflow-hidden sm:max-w-[520px]" data-testid="page-scale-dialog" finalFocus={() => getPageScaleReturnFocus()} showCloseButton={false}>
+        <DialogHeader className="flex-row items-center justify-between">
           <div className="min-w-0">
             <DialogTitle>Set Page Scale</DialogTitle>
-            <DialogDescription className="mt-1 text-xs">
+            <DialogDescription>
               Page {currentPage + 1} of {pageCount}. Choose a scale and the pages it applies to.
             </DialogDescription>
           </div>
@@ -188,13 +189,13 @@ export function PageScaleDialog({
         </DialogHeader>
 
         <form
-          className="grid min-h-0 grid-rows-[minmax(0,1fr)_auto]"
+          className="grid min-h-0 grid-rows-[minmax(0,1fr)_auto] gap-4"
           onSubmit={(event) => {
             event.preventDefault();
             handleApply();
           }}
         >
-          <div className="min-h-0 space-y-4 overflow-y-auto px-4 py-4" data-testid="page-scale-dialog-body">
+          <FieldGroup className="min-h-0 overflow-y-auto" data-testid="page-scale-dialog-body">
             <SegmentedControl
               label="Method"
               value={mode}
@@ -236,7 +237,7 @@ export function PageScaleDialog({
             ) : null}
 
             {mode === 'custom' ? (
-              <div className="space-y-3">
+              <div className="flex flex-col gap-3">
                 <ScaleEquation pdfLength={pdfLength} pdfUnits={pdfUnits} realLength={realLength} realUnits={realUnits} onPdfLengthChange={setPdfLength} onPdfUnitsChange={setPdfUnits} onRealLengthChange={setRealLength} onRealUnitsChange={setRealUnits} testIdPrefix="page-scale-custom" />
                 <CheckboxField checked={separateYScale} label="Separate Y scale" testId="page-scale-separate-y" onCheckedChange={setSeparateYScale} />
                 {separateYScale ? <ScaleEquation label="Y scale" pdfLength={yPdfLength} pdfUnits={pdfUnits} realLength={yRealLength} realUnits={realUnits} onPdfLengthChange={setYPdfLength} onPdfUnitsChange={setPdfUnits} onRealLengthChange={setYRealLength} onRealUnitsChange={setRealUnits} testIdPrefix="page-scale-y-custom" /> : null}
@@ -244,7 +245,7 @@ export function PageScaleDialog({
             ) : null}
 
             {mode === 'calibrate' ? (
-              <div className="space-y-3">
+              <div className="flex flex-col gap-3">
                 <Alert>
                   <AlertTitle>Calibrate from the PDF</AlertTitle>
                   <AlertDescription>Pick two endpoints on the PDF, then enter the known real-world length.</AlertDescription>
@@ -319,9 +320,9 @@ export function PageScaleDialog({
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             ) : null}
-          </div>
+          </FieldGroup>
 
-          <DialogFooter className="border-t border-border px-4 py-3">
+          <DialogFooter>
             <DialogClose render={<Button type="button" variant="outline" />}>Cancel</DialogClose>
             <Button type="submit" data-testid="page-scale-apply">
               Apply Scale
@@ -502,7 +503,6 @@ function SegmentedControl({
       </FieldLegend>
       <ToggleGroup
         aria-label={label}
-        className="rounded-2xl border border-border"
         spacing={0}
         variant="outline"
         value={[value]}
@@ -515,7 +515,7 @@ function SegmentedControl({
         }}
       >
         {options.map((option) => (
-          <ToggleGroupItem key={option.value} value={option.value} className="px-3" data-testid={`page-scale-method-${option.value}`}>
+          <ToggleGroupItem key={option.value} value={option.value} data-testid={`page-scale-method-${option.value}`}>
             {option.label}
           </ToggleGroupItem>
         ))}
@@ -562,15 +562,17 @@ function ScaleSelect<Value extends string>({
         }
       }}
     >
-      <SelectTrigger id={id} className={['w-full', className].filter(Boolean).join(' ')} aria-label={ariaLabel} aria-labelledby={ariaLabelledBy} data-testid={testId}>
+      <SelectTrigger id={id} className={cn('w-full', className)} aria-label={ariaLabel} aria-labelledby={ariaLabelledBy} data-testid={testId}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent align="start" alignItemWithTrigger={false}>
-        {options.map((option) => (
-          <SelectItem key={option.value} value={option.value}>
-            {option.label}
-          </SelectItem>
-        ))}
+        <SelectGroup>
+          {options.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectGroup>
       </SelectContent>
     </Select>
   );

@@ -1,4 +1,4 @@
-import type { ButterCanvasDocument, DocumentModel, Markup } from '@butter-paper/core';
+import type { DocumentModel, Markup } from '@butter-paper/core';
 import type { PdfPageGeometryIndex, PdfSaveMode, PdfSaveResult } from '@butter-paper/pdf';
 
 export type ToolMode = 'select' | 'pan' | 'text-box' | 'rectangle' | 'ellipse' | 'arc' | 'line' | 'arrow' | 'dimension' | 'length' | 'polylength' | 'area' | 'polyline' | 'polygon' | 'pen' | 'highlight' | 'cloud' | 'cloud-plus' | 'callout' | 'image' | 'snapshot';
@@ -227,6 +227,17 @@ export interface LoadedDocumentPayload {
   fileName: string;
   document: DocumentModel;
   openStageTimings?: DocumentOpenStageTimings;
+}
+
+export interface BlankPdfCreateRequest {
+  readonly widthMm: number;
+  readonly heightMm: number;
+}
+
+export interface BlankPdfCreateResult {
+  readonly filePath: string;
+  readonly fileName: string;
+  readonly temporarySourcePath: string;
 }
 
 export interface SaveDocumentRequest {
@@ -464,6 +475,10 @@ export interface ButterPaperBridge {
     setAsDefaultPdfApp(): Promise<DefaultPdfAppResult>;
     takePendingPdfPaths(): Promise<string[]>;
     onOpenPdfPaths(listener: (filePaths: string[]) => void): () => void;
+    setCloseBlocked(blocked: boolean): Promise<void>;
+    onCloseRequested(listener: () => void): () => void;
+    confirmClose(): Promise<void>;
+    cancelClose(): Promise<void>;
   };
   readonly theme: {
     getSnapshot(): Promise<ThemeSnapshot>;
@@ -481,21 +496,17 @@ export interface ButterPaperBridge {
   readonly dialogs: {
     openPdfDialog(): Promise<string[] | null>;
     savePdfAsDialog(defaultPath?: string): Promise<string | null>;
-    openCanvasDialog(): Promise<string[] | null>;
-    saveCanvasAsDialog(defaultPath?: string): Promise<string | null>;
   };
   readonly files: {
     readFile(filePath: string): Promise<Uint8Array>;
     writeFile(filePath: string, bytes: Uint8Array): Promise<void>;
   };
   readonly pdf: {
+    createBlankDocument(request: BlankPdfCreateRequest): Promise<BlankPdfCreateResult>;
+    releaseTemporaryDocument(temporarySourcePath: string): Promise<void>;
     loadDocument(filePath: string): Promise<LoadedDocumentPayload>;
     getPageGeometry(request: PageGeometryRequest): Promise<PdfPageGeometryIndex>;
     saveDocument(request: SaveDocumentRequest): Promise<PdfSaveResult>;
-  };
-  readonly canvas: {
-    readDocument(filePath: string): Promise<ButterCanvasDocument>;
-    writeDocument(filePath: string, document: ButterCanvasDocument): Promise<void>;
   };
   readonly renderCore: {
     getBackendConfig(): Promise<DesktopRenderBackendConfig>;
@@ -531,7 +542,6 @@ export interface ViewerDiagnostics {
   scrollWheelMode?: ScrollWheelMode;
   continuousScrollWheelMode?: ScrollWheelMode;
   singlePageScrollWheelMode?: ScrollWheelMode;
-  cadScrollWheelMode?: ScrollWheelMode;
   pageColumnsEnabled?: boolean;
   cadViewOrganisation?: 'columns' | 'rows';
   pagesPerColumn?: number;

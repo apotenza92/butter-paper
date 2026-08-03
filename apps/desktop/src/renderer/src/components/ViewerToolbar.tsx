@@ -15,13 +15,14 @@ import {
   ZoomOut,
   type LucideIcon,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState, type ComponentProps, type ComponentType, type KeyboardEvent as ReactKeyboardEvent, type ReactElement, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ComponentType, type KeyboardEvent as ReactKeyboardEvent, type ReactElement } from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
@@ -29,8 +30,10 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
+import { Field, FieldLabel } from '@/components/ui/field';
 import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from '@/components/ui/popover';
 import { Tooltip as ShadcnTooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Toggle } from '@/components/ui/toggle';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
   CONTROL_ICON_SIZE,
@@ -40,8 +43,8 @@ import {
   SHELL_SURFACE_PANEL,
   VIEWER_TOOLBAR_INSET_X,
 } from './shellSpacing';
-import { Tooltip } from './Tooltip';
 import type { CadViewOrganisation, ScrollWheelMode, SnapSettings, SnapTarget } from '../state/viewerStore';
+import { SplitButtonSegment } from './domain-ui/SplitButtonSegment';
 
 interface ViewerToolbarProps {
   disabled?: boolean;
@@ -50,7 +53,6 @@ interface ViewerToolbarProps {
   scrollMode: 'continuous' | 'single-page';
   continuousScrollWheelMode: ScrollWheelMode;
   singlePageScrollWheelMode: ScrollWheelMode;
-  cadScrollWheelMode: ScrollWheelMode;
   pageColumnsEnabled: boolean;
   cadViewOrganisation: CadViewOrganisation;
   pagesPerColumn: number;
@@ -64,7 +66,6 @@ interface ViewerToolbarProps {
   onScrollModeChange: (mode: 'continuous' | 'single-page') => void;
   onContinuousScrollWheelModeChange: (mode: ScrollWheelMode) => void;
   onSinglePageScrollWheelModeChange: (mode: ScrollWheelMode) => void;
-  onCadScrollWheelModeChange: (mode: ScrollWheelMode) => void;
   onPageColumnsEnabledChange: (enabled: boolean) => void;
   onCadViewOrganisationChange: (organisation: CadViewOrganisation) => void;
   onPagesPerColumnChange: (count: number) => void;
@@ -80,6 +81,25 @@ interface ToolbarIconProps {
 }
 
 type ToolbarIconComponent = ComponentType<ToolbarIconProps>;
+
+export const TOOLBAR_ACTION_BUTTON_VARIANT = 'ghost' as const;
+
+interface GestureHintState {
+  id: string;
+  text: string;
+  visible: boolean;
+}
+
+export function resolveGestureHintPresentation(
+  gestureHint: GestureHintState | null,
+  id: string,
+): { hint: string | undefined; suppressTooltip: boolean } {
+  const isCurrentHint = gestureHint?.id === id;
+  return {
+    hint: isCurrentHint && gestureHint.visible ? gestureHint.text : undefined,
+    suppressTooltip: Boolean(isCurrentHint && !gestureHint.visible),
+  };
+}
 
 function FitWidthIcon({ size = 24, strokeWidth = 2, className, 'aria-hidden': ariaHidden }: ToolbarIconProps) {
   return (
@@ -133,101 +153,63 @@ function ContinuousIcon({ size = 24, strokeWidth = 2, className, 'aria-hidden': 
   );
 }
 
-type ToolbarButtonProps = Omit<ComponentProps<typeof Button>, 'size' | 'variant'> & {
-  active?: boolean;
-  testId?: string;
-  ariaPressed?: boolean;
-};
-
-function ToolbarButton({
-  active,
-  ariaPressed,
-  className,
-  disabled,
-  ref,
-  testId,
-  title,
-  ...props
-}: ToolbarButtonProps) {
-  return (
-    <Button
-      {...props}
-      ref={ref}
-      type="button"
-      variant={active ? 'secondary' : 'ghost'}
-      size="sm"
-      disabled={disabled}
-      data-testid={testId}
-      aria-label={title}
-      aria-pressed={ariaPressed}
-      className={['relative h-8 rounded-2xl px-2 text-[12px]', className].filter(Boolean).join(' ')}
-    />
-  );
-}
-
 function ToolbarTriggerTooltip({
   disabled,
+  hint,
+  hintTestId,
   label,
+  suppressTooltip,
   testId,
   trigger,
 }: {
   disabled?: boolean;
+  hint?: string;
+  hintTestId?: string;
   label: string;
+  suppressTooltip?: boolean;
   testId?: string;
   trigger: ReactElement;
 }) {
-  if (disabled) {
+  if (disabled || suppressTooltip) {
     return trigger;
   }
 
   return (
-    <ShadcnTooltip>
+    <ShadcnTooltip open={hint ? true : undefined}>
       <TooltipTrigger render={trigger} />
-      <TooltipContent data-testid={testId}>{label}</TooltipContent>
+      <TooltipContent data-testid={hint ? hintTestId : testId}>{hint ?? label}</TooltipContent>
     </ShadcnTooltip>
   );
 }
 
 function ToolbarIconButton({
-  active,
   disabled,
   icon: Icon,
   label,
   onClick,
-  onDoubleClick,
-  suppressTooltip,
   testId,
 }: {
-  active?: boolean;
   disabled?: boolean;
   icon: ToolbarIconComponent;
   label: string;
   onClick?: () => void;
-  onDoubleClick?: () => void;
-  suppressTooltip?: boolean;
   testId: string;
 }) {
   const button = (
-    <ToolbarButton
-      active={active}
-      ariaPressed={active}
-      className="w-8 px-0"
+    <Button
+      type="button"
+      variant={TOOLBAR_ACTION_BUTTON_VARIANT}
+      size="icon"
       disabled={disabled}
       onClick={onClick}
-      onDoubleClick={onDoubleClick}
-      testId={testId}
-      title={label}
+      data-testid={testId}
+      aria-label={label}
     >
-      <Icon
-        size={CONTROL_ICON_SIZE}
-        strokeWidth={CONTROL_ICON_STROKE_WIDTH}
-        className={CONTROL_ICON_SIZE_CLASS}
-        aria-hidden="true"
-      />
-    </ToolbarButton>
+      <Icon data-icon="inline-start" aria-hidden="true" />
+    </Button>
   );
 
-  if (disabled || suppressTooltip) {
+  if (disabled) {
     return button;
   }
 
@@ -263,8 +245,6 @@ const zoomPresetOptions: ReadonlyArray<number> = [
   32,
   64,
 ];
-const VIEW_DROPDOWN_OPEN_DELAY_MS = 220;
-
 function formatZoomPercent(zoom: number): string {
   if (zoom < 0.1) {
     return `${Number((zoom * 100).toFixed(2))}%`;
@@ -297,22 +277,23 @@ function ZoomDropdown({
       <ShadcnTooltip disabled={disabled || open}>
         <TooltipTrigger render={(
           <DropdownMenuTrigger render={(
-            <ToolbarButton
-              active={open && !disabled}
-              className="min-w-[68px] gap-1.5 px-2 tabular-nums"
+            <Button
+              type="button"
+              variant={TOOLBAR_ACTION_BUTTON_VARIANT}
+              size="default"
+              className="min-w-[68px] tabular-nums"
               disabled={disabled}
-              testId="viewer-zoom-menu"
-              title={`Zoom ${zoomLabel}`}
-              ariaPressed={open}
+              data-testid="viewer-zoom-menu"
+              aria-label={`Zoom ${zoomLabel}`}
             >
               <span>{zoomLabel}</span>
-              <ChevronDown size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} className={CONTROL_ICON_SIZE_CLASS} aria-hidden="true" />
-            </ToolbarButton>
+              <ChevronDown data-icon="inline-end" aria-hidden="true" />
+            </Button>
           )} />
         )} />
         <TooltipContent>{`Zoom ${zoomLabel}`}</TooltipContent>
       </ShadcnTooltip>
-      <DropdownMenuContent align="start" className="min-w-[112px] text-xs">
+      <DropdownMenuContent align="start" className="min-w-[112px]">
         <DropdownMenuRadioGroup
           value={selectedZoom === undefined ? '' : String(selectedZoom)}
           onValueChange={(value) => onZoomChange(Number(value))}
@@ -321,7 +302,7 @@ function ZoomDropdown({
             <DropdownMenuRadioItem
               key={option}
               value={String(option)}
-              className="text-xs tabular-nums"
+              className="tabular-nums"
               data-testid={`viewer-zoom-preset-${Math.round(option * 100)}`}
             >
               {formatZoomPercent(option)}
@@ -365,66 +346,59 @@ function SnapDropdown({
         <ShadcnTooltip disabled={disabled || open}>
           <TooltipTrigger render={(
             <DropdownMenuTrigger render={(
-              <ToolbarButton
-                active={!disabled && (open || snapSettings.snapToContent || snapSettings.snapToMarkup)}
-                className="gap-1.5 px-2"
+              <Button
+                type="button"
+                variant={TOOLBAR_ACTION_BUTTON_VARIANT}
+                size="default"
                 disabled={disabled}
-                testId="viewer-snap-target-menu"
-                title="Snap"
-                ariaPressed={open}
+                data-testid="viewer-snap-target-menu"
+                aria-label="Snap settings"
               >
-                <Magnet size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} className={CONTROL_ICON_SIZE_CLASS} aria-hidden="true" />
-                <ChevronDown size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} className={CONTROL_ICON_SIZE_CLASS} aria-hidden="true" />
-              </ToolbarButton>
+                <Magnet data-icon="inline-start" aria-hidden="true" />
+                <ChevronDown data-icon="inline-end" aria-hidden="true" />
+              </Button>
             )} />
           )} />
           <TooltipContent>Snap</TooltipContent>
         </ShadcnTooltip>
-        <DropdownMenuContent align="start" className="min-w-[240px] text-xs">
-          <DropdownMenuCheckboxItem
-            checked={snapSettings.snapToContent}
-            data-testid="viewer-snap-content"
-            onCheckedChange={(checked) => onSnapSettingsChange({ snapToContent: checked })}
-          >
-            <VectorSquare
-              size={CONTROL_ICON_SIZE}
-              strokeWidth={CONTROL_ICON_STROKE_WIDTH}
-              className={CONTROL_ICON_SIZE_CLASS}
-              aria-hidden="true"
-            />
-            <span>Content</span>
-          </DropdownMenuCheckboxItem>
-          <DropdownMenuCheckboxItem
-            checked={snapSettings.snapToMarkup}
-            data-testid="viewer-snap-markup"
-            onCheckedChange={(checked) => onSnapSettingsChange({ snapToMarkup: checked })}
-          >
-            <Shapes
-              size={CONTROL_ICON_SIZE}
-              strokeWidth={CONTROL_ICON_STROKE_WIDTH}
-              className={CONTROL_ICON_SIZE_CLASS}
-              aria-hidden="true"
-            />
-            <span>Markup</span>
-          </DropdownMenuCheckboxItem>
+        <DropdownMenuContent align="start" className="min-w-[240px]">
+          <DropdownMenuGroup>
+            <DropdownMenuCheckboxItem
+              checked={snapSettings.snapToContent}
+              data-testid="viewer-snap-content"
+              onCheckedChange={(checked) => onSnapSettingsChange({ snapToContent: checked })}
+            >
+              <VectorSquare aria-hidden="true" />
+              <span>Content</span>
+            </DropdownMenuCheckboxItem>
+            <DropdownMenuCheckboxItem
+              checked={snapSettings.snapToMarkup}
+              data-testid="viewer-snap-markup"
+              onCheckedChange={(checked) => onSnapSettingsChange({ snapToMarkup: checked })}
+            >
+              <Shapes aria-hidden="true" />
+              <span>Markup</span>
+            </DropdownMenuCheckboxItem>
+          </DropdownMenuGroup>
           <DropdownMenuSeparator />
-          {snapTargetOptions.map((option) => {
-            const selected = selectedTargets.has(option.target);
-            return (
-              <DropdownMenuCheckboxItem
-                key={option.target}
-                checked={selected}
-                className="text-xs"
-                data-testid={`viewer-snap-target-${option.target}`}
-                onCheckedChange={() => toggleTarget(option.target)}
-              >
-                <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
-                  <span>{option.label}</span>
-                  <span className="text-[11px] text-muted-foreground">{option.hint}</span>
-                </span>
-              </DropdownMenuCheckboxItem>
-            );
-          })}
+          <DropdownMenuGroup>
+            {snapTargetOptions.map((option) => {
+              const selected = selectedTargets.has(option.target);
+              return (
+                <DropdownMenuCheckboxItem
+                  key={option.target}
+                  checked={selected}
+                  data-testid={`viewer-snap-target-${option.target}`}
+                  onCheckedChange={() => toggleTarget(option.target)}
+                >
+                  <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
+                    <span>{option.label}</span>
+                    <span className="text-[11px] text-muted-foreground">{option.hint}</span>
+                  </span>
+                </DropdownMenuCheckboxItem>
+              );
+            })}
+          </DropdownMenuGroup>
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
@@ -435,9 +409,6 @@ const wheelModeOptions: ReadonlyArray<{ mode: ScrollWheelMode; label: string; ic
   { mode: 'zoom', label: 'Mousewheel Zoom', icon: Search },
   { mode: 'scroll', label: 'Mousewheel Scroll', icon: MoveVertical },
 ];
-const ACTIVE_VIEW_CHEVRON_CLASS = CONTROL_ICON_SIZE_CLASS;
-const INACTIVE_VIEW_CHEVRON_CLASS = `${CONTROL_ICON_SIZE_CLASS} opacity-35`;
-
 function nextSingleSelectValue<Value extends string>(
   event: ReactKeyboardEvent,
   values: readonly Value[],
@@ -484,15 +455,9 @@ function WheelBehaviourMenuItems({
           <DropdownMenuRadioItem
             key={option.mode}
             value={option.mode}
-            className="text-xs"
             data-testid={`${testIdPrefix}-wheel-${option.mode}`}
           >
-            <Icon
-              size={CONTROL_ICON_SIZE}
-              strokeWidth={CONTROL_ICON_STROKE_WIDTH}
-              className={CONTROL_ICON_SIZE_CLASS}
-              aria-hidden="true"
-            />
+            <Icon aria-hidden="true" />
             <span className="whitespace-nowrap">{option.label}</span>
           </DropdownMenuRadioItem>
         );
@@ -501,111 +466,124 @@ function WheelBehaviourMenuItems({
   );
 }
 
-function ViewWheelDropdown({
+function ViewWheelControl({
   disabled,
   active,
   icon: Icon,
+  preserveIconGeometry = false,
   label,
   mode,
   testId,
   testIdPrefix,
+  gestureHint,
   suppressTooltip,
   onActivate,
   onDoubleClick,
+  onHideGestureHint,
+  onRestartTooltip,
+  onShowGestureHint,
   onModeChange,
 }: {
   disabled?: boolean;
   active: boolean;
   icon: ToolbarIconComponent;
+  preserveIconGeometry?: boolean;
   label: string;
   mode: ScrollWheelMode;
   testId: string;
   testIdPrefix: string;
+  gestureHint?: string;
   suppressTooltip?: boolean;
   onActivate: () => void;
-  onDoubleClick?: () => void;
+  onDoubleClick: () => void;
+  onHideGestureHint: () => void;
+  onRestartTooltip: () => void;
+  onShowGestureHint: () => void;
   onModeChange: (mode: ScrollWheelMode) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const dropdownOpenTimerRef = useRef<number | null>(null);
-
-  const cancelPendingDropdownOpen = useCallback(() => {
-    if (dropdownOpenTimerRef.current === null) {
-      return;
-    }
-
-    window.clearTimeout(dropdownOpenTimerRef.current);
-    dropdownOpenTimerRef.current = null;
-  }, []);
 
   useEffect(() => {
-    if (disabled || !active) {
-      cancelPendingDropdownOpen();
+    if (disabled) {
       setOpen(false);
     }
-  }, [active, cancelPendingDropdownOpen, disabled, setOpen]);
-
-  useEffect(() => {
-    return () => cancelPendingDropdownOpen();
-  }, [cancelPendingDropdownOpen]);
-
-  function handleOpenChange(nextOpen: boolean, eventDetails: { event: Event }): void {
-    if (!nextOpen) {
-      cancelPendingDropdownOpen();
-      setOpen(false);
-      return;
-    }
-
-    if (!active) {
-      onActivate();
-      setOpen(false);
-      return;
-    }
-
-    cancelPendingDropdownOpen();
-    const isKeyboardOpen = eventDetails.event instanceof KeyboardEvent;
-    dropdownOpenTimerRef.current = window.setTimeout(() => {
-      dropdownOpenTimerRef.current = null;
-      setOpen(true);
-    }, isKeyboardOpen || !onDoubleClick ? 0 : VIEW_DROPDOWN_OPEN_DELAY_MS);
-  }
-
-  const trigger = (
-    <DropdownMenuTrigger
-      render={(
-        <ToolbarButton
-          active={!disabled && active}
-          ariaPressed={active}
-          className="w-14 gap-1 px-2"
-          disabled={disabled}
-          onDoubleClick={() => {
-            cancelPendingDropdownOpen();
-            setOpen(false);
-            onDoubleClick?.();
-          }}
-          testId={testId}
-          title={label}
-        >
-          <Icon size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} className={CONTROL_ICON_SIZE_CLASS} aria-hidden="true" />
-          <ChevronDown size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} className={active ? ACTIVE_VIEW_CHEVRON_CLASS : INACTIVE_VIEW_CHEVRON_CLASS} aria-hidden="true" />
-        </ToolbarButton>
-      )}
-    />
-  );
+  }, [disabled]);
 
   return (
-    <DropdownMenu open={open} onOpenChange={handleOpenChange} disabled={disabled}>
-      <ToolbarTriggerTooltip disabled={disabled || suppressTooltip || open} label={label} testId={`${testId}-tooltip`} trigger={trigger} />
-      <DropdownMenuContent align="start" className="min-w-[190px] text-xs">
-          <DropdownMenuLabel className="text-[11px]">Mousewheel Behaviour</DropdownMenuLabel>
-          <WheelBehaviourMenuItems
-            mode={mode}
-            testIdPrefix={testIdPrefix}
-            onModeChange={onModeChange}
+    <ButtonGroup aria-label={`${label} controls`}>
+      <ToolbarTriggerTooltip
+        disabled={disabled}
+        hint={gestureHint}
+        hintTestId={`viewer-toolbar-hint-${testIdPrefix.replace(/^viewer-/, '')}`}
+        label={label}
+        suppressTooltip={suppressTooltip}
+        testId={`${testId}-tooltip`}
+        trigger={(
+          <Toggle
+            variant="outline"
+            size="default"
+            pressed={active}
+            disabled={disabled}
+            data-testid={testId}
+            aria-label={label}
+            onClick={onShowGestureHint}
+            onBlur={onHideGestureHint}
+            onFocus={onRestartTooltip}
+            onPointerEnter={onRestartTooltip}
+            onPointerLeave={onHideGestureHint}
+            onDoubleClick={() => {
+              onHideGestureHint();
+              onDoubleClick();
+            }}
+            onPressedChange={(pressed) => {
+              if (pressed) {
+                onActivate();
+              }
+            }}
+          >
+            {preserveIconGeometry ? (
+              <Icon size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} className={CONTROL_ICON_SIZE_CLASS} aria-hidden="true" />
+            ) : (
+              <Icon aria-hidden="true" />
+            )}
+          </Toggle>
+        )}
+      />
+      <DropdownMenu open={open} onOpenChange={setOpen} disabled={disabled}>
+        <ShadcnTooltip disabled={disabled || open}>
+          <DropdownMenuTrigger
+            render={(
+              <TooltipTrigger
+                render={(
+                  <SplitButtonSegment
+                    type="button"
+                    size="icon"
+                    selected={active}
+                    disabled={disabled}
+                    data-testid={`${testId}-settings`}
+                    aria-label={`${label} settings`}
+                  >
+                    <ChevronDown data-icon="inline-start" aria-hidden="true" />
+                  </SplitButtonSegment>
+                )}
+              />
+            )}
           />
-          <div className="px-2 py-1 text-[11px] leading-4 text-muted-foreground">Ctrl + mousewheel does the opposite.</div>
-      </DropdownMenuContent>
-    </DropdownMenu>
+          <TooltipContent>{label} settings</TooltipContent>
+        </ShadcnTooltip>
+        <DropdownMenuContent align="start" className="min-w-[190px]">
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>Mousewheel Behaviour</DropdownMenuLabel>
+            <WheelBehaviourMenuItems
+              mode={mode}
+              testIdPrefix={testIdPrefix}
+              onModeChange={onModeChange}
+            />
+          </DropdownMenuGroup>
+          <div className="px-2 py-1 text-muted-foreground">Ctrl + mousewheel does the opposite.</div>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </ButtonGroup>
   );
 }
 
@@ -614,24 +592,20 @@ function CadViewButton({
   scrollMode,
   pageColumnsEnabled,
   cadViewOrganisation,
-  cadScrollWheelMode,
   pagesPerColumn,
   onScrollModeChange,
   onPageColumnsEnabledChange,
   onCadViewOrganisationChange,
-  onCadScrollWheelModeChange,
   onPagesPerColumnChange,
 }: {
   disabled?: boolean;
   scrollMode: 'continuous' | 'single-page';
   pageColumnsEnabled: boolean;
   cadViewOrganisation: CadViewOrganisation;
-  cadScrollWheelMode: ScrollWheelMode;
   pagesPerColumn: number;
   onScrollModeChange: (mode: 'continuous' | 'single-page') => void;
   onPageColumnsEnabledChange: (enabled: boolean) => void;
   onCadViewOrganisationChange: (organisation: CadViewOrganisation) => void;
-  onCadScrollWheelModeChange: (mode: ScrollWheelMode) => void;
   onPagesPerColumnChange: (count: number) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -651,51 +625,68 @@ function CadViewButton({
     }
   }, [disabled, setOpen]);
 
-  const trigger = (
-    <PopoverTrigger
-      render={(
-        <ToolbarButton
-          active={!disabled && cadViewActive}
-          ariaPressed={cadViewActive}
-          className="w-14 gap-1 px-2"
-          disabled={disabled}
-          testId="viewer-cad-view"
-          title="CAD View"
-        >
-          <Grid2x2 size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} className={CONTROL_ICON_SIZE_CLASS} aria-hidden="true" />
-          <ChevronDown size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} className={cadViewActive ? ACTIVE_VIEW_CHEVRON_CLASS : INACTIVE_VIEW_CHEVRON_CLASS} aria-hidden="true" />
-        </ToolbarButton>
-      )}
-    />
-  );
-
   return (
-    <Popover
-      open={open}
-      onOpenChange={(nextOpen) => {
-        if (nextOpen && !cadViewActive) {
-          onScrollModeChange('continuous');
-          onPageColumnsEnabledChange(true);
-          setOpen(false);
-          return;
-        }
-        setOpen(nextOpen);
-      }}
-    >
-      <ToolbarTriggerTooltip disabled={disabled || open} label="CAD View" testId="viewer-cad-view-tooltip" trigger={trigger} />
-      <PopoverContent
-        align="start"
-        className="w-[230px] gap-3 p-3"
-        data-testid="viewer-cad-settings"
-        finalFocus={() => globalThis.document.querySelector<HTMLElement>('[data-testid="viewer-cad-view"]')}
+    <ButtonGroup aria-label="CAD View controls">
+      <ToolbarTriggerTooltip
+        disabled={disabled}
+        label="CAD View"
+        testId="viewer-cad-view-tooltip"
+        trigger={(
+          <Toggle
+            variant="outline"
+            size="default"
+            pressed={cadViewActive}
+            disabled={disabled}
+            data-testid="viewer-cad-view"
+            aria-label="CAD View"
+            onPressedChange={(pressed) => {
+              if (pressed) {
+                onScrollModeChange('continuous');
+                onPageColumnsEnabledChange(true);
+              }
+            }}
+          >
+            <Grid2x2 aria-hidden="true" />
+          </Toggle>
+        )}
+      />
+      <Popover open={open} onOpenChange={setOpen}>
+        <ShadcnTooltip disabled={disabled || open}>
+          <PopoverTrigger
+            render={(
+              <TooltipTrigger
+                render={(
+                  <SplitButtonSegment
+                    type="button"
+                    size="icon"
+                    selected={cadViewActive}
+                    disabled={disabled}
+                    data-testid="viewer-cad-view-settings"
+                    aria-label="CAD View settings"
+                  >
+                    <ChevronDown data-icon="inline-start" aria-hidden="true" />
+                  </SplitButtonSegment>
+                )}
+              />
+            )}
+          />
+          <TooltipContent>CAD View settings</TooltipContent>
+        </ShadcnTooltip>
+        <PopoverContent
+          align="start"
+          className="w-[230px]"
+          data-testid="viewer-cad-settings"
+          finalFocus={() => globalThis.document.querySelector<HTMLElement>('[data-testid="viewer-cad-view-settings"]')}
       >
           <PopoverHeader>
-            <PopoverTitle className="text-sm">CAD View</PopoverTitle>
-            <PopoverDescription className="text-xs">Organise drawing sheets and choose mousewheel behaviour.</PopoverDescription>
+            <PopoverTitle>CAD View</PopoverTitle>
+            <PopoverDescription>Organise drawing sheets. Mousewheel always zooms in CAD View.</PopoverDescription>
           </PopoverHeader>
           <ToggleGroup
             aria-label="Organise by"
             className="grid w-full grid-cols-2"
+            spacing={0}
+            variant="outline"
             value={[cadViewOrganisation]}
             onKeyDown={(event) => {
               const nextValue = nextSingleSelectValue(event, ['columns', 'rows'], cadViewOrganisation, 'horizontal');
@@ -719,7 +710,7 @@ function CadViewButton({
                   key={organisation}
                   size="sm"
                   value={organisation}
-                  className="w-full text-xs"
+                  className="w-full"
                   data-testid={`viewer-cad-organisation-${organisation}`}
                 >
                   {label}
@@ -727,56 +718,22 @@ function CadViewButton({
               );
             })}
           </ToggleGroup>
-          <label className="flex items-center justify-between gap-3 text-xs">
-            <span className="text-muted-foreground">{countLabel}</span>
+          <Field orientation="horizontal">
+            <FieldLabel>{countLabel}</FieldLabel>
             <Input
               type="number"
               min={1}
               max={100}
               step={1}
               value={pagesPerColumn}
-              className="h-7 w-16 text-right text-xs"
+              className="w-16 text-right"
               data-testid={cadViewOrganisation === 'columns' ? 'viewer-pages-per-column' : 'viewer-pages-per-row'}
               onChange={(event) => handlePageCountChange(event.currentTarget.value)}
             />
-          </label>
-          <ToggleGroup
-            aria-label="Mousewheel behaviour"
-            className="grid w-full gap-1"
-            orientation="vertical"
-            value={[cadScrollWheelMode]}
-            onKeyDown={(event) => {
-              const nextValue = nextSingleSelectValue(event, ['zoom', 'scroll'], cadScrollWheelMode, 'vertical');
-              if (nextValue) {
-                onCadScrollWheelModeChange(nextValue);
-              }
-            }}
-            onValueChange={(values) => {
-              const nextValue = values[0] as ScrollWheelMode | undefined;
-              if (nextValue) {
-                onCadScrollWheelModeChange(nextValue);
-              }
-            }}
-          >
-            {wheelModeOptions.map((option) => {
-              const Icon = option.icon;
-              return (
-                <ToggleGroupItem
-                  key={option.mode}
-                  size="sm"
-                  value={option.mode}
-                  className="w-full justify-start text-xs"
-                  data-testid={`viewer-cad-wheel-${option.mode}`}
-                >
-                  <Icon aria-hidden="true" />
-                  {option.label}
-                </ToggleGroupItem>
-              );
-            })}
-          </ToggleGroup>
-          <div className="text-[11px] leading-4 text-muted-foreground">Ctrl + mousewheel does the opposite.</div>
-      </PopoverContent>
-    </Popover>
+          </Field>
+        </PopoverContent>
+      </Popover>
+    </ButtonGroup>
   );
 }
 
@@ -787,7 +744,6 @@ export function ViewerToolbar({
   scrollMode,
   continuousScrollWheelMode,
   singlePageScrollWheelMode,
-  cadScrollWheelMode,
   pageColumnsEnabled,
   cadViewOrganisation,
   pagesPerColumn,
@@ -801,55 +757,49 @@ export function ViewerToolbar({
   onScrollModeChange,
   onContinuousScrollWheelModeChange,
   onSinglePageScrollWheelModeChange,
-  onCadScrollWheelModeChange,
   onPageColumnsEnabledChange,
   onCadViewOrganisationChange,
   onPagesPerColumnChange,
   onSnapSettingsChange,
   onSetPageScale,
 }: ViewerToolbarProps) {
-  const [gestureHint, setGestureHint] = useState<{ id: string; text: string; nonce: number } | null>(null);
-  const hintTimerRef = useRef<number | null>(null);
+  const [gestureHint, setGestureHint] = useState<GestureHintState | null>(null);
+  const gestureHintTimerRef = useRef<number | null>(null);
 
   function showGestureHint(id: string, text: string): void {
-    if (hintTimerRef.current !== null) {
-      window.clearTimeout(hintTimerRef.current);
+    if (gestureHintTimerRef.current !== null) {
+      window.clearTimeout(gestureHintTimerRef.current);
     }
-    setGestureHint({ id, text, nonce: Date.now() });
-    hintTimerRef.current = window.setTimeout(() => {
-      hintTimerRef.current = null;
-      setGestureHint(null);
-    }, 2000);
+    setGestureHint({ id, text, visible: true });
+    gestureHintTimerRef.current = window.setTimeout(() => {
+      gestureHintTimerRef.current = null;
+      setGestureHint((current) => current?.id === id ? { ...current, visible: false } : current);
+    }, 2_000);
   }
 
-  useEffect(() => {
-    return () => {
-      if (hintTimerRef.current !== null) {
-        window.clearTimeout(hintTimerRef.current);
-      }
-    };
+  function hideGestureHint(id: string): void {
+    setGestureHint((current) => current?.id === id ? { ...current, visible: false } : current);
+  }
+
+  function restartTooltip(id: string): void {
+    setGestureHint((current) => current?.id === id && !current.visible ? null : current);
+  }
+
+  useEffect(() => () => {
+    if (gestureHintTimerRef.current !== null) {
+      window.clearTimeout(gestureHintTimerRef.current);
+    }
   }, []);
 
-  function hintFor(id: string): ReactNode {
-    if (gestureHint?.id !== id) {
-      return null;
-    }
-
-    return (
-      <Tooltip
-        key={gestureHint.nonce}
-        className="bp-toolbar-gesture-tooltip"
-        testId={`viewer-toolbar-hint-${id}`}
-      >
-        {gestureHint.text}
-      </Tooltip>
-    );
-  }
+  const fitWidthGestureHint = resolveGestureHintPresentation(gestureHint, 'fit-width');
+  const fitPageGestureHint = resolveGestureHintPresentation(gestureHint, 'fit-page');
+  const continuousGestureHint = resolveGestureHintPresentation(gestureHint, 'continuous');
+  const singlePageGestureHint = resolveGestureHintPresentation(gestureHint, 'single-page');
 
   return (
     <div
       className={[
-        'bp-border-bottom-inset bp-native-scroll-hidden flex min-w-0 items-center overflow-x-auto [justify-content:safe_center]',
+        'bp-native-scroll-hidden flex min-w-0 items-center overflow-x-auto border-b border-border [justify-content:safe_center]',
         PRIMARY_BAND_HEIGHT,
         VIEWER_TOOLBAR_INSET_X,
         'gap-2',
@@ -857,7 +807,7 @@ export function ViewerToolbar({
       ].join(' ')}
       data-testid="viewer-toolbar"
     >
-      <ButtonGroup aria-label="Zoom controls" className="gap-1 rounded-2xl bg-muted/50 p-1 [&>[data-slot]]:rounded-xl!">
+      <ButtonGroup aria-label="Zoom controls">
         <ToolbarIconButton
           disabled={disabled}
           icon={ZoomOut}
@@ -886,120 +836,146 @@ export function ViewerToolbar({
         />
       </ButtonGroup>
 
-      <ButtonGroup aria-label="Fit controls" className="gap-1 rounded-2xl bg-muted/50 p-1 [&>[data-slot]]:rounded-xl!">
-        <span className="relative inline-flex justify-center">
-          <ToolbarIconButton
-            active={zoomPreset === 'fit-width'}
-            disabled={disabled || pageColumnsEnabled}
-            icon={FitWidthIcon}
-            label="Fit Width"
-            suppressTooltip={gestureHint?.id === 'fit-width'}
-            onClick={() => {
-              onFitWidth();
-              showGestureHint('fit-width', 'Double click to view Continuous');
-            }}
-            onDoubleClick={() => {
-              onScrollModeChange('continuous');
-              onPageColumnsEnabledChange(false);
-            }}
-            testId="viewer-fit-width"
-          />
-          {hintFor('fit-width')}
-        </span>
-        <span className="relative inline-flex justify-center">
-          <ToolbarIconButton
-            active={zoomPreset === 'fit-page'}
-            disabled={disabled || pageColumnsEnabled}
-            icon={FitPageIcon}
-            label="Fit Page"
-            suppressTooltip={gestureHint?.id === 'fit-page'}
-            onClick={() => {
-              onFitPage();
-              showGestureHint('fit-page', 'Double click to view Single Page');
-            }}
-            onDoubleClick={() => {
-              onScrollModeChange('single-page');
-              onPageColumnsEnabledChange(false);
-            }}
-            testId="viewer-fit-page"
-          />
-          {hintFor('fit-page')}
-        </span>
-      </ButtonGroup>
+      <ToggleGroup
+        aria-label="Fit controls"
+        variant="outline"
+        spacing={0}
+        value={zoomPreset === 'manual' ? [] : [zoomPreset]}
+        onValueChange={(values) => {
+          const nextValue = values.at(-1);
+          if (nextValue === 'fit-width') {
+            onFitWidth();
+          } else if (nextValue === 'fit-page') {
+            onFitPage();
+          }
+        }}
+      >
+        <ToolbarTriggerTooltip
+          disabled={disabled || pageColumnsEnabled}
+          hint={fitWidthGestureHint.hint}
+          hintTestId="viewer-toolbar-hint-fit-width"
+          label="Fit Width"
+          suppressTooltip={fitWidthGestureHint.suppressTooltip}
+          testId="viewer-fit-width-tooltip"
+          trigger={(
+            <ToggleGroupItem
+              value="fit-width"
+              disabled={disabled || pageColumnsEnabled}
+              data-testid="viewer-fit-width"
+              aria-label="Fit Width"
+              onClick={() => showGestureHint('fit-width', 'Double click to view Continuous')}
+              onBlur={() => hideGestureHint('fit-width')}
+              onFocus={() => restartTooltip('fit-width')}
+              onPointerEnter={() => restartTooltip('fit-width')}
+              onPointerLeave={() => hideGestureHint('fit-width')}
+              onDoubleClick={() => {
+                hideGestureHint('fit-width');
+                onScrollModeChange('continuous');
+                onPageColumnsEnabledChange(false);
+              }}
+            >
+              <FitWidthIcon size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} className={CONTROL_ICON_SIZE_CLASS} aria-hidden="true" />
+            </ToggleGroupItem>
+          )}
+        />
+        <ToolbarTriggerTooltip
+          disabled={disabled || pageColumnsEnabled}
+          hint={fitPageGestureHint.hint}
+          hintTestId="viewer-toolbar-hint-fit-page"
+          label="Fit Page"
+          suppressTooltip={fitPageGestureHint.suppressTooltip}
+          testId="viewer-fit-page-tooltip"
+          trigger={(
+            <ToggleGroupItem
+              value="fit-page"
+              disabled={disabled || pageColumnsEnabled}
+              data-testid="viewer-fit-page"
+              aria-label="Fit Page"
+              onClick={() => showGestureHint('fit-page', 'Double click to view Single Page')}
+              onBlur={() => hideGestureHint('fit-page')}
+              onFocus={() => restartTooltip('fit-page')}
+              onPointerEnter={() => restartTooltip('fit-page')}
+              onPointerLeave={() => hideGestureHint('fit-page')}
+              onDoubleClick={() => {
+                hideGestureHint('fit-page');
+                onScrollModeChange('single-page');
+                onPageColumnsEnabledChange(false);
+              }}
+            >
+              <FitPageIcon size={CONTROL_ICON_SIZE} strokeWidth={CONTROL_ICON_STROKE_WIDTH} className={CONTROL_ICON_SIZE_CLASS} aria-hidden="true" />
+            </ToggleGroupItem>
+          )}
+        />
+      </ToggleGroup>
 
-      <ButtonGroup aria-label="Page view controls" className="gap-1 rounded-2xl bg-muted/50 p-1 [&>[data-slot]]:rounded-xl!">
-        <span className="relative inline-flex justify-center">
-          <ViewWheelDropdown
-            active={scrollMode === 'continuous' && !pageColumnsEnabled}
-            disabled={disabled}
-            icon={ContinuousIcon}
-            label="Continuous View"
-            mode={continuousScrollWheelMode}
-            suppressTooltip={gestureHint?.id === 'continuous'}
-            onActivate={() => {
-              onScrollModeChange('continuous');
-              onPageColumnsEnabledChange(false);
-              showGestureHint('continuous', 'Double click to Fit Width');
-            }}
-            onDoubleClick={onFitWidth}
-            testId="viewer-scroll-continuous"
-            testIdPrefix="viewer-continuous"
-            onModeChange={onContinuousScrollWheelModeChange}
-          />
-          {hintFor('continuous')}
-        </span>
-        <span className="relative inline-flex justify-center">
-          <ViewWheelDropdown
-            active={scrollMode === 'single-page'}
-            disabled={disabled}
-            icon={RectangleVertical}
-            label="Single Page View"
-            mode={singlePageScrollWheelMode}
-            suppressTooltip={gestureHint?.id === 'single-page'}
-            onActivate={() => {
-              onScrollModeChange('single-page');
-              onPageColumnsEnabledChange(false);
-              showGestureHint('single-page', 'Double click to Fit Page');
-            }}
-            onDoubleClick={onFitPage}
-            testId="viewer-scroll-single-page"
-            testIdPrefix="viewer-single-page"
-            onModeChange={onSinglePageScrollWheelModeChange}
-          />
-          {hintFor('single-page')}
-        </span>
+      <ButtonGroup aria-label="Page view controls">
+        <ViewWheelControl
+          active={scrollMode === 'continuous' && !pageColumnsEnabled}
+          disabled={disabled}
+          icon={ContinuousIcon}
+          preserveIconGeometry
+          label="Continuous View"
+          mode={continuousScrollWheelMode}
+          onActivate={() => {
+            onScrollModeChange('continuous');
+            onPageColumnsEnabledChange(false);
+          }}
+          testId="viewer-scroll-continuous"
+          testIdPrefix="viewer-continuous"
+          gestureHint={continuousGestureHint.hint}
+          suppressTooltip={continuousGestureHint.suppressTooltip}
+          onShowGestureHint={() => showGestureHint('continuous', 'Double click to Fit Width')}
+          onHideGestureHint={() => hideGestureHint('continuous')}
+          onRestartTooltip={() => restartTooltip('continuous')}
+          onDoubleClick={onFitWidth}
+          onModeChange={onContinuousScrollWheelModeChange}
+        />
+        <ViewWheelControl
+          active={scrollMode === 'single-page'}
+          disabled={disabled}
+          icon={RectangleVertical}
+          label="Single Page View"
+          mode={singlePageScrollWheelMode}
+          onActivate={() => {
+            onScrollModeChange('single-page');
+            onPageColumnsEnabledChange(false);
+          }}
+          testId="viewer-scroll-single-page"
+          testIdPrefix="viewer-single-page"
+          gestureHint={singlePageGestureHint.hint}
+          suppressTooltip={singlePageGestureHint.suppressTooltip}
+          onShowGestureHint={() => showGestureHint('single-page', 'Double click to Fit Page')}
+          onHideGestureHint={() => hideGestureHint('single-page')}
+          onRestartTooltip={() => restartTooltip('single-page')}
+          onDoubleClick={onFitPage}
+          onModeChange={onSinglePageScrollWheelModeChange}
+        />
         <CadViewButton
           disabled={disabled}
           scrollMode={scrollMode}
           pageColumnsEnabled={pageColumnsEnabled}
           cadViewOrganisation={cadViewOrganisation}
-          cadScrollWheelMode={cadScrollWheelMode}
           pagesPerColumn={pagesPerColumn}
           onScrollModeChange={onScrollModeChange}
           onPageColumnsEnabledChange={onPageColumnsEnabledChange}
           onCadViewOrganisationChange={onCadViewOrganisationChange}
-          onCadScrollWheelModeChange={onCadScrollWheelModeChange}
           onPagesPerColumnChange={onPagesPerColumnChange}
         />
       </ButtonGroup>
 
-      <ButtonGroup aria-label="Snapping controls" className="gap-1 rounded-2xl bg-muted/50 p-1 [&>[data-slot]]:rounded-xl!">
-        <SnapDropdown
-          disabled={disabled}
-          snapSettings={snapSettings}
-          onSnapSettingsChange={onSnapSettingsChange}
-        />
-      </ButtonGroup>
+      <SnapDropdown
+        disabled={disabled}
+        snapSettings={snapSettings}
+        onSnapSettingsChange={onSnapSettingsChange}
+      />
 
-      <ButtonGroup aria-label="Document controls" className="gap-1 rounded-2xl bg-muted/50 p-1 [&>[data-slot]]:rounded-xl!">
-        <ToolbarIconButton
-          disabled={disabled}
-          icon={Ruler}
-          label="Set Page Scale"
-          onClick={onSetPageScale}
-          testId="viewer-set-page-scale"
-        />
-      </ButtonGroup>
+      <ToolbarIconButton
+        disabled={disabled}
+        icon={Ruler}
+        label="Set Page Scale"
+        onClick={onSetPageScale}
+        testId="viewer-set-page-scale"
+      />
     </div>
   );
 }

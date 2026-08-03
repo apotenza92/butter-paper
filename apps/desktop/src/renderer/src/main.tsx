@@ -1,5 +1,3 @@
-import '@fontsource/dm-sans/400.css';
-import '@fontsource/dm-sans/500.css';
 import './styles.css';
 
 import { StrictMode } from 'react';

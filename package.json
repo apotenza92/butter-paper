@@ -25,6 +25,7 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "check:repo": "node scripts/check-repository-hygiene.mjs",
+    "audit:shadcn": "node scripts/audit-shadcn-registry.mjs",
     "check:icons": "node scripts/generate-icons.mjs --check",
     "test": "vitest run --config vitest.config.mts",
     "test:e2e": "playwright test",

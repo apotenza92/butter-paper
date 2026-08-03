@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import {
   Menubar,
   MenubarContent,
+  MenubarGroup,
   MenubarItem,
   MenubarMenu,
   MenubarRadioGroup,
@@ -13,14 +14,6 @@ import {
   MenubarTrigger,
 } from './ui/menubar';
 import type { UpdateFrequency, UpdateStatus } from '../../../shared/protocol';
-import {
-  MENU_BAR_HEIGHT,
-  MENU_TRIGGER_HEIGHT,
-  SHELL_BORDER_SUBTLE,
-  SHELL_CONTROL_GAP,
-  SHELL_ROW_INSET_X,
-  SHELL_SURFACE_PANEL,
-} from './shellSpacing';
 
 type MenuKey = 'butter-paper' | 'file';
 
@@ -35,8 +28,8 @@ interface AppMenuBarProps {
   canSave: boolean;
   productName: string;
   updateStatus: UpdateStatus | null;
+  onNewPdf: () => void;
   onOpen: () => void;
-  onOpenCanvas: () => void;
   onSave: () => void;
   onSaveAs: () => void;
   onSetAsDefaultPdfApp: () => void;
@@ -56,18 +49,18 @@ const UPDATE_FREQUENCIES: Array<{ value: UpdateFrequency; label: string }> = [
   { value: 'monthly', label: 'Monthly' },
 ];
 
-export function AppMenuBar({ canSave, productName, updateStatus, onOpen, onOpenCanvas, onSave, onSaveAs, onSetAsDefaultPdfApp, onCheckForUpdates, onOpenReleasePage, onUpdateFrequencyChange }: AppMenuBarProps) {
+export function AppMenuBar({ canSave, productName, updateStatus, onNewPdf, onOpen, onSave, onSaveAs, onSetAsDefaultPdfApp, onCheckForUpdates, onOpenReleasePage, onUpdateFrequencyChange }: AppMenuBarProps) {
   const fileItems = useMemo<AppMenuItem[]>(() => {
     return [
+      {
+        label: 'New Blank PDF',
+        onSelect: onNewPdf,
+        testId: 'menu-file-new-pdf',
+      },
       {
         label: 'Open...',
         onSelect: onOpen,
         testId: 'menu-file-open',
-      },
-      {
-        label: 'Open Butter Canvas...',
-        onSelect: onOpenCanvas,
-        testId: 'menu-file-open-canvas',
       },
       {
         label: 'Save',
@@ -82,7 +75,7 @@ export function AppMenuBar({ canSave, productName, updateStatus, onOpen, onOpenC
         testId: 'menu-file-save-as',
       },
     ];
-  }, [canSave, onOpen, onOpenCanvas, onSave, onSaveAs]);
+  }, [canSave, onNewPdf, onOpen, onSave, onSaveAs]);
 
   const menus: Array<{ key: MenuKey; label: string; items: AppMenuItem[] }> = [
     { key: 'butter-paper', label: productName, items: [] },
@@ -91,110 +84,95 @@ export function AppMenuBar({ canSave, productName, updateStatus, onOpen, onOpenC
 
   return (
     <Menubar
-      className={[
-        'w-full justify-start rounded-none border-0 border-b py-0',
-        MENU_BAR_HEIGHT,
-        SHELL_ROW_INSET_X,
-        SHELL_CONTROL_GAP,
-        SHELL_SURFACE_PANEL,
-        SHELL_BORDER_SUBTLE,
-      ].join(' ')}
+      className="w-full justify-start rounded-none border-x-0 border-t-0"
       data-testid="app-menu-bar"
     >
       {menus.map((menu) => (
         <MenubarMenu key={menu.key}>
-          <MenubarTrigger
-            className={['px-2 py-0 text-[12px]', MENU_TRIGGER_HEIGHT].join(' ')}
-            data-testid={`menu-trigger-${menu.key}`}
-          >
+          <MenubarTrigger data-testid={`menu-trigger-${menu.key}`}>
             {menu.label}
           </MenubarTrigger>
           <MenubarContent className="min-w-[168px]">
             {menu.key === 'butter-paper' ? (
               <>
-                <MenubarItem
-                  className="h-7 py-0 text-[12px]"
-                  data-testid="menu-set-default-pdf-app"
-                  onClick={onSetAsDefaultPdfApp}
-                >
-                  Set as Default PDF App...
-                </MenubarItem>
-                <MenubarSeparator />
-                <MenubarItem
-                  className="h-7 py-0 text-[12px]"
-                  data-testid="menu-check-for-updates"
-                  disabled={!updateStatus?.enabled
-                    || updateStatus.phase === 'checking'
-                    || updateStatus.phase === 'available'
-                    || updateStatus.phase === 'downloading'}
-                  onClick={onCheckForUpdates}
-                >
-                  {updateStatus?.phase === 'checking'
-                    ? 'Checking for Updates...'
-                    : updateStatus?.phase === 'available' || updateStatus?.phase === 'downloading'
-                      ? `Downloading Update${updateStatus.downloadPercent == null
-                        ? '...'
-                        : ` (${Math.round(updateStatus.downloadPercent)}%)`}`
-                      : updateStatus?.phase === 'downloaded'
-                        ? 'Update Ready...'
-                        : 'Check for Updates...'}
-                </MenubarItem>
-                <MenubarSub>
-                  <MenubarSubTrigger
-                    className="h-7 py-0 text-[12px]"
-                    data-testid="menu-update-frequency"
-                    disabled={!updateStatus}
-                  >
-                    Check Automatically
-                  </MenubarSubTrigger>
-                  <MenubarSubContent>
-                    <MenubarRadioGroup
-                      value={updateStatus?.frequency ?? 'daily'}
-                      onValueChange={(value) => onUpdateFrequencyChange(value as UpdateFrequency)}
-                    >
-                      {UPDATE_FREQUENCIES.map((frequency) => (
-                        <MenubarRadioItem
-                          key={frequency.value}
-                          className="h-7 py-0 text-[12px]"
-                          data-testid={`menu-update-frequency-${frequency.value}`}
-                          value={frequency.value}
-                        >
-                          {frequency.label}
-                        </MenubarRadioItem>
-                      ))}
-                    </MenubarRadioGroup>
-                  </MenubarSubContent>
-                </MenubarSub>
-                <MenubarItem
-                  className="h-7 py-0 text-[12px]"
-                  data-testid="menu-open-release-page"
-                  onClick={onOpenReleasePage}
-                >
-                  View Releases...
-                </MenubarItem>
-                <MenubarSeparator />
-                <MenubarItem className="h-7 py-0 text-[12px]" disabled>
-                  {updateStatus
-                    ? `Version ${updateStatus.currentVersion}${updateStatus.channel === 'beta' ? ' Beta' : ''}`
-                    : 'Loading update settings...'}
-                </MenubarItem>
-                {updateStatus?.disabledReason ? (
-                  <MenubarItem className="h-7 py-0 text-[12px]" disabled>
-                    {updateDisabledReasonLabel(updateStatus.disabledReason)}
+                <MenubarGroup>
+                  <MenubarItem data-testid="menu-set-default-pdf-app" onClick={onSetAsDefaultPdfApp}>
+                    Set as Default PDF App...
                   </MenubarItem>
-                ) : null}
+                </MenubarGroup>
+                <MenubarSeparator />
+                <MenubarGroup>
+                  <MenubarItem
+                    data-testid="menu-check-for-updates"
+                    disabled={!updateStatus?.enabled
+                      || updateStatus.phase === 'checking'
+                      || updateStatus.phase === 'available'
+                      || updateStatus.phase === 'downloading'}
+                    onClick={onCheckForUpdates}
+                  >
+                    {updateStatus?.phase === 'checking'
+                      ? 'Checking for Updates...'
+                      : updateStatus?.phase === 'available' || updateStatus?.phase === 'downloading'
+                        ? `Downloading Update${updateStatus.downloadPercent == null
+                          ? '...'
+                          : ` (${Math.round(updateStatus.downloadPercent)}%)`}`
+                        : updateStatus?.phase === 'downloaded'
+                          ? 'Update Ready...'
+                          : 'Check for Updates...'}
+                  </MenubarItem>
+                  <MenubarSub>
+                    <MenubarSubTrigger data-testid="menu-update-frequency" disabled={!updateStatus}>
+                      Check Automatically
+                    </MenubarSubTrigger>
+                    <MenubarSubContent>
+                      <MenubarRadioGroup
+                        value={updateStatus?.frequency ?? 'daily'}
+                        onValueChange={(value) => onUpdateFrequencyChange(value as UpdateFrequency)}
+                      >
+                        {UPDATE_FREQUENCIES.map((frequency) => (
+                          <MenubarRadioItem
+                            key={frequency.value}
+                            data-testid={`menu-update-frequency-${frequency.value}`}
+                            value={frequency.value}
+                          >
+                            {frequency.label}
+                          </MenubarRadioItem>
+                        ))}
+                      </MenubarRadioGroup>
+                    </MenubarSubContent>
+                  </MenubarSub>
+                  <MenubarItem data-testid="menu-open-release-page" onClick={onOpenReleasePage}>
+                    View Releases...
+                  </MenubarItem>
+                </MenubarGroup>
+                <MenubarSeparator />
+                <MenubarGroup>
+                  <MenubarItem disabled>
+                    {updateStatus
+                      ? `Version ${updateStatus.currentVersion}${updateStatus.channel === 'beta' ? ' Beta' : ''}`
+                      : 'Loading update settings...'}
+                  </MenubarItem>
+                  {updateStatus?.disabledReason ? (
+                    <MenubarItem disabled>
+                      {updateDisabledReasonLabel(updateStatus.disabledReason)}
+                    </MenubarItem>
+                  ) : null}
+                </MenubarGroup>
               </>
-            ) : menu.items.map((item) => (
-              <MenubarItem
-                key={item.label}
-                className="h-7 py-0 text-[12px]"
-                data-testid={item.testId}
-                disabled={item.disabled}
-                onClick={item.onSelect}
-              >
-                {item.label}
-              </MenubarItem>
-            ))}
+            ) : (
+              <MenubarGroup>
+                {menu.items.map((item) => (
+                  <MenubarItem
+                    key={item.label}
+                    data-testid={item.testId}
+                    disabled={item.disabled}
+                    onClick={item.onSelect}
+                  >
+                    {item.label}
+                  </MenubarItem>
+                ))}
+              </MenubarGroup>
+            )}
           </MenubarContent>
         </MenubarMenu>
       ))}

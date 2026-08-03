@@ -1,6 +1,6 @@
 import { _electron as electron } from '@playwright/test';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { assertIsolatedGuiTestEnvironment } from './gui-test-environment.mjs';
@@ -80,7 +80,7 @@ async function waitForDiagnostics(page, expected) {
 }
 
 async function verifyCustomIcons(page) {
-  for (const testId of ['icon-fit-width', 'icon-fit-page', 'icon-butter-canvas']) {
+  for (const testId of ['icon-fit-width', 'icon-fit-page']) {
     const icon = page.getByTestId(testId);
     await icon.waitFor({ state: 'visible' });
     const bounds = await icon.boundingBox();
@@ -119,34 +119,25 @@ async function verifyPdfWorkflow(page, outputDirectory) {
   await page.locator('[data-testid^="markup-rect-"]').first().waitFor({ state: 'visible' });
 }
 
-async function verifyButterCanvasWorkflow(page, outputDirectory) {
-  await page.getByTestId('document-tab-new-canvas').click();
-  await page.getByTestId('butter-canvas-toolbar').waitFor({ state: 'visible' });
-  const viewport = page.getByTestId('butter-canvas-viewport');
-  const bounds = await viewport.boundingBox();
-  assert(bounds, 'Packaged Butter Canvas viewport did not render');
+async function verifyBlankPdfWorkflow(page, outputDirectory) {
+  await page.getByTestId('document-tab-new-pdf-settings').click();
+  await page.getByTestId('new-blank-pdf-settings').waitFor({ state: 'visible' });
+  assert(await page.getByTestId('new-blank-pdf-paper-size').inputValue() === 'a3', 'Blank PDF settings did not default to A3');
+  assert(await page.getByTestId('new-blank-pdf-landscape').getAttribute('aria-pressed') === 'true', 'Blank PDF settings did not default to landscape');
+  await page.keyboard.press('Escape');
+  await page.getByTestId('document-tab-new-pdf').click();
+  await waitForDiagnostics(page, { pageCount: 1, documentName: 'Untitled.pdf' });
+  await page.waitForFunction(() => window.__butterPaperTestHooks?.getDiagnostics()?.tabs?.at(-1)?.dirty === true);
 
-  await page.getByTestId('tool-rectangle').click();
-  await page.mouse.move(bounds.x + 80, bounds.y + 80);
-  await page.mouse.down();
-  await page.mouse.move(bounds.x + 220, bounds.y + 170, { steps: 12 });
-  await page.mouse.up();
-  await waitForDiagnostics(page, { pageCount: 0, markupCount: 1 });
-
-  const savedCanvasPath = join(outputDirectory, 'packaged-butter-canvas-round-trip.bpc');
+  const savedPdfPath = join(outputDirectory, 'packaged-blank-pdf.pdf');
   await page.evaluate(async ({ filePath }) => {
     await window.__butterPaperTestHooks?.saveCurrentDocumentAs(filePath);
-  }, { filePath: savedCanvasPath });
-  const savedCanvas = JSON.parse(await readFile(savedCanvasPath, 'utf8'));
-  assert(savedCanvas.kind === 'butter-canvas', 'Packaged Butter Canvas save used the wrong document kind');
-  assert(savedCanvas.markups?.length === 1, 'Packaged Butter Canvas save lost its annotation');
-
+  }, { filePath: savedPdfPath });
+  assert(existsSync(savedPdfPath), 'Packaged blank PDF save did not create its output file');
   await page.evaluate(async ({ filePath }) => {
-    await window.__butterPaperTestHooks?.closeTab(filePath);
-    await window.__butterPaperTestHooks?.openCanvasPath(filePath);
-  }, { filePath: savedCanvasPath });
-  await page.getByTestId('butter-canvas-toolbar').waitFor({ state: 'visible' });
-  await waitForDiagnostics(page, { pageCount: 0, markupCount: 1 });
+    await window.__butterPaperTestHooks?.openDocumentPath(filePath);
+  }, { filePath: savedPdfPath });
+  await waitForDiagnostics(page, { pageCount: 1, documentName: 'packaged-blank-pdf.pdf' });
 }
 
 try {
@@ -195,10 +186,10 @@ try {
   );
 
   await verifyPdfWorkflow(page, temporaryDirectory);
-  await verifyButterCanvasWorkflow(page, temporaryDirectory);
+  await verifyBlankPdfWorkflow(page, temporaryDirectory);
   const diagnostics = await getDiagnostics(page);
   console.log(
-    `Packaged ${expectedProductName} smoke test passed: channel identity, PDF annotation round-trip, custom icons, fit controls, and Butter Canvas (${diagnostics.sessionBackendKind} backend).`,
+    `Packaged ${expectedProductName} smoke test passed: channel identity, PDF annotation round-trip, blank PDF creation, custom icons, and fit controls (${diagnostics.sessionBackendKind} backend).`,
   );
 } catch (error) {
   if (page) {

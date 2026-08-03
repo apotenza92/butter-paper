@@ -250,6 +250,15 @@ test.describe('custom scrollbars', () => {
       return await page.getByTestId('document-viewport').evaluate((element) => element.scrollWidth - element.clientWidth);
     }).toBe(0);
 
+    await page.getByTestId('viewer-fit-width').click();
+    await waitForShellDiagnostics(page, {
+      zoomPreset: 'fit-width',
+    });
+    await expect.poll(async () => {
+      return await page.getByTestId('document-viewport').evaluate((element) => element.scrollWidth - element.clientWidth);
+    }).toBe(0);
+    await expect(page.getByTestId('document-viewport-scrollbar-track-x')).toHaveAttribute('data-overflow', 'false');
+
     await app.close();
   });
 

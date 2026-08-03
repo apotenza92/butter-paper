@@ -1,5 +1,5 @@
-import type { ButterCanvasDocument, DocumentModel } from '@butter-paper/core';
-import type { ButterPaperBridge, PerfSnapshot, ViewerDiagnostics, WindowState } from '../../../shared/protocol';
+import type { DocumentModel } from '@butter-paper/core';
+import type { BlankPdfCreateRequest, ButterPaperBridge, PerfSnapshot, ViewerDiagnostics, WindowState } from '../../../shared/protocol';
 import type { CadViewOrganisation, SnapSettings } from '../state/viewerStore';
 
 declare global {
@@ -9,12 +9,8 @@ declare global {
     __butterPaperTestHooks?: {
       openDocumentPath: (filePath: string) => Promise<void>;
       openDocumentPaths: (filePaths: string[]) => Promise<void>;
-      createButterCanvas: () => Promise<void>;
-      openCanvasPath: (filePath: string) => Promise<void>;
-      openCanvasPaths: (filePaths: string[]) => Promise<void>;
-      importCanvasPdfPath: (filePath: string, pageSelection?: string) => Promise<void>;
+      createBlankPdf: (request: BlankPdfCreateRequest) => Promise<void>;
       getActiveDocument: () => DocumentModel | null;
-      getActiveCanvasDocument: () => ButterCanvasDocument | null;
       openFixturePdf: (fixtureName: string) => Promise<void>;
       switchToTab: (indexOrPath: number | string) => Promise<void>;
       closeTab: (indexOrPath: number | string) => Promise<void>;
