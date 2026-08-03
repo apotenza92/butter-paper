@@ -110,7 +110,7 @@ export function Tooltip({
         render={trigger ?? (
           <span
             aria-hidden="true"
-            className={style ? 'pointer-events-none absolute inset-x-0 h-px' : 'pointer-events-none absolute inset-0'}
+            className={style ? 'pointer-events-none absolute h-px' : 'pointer-events-none absolute inset-0'}
             style={style}
           />
         )}

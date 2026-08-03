@@ -1,6 +1,5 @@
 import type { UpdateChannel, UpdateFrequency } from '../shared/protocol';
 
-export const DEFAULT_UPDATE_FREQUENCY: UpdateFrequency = 'daily';
 export const UPDATE_SETTINGS_SCHEMA_VERSION = 1 as const;
 export const UPDATE_SCHEDULER_MAX_WAKE_MS = 60 * 60 * 1_000;
 
@@ -34,10 +33,14 @@ export function isUpdateFrequency(value: unknown): value is UpdateFrequency {
   return typeof value === 'string' && UPDATE_FREQUENCIES.has(value as UpdateFrequency);
 }
 
-export function createDefaultUpdateSettings(): UpdateSettings {
+export function getDefaultUpdateFrequency(channel: UpdateChannel | null): UpdateFrequency {
+  return channel === 'stable' ? 'weekly' : 'daily';
+}
+
+export function createDefaultUpdateSettings(channel: UpdateChannel | null): UpdateSettings {
   return {
     schemaVersion: UPDATE_SETTINGS_SCHEMA_VERSION,
-    frequency: DEFAULT_UPDATE_FREQUENCY,
+    frequency: getDefaultUpdateFrequency(channel),
     lastSuccessfulCheckAt: null,
   };
 }

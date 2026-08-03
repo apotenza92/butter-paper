@@ -520,14 +520,16 @@ async function expectShellSizing(page) {
 
   expect(appMenuBarBox?.height).toBeGreaterThanOrEqual(31);
   expect(appMenuBarBox?.height).toBeLessThanOrEqual(33);
-  expect(documentTabBarBox?.height).toBeGreaterThanOrEqual(47);
-  expect(documentTabBarBox?.height).toBeLessThanOrEqual(49);
+  expect(documentTabBarBox?.height).toBeGreaterThanOrEqual(48);
+  expect(documentTabBarBox?.height).toBeLessThanOrEqual(50);
 
   expect(leftRailBox?.width).toBeGreaterThanOrEqual(47);
   expect(leftRailBox?.width).toBeLessThanOrEqual(49);
-  expect(rightRailBox?.width).toBeGreaterThanOrEqual(47);
-  expect(rightRailBox?.width).toBeLessThanOrEqual(49);
+  expect(rightRailBox?.width).toBeGreaterThanOrEqual(87);
+  expect(rightRailBox?.width).toBeLessThanOrEqual(89);
 
+  expect(leftRailButtonBox).not.toBeNull();
+  expect(rightRailButtonBox).not.toBeNull();
   expect(leftRailButtonBox?.width).toBeGreaterThanOrEqual(31);
   expect(leftRailButtonBox?.width).toBeLessThanOrEqual(33);
   expect(leftRailButtonBox?.height).toBeGreaterThanOrEqual(31);
@@ -536,6 +538,8 @@ async function expectShellSizing(page) {
   expect(rightRailButtonBox?.width).toBeLessThanOrEqual(33);
   expect(rightRailButtonBox?.height).toBeGreaterThanOrEqual(31);
   expect(rightRailButtonBox?.height).toBeLessThanOrEqual(33);
+  expect(Math.abs(leftRailButtonBox.width - leftRailButtonBox.height)).toBeLessThanOrEqual(0.5);
+  expect(Math.abs(rightRailButtonBox.width - rightRailButtonBox.height)).toBeLessThanOrEqual(0.5);
 
   expect(viewerToolbarBox?.height).toBeGreaterThanOrEqual(47);
   expect(viewerToolbarBox?.height).toBeLessThanOrEqual(49);

@@ -102,7 +102,7 @@ describe('Electron Builder release identity', () => {
       afterPack: 'build/after-pack.cjs',
       compression: 'maximum',
       electronLanguages: ['en-US'],
-      releaseNotes: expect.stringContaining('Added immediate, accessible in-app feedback for manual update checks'),
+      releaseNotes: expect.stringContaining('Replaced the experimental Butter Canvas surface with native blank PDFs'),
       nsisInclude: 'build/installer.nsh',
       nsisOneClick: false,
       macMinimumSystemVersion: '12.0',

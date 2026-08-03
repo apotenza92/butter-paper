@@ -7,7 +7,7 @@ import { getAnnotationContentStyle } from './annotationStyles';
 import { hitTestHandles, hitTestMarkup, hitTestMarkups } from './hitTesting';
 import { getChromeStyle, getMoveCursor, getResizeCursor, getRotateCursor, getResizeHandles, getRotationHandle } from './interactionChrome';
 import { DEFAULT_CLOUD_LINE_OPTIONS, CLOUD_LINE_TYPE_RENDERER, generateCloudScallopPoints } from './lineTypes';
-import { getMarkupToolDefinition, getToolDefinition, PDF_TOOL_REGISTRY } from './toolRegistry';
+import { getMarkupToolDefinition, getToolDefinition, PDF_TOOL_RAIL_GROUPS, PDF_TOOL_REGISTRY } from './toolRegistry';
 
 describe('PDF tool registry', () => {
   it('exposes only the implemented reset tools', () => {
@@ -31,6 +31,19 @@ describe('PDF tool registry', () => {
     expect(getToolDefinition('callout')).toMatchObject({ label: 'Callout', shortcut: 'Q' });
     expect(getToolDefinition('image')).toMatchObject({ label: 'Insert Image', shortcut: 'I' });
     expect(getToolDefinition('snapshot')).toMatchObject({ label: 'Snapshot', shortcut: 'G' });
+  });
+
+  it('assigns every visible tool to exactly one ordered normal or CAD rail group', () => {
+    expect(PDF_TOOL_RAIL_GROUPS.normal).toEqual([
+      'select', 'pan', 'text-box', 'arrow', 'pen', 'highlight', 'cloud', 'cloud-plus', 'callout', 'image', 'snapshot',
+    ]);
+    expect(PDF_TOOL_RAIL_GROUPS.cad).toEqual([
+      'rectangle', 'ellipse', 'line', 'arc', 'polyline', 'polygon', 'dimension', 'length', 'polylength', 'area',
+    ]);
+
+    const groupedToolIds = [...PDF_TOOL_RAIL_GROUPS.normal, ...PDF_TOOL_RAIL_GROUPS.cad];
+    expect(new Set(groupedToolIds).size).toBe(groupedToolIds.length);
+    expect(new Set(groupedToolIds)).toEqual(new Set(PDF_TOOL_REGISTRY.map((tool) => tool.id)));
   });
 
   it('starts sized drawing tools with click placement instead of pointer capture drag', () => {

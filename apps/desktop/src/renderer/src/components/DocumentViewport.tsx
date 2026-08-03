@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { Alert, AlertAction, AlertDescription } from '@/components/ui/alert';
+import { Spinner } from '@/components/ui/spinner';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { PageModel, PdfPoint, Rect } from '@butter-paper/core';
 import type { ToolMode, ZoomPreset } from '../../../shared/protocol';
 import { isRenderBacklogIdle, type DiagnosticsSnapshot, type LocalPdfSession } from '../services/documentSession';
 import { useRenderCoordinator } from '../services/renderCoordinator';
 import { useSessionVersion } from '../services/sessionHooks';
-import { useViewerStore } from '../state/viewerStore';
+import { useViewerStore, type ScrollWheelMode } from '../state/viewerStore';
 import { buildPageLayouts, computeVisibleLayoutPositions } from '../utils/virtualisation';
 import type { PageLayout } from '../utils/virtualisation';
-import { clampViewerZoom, computePreviewRasterZoom, MIN_VIEWER_ZOOM, quantizeFitZoom, quantizeFitZoomDown } from '../utils/renderZoom';
+import { clampViewerZoom, computePreviewRasterZoom, MIN_VIEWER_ZOOM, quantizeFitZoomDown } from '../utils/renderZoom';
 import { resolveAnchoredZoomAxis } from '../utils/viewportZoom';
 import {
   EMPTY_CANVAS_PADDING,
@@ -154,7 +156,6 @@ export function DocumentViewport({
   const scrollMode = useViewerStore((state) => state.scrollMode);
   const continuousScrollWheelMode = useViewerStore((state) => state.continuousScrollWheelMode);
   const singlePageScrollWheelMode = useViewerStore((state) => state.singlePageScrollWheelMode);
-  const cadScrollWheelMode = useViewerStore((state) => state.cadScrollWheelMode);
   const pageColumnsEnabled = useViewerStore((state) => state.pageColumnsEnabled);
   const cadViewOrganisation = useViewerStore((state) => state.cadViewOrganisation);
   const pagesPerColumn = useViewerStore((state) => state.pagesPerColumn);
@@ -366,12 +367,23 @@ export function DocumentViewport({
     const currentPadding = canvasPaddingRef.current;
     let nextPadding = currentPadding;
     const currentLayoutMode = layoutModeRef.current;
-    const horizontalBounds = currentLayoutMode === 'continuous' || currentLayoutMode === 'single-page'
-      ? resolveMinimumZoomPanBounds(pageLayoutListRef.current, container.clientWidth, maxScrollLeft, zoom, 'x')
-      : null;
-    const verticalBounds = currentLayoutMode === 'single-page'
-      ? resolveMinimumZoomPanBounds(pageLayoutListRef.current, container.clientHeight, maxScrollTop, zoom, 'y')
-      : null;
+    const currentZoom = useViewerStore.getState().zoom;
+    const horizontalBounds = resolveViewportPanBounds(
+      pageLayoutListRef.current,
+      container.clientWidth,
+      maxScrollLeft,
+      currentZoom,
+      'x',
+      currentLayoutMode,
+    );
+    const verticalBounds = resolveViewportPanBounds(
+      pageLayoutListRef.current,
+      container.clientHeight,
+      maxScrollTop,
+      currentZoom,
+      'y',
+      currentLayoutMode,
+    );
 
     if (horizontalBounds) {
       const requestedLeft = nextLeft;
@@ -495,8 +507,25 @@ export function DocumentViewport({
     const handleScroll = () => {
       recordEvent('DocumentViewport.scroll');
       markViewportInMotion();
-      const nextObservedScrollTop = container.scrollTop;
       const isUserScrollForCurrentPage = !suppressContinuousCurrentPageScrollRef.current && !panState.current;
+      if (isUserScrollForCurrentPage) {
+        const nextScroll = constrainViewportScrollToPanBounds(
+          pageLayoutListRef.current,
+          container.clientWidth,
+          container.clientHeight,
+          Math.max(0, container.scrollWidth - container.clientWidth),
+          Math.max(0, container.scrollHeight - container.clientHeight),
+          useViewerStore.getState().zoom,
+          layoutModeRef.current,
+          container.scrollLeft,
+          container.scrollTop,
+          viewportContentOffsetRef.current,
+        );
+        if (nextScroll.left !== container.scrollLeft || nextScroll.top !== container.scrollTop) {
+          container.scrollTo({ ...nextScroll, behavior: 'auto' });
+        }
+      }
+      const nextObservedScrollTop = container.scrollTop;
       lastScrollWasUserScrollRef.current = isUserScrollForCurrentPage;
       if (isUserScrollForCurrentPage && nextObservedScrollTop > lastObservedScrollTopRef.current) {
         scrollDirectionRef.current = 'down';
@@ -623,6 +652,16 @@ export function DocumentViewport({
       markViewportInMotion();
       suppressContinuousCurrentPageFromScroll();
       if (useViewerStore.getState().zoomPreset !== 'manual') {
+        if (layoutModeRef.current === 'single-page') {
+          const currentLayout = pageLayoutListRef.current[0];
+          if (currentLayout) {
+            updateCanvasPadding(materializeSinglePagePanPadding(
+              currentLayout,
+              computePageLayoutGap(useViewerStore.getState().zoom),
+              canvasPaddingRef.current,
+            ));
+          }
+        }
         setZoomPreset('manual');
       }
       panState.current = {
@@ -756,9 +795,9 @@ export function DocumentViewport({
       ? 'columns'
       : 'continuous';
   layoutModeRef.current = layoutMode;
-  const scrollWheelMode = layoutMode === 'columns'
-    ? cadScrollWheelMode
-    : (layoutMode === 'single-page' ? singlePageScrollWheelMode : continuousScrollWheelMode);
+  const scrollWheelMode = layoutMode === 'single-page'
+    ? singlePageScrollWheelMode
+    : continuousScrollWheelMode;
   const pageLayoutGap = computePageLayoutGap(zoom);
   const pageLayouts = useMemo(() => {
     const pageInputs = pages.map((page) => ({
@@ -874,7 +913,7 @@ export function DocumentViewport({
 
       event.preventDefault();
       markViewportInMotion();
-      const shouldScroll = scrollWheelMode === 'scroll' ? !event.ctrlKey : event.ctrlKey;
+      const shouldScroll = shouldScrollViewportWheel(layoutMode, scrollWheelMode, event.ctrlKey);
       if (shouldScroll) {
         if (wheelZoomFrameRef.current !== null) {
           window.cancelAnimationFrame(wheelZoomFrameRef.current);
@@ -1243,14 +1282,14 @@ export function DocumentViewport({
       return;
     }
 
-    const fitWidthZoom = Number((fitViewportSize.width / Math.max(1, referencePage.size.width + PAGE_LAYOUT_GAP * 2)).toFixed(3));
-    const fitPageZoom = Number(
-      Math.min(
-        fitWidthZoom,
-        fitViewportSize.height / Math.max(1, referencePage.size.height + PAGE_LAYOUT_GAP * 2),
-      ).toFixed(3),
+    const fitWidthZoom = resolveFitWidthZoom(fitViewportSize.width, referencePage.size.width);
+    const fitPageZoom = Math.min(
+      fitWidthZoom,
+      fitViewportSize.height / Math.max(1, referencePage.size.height + PAGE_LAYOUT_GAP * 2),
     );
-    const nextZoom = clampViewerZoom(zoomPreset === 'fit-page' ? quantizeFitZoomDown(fitPageZoom) : quantizeFitZoom(fitWidthZoom));
+    const nextZoom = zoomPreset === 'fit-page'
+      ? clampViewerZoom(quantizeFitZoomDown(fitPageZoom))
+      : fitWidthZoom;
 
     if (Math.abs(nextZoom - zoom) > 0.001) {
       fitZoomReferencePageRef.current = referencePage.index;
@@ -1412,7 +1451,7 @@ export function DocumentViewport({
 
   if (!documentState || !session) {
     return (
-      <section className="bp-surface-app bp-text-muted flex h-full items-center justify-center">
+      <section className="flex h-full items-center justify-center bg-background text-muted-foreground">
         <div className="flex flex-col items-center text-center">
           <Button
             type="button"
@@ -1424,7 +1463,7 @@ export function DocumentViewport({
           >
             Open
           </Button>
-          <div className="bp-text-primary text-[14px] font-medium">Open a PDF to begin</div>
+          <div className="text-[14px] font-medium text-foreground">Open a PDF to begin</div>
         </div>
       </section>
     );
@@ -1529,7 +1568,7 @@ export function DocumentViewport({
         );
       }) : (
         <div className="absolute inset-0 flex items-start justify-center pt-8">
-          <div className="h-7 w-7 animate-spin rounded-full border-[3px] border-neutral-300 border-t-neutral-500" aria-hidden="true" />
+          <Spinner className="size-7" />
         </div>
       )}
     </div>
@@ -1539,7 +1578,7 @@ export function DocumentViewport({
     <div className="relative h-full">
       <CustomScrollArea
         ref={containerRef}
-        className="bp-surface-app relative h-full"
+        className="relative h-full bg-background"
         orientation="both"
         viewportClassName={isPanning ? 'cursor-grabbing' : activeTool === 'pan' ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'}
         viewportTestId="document-viewport"
@@ -1552,12 +1591,16 @@ export function DocumentViewport({
         {viewportContent}
       </CustomScrollArea>
       {calibrationPick?.active ? (
-        <div className="pointer-events-auto absolute left-1/2 top-4 z-30 flex -translate-x-1/2 items-center gap-3 rounded-[6px] border border-blue-200 bg-blue-50 px-3 py-2 text-[12px] text-blue-900 shadow-sm" data-testid="page-scale-calibration-instructions">
-          <span>{calibrationPick.pointCount === 0 ? 'Click the first point of a known distance.' : 'Click the second point of the same distance.'}</span>
-          <Button type="button" variant="outline" size="xs" onClick={onCancelCalibrationPick}>
-            Cancel
-          </Button>
-        </div>
+        <Alert className="pointer-events-auto absolute left-1/2 top-4 z-30 w-fit -translate-x-1/2 pr-20" data-testid="page-scale-calibration-instructions">
+          <AlertDescription>
+            {calibrationPick.pointCount === 0 ? 'Click the first point of a known distance.' : 'Click the second point of the same distance.'}
+          </AlertDescription>
+          <AlertAction>
+            <Button type="button" variant="outline" size="xs" onClick={onCancelCalibrationPick}>
+              Cancel
+            </Button>
+          </AlertAction>
+        </Alert>
       ) : null}
     </div>
   );
@@ -1961,12 +2004,45 @@ export function computePageLayoutGap(zoom: number): number {
   return Number((PAGE_LAYOUT_GAP * Math.max(0.01, zoom)).toFixed(2));
 }
 
+export function resolveFitWidthZoom(viewportWidth: number, pageWidth: number): number {
+  const rawFitZoom = viewportWidth / Math.max(1, pageWidth + PAGE_LAYOUT_GAP * 2);
+  return clampViewerZoom(quantizeFitZoomDown(rawFitZoom));
+}
+
+export function materializeSinglePagePanPadding(
+  layout: Pick<PageLayout, 'left' | 'top'>,
+  gap: number,
+  currentPadding: CanvasPadding,
+): CanvasPadding {
+  const horizontalCentering = Math.max(0, layout.left - currentPadding.left - gap);
+  const verticalCentering = Math.max(0, layout.top - currentPadding.top - gap);
+
+  return {
+    left: currentPadding.left + horizontalCentering,
+    right: currentPadding.right + horizontalCentering,
+    top: currentPadding.top + verticalCentering,
+    bottom: currentPadding.bottom + verticalCentering,
+  };
+}
+
 export function clampWheelZoomFrameDelta(deltaY: number): number {
   if (!Number.isFinite(deltaY)) {
     return 0;
   }
 
   return Math.max(-WHEEL_ZOOM_MAX_DELTA_PER_FRAME, Math.min(WHEEL_ZOOM_MAX_DELTA_PER_FRAME, deltaY));
+}
+
+export function shouldScrollViewportWheel(
+  layoutMode: 'continuous' | 'columns' | 'single-page',
+  scrollWheelMode: ScrollWheelMode,
+  ctrlKey: boolean,
+): boolean {
+  if (layoutMode === 'columns') {
+    return false;
+  }
+
+  return scrollWheelMode === 'scroll' ? !ctrlKey : ctrlKey;
 }
 
 export function computeBluebeamWheelZoom(currentZoom: number, deltaY: number): number {
@@ -3201,6 +3277,102 @@ export function resolveMinimumZoomPanBounds(
   const min = layoutStart + minimumVisibleLength - viewportLength;
   const max = layoutStart + layoutLength - minimumVisibleLength;
   return min <= max ? { min, max } : { min: max, max: min };
+}
+
+export function resolveViewportPanBounds(
+  layouts: readonly PageLayout[],
+  viewportLength: number,
+  maxScroll: number,
+  zoom: number,
+  axis: 'x' | 'y',
+  layoutMode: 'continuous' | 'columns' | 'single-page',
+  minimumZoom = MIN_VIEWER_ZOOM,
+  minimumVisibleRatio = MINIMUM_ZOOM_PAN_VISIBLE_RATIO,
+): { min: number; max: number } | null {
+  if (layoutMode === 'columns') {
+    return null;
+  }
+
+  if (layoutMode !== 'continuous' || axis === 'x') {
+    return resolveMinimumZoomPanBounds(
+      layouts,
+      viewportLength,
+      maxScroll,
+      zoom,
+      axis,
+      minimumZoom,
+      minimumVisibleRatio,
+    );
+  }
+
+  if (layouts.length === 0 || viewportLength <= 0 || maxScroll < 0 || zoom <= 0) {
+    return null;
+  }
+
+  const firstLayout = layouts.reduce((first, layout) => (
+    layout.top < first.top ? layout : first
+  ), layouts[0]);
+  const lastLayout = layouts.reduce((last, layout) => (
+    layout.top + layout.height > last.top + last.height ? layout : last
+  ), layouts[0]);
+  if (!firstLayout || !lastLayout) {
+    return null;
+  }
+
+  const visibleScale = clamp(minimumZoom / zoom, 0, 1) * clamp(minimumVisibleRatio, 0, 1);
+  const min = firstLayout.top + firstLayout.height * visibleScale - viewportLength;
+  const max = lastLayout.top + lastLayout.height * (1 - visibleScale);
+  return min <= max ? { min, max } : { min: max, max: min };
+}
+
+export function constrainViewportScrollToPanBounds(
+  layouts: readonly PageLayout[],
+  viewportWidth: number,
+  viewportHeight: number,
+  maxScrollLeft: number,
+  maxScrollTop: number,
+  zoom: number,
+  layoutMode: 'continuous' | 'columns' | 'single-page',
+  scrollLeft: number,
+  scrollTop: number,
+  contentOffset: ViewportContentOffset = { x: 0, y: 0 },
+): { left: number; top: number } {
+  const horizontalBounds = resolveViewportPanBounds(
+    layouts,
+    viewportWidth,
+    maxScrollLeft,
+    zoom,
+    'x',
+    layoutMode,
+  );
+  const verticalBounds = resolveViewportPanBounds(
+    layouts,
+    viewportHeight,
+    maxScrollTop,
+    zoom,
+    'y',
+    layoutMode,
+  );
+  return {
+    left: constrainScrollAxis(scrollLeft, maxScrollLeft, horizontalBounds, contentOffset.x),
+    top: constrainScrollAxis(scrollTop, maxScrollTop, verticalBounds, contentOffset.y),
+  };
+}
+
+function constrainScrollAxis(
+  scrollOffset: number,
+  maxScroll: number,
+  bounds: { min: number; max: number } | null,
+  contentOffset: number,
+): number {
+  const safeMaxScroll = Math.max(0, maxScroll);
+  if (!bounds) {
+    return clamp(scrollOffset, 0, safeMaxScroll);
+  }
+
+  const min = clamp(bounds.min + contentOffset, 0, safeMaxScroll);
+  const max = clamp(bounds.max + contentOffset, min, safeMaxScroll);
+  return clamp(scrollOffset, min, max);
 }
 
 function getLayoutAxisLength(layout: PageLayout, axis: 'x' | 'y'): number {

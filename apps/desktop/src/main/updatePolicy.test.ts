@@ -1,7 +1,7 @@
 import {
-  DEFAULT_UPDATE_FREQUENCY,
   UPDATE_SCHEDULER_MAX_WAKE_MS,
   createDefaultUpdateSettings,
+  getDefaultUpdateFrequency,
   getSchedulerWakeInterval,
   isAutomaticCheckDue,
   isUpdateFrequency,
@@ -13,9 +13,16 @@ import {
 } from './updatePolicy';
 
 describe('update policy', () => {
-  it('accepts only supported frequencies and defaults to daily', () => {
-    expect(DEFAULT_UPDATE_FREQUENCY).toBe('daily');
-    expect(createDefaultUpdateSettings()).toEqual({
+  it('accepts only supported frequencies and defaults stable weekly and beta daily', () => {
+    expect(getDefaultUpdateFrequency('stable')).toBe('weekly');
+    expect(getDefaultUpdateFrequency('beta')).toBe('daily');
+    expect(getDefaultUpdateFrequency(null)).toBe('daily');
+    expect(createDefaultUpdateSettings('stable')).toEqual({
+      schemaVersion: 1,
+      frequency: 'weekly',
+      lastSuccessfulCheckAt: null,
+    });
+    expect(createDefaultUpdateSettings('beta')).toEqual({
       schemaVersion: 1,
       frequency: 'daily',
       lastSuccessfulCheckAt: null,

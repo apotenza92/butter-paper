@@ -23,4 +23,95 @@ describe('repository hygiene release guardrails', () => {
     expect(hygiene).toContain('third-party action is not pinned to a full commit SHA');
     expect(hygiene).toContain('/@[a-f0-9]{40}$/');
   });
+
+  it('pins the desktop renderer to the stock Base UI Nova preset and Geist', () => {
+    const components = JSON.parse(readFileSync('apps/desktop/components.json', 'utf8'));
+    const desktopPackage = JSON.parse(readFileSync('apps/desktop/package.json', 'utf8'));
+    const styles = readFileSync('apps/desktop/src/renderer/src/styles.css', 'utf8');
+    const audit = readFileSync('scripts/audit-shadcn-registry.mjs', 'utf8');
+    const repositoryInstructions = readFileSync('AGENTS.md', 'utf8');
+
+    expect(components.style).toBe('base-nova');
+    expect(components.iconLibrary).toBe('lucide');
+    expect(desktopPackage.dependencies['@base-ui/react']).toBe('1.6.0');
+    expect(desktopPackage.dependencies['@fontsource-variable/geist']).toBe('5.3.0');
+    expect(desktopPackage.devDependencies.shadcn).toBe('4.16.1');
+    expect(desktopPackage.dependencies['@fontsource/dm-sans']).toBeUndefined();
+    expect(desktopPackage.devDependencies['@fontsource/dm-sans']).toBeUndefined();
+    expect(styles).toContain('@import "@fontsource-variable/geist";');
+    expect(styles).toContain("--font-sans: 'Geist Variable', sans-serif;");
+    expect(styles).not.toMatch(/DM Sans|--bp-(?:surface|border-subtle|selected-neutral|text-(?:primary|secondary|muted))/);
+    expect(audit).toContain("style: 'base-nova'");
+    expect(audit).toContain("preset: 'b2fA'");
+    expect(repositoryInstructions).toContain('Base UI primitives and the Nova style');
+    expect(repositoryInstructions).not.toContain('style: "base-rhea"');
+  });
+
+  it('keeps the closable document tab as an explicit domain exception', () => {
+    const hygiene = readFileSync('scripts/check-repository-hygiene.mjs', 'utf8');
+    const documentTabBar = readFileSync('apps/desktop/src/renderer/src/components/DocumentTabBar.tsx', 'utf8');
+    const blankPdfSettings = readFileSync('apps/desktop/src/renderer/src/components/BlankPdfSettingsPopover.tsx', 'utf8');
+    const closableTab = readFileSync('apps/desktop/src/renderer/src/components/domain-ui/ClosableDocumentTab.tsx', 'utf8');
+    const splitButtonSegment = readFileSync('apps/desktop/src/renderer/src/components/domain-ui/SplitButtonSegment.tsx', 'utf8');
+    const styles = readFileSync('apps/desktop/src/renderer/src/styles.css', 'utf8');
+
+    expect(hygiene).toContain('ClosableDocumentTab.tsx');
+    expect(hygiene).toContain('shadcn Tabs has no closable document-tab pattern');
+    expect(closableTab).toContain('data-domain-ui-exception="closable-document-tab"');
+    expect(closableTab).toContain('<TabsTrigger');
+    expect(documentTabBar).not.toContain('variant="line"');
+    expect(documentTabBar).toContain('className="shrink-0 justify-start gap-2 rounded-none bg-background! p-0! group-data-horizontal/tabs:h-8!"');
+    expect(documentTabBar).toContain('data-testid="document-tab-surface"');
+    expect(documentTabBar).toContain('data-testid="document-tab-actions"');
+    expect(documentTabBar).toContain('className="flex items-center border-b border-border bg-background p-2"');
+    expect(documentTabBar).toContain('className="bp-native-scroll-hidden flex min-w-0 items-center gap-2 overflow-x-auto"');
+    expect(documentTabBar).toContain('className="flex h-8 shrink-0 items-center gap-2 bg-background"');
+    expect(documentTabBar).not.toContain('data-tab-line');
+    expect(documentTabBar).toContain('<Separator');
+    expect(documentTabBar).toContain('data-testid="document-tab-actions-separator"');
+    expect(documentTabBar).not.toContain('variant="ghost"');
+    expect(documentTabBar.match(/<SplitButtonSegment/g)).toHaveLength(2);
+    expect(documentTabBar).toContain('<Plus data-icon="inline-start" aria-hidden="true" />');
+    expect(documentTabBar).toContain('aria-label="Open PDF"');
+    expect(documentTabBar.match(/size="icon"/g)).toHaveLength(2);
+    expect(documentTabBar).toContain('<ButtonGroup aria-label="New blank PDF controls">');
+    expect(documentTabBar).not.toContain('<ButtonGroupSeparator />');
+    expect(blankPdfSettings).toContain('<Popover open={open} onOpenChange={handleOpenChange}>');
+    expect(blankPdfSettings).toContain('<SplitButtonSegment');
+    expect(blankPdfSettings).toContain('data-testid="document-tab-new-pdf-settings"');
+    expect(blankPdfSettings).toContain('data-testid="new-blank-pdf-settings"');
+    expect(blankPdfSettings).not.toContain('Change default');
+    expect(documentTabBar).not.toContain('<div className="min-w-0 flex-1" aria-hidden="true"');
+    expect(closableTab).not.toMatch(/\bdata-active=|\bjustify-start\b|\bmin-w-24\b|\bmax-w-\[|\bflex-none\b|\btouch-none\b|\bcursor-default\b/);
+    expect(closableTab).toContain('className="h-8! bg-background! data-active:bg-muted! group-data-[dragging]/document-tab:after:opacity-0!"');
+    expect(closableTab).toContain('className="inline-flex h-full shrink-0 items-center text-muted-foreground leading-none"');
+    expect(splitButtonSegment).toContain('data-domain-ui-exception="split-button-segment"');
+    expect(splitButtonSegment).toContain('dark:aria-expanded:bg-transparent!');
+    expect(splitButtonSegment).toContain('dark:aria-expanded:bg-muted!');
+    expect(styles).not.toMatch(/\[data-domain-ui-exception="closable-document-tab"\][^{]*\[data-slot="tabs-trigger"\]/);
+  });
+
+  it('keeps shell controls on stock Nova treatments', () => {
+    const leftRail = readFileSync('apps/desktop/src/renderer/src/components/LeftRail.tsx', 'utf8');
+    const rightRail = readFileSync('apps/desktop/src/renderer/src/components/RightRail.tsx', 'utf8');
+    const railSettings = readFileSync('apps/desktop/src/renderer/src/components/RailSettingsPopover.tsx', 'utf8');
+    const menuBar = readFileSync('apps/desktop/src/renderer/src/components/AppMenuBar.tsx', 'utf8');
+    const viewerToolbar = readFileSync('apps/desktop/src/renderer/src/components/ViewerToolbar.tsx', 'utf8');
+
+    expect(leftRail).not.toContain('variant="outline"');
+    expect(rightRail).not.toContain('variant="outline"');
+    expect(leftRail).toContain('<RailSettingsPopover');
+    expect(rightRail).toContain('<RailSettingsPopover');
+    expect(railSettings).toContain('<Popover open={open} onOpenChange={onOpenChange}>');
+    expect(railSettings).toContain('<Checkbox');
+    expect(railSettings).toContain('Expand labels on hover');
+    expect(menuBar).toContain('className="w-full justify-start rounded-none border-x-0 border-t-0"');
+    expect(viewerToolbar).toContain('onDoubleClick');
+    expect(viewerToolbar).toContain('Double click to view Continuous');
+    expect(viewerToolbar).toContain('Double click to view Single Page');
+    expect(viewerToolbar).toContain('Double click to Fit Width');
+    expect(viewerToolbar).toContain('Double click to Fit Page');
+    expect(viewerToolbar).toContain('<SplitButtonSegment');
+    expect(viewerToolbar).toContain('<DropdownMenuGroup>\n            <DropdownMenuLabel>Mousewheel Behaviour</DropdownMenuLabel>');
+  });
 });

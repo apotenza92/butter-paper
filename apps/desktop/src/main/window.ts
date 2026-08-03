@@ -1,5 +1,4 @@
 import electron from 'electron';
-import { parseButterCanvasDocument, serializeButterCanvasDocument } from '@butter-paper/core';
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -8,6 +7,7 @@ import type { BrowserWindow as BrowserWindowInstance, Event as ElectronEvent, Re
 import { ipcChannels } from '../shared/ipc';
 import type {
   ApplicationMetadata,
+  BlankPdfCreateRequest,
   DesktopRenderBackend,
   DesktopRenderBackendConfig,
   DesktopRenderBackendSelection,
@@ -39,13 +39,15 @@ import type {
   UpdateFrequency,
 } from '../shared/protocol';
 import { resolveApplicationMetadata } from './applicationMetadata';
+import { BlankPdfTemporaryStore } from './blankPdfTemporaryStore';
 import { setAsDefaultPdfApp } from './defaultPdfApp';
 import { takePendingPdfPaths } from './pendingPdfPaths';
 import { loadDocumentPayload, loadPageGeometryIndex, saveDocumentPayload } from './pdfSession';
 import { getFocusedWindowState, isTestModeEnabled, resolveFixturePath, setFocusedWindowBounds } from './testMode';
-import { readBinaryFile, readTextFile, writeBinaryFile, writeTextFile } from './fileSystem';
+import { readBinaryFile, writeBinaryFile } from './fileSystem';
 import { DesktopUpdaterService, loadElectronAutoUpdater } from './updater';
 import { resolveReleasePageUrl } from './releasePage';
+import { MAIN_WINDOW_GEOMETRY } from './windowGeometry';
 
 const { app, BrowserWindow, ipcMain, dialog, nativeTheme, shell } = electron;
 const require = createRequire(import.meta.url);
@@ -64,6 +66,10 @@ let themeListenerRegistered = false;
 let pdfiumCliPathPromise: Promise<string> | null = null;
 let updaterService: DesktopUpdaterService | null = null;
 let unsubscribeUpdaterStatus: (() => void) | null = null;
+let blankPdfTemporaryStore: BlankPdfTemporaryStore | null = null;
+let applicationQuitRequested = false;
+const closeBlockedWebContents = new Set<number>();
+const closeConfirmedWebContents = new Set<number>();
 const documentRegistry = new Map<string, {
   ownerWebContentsId: number;
   filePath: string;
@@ -1677,10 +1683,7 @@ export function createMainWindow(): BrowserWindowInstance {
   let window: BrowserWindowInstance;
   try {
     window = new BrowserWindow({
-      width: 1280,
-      height: 960,
-      minWidth: 1100,
-      minHeight: 720,
+      ...MAIN_WINDOW_GEOMETRY,
       backgroundColor: getWindowBackgroundColor(themeSnapshot.mode),
       title: applicationMetadata.productName,
       show: testMode,
@@ -1736,6 +1739,17 @@ export function createMainWindow(): BrowserWindowInstance {
   }
 
   const webContentsId = window.webContents.id;
+  window.on('close', (event) => {
+    if (closeBlockedWebContents.has(webContentsId) && !closeConfirmedWebContents.has(webContentsId)) {
+      event.preventDefault();
+      if (!window.webContents.isDestroyed()) {
+        window.webContents.send(ipcChannels.applicationCloseRequested);
+      }
+      return;
+    }
+    closeBlockedWebContents.delete(webContentsId);
+    closeConfirmedWebContents.delete(webContentsId);
+  });
   window.on('closed', () => {
     clearRenderCoreRegistriesForOwner(webContentsId);
     if (mainWindow === window) {
@@ -1769,6 +1783,35 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(ipcChannels.applicationTakePendingPdfPaths, async () => {
     return takePendingPdfPaths();
+  });
+
+  ipcMain.handle(ipcChannels.applicationSetCloseBlocked, async (event, blocked: boolean) => {
+    if (typeof blocked !== 'boolean') {
+      throw new TypeError('Application close-blocked state must be a boolean.');
+    }
+    if (blocked) {
+      closeBlockedWebContents.add(event.sender.id);
+      closeConfirmedWebContents.delete(event.sender.id);
+    } else {
+      closeBlockedWebContents.delete(event.sender.id);
+    }
+  });
+
+  ipcMain.handle(ipcChannels.applicationConfirmClose, async (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window || window.isDestroyed()) {
+      return;
+    }
+    closeConfirmedWebContents.add(event.sender.id);
+    if (applicationQuitRequested) {
+      app.quit();
+    } else {
+      window.close();
+    }
+  });
+
+  ipcMain.handle(ipcChannels.applicationCancelClose, async () => {
+    applicationQuitRequested = false;
   });
 
   ipcMain.handle(ipcChannels.updatesGetStatus, async () => {
@@ -1847,48 +1890,6 @@ export function registerIpcHandlers(): void {
     return result.filePath;
   });
 
-  ipcMain.handle(ipcChannels.dialogOpenCanvas, async () => {
-    const window = BrowserWindow.getFocusedWindow();
-    const result = window
-      ? await dialog.showOpenDialog(window, {
-          title: 'Open Butter Canvas',
-          properties: ['openFile', 'multiSelections'],
-          filters: [{ name: 'Butter Canvas', extensions: ['bpc'] }],
-        })
-      : await dialog.showOpenDialog({
-          title: 'Open Butter Canvas',
-          properties: ['openFile', 'multiSelections'],
-          filters: [{ name: 'Butter Canvas', extensions: ['bpc'] }],
-        });
-
-    if (result.canceled || result.filePaths.length === 0) {
-      return null;
-    }
-
-    return result.filePaths;
-  });
-
-  ipcMain.handle(ipcChannels.dialogSaveCanvasAs, async (_event, defaultPath?: string) => {
-    const window = BrowserWindow.getFocusedWindow();
-    const result = window
-      ? await dialog.showSaveDialog(window, {
-          title: 'Save Butter Canvas As',
-          defaultPath: defaultPath ?? 'untitled-canvas.bpc',
-          filters: [{ name: 'Butter Canvas', extensions: ['bpc'] }],
-        })
-      : await dialog.showSaveDialog({
-          title: 'Save Butter Canvas As',
-          defaultPath: defaultPath ?? 'untitled-canvas.bpc',
-          filters: [{ name: 'Butter Canvas', extensions: ['bpc'] }],
-        });
-
-    if (result.canceled || !result.filePath) {
-      return null;
-    }
-
-    return result.filePath;
-  });
-
   ipcMain.handle(ipcChannels.fileRead, async (_event, filePath: string) => {
     return readBinaryFile(filePath);
   });
@@ -1898,13 +1899,12 @@ export function registerIpcHandlers(): void {
     return true;
   });
 
-  ipcMain.handle(ipcChannels.canvasReadDocument, async (_event, filePath: string) => {
-    return parseButterCanvasDocument(await readTextFile(filePath));
+  ipcMain.handle(ipcChannels.pdfCreateBlankDocument, async (_event, request: BlankPdfCreateRequest) => {
+    return requireBlankPdfTemporaryStore().create(request);
   });
 
-  ipcMain.handle(ipcChannels.canvasWriteDocument, async (_event, filePath: string, document) => {
-    await writeTextFile(filePath, serializeButterCanvasDocument(document));
-    return true;
+  ipcMain.handle(ipcChannels.pdfReleaseTemporaryDocument, async (_event, temporarySourcePath: string) => {
+    await requireBlankPdfTemporaryStore().release(temporarySourcePath);
   });
 
   ipcMain.handle(ipcChannels.pdfLoadDocument, async (_event, filePath: string) => {
@@ -1990,6 +1990,11 @@ export function registerIpcHandlers(): void {
 
 export async function bootstrapDesktop(): Promise<void> {
   await app.whenReady();
+  const metadata = getApplicationMetadata();
+  blankPdfTemporaryStore = new BlankPdfTemporaryStore(app.getPath('temp'), `butter-paper-${metadata.channel}-blank-`);
+  await blankPdfTemporaryStore.cleanupStaleSessions().catch((error) => {
+    console.warn('Unable to remove stale blank PDF temporary files.', error);
+  });
   updaterService = createUpdaterService();
   registerThemeListener();
   registerIpcHandlers();
@@ -2003,7 +2008,21 @@ export async function bootstrapDesktop(): Promise<void> {
   });
   await updaterService.start();
 
-  app.on('before-quit', () => {
+  app.on('before-quit', (event) => {
+    const blockedWindows = BrowserWindow.getAllWindows().filter((window) => (
+      !window.isDestroyed()
+      && closeBlockedWebContents.has(window.webContents.id)
+      && !closeConfirmedWebContents.has(window.webContents.id)
+    ));
+    if (blockedWindows.length > 0) {
+      applicationQuitRequested = true;
+      event.preventDefault();
+      for (const window of blockedWindows) {
+        window.webContents.send(ipcChannels.applicationCloseRequested);
+      }
+      return;
+    }
+    applicationQuitRequested = false;
     unsubscribeUpdaterStatus?.();
     unsubscribeUpdaterStatus = null;
     void updaterService?.stop();
@@ -2011,11 +2030,21 @@ export async function bootstrapDesktop(): Promise<void> {
     clearRenderCoreRegistries();
   });
 
+  app.on('will-quit', () => {
+    blankPdfTemporaryStore?.cleanupSync();
+    blankPdfTemporaryStore = null;
+  });
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow();
     }
   });
+}
+
+function requireBlankPdfTemporaryStore(): BlankPdfTemporaryStore {
+  blankPdfTemporaryStore ??= new BlankPdfTemporaryStore(app.getPath('temp'));
+  return blankPdfTemporaryStore;
 }
 
 function createUpdaterService(): DesktopUpdaterService {

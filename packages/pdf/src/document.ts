@@ -233,7 +233,7 @@ export class PdfAnnotationWriter {
 
   async save(_document: PdfDocumentHandle, markups: readonly Markup[], mode: PdfSaveMode, targetPath?: string, pageScales: readonly PageScale[] = []): Promise<PdfSaveResult> {
     const sourceBytes = await readFile(this.sourcePath);
-    const pdfDoc = await PDFDocument.load(sourceBytes);
+    const pdfDoc = await PDFDocument.load(sourceBytes, { updateMetadata: false });
     const pagesByIndex = groupMarkupsByPage(markups);
     const fonts = await createPdfExportFonts(pdfDoc, markups);
 

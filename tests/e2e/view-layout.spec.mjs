@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { getDiagnostics, launchButterPaper, openFixturePdf, resolveDesktopEntryPoint } from './helpers/electron.mjs';
 
 test.describe('viewer page layout controls', () => {
-  test('supports page columns, overview labels, single-page mode, and paired double-click controls', async () => {
+  test('supports page columns, overview labels, single-page mode, and split view controls', async () => {
     const entryPoint = resolveDesktopEntryPoint();
     test.skip(!entryPoint, 'Desktop app entrypoint not available yet');
 
@@ -28,7 +28,7 @@ test.describe('viewer page layout controls', () => {
       pageColumnsEnabled: true,
       pagesPerColumn: 2,
       zoomPreset: 'manual',
-      cadScrollWheelMode: 'zoom',
+      scrollWheelMode: 'zoom',
     });
     await expectViewButtonWidthsToMatch(page);
     await expect(page.getByTestId('viewer-fit-width')).toBeDisabled();
@@ -52,26 +52,14 @@ test.describe('viewer page layout controls', () => {
     }).toBeLessThan((beforeColumnWheelDiagnostics?.zoom ?? 0.8) - 0.05);
     await expect.poll(async () => (await getDiagnostics(page))?.currentPage).toBe(beforeColumnWheelDiagnostics?.currentPage ?? 0);
     await openCadViewSettings(page);
-    await expect(page.getByText('Ctrl + mousewheel does the opposite.')).toBeVisible();
-    await page.getByTestId('viewer-cad-wheel-scroll').click();
+    await expect(page.getByText('Mousewheel always zooms in CAD View.')).toBeVisible();
+    await expect(page.getByTestId('viewer-cad-wheel-scroll')).toHaveCount(0);
+    await expect(page.getByTestId('viewer-cad-wheel-zoom')).toHaveCount(0);
     await page.keyboard.press('Escape');
     await waitForDiagnostics(page, {
-      cadScrollWheelMode: 'scroll',
       pageColumnsEnabled: true,
+      scrollWheelMode: 'zoom',
     });
-    const beforeCadScroll = await getViewportScroll(page);
-    await page.getByTestId('document-viewport').evaluate((element) => {
-      element.dispatchEvent(new WheelEvent('wheel', {
-        bubbles: true,
-        cancelable: true,
-        deltaX: 120,
-        deltaY: 100,
-      }));
-    });
-    await expect.poll(async () => {
-      const scroll = await getViewportScroll(page);
-      return scroll.left > beforeCadScroll.left + 50 || scroll.top > beforeCadScroll.top + 50;
-    }).toBe(true);
     const beforeCadCtrlWheelDiagnostics = await getDiagnostics(page);
     await page.getByTestId('document-viewport').evaluate((element) => {
       element.dispatchEvent(new WheelEvent('wheel', {
@@ -114,33 +102,34 @@ test.describe('viewer page layout controls', () => {
     await expect(page.getByTestId('page-3')).toBeVisible();
     await expect(page.getByTestId('page-1')).toHaveCount(0);
 
-    await dispatchDoubleClick(page.getByTestId('viewer-scroll-single-page'));
+    await page.getByTestId('viewer-fit-page').click();
     await waitForDiagnostics(page, {
       scrollMode: 'single-page',
       zoomPreset: 'fit-page',
     });
 
     await page.getByTestId('viewer-fit-width').click();
-    await expect(page.getByTestId('viewer-toolbar-hint-fit-width')).toContainText('Double click to view Continuous');
-    await dispatchDoubleClick(page.getByTestId('viewer-fit-width'));
-    await waitForDiagnostics(page, {
-      scrollMode: 'continuous',
-      zoomPreset: 'fit-width',
-    });
-
-    await dispatchDoubleClick(page.getByTestId('viewer-fit-page'));
     await waitForDiagnostics(page, {
       scrollMode: 'single-page',
-      zoomPreset: 'fit-page',
+      zoomPreset: 'fit-width',
     });
 
     await page.getByTestId('viewer-scroll-continuous').click();
-    await expect(page.getByTestId('viewer-toolbar-hint-continuous')).toContainText('Double click to Fit Width');
-    await dispatchDoubleClick(page.getByTestId('viewer-scroll-continuous'));
     await waitForDiagnostics(page, {
       scrollMode: 'continuous',
       zoomPreset: 'fit-width',
     });
+
+    const singlePageSettings = page.getByTestId('viewer-scroll-single-page-settings');
+    await singlePageSettings.click();
+    await expect(singlePageSettings).toHaveAttribute('aria-expanded', 'true');
+    await page.getByTestId('viewer-single-page-wheel-scroll').click();
+    await page.keyboard.press('Escape');
+    await waitForDiagnostics(page, {
+      scrollMode: 'continuous',
+      singlePageScrollWheelMode: 'scroll',
+    });
+    await expect(singlePageSettings).toBeFocused();
 
     await app.close();
   });
@@ -230,7 +219,8 @@ test.describe('viewer page layout controls', () => {
     }
 
     const { page } = await openFixturePdf(app, 'multi-page');
-    await page.getByTestId('viewer-scroll-single-page').dblclick();
+    await page.getByTestId('viewer-scroll-single-page').click();
+    await page.getByTestId('viewer-fit-page').click();
     await waitForDiagnostics(page, {
       scrollMode: 'single-page',
       zoomPreset: 'fit-page',
@@ -584,7 +574,7 @@ async function waitForDiagnostics(page, expected) {
       scrollMode: diagnostics?.scrollMode ?? 'continuous',
       zoomPreset: diagnostics?.zoomPreset ?? 'manual',
       pageColumnsEnabled: diagnostics?.pageColumnsEnabled ?? false,
-      cadScrollWheelMode: diagnostics?.cadScrollWheelMode ?? 'zoom',
+      scrollWheelMode: diagnostics?.scrollWheelMode ?? 'scroll',
       cadViewOrganisation: diagnostics?.cadViewOrganisation ?? 'columns',
       pagesPerColumn: diagnostics?.pagesPerColumn ?? 10,
     };
@@ -657,8 +647,7 @@ async function openCadViewSettings(page) {
   }
 
   await expect(settings).toHaveCount(0);
-  await activateCadView(page);
-  await page.getByTestId('viewer-cad-view').click();
+  await page.getByTestId('viewer-cad-view-settings').click();
   await expect(openSettings).toBeVisible();
   await expect(columnsButton).toBeVisible();
   await expect(rowsButton).toBeVisible();
@@ -773,10 +762,6 @@ async function drag(page, startX, startY, endX, endY) {
   await page.mouse.down();
   await page.mouse.move(endX, endY, { steps: 12 });
   await page.mouse.up();
-}
-
-async function dispatchDoubleClick(locator) {
-  await locator.dblclick({ force: true });
 }
 
 async function middlePanViewport(page) {

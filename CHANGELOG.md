@@ -2,6 +2,27 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.16]
+
+- Replaced the experimental Butter Canvas surface with native blank PDFs that
+  can be created in standard paper sizes, orientations, and page counts, then
+  saved, annotated, and reopened through the normal document workflow.
+- Refined the Nova desktop shell with integrated closable and reorderable
+  document tabs, configurable annotation rails, streamlined tool controls, and
+  safer unsaved-document handling.
+- Standardized new desktop windows at 1200×800 with a 900×600 minimum while
+  preserving accessible menus, popovers, dialogs, scrolling, and constrained
+  layouts.
+- Refreshed the renderer against the official shadcn Base UI Nova registry,
+  moved typography to Geist Variable, and preserved Butter Paper's custom AEC
+  and document-view icon geometry.
+- Changed automatic-update defaults for new installations to weekly on the
+  stable channel and daily on the beta channel. Existing saved preferences are
+  preserved.
+- Expanded deterministic and hosted Electron coverage for blank-PDF lifecycle,
+  document tabs, shell overflow, rail behavior, update scheduling, and
+  repository UI-component hygiene.
+
 ## [0.0.15]
 
 - Added immediate, accessible in-app feedback for manual update checks,

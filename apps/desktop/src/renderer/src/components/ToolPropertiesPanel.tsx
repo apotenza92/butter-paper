@@ -1,5 +1,5 @@
 import { getPageScale, type Markup, type ScaleUnit } from '@butter-paper/core';
-import { Label } from '@/components/ui/label';
+import { Field, FieldLabel } from '@/components/ui/field';
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { useViewerStore } from '../state/viewerStore';
 import { CustomScrollArea } from './CustomScrollArea';
@@ -50,19 +50,19 @@ export function ToolPropertiesPanel() {
     >
       <div className="min-h-full px-3 py-3">
         {measurementMarkup ? (
-          <section className="space-y-3" data-testid="measurement-properties-panel">
+          <section className="flex flex-col gap-3" data-testid="measurement-properties-panel">
             <div>
               <div className={['text-[12px] font-semibold', SHELL_TEXT_PRIMARY].join(' ')}>Measurement</div>
               <div className={['mt-0.5 text-[11px]', SHELL_TEXT_MUTED].join(' ')}>
                 {measurementKindLabel(measurementMarkup.kind)}
               </div>
             </div>
-            <Label className="block">
-              <span className={['mb-1 block text-[11px] font-medium', SHELL_TEXT_MUTED].join(' ')}>Units</span>
+            <Field>
+              <FieldLabel>Units</FieldLabel>
               <NativeSelect
                 value={measurementMarkup.displayUnit ?? PAGE_SCALE_UNIT}
                 onChange={(event) => handleDisplayUnitChange(event.target.value)}
-                className="w-full [&_[data-slot=native-select]]:rounded-[6px] [&_[data-slot=native-select]]:text-[12px]"
+                className="w-full"
                 data-testid="measurement-display-unit"
               >
                 <NativeSelectOption value={PAGE_SCALE_UNIT}>Page scale{pageScale ? ` (${pageScale.realUnits})` : ''}</NativeSelectOption>
@@ -70,7 +70,7 @@ export function ToolPropertiesPanel() {
                   <NativeSelectOption key={unit} value={unit}>{unit}</NativeSelectOption>
                 ))}
               </NativeSelect>
-            </Label>
+            </Field>
           </section>
         ) : null}
       </div>

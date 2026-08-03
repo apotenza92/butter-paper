@@ -1,16 +1,22 @@
 import { describe, expect, it } from 'vitest';
+import { EMPTY_CANVAS_PADDING } from '../utils/canvasPadding';
+import { buildPageLayouts } from '../utils/virtualisation';
 import {
   captureViewportCentreAnchor,
   clampWheelZoomFrameDelta,
   computeBluebeamWheelZoom,
   computePageLayoutGap,
+  constrainViewportScrollToPanBounds,
   distributeStrictVisibleOverviewLayouts,
   getContinuousCurrentPageLayout,
   isViewportPanButtonPressed,
+  materializeSinglePagePanPadding,
   resolveCadOverviewCenteredView,
   resolveCadOverviewEntryZoom,
+  resolveFitWidthZoom,
   resolveMiddleDoubleClickZoomPreset,
   resolveMinimumZoomPanBounds,
+  resolveViewportPanBounds,
   resolveAnchoredLayoutTransitionScroll,
   resolveColumnOverviewPreviewBatch,
   resolveColumnOverviewPreviewRenderWidth,
@@ -19,6 +25,7 @@ import {
   resolvePageCenteredScroll,
   resolveVisiblePageViewportRect,
   resolveViewportVisibleOverscanPx,
+  shouldScrollViewportWheel,
   shouldWarmNearbyPagePreviews,
   shouldDeferColumnOverviewPreview,
   shouldAutoUpdateCurrentPageFromViewport,
@@ -524,6 +531,20 @@ describe('document viewport visible page crop rect', () => {
 });
 
 describe('document viewport wheel zoom', () => {
+  it('always zooms in CAD view regardless of wheel preference or Ctrl', () => {
+    expect(shouldScrollViewportWheel('columns', 'scroll', false)).toBe(false);
+    expect(shouldScrollViewportWheel('columns', 'scroll', true)).toBe(false);
+    expect(shouldScrollViewportWheel('columns', 'zoom', false)).toBe(false);
+    expect(shouldScrollViewportWheel('columns', 'zoom', true)).toBe(false);
+  });
+
+  it('preserves configurable wheel behaviour outside CAD view', () => {
+    expect(shouldScrollViewportWheel('continuous', 'scroll', false)).toBe(true);
+    expect(shouldScrollViewportWheel('continuous', 'scroll', true)).toBe(false);
+    expect(shouldScrollViewportWheel('single-page', 'zoom', false)).toBe(false);
+    expect(shouldScrollViewportWheel('single-page', 'zoom', true)).toBe(true);
+  });
+
   it('caps accelerated trackpad deltas per frame', () => {
     expect(clampWheelZoomFrameDelta(40)).toBe(40);
     expect(clampWheelZoomFrameDelta(900)).toBe(120);
@@ -578,6 +599,119 @@ describe('document viewport panning bounds', () => {
       { index: 0, left: 24, top: 24, width: 400, height: 600, columnIndex: 0, rowIndex: 0 },
     ], 600, 0, 1, 'x')).toEqual({ min: -563.5, max: 411.5 });
   });
+
+  it('uses the first and last pages as continuous vertical document edges', () => {
+    expect(resolveViewportPanBounds([
+      { index: 0, left: 24, top: 24, width: 800, height: 1000, columnIndex: 0, rowIndex: 0 },
+      { index: 1, left: 174, top: 1048, width: 500, height: 500, columnIndex: 0, rowIndex: 1 },
+    ], 700, 2000, 1, 'y', 'continuous')).toEqual({ min: -644.75, max: 1532.375 });
+  });
+
+  it('clamps wheel and scrollbar movement to the safe continuous document overlap', () => {
+    expect(constrainViewportScrollToPanBounds([
+      { index: 0, left: 256, top: 924, width: 800, height: 1000, columnIndex: 0, rowIndex: 0 },
+    ], 600, 700, 2000, 2200, 1, 'continuous', 2000, 2200)).toEqual({
+      left: 1031,
+      top: 1892.75,
+    });
+  });
+
+  it('includes an anchored content offset when constraining continuous scrolling', () => {
+    expect(constrainViewportScrollToPanBounds([
+      { index: 0, left: 256, top: 924, width: 800, height: 1000, columnIndex: 0, rowIndex: 0 },
+    ], 600, 700, 2000, 2200, 1, 'continuous', 2000, 2200, { x: -100, y: -200 })).toEqual({
+      left: 931,
+      top: 1692.75,
+    });
+  });
+
+  it('leaves CAD overview scrolling unconstrained by document-edge overlap', () => {
+    expect(constrainViewportScrollToPanBounds([
+      { index: 0, left: 24, top: 24, width: 800, height: 1000, columnIndex: 0, rowIndex: 0 },
+    ], 600, 700, 2000, 2200, 1, 'columns', 2000, 2200)).toEqual({
+      left: 2000,
+      top: 2200,
+    });
+  });
+});
+
+describe('single-page fit preset pan transition', () => {
+  it('materializes automatic centering without moving the fitted page', () => {
+    const pages = [{ index: 0, width: 400, height: 500 }];
+    const viewport = { width: 1000, height: 800 };
+    const gap = 24;
+    const fitted = buildPageLayouts(pages, 1, viewport.width, gap, EMPTY_CANVAS_PADDING, {
+      mode: 'single-page',
+      currentPageIndex: 0,
+      viewportHeight: viewport.height,
+    });
+    const fittedPage = fitted.layouts[0];
+    expect(fittedPage).toBeDefined();
+
+    const panPadding = materializeSinglePagePanPadding(
+      fittedPage!,
+      gap,
+      EMPTY_CANVAS_PADDING,
+    );
+    const unlocked = buildPageLayouts(pages, 1, viewport.width, gap, panPadding, {
+      mode: 'single-page',
+      currentPageIndex: 0,
+      viewportHeight: viewport.height,
+    });
+
+    expect(unlocked.layouts[0]).toMatchObject({
+      left: fittedPage!.left,
+      top: fittedPage!.top,
+    });
+    expect(unlocked.totalWidth).toBe(fitted.totalWidth);
+    expect(unlocked.totalHeight).toBe(fitted.totalHeight);
+  });
+
+  it('makes the first loose-canvas expansion translate by exactly its padding delta', () => {
+    const pages = [{ index: 0, width: 400, height: 500 }];
+    const viewport = { width: 1000, height: 800 };
+    const gap = 24;
+    const fitted = buildPageLayouts(pages, 1, viewport.width, gap, EMPTY_CANVAS_PADDING, {
+      mode: 'single-page',
+      currentPageIndex: 0,
+      viewportHeight: viewport.height,
+    });
+    const fittedPage = fitted.layouts[0]!;
+    const panPadding = materializeSinglePagePanPadding(
+      fittedPage,
+      gap,
+      EMPTY_CANVAS_PADDING,
+    );
+    const expanded = buildPageLayouts(pages, 1, viewport.width, gap, {
+      ...panPadding,
+      left: panPadding.left + viewport.width,
+      top: panPadding.top + viewport.height,
+    }, {
+      mode: 'single-page',
+      currentPageIndex: 0,
+      viewportHeight: viewport.height,
+    });
+
+    expect(expanded.layouts[0]!.left - fittedPage.left).toBe(viewport.width);
+    expect(expanded.layouts[0]!.top - fittedPage.top).toBe(viewport.height);
+
+    const trailingExpanded = buildPageLayouts(pages, 1, viewport.width, gap, {
+      ...panPadding,
+      right: panPadding.right + viewport.width,
+      bottom: panPadding.bottom + viewport.height,
+    }, {
+      mode: 'single-page',
+      currentPageIndex: 0,
+      viewportHeight: viewport.height,
+    });
+
+    expect(trailingExpanded.layouts[0]).toMatchObject({
+      left: fittedPage.left,
+      top: fittedPage.top,
+    });
+    expect(trailingExpanded.totalWidth - fitted.totalWidth).toBe(viewport.width);
+    expect(trailingExpanded.totalHeight - fitted.totalHeight).toBe(viewport.height);
+  });
 });
 
 describe('document viewport page spacing', () => {
@@ -592,6 +726,17 @@ describe('document viewport page spacing', () => {
 
   it('scales the page gap up at high zoom', () => {
     expect(computePageLayoutGap(4)).toBe(96);
+  });
+});
+
+describe('document viewport fit width', () => {
+  it('rounds down from the raw fit ratio so the fitted canvas cannot create fractional horizontal overflow', () => {
+    const viewportWidth = 919.6;
+    const pageWidthWithGaps = 952 + 24 * 2;
+    const zoom = resolveFitWidthZoom(viewportWidth, 952);
+
+    expect(zoom).toBe(0.9);
+    expect(pageWidthWithGaps * zoom).toBeLessThanOrEqual(viewportWidth);
   });
 });
 

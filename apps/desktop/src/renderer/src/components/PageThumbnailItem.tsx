@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { Spinner } from '@/components/ui/spinner';
 import { createPageTransform, type Markup, type PageModel } from '@butter-paper/core';
 import { isRenderUnavailableError, type LocalPdfSession, type PageRenderSurface } from '../services/documentSession';
 import { recordComponentRender, recordPlaceholderShow } from '../services/perfTracker';
@@ -354,7 +355,7 @@ export function PageThumbnailItem({
     <Button
       type="button"
       variant="ghost"
-      className="absolute left-2 right-2 flex-col bg-transparent px-2 py-1 text-center whitespace-normal focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
+      className="absolute left-2 right-2 flex-col text-center whitespace-normal"
       data-testid={`page-thumbnail-item-${page.index + 1}`}
       onClick={() => onSelect(sourceUrlRef.current)}
       style={{ top: `${top}px`, height: `${itemHeight}px` }}
@@ -414,23 +415,19 @@ export function PageThumbnailItem({
             </>
           ) : (
             <div
-              className="flex h-full w-full items-center justify-center bg-neutral-100 text-[11px] text-neutral-400"
+              className="flex h-full w-full items-center justify-center bg-muted text-[11px] text-muted-foreground"
             >
               {hasError ? (
                 'Preview unavailable'
               ) : (
-                <div
-                  className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-500"
-                  aria-hidden="true"
-                  data-render-placeholder="thumbnail"
-                />
+                <Spinner className="size-5" data-render-placeholder="thumbnail" />
               )}
             </div>
           )}
         </div>
       </div>
       <div className={[
-        'bp-text-secondary mt-1.5 h-4 truncate text-center text-[12px] font-medium leading-4 tabular-nums',
+        'mt-1.5 h-4 truncate text-center text-[12px] font-medium leading-4 text-muted-foreground tabular-nums',
       ].join(' ')}>
         Page {page.index + 1}
       </div>

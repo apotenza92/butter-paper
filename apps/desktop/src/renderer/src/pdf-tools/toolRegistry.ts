@@ -19,6 +19,7 @@ import { TEXT_BOX_TOOL_DEFINITION } from './builtins/textBoxTool';
 import type { PdfToolDefinition } from './types';
 
 type RegistryToolDefinition = PdfToolDefinition & { readonly id: ToolMode };
+export type PdfToolRailGroup = 'normal' | 'cad';
 
 export const PDF_TOOL_REGISTRY = [
   {
@@ -63,6 +64,34 @@ export const PDF_TOOL_REGISTRY = [
   IMAGE_TOOL_DEFINITION,
   SNAPSHOT_TOOL_DEFINITION,
 ] as const satisfies readonly RegistryToolDefinition[];
+
+export const PDF_TOOL_RAIL_GROUPS = {
+  normal: [
+    'select',
+    'pan',
+    'text-box',
+    'arrow',
+    'pen',
+    'highlight',
+    'cloud',
+    'cloud-plus',
+    'callout',
+    'image',
+    'snapshot',
+  ],
+  cad: [
+    'rectangle',
+    'ellipse',
+    'line',
+    'arc',
+    'polyline',
+    'polygon',
+    'dimension',
+    'length',
+    'polylength',
+    'area',
+  ],
+} as const satisfies Record<PdfToolRailGroup, readonly ToolMode[]>;
 
 export function getToolDefinition(tool: ToolMode): RegistryToolDefinition {
   const definition = PDF_TOOL_REGISTRY.find((candidate) => candidate.id === tool);

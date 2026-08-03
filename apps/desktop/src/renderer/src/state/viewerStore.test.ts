@@ -107,14 +107,11 @@ describe('viewer store', () => {
     expect(store.pagesPerColumn).toBe(10);
     expect(store.continuousScrollWheelMode).toBe('scroll');
     expect(store.singlePageScrollWheelMode).toBe('zoom');
-    expect(store.cadScrollWheelMode).toBe('zoom');
 
     store.setContinuousScrollWheelMode('zoom');
     store.setSinglePageScrollWheelMode('scroll');
-    store.setCadScrollWheelMode('scroll');
     expect(useViewerStore.getState().continuousScrollWheelMode).toBe('zoom');
     expect(useViewerStore.getState().singlePageScrollWheelMode).toBe('scroll');
-    expect(useViewerStore.getState().cadScrollWheelMode).toBe('scroll');
     store.setZoomPreset('fit-width');
     store.setPageColumnsEnabled(true);
     store.setCadViewOrganisation('rows');
@@ -163,7 +160,6 @@ describe('viewer store', () => {
     store.setScrollMode('single-page');
     store.setContinuousScrollWheelMode('zoom');
     store.setSinglePageScrollWheelMode('scroll');
-    store.setCadScrollWheelMode('scroll');
     store.setPageColumnsEnabled(true);
     store.setPagesPerColumn(5);
 
@@ -183,7 +179,6 @@ describe('viewer store', () => {
     expect(useViewerStore.getState().scrollMode).toBe('continuous');
     expect(useViewerStore.getState().continuousScrollWheelMode).toBe('scroll');
     expect(useViewerStore.getState().singlePageScrollWheelMode).toBe('zoom');
-    expect(useViewerStore.getState().cadScrollWheelMode).toBe('zoom');
     expect(useViewerStore.getState().pageColumnsEnabled).toBe(false);
     expect(useViewerStore.getState().cadViewOrganisation).toBe('columns');
     expect(useViewerStore.getState().pagesPerColumn).toBe(10);

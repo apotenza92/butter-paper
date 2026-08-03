@@ -1,12 +1,13 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
   --font-heading: var(--font-sans);
-  --font-sans: "DM Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-sans: 'Geist Variable', sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -82,13 +83,6 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
-  --bp-surface-app: #f5f5f5;
-  --bp-surface-panel: #fafafa;
-  --bp-border-subtle: #e5e5e5;
-  --bp-selected-neutral: #f0f0f0;
-  --bp-text-primary: #111315;
-  --bp-text-secondary: #4b5563;
-  --bp-text-muted: #6b7280;
   --bp-scrollbar-track: rgba(17, 19, 21, 0.06);
   --bp-scrollbar-thumb: rgba(107, 114, 128, 0.34);
   --bp-scrollbar-thumb-hover: rgba(75, 85, 99, 0.5);
@@ -133,13 +127,6 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
-  --bp-surface-app: #111315;
-  --bp-surface-panel: #17191c;
-  --bp-border-subtle: #2a2e34;
-  --bp-selected-neutral: #242930;
-  --bp-text-primary: #ecedee;
-  --bp-text-secondary: #b6bbc2;
-  --bp-text-muted: #8e949c;
   --bp-scrollbar-track: rgba(255, 255, 255, 0.05);
   --bp-scrollbar-thumb: rgba(182, 187, 194, 0.28);
   --bp-scrollbar-thumb-hover: rgba(182, 187, 194, 0.44);
@@ -164,10 +151,10 @@ body,
 body {
   margin: 0;
   overflow: hidden;
-  font-family: "DM Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
   font-size: 13px;
-  color: var(--bp-text-primary);
-  background: var(--bp-surface-app);
+  color: var(--foreground);
+  background: var(--background);
   letter-spacing: 0;
 }
 
@@ -185,40 +172,10 @@ textarea {
   outline-color: color-mix(in oklab, var(--ring) 50%, transparent);
 }
 
-.bp-surface-app {
-  background: var(--bp-surface-app);
-}
-
-.bp-surface-panel {
-  background: var(--bp-surface-panel);
-}
-
-.bp-border-subtle {
-  border-color: var(--bp-border-subtle);
-}
-
-.bp-border-left-inset {
-  box-shadow: inset 1px 0 0 var(--bp-border-subtle);
-}
-
-.bp-border-right-inset {
-  box-shadow: inset -1px 0 0 var(--bp-border-subtle);
-}
-
-.bp-border-bottom-inset {
-  box-shadow: inset 0 -1px 0 var(--bp-border-subtle);
-}
-
-.bp-text-primary {
-  color: var(--bp-text-primary);
-}
-
-.bp-text-secondary {
-  color: var(--bp-text-secondary);
-}
-
-.bp-text-muted {
-  color: var(--bp-text-muted);
+[data-domain-ui-exception="closable-document-tab"]:hover .bp-document-tab-label,
+[data-domain-ui-exception="closable-document-tab"]:has([data-domain-ui-control="tab-close"]:focus-visible) .bp-document-tab-label {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 34px), transparent calc(100% - 14px));
+  mask-image: linear-gradient(to right, #000 calc(100% - 34px), transparent calc(100% - 14px));
 }
 
 .bp-current-page-outline {
@@ -227,25 +184,6 @@ textarea {
 
 .bp-page-preview-raster {
   filter: contrast(1.045) saturate(1.025);
-}
-
-.bp-toolbar-gesture-tooltip {
-  animation: bp-toolbar-gesture-tooltip-fade 1s ease-out forwards;
-}
-
-@keyframes bp-toolbar-gesture-tooltip-fade {
-  0% {
-    opacity: 0;
-  }
-  12% {
-    opacity: 1;
-  }
-  55% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 0;
-  }
 }
 
 .bp-resize-handle-line {
@@ -374,4 +312,85 @@ textarea {
 :root[data-theme="light"] .bp-custom-scrollbar-track,
 :root .bp-custom-scrollbar-track {
   background: var(--bp-scrollbar-lane);
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
 }

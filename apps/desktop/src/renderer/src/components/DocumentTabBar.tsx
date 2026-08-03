@@ -1,15 +1,22 @@
-import { Grip, Plus } from 'lucide-react';
-import { useRef, type KeyboardEvent } from 'react';
-import { Button } from '@/components/ui/button';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
-  CONTROL_ICON_SIZE,
-  CONTROL_ICON_SIZE_CLASS,
-  CONTROL_ICON_STROKE_WIDTH,
-  SHELL_CONTROL_GAP,
-  SHELL_SURFACE_PANEL,
-  TAB_BAR_HEIGHT,
-} from './shellSpacing';
+  closestCenter,
+  DndContext,
+  type DragEndEvent,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import { horizontalListSortingStrategy, SortableContext } from '@dnd-kit/sortable';
+import { FilePlus, Plus } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { ButtonGroup } from '@/components/ui/button-group';
+import { Separator } from '@/components/ui/separator';
+import { Tabs, TabsList } from '@/components/ui/tabs';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import type { BlankPdfSettings } from './blankPdfSettings';
+import { BlankPdfSettingsPopover } from './BlankPdfSettingsPopover';
+import { ClosableDocumentTab } from './domain-ui/ClosableDocumentTab';
+import { SplitButtonSegment } from './domain-ui/SplitButtonSegment';
 
 export interface DocumentTabItem {
   id: string;
@@ -22,156 +29,231 @@ interface DocumentTabBarProps {
   activeTabId: string | null;
   onSelectTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
+  onReorderTabs: (orderedTabIds: string[]) => void;
   onOpenTab: () => void;
-  onNewCanvas: () => void;
+  onNewPdf: () => void;
+  onBlankPdfSettingsChange: (settings: BlankPdfSettings) => void;
+  blankPdfSettings: BlankPdfSettings;
+  blankPdfDefaultLabel: string;
 }
 
-export function DocumentTabBar({ tabs, activeTabId, onSelectTab, onCloseTab, onOpenTab, onNewCanvas }: DocumentTabBarProps) {
-  const tabRefs = useRef(new Map<string, HTMLButtonElement>());
+export function DocumentTabBar({
+  tabs,
+  activeTabId,
+  onSelectTab,
+  onCloseTab,
+  onReorderTabs,
+  onOpenTab,
+  onNewPdf,
+  onBlankPdfSettingsChange,
+  blankPdfSettings,
+  blankPdfDefaultLabel,
+}: DocumentTabBarProps) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const tabListRef = useRef<HTMLDivElement | null>(null);
+  const [reorderAnnouncement, setReorderAnnouncement] = useState('');
+  const sensors = useSensors(useSensor(PointerSensor, {
+    activationConstraint: { distance: 6 },
+  }));
 
-  function focusTabAt(index: number): void {
-    const tab = tabs[index];
-    if (!tab) {
-      return;
-    }
-    onSelectTab(tab.id);
-    tabRefs.current.get(tab.id)?.focus();
-  }
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
 
-  function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number): void {
-    let nextIndex: number | null = null;
-    if (event.key === 'ArrowLeft') {
-      nextIndex = (index - 1 + tabs.length) % tabs.length;
-    } else if (event.key === 'ArrowRight') {
-      nextIndex = (index + 1) % tabs.length;
-    } else if (event.key === 'Home') {
-      nextIndex = 0;
-    } else if (event.key === 'End') {
-      nextIndex = tabs.length - 1;
-    }
+    const handleWheel = (event: WheelEvent) => {
+      const tabList = tabListRef.current;
+      if (!tabList || tabList.scrollWidth <= tabList.clientWidth + 1) return;
 
-    if (nextIndex !== null) {
+      const delta = resolveHorizontalWheelDelta(event, tabList.clientWidth);
+      if (delta === 0) return;
+
       event.preventDefault();
-      focusTabAt(nextIndex);
-    }
-  }
+      tabList.scrollLeft += delta;
+    };
+    root.addEventListener('wheel', handleWheel, { passive: false });
+    return () => root.removeEventListener('wheel', handleWheel);
+  }, []);
 
   function handleCloseTab(tabId: string, index: number): void {
     const fallbackTab = tabs[index + 1] ?? tabs[index - 1];
     onCloseTab(tabId);
     if (tabId === activeTabId && fallbackTab) {
-      window.requestAnimationFrame(() => tabRefs.current.get(fallbackTab.id)?.focus());
+      window.requestAnimationFrame(() => {
+        rootRef.current
+          ?.querySelector<HTMLButtonElement>(`[data-document-tab-id="${fallbackTab.id}"]`)
+          ?.focus();
+      });
     }
+  }
+
+  function commitTabReorder(tabId: string, targetTabId: string, restoreFocus: boolean): void {
+    const currentTabIds = tabs.map((tab) => tab.id);
+    const nextTabIds = reorderTabIds(currentTabIds, tabId, targetTabId);
+    if (nextTabIds === currentTabIds) return;
+
+    onReorderTabs(nextTabIds);
+    const nextIndex = nextTabIds.indexOf(tabId);
+    const tab = tabs.find((candidate) => candidate.id === tabId);
+    setReorderAnnouncement(`Moved ${tab?.documentName ?? 'document'} to position ${nextIndex + 1} of ${nextTabIds.length}.`);
+
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => {
+        rootRef.current
+          ?.querySelector<HTMLButtonElement>(`[data-document-tab-id="${tabId}"]`)
+          ?.focus();
+      });
+    }
+  }
+
+  function handleDragEnd(event: DragEndEvent): void {
+    if (!event.over) return;
+    commitTabReorder(String(event.active.id), String(event.over.id), false);
+  }
+
+  function handleKeyboardMove(tabId: string, direction: -1 | 1): void {
+    const index = tabs.findIndex((tab) => tab.id === tabId);
+    const target = tabs[index + direction];
+    if (!target) return;
+    commitTabReorder(tabId, target.id, true);
   }
 
   return (
     <div
-      className={[
-        'bp-border-bottom-inset flex items-center',
-        TAB_BAR_HEIGHT,
-        'px-2',
-        SHELL_CONTROL_GAP,
-        SHELL_SURFACE_PANEL,
-      ].join(' ')}
+      ref={rootRef}
+      className="flex items-center border-b border-border bg-background p-2"
       data-testid="document-tab-bar"
     >
-      <div
-        aria-label="Open documents"
-        className={['flex min-w-0 flex-1 items-center overflow-x-auto', SHELL_CONTROL_GAP].join(' ')}
-        role="tablist"
+      <Tabs
+        value={activeTabId}
+        onValueChange={(value) => {
+          if (typeof value === 'string') onSelectTab(value);
+        }}
+        className="min-w-0 flex-1 gap-0"
       >
-        {tabs.map((tab, index) => (
-          <div key={tab.id} className="flex shrink-0 items-center rounded-2xl bg-muted p-[2px]">
-            <Button
-              ref={(node) => {
-                if (node) tabRefs.current.set(tab.id, node);
-                else tabRefs.current.delete(tab.id);
-              }}
-              type="button"
-              variant={tab.id === activeTabId ? 'secondary' : 'ghost'}
-              size="sm"
-              className="max-w-[250px] rounded-xl px-2 text-[12px]"
-              id={`document-tab-trigger-${index}`}
-              data-testid={`document-tab-${index}`}
-              role="tab"
-              aria-controls="document-tab-panel"
-              aria-selected={tab.id === activeTabId}
-              tabIndex={tab.id === activeTabId ? 0 : -1}
-              onClick={() => onSelectTab(tab.id)}
-              onKeyDown={(event) => handleTabKeyDown(event, index)}
-            >
-              <span className="truncate">{tab.documentName}</span>
-              {tab.dirty ? <span className="text-amber-600" aria-label="Unsaved changes">*</span> : null}
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              className="rounded-xl"
-              aria-label={`Close ${tab.documentName}`}
-              data-testid={`document-tab-close-${index}`}
-              onClick={() => handleCloseTab(tab.id, index)}
-            >
-              <span aria-hidden="true">×</span>
-            </Button>
-          </div>
-        ))}
-      </div>
-      <Tooltip>
-        <TooltipTrigger
-          render={(
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-8 shrink-0 rounded-2xl"
-              aria-label="New Butter Canvas"
-              data-testid="document-tab-new-canvas"
-              onClick={onNewCanvas}
-            >
-              <ButterCanvasIcon />
-            </Button>
-          )}
-        />
-        <TooltipContent data-testid="document-tab-new-canvas-tooltip">New Butter Canvas</TooltipContent>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger
-          render={(
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-8 shrink-0 rounded-2xl"
-              aria-label="Open PDF"
-              data-testid="document-tab-open"
-              onClick={onOpenTab}
-            >
-              <Plus
-                aria-hidden="true"
-                size={CONTROL_ICON_SIZE}
-                strokeWidth={CONTROL_ICON_STROKE_WIDTH}
-                absoluteStrokeWidth
-                className={CONTROL_ICON_SIZE_CLASS}
+        <div className="min-w-0" data-testid="document-tab-surface">
+          <div
+            ref={tabListRef}
+            className="bp-native-scroll-hidden flex min-w-0 items-center gap-2 overflow-x-auto"
+            data-testid="document-tab-list"
+          >
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+              <SortableContext items={tabs.map((tab) => tab.id)} strategy={horizontalListSortingStrategy}>
+                <TabsList
+                  activateOnFocus
+                  aria-label="Open documents"
+                  className="shrink-0 justify-start gap-2 rounded-none bg-background! p-0! group-data-horizontal/tabs:h-8!"
+                >
+                  {tabs.map((tab, index) => (
+                    <ClosableDocumentTab
+                      key={tab.id}
+                      active={tab.id === activeTabId}
+                      dirty={tab.dirty}
+                      documentName={tab.documentName}
+                      index={index}
+                      tabId={tab.id}
+                      onClose={() => handleCloseTab(tab.id, index)}
+                      onMove={handleKeyboardMove}
+                    />
+                  ))}
+                </TabsList>
+              </SortableContext>
+            </DndContext>
+            {tabs.length > 0 ? (
+              <Separator
+                orientation="vertical"
+                data-testid="document-tab-actions-separator"
               />
-            </Button>
-          )}
-        />
-        <TooltipContent data-testid="document-tab-open-tooltip">Open PDF</TooltipContent>
-      </Tooltip>
+            ) : null}
+            <div
+              className="flex h-8 shrink-0 items-center gap-2 bg-background"
+              role="group"
+              aria-label="Document actions"
+              data-testid="document-tab-actions"
+            >
+              <Tooltip>
+                <TooltipTrigger
+                  render={(
+                    <SplitButtonSegment
+                      type="button"
+                      size="icon"
+                      aria-label="Open PDF"
+                      data-testid="document-tab-open"
+                      onClick={onOpenTab}
+                    >
+                      <Plus data-icon="inline-start" aria-hidden="true" />
+                    </SplitButtonSegment>
+                  )}
+                />
+                <TooltipContent data-testid="document-tab-open-tooltip">Open PDF</TooltipContent>
+              </Tooltip>
+              <ButtonGroup aria-label="New blank PDF controls">
+                <Tooltip>
+                  <TooltipTrigger
+                    render={(
+                      <SplitButtonSegment
+                        type="button"
+                        size="icon"
+                        aria-label={`New blank PDF using ${blankPdfDefaultLabel}`}
+                        data-testid="document-tab-new-pdf"
+                        onClick={onNewPdf}
+                      >
+                        <FilePlus data-icon="inline-start" aria-hidden="true" />
+                      </SplitButtonSegment>
+                    )}
+                  />
+                  <TooltipContent data-testid="document-tab-new-pdf-tooltip">
+                    New blank PDF · {blankPdfDefaultLabel}
+                  </TooltipContent>
+                </Tooltip>
+                <BlankPdfSettingsPopover
+                  settings={blankPdfSettings}
+                  onSettingsChange={onBlankPdfSettingsChange}
+                />
+              </ButtonGroup>
+            </div>
+          </div>
+        </div>
+        <span className="sr-only" aria-live="polite" data-testid="document-tab-reorder-status">
+          {reorderAnnouncement}
+        </span>
+      </Tabs>
     </div>
   );
 }
 
-function ButterCanvasIcon() {
-  return (
-    <Grip
-      aria-hidden="true"
-      data-testid="icon-butter-canvas"
-      size={CONTROL_ICON_SIZE}
-      strokeWidth={CONTROL_ICON_STROKE_WIDTH}
-      absoluteStrokeWidth
-      className={CONTROL_ICON_SIZE_CLASS}
-    />
-  );
+export function reorderTabIds(tabIds: string[], tabId: string, targetTabId: string): string[] {
+  const sourceIndex = tabIds.indexOf(tabId);
+  const targetIndex = tabIds.indexOf(targetTabId);
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return tabIds;
+
+  const reordered = [...tabIds];
+  const [movedTabId] = reordered.splice(sourceIndex, 1);
+  reordered.splice(targetIndex, 0, movedTabId);
+  return reordered;
+}
+
+export function applyTabOrder<T extends { id: string }>(tabs: T[], orderedTabIds: string[]): T[] {
+  if (tabs.length !== orderedTabIds.length || new Set(orderedTabIds).size !== orderedTabIds.length) return tabs;
+  const tabsById = new Map(tabs.map((tab) => [tab.id, tab]));
+  const reordered = orderedTabIds.map((tabId) => tabsById.get(tabId));
+  return reordered.every((tab): tab is T => tab !== undefined) ? reordered : tabs;
+}
+
+export function resolveActiveTabId<T extends { id: string }>(tabs: T[], activeTabId: string | null): string | null {
+  return activeTabId && tabs.some((tab) => tab.id === activeTabId)
+    ? activeTabId
+    : tabs[0]?.id ?? null;
+}
+
+export function resolveHorizontalWheelDelta(
+  event: Pick<WheelEvent, 'deltaMode' | 'deltaX' | 'deltaY'>,
+  viewportWidth: number,
+): number {
+  const dominantDelta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+  const multiplier = event.deltaMode === 1
+    ? 16
+    : event.deltaMode === 2
+      ? Math.max(1, viewportWidth)
+      : 1;
+  return dominantDelta * multiplier;
 }

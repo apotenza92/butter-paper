@@ -5,14 +5,15 @@
 - Butter Paper is a pnpm monorepo with an Electron/React desktop app, a CLI, and shared `core` and `pdf` packages.
 - The normal renderer uses PDF.js. The native Rust/PDFium render core under `native/pdfium-render-core` is an opt-in backend selected with `BP_DESKTOP_RENDER_BACKEND=pdfium`.
 - Electron Forge is used only for the development server. Electron Builder owns packaging and release configuration.
-- The renderer uses official shadcn/ui components with Base UI primitives and the Rhea style. `apps/desktop/components.json` is the configuration source of truth.
+- The renderer uses official shadcn/ui components with Base UI primitives and the Nova style. `apps/desktop/components.json` is the configuration source of truth.
 
 ## UI conventions
 
 - Use components from `apps/desktop/src/renderer/src/components/ui` for standard controls. Add or refresh them with the official shadcn CLI; do not copy registry source by hand.
-- Keep `style: "base-rhea"`, Base UI (`base`), Lucide, DM Sans, and the existing Butter Paper semantic/domain tokens unless a task explicitly changes them.
+- Keep `style: "base-nova"`, Base UI (`base`), Lucide, Geist Variable, and the existing Butter Paper domain tokens unless a task explicitly changes them.
 - Compose Base UI with `render`, never Radix `asChild`. Do not add Radix dependencies, APIs, CSS variables, or state selectors.
-- Preserve Butter Paper's custom AEC tool icons, Fit Width/Fit Page/Continuous icons, and Butter Canvas icon. Their explicit `size-*` classes prevent shadcn descendant SVG defaults from replacing their geometry.
+- Keep reviewed exceptions to standard shadcn composition in `apps/desktop/src/renderer/src/components/domain-ui`. Every file there must be explicitly allowlisted by `scripts/check-repository-hygiene.mjs` and explain why an official component cannot provide the behaviour. Default to generated Nova styling; any custom visual treatment must be individually allowlisted with a product or accessibility reason and scoped tests.
+- Preserve Butter Paper's custom AEC tool icons and Fit Width/Fit Page/Continuous icons. Their explicit `size-*` classes prevent shadcn descendant SVG defaults from replacing their geometry.
 - The PDF/canvas renderers, annotation layers, resize handles, virtualized thumbnails, and two-axis `CustomScrollArea` are domain UI rather than generic controls. Preserve their behavior and regression coverage unless a task explicitly redesigns them.
 - Portaled menus, popovers, tooltips, selects, and dialogs must remain keyboard accessible, contained at constrained window sizes, and compatible with the application shortcut handler.
 

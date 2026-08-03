@@ -9,6 +9,7 @@ interface SidebarResizeHandleProps {
   defaultWidth: number;
   label: string;
   testId: string;
+  step?: number;
   onWidthChange: (width: number) => void;
 }
 
@@ -30,6 +31,7 @@ export function SidebarResizeHandle({
   defaultWidth,
   label,
   testId,
+  step = 16,
   onWidthChange,
 }: SidebarResizeHandleProps) {
   const dragStateRef = useRef<DragState | null>(null);
@@ -81,13 +83,13 @@ export function SidebarResizeHandle({
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
     if (event.key === 'ArrowLeft') {
       event.preventDefault();
-      applyWidth(width - 16);
+      applyWidth(width - step);
       return;
     }
 
     if (event.key === 'ArrowRight') {
       event.preventDefault();
-      applyWidth(width + 16);
+      applyWidth(width + step);
       return;
     }
 
