@@ -96,9 +96,11 @@ export function PageView({
   const documentState = useViewerStore((state) => state.document);
   const activeTool = useViewerStore((state) => state.activeTool);
   const selectedMarkupIds = useViewerStore((state) => state.selectedMarkupIds);
+  const postPlacement = useViewerStore((state) => state.postPlacement);
   const pendingImageAsset = useViewerStore((state) => state.pendingImageAsset);
   const snapSettings = useViewerStore((state) => state.snapSettings);
   const setSelectedMarkupIds = useViewerStore((state) => state.setSelectedMarkupIds);
+  const setPostPlacement = useViewerStore((state) => state.setPostPlacement);
   const consumePendingImageAsset = useViewerStore((state) => state.consumePendingImageAsset);
   const updateDocument = useViewerStore((state) => state.updateDocument);
   const setStatusMessage = useViewerStore((state) => state.setStatusMessage);
@@ -1065,8 +1067,10 @@ export function PageView({
         snapTargets={snapSettings.snapTargets}
         activeTool={activeTool}
         selectedMarkupIds={selectedMarkupIds}
+        postPlacement={postPlacement}
         pendingImageAsset={pendingImageAsset}
         setSelectedMarkupIds={setSelectedMarkupIds}
+        setPostPlacement={setPostPlacement}
         consumePendingImageAsset={consumePendingImageAsset}
         createSnapshotDataUrl={createSnapshotDataUrl}
         updateDocument={updateDocument}

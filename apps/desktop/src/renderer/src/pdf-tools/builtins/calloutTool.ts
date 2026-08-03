@@ -7,7 +7,7 @@ import {
   type LineDraft,
   type RectResizeHandle,
 } from '../annotationLifecycle';
-import { getAnnotationContentStyle, getAnnotationTextContentStyle } from '../annotationStyles';
+import { getAnnotationContentStyle, getVerticallyCenteredAnnotationTextContentStyle } from '../annotationStyles';
 import { isPointInRect, isPointNearPolyline } from '../hitTesting';
 import { getMoveCursor, getResizeHandles } from '../interactionChrome';
 import type { PdfToolDefinition, SelectionChromeDescriptor, ToolGeometryDescriptor, ToolHit } from '../types';
@@ -118,7 +118,7 @@ export const CALLOUT_TOOL_DEFINITION: PdfToolDefinition<CalloutMarkup, LineDraft
           kind: 'textBox',
           rect: markup.textBox,
           text: markup.text,
-          style: getAnnotationTextContentStyle(markup),
+          style: getVerticallyCenteredAnnotationTextContentStyle(markup),
           pointerEvents: 'all',
         },
       ];
@@ -134,8 +134,6 @@ export const CALLOUT_TOOL_DEFINITION: PdfToolDefinition<CalloutMarkup, LineDraft
         bounds: {
           rect: calloutBounds(markup),
           kind: 'group',
-          canResize: false,
-          canRotate: false,
         },
         handles: calloutHandles(markup),
         controlPaths: [{ id: 'callout.leaderPath', points: markup.leader.points, closed: false }],
@@ -147,8 +145,6 @@ export const CALLOUT_TOOL_DEFINITION: PdfToolDefinition<CalloutMarkup, LineDraft
         bounds: {
           rect: calloutBounds(markup),
           kind: 'group',
-          canResize: false,
-          canRotate: false,
         },
         handles: [],
         controlPaths: [{ id: 'callout.draftLeaderPath', points: markup.leader.points, closed: false }],

@@ -28,15 +28,12 @@ import {
   TextBoxRailIcon,
 } from './RailIcons';
 import { RailScrollArea } from './RailScrollArea';
-import { RailSettingsPopover } from './RailSettingsPopover';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import {
   RAIL_BUTTON_SIZE,
-  RAIL_EXPANDED_WIDTH,
   RAIL_INSET,
   SHELL_SURFACE_APP,
 } from './shellSpacing';
-import { loadRailExpandOnHover, saveRailExpandOnHover, shouldExpandRail } from './railSettings';
 
 interface RightRailProps {
   activeTool: ToolMode;
@@ -102,7 +99,6 @@ function RailToolButton({
   label,
   shortcut,
   icon,
-  expanded,
   testId,
   onClick,
 }: {
@@ -111,7 +107,6 @@ function RailToolButton({
   label: string;
   shortcut?: string;
   icon: ReactNode;
-  expanded: boolean;
   testId: string;
   onClick: () => void;
 }) {
@@ -124,61 +119,38 @@ function RailToolButton({
       data-rail-tooltip={accessibleLabel}
       aria-label={label}
       disabled={disabled}
-      className={cn(
-        'relative shrink-0',
-        expanded ? 'w-full justify-start px-2' : [RAIL_BUTTON_SIZE, 'p-0'],
-      )}
+      className={cn('relative shrink-0 p-0', RAIL_BUTTON_SIZE)}
       onPressedChange={onClick}
     >
       {icon}
-      {expanded ? <span className="truncate">{label}</span> : null}
-      {expanded && shortcut ? <span className="ml-auto text-muted-foreground">{shortcut}</span> : null}
     </Toggle>
   );
 }
 
 export function RightRail({ activeTool, disabled = false, onSelectTool }: RightRailProps) {
   const [columnCount, setColumnCount] = useState(RIGHT_RAIL_DEFAULT_COLUMNS);
-  const [hovered, setHovered] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [expandOnHover, setExpandOnHover] = useState(() => loadRailExpandOnHover(window.localStorage, 'right'));
   const width = getRightRailWidth(columnCount);
-  const expanded = shouldExpandRail({
-    enabled: expandOnHover,
-    hovered,
-    settingsOpen,
-    singleColumn: columnCount === 1,
-  });
-
-  function handleExpandOnHoverChange(enabled: boolean): void {
-    setExpandOnHover(enabled);
-    saveRailExpandOnHover(window.localStorage, 'right', enabled);
-  }
 
   return (
     <aside
       className={cn(
-        'relative flex h-full min-h-0 flex-none flex-col items-center border-l border-border transition-[width] duration-150',
+        'relative flex h-full min-h-0 flex-none flex-col items-center border-l border-border',
         RAIL_INSET,
         SHELL_SURFACE_APP,
       )}
       data-testid="right-rail"
       data-column-count={columnCount}
-      data-expanded={expanded ? '' : undefined}
-      style={{ width: `${expanded ? RAIL_EXPANDED_WIDTH : width}px` }}
-      onPointerEnter={() => setHovered(true)}
-      onPointerLeave={() => setHovered(false)}
+      style={{ width: `${width}px` }}
     >
       <RailScrollArea
         overflowIndicatorTestId="right-rail-overflow-indicator"
         overflowSide="left"
-        tooltipsDisabled={expanded}
         viewportTestId="right-rail-viewport"
       >
         <RightRailGroup
           group="normal"
+          heading="Review"
           columnCount={columnCount}
-          expanded={expanded}
           activeTool={activeTool}
           disabled={disabled}
           onSelectTool={onSelectTool}
@@ -189,23 +161,13 @@ export function RightRail({ activeTool, disabled = false, onSelectTool }: RightR
         />
         <RightRailGroup
           group="cad"
+          heading="Draw"
           columnCount={columnCount}
-          expanded={expanded}
           activeTool={activeTool}
           disabled={disabled}
           onSelectTool={onSelectTool}
         />
       </RailScrollArea>
-      <div className={cn('mt-2 shrink-0', expanded ? 'w-full' : RAIL_BUTTON_SIZE)}>
-        <RailSettingsPopover
-          side="right"
-          expanded={expanded}
-          open={settingsOpen}
-          expandOnHover={expandOnHover}
-          onOpenChange={setSettingsOpen}
-          onExpandOnHoverChange={handleExpandOnHoverChange}
-        />
-      </div>
       <SidebarResizeHandle
         side="right"
         width={width}
@@ -223,38 +185,41 @@ export function RightRail({ activeTool, disabled = false, onSelectTool }: RightR
 
 function RightRailGroup({
   group,
+  heading,
   columnCount,
-  expanded,
   activeTool,
   disabled,
   onSelectTool,
 }: RightRailProps & {
   group: keyof typeof PDF_TOOL_RAIL_GROUPS;
+  heading: string;
   columnCount: number;
-  expanded: boolean;
 }) {
   return (
-    <div
-      className={cn('grid gap-2', expanded ? 'w-full' : 'justify-center')}
-      data-testid={`right-rail-${group}`}
-      style={{ gridTemplateColumns: expanded ? 'minmax(0, 1fr)' : `repeat(${columnCount}, 32px)` }}
-    >
-      {PDF_TOOL_RAIL_GROUPS[group].map((toolId) => {
-        const tool = getToolDefinition(toolId);
-        return (
-          <RailToolButton
-            key={tool.id}
-            active={activeTool === tool.id}
-            label={tool.label}
-            shortcut={tool.shortcut}
-            disabled={disabled}
-            icon={TOOL_ICONS[tool.id]}
-            expanded={expanded}
-            testId={tool.testId}
-            onClick={() => onSelectTool(tool.id)}
-          />
-        );
-      })}
-    </div>
+    <section className="flex w-full flex-col items-center gap-2" data-testid={`right-rail-${group}`}>
+      <h2 className="w-full text-center text-[10px] font-medium leading-none text-muted-foreground">
+        {heading}
+      </h2>
+      <div
+        className="grid justify-center gap-2"
+        style={{ gridTemplateColumns: `repeat(${columnCount}, 32px)` }}
+      >
+        {PDF_TOOL_RAIL_GROUPS[group].map((toolId) => {
+          const tool = getToolDefinition(toolId);
+          return (
+            <RailToolButton
+              key={tool.id}
+              active={activeTool === tool.id}
+              label={tool.label}
+              shortcut={tool.shortcut}
+              disabled={disabled}
+              icon={TOOL_ICONS[tool.id]}
+              testId={tool.testId}
+              onClick={() => onSelectTool(tool.id)}
+            />
+          );
+        })}
+      </div>
+    </section>
   );
 }

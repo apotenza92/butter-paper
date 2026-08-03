@@ -166,11 +166,133 @@ test.describe('Butter Paper electron workflows', () => {
     await waitForMarkupDiagnostics(page, { markupCount: initialMarkupCount + 1 });
     await expect(page.locator('[data-testid="thumbnail-annotation-layer-1"] [data-testid^="thumbnail-markup-"] rect').first()).toBeVisible();
 
+    await page.mouse.click(rectangleCanvasBox.x + 300, rectangleStartY + 180);
+    await waitForMarkupDiagnostics(page, { markupCount: initialMarkupCount + 1 });
+    await expect(pageCanvas.locator('[data-interaction-state="focused"]')).toHaveCount(0);
+
     await page.getByTestId('tool-select').click();
     const rectangle = page.locator('[data-testid^="markup-rect-"]').first();
-    const rectangleBox = await rectangle.boundingBox();
+    const rectangleContent = rectangle.locator(':scope > g').first().locator('rect').first();
+    const rectangleBox = await rectangleContent.boundingBox();
     expect(rectangleBox).not.toBeNull();
-    const rectBounds = rectangleBox;
+    await page.mouse.move(rectangleBox.x + 2, rectangleBox.y + rectangleBox.height * 0.35);
+    await expect(rectangle.locator('[data-interaction-state="hovered"]')).toBeVisible();
+    const eastHandle = rectangle.locator('[data-handle-id="rectangle.resize.e"]');
+    await expect(eastHandle).toHaveAttribute('fill', '#fef08a');
+    const eastHandleBox = await eastHandle.boundingBox();
+    expect(eastHandleBox).not.toBeNull();
+    await page.mouse.move(eastHandleBox.x + eastHandleBox.width / 2, eastHandleBox.y + eastHandleBox.height / 2);
+    await expect(eastHandle).toHaveAttribute('data-handle-state', 'hot');
+    await expect(eastHandle).toHaveAttribute('fill', '#facc15');
+    await drag(
+      page,
+      eastHandleBox.x + eastHandleBox.width / 2,
+      eastHandleBox.y + eastHandleBox.height / 2,
+      eastHandleBox.x + eastHandleBox.width / 2 + 32,
+      eastHandleBox.y + eastHandleBox.height / 2,
+    );
+    await expect(rectangle.locator('[data-interaction-state="focused"]')).toHaveCount(0);
+    await expect(rectangle.locator('[data-interaction-state="hovered"]')).toBeVisible();
+    const resizedRectangleBox = await rectangleContent.boundingBox();
+    expect(resizedRectangleBox).not.toBeNull();
+    expect(resizedRectangleBox.width).toBeGreaterThan(rectangleBox.width);
+
+    const resizedEastHandleBox = await eastHandle.boundingBox();
+    expect(resizedEastHandleBox).not.toBeNull();
+    await page.mouse.click(
+      resizedEastHandleBox.x + resizedEastHandleBox.width / 2,
+      resizedEastHandleBox.y + resizedEastHandleBox.height / 2,
+    );
+    await expect(rectangle.locator('[data-interaction-state="focused"]')).toBeVisible();
+
+    const selectionTogglePoint = {
+      x: resizedRectangleBox.x + 2,
+      y: resizedRectangleBox.y + resizedRectangleBox.height * 0.35,
+    };
+    await page.mouse.move(selectionTogglePoint.x, selectionTogglePoint.y);
+    await page.keyboard.down('Shift');
+    await expect(pageCanvas).toHaveAttribute('data-selection-toggle-intent', 'remove');
+    await expect(page.getByTestId('selection-cursor-hint')).toHaveAttribute('data-selection-operation', 'remove');
+    await page.mouse.click(selectionTogglePoint.x, selectionTogglePoint.y);
+    await page.keyboard.up('Shift');
+    await expect(rectangle.locator('[data-interaction-state="focused"]')).toHaveCount(0);
+
+    await page.keyboard.down('Shift');
+    await expect(pageCanvas).toHaveAttribute('data-selection-toggle-intent', 'add');
+    await expect(page.getByTestId('selection-cursor-hint')).toHaveAttribute('data-selection-operation', 'add');
+    await page.mouse.click(selectionTogglePoint.x, selectionTogglePoint.y);
+    await page.keyboard.up('Shift');
+    await expect(rectangle.locator('[data-interaction-state="focused"]')).toBeVisible();
+
+    const emptySelectionPoint = {
+      x: rectangleCanvasBox.x + 300,
+      y: rectangleStartY + 180,
+    };
+    await page.mouse.click(emptySelectionPoint.x, emptySelectionPoint.y);
+    await expect(rectangle.locator('[data-interaction-state="focused"]')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+
+    const windowStart = { x: resizedRectangleBox.x - 24, y: resizedRectangleBox.y - 24 };
+    const windowEnd = {
+      x: resizedRectangleBox.x + resizedRectangleBox.width + 24,
+      y: resizedRectangleBox.y + resizedRectangleBox.height + 24,
+    };
+    await page.mouse.click(windowStart.x, windowStart.y);
+    await page.mouse.move(windowEnd.x, windowEnd.y, { steps: 5 });
+    const windowMarquee = page.getByTestId('selection-marquee');
+    await expect(windowMarquee).toHaveAttribute('data-selection-kind', 'window');
+    await expect(windowMarquee).toHaveAttribute('data-selection-shape', 'box');
+    await expect(windowMarquee).toHaveAttribute('data-selection-operation', 'replace');
+    await expect(windowMarquee).toHaveAttribute('stroke', '#2563eb');
+    await expect(windowMarquee).not.toHaveAttribute('stroke-dasharray');
+    await expect(page.getByTestId('selection-cursor-hint')).toHaveAttribute('data-selection-operation', 'replace');
+    await page.mouse.click(windowEnd.x, windowEnd.y);
+    await expect(rectangle.locator('[data-interaction-state="focused"]')).toBeVisible();
+
+    await page.mouse.click(emptySelectionPoint.x, emptySelectionPoint.y);
+    await expect(rectangle.locator('[data-interaction-state="focused"]')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    const crossingStart = {
+      x: resizedRectangleBox.x + resizedRectangleBox.width + 24,
+      y: resizedRectangleBox.y - 12,
+    };
+    const crossingEnd = {
+      x: resizedRectangleBox.x + resizedRectangleBox.width - 2,
+      y: resizedRectangleBox.y + resizedRectangleBox.height + 12,
+    };
+    await page.mouse.move(crossingStart.x, crossingStart.y);
+    await page.mouse.down();
+    await page.mouse.move(crossingStart.x, crossingEnd.y, { steps: 3 });
+    await page.mouse.move(crossingEnd.x, crossingEnd.y, { steps: 3 });
+    await page.mouse.move(crossingEnd.x, crossingStart.y, { steps: 3 });
+    const crossingMarquee = page.getByTestId('selection-marquee');
+    await expect(crossingMarquee).toHaveAttribute('data-selection-kind', 'crossing');
+    await expect(crossingMarquee).toHaveAttribute('data-selection-shape', 'lasso');
+    await expect(crossingMarquee).toHaveAttribute('data-selection-operation', 'replace');
+    await expect(crossingMarquee).toHaveAttribute('stroke', '#22c55e');
+    await expect(crossingMarquee).toHaveAttribute('stroke-dasharray', '7 5');
+    await page.mouse.up();
+    await expect(rectangle.locator('[data-interaction-state="focused"]')).toBeVisible();
+
+    await page.keyboard.down('Alt');
+    await page.mouse.click(windowStart.x, windowStart.y);
+    await page.keyboard.up('Alt');
+    await page.mouse.move(windowEnd.x, windowEnd.y, { steps: 5 });
+    await expect(page.getByTestId('selection-marquee')).toHaveAttribute('data-selection-operation', 'remove');
+    await expect(page.getByTestId('selection-marquee-operation')).toHaveAttribute('data-selection-operation', 'remove');
+    await page.mouse.click(windowEnd.x, windowEnd.y);
+    await expect(rectangle.locator('[data-interaction-state="focused"]')).toHaveCount(0);
+
+    await page.keyboard.down('Shift');
+    await page.mouse.click(windowStart.x, windowStart.y);
+    await page.keyboard.up('Shift');
+    await page.mouse.move(windowEnd.x, windowEnd.y, { steps: 5 });
+    await expect(page.getByTestId('selection-marquee')).toHaveAttribute('data-selection-operation', 'add');
+    await expect(page.getByTestId('selection-marquee-operation')).toHaveAttribute('data-selection-operation', 'add');
+    await page.mouse.click(windowEnd.x, windowEnd.y);
+    await expect(rectangle.locator('[data-interaction-state="focused"]')).toBeVisible();
+
+    const rectBounds = resizedRectangleBox;
     await drag(
       page,
       rectBounds.x + 2,

@@ -116,6 +116,8 @@ test.describe('shell overflow controls', () => {
       await expect(rectangleTool).toHaveAttribute('aria-pressed', 'true');
 
       const divider = page.getByTestId('right-rail-group-divider');
+      await expect(normalGroup.getByRole('heading', { name: 'Review' })).toBeVisible();
+      await expect(cadGroup.getByRole('heading', { name: 'Draw' })).toBeVisible();
       const dividerBounds = await divider.boundingBox();
       expect(dividerBounds?.width).toBeGreaterThanOrEqual(71);
       expect(dividerBounds?.width).toBeLessThanOrEqual(73);
@@ -144,18 +146,9 @@ test.describe('shell overflow controls', () => {
       await expect.poll(async () => (await rightRail.boundingBox())?.width).toBeLessThanOrEqual(49);
 
       await normalGroup.getByTestId('tool-select').hover();
-      await expect(rightRail).toHaveAttribute('data-expanded', '');
-      await expect.poll(async () => (await rightRail.boundingBox())?.width).toBeGreaterThanOrEqual(183);
-      await expect(normalGroup.getByTestId('tool-select')).toContainText('Select');
-      await expect(page.locator('[data-slot="tooltip-content"]').filter({ hasText: 'Select' })).toHaveCount(0);
-      const rightRailSettings = page.getByTestId('right-rail-settings-trigger');
-      await rightRailSettings.click();
-      await expect(page.getByTestId('right-rail-settings-popover')).toBeVisible();
-      await expect(page.getByTestId('right-rail-expand-on-hover')).toHaveAttribute('data-checked', '');
-      await page.keyboard.press('Escape');
-      await page.getByTestId('document-viewport').hover();
-      await expect(rightRail).not.toHaveAttribute('data-expanded', '');
       await expect.poll(async () => (await rightRail.boundingBox())?.width).toBeLessThanOrEqual(49);
+      await expect(normalGroup.getByTestId('tool-select')).not.toContainText('Select');
+      await expect(page.locator('[data-slot="tooltip-content"]').filter({ hasText: 'Select' })).toBeVisible();
 
       const browserWindow = await app.browserWindow(page);
       await browserWindow.evaluate((window) => window.webContents.setZoomFactor(2));

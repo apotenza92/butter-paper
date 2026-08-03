@@ -20,7 +20,7 @@ import {
   type TextBoxRichTextRun,
 } from '@butter-paper/core';
 import type { ToolMode } from '../../../shared/protocol';
-import type { PendingImageAsset, SnapTarget } from '../state/viewerStore';
+import type { PendingImageAsset, PostPlacementState, SnapTarget } from '../state/viewerStore';
 import {
   addCloudNodeDraftPoint,
   addMeasurementPathDraftPoint,
@@ -42,26 +42,52 @@ import {
   updateTransformDraft,
   type AnnotationDraft,
   type MeasurementPathDraft,
+  type TransformDraft,
 } from '../pdf-tools/annotationLifecycle';
 import { createArcMarkupFromThreePoints } from '../pdf-tools/builtins/arcTool';
 import { createAreaMeasurementMarkup, createLengthMeasurementMarkup, createPolylengthMeasurementMarkup } from '../pdf-tools/builtins/measurementTool';
 import { dimensionCaptionRect } from '../pdf-tools/builtins/dimensionTool';
-import { annotationFontCssFamily, getAnnotationContentStyle, getAnnotationTextContentStyle } from '../pdf-tools/annotationStyles';
+import { annotationFontCssFamily, getAnnotationContentStyle, getAnnotationTextContentStyle, getVerticallyCenteredAnnotationTextContentStyle } from '../pdf-tools/annotationStyles';
 import { DEFAULT_IMAGE_DATA_URL } from '../pdf-tools/builtins/imageTool';
-import { getChromeStyle, getMoveCursor, getResizeCursor, getRotateCursor, type ChromeBoundsKind, type InteractionState } from '../pdf-tools/interactionChrome';
+import { getChromeHandleStyle, getChromeStyle, getMoveCursor, getResizeCursor, getRotateCursor, type ChromeBoundsKind, type InteractionState } from '../pdf-tools/interactionChrome';
 import { expandViewportRect, projectChromeHandlePoint, unrotateViewportPointAroundBounds } from '../pdf-tools/selectionHitZones';
 import { layoutTextBoxLines, measureAnnotationText, splitAnnotationTextLines, type TextMeasurementContext } from '../pdf-tools/textLayout';
 import { getMarkupToolDefinition, getToolDefinition } from '../pdf-tools/toolRegistry';
 import { findNearestSnapPoint, getAnnotationSnapCandidates, type SnapCandidate, type SnapResult } from '../pdf-tools/snapping';
+import {
+  createArmedBoxSelectionMarquee,
+  createSelectionMarquee,
+  isGeometrySelectedByMarquee,
+  selectionAfterMarquee,
+  selectionMarqueeBounds,
+  selectionMarqueeKind,
+  selectionMarqueeOperationFromModifiers,
+  updateSelectionMarquee,
+  type SelectionMarqueeState,
+  type ViewportPoint,
+} from '../pdf-tools/selectionMarquee';
 import type { RenderPrimitive, SelectionChromeDescriptor, ToolHandleDescriptor, ToolHit } from '../pdf-tools/types';
 
 type PageTransform = ReturnType<typeof createPageTransform>;
 const IMPORTED_MARKUP_MIN_RENDER_ZOOM = 0.35;
 const TEXT_BOX_GHOST_CURSOR = createTextBoxGhostCursor();
+const SELECTION_ADD_CURSOR = createSelectionToggleCursor('add');
+const SELECTION_REMOVE_CURSOR = createSelectionToggleCursor('remove');
+export const FINISH_CLOUD_POLYGON_EVENT = 'butter-paper:finish-cloud-polygon';
 
 interface TextEditState {
   readonly markupId: string;
   readonly text: string;
+}
+
+interface CursorHintPoint {
+  readonly x: number;
+  readonly y: number;
+}
+
+interface HotHandleState {
+  readonly markupId: string;
+  readonly handleId: string;
 }
 
 interface TextBoxAutosizeOptions extends TextMeasurementContext {
@@ -82,6 +108,83 @@ interface SnapPointOptions {
 
 type EditableTextMarkup = Extract<Markup, { kind: 'text-box' | 'callout' | 'cloud-plus' | 'dimension' }>;
 
+function isCloudTool(tool: ToolMode): tool is Extract<ToolMode, 'cloud' | 'cloud-plus'> {
+  return tool === 'cloud' || tool === 'cloud-plus';
+}
+
+export function isPostPlacementSelectionActive(
+  postPlacement: PostPlacementState | null,
+  activeTool: ToolMode,
+  selectedMarkupIds: readonly string[],
+  draftActive: boolean,
+): boolean {
+  return Boolean(
+    postPlacement
+    && postPlacement.tool === activeTool
+    && selectedMarkupIds.includes(postPlacement.markupId)
+    && !draftActive,
+  );
+}
+
+export function shouldSelectMarkupAfterHandleTransform(
+  draft: Pick<TransformDraft, 'startPoint' | 'dragStarted'>,
+  currentPoint: PdfPoint,
+  transform: PageTransform,
+): boolean {
+  if (draft.dragStarted) {
+    return false;
+  }
+
+  return !hasExceededDragThreshold(
+    transform.pdfToViewport(draft.startPoint),
+    transform.pdfToViewport(currentPoint),
+  );
+}
+
+export function selectionAfterMarkupClick(
+  selectedMarkupIds: readonly string[],
+  markupId: string,
+  toggle: boolean,
+): string[] {
+  if (!toggle) {
+    return selectedMarkupIds.includes(markupId) ? [...selectedMarkupIds] : [markupId];
+  }
+
+  return selectedMarkupIds.includes(markupId)
+    ? selectedMarkupIds.filter((selectedMarkupId) => selectedMarkupId !== markupId)
+    : [...selectedMarkupIds, markupId];
+}
+
+export function selectionToggleCursorIntent(
+  activeTool: ToolMode,
+  shiftActive: boolean,
+  hoveredMarkupId: string | null,
+  selectedMarkupIds: readonly string[],
+  handleActive: boolean,
+): 'add' | 'remove' | null {
+  if (activeTool !== 'select' || !shiftActive || !hoveredMarkupId || handleActive) {
+    return null;
+  }
+
+  return selectedMarkupIds.includes(hoveredMarkupId) ? 'remove' : 'add';
+}
+
+export function selectionZoneCursorIntent(
+  activeTool: ToolMode,
+  shiftActive: boolean,
+  altActive: boolean,
+  hoveredMarkupId: string | null,
+  marqueeActive: boolean,
+): 'add' | 'remove' | null {
+  if (activeTool !== 'select' || hoveredMarkupId || marqueeActive) {
+    return null;
+  }
+  if (altActive) {
+    return 'remove';
+  }
+  return shiftActive ? 'add' : null;
+}
+
 interface AnnotationLayerProps {
   page: PageModel;
   pageScale?: PageScale;
@@ -94,8 +197,10 @@ interface AnnotationLayerProps {
   snapTargets?: readonly SnapTarget[];
   activeTool: ToolMode;
   selectedMarkupIds: readonly string[];
+  postPlacement: PostPlacementState | null;
   pendingImageAsset: PendingImageAsset | null;
   setSelectedMarkupIds: (markupIds: string[]) => void;
+  setPostPlacement: (postPlacement: PostPlacementState | null) => void;
   consumePendingImageAsset: () => PendingImageAsset | null;
   createSnapshotDataUrl?: (rect: Rect) => string | null;
   updateDocument: (updater: (document: DocumentModel) => DocumentModel) => void;
@@ -144,8 +249,10 @@ export function AnnotationLayer({
   snapTargets,
   activeTool,
   selectedMarkupIds,
+  postPlacement,
   pendingImageAsset,
   setSelectedMarkupIds,
+  setPostPlacement,
   consumePendingImageAsset,
   createSnapshotDataUrl,
   updateDocument,
@@ -158,10 +265,16 @@ export function AnnotationLayer({
   const activeToolRef = useRef(activeTool);
   const clickPlacementToolRef = useRef<ToolMode | null>(null);
   const [hoveredMarkupId, setHoveredMarkupId] = useState<string | null>(null);
+  const [hotHandle, setHotHandle] = useState<HotHandleState | null>(null);
   const [hoverCursor, setHoverCursor] = useState<string | null>(null);
   const [textEdit, setTextEdit] = useState<TextEditState | null>(null);
   const [pendingTextBox, setPendingTextBox] = useState<TextBoxMarkup | null>(null);
   const [snapResult, setSnapResult] = useState<SnapResult | null>(null);
+  const [cursorHintPoint, setCursorHintPoint] = useState<CursorHintPoint | null>(null);
+  const [shiftSelectionActive, setShiftSelectionActive] = useState(false);
+  const [altSelectionActive, setAltSelectionActive] = useState(false);
+  const [selectionMarquee, setSelectionMarquee] = useState<SelectionMarqueeState | null>(null);
+  const [selectionCursorPoint, setSelectionCursorPoint] = useState<ViewportPoint | null>(null);
 
   const selectedMarkupIdSet = useMemo(() => new Set(selectedMarkupIds), [selectedMarkupIds]);
   const visibleMarkups = useMemo(() => (
@@ -170,6 +283,44 @@ export function AnnotationLayer({
   const annotationSnapCandidates = useMemo(() => (
     getAnnotationSnapCandidates(visibleMarkups, page)
   ), [visibleMarkups, page]);
+  const postPlacementSelectionActive = isPostPlacementSelectionActive(
+    postPlacement,
+    activeTool,
+    selectedMarkupIds,
+    draft !== null,
+  );
+  const selectedManipulationActive = selectedMarkupIds.length > 0 && draft === null;
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Shift') {
+        setShiftSelectionActive(true);
+      }
+      if (event.key === 'Alt') {
+        setAltSelectionActive(true);
+      }
+    };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'Shift') {
+        setShiftSelectionActive(false);
+      }
+      if (event.key === 'Alt') {
+        setAltSelectionActive(false);
+      }
+    };
+    const handleBlur = () => {
+      setShiftSelectionActive(false);
+      setAltSelectionActive(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleBlur);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, []);
 
   useEffect(() => {
     const previousTool = activeToolRef.current;
@@ -178,6 +329,9 @@ export function AnnotationLayer({
     }
 
     activeToolRef.current = activeTool;
+    setPostPlacement(null);
+    setHotHandle(null);
+    setSelectionMarquee(null);
     if (!shouldCancelDraftForToolChange(previousTool, activeTool, draft)) {
       return;
     }
@@ -194,6 +348,12 @@ export function AnnotationLayer({
       if (event.defaultPrevented || isEditableKeyboardTarget(event.target)) {
         return;
       }
+      if (event.key === 'Escape' && selectionMarquee) {
+        event.preventDefault();
+        setSelectionMarquee(null);
+        setSnapResult(null);
+        return;
+      }
       if (event.key === 'Escape' && draft?.kind === 'measurement-path') {
         event.preventDefault();
         setDraft(null);
@@ -204,22 +364,54 @@ export function AnnotationLayer({
         if (commitMeasurementPathDraft(draft)) {
           event.preventDefault();
         }
+        return;
+      }
+      if ((event.key === 'Enter' || event.key === 'Escape') && draft?.kind === 'cloud-node' && isCloudTool(activeTool)) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (draft.points.length >= 3) {
+          commitCloudNodeDraft(draft);
+        } else {
+          setDraft(null);
+          setSnapResult(null);
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [draft, page.index, pageScale]);
+  }, [draft, page.index, pageScale, selectionMarquee]);
 
-  function toPdfPoint(event: ReactPointerEventLike): PdfPoint {
+  useEffect(() => {
+    const finishCloudPolygon = (event: Event) => {
+      if (draft?.kind !== 'cloud-node' || !isCloudTool(activeTool)) {
+        return;
+      }
+      event.preventDefault();
+      if (draft.points.length >= 3) {
+        commitCloudNodeDraft(draft);
+      } else {
+        setDraft(null);
+        setSnapResult(null);
+      }
+    };
+    window.addEventListener(FINISH_CLOUD_POLYGON_EVENT, finishCloudPolygon);
+    return () => window.removeEventListener(FINISH_CLOUD_POLYGON_EVENT, finishCloudPolygon);
+  }, [activeTool, draft, page.index]);
+
+  function toViewportPoint(event: ReactPointerEventLike): ViewportPoint {
     const bounds = svgRef.current?.getBoundingClientRect();
     if (!bounds) {
-      return pdfPoint(0, 0);
+      return { x: 0, y: 0 };
     }
 
-    return transform.viewportToPdf({
+    return {
       x: event.clientX - bounds.left,
       y: event.clientY - bounds.top,
-    } as never);
+    };
+  }
+
+  function toPdfPoint(event: ReactPointerEventLike): PdfPoint {
+    return transform.viewportToPdf(toViewportPoint(event) as never);
   }
 
   function snapPdfPoint(point: PdfPoint, options: SnapPointOptions): PdfPoint {
@@ -261,7 +453,42 @@ export function AnnotationLayer({
       return;
     }
 
+    if (selectionMarquee?.shape === 'box' && selectionMarquee.pointerId === null) {
+      const completedMarquee = updateSelectionMarquee(selectionMarquee, toViewportPoint(event));
+      setSelectedMarkupIds(selectionAfterMarquee(
+        selectedMarkupIds,
+        completedMarquee.active ? markupIdsSelectedByMarquee(completedMarquee) : [],
+        completedMarquee.operation,
+      ));
+      setSelectionMarquee(null);
+      setSnapResult(null);
+      event.stopPropagation();
+      event.preventDefault();
+      return;
+    }
+
+    setSelectionCursorPoint(toViewportPoint(event));
     const rawPoint = toPdfPoint(event);
+    if ((activeTool === 'select' || selectedManipulationActive) && beginHandleTransform(event, rawPoint)) {
+      return;
+    }
+
+    if (activeTool !== 'select' && selectedManipulationActive && beginSelectedMarkupMoveFromHit(event, rawPoint)) {
+      return;
+    }
+
+    if (postPlacementSelectionActive) {
+      setSelectedMarkupIds([]);
+      setPostPlacement(null);
+      setHoveredMarkupId(null);
+      setHotHandle(null);
+      setHoverCursor(null);
+      setSnapResult(null);
+      event.stopPropagation();
+      event.preventDefault();
+      return;
+    }
+
     const point = snapPdfPoint(rawPoint, { enabled: shouldSnapCreationTool(activeTool) });
     if (activeTool === 'text-box') {
       beginTextBoxPlacement(point);
@@ -282,7 +509,13 @@ export function AnnotationLayer({
       }
     }
 
-    if (activeTool === 'cloud' && draft?.kind === 'cloud-node') {
+    if (isCloudTool(activeTool) && draft?.kind === 'cloud-node') {
+      if (draft.points.length >= 3 && isCloudPolygonClosePoint(draft.points[0], point, transform)) {
+        commitCloudNodeDraft(draft);
+        event.stopPropagation();
+        event.preventDefault();
+        return;
+      }
       setDraft(beginCloudNodeDraftPoint(draft, point));
       event.currentTarget.setPointerCapture(event.pointerId);
       return;
@@ -306,15 +539,27 @@ export function AnnotationLayer({
       return;
     }
 
-    if (activeTool === 'select' && beginHandleTransform(event, point)) {
-      return;
-    }
-
     if (activeTool === 'select' && event.detail >= 2 && beginTextEditFromHit(event, point)) {
       return;
     }
 
     if (activeTool === 'select' && beginMarkupMoveFromHit(event, point)) {
+      return;
+    }
+
+    if (activeTool === 'select') {
+      setSelectionMarquee(createSelectionMarquee(
+        event.pointerId,
+        toViewportPoint(event),
+        selectionMarqueeOperationFromModifiers(event),
+      ));
+      setHoveredMarkupId(null);
+      setHotHandle(null);
+      setHoverCursor(null);
+      setSnapResult(null);
+      event.currentTarget.setPointerCapture(event.pointerId);
+      event.stopPropagation();
+      event.preventDefault();
       return;
     }
 
@@ -348,6 +593,28 @@ export function AnnotationLayer({
     onCalibrationPoint?.(page.index, toPdfPoint(event));
   }
 
+  function completePlacedMarkup(
+    markup: Markup,
+    options: {
+      readonly tool?: ToolMode;
+      readonly select?: boolean;
+      readonly armClickAway?: boolean;
+      readonly beginTextEdit?: boolean;
+    } = {},
+  ): void {
+    const select = options.select ?? true;
+    const tool = options.tool ?? activeTool;
+    updateDocument((document) => createMarkup(document, markup));
+    setSelectedMarkupIds(select ? [markup.id] : []);
+    setPostPlacement(select && (options.armClickAway ?? true) ? { markupId: markup.id, tool } : null);
+    if (
+      options.beginTextEdit
+      && (markup.kind === 'text-box' || markup.kind === 'callout' || markup.kind === 'cloud-plus' || markup.kind === 'dimension')
+    ) {
+      setTextEdit({ markupId: markup.id, text: markup.text });
+    }
+  }
+
   function handleArcPointerDown(point: PdfPoint): void {
     if (draft?.kind === 'arc' && draft.phase === 'end') {
       if (shouldCommitLine(draft.start, point)) {
@@ -361,8 +628,7 @@ export function AnnotationLayer({
         ? createArcMarkupFromThreePoints(createMarkupId('arc'), page.index, draft.start, draft.end, point)
         : null;
       if (markup) {
-        updateDocument((document) => createMarkup(document, markup));
-        setSelectedMarkupIds([markup.id]);
+        completePlacedMarkup(markup, { tool: 'arc' });
       }
       setDraft(null);
       setSnapResult(null);
@@ -386,11 +652,7 @@ export function AnnotationLayer({
         createMarkupId,
       });
       if (markup) {
-        updateDocument((document) => createMarkup(document, markup));
-        setSelectedMarkupIds([markup.id]);
-        if (markup.kind === 'dimension') {
-          setTextEdit({ markupId: markup.id, text: markup.text });
-        }
+        completePlacedMarkup(markup, { tool: 'dimension', beginTextEdit: markup.kind === 'dimension' });
       }
       setDraft(null);
       setSnapResult(null);
@@ -424,8 +686,7 @@ export function AnnotationLayer({
         const finalDraft = updateLineDraft(draft, point);
         if (shouldCommitLine(finalDraft.start, finalDraft.current)) {
           const markup = createLengthMeasurementMarkup(createMarkupId('length'), page.index, finalDraft.start, finalDraft.current);
-          updateDocument((document) => createMarkup(document, markup));
-          setSelectedMarkupIds([markup.id]);
+          completePlacedMarkup(markup, { tool: 'length' });
         }
         setDraft(null);
         setSnapResult(null);
@@ -479,10 +740,26 @@ export function AnnotationLayer({
     const markup = isArea
       ? createAreaMeasurementMarkup(createMarkupId('area'), page.index, points)
       : createPolylengthMeasurementMarkup(createMarkupId('polylength'), page.index, points);
-    updateDocument((document) => createMarkup(document, markup));
-    setSelectedMarkupIds([markup.id]);
+    completePlacedMarkup(markup, { tool: measurementDraft.tool });
     setDraft(null);
     setSnapResult(null);
+    return true;
+  }
+
+  function commitCloudNodeDraft(cloudDraft: Extract<AnnotationDraft, { kind: 'cloud-node' }>): boolean {
+    const definition = getToolDefinition(activeTool);
+    const markup = definition.interaction?.commitDraft?.(cloudDraft as never, {
+      page,
+      hasExceededDragThreshold: true,
+      createMarkupId,
+    });
+    setDraft(null);
+    setSnapResult(null);
+    if (!markup) {
+      return false;
+    }
+
+    completePlacedMarkup(markup, { beginTextEdit: markup.kind === 'cloud-plus' });
     return true;
   }
 
@@ -505,8 +782,7 @@ export function AnnotationLayer({
       mimeType: asset.mimeType,
       source: { source: 'butter' },
     });
-    updateDocument((document) => createMarkup(document, markup));
-    setSelectedMarkupIds([markup.id]);
+    completePlacedMarkup(markup, { tool: 'image' });
     return true;
   }
 
@@ -565,8 +841,7 @@ export function AnnotationLayer({
         lineHeightPt: pending.lineHeightPt,
       }),
     };
-    updateDocument((document) => createMarkup(document, markup));
-    setSelectedMarkupIds([]);
+    completePlacedMarkup(markup, { tool: 'text-box', select: false, armClickAway: false });
   }
 
   function isClickPlacementDraft(candidate: AnnotationDraft): candidate is Extract<AnnotationDraft, { kind: 'line' | 'rectangle' | 'text-box' }> {
@@ -614,29 +889,78 @@ export function AnnotationLayer({
         mimeType: 'image/png',
         source: { source: 'butter' },
       });
-      updateDocument((document) => createMarkup(document, snapshotMarkup));
-      setSelectedMarkupIds([snapshotMarkup.id]);
+      completePlacedMarkup(snapshotMarkup, { tool: 'snapshot' });
       return true;
     }
 
-    updateDocument((document) => createMarkup(document, markup));
-    setSelectedMarkupIds([markup.id]);
-    if (markup.kind === 'text-box' || markup.kind === 'callout' || markup.kind === 'cloud-plus' || markup.kind === 'dimension') {
-      setTextEdit({ markupId: markup.id, text: markup.text });
-    }
+    completePlacedMarkup(markup, {
+      tool,
+      beginTextEdit: markup.kind === 'text-box' || markup.kind === 'callout' || markup.kind === 'cloud-plus' || markup.kind === 'dimension',
+    });
     return true;
   }
 
   function handlePointerMove(event: React.PointerEvent<SVGSVGElement>): void {
+    const viewportPoint = toViewportPoint(event);
+    setSelectionCursorPoint(viewportPoint);
+    if (selectionMarquee) {
+      if (selectionMarquee.pointerId !== null && selectionMarquee.pointerId !== event.pointerId) {
+        return;
+      }
+      setSelectionMarquee(updateSelectionMarquee(selectionMarquee, viewportPoint));
+      setHoveredMarkupId(null);
+      setHotHandle(null);
+      setHoverCursor(null);
+      setSnapResult(null);
+      return;
+    }
+
     const rawPoint = toPdfPoint(event);
-    const point = draft?.kind === 'transform'
-      ? snapPdfPoint(rawPoint, { enabled: true, excludeMarkupIds: [draft.markupId] })
-      : snapPdfPoint(rawPoint, { enabled: shouldSnapCreationTool(activeTool) });
+    if (isCloudTool(activeTool)) {
+      const viewportPoint = transform.pdfToViewport(rawPoint);
+      setCursorHintPoint(cloudCursorHintPosition(viewportPoint, {
+        width: event.currentTarget.clientWidth,
+        height: event.currentTarget.clientHeight,
+      }));
+    } else if (cursorHintPoint) {
+      setCursorHintPoint(null);
+    }
+    if (!draft) {
+      const hit = activeTool === 'select'
+        ? hitTestSelectMode(rawPoint)
+        : selectedManipulationActive
+          ? hitTestSelectedMode(rawPoint)
+          : null;
+      setHoveredMarkupId(hit?.markupId ?? null);
+      setHotHandle(hit?.handleId ? { markupId: hit.markupId, handleId: hit.handleId } : null);
+      setHoverCursor(hit?.cursor ?? cursorForHit(hit));
+      if (activeTool === 'select' || postPlacementSelectionActive || hit) {
+        setSnapResult(null);
+        return;
+      }
+    }
+
+    if (draft?.kind === 'transform') {
+      if (draft.pointerId !== event.pointerId) {
+        return;
+      }
+
+      const dragStarted = !shouldSelectMarkupAfterHandleTransform(draft, rawPoint, transform);
+      if (!dragStarted) {
+        setDraft(updateTransformDraft(draft, rawPoint));
+        setSnapResult(null);
+        return;
+      }
+
+      const point = snapPdfPoint(rawPoint, { enabled: true, excludeMarkupIds: [draft.markupId] });
+      applyHandleTransform(draft, point);
+      setDraft(updateTransformDraft(draft, point, true));
+      return;
+    }
+
+    const point = snapPdfPoint(rawPoint, { enabled: shouldSnapCreationTool(activeTool) });
 
     if (!draft) {
-      const hit = activeTool === 'select' ? hitTestSelectMode(point) : null;
-      setHoveredMarkupId(hit?.markupId ?? null);
-      setHoverCursor(hit?.cursor ?? cursorForHit(hit));
       return;
     }
 
@@ -673,31 +997,37 @@ export function AnnotationLayer({
       }
     }
 
-    if (draft.kind === 'transform') {
-      if (draft.pointerId !== event.pointerId) {
-        return;
-      }
-
-      const nextDraft = updateTransformDraft(draft, point);
-      const definition = getMarkupToolDefinition(draft.originalMarkup);
-      const transformed = definition?.interaction?.transformMarkup?.(draft.originalMarkup as never, {
-        handleId: draft.handleId,
-        handleBehavior: draft.handleBehavior,
-        startPoint: draft.startPoint,
-        currentPoint: point,
-      });
-
-      if (transformed && transformed !== draft.originalMarkup) {
-        updateDocument((document) => ({
-          ...document,
-          markups: document.markups.map((markup) => markup.id === draft.markupId ? transformed : markup),
-        }));
-      }
-      setDraft(nextDraft);
-    }
   }
 
   function handlePointerUp(event: React.PointerEvent<SVGSVGElement>): void {
+    if (selectionMarquee) {
+      if (selectionMarquee.pointerId !== event.pointerId) {
+        return;
+      }
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+
+      const completedMarquee = updateSelectionMarquee(selectionMarquee, toViewportPoint(event));
+      if (completedMarquee.active) {
+        setSelectedMarkupIds(selectionAfterMarquee(
+          selectedMarkupIds,
+          markupIdsSelectedByMarquee(completedMarquee),
+          completedMarquee.operation,
+        ));
+        setSelectionMarquee(null);
+      } else {
+        if (completedMarquee.operation === 'replace') {
+          setSelectedMarkupIds([]);
+        }
+        setSelectionMarquee(createArmedBoxSelectionMarquee(completedMarquee.start, completedMarquee.operation));
+      }
+      setSnapResult(null);
+      event.stopPropagation();
+      event.preventDefault();
+      return;
+    }
+
     if (!draft) {
       return;
     }
@@ -707,9 +1037,24 @@ export function AnnotationLayer({
     }
 
     const rawPoint = toPdfPoint(event);
-    const point = draft.kind === 'transform'
-      ? snapPdfPoint(rawPoint, { enabled: true, excludeMarkupIds: [draft.markupId] })
-      : snapPdfPoint(rawPoint, { enabled: shouldSnapCreationTool(activeTool) });
+    if (draft.kind === 'transform') {
+      if (shouldSelectMarkupAfterHandleTransform(draft, rawPoint, transform)) {
+        setSelectedMarkupIds(selectionAfterMarkupClick(
+          selectedMarkupIds,
+          draft.markupId,
+          activeTool === 'select' && event.shiftKey,
+        ));
+        setSnapResult(null);
+      } else {
+        const point = snapPdfPoint(rawPoint, { enabled: true, excludeMarkupIds: [draft.markupId] });
+        applyHandleTransform(draft, point);
+      }
+      setDraft(null);
+      clickPlacementToolRef.current = null;
+      return;
+    }
+
+    const point = snapPdfPoint(rawPoint, { enabled: shouldSnapCreationTool(activeTool) });
     if (isClickPlacementDraft(draft)) {
       return;
     }
@@ -723,7 +1068,7 @@ export function AnnotationLayer({
       return;
     }
 
-    if (activeTool === 'cloud' && draft.kind === 'cloud-node') {
+    if (isCloudTool(activeTool) && draft.kind === 'cloud-node') {
       const startPoint = transform.pdfToViewport(draft.start);
       const currentPoint = transform.pdfToViewport(draft.current);
       if (!hasExceededDragThreshold(startPoint, currentPoint)) {
@@ -738,7 +1083,7 @@ export function AnnotationLayer({
       const startPoint = transform.pdfToViewport(draft.start);
       const currentPoint = transform.pdfToViewport(draft.current);
       const exceededDragThreshold = hasExceededDragThreshold(startPoint, currentPoint);
-      if (activeTool === 'cloud' && !exceededDragThreshold) {
+      if (isCloudTool(activeTool) && !exceededDragThreshold) {
         setDraft(createCloudNodeDraft(point));
         setSelectedMarkupIds([]);
         setSnapResult(null);
@@ -751,11 +1096,9 @@ export function AnnotationLayer({
         createMarkupId,
       });
       if (markup) {
-        updateDocument((document) => createMarkup(document, markup));
-        setSelectedMarkupIds([markup.id]);
-        if (markup.kind === 'dimension') {
-          setTextEdit({ markupId: markup.id, text: markup.text });
-        }
+        completePlacedMarkup(markup, {
+          beginTextEdit: markup.kind === 'dimension' || markup.kind === 'cloud-plus',
+        });
       }
     }
 
@@ -769,6 +1112,7 @@ export function AnnotationLayer({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     setDraft(null);
+    setSelectionMarquee(null);
     clickPlacementToolRef.current = null;
     setSnapResult(null);
   }
@@ -784,20 +1128,10 @@ export function AnnotationLayer({
       return;
     }
 
-    if (activeTool === 'cloud' && draft?.kind === 'cloud-node') {
-      const activeDefinition = getToolDefinition(activeTool);
+    if (isCloudTool(activeTool) && draft?.kind === 'cloud-node') {
       const point = toPdfPoint(event);
       const finalDraft = addCloudNodeDraftPoint(draft, point);
-      const markup = activeDefinition.interaction?.commitDraft?.(finalDraft as never, {
-        page,
-        hasExceededDragThreshold: true,
-        createMarkupId,
-      });
-      if (markup) {
-        updateDocument((document) => createMarkup(document, markup));
-        setSelectedMarkupIds([markup.id]);
-      }
-      setDraft(null);
+      commitCloudNodeDraft(finalDraft);
       event.stopPropagation();
       event.preventDefault();
       return;
@@ -840,7 +1174,8 @@ export function AnnotationLayer({
       return;
     }
 
-    if (activeTool !== 'select') {
+    const canManipulateSelection = selectedMarkupIds.includes(markup.id);
+    if (activeTool !== 'select' && !canManipulateSelection) {
       return;
     }
 
@@ -864,7 +1199,14 @@ export function AnnotationLayer({
     }
 
     event.stopPropagation();
-    const nextSelection = selectedMarkupIds.includes(markup.id) ? [...selectedMarkupIds] : [markup.id];
+    if (activeTool === 'select' && event.shiftKey) {
+      setSelectedMarkupIds(selectionAfterMarkupClick(selectedMarkupIds, markup.id, true));
+      setHoveredMarkupId(markup.id);
+      setHotHandle(null);
+      return;
+    }
+
+    const nextSelection = selectionAfterMarkupClick(selectedMarkupIds, markup.id, false);
     setSelectedMarkupIds(nextSelection);
     setHoveredMarkupId(markup.id);
     setDraft(createMoveDraft(event.pointerId, nextSelection, point, {
@@ -872,6 +1214,28 @@ export function AnnotationLayer({
       bodyDrag: hit.bodyDrag,
     }));
     svgRef.current?.setPointerCapture(event.pointerId);
+  }
+
+  function beginSelectedMarkupMoveFromHit(event: React.PointerEvent<SVGElement>, point: PdfPoint): boolean {
+    const hit = hitTestSelectedMode(point);
+    if (!hit?.bodyDrag || hit.region === 'handle') {
+      return false;
+    }
+
+    const markup = visibleMarkups.find((candidate) => candidate.id === hit.markupId);
+    if (!markup) {
+      return false;
+    }
+
+    event.stopPropagation();
+    setHoveredMarkupId(markup.id);
+    setHotHandle(null);
+    setDraft(createMoveDraft(event.pointerId, [markup.id], point, {
+      componentId: hit.componentId,
+      bodyDrag: hit.bodyDrag,
+    }));
+    svgRef.current?.setPointerCapture(event.pointerId);
+    return true;
   }
 
   function beginMarkupMoveFromHit(event: React.PointerEvent<SVGElement>, point: PdfPoint): boolean {
@@ -886,7 +1250,14 @@ export function AnnotationLayer({
     }
 
     event.stopPropagation();
-    const nextSelection = selectedMarkupIds.includes(markup.id) ? [...selectedMarkupIds] : [markup.id];
+    if (event.shiftKey) {
+      setSelectedMarkupIds(selectionAfterMarkupClick(selectedMarkupIds, markup.id, true));
+      setHoveredMarkupId(markup.id);
+      setHotHandle(null);
+      return true;
+    }
+
+    const nextSelection = selectionAfterMarkupClick(selectedMarkupIds, markup.id, false);
     setSelectedMarkupIds(nextSelection);
     setHoveredMarkupId(markup.id);
     setDraft(createMoveDraft(event.pointerId, nextSelection, point, {
@@ -909,8 +1280,8 @@ export function AnnotationLayer({
     }
 
     event.stopPropagation();
-    setSelectedMarkupIds([markup.id]);
     setHoveredMarkupId(markup.id);
+    setHotHandle({ markupId: markup.id, handleId: hit.handleId });
     if (hit.handleBehavior === 'rotateSelf' && event.detail >= 2) {
       resetMarkupRotation(markup.id);
       return true;
@@ -921,6 +1292,31 @@ export function AnnotationLayer({
     return true;
   }
 
+  function markupIdsSelectedByMarquee(marquee: SelectionMarqueeState): string[] {
+    return visibleMarkups.flatMap((markup) => {
+      const definition = getMarkupToolDefinition(markup);
+      const geometry = definition?.geometry?.getGeometry(markup as never, { page });
+      return geometry && isGeometrySelectedByMarquee(geometry, marquee, transform) ? [markup.id] : [];
+    });
+  }
+
+  function applyHandleTransform(transformDraft: TransformDraft, point: PdfPoint): void {
+    const definition = getMarkupToolDefinition(transformDraft.originalMarkup);
+    const transformed = definition?.interaction?.transformMarkup?.(transformDraft.originalMarkup as never, {
+      handleId: transformDraft.handleId,
+      handleBehavior: transformDraft.handleBehavior,
+      startPoint: transformDraft.startPoint,
+      currentPoint: point,
+    });
+
+    if (transformed && transformed !== transformDraft.originalMarkup) {
+      updateDocument((document) => ({
+        ...document,
+        markups: document.markups.map((markup) => markup.id === transformDraft.markupId ? transformed : markup),
+      }));
+    }
+  }
+
   function hitTestSelectMode(point: PdfPoint): ToolHit | null {
     const handleHit = hitTestInteractiveHandles(point);
     if (handleHit) {
@@ -928,6 +1324,19 @@ export function AnnotationLayer({
     }
 
     return hitTestToolMarkups(visibleMarkups, point, { page, tolerance: pdfToleranceForScale(transform.zoom), transform });
+  }
+
+  function hitTestSelectedMode(point: PdfPoint): ToolHit | null {
+    const handleHit = hitTestSelectedHandles(point);
+    if (handleHit) {
+      return handleHit;
+    }
+
+    return hitTestToolMarkups(
+      visibleMarkups.filter((markup) => selectedMarkupIdSet.has(markup.id)),
+      point,
+      { page, tolerance: pdfToleranceForScale(transform.zoom), transform },
+    );
   }
 
   function hitTestInteractiveHandles(point: PdfPoint): ToolHit | null {
@@ -941,9 +1350,7 @@ export function AnnotationLayer({
       const definition = markup ? getMarkupToolDefinition(markup) : null;
       const interactionState = markupId === selectedMarkupIds[0] ? 'focused' : 'selected';
       const chrome = markup && definition?.selection?.getSelectionChrome(markup as never, { page, phase: interactionState });
-      const handles = chrome?.handles?.filter((handle) => {
-        return isHandleVisibleForBounds(handle, chrome);
-      }) ?? [];
+      const handles = chrome?.handles ?? [];
       const handle = chrome ? hitTestChromeHandles(handles, point, chrome, transform, interactionState) : null;
       if (markup && handle) {
         const rotation = chrome?.bounds?.rotation ?? 0;
@@ -969,9 +1376,7 @@ export function AnnotationLayer({
     const markup = visibleMarkups.find((candidate) => candidate.id === hoveredMarkupId);
     const definition = markup ? getMarkupToolDefinition(markup) : null;
     const chrome = markup && definition?.selection?.getSelectionChrome(markup as never, { page, phase: 'hovered' });
-    const handles = chrome?.handles?.filter((handle) => {
-      return isHandleVisibleForBounds(handle, chrome);
-    }) ?? [];
+    const handles = chrome?.handles ?? [];
     const handle = chrome ? hitTestChromeHandles(handles, point, chrome, transform, 'hovered') : null;
 
     if (!markup || !handle) {
@@ -1013,21 +1418,45 @@ export function AnnotationLayer({
   }
 
   function commitTextEdit(markupId: string, text: string): void {
-    updateDocument((document) => updateMarkupText(document, markupId, text));
+    updateDocument((document) => updateMarkupTextAndCenterOnLeader(document, markupId, text));
     setTextEdit(null);
-    const markup = visibleMarkups.find((candidate) => candidate.id === markupId);
-    if (markup?.kind === 'text-box') {
-      setSelectedMarkupIds([]);
-    }
+    setSelectedMarkupIds([]);
+    setPostPlacement(null);
+    setHotHandle(null);
   }
 
+  const objectSelectionToggleIntent = selectionToggleCursorIntent(
+    activeTool,
+    shiftSelectionActive,
+    hoveredMarkupId,
+    selectedMarkupIds,
+    hotHandle !== null || selectionMarquee !== null,
+  );
+  const selectionCursorIntent = objectSelectionToggleIntent ?? selectionZoneCursorIntent(
+    activeTool,
+    shiftSelectionActive,
+    altSelectionActive,
+    hoveredMarkupId,
+    selectionMarquee !== null,
+  );
+  const selectionToggleCursor = selectionCursorIntent === 'add'
+    ? SELECTION_ADD_CURSOR
+    : selectionCursorIntent === 'remove'
+      ? SELECTION_REMOVE_CURSOR
+      : null;
+  const selectionHintOperation = selectionMarquee?.operation ?? selectionCursorIntent;
+  const selectionHintPoint = selectionMarquee?.current ?? selectionCursorPoint;
   const toolCursor = calibrationPickActive
     ? 'crosshair'
+    : selectionMarquee
+      ? 'crosshair'
     : activeTool === 'text-box' && pendingTextBox
       ? 'default'
       : activeTool === 'text-box' && !textEdit
         ? TEXT_BOX_GHOST_CURSOR
-      : hoverCursor ?? getToolDefinition(activeTool).cursor;
+      : postPlacementSelectionActive
+        ? hoverCursor ?? 'default'
+        : selectionToggleCursor ?? hoverCursor ?? getToolDefinition(activeTool).cursor;
   const activeDefinition = getToolDefinition(activeTool);
   const draftPrimitives = draft && activeDefinition.render?.getDraftPrimitives
     ? activeDefinition.render.getDraftPrimitives(draft as never, { page, pageScale, phase: 'draft' })
@@ -1044,6 +1473,8 @@ export function AnnotationLayer({
       ref={svgRef}
       className="absolute inset-0 z-20 h-full w-full overflow-visible"
       data-testid={`annotation-layer-${page.index + 1}`}
+      data-annotation-canvas="true"
+      data-selection-toggle-intent={selectionCursorIntent ?? undefined}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -1051,8 +1482,11 @@ export function AnnotationLayer({
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
       onPointerLeave={() => {
+        setCursorHintPoint(null);
+        setSelectionCursorPoint(null);
         if (!draft) {
           setHoveredMarkupId(null);
+          setHotHandle(null);
           setHoverCursor(null);
           setSnapResult(null);
         }
@@ -1073,6 +1507,7 @@ export function AnnotationLayer({
               page={page}
               pageScale={pageScale}
               interactionState={interactionState}
+              hotHandleId={hotHandle?.markupId === markup.id ? hotHandle.handleId : null}
               editingText={textEdit?.markupId === markup.id ? textEdit.text : null}
               onPointerDown={(event) => beginMarkupMove(event, markup)}
             />
@@ -1094,6 +1529,7 @@ export function AnnotationLayer({
           page={page}
           pageScale={pageScale}
           interactionState="focused"
+          hotHandleId={null}
           editingText={pendingTextBox.text}
           onPointerDown={() => undefined}
         />
@@ -1102,7 +1538,18 @@ export function AnnotationLayer({
       {draftPrimitives.map((primitive, index) => (
         <RenderPrimitiveElement key={`draft-${index}`} primitive={primitive} transform={transform} />
       ))}
+      {selectionMarquee?.active ? <SelectionMarquee marquee={selectionMarquee} /> : null}
+      {activeTool === 'select' && selectionHintOperation && selectionHintPoint ? (
+        <SelectionCursorHint
+          point={selectionHintPoint}
+          operation={selectionHintOperation}
+          viewport={selectionViewportSize(transform)}
+        />
+      ) : null}
       {snapResult ? <SnapIndicator result={snapResult} transform={transform} /> : null}
+      {isCloudTool(activeTool) && cursorHintPoint && !textEdit && !pendingTextBox && !postPlacementSelectionActive ? (
+        <CloudCursorHint point={cursorHintPoint} />
+      ) : null}
       {pendingTextBox ? (
         <TextBoxEditor
           markup={pendingTextBox}
@@ -1122,10 +1569,186 @@ export function AnnotationLayer({
           transform={transform}
           onChange={(text) => setTextEdit({ markupId: editingMarkup.id, text })}
           onCommit={(text) => commitTextEdit(editingMarkup.id, text)}
-          onCancel={() => setTextEdit(null)}
+          onOutsidePointerDown={(text) => commitTextEdit(editingMarkup.id, text)}
+          onCancel={() => {
+            setTextEdit(null);
+            setSelectedMarkupIds([]);
+            setPostPlacement(null);
+            setHotHandle(null);
+          }}
         />
       ) : null}
     </svg>
+  );
+}
+
+const CLOUD_CURSOR_HINT_WIDTH = 202;
+const CLOUD_CURSOR_HINT_HEIGHT = 24;
+const CLOUD_CURSOR_HINT_OFFSET = 14;
+const CLOUD_CURSOR_HINT_MARGIN = 8;
+
+export function cloudCursorHintPosition(
+  pointer: CursorHintPoint,
+  viewport: { readonly width: number; readonly height: number },
+): CursorHintPoint {
+  const preferredX = pointer.x + CLOUD_CURSOR_HINT_OFFSET;
+  const preferredY = pointer.y + CLOUD_CURSOR_HINT_OFFSET;
+  const x = Math.max(CLOUD_CURSOR_HINT_MARGIN, Math.min(preferredX, viewport.width - CLOUD_CURSOR_HINT_WIDTH - CLOUD_CURSOR_HINT_MARGIN));
+  const yBelow = preferredY + CLOUD_CURSOR_HINT_HEIGHT <= viewport.height - CLOUD_CURSOR_HINT_MARGIN;
+  const y = yBelow ? preferredY : pointer.y - CLOUD_CURSOR_HINT_HEIGHT - CLOUD_CURSOR_HINT_OFFSET;
+  return {
+    x: Math.max(CLOUD_CURSOR_HINT_MARGIN, x),
+    y: Math.max(CLOUD_CURSOR_HINT_MARGIN, Math.min(y, viewport.height - CLOUD_CURSOR_HINT_HEIGHT - CLOUD_CURSOR_HINT_MARGIN)),
+  };
+}
+
+export function isCloudPolygonClosePoint(
+  firstPoint: PdfPoint,
+  currentPoint: PdfPoint,
+  transform: Pick<PageTransform, 'pdfToViewport'>,
+  thresholdPx = 10,
+): boolean {
+  const first = transform.pdfToViewport(firstPoint);
+  const current = transform.pdfToViewport(currentPoint);
+  return Math.hypot(current.x - first.x, current.y - first.y) <= thresholdPx;
+}
+
+function CloudCursorHint({ point }: { point: CursorHintPoint }) {
+  return (
+    <g
+      data-testid="cloud-cursor-hint"
+      className="pointer-events-none select-none"
+      aria-hidden="true"
+      transform={`translate(${point.x} ${point.y})`}
+    >
+      <rect width={CLOUD_CURSOR_HINT_WIDTH} height={CLOUD_CURSOR_HINT_HEIGHT} rx="6" fill="rgba(15, 23, 42, 0.92)" />
+      <text x="10" y="16" fill="#ffffff" fontFamily="Geist Variable, sans-serif" fontSize="12">
+        Drag for rectangle · Click for points
+      </text>
+    </g>
+  );
+}
+
+function SelectionMarquee({ marquee }: { marquee: SelectionMarqueeState }) {
+  const bounds = selectionMarqueeBounds(marquee.start, marquee.current);
+  const kind = selectionMarqueeKind(marquee.start, marquee.current);
+  const crossing = kind === 'crossing';
+  const commonProps = {
+    'data-testid': 'selection-marquee',
+    'data-selection-kind': kind,
+    'data-selection-shape': marquee.shape,
+    'data-selection-operation': marquee.operation,
+    fill: crossing ? 'rgba(34, 197, 94, 0.14)' : 'rgba(37, 99, 235, 0.13)',
+    stroke: crossing ? '#22c55e' : '#2563eb',
+    strokeWidth: 1.5,
+    strokeDasharray: crossing ? '7 5' : undefined,
+    pointerEvents: 'none' as const,
+    'aria-hidden': true,
+  };
+  const lassoPath = marquee.points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
+  const selectionShape = marquee.shape === 'lasso'
+    ? <path {...commonProps} d={`${lassoPath} Z`} />
+    : (
+      <rect
+        {...commonProps}
+        x={bounds.left}
+        y={bounds.top}
+        width={bounds.right - bounds.left}
+        height={bounds.bottom - bounds.top}
+      />
+    );
+  const operationBadge = marquee.operation === 'replace' ? null : (
+    <g
+      data-testid="selection-marquee-operation"
+      data-selection-operation={marquee.operation}
+      transform={`translate(${marquee.current.x + 18} ${marquee.current.y - 18})`}
+      pointerEvents="none"
+      aria-hidden="true"
+    >
+      <circle r="10" fill={marquee.operation === 'add' ? '#16a34a' : '#dc2626'} stroke="rgba(255,255,255,0.88)" strokeWidth="2" />
+      <path
+        d={marquee.operation === 'add' ? 'M -6 0 H 6 M 0 -6 V 6' : 'M -6 0 H 6'}
+        fill="none"
+        stroke="#ffffff"
+        strokeWidth="2.4"
+        strokeLinecap="round"
+      />
+    </g>
+  );
+
+  return (
+    <>
+      {selectionShape}
+      {operationBadge}
+    </>
+  );
+}
+
+const SELECTION_CURSOR_HINT_WIDTH = 294;
+const SELECTION_CURSOR_HINT_HEIGHT = 28;
+const SELECTION_CURSOR_HINT_OFFSET = 16;
+const SELECTION_CURSOR_HINT_MARGIN = 8;
+
+export function selectionCursorHintPosition(
+  pointer: ViewportPoint,
+  viewport: { readonly width: number; readonly height: number },
+): ViewportPoint {
+  const preferredX = pointer.x + SELECTION_CURSOR_HINT_OFFSET;
+  const preferredY = pointer.y + SELECTION_CURSOR_HINT_OFFSET;
+  const x = Math.max(
+    SELECTION_CURSOR_HINT_MARGIN,
+    Math.min(preferredX, viewport.width - SELECTION_CURSOR_HINT_WIDTH - SELECTION_CURSOR_HINT_MARGIN),
+  );
+  const yBelow = preferredY + SELECTION_CURSOR_HINT_HEIGHT <= viewport.height - SELECTION_CURSOR_HINT_MARGIN;
+  const y = yBelow ? preferredY : pointer.y - SELECTION_CURSOR_HINT_HEIGHT - SELECTION_CURSOR_HINT_OFFSET;
+  return {
+    x,
+    y: Math.max(
+      SELECTION_CURSOR_HINT_MARGIN,
+      Math.min(y, viewport.height - SELECTION_CURSOR_HINT_HEIGHT - SELECTION_CURSOR_HINT_MARGIN),
+    ),
+  };
+}
+
+function selectionViewportSize(transform: PageTransform): { width: number; height: number } {
+  const rotated = transform.geometry.rotation === 90 || transform.geometry.rotation === 270;
+  return {
+    width: (rotated ? transform.geometry.size.height : transform.geometry.size.width) * transform.zoom,
+    height: (rotated ? transform.geometry.size.width : transform.geometry.size.height) * transform.zoom,
+  };
+}
+
+function SelectionCursorHint({
+  point,
+  operation,
+  viewport,
+}: {
+  point: ViewportPoint;
+  operation: 'replace' | 'add' | 'remove';
+  viewport: { readonly width: number; readonly height: number };
+}) {
+  const position = selectionCursorHintPosition(point, viewport);
+  const isMac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac');
+  const removeShortcut = isMac ? '⌥ Remove' : 'Alt Remove';
+  const operationLabel = operation === 'add'
+    ? 'Add to selection'
+    : operation === 'remove'
+      ? 'Remove from selection'
+      : 'Replace selection';
+  return (
+    <g
+      data-testid="selection-cursor-hint"
+      data-selection-operation={operation}
+      transform={`translate(${position.x} ${position.y})`}
+      pointerEvents="none"
+      aria-hidden="true"
+    >
+      <rect width={SELECTION_CURSOR_HINT_WIDTH} height={SELECTION_CURSOR_HINT_HEIGHT} rx="6" fill="rgba(15, 23, 42, 0.94)" />
+      <text x="10" y="18" fontFamily="Geist Variable, sans-serif" fontSize="12">
+        <tspan fill="#ffffff">{operationLabel}</tspan>
+        <tspan fill="#94a3b8">{'  ·  ⇧ Add  ·  '}{removeShortcut}</tspan>
+      </text>
+    </g>
   );
 }
 
@@ -1170,6 +1793,7 @@ function PrimitiveAnnotation({
   page,
   pageScale,
   interactionState,
+  hotHandleId,
   editingText,
   onPointerDown,
 }: {
@@ -1179,6 +1803,7 @@ function PrimitiveAnnotation({
   page: PageModel;
   pageScale?: PageScale;
   interactionState: InteractionState;
+  hotHandleId: string | null;
   editingText: string | null;
   onPointerDown: (event: React.PointerEvent<SVGElement>) => void;
 }) {
@@ -1187,7 +1812,10 @@ function PrimitiveAnnotation({
   }
 
   const isInteractive = interactionState !== 'idle';
-  const primitives = (definition.render?.getContentPrimitives(markup as never, { page, pageScale, phase: interactionState }) ?? [])
+  const renderedMarkup = editingText !== null && (markup.kind === 'callout' || markup.kind === 'cloud-plus')
+    ? { ...markup, text: editingText, textBox: centeredCompositeTextBoxRect(markup, editingText) }
+    : markup;
+  const primitives = (definition.render?.getContentPrimitives(renderedMarkup as never, { page, pageScale, phase: interactionState }) ?? [])
     .map((primitive) => (
       editingText !== null && (markup.kind === 'text-box' || markup.kind === 'callout' || markup.kind === 'cloud-plus' || markup.kind === 'dimension') && primitive.kind === 'textBox'
         ? {
@@ -1209,7 +1837,7 @@ function PrimitiveAnnotation({
           <RenderPrimitiveElement key={index} primitive={primitive} transform={transform} />
         ))}
       </g>
-      {chrome ? <SelectionChrome chrome={chrome} transform={transform} state={interactionState} /> : null}
+      {chrome ? <SelectionChrome chrome={chrome} transform={transform} state={interactionState} hotHandleId={hotHandleId} /> : null}
     </g>
   );
 }
@@ -1466,7 +2094,7 @@ function TextBoxEditor({
 }) {
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const [selection, setSelection] = useState(() => ({ start: selectOnFocus ? 0 : text.length, end: text.length }));
-  const editRect = editableTextRect(markup);
+  const editRect = editableTextRect(markup, text);
   const box = transform.pdfRectToViewport(editRect);
   const editorTextStyle = getAnnotationTextContentStyle(markup, markup.kind === 'dimension' ? 13 / 12 : 14.3146 / 12);
   const fontSizePt = editorTextStyle.fontSizePt ?? 12;
@@ -1506,7 +2134,7 @@ function TextBoxEditor({
   const caretY = caretGeometry ? box.y + (caretGeometry.y - editRect.y) * transform.zoom : 0;
 
   useEffect(() => {
-    if (markup.kind !== 'text-box') {
+    if (!onOutsidePointerDown) {
       return;
     }
 
@@ -1515,18 +2143,18 @@ function TextBoxEditor({
       if (!editor || editor.contains(event.target as Node)) {
         return;
       }
+      const target = event.target;
+      if (!(target instanceof Element) || !target.closest('[data-annotation-canvas="true"]')) {
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
-      if (onOutsidePointerDown) {
-        onOutsidePointerDown(editor.value, event);
-      } else {
-        onCommit(editor.value);
-      }
+      onOutsidePointerDown(editor.value, event);
     };
 
     document.addEventListener('pointerdown', finishOnOutsidePointerDown, true);
     return () => document.removeEventListener('pointerdown', finishOnOutsidePointerDown, true);
-  }, [markup.kind, onCommit, onOutsidePointerDown]);
+  }, [onOutsidePointerDown]);
 
   const rotation = markup.kind === 'text-box' && markup.rotation ? `rotate(${markup.rotation} ${center.x} ${center.y})` : undefined;
 
@@ -1633,8 +2261,10 @@ function editableTextCaretGeometry(
   selectionOffset: number,
   options: TextBoxCaretGeometryOptions = {},
 ): { x: number; y: number; height: number } {
-  const rect = editableTextRect(markup);
-  const style = getAnnotationTextContentStyle(markup, markup.kind === 'dimension' ? 13 / 12 : 14.3146 / 12);
+  const rect = editableTextRect(markup, text);
+  const style = markup.kind === 'callout' || markup.kind === 'cloud-plus'
+    ? getVerticallyCenteredAnnotationTextContentStyle(markup, rect, text)
+    : getAnnotationTextContentStyle(markup, markup.kind === 'dimension' ? 13 / 12 : 14.3146 / 12);
   const fontFamily = options.fontFamily ?? style.fontFamily ?? annotationFontCssFamily('Helvetica');
   const fontSizePt = options.fontSizePt ?? style.fontSizePt ?? 12;
   const lineHeightPt = options.lineHeightPt ?? style.lineHeightPt ?? fontSizePt * 1.15;
@@ -1714,6 +2344,21 @@ function createTextBoxGhostCursor(): string {
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 16 12, default`;
 }
 
+function createSelectionToggleCursor(intent: 'add' | 'remove'): string {
+  const badgeFill = intent === 'add' ? '#16a34a' : '#dc2626';
+  const badgeGlyph = intent === 'add'
+    ? '<path d="M23 18.5v9M18.5 23h9" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>'
+    : '<path d="M18.5 23h9" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>';
+  const svg = [
+    '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">',
+    '<path d="M3 2.5v20l5.4-5.2 4.1 9.2 3.7-1.7-4.1-9.1H20z" fill="#ffffff" stroke="#0f172a" stroke-width="1.5" stroke-linejoin="round"/>',
+    `<circle cx="23" cy="23" r="7.5" fill="${badgeFill}" stroke="#ffffff" stroke-width="1.5"/>`,
+    badgeGlyph,
+    '</svg>',
+  ].join('');
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 3 3, default`;
+}
+
 function initialTextBoxRectAtPointer(
   point: PdfPoint,
   transform: PageTransform,
@@ -1785,22 +2430,59 @@ export function scaleAnnotationDashArray(dashArray: string | undefined, transfor
     .join(' ');
 }
 
-function editableTextRect(markup: EditableTextMarkup) {
+function editableTextRect(markup: EditableTextMarkup, text = markup.text) {
   if (markup.kind === 'dimension') {
     return dimensionCaptionRect(markup);
   }
 
-  return markup.kind === 'callout' || markup.kind === 'cloud-plus' ? markup.textBox : markup.rect;
+  return markup.kind === 'callout' || markup.kind === 'cloud-plus'
+    ? centeredCompositeTextBoxRect(markup, text)
+    : markup.rect;
+}
+
+export function centeredCompositeTextBoxRect(
+  markup: Extract<Markup, { kind: 'callout' | 'cloud-plus' }>,
+  text: string,
+): Rect {
+  const style = getAnnotationTextContentStyle(markup);
+  const fontSizePt = style.fontSizePt ?? 12;
+  const lineHeightPt = style.lineHeightPt ?? fontSizePt * 1.15;
+  const lineCount = Math.max(1, splitAnnotationTextLines(text).length);
+  const requiredHeight = lineCount * lineHeightPt + 12;
+  const height = Math.max(markup.textBox.height, requiredHeight);
+  const connection = markup.leader.points.at(-1);
+  const centerY = connection?.y ?? markup.textBox.y + markup.textBox.height * 0.5;
+  return rect(markup.textBox.x, centerY - height * 0.5, markup.textBox.width, height);
+}
+
+export function updateMarkupTextAndCenterOnLeader(
+  document: DocumentModel,
+  markupId: string,
+  text: string,
+): DocumentModel {
+  const markup = document.markups.find((candidate) => candidate.id === markupId);
+  if (markup?.kind !== 'callout' && markup?.kind !== 'cloud-plus') {
+    return updateMarkupText(document, markupId, text);
+  }
+
+  return {
+    ...document,
+    markups: document.markups.map((candidate) => candidate.id === markupId
+      ? { ...markup, text, textBox: centeredCompositeTextBoxRect(markup, text) }
+      : candidate),
+  };
 }
 
 function SelectionChrome({
   chrome,
   transform,
   state,
+  hotHandleId,
 }: {
   chrome: SelectionChromeDescriptor;
   transform: PageTransform;
   state: InteractionState;
+  hotHandleId: string | null;
 }) {
   if (!chrome.bounds) {
     return null;
@@ -1809,8 +2491,6 @@ function SelectionChrome({
   const box = transform.pdfRectToViewport(chrome.bounds.rect);
   const style = getChromeStyle(state, chrome.bounds.kind as ChromeBoundsKind);
   const chromeBox = expandViewportRect(box, style.boundsOutsetPx);
-  const handleSize = style.handleSize;
-  const handleOffset = handleSize * 0.5;
   const center = {
     x: box.x + box.width * 0.5,
     y: box.y + box.height * 0.5,
@@ -1818,9 +2498,7 @@ function SelectionChrome({
   const chromeTransform = chrome.bounds.rotation
     ? `rotate(${chrome.bounds.rotation} ${center.x} ${center.y})`
     : undefined;
-  const handles = (chrome.handles ?? []).filter((handle) => {
-    return isHandleVisibleForBounds(handle, chrome);
-  });
+  const handles = chrome.handles ?? [];
   const controlPaths = chrome.controlPaths?.filter((path) => path.points.length > 1) ?? [];
   const lineBoundsPaths = controlPaths.filter((path) => !path.closed && path.points.length === 2);
   const shouldRenderBoundsBox = lineBoundsPaths.length === 0;
@@ -1878,7 +2556,8 @@ function SelectionChrome({
           .filter((handle) => handle.behavior === 'rotateSelf')
           .map((handle) => {
             const point = projectChromeHandlePoint(transform.pdfToViewport(handle.point), box, chromeBox);
-            const radius = Math.max(4, handleSize * 0.55);
+            const handleStyle = getChromeHandleStyle(style, state, handle.id === hotHandleId);
+            const radius = Math.max(4, handleStyle.size * 0.55);
             const connectorStart = {
               x: Math.max(chromeBox.x, Math.min(chromeBox.x + chromeBox.width, point.x)),
               y: point.y < chromeBox.y ? chromeBox.y : chromeBox.y + chromeBox.height,
@@ -1901,20 +2580,24 @@ function SelectionChrome({
             );
           })}
         {handles.map((handle) => {
+          const handleState = getChromeHandleStyle(style, state, handle.id === hotHandleId);
+          const handleOffset = handleState.size * 0.5;
           const point = shouldProjectHandleToChromeBounds(handle, chrome)
             ? projectChromeHandlePoint(transform.pdfToViewport(handle.point), box, chromeBox)
             : transform.pdfToViewport(handle.point);
           if (handle.behavior === 'rotateSelf') {
-            const radius = Math.max(4, handleSize * 0.55);
+            const radius = Math.max(4, handleState.size * 0.55);
             return (
               <circle
                 key={handle.id}
+                data-handle-id={handle.id}
+                data-handle-state={handle.id === hotHandleId ? 'hot' : state}
                 cx={point.x}
                 cy={point.y}
                 r={radius}
-                fill={style.handleFill}
-                stroke={style.boundsStroke}
-                strokeWidth={1.25}
+                fill={handleState.fill}
+                stroke={handleState.stroke}
+                strokeWidth={handleState.strokeWidth}
               />
             );
           }
@@ -1922,13 +2605,15 @@ function SelectionChrome({
           return (
             <rect
               key={handle.id}
+              data-handle-id={handle.id}
+              data-handle-state={handle.id === hotHandleId ? 'hot' : state}
               x={point.x - handleOffset}
               y={point.y - handleOffset}
-              width={handleSize}
-              height={handleSize}
-              fill={style.handleFill}
-              stroke={style.handleStroke}
-              strokeWidth={1}
+              width={handleState.size}
+              height={handleState.size}
+              fill={handleState.fill}
+              stroke={handleState.stroke}
+              strokeWidth={handleState.strokeWidth}
             />
           );
         })}
@@ -2221,16 +2906,6 @@ function resizeHandleKindFromId(handleId: string) {
   }
 
   return null;
-}
-
-function isHandleVisibleForBounds(handle: ToolHandleDescriptor, chrome: SelectionChromeDescriptor): boolean {
-  if (handle.behavior === 'resizeSelf') {
-    return chrome.bounds?.kind === 'group' || Boolean(chrome.bounds?.canResize);
-  }
-  if (handle.behavior === 'rotateSelf') {
-    return Boolean(chrome.bounds?.canRotate);
-  }
-  return true;
 }
 
 function shouldProjectHandleToChromeBounds(handle: ToolHandleDescriptor, chrome: SelectionChromeDescriptor): boolean {

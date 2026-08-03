@@ -105,8 +105,6 @@ export const SNAPSHOT_TOOL_DEFINITION: PdfToolDefinition<SnapshotMarkup, Rectang
           rect: markup.rect,
           rotation: markup.rotation,
           kind: 'child',
-          canResize: context.phase !== 'hovered',
-          canRotate: context.phase !== 'hovered',
         },
         handles: SNAPSHOT_TOOL_DEFINITION.geometry?.getGeometry(markup, context).handles,
       };
@@ -116,8 +114,6 @@ export const SNAPSHOT_TOOL_DEFINITION: PdfToolDefinition<SnapshotMarkup, Rectang
         bounds: {
           rect: rectangleDraftToRect(draft),
           kind: 'child',
-          canResize: false,
-          canRotate: false,
         },
         handles: [],
       };

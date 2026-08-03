@@ -166,8 +166,6 @@ export const TEXT_BOX_TOOL_DEFINITION: PdfToolDefinition<TextBoxMarkup, TextBoxD
           rect: markup.rect,
           rotation: markup.rotation,
           kind: 'child',
-          canResize: context.phase !== 'hovered',
-          canRotate: context.phase !== 'hovered',
         },
         handles: TEXT_BOX_TOOL_DEFINITION.geometry?.getGeometry(markup, context).handles,
       };
@@ -177,8 +175,6 @@ export const TEXT_BOX_TOOL_DEFINITION: PdfToolDefinition<TextBoxMarkup, TextBoxD
         bounds: {
           rect: textBoxDraftToRect(draft),
           kind: 'child',
-          canResize: false,
-          canRotate: false,
         },
         handles: [],
       };

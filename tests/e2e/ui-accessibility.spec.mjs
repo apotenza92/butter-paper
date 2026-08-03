@@ -48,6 +48,11 @@ test.describe('shadcn Base UI shell accessibility', () => {
     await expect(checkForUpdates).toBeVisible();
     await expect(checkForUpdates).toHaveAttribute('aria-disabled', 'true');
     await expect(page.getByTestId('menu-open-release-page')).toBeVisible();
+    const quitItem = page.getByTestId('menu-quit');
+    await expect(quitItem).toBeVisible();
+    await expect(quitItem).toHaveAccessibleName('Quit Butter Paper');
+    await expect(quitItem.locator('svg')).toHaveCount(1);
+    await expect(page.getByRole('menuitem', { name: /^Version / })).toHaveCount(0);
     const updateFrequency = page.getByTestId('menu-update-frequency');
     await updateFrequency.hover();
     const weeklyFrequency = page.getByTestId('menu-update-frequency-weekly');

@@ -170,8 +170,6 @@ function createLineToolDefinition<TMarkup extends StraightLineMarkup, TId extend
           bounds: {
             rect: lineBounds(markup),
             kind: 'child',
-            canResize: false,
-            canRotate: false,
           },
           handles: getEndpointHandles(id, markup),
           controlPaths: [{ id: `${id}.path`, points: [markup.start, markup.end], closed: false }],
@@ -182,8 +180,6 @@ function createLineToolDefinition<TMarkup extends StraightLineMarkup, TId extend
           bounds: {
             rect: lineBounds({ start: draft.start, end: draft.current }),
             kind: 'child',
-            canResize: false,
-            canRotate: false,
           },
           handles: [],
         };

@@ -88,8 +88,6 @@ export const LENGTH_TOOL_DEFINITION: PdfToolDefinition<LengthMarkup, never> & { 
         bounds: {
           rect: lineBounds(markup.start, markup.end),
           kind: 'child',
-          canResize: false,
-          canRotate: false,
         },
         handles: endpointHandles('length', markup.start, markup.end),
         controlPaths: [{ id: 'length.path', points: [markup.start, markup.end], closed: false }],
@@ -444,8 +442,6 @@ function pathSelection(id: 'polylength' | 'area', closed: boolean) {
         bounds: {
           rect: pointsBounds(markup.points),
           kind: 'child',
-          canResize: false,
-          canRotate: false,
         },
         handles: markup.points.map((point, index) => ({
           id: `${id}.vertex.${index}`,
@@ -463,8 +459,6 @@ function pathSelection(id: 'polylength' | 'area', closed: boolean) {
         bounds: {
           rect: pointsBounds(points),
           kind: 'child',
-          canResize: false,
-          canRotate: false,
         },
         handles: [],
       };

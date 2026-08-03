@@ -149,8 +149,6 @@ export const DIMENSION_TOOL_DEFINITION: PdfToolDefinition<DimensionMarkup, LineD
         bounds: {
           rect: dimensionBounds(markup),
           kind: 'group',
-          canResize: false,
-          canRotate: false,
         },
         handles: dimensionHandles(markup),
         controlPaths: [{ id: 'dimension.path', points: dimensionHitPath(markup), closed: false }],
@@ -162,8 +160,6 @@ export const DIMENSION_TOOL_DEFINITION: PdfToolDefinition<DimensionMarkup, LineD
         bounds: {
           rect: dimensionBounds(markup),
           kind: 'group',
-          canResize: false,
-          canRotate: false,
         },
         handles: [],
       };

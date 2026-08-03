@@ -2,6 +2,29 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.17]
+
+- Standardized annotation interaction chrome across tools: hovering now shows
+  faint blue geometry with pale handles, selected objects use dark blue chrome
+  with solid yellow handles, and a hovered handle becomes visibly actionable.
+- Added direct manipulation of unselected handles without forcing selection;
+  clicking a handle still selects its object, and the first click after placing
+  an annotation now deselects it instead of creating an accidental duplicate.
+- Added CAD-style multi-object selection with Shift toggling, left-to-right
+  contained selection, right-to-left crossing selection, freeform lasso,
+  explicit add/remove zones, directional blue/green styling, operation badges,
+  and cursor-following hotkey guidance.
+- Simplified the annotation rails into stable Review and Draw groups while
+  preserving resizing, overflow access, tooltips, accessibility, and the custom
+  Butter Paper tool icons.
+- Restored saved desktop window size and position safely across launches and
+  display changes, while retaining the reviewed default and minimum geometry.
+- Reworked cloud scallops as continuous cubic lobes with matching sampled hit
+  geometry for a cleaner Bluebeam-style appearance and dependable selection.
+- Expanded deterministic and hosted Electron coverage for annotation creation,
+  hover and handle behavior, multi-selection geometry, window restoration,
+  rail layout, keyboard accessibility, and shell overflow.
+
 ## [0.0.16]
 
 - Replaced the experimental Butter Canvas surface with native blank PDFs that

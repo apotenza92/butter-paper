@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { createPageTransform, createRectangleMarkup, pdfPoint, rect } from '@butter-paper/core';
+import { createCalloutMarkup, createCloudPlusMarkup, createPageTransform, createRectangleMarkup, pdfPoint, rect } from '@butter-paper/core';
+import { getVerticallyCenteredAnnotationTextContentStyle } from '../pdf-tools/annotationStyles';
 import { expandViewportRect, isPointNearSelectionChromeEdge, projectChromeHandlePoint } from '../pdf-tools/selectionHitZones';
 import { layoutTextBoxLines, splitAnnotationTextLines } from '../pdf-tools/textLayout';
-import { autosizeTextBoxRect, autosizeTextBoxRectDownward, scaleAnnotationDashArray, scaleAnnotationFirstBaselineOffset, scaleAnnotationFontSize, scaleAnnotationLineHeight, scaleAnnotationStrokeWidth, scaleAnnotationTextInset, shouldCancelDraftForToolChange, shouldRenderMarkupAtZoom, textBoxCaretGeometry } from './AnnotationLayer';
+import { autosizeTextBoxRect, autosizeTextBoxRectDownward, centeredCompositeTextBoxRect, cloudCursorHintPosition, isCloudPolygonClosePoint, isPostPlacementSelectionActive, scaleAnnotationDashArray, scaleAnnotationFirstBaselineOffset, scaleAnnotationFontSize, scaleAnnotationLineHeight, scaleAnnotationStrokeWidth, scaleAnnotationTextInset, selectionAfterMarkupClick, selectionCursorHintPosition, selectionToggleCursorIntent, selectionZoneCursorIntent, shouldCancelDraftForToolChange, shouldRenderMarkupAtZoom, shouldSelectMarkupAfterHandleTransform, textBoxCaretGeometry, updateMarkupTextAndCenterOnLeader } from './AnnotationLayer';
 
 describe('annotation layer rendering', () => {
   it('scales PDF text font sizes into thumbnail viewport space', () => {
@@ -153,5 +154,92 @@ describe('annotation layer rendering', () => {
     expect(shouldCancelDraftForToolChange('line', 'rectangle', lineDraft)).toBe(true);
     expect(shouldCancelDraftForToolChange('line', 'line', lineDraft)).toBe(false);
     expect(shouldCancelDraftForToolChange('line', 'rectangle', null)).toBe(false);
+  });
+
+  it('keeps only the matching completed placement in the direct-manipulation submode', () => {
+    const completed = { markupId: 'rect-1', tool: 'rectangle' } as const;
+
+    expect(isPostPlacementSelectionActive(completed, 'rectangle', ['rect-1'], false)).toBe(true);
+    expect(isPostPlacementSelectionActive(completed, 'rectangle', ['rect-1'], true)).toBe(false);
+    expect(isPostPlacementSelectionActive(completed, 'line', ['rect-1'], false)).toBe(false);
+    expect(isPostPlacementSelectionActive(completed, 'rectangle', [], false)).toBe(false);
+  });
+
+  it('selects on a handle click but keeps a latched handle drag transient', () => {
+    const page = { id: 'page-1', index: 0, size: { width: 612, height: 792 }, rotation: 0 } as const;
+    const transform = createPageTransform(page, 2);
+    const gesture = { startPoint: pdfPoint(10, 10), dragStarted: false } as const;
+
+    expect(shouldSelectMarkupAfterHandleTransform(gesture, pdfPoint(11, 10), transform)).toBe(true);
+    expect(shouldSelectMarkupAfterHandleTransform(gesture, pdfPoint(12, 10), transform)).toBe(false);
+    expect(shouldSelectMarkupAfterHandleTransform(
+      { ...gesture, dragStarted: true },
+      gesture.startPoint,
+      transform,
+    )).toBe(false);
+  });
+
+  it('replaces selection on a plain click and toggles membership on Shift-click', () => {
+    expect(selectionAfterMarkupClick(['rect-1', 'line-1'], 'ellipse-1', false)).toEqual(['ellipse-1']);
+    expect(selectionAfterMarkupClick(['rect-1', 'line-1'], 'line-1', false)).toEqual(['rect-1', 'line-1']);
+    expect(selectionAfterMarkupClick(['rect-1'], 'ellipse-1', true)).toEqual(['rect-1', 'ellipse-1']);
+    expect(selectionAfterMarkupClick(['rect-1', 'ellipse-1'], 'ellipse-1', true)).toEqual(['rect-1']);
+  });
+
+  it('shows add and remove cursors for Shift-toggle selection without masking handle cursors', () => {
+    expect(selectionToggleCursorIntent('select', true, 'ellipse-1', ['rect-1'], false)).toBe('add');
+    expect(selectionToggleCursorIntent('select', true, 'rect-1', ['rect-1'], false)).toBe('remove');
+    expect(selectionToggleCursorIntent('select', true, 'rect-1', ['rect-1'], true)).toBeNull();
+    expect(selectionToggleCursorIntent('select', false, 'rect-1', ['rect-1'], false)).toBeNull();
+    expect(selectionToggleCursorIntent('rectangle', true, 'rect-1', ['rect-1'], false)).toBeNull();
+    expect(selectionZoneCursorIntent('select', true, false, null, false)).toBe('add');
+    expect(selectionZoneCursorIntent('select', false, true, null, false)).toBe('remove');
+    expect(selectionZoneCursorIntent('select', true, false, 'rect-1', false)).toBeNull();
+  });
+
+  it('keeps the cursor-following selection shortcut hint inside the page', () => {
+    expect(selectionCursorHintPosition({ x: 40, y: 50 }, { width: 600, height: 400 })).toEqual({ x: 56, y: 66 });
+    expect(selectionCursorHintPosition({ x: 590, y: 390 }, { width: 600, height: 400 })).toEqual({ x: 298, y: 346 });
+  });
+
+  it('keeps the cloud gesture hint beside the pointer and inside the page', () => {
+    expect(cloudCursorHintPosition({ x: 40, y: 50 }, { width: 600, height: 400 })).toEqual({ x: 54, y: 64 });
+    expect(cloudCursorHintPosition({ x: 590, y: 390 }, { width: 600, height: 400 })).toEqual({ x: 390, y: 352 });
+  });
+
+  it('closes a cloud polygon within a zoom-independent screen-space threshold', () => {
+    const page = { id: 'page-1', index: 0, size: { width: 612, height: 792 }, rotation: 0 } as const;
+    const transform = createPageTransform(page, 2);
+
+    expect(isCloudPolygonClosePoint(pdfPoint(10, 10), pdfPoint(14, 10), transform)).toBe(true);
+    expect(isCloudPolygonClosePoint(pdfPoint(10, 10), pdfPoint(16, 10), transform)).toBe(false);
+  });
+
+  it.each(['callout', 'cloud-plus'] as const)('grows and vertically centers %s text around its leader connection', (kind) => {
+    const base = {
+      id: `${kind}-1`,
+      pageIndex: 0,
+      leader: { points: [pdfPoint(10, 22), pdfPoint(40, 22), pdfPoint(100, 22)] },
+      textBox: rect(100, 0, 150, 44),
+      text: 'One line',
+    } as const;
+    const markup = kind === 'callout'
+      ? createCalloutMarkup(base)
+      : createCloudPlusMarkup({ ...base, cloud: { controlPath: [pdfPoint(0, 0), pdfPoint(0, 40), pdfPoint(80, 40), pdfPoint(80, 0)] } });
+    const text = 'First\nSecond\nThird';
+    const centered = centeredCompositeTextBoxRect(markup, text);
+    const updated = updateMarkupTextAndCenterOnLeader({
+      id: 'document-1',
+      path: '/document.pdf',
+      metadata: {},
+      pages: [],
+      markups: [markup],
+    }, markup.id, text).markups[0];
+    const style = getVerticallyCenteredAnnotationTextContentStyle({ ...markup, text, textBox: centered } as never);
+
+    expect(centered.height).toBeCloseTo(53.4);
+    expect(centered.y + centered.height * 0.5).toBeCloseTo(22);
+    expect(updated).toMatchObject({ text, textBox: centered });
+    expect(style.firstBaselineOffsetPt).toBeCloseTo(16.5);
   });
 });

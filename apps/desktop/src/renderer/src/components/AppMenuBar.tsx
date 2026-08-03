@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { X } from 'lucide-react';
 import {
   Menubar,
   MenubarContent,
@@ -36,6 +37,7 @@ interface AppMenuBarProps {
   onCheckForUpdates: () => void;
   onOpenReleasePage: () => void;
   onUpdateFrequencyChange: (frequency: UpdateFrequency) => void;
+  onQuit: () => void;
 }
 
 const UPDATE_FREQUENCIES: Array<{ value: UpdateFrequency; label: string }> = [
@@ -49,7 +51,7 @@ const UPDATE_FREQUENCIES: Array<{ value: UpdateFrequency; label: string }> = [
   { value: 'monthly', label: 'Monthly' },
 ];
 
-export function AppMenuBar({ canSave, productName, updateStatus, onNewPdf, onOpen, onSave, onSaveAs, onSetAsDefaultPdfApp, onCheckForUpdates, onOpenReleasePage, onUpdateFrequencyChange }: AppMenuBarProps) {
+export function AppMenuBar({ canSave, productName, updateStatus, onNewPdf, onOpen, onSave, onSaveAs, onSetAsDefaultPdfApp, onCheckForUpdates, onOpenReleasePage, onUpdateFrequencyChange, onQuit }: AppMenuBarProps) {
   const fileItems = useMemo<AppMenuItem[]>(() => {
     return [
       {
@@ -144,19 +146,18 @@ export function AppMenuBar({ canSave, productName, updateStatus, onNewPdf, onOpe
                   <MenubarItem data-testid="menu-open-release-page" onClick={onOpenReleasePage}>
                     View Releases...
                   </MenubarItem>
-                </MenubarGroup>
-                <MenubarSeparator />
-                <MenubarGroup>
-                  <MenubarItem disabled>
-                    {updateStatus
-                      ? `Version ${updateStatus.currentVersion}${updateStatus.channel === 'beta' ? ' Beta' : ''}`
-                      : 'Loading update settings...'}
-                  </MenubarItem>
                   {updateStatus?.disabledReason ? (
                     <MenubarItem disabled>
                       {updateDisabledReasonLabel(updateStatus.disabledReason)}
                     </MenubarItem>
                   ) : null}
+                </MenubarGroup>
+                <MenubarSeparator />
+                <MenubarGroup>
+                  <MenubarItem data-testid="menu-quit" onClick={onQuit}>
+                    <X aria-hidden="true" />
+                    Quit {productName}
+                  </MenubarItem>
                 </MenubarGroup>
               </>
             ) : (
