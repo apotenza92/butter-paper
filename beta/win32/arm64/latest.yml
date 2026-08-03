@@ -1,30 +1,44 @@
-version: 0.0.15
+version: 0.0.16
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.15/Butter-Paper-Beta-Windows-arm64-Setup.exe
-    sha512: /BcpNSQxbDuCCxsJBiyW6rPFgx0lhXwOroSgFRe7gz/oOkbq5/tEQR5BK2WNF+2hndGKjpVmTSQwLOgTjaq3Sg==
-    size: 109444958
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.15/Butter-Paper-Beta-Windows-arm64-Setup.exe
-sha512: /BcpNSQxbDuCCxsJBiyW6rPFgx0lhXwOroSgFRe7gz/oOkbq5/tEQR5BK2WNF+2hndGKjpVmTSQwLOgTjaq3Sg==
-releaseNotes: "- Added immediate, accessible in-app feedback for manual update checks,\r
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.16/Butter-Paper-Beta-Windows-arm64-Setup.exe
+    sha512: Qm/lbXbAS5w5ss82EqyiQZ09jXSe9Mn/59pvKijmDCBYYn+/NXkXr9BCUmaGzI1A9nNCMK7WasQtB4Q63pwSgw==
+    size: 109536797
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.16/Butter-Paper-Beta-Windows-arm64-Setup.exe
+sha512: Qm/lbXbAS5w5ss82EqyiQZ09jXSe9Mn/59pvKijmDCBYYn+/NXkXr9BCUmaGzI1A9nNCMK7WasQtB4Q63pwSgw==
+releaseNotes: "- Replaced the experimental Butter Canvas surface with native blank PDFs that\r
 
-  \  including checking, authenticated download progress, up-to-date,\r
+  \  can be created in standard paper sizes, orientations, and page counts, then\r
 
-  \  failure/retry, and ready-to-install states.\r
+  \  saved, annotated, and reopened through the normal document workflow.\r
 
-  - Kept automatic checks quiet until an update is ready, while ensuring every\r
+  - Refined the Nova desktop shell with integrated closable and reorderable\r
 
-  \  manual check ends with visible success, no-update, or error feedback.\r
+  \  document tabs, configurable annotation rails, streamlined tool controls, and\r
 
-  - Allowed the update progress window to close without cancelling its background\r
+  \  safer unsaved-document handling.\r
 
-  \  download; the ready-to-install prompt still appears when that download\r
+  - Standardized new desktop windows at 1200×800 with a 900×600 minimum while\r
 
-  \  completes.\r
+  \  preserving accessible menus, popovers, dialogs, scrolling, and constrained\r
 
-  - Preserved isolated stable and beta application identities and feeds. This\r
+  \  layouts.\r
 
-  \  stable release advances both products without converting beta installations\r
+  - Refreshed the renderer against the official shadcn Base UI Nova registry,\r
 
-  \  into the stable app."
-releaseDate: 2026-07-31T07:00:56.518Z
+  \  moved typography to Geist Variable, and preserved Butter Paper's custom AEC\r
+
+  \  and document-view icon geometry.\r
+
+  - Changed automatic-update defaults for new installations to weekly on the\r
+
+  \  stable channel and daily on the beta channel. Existing saved preferences are\r
+
+  \  preserved.\r
+
+  - Expanded deterministic and hosted Electron coverage for blank-PDF lifecycle,\r
+
+  \  document tabs, shell overflow, rail behavior, update scheduling, and\r
+
+  \  repository UI-component hygiene."
+releaseDate: 2026-08-03T10:31:39.964Z
 butterPaperChannel: beta
