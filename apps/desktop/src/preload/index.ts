@@ -69,6 +69,9 @@ const bridge: ButterPaperBridge = {
         }
       };
     },
+    requestQuit: async () => {
+      await ipcRenderer.invoke(ipcChannels.applicationRequestQuit);
+    },
     confirmClose: async () => {
       await ipcRenderer.invoke(ipcChannels.applicationConfirmClose);
     },

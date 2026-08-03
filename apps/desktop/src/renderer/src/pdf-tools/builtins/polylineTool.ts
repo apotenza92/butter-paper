@@ -106,8 +106,6 @@ export const POLYLINE_TOOL_DEFINITION: PdfToolDefinition<PolylineMarkup, LineDra
         bounds: {
           rect: pointsBounds(markup.points),
           kind: 'child',
-          canResize: false,
-          canRotate: false,
         },
         handles: markup.points.map((point, index) => ({
           id: `polyline.vertex.${index}`,
@@ -124,8 +122,6 @@ export const POLYLINE_TOOL_DEFINITION: PdfToolDefinition<PolylineMarkup, LineDra
         bounds: {
           rect: pointsBounds([draft.start, draft.current]),
           kind: 'child',
-          canResize: false,
-          canRotate: false,
         },
         handles: [],
       };

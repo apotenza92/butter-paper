@@ -162,8 +162,6 @@ function createInkToolDefinition<TMarkup extends InkMarkup, TId extends 'pen' | 
           bounds: {
             rect: inkBounds(markup.paths, style.strokeWidth),
             kind: 'child',
-            canResize: false,
-            canRotate: false,
           },
           handles: [],
         };
@@ -173,8 +171,6 @@ function createInkToolDefinition<TMarkup extends InkMarkup, TId extends 'pen' | 
           bounds: {
             rect: inkBounds([draft.points], defaultStrokeWidth),
             kind: 'child',
-            canResize: false,
-            canRotate: false,
           },
           handles: [],
         };

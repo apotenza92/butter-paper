@@ -122,8 +122,6 @@ export const POLYGON_TOOL_DEFINITION: PdfToolDefinition<PolygonMarkup, LineDraft
         bounds: {
           rect: pointsBounds(markup.points),
           kind: 'child',
-          canResize: false,
-          canRotate: false,
         },
         handles: markup.points.map((point, index) => ({
           id: `polygon.vertex.${index}`,
@@ -140,8 +138,6 @@ export const POLYGON_TOOL_DEFINITION: PdfToolDefinition<PolygonMarkup, LineDraft
         bounds: {
           rect: pointsBounds([draft.start, draft.current]),
           kind: 'child',
-          canResize: false,
-          canRotate: false,
         },
         handles: [],
       };

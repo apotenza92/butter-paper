@@ -58,51 +58,18 @@ export function generateCloudScallopPoints(
     return controlPath;
   }
 
-  const orderedControlPath = closed ? normalizeClosedCloudControlPath(controlPath) : controlPath;
-  const path = closed ? [...orderedControlPath, orderedControlPath[0]] : [...orderedControlPath];
-  const orientation = closed ? polygonSignedArea(orderedControlPath) : 1;
-  const spacing = Math.max(3, options.scallopSpacing);
-  const radius = Math.max(1, options.scallopRadius + options.offset);
-  const outwardOffset = options.offset > 0 ? options.offset : radius * 0.3316;
-  const generated: PdfPoint[] = [];
-
-  for (let index = 0; index < path.length - 1; index += 1) {
-    const start = path[index];
-    const end = path[index + 1];
-    const dx = end.x - start.x;
-    const dy = end.y - start.y;
-    const length = Math.hypot(dx, dy);
-    if (length === 0) {
-      continue;
-    }
-
-    const segmentCount = Math.max(1, Math.round(length / spacing));
-    const ux = dx / length;
-    const uy = dy / length;
-    const normal = outwardNormal(ux, uy, orientation);
-
-    for (let segmentIndex = 0; segmentIndex < segmentCount; segmentIndex += 1) {
-      const lobeLength = spacing;
-      const lobeStart = (segmentIndex + 0.5) * spacing;
-      for (const sample of BLUEBEAM_CLOUD_LOBE_SAMPLES) {
-        if (generated.length > 0 && segmentIndex > 0 && sample.t === 0 && sample.n === 0) continue;
-        const distanceAlong = lobeStart + sample.t * lobeLength;
-        const baseX = start.x + ux * distanceAlong;
-        const baseY = start.y + uy * distanceAlong;
-        const normalDistance = outwardOffset + sample.n * radius;
-        generated.push({
-          ...start,
-          x: roundCloudCoordinate(baseX + normal.x * normalDistance),
-          y: roundCloudCoordinate(baseY + normal.y * normalDistance),
-        });
-      }
-    }
+  const segments = generateCloudCubicSegments(controlPath, closed, options);
+  if (segments.length === 0) {
+    return controlPath;
   }
 
-  if (closed && generated.length > 0) {
-    generated.push(generated[0]);
+  const points: PdfPoint[] = [segments[0].start];
+  for (const segment of segments) {
+    for (let sample = 1; sample <= CLOUD_CURVE_HIT_TEST_SAMPLES; sample += 1) {
+      points.push(cubicPoint(segment, sample / CLOUD_CURVE_HIT_TEST_SAMPLES));
+    }
   }
-  return generated;
+  return points;
 }
 
 export function generateCloudScallopPath(
@@ -114,56 +81,88 @@ export function generateCloudScallopPath(
     return pointsToPath(controlPath, closed);
   }
 
+  const segments = generateCloudCubicSegments(controlPath, closed, options);
+  if (segments.length === 0) {
+    return pointsToPath(controlPath, closed);
+  }
+  const commands = [`M ${segments[0].start.x} ${segments[0].start.y}`];
+  for (const segment of segments) {
+    commands.push(cubicCommand(segment));
+  }
+  if (closed) {
+    commands.push('Z');
+  }
+  return commands.join(' ');
+}
+
+interface CloudCubicSegment {
+  readonly start: PdfPoint;
+  readonly control1: PdfPoint;
+  readonly control2: PdfPoint;
+  readonly end: PdfPoint;
+}
+
+const CLOUD_CURVE_HIT_TEST_SAMPLES = 6;
+const HALF_ELLIPSE_KAPPA = 0.5522847498;
+const BLUEBEAM_CLOUD_PADDING_RATIO = 0.6831;
+
+function generateCloudCubicSegments(
+  controlPath: readonly PdfPoint[],
+  closed: boolean,
+  options: CloudLineTypeOptions,
+): readonly CloudCubicSegment[] {
   const orderedControlPath = closed ? normalizeClosedCloudControlPath(controlPath) : controlPath;
   const path = closed ? [...orderedControlPath, orderedControlPath[0]] : [...orderedControlPath];
   const orientation = closed ? polygonSignedArea(orderedControlPath) : 1;
   const spacing = Math.max(3, options.scallopSpacing);
-  const radius = Math.max(1, options.scallopRadius + options.offset);
-  const outwardOffset = options.offset > 0 ? options.offset : radius * 0.3316;
-  const commands: string[] = [];
+  const radius = Math.max(1, options.scallopRadius);
+  const segments: CloudCubicSegment[] = [];
 
-  for (let index = 0; index < path.length - 1; index += 1) {
-    const start = path[index];
-    const end = path[index + 1];
-    const dx = end.x - start.x;
-    const dy = end.y - start.y;
+  for (let edgeIndex = 0; edgeIndex < path.length - 1; edgeIndex += 1) {
+    const edgeStart = path[edgeIndex];
+    const edgeEnd = path[edgeIndex + 1];
+    const dx = edgeEnd.x - edgeStart.x;
+    const dy = edgeEnd.y - edgeStart.y;
     const length = Math.hypot(dx, dy);
     if (length === 0) {
       continue;
     }
+
+    const lobeCount = Math.max(1, Math.round(length / spacing));
+    const lobeLength = length / lobeCount;
     const ux = dx / length;
     const uy = dy / length;
     const normal = outwardNormal(ux, uy, orientation);
-    const segmentCount = Math.max(1, Math.round(length / spacing));
-    for (let segmentIndex = 0; segmentIndex < segmentCount; segmentIndex += 1) {
-      const pointAt = (sample: { t: number; n: number }) => {
-        const lobeLength = spacing;
-        const lobeStart = (segmentIndex + 0.5) * spacing;
-        const distanceAlong = lobeStart + sample.t * lobeLength;
-        const baseX = start.x + ux * distanceAlong;
-        const baseY = start.y + uy * distanceAlong;
-        const normalDistance = outwardOffset + sample.n * radius;
-        return {
-          x: roundCloudCoordinate(baseX + normal.x * normalDistance),
-          y: roundCloudCoordinate(baseY + normal.y * normalDistance),
-        };
-      };
+    const depth = Math.max(0.5, Math.min(radius * BLUEBEAM_CLOUD_PADDING_RATIO, lobeLength * 0.8) + options.offset);
 
-      if (commands.length === 0) {
-        const first = pointAt(BLUEBEAM_CLOUD_LOBE_POINTS[0]);
-        commands.push(`M ${first.x} ${first.y}`);
-      }
+    for (let lobeIndex = 0; lobeIndex < lobeCount; lobeIndex += 1) {
+      const startDistance = lobeIndex * lobeLength;
+      const endDistance = (lobeIndex + 1) * lobeLength;
+      const middleDistance = startDistance + lobeLength * 0.5;
+      const start = lobeIndex === 0 ? edgeStart : edgePoint(edgeStart, ux, uy, startDistance);
+      const middle = offsetPoint(edgePoint(edgeStart, ux, uy, middleDistance), normal, depth);
+      const end = lobeIndex === lobeCount - 1 ? edgeEnd : edgePoint(edgeStart, ux, uy, endDistance);
+      const tangentX = ux * lobeLength * 0.5 * HALF_ELLIPSE_KAPPA;
+      const tangentY = uy * lobeLength * 0.5 * HALF_ELLIPSE_KAPPA;
+      const normalX = normal.x * depth * HALF_ELLIPSE_KAPPA;
+      const normalY = normal.y * depth * HALF_ELLIPSE_KAPPA;
 
-      const firstCurve = BLUEBEAM_CLOUD_LOBE_POINTS.slice(1, 4).map(pointAt);
-      const secondCurve = BLUEBEAM_CLOUD_LOBE_POINTS.slice(4, 7).map(pointAt);
-      const thirdCurve = BLUEBEAM_CLOUD_LOBE_POINTS.slice(7, 10).map(pointAt);
-      commands.push(cubicCommand(firstCurve));
-      commands.push(cubicCommand(secondCurve));
-      commands.push(cubicCommand(thirdCurve));
+      segments.push({
+        start,
+        control1: roundedPoint(start.x + normalX, start.y + normalY, start),
+        control2: roundedPoint(middle.x - tangentX, middle.y - tangentY, start),
+        end: middle,
+      });
+      segments.push({
+        start: middle,
+        control1: roundedPoint(middle.x + tangentX, middle.y + tangentY, start),
+        control2: roundedPoint(end.x + normalX, end.y + normalY, start),
+        end,
+      });
     }
   }
 
-  return commands.join(' ');
+  return segments;
 }
 
 export function pointsToPath(points: readonly PdfPoint[], closed: boolean): string {
@@ -182,28 +181,39 @@ export function pointsToPath(points: readonly PdfPoint[], closed: boolean): stri
   return commands.join(' ');
 }
 
-const BLUEBEAM_CLOUD_LOBE_POINTS = [
-  // Fitted from Bluebeam `/PolygonCloud` AP streams in
-  // `docs/pdf-tools/bluebeam-defaults-research.md`.
-  // Each lobe is drawn as three cubic segments; `t` is distance along the
-  // control edge, and `n` is outward normal distance in radius units.
-  { t: 0, n: 0 },
-  { t: 0.1832, n: 0.2761 },
-  { t: 0.5555, n: 0.3515 },
-  { t: 0.8317, n: 0.1683 },
-  { t: 0.9435, n: 0.0942 },
-  { t: 1.0574, n: -0.0722 },
-  { t: 1.0854, n: -0.2033 },
-  { t: 1.0721, n: -0.1427 },
-  { t: 1.0335, n: -0.0517 },
-  { t: 1, n: 0 },
-] as const;
+function cubicCommand(segment: CloudCubicSegment): string {
+  return `C ${segment.control1.x} ${segment.control1.y} ${segment.control2.x} ${segment.control2.y} ${segment.end.x} ${segment.end.y}`;
+}
 
-const BLUEBEAM_CLOUD_LOBE_SAMPLES = BLUEBEAM_CLOUD_LOBE_POINTS;
+function cubicPoint(segment: CloudCubicSegment, t: number): PdfPoint {
+  if (t <= 0) {
+    return segment.start;
+  }
+  if (t >= 1) {
+    return segment.end;
+  }
+  const inverse = 1 - t;
+  const x = inverse ** 3 * segment.start.x
+    + 3 * inverse ** 2 * t * segment.control1.x
+    + 3 * inverse * t ** 2 * segment.control2.x
+    + t ** 3 * segment.end.x;
+  const y = inverse ** 3 * segment.start.y
+    + 3 * inverse ** 2 * t * segment.control1.y
+    + 3 * inverse * t ** 2 * segment.control2.y
+    + t ** 3 * segment.end.y;
+  return roundedPoint(x, y, segment.start);
+}
 
-function cubicCommand(points: readonly { x: number; y: number }[]): string {
-  const [first, second, third] = points;
-  return `C ${first.x} ${first.y} ${second.x} ${second.y} ${third.x} ${third.y}`;
+function edgePoint(start: PdfPoint, ux: number, uy: number, distance: number): PdfPoint {
+  return roundedPoint(start.x + ux * distance, start.y + uy * distance, start);
+}
+
+function offsetPoint(point: PdfPoint, normal: { x: number; y: number }, distance: number): PdfPoint {
+  return roundedPoint(point.x + normal.x * distance, point.y + normal.y * distance, point);
+}
+
+function roundedPoint(x: number, y: number, source: PdfPoint): PdfPoint {
+  return { ...source, x: roundCloudCoordinate(x), y: roundCloudCoordinate(y) };
 }
 
 function outwardNormal(ux: number, uy: number, orientation: number): { x: number; y: number } {

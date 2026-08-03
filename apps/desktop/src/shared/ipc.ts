@@ -5,6 +5,7 @@ export const ipcChannels = {
   applicationTakePendingPdfPaths: 'application:take-pending-pdf-paths',
   applicationSetCloseBlocked: 'application:set-close-blocked',
   applicationCloseRequested: 'application:close-requested',
+  applicationRequestQuit: 'application:request-quit',
   applicationConfirmClose: 'application:confirm-close',
   applicationCancelClose: 'application:cancel-close',
   themeGetSnapshot: 'theme:get-snapshot',

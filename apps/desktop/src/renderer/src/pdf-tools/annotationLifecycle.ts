@@ -70,6 +70,7 @@ export type TransformDraft = {
   readonly handleBehavior: HandleBehavior;
   readonly startPoint: PdfPoint;
   readonly currentPoint: PdfPoint;
+  readonly dragStarted: boolean;
 };
 
 export type AnnotationDraft = RectangleDraft | TextBoxDraft | LineDraft | ArcDraft | CloudNodeDraft | InkDraft | MeasurementPathDraft | MoveDraft | TransformDraft;
@@ -222,11 +223,12 @@ export function createTransformDraft(
     handleBehavior,
     startPoint: point,
     currentPoint: point,
+    dragStarted: false,
   };
 }
 
-export function updateTransformDraft(draft: TransformDraft, currentPoint: PdfPoint): TransformDraft {
-  return { ...draft, currentPoint };
+export function updateTransformDraft(draft: TransformDraft, currentPoint: PdfPoint, dragStarted = draft.dragStarted): TransformDraft {
+  return { ...draft, currentPoint, dragStarted: draft.dragStarted || dragStarted };
 }
 
 export type RectResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';

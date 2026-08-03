@@ -43,7 +43,6 @@ interface RailScrollAreaProps {
   children: ReactNode;
   overflowIndicatorTestId: string;
   overflowSide: 'left' | 'right';
-  tooltipsDisabled?: boolean;
   viewportTestId?: string;
 }
 
@@ -51,7 +50,6 @@ export function RailScrollArea({
   children,
   overflowIndicatorTestId,
   overflowSide,
-  tooltipsDisabled = false,
   viewportTestId,
 }: RailScrollAreaProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -63,19 +61,19 @@ export function RailScrollArea({
   const activeTooltipTriggerRef = useRef<HTMLElement | null>(null);
   const canShowTooltip = useCallback(() => {
     const trigger = activeTooltipTriggerRef.current;
-    if (!trigger || tooltipsDisabled) {
+    if (!trigger) {
       return false;
     }
 
     const activeElement = trigger.ownerDocument.activeElement;
     return trigger.matches(':hover') || (activeElement instanceof Node && trigger.contains(activeElement));
-  }, [tooltipsDisabled]);
+  }, []);
   const {
     visible: tooltipVisible,
     hideTooltip: hideDelayedTooltip,
     showTooltip,
     showTooltipAfterDelay,
-  } = useTooltipDelay({ canShow: canShowTooltip, disabled: tooltipsDisabled });
+  } = useTooltipDelay({ canShow: canShowTooltip });
 
   const hideTooltip = useCallback(() => {
     activeTooltipTriggerRef.current = null;
@@ -84,10 +82,6 @@ export function RailScrollArea({
   }, [hideDelayedTooltip]);
 
   const updateTooltip = useCallback((target: EventTarget | null, clearWhenMissing = true, immediate = false) => {
-    if (tooltipsDisabled) {
-      hideTooltip();
-      return;
-    }
     if (!(target instanceof HTMLElement)) {
       if (clearWhenMissing) {
         hideTooltip();
@@ -126,7 +120,7 @@ export function RailScrollArea({
     } else if (!isSameTrigger) {
       showTooltipAfterDelay();
     }
-  }, [canShowTooltip, hideTooltip, showTooltip, showTooltipAfterDelay, tooltipsDisabled]);
+  }, [canShowTooltip, hideTooltip, showTooltip, showTooltipAfterDelay]);
 
   const updateOverflow = useCallback(() => {
     const viewport = viewportRef.current;
@@ -165,12 +159,6 @@ export function RailScrollArea({
   useEffect(() => {
     updateOverflow();
   }, [children, updateOverflow]);
-
-  useEffect(() => {
-    if (tooltipsDisabled) {
-      hideTooltip();
-    }
-  }, [hideTooltip, tooltipsDisabled]);
 
   const handleIndicatorWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
     const viewport = viewportRef.current;

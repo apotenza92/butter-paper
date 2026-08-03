@@ -115,8 +115,6 @@ export const ARC_TOOL_DEFINITION: PdfToolDefinition<ArcMarkup, ArcDraft> & { rea
         bounds: {
           rect: markup.rect,
           kind: 'child',
-          canResize: false,
-          canRotate: false,
         },
         handles: arcHandles(arcControlPoints(markup)),
         controlPaths: [{ id: 'arc.path', points: sampleArcPoints(markup, 24), closed: false }],
@@ -125,7 +123,7 @@ export const ARC_TOOL_DEFINITION: PdfToolDefinition<ArcMarkup, ArcDraft> & { rea
     getDraftChrome(draft): SelectionChromeDescriptor {
       const rect = draftBounds(draft);
       return {
-        bounds: rect ? { rect, kind: 'child', canResize: false, canRotate: false } : undefined,
+        bounds: rect ? { rect, kind: 'child' } : undefined,
         handles: [],
       };
     },

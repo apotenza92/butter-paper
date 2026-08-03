@@ -477,6 +477,7 @@ export interface ButterPaperBridge {
     onOpenPdfPaths(listener: (filePaths: string[]) => void): () => void;
     setCloseBlocked(blocked: boolean): Promise<void>;
     onCloseRequested(listener: () => void): () => void;
+    requestQuit(): Promise<void>;
     confirmClose(): Promise<void>;
     cancelClose(): Promise<void>;
   };

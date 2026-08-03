@@ -72,6 +72,24 @@ describe('viewer store', () => {
     expect(useViewerStore.getState().pendingImageAsset).toBeNull();
   });
 
+  it('shares post-placement direct manipulation across pages until selection or tool changes', () => {
+    const store = useViewerStore.getState();
+    store.setActiveTool('rectangle');
+    store.setSelectedMarkupIds(['rect-1']);
+    store.setPostPlacement({ markupId: 'rect-1', tool: 'rectangle' });
+
+    expect(useViewerStore.getState().postPlacement).toEqual({ markupId: 'rect-1', tool: 'rectangle' });
+    store.setSelectedMarkupIds(['rect-1']);
+    expect(useViewerStore.getState().postPlacement).toEqual({ markupId: 'rect-1', tool: 'rectangle' });
+    store.setSelectedMarkupIds([]);
+    expect(useViewerStore.getState().postPlacement).toBeNull();
+
+    store.setSelectedMarkupIds(['rect-2']);
+    store.setPostPlacement({ markupId: 'rect-2', tool: 'rectangle' });
+    store.setActiveTool('line');
+    expect(useViewerStore.getState().postPlacement).toBeNull();
+  });
+
   it('tracks snap source toggles and clamps sensitivity', () => {
     const store = useViewerStore.getState();
 

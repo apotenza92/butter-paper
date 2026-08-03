@@ -3,11 +3,13 @@ import {
   createLineDraft,
   resizeRectFromHandle,
   shouldCommitLine,
+  updateCloudNodeDraft,
   updateLineDraft,
+  type CloudNodeDraft,
   type LineDraft,
   type RectResizeHandle,
 } from '../annotationLifecycle';
-import { getAnnotationContentStyle, getAnnotationTextContentStyle } from '../annotationStyles';
+import { getAnnotationContentStyle, getVerticallyCenteredAnnotationTextContentStyle } from '../annotationStyles';
 import { isPointInRect, isPointNearPolygonEdge, isPointNearPolyline } from '../hitTesting';
 import { getMoveCursor, getResizeHandles } from '../interactionChrome';
 import { CLOUD_LINE_TYPE_RENDERER, DEFAULT_CLOUD_LINE_OPTIONS } from '../lineTypes';
@@ -16,6 +18,8 @@ import type { PdfToolDefinition, SelectionChromeDescriptor, ToolGeometryDescript
 const DEFAULT_TEXT = 'Cloud+';
 const DEFAULT_TEXT_BOX_WIDTH = 150;
 const DEFAULT_TEXT_BOX_HEIGHT = 44;
+
+type CloudPlusDraft = LineDraft | CloudNodeDraft;
 
 const CLOUD_PLUS_PROPERTIES = {
   properties: [
@@ -27,7 +31,7 @@ const CLOUD_PLUS_PROPERTIES = {
   ],
 } as const;
 
-export const CLOUD_PLUS_TOOL_DEFINITION: PdfToolDefinition<CloudPlusMarkup, LineDraft> & { readonly id: 'cloud-plus' } = {
+export const CLOUD_PLUS_TOOL_DEFINITION: PdfToolDefinition<CloudPlusMarkup, CloudPlusDraft> & { readonly id: 'cloud-plus' } = {
   id: 'cloud-plus',
   label: 'Cloud+',
   shortcut: 'K',
@@ -130,6 +134,8 @@ export const CLOUD_PLUS_TOOL_DEFINITION: PdfToolDefinition<CloudPlusMarkup, Line
             fill: 'none',
             strokeWidth: style.strokeWidth,
             opacity: style.opacity,
+            lineCap: 'round',
+            lineJoin: 'round',
           },
           pointerEvents: 'visibleStroke',
         },
@@ -149,7 +155,7 @@ export const CLOUD_PLUS_TOOL_DEFINITION: PdfToolDefinition<CloudPlusMarkup, Line
           kind: 'textBox',
           rect: markup.textBox,
           text: markup.text,
-          style: getAnnotationTextContentStyle(markup),
+          style: getVerticallyCenteredAnnotationTextContentStyle(markup),
           pointerEvents: 'all',
         },
       ];
@@ -164,8 +170,6 @@ export const CLOUD_PLUS_TOOL_DEFINITION: PdfToolDefinition<CloudPlusMarkup, Line
         bounds: {
           rect: cloudPlusBounds(markup),
           kind: 'group',
-          canResize: false,
-          canRotate: false,
         },
         handles: cloudPlusHandles(markup),
         controlPaths: [
@@ -177,8 +181,8 @@ export const CLOUD_PLUS_TOOL_DEFINITION: PdfToolDefinition<CloudPlusMarkup, Line
     getDraftChrome(draft): SelectionChromeDescriptor {
       const markup = draftToCloudPlusPreview(draft, 'cloud-plus-draft', 0);
       return {
-        bounds: { rect: cloudPlusBounds(markup), kind: 'group', canResize: false, canRotate: false },
-        handles: [],
+        bounds: { rect: cloudPlusBounds(markup), kind: 'group' },
+        handles: draft.kind === 'cloud-node' ? cloudPlusDraftVertexHandles(draft.points) : [],
         controlPaths: [
           { id: 'cloud-plus.draftCloudPath', points: markup.cloud.controlPath, closed: true },
           { id: 'cloud-plus.draftLeaderPath', points: markup.leader.points, closed: false },
@@ -187,15 +191,21 @@ export const CLOUD_PLUS_TOOL_DEFINITION: PdfToolDefinition<CloudPlusMarkup, Line
     },
   },
   interaction: {
-    placement: 'click',
     createDraft(session) {
       return createLineDraft(session.startPoint);
     },
     updateDraft(draft, point) {
-      return updateLineDraft(draft, point);
+      return draft.kind === 'cloud-node' ? updateCloudNodeDraft(draft, point) : updateLineDraft(draft, point);
     },
     commitDraft(draft, context) {
-      if (!shouldCommitLine(draft.start, draft.current)) {
+      if (draft.kind === 'cloud-node') {
+        if (draft.points.length < 3) {
+          return null;
+        }
+        return cloudPlusFromControlPath(draft.points, context.createMarkupId('cloud-plus'), context.page.index);
+      }
+
+      if (!context.hasExceededDragThreshold || !shouldCommitLine(draft.start, draft.current)) {
         return null;
       }
       return draftToCloudPlusPreview(draft, context.createMarkupId('cloud-plus'), context.page.index);
@@ -292,8 +302,14 @@ export const CLOUD_PLUS_TOOL_DEFINITION: PdfToolDefinition<CloudPlusMarkup, Line
   },
 };
 
-function draftToCloudPlusPreview(draft: LineDraft, id: string, pageIndex: number): CloudPlusMarkup {
-  const cloudPath = rectangleControlPath(draft.start, draft.current);
+function draftToCloudPlusPreview(draft: CloudPlusDraft, id: string, pageIndex: number): CloudPlusMarkup {
+  const cloudPath = draft.kind === 'cloud-node'
+    ? cloudNodePreviewPath(draft)
+    : rectangleControlPath(draft.start, draft.current);
+  return cloudPlusFromControlPath(cloudPath, id, pageIndex);
+}
+
+function cloudPlusFromControlPath(cloudPath: readonly PdfPoint[], id: string, pageIndex: number): CloudPlusMarkup {
   const cloudBounds = pointsBounds(cloudPath);
   const textBox = rect(cloudBounds.x + cloudBounds.width + 24, cloudBounds.y + cloudBounds.height * 0.5 - DEFAULT_TEXT_BOX_HEIGHT * 0.5, DEFAULT_TEXT_BOX_WIDTH, DEFAULT_TEXT_BOX_HEIGHT);
   const tip = pdfPoint(cloudBounds.x + cloudBounds.width, cloudBounds.y + cloudBounds.height * 0.5);
@@ -314,6 +330,13 @@ function draftToCloudPlusPreview(draft: LineDraft, id: string, pageIndex: number
     color: '#ff0000',
     source: { source: 'butter' },
   });
+}
+
+function cloudNodePreviewPath(draft: CloudNodeDraft): readonly PdfPoint[] {
+  const lastPoint = draft.points[draft.points.length - 1] ?? draft.start;
+  return Math.hypot(draft.current.x - lastPoint.x, draft.current.y - lastPoint.y) < 0.5
+    ? draft.points
+    : [...draft.points, draft.current];
 }
 
 function cloudPlusBounds(markup: CloudPlusMarkup): Rect {
@@ -352,6 +375,16 @@ function cloudPlusHandles(markup: CloudPlusMarkup) {
     cursor: getMoveCursor(),
   }));
   return [...cloudHandles, ...textResizeHandles, ...leaderHandles];
+}
+
+function cloudPlusDraftVertexHandles(points: readonly PdfPoint[]) {
+  return points.map((point, index) => ({
+    id: `cloud-plus.cloud.vertex.${index}`,
+    componentId: 'cloud-plus.cloud',
+    point,
+    behavior: 'reshapeVertex' as const,
+    cursor: getMoveCursor(),
+  }));
 }
 
 function leaderPointIndexFromHandle(handleId: string, pointCount: number): number | null {

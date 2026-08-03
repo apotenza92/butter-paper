@@ -136,8 +136,6 @@ export const RECTANGLE_TOOL_DEFINITION: PdfToolDefinition<RectangleMarkup, Recta
           rect: markup.rect,
           rotation: markup.rotation,
           kind: 'child',
-          canResize: true,
-          canRotate: context.phase !== 'hovered',
         },
         handles: RECTANGLE_TOOL_DEFINITION.geometry?.getGeometry(markup, context).handles,
       };
@@ -147,8 +145,6 @@ export const RECTANGLE_TOOL_DEFINITION: PdfToolDefinition<RectangleMarkup, Recta
         bounds: {
           rect: rectangleDraftToRect(draft),
           kind: 'child',
-          canResize: false,
-          canRotate: false,
         },
         handles: [],
       };

@@ -15,6 +15,11 @@ export interface PendingImageAsset {
   readonly fileName: string;
 }
 
+export interface PostPlacementState {
+  readonly markupId: string;
+  readonly tool: ToolMode;
+}
+
 export interface LoadedDocumentState extends LoadedDocumentPayload {
   dirty: boolean;
 }
@@ -52,6 +57,7 @@ interface ViewerState {
   currentPage: number;
   visiblePageIndices: number[];
   selectedMarkupIds: string[];
+  postPlacement: PostPlacementState | null;
   snapSettings: SnapSettings;
   pendingImageAsset: PendingImageAsset | null;
   pendingPageScroll: { pageIndex: number; requestId: number } | null;
@@ -80,6 +86,7 @@ interface ViewerState {
   setCurrentPage: (pageIndex: number) => void;
   setVisiblePageIndices: (pageIndices: number[]) => void;
   setSelectedMarkupIds: (markupIds: string[]) => void;
+  setPostPlacement: (postPlacement: PostPlacementState | null) => void;
   setSnapSettings: (settings: Partial<SnapSettings>) => void;
   setPendingImageAsset: (asset: PendingImageAsset | null) => void;
   consumePendingImageAsset: () => PendingImageAsset | null;
@@ -139,6 +146,7 @@ const initialState = {
   currentPage: 0,
   visiblePageIndices: [] as number[],
   selectedMarkupIds: [] as string[],
+  postPlacement: null as PostPlacementState | null,
   snapSettings: {
     snapToContent: true,
     snapToMarkup: true,
@@ -162,6 +170,7 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
       currentPage: 0,
       visiblePageIndices: [],
       selectedMarkupIds: [],
+      postPlacement: null,
       pendingImageAsset: null,
       pendingPageScroll: null,
       pendingThumbnailScroll: null,
@@ -188,7 +197,7 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
       };
     }),
   setZoom: (zoom) => set({ zoom }),
-  setActiveTool: (activeTool) => set({ activeTool }),
+  setActiveTool: (activeTool) => set({ activeTool, postPlacement: null }),
   setLeftSidebarWidth: (leftSidebarWidth) => set({ leftSidebarWidth: clampLeftSidebarWidth(leftSidebarWidth) }),
   setRightSidebarWidth: (rightSidebarWidth) => set({ rightSidebarWidth: clampRightSidebarWidth(rightSidebarWidth) }),
   toggleLeftSidebar: (panel = 'pages') =>
@@ -218,7 +227,13 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
   setZoomPreset: (zoomPreset) => set({ zoomPreset }),
   setCurrentPage: (currentPage) => set({ currentPage }),
   setVisiblePageIndices: (visiblePageIndices) => set({ visiblePageIndices }),
-  setSelectedMarkupIds: (selectedMarkupIds) => set({ selectedMarkupIds }),
+  setSelectedMarkupIds: (selectedMarkupIds) => set((state) => ({
+    selectedMarkupIds,
+    postPlacement: state.postPlacement && selectedMarkupIds.includes(state.postPlacement.markupId)
+      ? state.postPlacement
+      : null,
+  })),
+  setPostPlacement: (postPlacement) => set({ postPlacement }),
   setSnapSettings: (settings) =>
     set((state) => ({
       snapSettings: {

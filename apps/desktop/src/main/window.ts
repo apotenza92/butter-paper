@@ -48,8 +48,14 @@ import { readBinaryFile, writeBinaryFile } from './fileSystem';
 import { DesktopUpdaterService, loadElectronAutoUpdater } from './updater';
 import { resolveReleasePageUrl } from './releasePage';
 import { MAIN_WINDOW_GEOMETRY } from './windowGeometry';
+import {
+  loadWindowBounds,
+  resolveRestoredWindowBounds,
+  WINDOW_STATE_FILE_NAME,
+  writeWindowBoundsAtomic,
+} from './windowState';
 
-const { app, BrowserWindow, ipcMain, dialog, nativeTheme, shell } = electron;
+const { app, BrowserWindow, ipcMain, dialog, nativeTheme, screen, shell } = electron;
 const require = createRequire(import.meta.url);
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const preloadPath = join(moduleDir, 'preload.cjs');
@@ -1670,6 +1676,15 @@ function escapeHtml(value: string): string {
 
 export function createMainWindow(): BrowserWindowInstance {
   const testMode = isTestModeEnabled();
+  const shouldPersistWindowState = !testMode || Boolean(process.env.BP_TEST_USER_DATA_DIR?.trim());
+  const windowStatePath = shouldPersistWindowState
+    ? join(app.getPath('userData'), WINDOW_STATE_FILE_NAME)
+    : null;
+  const restoredWindowBounds = resolveRestoredWindowBounds(
+    windowStatePath == null ? null : loadWindowBounds(windowStatePath),
+    screen.getAllDisplays().map((display) => display.workArea),
+    { width: MAIN_WINDOW_GEOMETRY.minWidth, height: MAIN_WINDOW_GEOMETRY.minHeight },
+  );
   const applicationMetadata = getApplicationMetadata();
   const rendererDevServerUrl =
     process.env.BP_DISABLE_RENDERER_DEV_SERVER === '1'
@@ -1684,6 +1699,7 @@ export function createMainWindow(): BrowserWindowInstance {
   try {
     window = new BrowserWindow({
       ...MAIN_WINDOW_GEOMETRY,
+      ...restoredWindowBounds,
       backgroundColor: getWindowBackgroundColor(themeSnapshot.mode),
       title: applicationMetadata.productName,
       show: testMode,
@@ -1739,7 +1755,35 @@ export function createMainWindow(): BrowserWindowInstance {
   }
 
   const webContentsId = window.webContents.id;
+  let windowStateSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  const saveWindowState = () => {
+    if (windowStateSaveTimer != null) {
+      clearTimeout(windowStateSaveTimer);
+      windowStateSaveTimer = null;
+    }
+    if (windowStatePath == null || window.isDestroyed()) {
+      return;
+    }
+    try {
+      writeWindowBoundsAtomic(windowStatePath, window.getNormalBounds());
+    } catch (error) {
+      console.warn('Unable to save window size and position.', error);
+    }
+  };
+  const scheduleWindowStateSave = () => {
+    if (windowStatePath == null) {
+      return;
+    }
+    if (windowStateSaveTimer != null) {
+      clearTimeout(windowStateSaveTimer);
+    }
+    windowStateSaveTimer = setTimeout(saveWindowState, 250);
+    windowStateSaveTimer.unref();
+  };
+  window.on('resize', scheduleWindowStateSave);
+  window.on('move', scheduleWindowStateSave);
   window.on('close', (event) => {
+    saveWindowState();
     if (closeBlockedWebContents.has(webContentsId) && !closeConfirmedWebContents.has(webContentsId)) {
       event.preventDefault();
       if (!window.webContents.isDestroyed()) {
@@ -1751,6 +1795,10 @@ export function createMainWindow(): BrowserWindowInstance {
     closeConfirmedWebContents.delete(webContentsId);
   });
   window.on('closed', () => {
+    if (windowStateSaveTimer != null) {
+      clearTimeout(windowStateSaveTimer);
+      windowStateSaveTimer = null;
+    }
     clearRenderCoreRegistriesForOwner(webContentsId);
     if (mainWindow === window) {
       mainWindow = null;
@@ -1795,6 +1843,10 @@ export function registerIpcHandlers(): void {
     } else {
       closeBlockedWebContents.delete(event.sender.id);
     }
+  });
+
+  ipcMain.handle(ipcChannels.applicationRequestQuit, async () => {
+    app.quit();
   });
 
   ipcMain.handle(ipcChannels.applicationConfirmClose, async (event) => {

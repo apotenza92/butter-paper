@@ -5,7 +5,7 @@ import { DEFAULT_IMAGE_DATA_URL } from './builtins/imageTool';
 import { addCloudNodeDraftPoint, createCloudNodeDraft, createRectangleDraft, createTextBoxDraft, hasExceededDragThreshold, rectangleDraftToRect, resizeRectFromHandle, resizeRotatedRectFromHandle, shouldCommitRectangle, textBoxDraftToRect, updateCloudNodeDraft } from './annotationLifecycle';
 import { getAnnotationContentStyle } from './annotationStyles';
 import { hitTestHandles, hitTestMarkup, hitTestMarkups } from './hitTesting';
-import { getChromeStyle, getMoveCursor, getResizeCursor, getRotateCursor, getResizeHandles, getRotationHandle } from './interactionChrome';
+import { getChromeHandleStyle, getChromeStyle, getMoveCursor, getResizeCursor, getRotateCursor, getResizeHandles, getRotationHandle } from './interactionChrome';
 import { DEFAULT_CLOUD_LINE_OPTIONS, CLOUD_LINE_TYPE_RENDERER, generateCloudScallopPoints } from './lineTypes';
 import { getMarkupToolDefinition, getToolDefinition, PDF_TOOL_RAIL_GROUPS, PDF_TOOL_REGISTRY } from './toolRegistry';
 
@@ -56,7 +56,6 @@ describe('PDF tool registry', () => {
       'dimension',
       'polyline',
       'polygon',
-      'cloud-plus',
       'callout',
       'image',
       'snapshot',
@@ -67,6 +66,7 @@ describe('PDF tool registry', () => {
     );
     expect(getToolDefinition('pen').interaction?.placement).toBeUndefined();
     expect(getToolDefinition('cloud').interaction?.placement).toBeUndefined();
+    expect(getToolDefinition('cloud-plus').interaction?.placement).toBeUndefined();
   });
 
   it('commits click-placement line and rectangle drafts without a drag gesture', () => {
@@ -163,8 +163,6 @@ describe('PDF tool registry', () => {
     });
     expect(definition?.selection?.getSelectionChrome(markup, { page: pageStub(), phase: 'focused' }).bounds).toMatchObject({
       kind: 'child',
-      canResize: true,
-      canRotate: true,
     });
   });
 
@@ -231,8 +229,6 @@ describe('PDF tool registry', () => {
     ]);
     expect(definition?.selection?.getSelectionChrome(markup, { page: pageStub(), phase: 'focused' }).bounds).toMatchObject({
       kind: 'group',
-      canResize: false,
-      canRotate: false,
     });
   });
 
@@ -301,8 +297,6 @@ describe('PDF tool registry', () => {
     ]));
     expect(definition?.selection?.getDraftChrome?.(createTextBoxDraft(pdfPoint(0, 0)), { page: pageStub(), phase: 'draft' }).bounds).toMatchObject({
       kind: 'child',
-      canResize: false,
-      canRotate: false,
     });
   });
 
@@ -375,20 +369,13 @@ describe('PDF tool registry', () => {
       kind: 'rect',
       pointerEvents: 'none',
     });
-    expect(definition?.selection?.getSelectionChrome(markup, { page: pageStub(), phase: 'focused' }).bounds).toMatchObject({
-      kind: 'child',
-      canResize: true,
-      canRotate: true,
-    });
-    expect(definition?.selection?.getSelectionChrome(markup, { page: pageStub(), phase: 'hovered' }).bounds).toMatchObject({
-      kind: 'child',
-      canResize: true,
-      canRotate: false,
-    });
+    const focusedChrome = definition?.selection?.getSelectionChrome(markup, { page: pageStub(), phase: 'focused' });
+    const hoveredChrome = definition?.selection?.getSelectionChrome(markup, { page: pageStub(), phase: 'hovered' });
+    expect(focusedChrome?.bounds).toMatchObject({ kind: 'child' });
+    expect(hoveredChrome?.bounds).toEqual(focusedChrome?.bounds);
+    expect(hoveredChrome?.handles).toEqual(focusedChrome?.handles);
     expect(definition?.selection?.getDraftChrome?.(createRectangleDraft(pdfPoint(0, 0)), { page: pageStub(), phase: 'draft' }).bounds).toMatchObject({
       kind: 'child',
-      canResize: false,
-      canRotate: false,
     });
   });
 
@@ -481,8 +468,6 @@ describe('PDF tool registry', () => {
     });
     expect(definition?.selection?.getSelectionChrome(markup, { page: pageStub(), phase: 'focused' }).bounds).toMatchObject({
       kind: 'child',
-      canResize: true,
-      canRotate: true,
     });
   });
 
@@ -1092,6 +1077,7 @@ describe('hit testing', () => {
     expect(definition?.render?.getContentPrimitives(markup, { page: pageStub(), phase: 'idle' })[0]).toMatchObject({
       kind: 'path',
       d: expect.stringContaining('C'),
+      style: { lineCap: 'round', lineJoin: 'round' },
     });
     expect(definition?.selection?.getSelectionChrome(markup, { page: pageStub(), phase: 'focused' }).controlPaths?.[0]).toMatchObject({
       id: 'cloud.controlPath',
@@ -1114,7 +1100,7 @@ describe('hit testing', () => {
       d: expect.stringContaining('C'),
     });
     expect(definition.selection?.getDraftChrome?.(draft, { page: pageStub(), phase: 'draft' })).toMatchObject({
-      bounds: { kind: 'child', canResize: false, canRotate: false },
+      bounds: { kind: 'child' },
       handles: expect.arrayContaining([
         expect.objectContaining({ id: 'cloud.vertex.0', behavior: 'reshapeVertex' }),
         expect.objectContaining({ id: 'cloud.vertex.1', behavior: 'reshapeVertex' }),
@@ -1134,6 +1120,44 @@ describe('hit testing', () => {
       kind: 'cloud',
       controlPath: [pdfPoint(10, 10), pdfPoint(40, 50), pdfPoint(90, 10)],
       borderEffectIntensity: 2,
+    });
+  });
+
+  it('uses the same point-created polygon and drag-created rectangle gestures for Cloud+', () => {
+    const definition = getToolDefinition('cloud-plus');
+    const polygonDraft = updateCloudNodeDraft(
+      addCloudNodeDraftPoint(
+        addCloudNodeDraftPoint(createCloudNodeDraft(pdfPoint(10, 10)), pdfPoint(40, 50)),
+        pdfPoint(90, 10),
+      ),
+      pdfPoint(120, 45),
+    );
+    const polygon = definition.interaction?.commitDraft?.(polygonDraft as never, {
+      page: pageStub(),
+      hasExceededDragThreshold: true,
+      createMarkupId: (prefix) => `${prefix}-polygon`,
+    });
+    const rectangleDraft = definition.interaction?.updateDraft?.(
+      definition.interaction.createDraft?.({
+        pointerId: 1,
+        startPoint: pdfPoint(10, 10),
+        currentPoint: pdfPoint(10, 10),
+      }) as never,
+      pdfPoint(90, 60),
+    );
+    const rectangle = definition.interaction?.commitDraft?.(rectangleDraft as never, {
+      page: pageStub(),
+      hasExceededDragThreshold: true,
+      createMarkupId: (prefix) => `${prefix}-rectangle`,
+    });
+
+    expect(polygon).toMatchObject({
+      kind: 'cloud-plus',
+      cloud: { controlPath: [pdfPoint(10, 10), pdfPoint(40, 50), pdfPoint(90, 10)] },
+    });
+    expect(rectangle).toMatchObject({
+      kind: 'cloud-plus',
+      cloud: { controlPath: [pdfPoint(10, 10), pdfPoint(10, 60), pdfPoint(90, 60), pdfPoint(90, 10)] },
     });
   });
 
@@ -1165,7 +1189,7 @@ describe('hit testing', () => {
       expect.objectContaining({ kind: 'polyline', points: markup.leader.points }),
     ]));
     expect(definition?.selection?.getSelectionChrome(markup, { page: pageStub(), phase: 'focused' })).toMatchObject({
-      bounds: { kind: 'group', canResize: false, canRotate: false },
+      bounds: { kind: 'group' },
       handles: expect.arrayContaining([
         expect.objectContaining({ id: 'callout.textBox.resize.e', behavior: 'resizeSelf' }),
         expect.objectContaining({ id: 'callout.leader.connection', behavior: 'moveEndpoint' }),
@@ -1269,11 +1293,37 @@ describe('hit testing', () => {
 });
 
 describe('interaction chrome', () => {
+  it('keeps tool-declared handles stable between hover and selection phases', () => {
+    const markups = [
+      { id: 'rect-phase', kind: 'rectangle', pageIndex: 0, rect: rect(10, 20, 100, 50) },
+      { id: 'line-phase', kind: 'line', pageIndex: 0, start: pdfPoint(10, 20), end: pdfPoint(110, 70) },
+      createCalloutMarkup({
+        id: 'callout-phase',
+        pageIndex: 0,
+        leader: { points: [pdfPoint(10, 20), pdfPoint(40, 40), pdfPoint(80, 40)] },
+        textBox: rect(80, 20, 100, 40),
+        text: 'Callout',
+      }),
+    ] as const;
+
+    for (const markup of markups) {
+      const definition = getMarkupToolDefinition(markup as never);
+      const hovered = definition?.selection?.getSelectionChrome(markup as never, { page: pageStub(), phase: 'hovered' });
+      const focused = definition?.selection?.getSelectionChrome(markup as never, { page: pageStub(), phase: 'focused' });
+      expect(hovered?.bounds).toEqual(focused?.bounds);
+      expect(hovered?.handles).toEqual(focused?.handles);
+    }
+  });
+
   it('derives handles and chrome separately from annotation content style', () => {
     const handles = getResizeHandles(rect(10, 20, 100, 50));
     const selectedStyle = getChromeStyle('selected');
     const hoveredStyle = getChromeStyle('hovered');
     const draftStyle = getChromeStyle('draft');
+    const groupStyle = getChromeStyle('focused', 'group');
+    const passiveHoverHandle = getChromeHandleStyle(hoveredStyle, 'hovered', false);
+    const hotHoverHandle = getChromeHandleStyle(hoveredStyle, 'hovered', true);
+    const selectedHandle = getChromeHandleStyle(selectedStyle, 'selected', false);
 
     expect(handles).toHaveLength(8);
     expect(handles.map((handle) => handle.kind)).toEqual(['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']);
@@ -1308,7 +1358,14 @@ describe('interaction chrome', () => {
     expect(hoveredStyle.boundsOutsetPx).toBe(8);
     expect(selectedStyle.boundsOutsetPx).toBe(8);
     expect(selectedStyle.boundsStroke).toBe('#2563eb');
+    expect(selectedStyle.handleFill).toBe('#facc15');
     expect(selectedStyle.strokeDasharray).toBe('5 4');
+    expect(groupStyle.boundsStroke).toBe('#1d4ed8');
+    expect(groupStyle.handleSize).toBeGreaterThan(0);
+    expect(passiveHoverHandle).toMatchObject({ fill: '#fef08a', stroke: '#facc15', strokeWidth: 1 });
+    expect(hotHoverHandle).toMatchObject({ fill: '#facc15', stroke: '#111827', strokeWidth: 2 });
+    expect(hotHoverHandle.size).toBeGreaterThan(passiveHoverHandle.size);
+    expect(selectedHandle).toMatchObject({ fill: '#facc15', stroke: '#111827' });
     expect(draftStyle.strokeDasharray).toBe('6 4');
   });
 });
@@ -1351,26 +1408,27 @@ describe('generated line types', () => {
     expect(Math.max(...ys)).toBeCloseTo(598.9975, 2);
   });
 
-  it('fits the first Bluebeam cloud lobe cubic commands', () => {
+  it('builds one closed path whose scallops meet at every rectangle edge and corner', () => {
+    const controlPath = [
+      pdfPoint(45.76695, 589.2418),
+      pdfPoint(45.76695, 532.2991),
+      pdfPoint(160.1843, 532.2991),
+      pdfPoint(160.1843, 589.2418),
+    ];
     const d = CLOUD_LINE_TYPE_RENDERER.render({
-      controlPath: [
-        pdfPoint(45.76695, 589.2418),
-        pdfPoint(45.76695, 532.2991),
-        pdfPoint(160.1843, 532.2991),
-        pdfPoint(160.1843, 589.2418),
-      ],
+      controlPath,
       closed: true,
       strokeWidth: 1,
       options: DEFAULT_CLOUD_LINE_OPTIONS,
     }).d;
-    const numbers = d.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+    const points = generateCloudScallopPoints(controlPath, true, DEFAULT_CLOUD_LINE_OPTIONS);
 
-    expect(numbers.slice(0, 20)).toEqual([
-      52.907, 593.977,
-      55.523, 597.9198, 60.8395, 598.9965, 64.7836, 596.3804,
-      66.3801, 595.3222, 68.0066, 592.946, 68.4065, 591.0739,
-      68.2165, 591.9393, 67.6653, 593.2388, 67.187, 593.977,
-    ]);
+    expect(d.match(/\bM\b/g)).toHaveLength(1);
+    expect(d).toMatch(/ Z$/);
+    expect(points[0]).toEqual(points.at(-1));
+    for (const corner of controlPath) {
+      expect(points).toContainEqual(corner);
+    }
   });
 });
 

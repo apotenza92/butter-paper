@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { MAIN_WINDOW_GEOMETRY } from './windowGeometry';
 
 describe('main window geometry', () => {
-  it('opens at a compact desktop size while retaining a usable minimum', () => {
+  it('uses a compact size on first launch while retaining a usable minimum', () => {
     expect(MAIN_WINDOW_GEOMETRY).toEqual({
       width: 1200,
       height: 800,

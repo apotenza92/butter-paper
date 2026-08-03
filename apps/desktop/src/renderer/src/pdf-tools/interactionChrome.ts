@@ -16,6 +16,13 @@ export interface ChromeStyle {
   readonly boundsOutsetPx: number;
 }
 
+export interface ChromeHandleStyle {
+  readonly fill: string;
+  readonly stroke: string;
+  readonly strokeWidth: number;
+  readonly size: number;
+}
+
 export interface ResizeHandle {
   readonly kind: ResizeHandleKind;
   readonly x: number;
@@ -45,17 +52,17 @@ export const MOVE_CURSOR = lucideCursor({
 
 export const CHROME_TOKENS = {
   selectedBounds: '#2563eb',
-  groupBounds: '#60a5fa',
   neutralHalo: 'rgba(255,255,255,0.92)',
   hoverBounds: '#93c5fd',
   focusBounds: '#1d4ed8',
   draftBounds: '#0f766e',
   primaryHandle: '#facc15',
+  hoverHandle: '#fef08a',
   secondaryHandle: '#ffffff',
   handleStroke: '#111827',
 } as const;
 
-export function getChromeStyle(state: InteractionState, boundsKind: ChromeBoundsKind = 'child'): ChromeStyle {
+export function getChromeStyle(state: InteractionState, _boundsKind: ChromeBoundsKind = 'child'): ChromeStyle {
   if (state === 'draft') {
     return {
       boundsStroke: CHROME_TOKENS.draftBounds,
@@ -74,7 +81,7 @@ export function getChromeStyle(state: InteractionState, boundsKind: ChromeBounds
     return {
       boundsStroke: CHROME_TOKENS.hoverBounds,
       haloStroke: CHROME_TOKENS.neutralHalo,
-      handleFill: '#fef08a',
+      handleFill: CHROME_TOKENS.hoverHandle,
       handleStroke: CHROME_TOKENS.primaryHandle,
       strokeDasharray: '4 3',
       boundsStrokeWidth: 1.25,
@@ -84,30 +91,26 @@ export function getChromeStyle(state: InteractionState, boundsKind: ChromeBounds
     };
   }
 
-  if (boundsKind === 'group') {
-    return {
-      boundsStroke: CHROME_TOKENS.groupBounds,
-      haloStroke: CHROME_TOKENS.neutralHalo,
-      handleFill: CHROME_TOKENS.secondaryHandle,
-      handleStroke: CHROME_TOKENS.groupBounds,
-      strokeDasharray: '8 5',
-      boundsStrokeWidth: 1.25,
-      haloStrokeWidth: 5,
-      handleSize: 0,
-      boundsOutsetPx: 8,
-    };
-  }
-
   return {
     boundsStroke: state === 'focused' ? CHROME_TOKENS.focusBounds : CHROME_TOKENS.selectedBounds,
     haloStroke: CHROME_TOKENS.neutralHalo,
-    handleFill: state === 'focused' ? CHROME_TOKENS.primaryHandle : CHROME_TOKENS.secondaryHandle,
+    handleFill: CHROME_TOKENS.primaryHandle,
     handleStroke: CHROME_TOKENS.handleStroke,
     strokeDasharray: '5 4',
     boundsStrokeWidth: state === 'focused' ? 1.75 : 1.5,
     haloStrokeWidth: 5,
     handleSize: 7,
     boundsOutsetPx: 8,
+  };
+}
+
+export function getChromeHandleStyle(style: ChromeStyle, state: InteractionState, hot: boolean): ChromeHandleStyle {
+  const selected = state === 'selected' || state === 'focused';
+  return {
+    fill: selected || hot ? CHROME_TOKENS.primaryHandle : style.handleFill,
+    stroke: selected || hot ? CHROME_TOKENS.handleStroke : style.handleStroke,
+    strokeWidth: hot ? 2 : 1,
+    size: hot ? style.handleSize + 1 : style.handleSize,
   };
 }
 

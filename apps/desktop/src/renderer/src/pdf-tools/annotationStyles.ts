@@ -1,4 +1,4 @@
-import { resolveMarkupAppearance, type Markup } from '@butter-paper/core';
+import { resolveMarkupAppearance, type Markup, type Rect } from '@butter-paper/core';
 import type { TextContentStyle } from './types';
 
 export interface AnnotationContentStyle {
@@ -39,6 +39,24 @@ export function getAnnotationTextContentStyle(
     textInsetPt: text.insetPt,
     firstBaselineOffsetPt: text.fontSizePt * firstBaselineRatio,
     opacity: appearance.opacity,
+  };
+}
+
+export function getVerticallyCenteredAnnotationTextContentStyle(
+  markup: Extract<Markup, { kind: 'callout' | 'cloud-plus' }>,
+  textBox: Rect = markup.textBox,
+  text: string = markup.text,
+): TextContentStyle {
+  const style = getAnnotationTextContentStyle(markup);
+  const fontSizePt = style.fontSizePt ?? 12;
+  const lineHeightPt = style.lineHeightPt ?? fontSizePt * 1.15;
+  const lineCount = Math.max(1, text.split(/\r\n|\r|\n/).length);
+  const textBlockHeight = lineCount * lineHeightPt;
+  const lineBoxTop = Math.max(0, (textBox.height - textBlockHeight) * 0.5);
+  const baselineWithinLine = (lineHeightPt - fontSizePt) * 0.5 + fontSizePt * 0.8;
+  return {
+    ...style,
+    firstBaselineOffsetPt: lineBoxTop + baselineWithinLine,
   };
 }
 

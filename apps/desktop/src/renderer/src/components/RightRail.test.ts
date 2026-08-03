@@ -7,6 +7,10 @@ import {
 } from './RightRail';
 
 describe('resizable right rail sizing', () => {
+  it('starts new users with two tool columns', () => {
+    expect(RIGHT_RAIL_DEFAULT_COLUMNS).toBe(2);
+  });
+
   it('uses compact widths that fit stock Nova toggles and 8px gaps', () => {
     expect(getRightRailWidth(1)).toBe(48);
     expect(getRightRailWidth(2)).toBe(88);

@@ -104,8 +104,6 @@ export const IMPORTED_ANNOTATION_TOOL_DEFINITION: PdfToolDefinition<ImportedAnno
         bounds: {
           rect: markup.rect,
           kind: 'child',
-          canResize: false,
-          canRotate: false,
         },
         handles: [],
       };

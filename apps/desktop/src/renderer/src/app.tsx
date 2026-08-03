@@ -5,6 +5,7 @@ import {
   type PdfPoint,
 } from '@butter-paper/core';
 import { AppMenuBar } from './components/AppMenuBar';
+import { FINISH_CLOUD_POLYGON_EVENT } from './components/AnnotationLayer';
 import {
   formatBlankPdfSettings,
   loadBlankPdfSettings,
@@ -447,6 +448,7 @@ export function App({ initialThemeMode }: AppProps) {
       document: nextTab.document,
       ...nextTab.viewSnapshot,
       activeTool: restoreableTool(nextTab.viewSnapshot.activeTool),
+      postPlacement: null,
       pendingImageAsset: null,
       pendingPageScroll: null,
     });
@@ -1015,6 +1017,10 @@ export function App({ initialThemeMode }: AppProps) {
 
       if (key === 'escape' && !isInteractiveShortcutTarget(event.target)) {
         event.preventDefault();
+        const finishCloudPolygon = new Event(FINISH_CLOUD_POLYGON_EVENT, { cancelable: true });
+        if (!window.dispatchEvent(finishCloudPolygon)) {
+          return;
+        }
         handleToolChange('select');
         return;
       }
@@ -1098,6 +1104,9 @@ export function App({ initialThemeMode }: AppProps) {
         onCheckForUpdates={() => void updater.actions.checkNow()}
         onOpenReleasePage={() => void updater.actions.openReleasePage()}
         onUpdateFrequencyChange={(frequency) => void updater.actions.setFrequency(frequency)}
+        onQuit={() => void window.butterPaper.application.requestQuit().catch((error) => {
+          console.error('Unable to quit Butter Paper.', error);
+        })}
       />
       <DocumentTabBar
         tabs={tabs.map((tab) => ({ id: tab.id, documentName: tab.document.fileName, dirty: Boolean(tab.document.dirty) }))}

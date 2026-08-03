@@ -4,7 +4,6 @@ export const PRIMARY_BAND_HEIGHT = 'h-12';
 export const TAB_HEIGHT = 'h-8';
 export const RAIL_WIDTH = 'w-12';
 export const RAIL_BUTTON_SIZE = 'size-8';
-export const RAIL_EXPANDED_WIDTH = 184;
 export const CONTROL_ICON_SIZE = 18;
 export const CONTROL_ICON_STROKE_WIDTH = 1.5;
 export const CONTROL_ICON_SIZE_CLASS = 'size-[18px] shrink-0';

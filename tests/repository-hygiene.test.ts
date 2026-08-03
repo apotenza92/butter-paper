@@ -94,17 +94,21 @@ describe('repository hygiene release guardrails', () => {
   it('keeps shell controls on stock Nova treatments', () => {
     const leftRail = readFileSync('apps/desktop/src/renderer/src/components/LeftRail.tsx', 'utf8');
     const rightRail = readFileSync('apps/desktop/src/renderer/src/components/RightRail.tsx', 'utf8');
-    const railSettings = readFileSync('apps/desktop/src/renderer/src/components/RailSettingsPopover.tsx', 'utf8');
     const menuBar = readFileSync('apps/desktop/src/renderer/src/components/AppMenuBar.tsx', 'utf8');
     const viewerToolbar = readFileSync('apps/desktop/src/renderer/src/components/ViewerToolbar.tsx', 'utf8');
 
     expect(leftRail).not.toContain('variant="outline"');
     expect(rightRail).not.toContain('variant="outline"');
-    expect(leftRail).toContain('<RailSettingsPopover');
-    expect(rightRail).toContain('<RailSettingsPopover');
-    expect(railSettings).toContain('<Popover open={open} onOpenChange={onOpenChange}>');
-    expect(railSettings).toContain('<Checkbox');
-    expect(railSettings).toContain('Expand labels on hover');
+    expect(leftRail).not.toContain('RailSettingsPopover');
+    expect(rightRail).not.toContain('RailSettingsPopover');
+    expect(leftRail).not.toContain('data-expanded');
+    expect(rightRail).not.toContain('data-expanded');
+    expect(rightRail).toContain('heading="Review"');
+    expect(rightRail).toContain('heading="Draw"');
+    expect(menuBar).toContain('data-testid="menu-quit"');
+    expect(menuBar).toContain('<X aria-hidden="true" />');
+    expect(menuBar).toContain('Quit {productName}');
+    expect(menuBar).not.toContain('updateStatus.currentVersion');
     expect(menuBar).toContain('className="w-full justify-start rounded-none border-x-0 border-t-0"');
     expect(viewerToolbar).toContain('onDoubleClick');
     expect(viewerToolbar).toContain('Double click to view Continuous');
@@ -113,5 +117,24 @@ describe('repository hygiene release guardrails', () => {
     expect(viewerToolbar).toContain('Double click to Fit Page');
     expect(viewerToolbar).toContain('<SplitButtonSegment');
     expect(viewerToolbar).toContain('<DropdownMenuGroup>\n            <DropdownMenuLabel>Mousewheel Behaviour</DropdownMenuLabel>');
+  });
+
+  it('routes the Butter Paper quit menu through the protected application close flow', () => {
+    const menuBar = readFileSync('apps/desktop/src/renderer/src/components/AppMenuBar.tsx', 'utf8');
+    const appRenderer = readFileSync('apps/desktop/src/renderer/src/app.tsx', 'utf8');
+    const protocol = readFileSync('apps/desktop/src/shared/protocol.ts', 'utf8');
+    const channels = readFileSync('apps/desktop/src/shared/ipc.ts', 'utf8');
+    const preload = readFileSync('apps/desktop/src/preload/index.ts', 'utf8');
+    const mainWindow = readFileSync('apps/desktop/src/main/window.ts', 'utf8');
+
+    expect(menuBar).toContain('data-testid="menu-quit"');
+    expect(menuBar).toContain('onClick={onQuit}');
+    expect(menuBar).not.toContain('updateStatus.currentVersion');
+    expect(appRenderer).toContain('window.butterPaper.application.requestQuit()');
+    expect(protocol).toContain('requestQuit(): Promise<void>');
+    expect(channels).toContain("applicationRequestQuit: 'application:request-quit'");
+    expect(preload).toContain('ipcRenderer.invoke(ipcChannels.applicationRequestQuit)');
+    expect(mainWindow).toContain('ipcMain.handle(ipcChannels.applicationRequestQuit');
+    expect(mainWindow).toContain('app.quit();');
   });
 });

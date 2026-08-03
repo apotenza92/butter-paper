@@ -98,8 +98,6 @@ export interface SelectionBoundsDescriptor {
   readonly rect: Rect;
   readonly rotation?: number;
   readonly kind: SelectionBoundsKind;
-  readonly canResize: boolean;
-  readonly canRotate: boolean;
 }
 
 export interface SelectionChromeDescriptor {
