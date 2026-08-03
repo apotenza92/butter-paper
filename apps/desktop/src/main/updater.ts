@@ -3,6 +3,7 @@ import { appendFileSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join } from 'node:path';
 import type {
+  UpdateChannel,
   UpdateDisabledReason,
   UpdateFrequency,
   UpdateStatus,
@@ -112,19 +113,22 @@ export function loadElectronAutoUpdater(): ElectronUpdaterLike {
   return updaterModule.autoUpdater;
 }
 
-export async function loadUpdateSettings(settingsPath: string): Promise<LoadedUpdateSettings> {
+export async function loadUpdateSettings(
+  settingsPath: string,
+  channel: UpdateChannel | null,
+): Promise<LoadedUpdateSettings> {
   try {
     const parsed = JSON.parse(await readFile(settingsPath, 'utf8')) as unknown;
     const settings = parseUpdateSettings(parsed);
     if (settings == null) {
-      return { settings: createDefaultUpdateSettings(), recovered: true };
+      return { settings: createDefaultUpdateSettings(channel), recovered: true };
     }
     return { settings, recovered: false };
   } catch (error) {
     if (isNodeError(error) && error.code === 'ENOENT') {
-      return { settings: createDefaultUpdateSettings(), recovered: false };
+      return { settings: createDefaultUpdateSettings(channel), recovered: false };
     }
-    return { settings: createDefaultUpdateSettings(), recovered: true };
+    return { settings: createDefaultUpdateSettings(channel), recovered: true };
   }
 }
 
@@ -164,7 +168,7 @@ export class DesktopUpdaterService {
   private readonly listeners = new Set<(status: UpdateStatus) => void>();
   private readonly updaterListeners = new Map<string, UpdaterEventListener>();
   private readonly channel;
-  private settings = createDefaultUpdateSettings();
+  private settings: UpdateSettings;
   private status: UpdateStatus;
   private schedulerHandle: unknown = null;
   private started = false;
@@ -187,6 +191,7 @@ export class DesktopUpdaterService {
     this.createVerifiedFeed = options.createVerifiedFeed ?? createTufVerifiedUpdateFeed;
     this.currentVersion = options.currentVersion;
     this.channel = resolveUpdateChannel(options.buildMetadata);
+    this.settings = createDefaultUpdateSettings(this.channel);
     this.settingsPath = join(options.userDataPath, UPDATE_SETTINGS_FILE_NAME);
 
     const disabledReason = this.getInitialDisabledReason();
@@ -224,7 +229,7 @@ export class DesktopUpdaterService {
     }
     this.started = true;
 
-    const loaded = await loadUpdateSettings(this.settingsPath);
+    const loaded = await loadUpdateSettings(this.settingsPath, this.channel);
     this.settings = loaded.settings;
     this.patchStatus({
       frequency: this.settings.frequency,

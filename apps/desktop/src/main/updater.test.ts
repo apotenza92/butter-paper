@@ -124,14 +124,38 @@ describe('update settings persistence', () => {
     const settingsPath = join(userDataPath, UPDATE_SETTINGS_FILE_NAME);
     await writeFile(settingsPath, '{broken json', 'utf8');
 
-    await expect(loadUpdateSettings(settingsPath)).resolves.toEqual({
+    await expect(loadUpdateSettings(settingsPath, 'stable')).resolves.toEqual({
       settings: {
         schemaVersion: 1,
-        frequency: 'daily',
+        frequency: 'weekly',
         lastSuccessfulCheckAt: null,
       },
       recovered: true,
     });
+  });
+
+  it('uses channel defaults only when no saved preference exists', async () => {
+    const stableUserDataPath = await createUserDataDirectory();
+    const betaUserDataPath = await createUserDataDirectory();
+
+    await expect(loadUpdateSettings(
+      join(stableUserDataPath, UPDATE_SETTINGS_FILE_NAME),
+      'stable',
+    )).resolves.toMatchObject({ settings: { frequency: 'weekly' } });
+    await expect(loadUpdateSettings(
+      join(betaUserDataPath, UPDATE_SETTINGS_FILE_NAME),
+      'beta',
+    )).resolves.toMatchObject({ settings: { frequency: 'daily' } });
+
+    await writeUpdateSettingsAtomic(join(stableUserDataPath, UPDATE_SETTINGS_FILE_NAME), {
+      schemaVersion: 1,
+      frequency: 'daily',
+      lastSuccessfulCheckAt: null,
+    });
+    await expect(loadUpdateSettings(
+      join(stableUserDataPath, UPDATE_SETTINGS_FILE_NAME),
+      'stable',
+    )).resolves.toMatchObject({ settings: { frequency: 'daily' } });
   });
 });
 
@@ -148,6 +172,7 @@ describe('DesktopUpdaterService', () => {
     await service.start();
 
     expect(updater.channel).toBe('latest');
+    expect(service.getStatus().frequency).toBe('weekly');
     expect(updater.allowPrerelease).toBe(false);
     expect(updater.allowDowngrade).toBe(false);
     expect(updater.autoDownload).toBe(false);
@@ -176,6 +201,7 @@ describe('DesktopUpdaterService', () => {
 
     expect(updater.channel).toBe('latest');
     expect(service.getStatus().channel).toBe('beta');
+    expect(service.getStatus().frequency).toBe('daily');
     expect(updater.allowPrerelease).toBe(true);
     expect(updater.allowDowngrade).toBe(false);
   });
@@ -328,7 +354,7 @@ describe('DesktopUpdaterService', () => {
       frequency: 'weekly',
       automaticChecksEnabled: true,
     });
-    expect((await loadUpdateSettings(service.settingsPath)).settings.frequency).toBe('weekly');
+    expect((await loadUpdateSettings(service.settingsPath, 'stable')).settings.frequency).toBe('weekly');
     expect(scheduler.scheduled.at(-1)?.delayMs).toBe(60 * 60 * 1_000);
 
     await service.setFrequency('never');
@@ -396,7 +422,7 @@ describe('DesktopUpdaterService', () => {
     expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
 
     await vi.waitFor(async () => {
-      const loaded = await loadUpdateSettings(service.settingsPath);
+      const loaded = await loadUpdateSettings(service.settingsPath, 'stable');
       expect(loaded.settings.lastSuccessfulCheckAt).toBe(fixedNow.toISOString());
     });
   });

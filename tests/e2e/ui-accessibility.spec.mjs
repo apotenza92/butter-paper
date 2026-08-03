@@ -50,9 +50,9 @@ test.describe('shadcn Base UI shell accessibility', () => {
     await expect(page.getByTestId('menu-open-release-page')).toBeVisible();
     const updateFrequency = page.getByTestId('menu-update-frequency');
     await updateFrequency.hover();
-    const dailyFrequency = page.getByTestId('menu-update-frequency-daily');
-    await expect(dailyFrequency).toBeVisible();
-    await expect(dailyFrequency).toHaveAttribute('aria-checked', 'true');
+    const weeklyFrequency = page.getByTestId('menu-update-frequency-weekly');
+    await expect(weeklyFrequency).toBeVisible();
+    await expect(weeklyFrequency).toHaveAttribute('aria-checked', 'true');
     await page.keyboard.press('Escape');
     await page.keyboard.press('Escape');
 
