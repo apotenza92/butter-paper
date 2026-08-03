@@ -1,31 +1,33 @@
-version: 0.0.16
+version: 0.0.17
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.16/Butter-Paper-macOS-arm64.zip
-    sha512: tvUMdQEUeVHoXW4i0HMVlON8QV8Q1VkHiZ9Zf+5kFO5cZNEDu89AOu06m9QMkh4agEVzWKBHKi+Nx0gXg1zViQ==
-    size: 126474567
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.16/Butter-Paper-macOS-arm64.dmg
-    sha512: XEbyPDwIFssaKX42xIt8mqGmt1gbjXS+oVJwp5qGE7qglx92wRR4VCoXo9LJfso7NEbvQYbc2KAnqCCNb22SgQ==
-    size: 120188252
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.16/Butter-Paper-macOS-arm64.zip
-sha512: tvUMdQEUeVHoXW4i0HMVlON8QV8Q1VkHiZ9Zf+5kFO5cZNEDu89AOu06m9QMkh4agEVzWKBHKi+Nx0gXg1zViQ==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-macOS-arm64.zip
+    sha512: nYnvfwEvqWX/3tDXbRaF4ffMLvJIEmPe/cnhnSxM0Tdboy7d3rhga2B5kNh1v45AZ3/qnBFSfOQtuYyIxvpsow==
+    size: 126478599
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-macOS-arm64.dmg
+    sha512: k5m2mKc6qrpgIzre009yfHahDVD0UxmZ/kD5rihoBe5rb26CjKfiLIdGbwprQ+XOnqSPWfAZSvltWD1WbtroNA==
+    size: 120184607
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-macOS-arm64.zip
+sha512: nYnvfwEvqWX/3tDXbRaF4ffMLvJIEmPe/cnhnSxM0Tdboy7d3rhga2B5kNh1v45AZ3/qnBFSfOQtuYyIxvpsow==
 releaseNotes: |-
-  - Replaced the experimental Butter Canvas surface with native blank PDFs that
-    can be created in standard paper sizes, orientations, and page counts, then
-    saved, annotated, and reopened through the normal document workflow.
-  - Refined the Nova desktop shell with integrated closable and reorderable
-    document tabs, configurable annotation rails, streamlined tool controls, and
-    safer unsaved-document handling.
-  - Standardized new desktop windows at 1200×800 with a 900×600 minimum while
-    preserving accessible menus, popovers, dialogs, scrolling, and constrained
-    layouts.
-  - Refreshed the renderer against the official shadcn Base UI Nova registry,
-    moved typography to Geist Variable, and preserved Butter Paper's custom AEC
-    and document-view icon geometry.
-  - Changed automatic-update defaults for new installations to weekly on the
-    stable channel and daily on the beta channel. Existing saved preferences are
-    preserved.
-  - Expanded deterministic and hosted Electron coverage for blank-PDF lifecycle,
-    document tabs, shell overflow, rail behavior, update scheduling, and
-    repository UI-component hygiene.
-releaseDate: 2026-08-03T10:38:53.621Z
+  - Standardized annotation interaction chrome across tools: hovering now shows
+    faint blue geometry with pale handles, selected objects use dark blue chrome
+    with solid yellow handles, and a hovered handle becomes visibly actionable.
+  - Added direct manipulation of unselected handles without forcing selection;
+    clicking a handle still selects its object, and the first click after placing
+    an annotation now deselects it instead of creating an accidental duplicate.
+  - Added CAD-style multi-object selection with Shift toggling, left-to-right
+    contained selection, right-to-left crossing selection, freeform lasso,
+    explicit add/remove zones, directional blue/green styling, operation badges,
+    and cursor-following hotkey guidance.
+  - Simplified the annotation rails into stable Review and Draw groups while
+    preserving resizing, overflow access, tooltips, accessibility, and the custom
+    Butter Paper tool icons.
+  - Restored saved desktop window size and position safely across launches and
+    display changes, while retaining the reviewed default and minimum geometry.
+  - Reworked cloud scallops as continuous cubic lobes with matching sampled hit
+    geometry for a cleaner Bluebeam-style appearance and dependable selection.
+  - Expanded deterministic and hosted Electron coverage for annotation creation,
+    hover and handle behavior, multi-selection geometry, window restoration,
+    rail layout, keyboard accessibility, and shell overflow.
+releaseDate: 2026-08-03T14:59:15.530Z
 butterPaperChannel: stable

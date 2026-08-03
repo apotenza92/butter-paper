@@ -1,44 +1,48 @@
-version: 0.0.16
+version: 0.0.17
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.16/Butter-Paper-Beta-Windows-arm64-Setup.exe
-    sha512: Qm/lbXbAS5w5ss82EqyiQZ09jXSe9Mn/59pvKijmDCBYYn+/NXkXr9BCUmaGzI1A9nNCMK7WasQtB4Q63pwSgw==
-    size: 109536797
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.16/Butter-Paper-Beta-Windows-arm64-Setup.exe
-sha512: Qm/lbXbAS5w5ss82EqyiQZ09jXSe9Mn/59pvKijmDCBYYn+/NXkXr9BCUmaGzI1A9nNCMK7WasQtB4Q63pwSgw==
-releaseNotes: "- Replaced the experimental Butter Canvas surface with native blank PDFs that\r
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-Beta-Windows-arm64-Setup.exe
+    sha512: sU29vW6Lm+Is3+8yA6Hhwi6qsP3/4dQelhZs3okQdJ0c4gBGgTGGhilmV35Yi+JhSDJH1XuK1PGBNXwarNsVmQ==
+    size: 109540460
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-Beta-Windows-arm64-Setup.exe
+sha512: sU29vW6Lm+Is3+8yA6Hhwi6qsP3/4dQelhZs3okQdJ0c4gBGgTGGhilmV35Yi+JhSDJH1XuK1PGBNXwarNsVmQ==
+releaseNotes: "- Standardized annotation interaction chrome across tools: hovering now shows\r
 
-  \  can be created in standard paper sizes, orientations, and page counts, then\r
+  \  faint blue geometry with pale handles, selected objects use dark blue chrome\r
 
-  \  saved, annotated, and reopened through the normal document workflow.\r
+  \  with solid yellow handles, and a hovered handle becomes visibly actionable.\r
 
-  - Refined the Nova desktop shell with integrated closable and reorderable\r
+  - Added direct manipulation of unselected handles without forcing selection;\r
 
-  \  document tabs, configurable annotation rails, streamlined tool controls, and\r
+  \  clicking a handle still selects its object, and the first click after placing\r
 
-  \  safer unsaved-document handling.\r
+  \  an annotation now deselects it instead of creating an accidental duplicate.\r
 
-  - Standardized new desktop windows at 1200×800 with a 900×600 minimum while\r
+  - Added CAD-style multi-object selection with Shift toggling, left-to-right\r
 
-  \  preserving accessible menus, popovers, dialogs, scrolling, and constrained\r
+  \  contained selection, right-to-left crossing selection, freeform lasso,\r
 
-  \  layouts.\r
+  \  explicit add/remove zones, directional blue/green styling, operation badges,\r
 
-  - Refreshed the renderer against the official shadcn Base UI Nova registry,\r
+  \  and cursor-following hotkey guidance.\r
 
-  \  moved typography to Geist Variable, and preserved Butter Paper's custom AEC\r
+  - Simplified the annotation rails into stable Review and Draw groups while\r
 
-  \  and document-view icon geometry.\r
+  \  preserving resizing, overflow access, tooltips, accessibility, and the custom\r
 
-  - Changed automatic-update defaults for new installations to weekly on the\r
+  \  Butter Paper tool icons.\r
 
-  \  stable channel and daily on the beta channel. Existing saved preferences are\r
+  - Restored saved desktop window size and position safely across launches and\r
 
-  \  preserved.\r
+  \  display changes, while retaining the reviewed default and minimum geometry.\r
 
-  - Expanded deterministic and hosted Electron coverage for blank-PDF lifecycle,\r
+  - Reworked cloud scallops as continuous cubic lobes with matching sampled hit\r
 
-  \  document tabs, shell overflow, rail behavior, update scheduling, and\r
+  \  geometry for a cleaner Bluebeam-style appearance and dependable selection.\r
 
-  \  repository UI-component hygiene."
-releaseDate: 2026-08-03T10:31:39.964Z
+  - Expanded deterministic and hosted Electron coverage for annotation creation,\r
+
+  \  hover and handle behavior, multi-selection geometry, window restoration,\r
+
+  \  rail layout, keyboard accessibility, and shell overflow."
+releaseDate: 2026-08-03T14:54:04.931Z
 butterPaperChannel: beta

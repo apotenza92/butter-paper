@@ -1,35 +1,37 @@
-version: 0.0.16
+version: 0.0.17
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.16/Butter-Paper-Beta-Linux-x64.AppImage
-    sha512: m9ejmQj+ubBu7NRqL2HeUI3T6qbxhO/wn+KGUj7M54ZEiuwCyRhf/GREQhxX8eTT3UAr+5HJum09z9WRY2FQjQ==
-    size: 108916744
-    blockMapSize: 114716
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.16/Butter-Paper-Beta-Linux-x64.deb
-    sha512: DiAb1NF/Xds0bfADS39Xogyx6L/htuoc1AXEcsNl5JrOQxcNVdyZTdhpl28qymQKSDZ98i0TvxUgnrHXOxoawQ==
-    size: 107570376
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.16/Butter-Paper-Beta-Linux-x64.rpm
-    sha512: GR+8lo/TmdduHtLJYXGc4UxMEkEXIlo+ymgKbLo003Vhl60+xOFiYu06VfBzyxRReMkzIIm1Zza12gYYMli0tg==
-    size: 94166301
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.16/Butter-Paper-Beta-Linux-x64.AppImage
-sha512: m9ejmQj+ubBu7NRqL2HeUI3T6qbxhO/wn+KGUj7M54ZEiuwCyRhf/GREQhxX8eTT3UAr+5HJum09z9WRY2FQjQ==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-Beta-Linux-x64.AppImage
+    sha512: rpTLGxLTd5YoE2f7+yeJc2pRaa/lx+MFt8M7dzJRHqVli1vZVwZBoCp+Kib+2r6T1tzaKZ9KS0OYQhZuPXSnNQ==
+    size: 108920761
+    blockMapSize: 114637
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-Beta-Linux-x64.deb
+    sha512: JbI3+fh3UkCQIZn64PPElBg0LVPm80jyI1B5CxS6D1BsFOPeK74ixIwUWaBlvV2hNmL9XN74oCMe6N0w5U4O7w==
+    size: 107573924
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-Beta-Linux-x64.rpm
+    sha512: GjeUHgEd7tdcaGOpKLgreWN/DTvsVSsR78atrehs9ByhhNuhSoDL29CsMPXjwVv4qSqeogzdUwdTFZWwcy+icQ==
+    size: 94151765
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-Beta-Linux-x64.AppImage
+sha512: rpTLGxLTd5YoE2f7+yeJc2pRaa/lx+MFt8M7dzJRHqVli1vZVwZBoCp+Kib+2r6T1tzaKZ9KS0OYQhZuPXSnNQ==
 releaseNotes: |-
-  - Replaced the experimental Butter Canvas surface with native blank PDFs that
-    can be created in standard paper sizes, orientations, and page counts, then
-    saved, annotated, and reopened through the normal document workflow.
-  - Refined the Nova desktop shell with integrated closable and reorderable
-    document tabs, configurable annotation rails, streamlined tool controls, and
-    safer unsaved-document handling.
-  - Standardized new desktop windows at 1200×800 with a 900×600 minimum while
-    preserving accessible menus, popovers, dialogs, scrolling, and constrained
-    layouts.
-  - Refreshed the renderer against the official shadcn Base UI Nova registry,
-    moved typography to Geist Variable, and preserved Butter Paper's custom AEC
-    and document-view icon geometry.
-  - Changed automatic-update defaults for new installations to weekly on the
-    stable channel and daily on the beta channel. Existing saved preferences are
-    preserved.
-  - Expanded deterministic and hosted Electron coverage for blank-PDF lifecycle,
-    document tabs, shell overflow, rail behavior, update scheduling, and
-    repository UI-component hygiene.
-releaseDate: 2026-08-03T10:33:12.399Z
+  - Standardized annotation interaction chrome across tools: hovering now shows
+    faint blue geometry with pale handles, selected objects use dark blue chrome
+    with solid yellow handles, and a hovered handle becomes visibly actionable.
+  - Added direct manipulation of unselected handles without forcing selection;
+    clicking a handle still selects its object, and the first click after placing
+    an annotation now deselects it instead of creating an accidental duplicate.
+  - Added CAD-style multi-object selection with Shift toggling, left-to-right
+    contained selection, right-to-left crossing selection, freeform lasso,
+    explicit add/remove zones, directional blue/green styling, operation badges,
+    and cursor-following hotkey guidance.
+  - Simplified the annotation rails into stable Review and Draw groups while
+    preserving resizing, overflow access, tooltips, accessibility, and the custom
+    Butter Paper tool icons.
+  - Restored saved desktop window size and position safely across launches and
+    display changes, while retaining the reviewed default and minimum geometry.
+  - Reworked cloud scallops as continuous cubic lobes with matching sampled hit
+    geometry for a cleaner Bluebeam-style appearance and dependable selection.
+  - Expanded deterministic and hosted Electron coverage for annotation creation,
+    hover and handle behavior, multi-selection geometry, window restoration,
+    rail layout, keyboard accessibility, and shell overflow.
+releaseDate: 2026-08-03T14:54:06.182Z
 butterPaperChannel: beta
