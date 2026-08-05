@@ -137,34 +137,20 @@ describe('macOS release contract', () => {
           const layerPath = join(contract.iconSourcePath, 'Assets', image.value);
           expect(existsSync(layerPath)).toBe(true);
           const layerSource = readFileSync(layerPath, 'utf8');
-          expect(layerSource).toContain('viewBox="0 0 1024 1024"');
-          expect(layerSource).toContain('linearGradient id="roll-edge"');
-          expect(layerSource).toContain('fill="url(#roll-edge)"');
-          expect(layerSource).toContain('d="M839 0V1024"');
-          expect(layerSource).toContain('d="M1019 0V1024"');
-          expect(layerSource).toContain('id="fold-shadow"');
-          expect(layerSource).toContain(
-            'id="fold" d="M0 0H270C237 49 244 226 244 226C244 226 39 246 0 270V0Z"',
-          );
-          const rollGradient = layerSource.match(
-            /<linearGradient id="roll"[\s\S]*?<\/linearGradient>/,
-          )?.[0];
-          expect(rollGradient).toBeDefined();
-          const edgeColor = image.appearance === 'dark'
-            ? (channel === 'stable' ? '#050505' : '#010507')
-            : (channel === 'stable' ? '#d69f3e' : '#043f6f');
-          expect(rollGradient).toContain(`<stop offset="0" stop-color="${edgeColor}"/>`);
-          expect(rollGradient).toContain(`<stop offset="1" stop-color="${edgeColor}"/>`);
+          expect(layerSource).toContain('viewBox="0 0 1254 1254"');
+          expect(layerSource).toContain('<rect width="1254" height="1254" rx="150"/>');
+          expect(layerSource).toContain('<g id="clean-stable-marker"');
+          expect(layerSource).toContain('<path d="M 627 627 C ');
+          expect(layerSource).not.toMatch(/<filter\b|filter=|<image\b|pencil|sketch/i);
+          const gradientId = channel === 'stable'
+            ? (image.appearance === 'dark' ? 'darkButter' : 'paper')
+            : (image.appearance === 'dark' ? 'betaDarkPaper' : 'betaPaper');
+          expect(layerSource.match(new RegExp(`fill="url\\(#${gradientId}\\)"`, 'g')))
+            .toHaveLength(9);
           if (channel === 'stable') {
-            expect(layerSource).toContain('stroke="#e2433d"');
-            expect(layerSource).toContain(
-              image.appearance === 'dark' ? 'fill="#090909"' : 'fill="#e3ab53"',
-            );
+            expect(layerSource).toContain('fill="#d31d17"');
           } else {
-            expect(layerSource).toContain('stroke="#e5f7ff"');
-            expect(layerSource).toContain(
-              image.appearance === 'dark' ? 'fill="#02070b"' : 'fill="#043f6f"',
-            );
+            expect(layerSource).toContain('fill="#e5f7ff"');
           }
         }
       }
