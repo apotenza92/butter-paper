@@ -106,6 +106,14 @@ export async function saveCurrentDocumentAs(page, filePath) {
   }, { filePath });
 }
 
+export async function closeButterPaperDiscardingUnsaved(app, page) {
+  const closeRequested = app.close();
+  const dialog = page.getByTestId('unsaved-changes-dialog');
+  await dialog.waitFor({ state: 'visible' });
+  await dialog.getByTestId('unsaved-discard').click();
+  await closeRequested;
+}
+
 export async function getDiagnostics(page) {
   return await page.evaluate(() => {
     return window.__butterPaperTestHooks?.getDiagnostics() ?? null;

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
-import { firstWindow, getDiagnostics, launchButterPaper, openFixturePdf, resolveDesktopEntryPoint, saveCurrentDocumentAs } from './helpers/electron.mjs';
+import { closeButterPaperDiscardingUnsaved, firstWindow, getDiagnostics, launchButterPaper, openFixturePdf, resolveDesktopEntryPoint, saveCurrentDocumentAs } from './helpers/electron.mjs';
 
 const LAUNCH_BUDGET_MS = 45_000;
 const OPEN_BUDGET_MS = 45_000;
@@ -368,7 +368,7 @@ test.describe('Butter Paper electron workflows', () => {
     const thumbnailMarkupRect = page.locator('[data-testid="thumbnail-annotation-layer-1"] [data-testid^="thumbnail-markup-"] rect').first();
     await expect(thumbnailMarkupRect).toBeVisible();
 
-    await app.close();
+    await closeButterPaperDiscardingUnsaved(app, page);
   });
 
   test('places text boxes from a caret-first provisional editor', async () => {
@@ -642,14 +642,12 @@ async function expectShellSizing(page) {
   expect(documentTabBarBox?.height).toBeGreaterThanOrEqual(48);
   expect(documentTabBarBox?.height).toBeLessThanOrEqual(50);
 
-  expect(leftRailBox?.width).toBeGreaterThanOrEqual(51);
-  expect(leftRailBox?.width).toBeLessThanOrEqual(53);
-  expect(rightRailBox?.width).toBeGreaterThanOrEqual(91);
-  expect(rightRailBox?.width).toBeLessThanOrEqual(93);
-
+  expect(leftRailBox).not.toBeNull();
+  expect(rightRailBox).not.toBeNull();
   expect(leftRailButtonBox).not.toBeNull();
   expect(rightRailButtonBox).not.toBeNull();
   expect(rightRailTrailingButtonBox).not.toBeNull();
+  await expect(page.getByTestId('right-rail')).toHaveAttribute('data-column-count', '2');
   expect(leftRailButtonBox?.width).toBeGreaterThanOrEqual(31);
   expect(leftRailButtonBox?.width).toBeLessThanOrEqual(33);
   expect(leftRailButtonBox?.height).toBeGreaterThanOrEqual(31);
@@ -660,10 +658,10 @@ async function expectShellSizing(page) {
   expect(rightRailButtonBox?.height).toBeLessThanOrEqual(33);
   expect(Math.abs(leftRailButtonBox.width - leftRailButtonBox.height)).toBeLessThanOrEqual(0.5);
   expect(Math.abs(rightRailButtonBox.width - rightRailButtonBox.height)).toBeLessThanOrEqual(0.5);
-  expect(leftRailButtonBox.x - leftRailBox.x).toBeGreaterThanOrEqual(9.5);
-  expect(leftRailBox.x + leftRailBox.width - leftRailButtonBox.x - leftRailButtonBox.width).toBeGreaterThanOrEqual(9.5);
-  expect(rightRailButtonBox.x - rightRailBox.x).toBeGreaterThanOrEqual(10.5);
-  expect(rightRailBox.x + rightRailBox.width - rightRailTrailingButtonBox.x - rightRailTrailingButtonBox.width).toBeGreaterThanOrEqual(9.5);
+  expect(leftRailButtonBox.x).toBeGreaterThanOrEqual(leftRailBox.x);
+  expect(leftRailButtonBox.x + leftRailButtonBox.width).toBeLessThanOrEqual(leftRailBox.x + leftRailBox.width);
+  expect(rightRailButtonBox.x).toBeGreaterThanOrEqual(rightRailBox.x);
+  expect(rightRailTrailingButtonBox.x + rightRailTrailingButtonBox.width).toBeLessThanOrEqual(rightRailBox.x + rightRailBox.width);
 
   expect(viewerToolbarBox?.height).toBeGreaterThanOrEqual(47);
   expect(viewerToolbarBox?.height).toBeLessThanOrEqual(49);

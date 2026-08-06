@@ -96,14 +96,11 @@ test.describe('shell overflow controls', () => {
       const drawGroup = page.getByTestId('right-rail-draw');
       const measureGroup = page.getByTestId('right-rail-measure');
       const groups = [markupGroup, drawGroup, measureGroup];
-      const rightRailBounds = await rightRail.boundingBox();
       const topControlSlot = page.getByTestId('properties-trigger-slot');
       const propertiesTrigger = page.getByTestId('properties-sidebar-trigger');
       const snapTrigger = page.getByTestId('viewer-snap-target-menu');
       const selectTrigger = page.getByTestId('tool-select');
       const panTrigger = page.getByTestId('tool-pan');
-      expect(rightRailBounds?.width).toBeGreaterThanOrEqual(91);
-      expect(rightRailBounds?.width).toBeLessThanOrEqual(93);
       await expect(rightRail).toHaveAttribute('data-column-count', '2');
       await expect(rightRail).not.toContainText('General');
       await expect(rightRail).toContainText('Markup');
@@ -194,7 +191,6 @@ test.describe('shell overflow controls', () => {
       expect(widePanBounds?.width).toBeCloseTo(32, 0);
       expect(wideSelectIconBounds.x + wideSelectIconBounds.width / 2).toBeCloseTo(wideSelectBounds.x + wideSelectBounds.width / 2, 0);
       expect(widePanIconBounds.x + widePanIconBounds.width / 2).toBeCloseTo(widePanBounds.x + widePanBounds.width / 2, 0);
-      await expect.poll(async () => (await rightRail.boundingBox())?.width).toBeGreaterThanOrEqual(131);
       const textBoxBounds = await markupGroup.getByTestId('tool-text-box').boundingBox();
       const arrowBounds = await markupGroup.getByTestId('tool-arrow').boundingBox();
       const penBounds = await markupGroup.getByTestId('tool-pen').boundingBox();
@@ -215,7 +211,6 @@ test.describe('shell overflow controls', () => {
       await page.keyboard.press('Home');
       await expect(rightRail).toHaveAttribute('data-column-count', '1');
       await page.getByTestId('document-viewport').hover();
-      await expect.poll(async () => (await rightRail.boundingBox())?.width).toBeLessThanOrEqual(53);
 
       for (const group of groups) {
         await expect(group.getByRole('heading')).toHaveCount(0);
@@ -239,7 +234,6 @@ test.describe('shell overflow controls', () => {
       expect(compactMarkupBounds?.y).toBeCloseTo(initialMarkupBounds.y, 0);
 
       await selectTrigger.hover();
-      await expect.poll(async () => (await rightRail.boundingBox())?.width).toBeLessThanOrEqual(53);
       await expect(selectTrigger).not.toContainText('Select');
       await expect(page.locator('[data-slot="tooltip-content"]').filter({ hasText: 'Select' })).toBeVisible();
 

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { getDiagnostics, launchButterPaper, openFixturePdf, resolveDesktopEntryPoint } from './helpers/electron.mjs';
+import { closeButterPaperDiscardingUnsaved, getDiagnostics, launchButterPaper, openFixturePdf, resolveDesktopEntryPoint } from './helpers/electron.mjs';
 
 test.describe('Page scale foundation', () => {
   test('sets a preset scale from the page thumbnail actions and applies it to all pages', async () => {
@@ -40,7 +40,7 @@ test.describe('Page scale foundation', () => {
     }).toBe(1);
     await expect.poll(async () => (await getActiveDocument(page))?.pageScales?.[1]?.name).toBe('1:100');
 
-    await app.close();
+    await closeButterPaperDiscardingUnsaved(app, page);
   });
 
   test('saves and deletes a custom scale preset through the dialog', async () => {
@@ -78,7 +78,7 @@ test.describe('Page scale foundation', () => {
     await expect.poll(async () => (await getActiveDocument(page))?.scalePresets?.length ?? 0).toBe(0);
     await page.getByRole('button', { name: 'Cancel' }).click();
 
-    await app.close();
+    await closeButterPaperDiscardingUnsaved(app, page);
   });
 
   test('applies a calibrated scale through the dialog', async () => {
@@ -116,7 +116,7 @@ test.describe('Page scale foundation', () => {
       expect.objectContaining({ pageIndex: 0, name: 'Calibrated 25 ft', source: 'calibrated', realUnits: 'ft' }),
     );
 
-    await app.close();
+    await closeButterPaperDiscardingUnsaved(app, page);
   });
 
   test('provides modal focus, keyboard controls, validation, and constrained zoom layout', async () => {

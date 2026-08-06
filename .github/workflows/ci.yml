@@ -115,6 +115,17 @@ jobs:
           BP_E2E_FIRST_WINDOW_TIMEOUT_MS: 15000
         run: pnpm test:e2e --shard=${{ matrix.shard }}
 
+      - name: Upload Electron E2E failure evidence
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: electron-e2e-${{ strategy.job-index }}-of-${{ strategy.job-total }}-failure
+          path: |
+            test-results/e2e
+            playwright-report
+          if-no-files-found: ignore
+          retention-days: 7
+
   manual-package-smoke:
     name: Manual package smoke (${{ matrix.platform }} ${{ matrix.arch }}, ${{ matrix.variant }})
     if: github.event_name == 'workflow_dispatch'
