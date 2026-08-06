@@ -1,37 +1,40 @@
-version: 0.0.17
+version: 0.0.18
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-Linux-x64.AppImage
-    sha512: XoiNODZ8LT6isc1XXgwR93wV3gUC8klll4cgrpYqHDx0PXDfN3k7u4R5ao5v8oc5GKawLib6dAjWfnJ2APaDBQ==
-    size: 108920818
-    blockMapSize: 114694
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-Linux-x64.deb
-    sha512: ZToFyg00XW6UViNQH2xSrxRtGBow4A0f5TcrqPHN3H6oOE5dm5e2eZDbnfXt4ycwrEb26Wbrn8V4kjEpoYUS7A==
-    size: 107567988
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-Linux-x64.rpm
-    sha512: MqUnGKBbH1z2LbJNv/lpGJlLzY+r7I/X5mge1eSwK0vYHJIIZLccZ5N+dc9hUves3ZJEXYLKuG/K1cfR0eUjdA==
-    size: 94150337
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-Linux-x64.AppImage
-sha512: XoiNODZ8LT6isc1XXgwR93wV3gUC8klll4cgrpYqHDx0PXDfN3k7u4R5ao5v8oc5GKawLib6dAjWfnJ2APaDBQ==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.18/Butter-Paper-Linux-x64.AppImage
+    sha512: cwuYjIbYWyhVz94hhycYi4wfDJlhrx6npMDuKYSHNJCFRbllg/SaQkMVsLctcyAia53X9g3+XSV9NgaIpfUQdg==
+    size: 109260681
+    blockMapSize: 114589
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.18/Butter-Paper-Linux-x64.deb
+    sha512: WXT+RIUXe6tSgBO/FLvSDTHiokd0rwDAty7yTskWqC8fAJDVSaLc4JQjjXZXpoNy0ncIPDowSBEwZGODCixGdg==
+    size: 107869420
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.18/Butter-Paper-Linux-x64.rpm
+    sha512: z4DvhyhbqF0Q5a8R2E0ZHEcNSmNGsuU1AMvgv/nWUWIRrnXx1JPJMKlXfI37A59W+xr6cCwbbaor2Wtqd7SZ7w==
+    size: 94459353
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.18/Butter-Paper-Linux-x64.AppImage
+sha512: cwuYjIbYWyhVz94hhycYi4wfDJlhrx6npMDuKYSHNJCFRbllg/SaQkMVsLctcyAia53X9g3+XSV9NgaIpfUQdg==
 releaseNotes: |-
-  - Standardized annotation interaction chrome across tools: hovering now shows
-    faint blue geometry with pale handles, selected objects use dark blue chrome
-    with solid yellow handles, and a hovered handle becomes visibly actionable.
-  - Added direct manipulation of unselected handles without forcing selection;
-    clicking a handle still selects its object, and the first click after placing
-    an annotation now deselects it instead of creating an accidental duplicate.
-  - Added CAD-style multi-object selection with Shift toggling, left-to-right
-    contained selection, right-to-left crossing selection, freeform lasso,
-    explicit add/remove zones, directional blue/green styling, operation badges,
-    and cursor-following hotkey guidance.
-  - Simplified the annotation rails into stable Review and Draw groups while
-    preserving resizing, overflow access, tooltips, accessibility, and the custom
-    Butter Paper tool icons.
-  - Restored saved desktop window size and position safely across launches and
-    display changes, while retaining the reviewed default and minimum geometry.
-  - Reworked cloud scallops as continuous cubic lobes with matching sampled hit
-    geometry for a cleaner Bluebeam-style appearance and dependable selection.
-  - Expanded deterministic and hosted Electron coverage for annotation creation,
-    hover and handle behavior, multi-selection geometry, window restoration,
-    rail layout, keyboard accessibility, and shell overflow.
-releaseDate: 2026-08-03T14:54:36.102Z
+  - Redesigned the PDF workspace with clearer toolbar and rail organisation,
+    resizable property panels, concise control hints, constrained menus, and
+    consistent Base UI Nova controls.
+  - Expanded annotation workflows with improved snapping and visible snap
+    markers, richer property controls, context menus, page rotation, refined
+    selection and markup geometry, and stronger Cloud, Cloud+, Callout, and
+    measurement behaviour.
+  - Added a complete blank-PDF workflow with reusable page settings and integrated
+    it with document tabs, thumbnails, open, Save As, and normal PDF.js rendering.
+  - Removed the unused native Rust/PDFium renderer so the desktop app has one
+    supported PDF.js rendering path, fewer native build requirements, and no
+    dormant backend selector.
+  - Hardened renderer file access with owner-scoped document and Save As
+    capabilities instead of renderer-supplied privileged paths.
+  - Added development source freshness checks, exact build provenance in the
+    development window title, stale-renderer rejection, and repeatable desktop
+    performance measurements for empty, one-page, and 100-page workloads.
+  - Replaced the stable and beta application icons with refreshed,
+    channel-specific artwork across macOS, Windows, and Linux, and added a public
+    download page with deterministic copy and asset checks.
+  - Expanded deterministic and hosted GUI coverage for the redesigned shell,
+    properties, snapping, context menus, blank PDFs, page layouts, accessibility,
+    constrained windows, and application provenance.
+releaseDate: 2026-08-06T13:22:46.245Z
 butterPaperChannel: stable

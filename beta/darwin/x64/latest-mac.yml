@@ -1,33 +1,36 @@
-version: 0.0.17
+version: 0.0.18
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-Beta-macOS-x64.zip
-    sha512: n2829EI1GCZDv4TscmFsY4J1FVtEBmLkS7vGOxs0Jwkt2ocWf2cUyPCm8A2p/jHrjbidcguvml+dMX7qFoVAKg==
-    size: 132965811
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-Beta-macOS-x64.dmg
-    sha512: U79djb0esr8Mn0Eqy3MRr1YNW77NE+/pJchYlIF1qwXWE+7rSlmWK+5uvLVc2YmdJiinVHbw0c5HANk/kWTETw==
-    size: 125460063
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-Beta-macOS-x64.zip
-sha512: n2829EI1GCZDv4TscmFsY4J1FVtEBmLkS7vGOxs0Jwkt2ocWf2cUyPCm8A2p/jHrjbidcguvml+dMX7qFoVAKg==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.18/Butter-Paper-Beta-macOS-x64.zip
+    sha512: jD7SfwZ23sJZtz1Yda/foIkiamxxF76d87e8DWnVjbXsQCzRNRoGfr0O6PLB5Nx4/GvH7qx1cldi4wp+ioazkQ==
+    size: 132809199
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.18/Butter-Paper-Beta-macOS-x64.dmg
+    sha512: ZGWZEOBm1QVMqURfTUyufKEq2zaA1WB9UOgp5Bm5zV39X93PaMun/3IjtoB06drJN5/xCcU/VhP3VX8TPchdtw==
+    size: 125324789
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.18/Butter-Paper-Beta-macOS-x64.zip
+sha512: jD7SfwZ23sJZtz1Yda/foIkiamxxF76d87e8DWnVjbXsQCzRNRoGfr0O6PLB5Nx4/GvH7qx1cldi4wp+ioazkQ==
 releaseNotes: |-
-  - Standardized annotation interaction chrome across tools: hovering now shows
-    faint blue geometry with pale handles, selected objects use dark blue chrome
-    with solid yellow handles, and a hovered handle becomes visibly actionable.
-  - Added direct manipulation of unselected handles without forcing selection;
-    clicking a handle still selects its object, and the first click after placing
-    an annotation now deselects it instead of creating an accidental duplicate.
-  - Added CAD-style multi-object selection with Shift toggling, left-to-right
-    contained selection, right-to-left crossing selection, freeform lasso,
-    explicit add/remove zones, directional blue/green styling, operation badges,
-    and cursor-following hotkey guidance.
-  - Simplified the annotation rails into stable Review and Draw groups while
-    preserving resizing, overflow access, tooltips, accessibility, and the custom
-    Butter Paper tool icons.
-  - Restored saved desktop window size and position safely across launches and
-    display changes, while retaining the reviewed default and minimum geometry.
-  - Reworked cloud scallops as continuous cubic lobes with matching sampled hit
-    geometry for a cleaner Bluebeam-style appearance and dependable selection.
-  - Expanded deterministic and hosted Electron coverage for annotation creation,
-    hover and handle behavior, multi-selection geometry, window restoration,
-    rail layout, keyboard accessibility, and shell overflow.
-releaseDate: 2026-08-03T15:01:57.809Z
+  - Redesigned the PDF workspace with clearer toolbar and rail organisation,
+    resizable property panels, concise control hints, constrained menus, and
+    consistent Base UI Nova controls.
+  - Expanded annotation workflows with improved snapping and visible snap
+    markers, richer property controls, context menus, page rotation, refined
+    selection and markup geometry, and stronger Cloud, Cloud+, Callout, and
+    measurement behaviour.
+  - Added a complete blank-PDF workflow with reusable page settings and integrated
+    it with document tabs, thumbnails, open, Save As, and normal PDF.js rendering.
+  - Removed the unused native Rust/PDFium renderer so the desktop app has one
+    supported PDF.js rendering path, fewer native build requirements, and no
+    dormant backend selector.
+  - Hardened renderer file access with owner-scoped document and Save As
+    capabilities instead of renderer-supplied privileged paths.
+  - Added development source freshness checks, exact build provenance in the
+    development window title, stale-renderer rejection, and repeatable desktop
+    performance measurements for empty, one-page, and 100-page workloads.
+  - Replaced the stable and beta application icons with refreshed,
+    channel-specific artwork across macOS, Windows, and Linux, and added a public
+    download page with deterministic copy and asset checks.
+  - Expanded deterministic and hosted GUI coverage for the redesigned shell,
+    properties, snapping, context menus, blank PDFs, page layouts, accessibility,
+    constrained windows, and application provenance.
+releaseDate: 2026-08-06T13:36:05.374Z
 butterPaperChannel: beta

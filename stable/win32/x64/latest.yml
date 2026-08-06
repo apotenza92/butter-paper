@@ -1,48 +1,54 @@
-version: 0.0.17
+version: 0.0.18
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-Windows-x64-Setup.exe
-    sha512: SqM4f89IVmP4OVczw6InjEVDS+JnbLLtQ40FPnjxqYYq2lusiZMdAM5IgnA7QP7Lgz9XNX2ZvhsIwRqm/domZg==
-    size: 116862551
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.17/Butter-Paper-Windows-x64-Setup.exe
-sha512: SqM4f89IVmP4OVczw6InjEVDS+JnbLLtQ40FPnjxqYYq2lusiZMdAM5IgnA7QP7Lgz9XNX2ZvhsIwRqm/domZg==
-releaseNotes: "- Standardized annotation interaction chrome across tools: hovering now shows\r
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.18/Butter-Paper-Windows-x64-Setup.exe
+    sha512: Y8AavtU+xmqbrIb/0kNLAGEqAIFHd/d8/88MLqHyueXGEIljYFN14R6dQ1pCB3u7A7MrsLICDEcLiKw5g7ug8A==
+    size: 117123512
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.18/Butter-Paper-Windows-x64-Setup.exe
+sha512: Y8AavtU+xmqbrIb/0kNLAGEqAIFHd/d8/88MLqHyueXGEIljYFN14R6dQ1pCB3u7A7MrsLICDEcLiKw5g7ug8A==
+releaseNotes: "- Redesigned the PDF workspace with clearer toolbar and rail organisation,\r
 
-  \  faint blue geometry with pale handles, selected objects use dark blue chrome\r
+  \  resizable property panels, concise control hints, constrained menus, and\r
 
-  \  with solid yellow handles, and a hovered handle becomes visibly actionable.\r
+  \  consistent Base UI Nova controls.\r
 
-  - Added direct manipulation of unselected handles without forcing selection;\r
+  - Expanded annotation workflows with improved snapping and visible snap\r
 
-  \  clicking a handle still selects its object, and the first click after placing\r
+  \  markers, richer property controls, context menus, page rotation, refined\r
 
-  \  an annotation now deselects it instead of creating an accidental duplicate.\r
+  \  selection and markup geometry, and stronger Cloud, Cloud+, Callout, and\r
 
-  - Added CAD-style multi-object selection with Shift toggling, left-to-right\r
+  \  measurement behaviour.\r
 
-  \  contained selection, right-to-left crossing selection, freeform lasso,\r
+  - Added a complete blank-PDF workflow with reusable page settings and integrated\r
 
-  \  explicit add/remove zones, directional blue/green styling, operation badges,\r
+  \  it with document tabs, thumbnails, open, Save As, and normal PDF.js rendering.\r
 
-  \  and cursor-following hotkey guidance.\r
+  - Removed the unused native Rust/PDFium renderer so the desktop app has one\r
 
-  - Simplified the annotation rails into stable Review and Draw groups while\r
+  \  supported PDF.js rendering path, fewer native build requirements, and no\r
 
-  \  preserving resizing, overflow access, tooltips, accessibility, and the custom\r
+  \  dormant backend selector.\r
 
-  \  Butter Paper tool icons.\r
+  - Hardened renderer file access with owner-scoped document and Save As\r
 
-  - Restored saved desktop window size and position safely across launches and\r
+  \  capabilities instead of renderer-supplied privileged paths.\r
 
-  \  display changes, while retaining the reviewed default and minimum geometry.\r
+  - Added development source freshness checks, exact build provenance in the\r
 
-  - Reworked cloud scallops as continuous cubic lobes with matching sampled hit\r
+  \  development window title, stale-renderer rejection, and repeatable desktop\r
 
-  \  geometry for a cleaner Bluebeam-style appearance and dependable selection.\r
+  \  performance measurements for empty, one-page, and 100-page workloads.\r
 
-  - Expanded deterministic and hosted Electron coverage for annotation creation,\r
+  - Replaced the stable and beta application icons with refreshed,\r
 
-  \  hover and handle behavior, multi-selection geometry, window restoration,\r
+  \  channel-specific artwork across macOS, Windows, and Linux, and added a public\r
 
-  \  rail layout, keyboard accessibility, and shell overflow."
-releaseDate: 2026-08-03T14:52:47.289Z
+  \  download page with deterministic copy and asset checks.\r
+
+  - Expanded deterministic and hosted GUI coverage for the redesigned shell,\r
+
+  \  properties, snapping, context menus, blank PDFs, page layouts, accessibility,\r
+
+  \  constrained windows, and application provenance."
+releaseDate: 2026-08-06T13:19:35.858Z
 butterPaperChannel: stable
