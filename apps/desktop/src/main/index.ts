@@ -1,4 +1,5 @@
 import electron from 'electron';
+import { appendFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { ipcChannels } from '../shared/ipc';
 import { resolvePdfPathsFromCommandLine } from './openPdfPaths';
@@ -18,6 +19,10 @@ if (testUserDataDir) {
   app.setPath('userData', testUserDataDir);
   app.setPath('sessionData', testUserDataDir);
 }
+
+recordTestStartupMilestone('main-module-loaded');
+app.on('ready', () => recordTestStartupMilestone('app-ready'));
+app.on('browser-window-created', () => recordTestStartupMilestone('browser-window-created'));
 
 process.on('unhandledRejection', (error) => {
   console.error('Unhandled rejection in main process:', error);
@@ -39,9 +44,17 @@ app.on('open-file', (event, filePath) => {
 if (!singleInstance) {
   app.quit();
 } else {
-  void bootstrapDesktop().then(() => {
-    void flushPendingPdfPaths();
-  });
+  recordTestStartupMilestone('bootstrap-started');
+  void bootstrapDesktop()
+    .then(() => {
+      recordTestStartupMilestone('bootstrap-completed');
+      void flushPendingPdfPaths();
+    })
+    .catch((error) => {
+      recordTestStartupMilestone('bootstrap-failed', error);
+      console.error('Unable to start Butter Paper:', error);
+      app.exit(1);
+    });
 }
 
 app.on('second-instance', (_event, commandLine, workingDirectory) => {
@@ -110,4 +123,19 @@ async function flushPendingPdfPaths(): Promise<void> {
 
 function queuePendingPdfPaths(filePaths: readonly string[]): void {
   enqueuePendingPdfPaths(filePaths);
+}
+
+function recordTestStartupMilestone(name: string, error?: unknown): void {
+  const logPath = process.env.BP_TEST_STARTUP_LOG_PATH?.trim();
+  if (!isTestMode || !logPath || !isAbsolute(logPath)) {
+    return;
+  }
+  const detail = error instanceof Error
+    ? `${error.name}: ${error.message}\n${error.stack ?? ''}`
+    : error == null ? '' : String(error);
+  try {
+    appendFileSync(logPath, `${new Date().toISOString()} ${name}${detail ? ` ${detail}` : ''}\n`);
+  } catch {
+    // Startup diagnostics must never affect application startup.
+  }
 }

@@ -1,5 +1,5 @@
 import { _electron as electron } from '@playwright/test';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -48,12 +48,15 @@ export async function launchButterPaper(options = {}) {
     ? []
     : [entryPoint];
   const userDataDirectory = mkdtempSync(join(tmpdir(), 'butter-paper-e2e-'));
+  const startupLogPath = join(userDataDirectory, 'startup.log');
 
   const env = {
     ...process.env,
     BP_TEST_MODE: '1',
     BP_TEST_USER_DATA_DIR: userDataDirectory,
+    BP_TEST_STARTUP_LOG_PATH: startupLogPath,
     BP_DISABLE_RENDERER_DEV_SERVER: '1',
+    ELECTRON_ENABLE_LOGGING: '1',
     BP_TEST_FIXTURE_DIR: fixtureDirectory
       ? resolve(fixtureDirectory)
       : resolve(repoRoot, 'tests/fixtures/generated'),
@@ -68,7 +71,7 @@ export async function launchButterPaper(options = {}) {
       env,
       timeout: firstWindowTimeoutMs,
     });
-    captureLaunchDiagnostics(app);
+    captureLaunchDiagnostics(app, startupLogPath);
     app.once('close', () => {
       rmSync(userDataDirectory, { recursive: true, force: true });
     });
@@ -138,9 +141,9 @@ export async function firstWindow(app) {
   return page;
 }
 
-function captureLaunchDiagnostics(app) {
+function captureLaunchDiagnostics(app, startupLogPath) {
   const output = [];
-  launchDiagnostics.set(app, output);
+  launchDiagnostics.set(app, { output, startupLogPath });
   const childProcess = app.process();
   captureStream(childProcess.stdout, 'stdout', output);
   captureStream(childProcess.stderr, 'stderr', output);
@@ -157,15 +160,30 @@ function captureStream(stream, label, output) {
 
 function formatFirstWindowFailure(error, app) {
   const childProcess = app.process();
-  const output = launchDiagnostics.get(app)?.join('\n').trim();
+  const diagnostics = launchDiagnostics.get(app);
+  const output = diagnostics?.output.join('\n').trim();
+  const startupMilestones = readStartupMilestones(diagnostics?.startupLogPath);
   const status = childProcess.exitCode == null
     ? `still running (pid ${childProcess.pid ?? 'unknown'})`
     : `exited with code ${childProcess.exitCode}`;
   return [
     `Butter Paper did not create its first window within ${firstWindowTimeoutMs}ms; process is ${status}.`,
     error instanceof Error ? error.message : String(error),
+    `Spawn arguments: ${childProcess.spawnargs.join(' ')}`,
+    `Startup milestones:\n${startupMilestones}`,
     output ? `Main-process output:\n${output}` : 'Main-process output: <none captured>',
   ].join('\n');
+}
+
+function readStartupMilestones(logPath) {
+  if (!logPath) {
+    return '<startup log path unavailable>';
+  }
+  try {
+    return readFileSync(logPath, 'utf8').trim() || '<startup log empty>';
+  } catch {
+    return '<startup log missing; main module did not record a milestone>';
+  }
 }
 
 function readPositiveInteger(value, fallback) {
