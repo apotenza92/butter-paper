@@ -354,10 +354,13 @@ test.describe('Butter Paper electron workflows', () => {
 
     const initialDiagnostics = await getDiagnostics(page);
     const initialMarkupCount = initialDiagnostics?.markupCount ?? 0;
-    const pageCanvasBox = await page.locator('[data-testid="annotation-layer-1"]').boundingBox();
+    const annotationLayer = page.getByTestId('annotation-layer-1');
+    await expect(annotationLayer).toBeVisible();
+    const pageCanvasBox = await annotationLayer.boundingBox();
     expect(pageCanvasBox).not.toBeNull();
 
     await page.getByTestId('tool-rectangle').click();
+    await expect.poll(async () => (await getDiagnostics(page))?.activeTool).toBe('rectangle');
     const documentViewportBox = await page.locator('[data-testid="document-viewport"]').boundingBox();
     expect(documentViewportBox).not.toBeNull();
     const startY = Math.max(pageCanvasBox.y + 90, documentViewportBox.y + 90);

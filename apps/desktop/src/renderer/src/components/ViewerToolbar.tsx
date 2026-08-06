@@ -162,12 +162,12 @@ function ToolbarTriggerTooltip({
   testId?: string;
   trigger: ReactElement;
 }) {
-  if (disabled || suppressTooltip) {
+  if (disabled) {
     return trigger;
   }
 
   return (
-    <ShadcnTooltip open={hint ? true : undefined}>
+    <ShadcnTooltip disabled={suppressTooltip} open={hint ? true : undefined}>
       <TooltipTrigger render={trigger} />
       <TooltipContent data-testid={hint ? hintTestId : testId}>{hint ?? label}</TooltipContent>
     </ShadcnTooltip>

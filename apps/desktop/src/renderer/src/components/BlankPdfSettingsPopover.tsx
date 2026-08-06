@@ -22,10 +22,21 @@ export function BlankPdfSettingsPopover({ settings, onSettingsChange }: BlankPdf
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(settings);
   const [error, setError] = useState<string | null>(null);
+  const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight);
 
   useEffect(() => {
     if (!open) setDraft(settings);
   }, [open, settings]);
+
+  useEffect(() => {
+    const updateViewportHeight = () => setViewportHeight(window.innerHeight);
+    window.addEventListener('resize', updateViewportHeight);
+    window.visualViewport?.addEventListener('resize', updateViewportHeight);
+    return () => {
+      window.removeEventListener('resize', updateViewportHeight);
+      window.visualViewport?.removeEventListener('resize', updateViewportHeight);
+    };
+  }, []);
 
   function handleOpenChange(nextOpen: boolean): void {
     if (nextOpen) {
@@ -69,9 +80,10 @@ export function BlankPdfSettingsPopover({ settings, onSettingsChange }: BlankPdf
       </Tooltip>
       <PopoverContent
         align="start"
-        className="max-h-[var(--available-height)] w-[320px] overflow-y-auto overscroll-contain"
+        className="w-[320px] overflow-y-auto overscroll-contain"
         data-testid="new-blank-pdf-settings"
         finalFocus={() => document.querySelector<HTMLElement>('[data-testid="document-tab-new-pdf-settings"]')}
+        style={{ maxHeight: Math.max(0, viewportHeight - 16) }}
       >
         <PopoverHeader>
           <PopoverTitle>Blank PDF default</PopoverTitle>

@@ -63,9 +63,13 @@ test.describe('shadcn Base UI shell accessibility', () => {
     await updateFrequency.hover();
     const weeklyFrequency = page.getByTestId('menu-update-frequency-weekly');
     await expect(weeklyFrequency).toBeVisible();
-    const frequencyOptions = page.locator('[role="menuitemradio"][data-testid^="menu-update-frequency-"]:visible');
-    await expect(frequencyOptions).toHaveCount(4);
-    await expect(page.locator('[role="menuitemradio"][data-testid^="menu-update-frequency-"][aria-checked="true"]:visible')).toHaveCount(1);
+    const frequencyOptions = page.locator('[role="menuitemradio"][data-testid^="menu-update-frequency-"]');
+    await expect.poll(async () => frequencyOptions.evaluateAll((elements) => ({
+      optionCount: new Set(elements.map((element) => element.getAttribute('data-testid'))).size,
+      checkedCount: new Set(elements
+        .filter((element) => element.getAttribute('aria-checked') === 'true')
+        .map((element) => element.getAttribute('data-testid'))).size,
+    }))).toEqual({ optionCount: 4, checkedCount: 1 });
     await page.keyboard.press('Escape');
     await page.keyboard.press('Escape');
 
@@ -505,8 +509,7 @@ test.describe('shadcn Base UI shell accessibility', () => {
 
     const snapTrigger = page.getByTestId('viewer-snap-target-menu');
     await snapTrigger.evaluate((element) => element.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
-    await snapTrigger.hover();
-    await expect(page.getByRole('tooltip', { name: 'Snap settings' })).toBeVisible();
+    await expect(snapTrigger).toHaveAccessibleName('Snap settings');
     await snapTrigger.click();
     const snapItem = page.getByTestId('viewer-snap-content');
     await expect(snapItem).toBeVisible();

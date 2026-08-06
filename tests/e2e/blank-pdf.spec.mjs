@@ -80,11 +80,13 @@ test.describe('New blank PDF', () => {
 
     const browserWindow = await app.browserWindow(page);
     await browserWindow.evaluate((window) => window.webContents.setZoomFactor(2));
-    const settingsBounds = await settings.boundingBox();
-    const constrainedViewportHeight = await page.evaluate(() => window.innerHeight);
-    expect(settingsBounds).not.toBeNull();
-    expect(settingsBounds.y).toBeGreaterThanOrEqual(0);
-    expect(settingsBounds.y + settingsBounds.height).toBeLessThanOrEqual(constrainedViewportHeight);
+    await expect.poll(async () => {
+      const settingsBounds = await settings.boundingBox();
+      const constrainedViewportHeight = await page.evaluate(() => window.innerHeight);
+      return settingsBounds !== null
+        && settingsBounds.y >= 0
+        && settingsBounds.y + settingsBounds.height <= constrainedViewportHeight;
+    }).toBe(true);
     await page.keyboard.press('Escape');
     await expect(settings).toHaveCount(0);
     await expect(settingsButton).toBeFocused();
@@ -203,6 +205,7 @@ test.describe('New blank PDF', () => {
       const layerBounds = await layer.boundingBox();
       expect(layerBounds).not.toBeNull();
       await page.getByTestId('tool-rectangle').click();
+      await expect.poll(async () => (await getDiagnostics(page))?.activeTool).toBe('rectangle');
       await page.mouse.click(layerBounds.x + 50, layerBounds.y + 60);
       await page.mouse.click(layerBounds.x + 160, layerBounds.y + 130);
       await expect.poll(async () => (await getDiagnostics(page))?.markupCount).toBe(1);
@@ -213,9 +216,9 @@ test.describe('New blank PDF', () => {
       await saveCurrentDocumentAs(page, savedPath);
       expect(existsSync(savedPath)).toBe(true);
       expect(existsSync(temporarySourcePath)).toBe(false);
-      await page.evaluate(async ({ path }) => {
-        await window.__butterPaperTestHooks?.closeTab(path);
-      }, { path: savedPath });
+      await page.evaluate(async () => {
+        await window.__butterPaperTestHooks?.closeTab(0);
+      });
       await expect.poll(async () => (await getDiagnostics(page))?.tabs?.length ?? 0).toBe(0);
       await page.evaluate(async ({ path }) => {
         await window.__butterPaperTestHooks?.openDocumentPath(path);

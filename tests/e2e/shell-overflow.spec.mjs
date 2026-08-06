@@ -104,8 +104,8 @@ test.describe('shell overflow controls', () => {
       await expect(rightRail).toHaveAttribute('data-column-count', '2');
       await expect(page.getByTestId('right-rail-general-heading')).toHaveText('General');
       await expect(rightRail).toContainText('Markup');
-      await expect(propertiesTrigger).toContainText('Properties');
-      await expect(snapTrigger).toContainText('Snap');
+      await expect(propertiesTrigger).toHaveAccessibleName('Show properties');
+      await expect(snapTrigger).toHaveAccessibleName('Snap settings');
       await expect(selectTrigger).toHaveText('');
       await expect(panTrigger).toHaveText('');
       await expect(propertiesTrigger).toHaveCSS('border-top-width', '1px');
