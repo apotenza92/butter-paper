@@ -174,8 +174,10 @@ try {
     expectedProductName,
     { timeout: 60_000 },
   );
+  const productMenuItem = page.getByRole('menuitem', { name: expectedProductName, exact: true });
+  await productMenuItem.waitFor({ state: 'visible', timeout: 30_000 });
   assert(
-    await page.getByRole('menuitem', { name: expectedProductName, exact: true }).count() === 1,
+    await productMenuItem.count() === 1,
     `Packaged app menu did not expose the ${expectedProductName} identity`,
   );
   await page.getByTestId('menu-trigger-butter-paper').click();
