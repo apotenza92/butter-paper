@@ -15,6 +15,7 @@ import type {
   UpdateFrequency,
 } from '../shared/protocol';
 import { resolveApplicationMetadata } from './applicationMetadata';
+import { ancestorFileCandidates } from './applicationPaths';
 import { BlankPdfTemporaryStore } from './blankPdfTemporaryStore';
 import { setAsDefaultPdfApp } from './defaultPdfApp';
 import { takePendingPdfPaths } from './pendingPdfPaths';
@@ -756,12 +757,16 @@ function requireUpdaterService(): DesktopUpdaterService {
 }
 
 function readDesktopPackageMetadata(): unknown {
-  try {
-    return JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')) as unknown;
-  } catch (error) {
-    console.warn('Unable to read packaged update channel metadata.', error);
-    return null;
+  let lastError: unknown = null;
+  for (const candidate of ancestorFileCandidates(app.getAppPath(), 'package.json')) {
+    try {
+      return JSON.parse(readFileSync(candidate, 'utf8')) as unknown;
+    } catch (error) {
+      lastError = error;
+    }
   }
+  console.warn('Unable to read packaged update channel metadata.', lastError);
+  return null;
 }
 
 function getApplicationMetadata(): ApplicationMetadata {
@@ -779,11 +784,10 @@ function getApplicationMetadata(): ApplicationMetadata {
 }
 
 function readDevProvenance(): unknown {
-  const candidates = [
-    join(app.getAppPath(), '..', '..', 'test-results', 'desktop-dev-provenance.json'),
-    join(app.getAppPath(), 'test-results', 'desktop-dev-provenance.json'),
-  ];
-  for (const candidate of candidates) {
+  for (const candidate of ancestorFileCandidates(
+    app.getAppPath(),
+    'test-results/desktop-dev-provenance.json',
+  )) {
     try {
       return JSON.parse(readFileSync(candidate, 'utf8')) as unknown;
     } catch {
