@@ -68,10 +68,17 @@ describe('desktop development preflight', () => {
     const builderConfig = readFileSync('apps/desktop/electron-builder.config.cjs', 'utf8');
     const electronE2eSetup = readFileSync('tests/e2e/global-setup.mjs', 'utf8');
     const electronE2eHelper = readFileSync('tests/e2e/helpers/electron.mjs', 'utf8');
+    const electronStartupProbe = readFileSync('tests/e2e/startup-probe.mjs', 'utf8');
+    const workflow = readFileSync('.github/workflows/ci.yml', 'utf8');
     expect(preflight).toContain("'test-results/desktop-dev-provenance.json'");
     expect(builderConfig).not.toContain('desktop-dev-provenance.json');
     expect(electronE2eSetup).toContain("'predev:desktop'");
     expect(electronE2eSetup).toContain('test-results/desktop-dev-provenance.json');
     expect(electronE2eHelper).toContain("app.once('close'");
+    expect(electronE2eHelper).toContain('BP_TEST_USER_DATA_DIR');
+    expect(electronE2eHelper).toContain('Main-process output:');
+    expect(electronStartupProbe).toContain('Electron startup provenance mismatch');
+    expect(workflow).toContain('Manual Electron startup probe');
+    expect(workflow).toContain('pnpm test:e2e --shard=${{ matrix.shard }}');
   });
 });

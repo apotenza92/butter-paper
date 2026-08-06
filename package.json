@@ -29,6 +29,7 @@
     "check:icons": "node scripts/generate-icons.mjs --check",
     "test": "vitest run --config vitest.config.mts",
     "test:e2e": "playwright test",
+    "test:e2e:startup": "node tests/e2e/startup-probe.mjs",
     "test:package:desktop": "node scripts/smoke-packaged-desktop.mjs",
     "test:macos-verifier": "vitest run --config vitest.config.mts tests/macos-package-verifier.test.ts",
     "test:macos-updater": "node scripts/test-macos-update.mjs",

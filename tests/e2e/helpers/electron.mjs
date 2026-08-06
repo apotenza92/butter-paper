@@ -1,6 +1,7 @@
 import { _electron as electron } from '@playwright/test';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertIsolatedGuiTestEnvironment } from '../../../scripts/gui-test-environment.mjs';
@@ -10,6 +11,11 @@ assertIsolatedGuiTestEnvironment('Electron E2E');
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(moduleDir, '../../..');
 const require = createRequire(import.meta.url);
+const launchDiagnostics = new WeakMap();
+const firstWindowTimeoutMs = readPositiveInteger(
+  process.env.BP_E2E_FIRST_WINDOW_TIMEOUT_MS,
+  15_000,
+);
 
 export function resolveDesktopEntryPoint() {
   const explicit = process.env.BP_DESKTOP_ENTRY;
@@ -41,10 +47,12 @@ export async function launchButterPaper(options = {}) {
   const launchArgs = explicitExecutablePath && executablePath === explicitExecutablePath
     ? []
     : [entryPoint];
+  const userDataDirectory = mkdtempSync(join(tmpdir(), 'butter-paper-e2e-'));
 
   const env = {
     ...process.env,
     BP_TEST_MODE: '1',
+    BP_TEST_USER_DATA_DIR: userDataDirectory,
     BP_DISABLE_RENDERER_DEV_SERVER: '1',
     BP_TEST_FIXTURE_DIR: fixtureDirectory
       ? resolve(fixtureDirectory)
@@ -53,12 +61,22 @@ export async function launchButterPaper(options = {}) {
   };
   delete env.ELECTRON_RUN_AS_NODE;
 
-  return await electron.launch({
-    ...(executablePath ? { executablePath } : {}),
-    args: launchArgs,
-    env,
-    timeout: 60_000,
-  });
+  try {
+    const app = await electron.launch({
+      ...(executablePath ? { executablePath } : {}),
+      args: launchArgs,
+      env,
+      timeout: firstWindowTimeoutMs,
+    });
+    captureLaunchDiagnostics(app);
+    app.once('close', () => {
+      rmSync(userDataDirectory, { recursive: true, force: true });
+    });
+    return app;
+  } catch (error) {
+    rmSync(userDataDirectory, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 export async function openFixturePdf(app, fixtureName = 'single-page') {
@@ -92,16 +110,65 @@ export async function getDiagnostics(page) {
 }
 
 export async function firstWindow(app) {
-  const page = app.windows()[0] ?? await Promise.race([
-    app.firstWindow({ timeout: 60_000 }),
-    new Promise((_, reject) => {
-      app.once('close', () => reject(new Error(
-        'Butter Paper exited before creating its first window. Check main-process startup diagnostics.',
-      )));
-    }),
-  ]);
+  let page = app.windows()[0];
+  if (!page) {
+    let handleClose;
+    const closedBeforeWindow = new Promise((_, reject) => {
+      handleClose = () => reject(new Error(
+        'Butter Paper exited before creating its first window.',
+      ));
+      app.once('close', handleClose);
+    });
+    try {
+      page = await Promise.race([
+        app.firstWindow({ timeout: firstWindowTimeoutMs }),
+        closedBeforeWindow,
+      ]);
+    } catch (error) {
+      throw new Error(formatFirstWindowFailure(error, app), { cause: error });
+    } finally {
+      if (handleClose) {
+        app.off('close', handleClose);
+      }
+    }
+  }
   const browserWindow = await app.browserWindow(page);
   await browserWindow.evaluate((window) => window.webContents.setZoomFactor(1));
   await page.waitForLoadState('domcontentloaded');
   return page;
+}
+
+function captureLaunchDiagnostics(app) {
+  const output = [];
+  launchDiagnostics.set(app, output);
+  const childProcess = app.process();
+  captureStream(childProcess.stdout, 'stdout', output);
+  captureStream(childProcess.stderr, 'stderr', output);
+}
+
+function captureStream(stream, label, output) {
+  stream?.on('data', (chunk) => {
+    output.push(`[${label}] ${String(chunk).trimEnd()}`);
+    while (output.join('\n').length > 20_000) {
+      output.shift();
+    }
+  });
+}
+
+function formatFirstWindowFailure(error, app) {
+  const childProcess = app.process();
+  const output = launchDiagnostics.get(app)?.join('\n').trim();
+  const status = childProcess.exitCode == null
+    ? `still running (pid ${childProcess.pid ?? 'unknown'})`
+    : `exited with code ${childProcess.exitCode}`;
+  return [
+    `Butter Paper did not create its first window within ${firstWindowTimeoutMs}ms; process is ${status}.`,
+    error instanceof Error ? error.message : String(error),
+    output ? `Main-process output:\n${output}` : 'Main-process output: <none captured>',
+  ].join('\n');
+}
+
+function readPositiveInteger(value, fallback) {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
