@@ -102,7 +102,7 @@ test.describe('shell overflow controls', () => {
       const selectTrigger = page.getByTestId('tool-select');
       const panTrigger = page.getByTestId('tool-pan');
       await expect(rightRail).toHaveAttribute('data-column-count', '2');
-      await expect(rightRail).not.toContainText('General');
+      await expect(page.getByTestId('right-rail-general-heading')).toHaveText('General');
       await expect(rightRail).toContainText('Markup');
       await expect(propertiesTrigger).toContainText('Properties');
       await expect(snapTrigger).toContainText('Snap');

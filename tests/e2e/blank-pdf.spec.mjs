@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PDFDocument } from 'pdf-lib';
@@ -172,7 +172,8 @@ test.describe('New blank PDF', () => {
           expect(document.getPage(0).getWidth()).toBeCloseTo(widthMm * MILLIMETRES_TO_POINTS, 3);
           expect(document.getPage(0).getHeight()).toBeCloseTo(heightMm * MILLIMETRES_TO_POINTS, 3);
 
-          await expect.poll(async () => (await getDiagnostics(page))?.documentPath).toBe(outputPath);
+          const canonicalOutputPath = await realpath(outputPath);
+          await expect.poll(async () => (await getDiagnostics(page))?.documentPath).toBe(canonicalOutputPath);
           await page.evaluate(async () => {
             await window.__butterPaperTestHooks?.closeTab(0);
           });
@@ -198,6 +199,7 @@ test.describe('New blank PDF', () => {
       });
       await expect.poll(async () => (await getDiagnostics(page))?.pageCount).toBe(1);
       const layer = page.getByTestId('annotation-layer-1');
+      await expect(layer).toBeVisible();
       const layerBounds = await layer.boundingBox();
       expect(layerBounds).not.toBeNull();
       await page.getByTestId('tool-rectangle').click();

@@ -391,6 +391,7 @@ test.describe('Butter Paper electron workflows', () => {
     const initialDiagnostics = await getDiagnostics(page);
     const initialMarkupCount = initialDiagnostics?.markupCount ?? 0;
     const annotationLayer = page.getByTestId('annotation-layer-1');
+    await expect(annotationLayer).toBeVisible();
     const layerBox = await annotationLayer.boundingBox();
     expect(layerBox).not.toBeNull();
     const viewportBox = await page.getByTestId('document-viewport').boundingBox();

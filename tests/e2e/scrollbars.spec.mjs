@@ -245,8 +245,7 @@ test.describe('custom scrollbars', () => {
       return await page.getByTestId('document-viewport-scrollbar-track-x').getAttribute('data-overflow');
     }).toBe('true');
 
-    await page.getByTestId('viewer-fit-page').focus();
-    await page.keyboard.press('Enter');
+    await page.getByTestId('viewer-fit-page').click();
     await waitForShellDiagnostics(page, {
       zoomPreset: 'fit-page',
     });
@@ -254,8 +253,7 @@ test.describe('custom scrollbars', () => {
       return await page.getByTestId('document-viewport').evaluate((element) => element.scrollWidth - element.clientWidth);
     }).toBe(0);
 
-    await page.getByTestId('viewer-fit-width').focus();
-    await page.keyboard.press('Enter');
+    await page.getByTestId('viewer-fit-width').click();
     await waitForShellDiagnostics(page, {
       zoomPreset: 'fit-width',
     });
