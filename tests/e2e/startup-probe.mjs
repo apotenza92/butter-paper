@@ -15,11 +15,12 @@ let app;
 try {
   app = await launchButterPaper({ theme: 'light' });
   const page = await firstWindow(app);
+  const expectedTitle = `Butter Paper Dev · ${provenance.branch}@${provenance.commit.slice(0, 8)}${provenance.dirty ? ' dirty' : ''}`;
+  await page.waitForFunction((title) => document.title === title, expectedTitle);
   const [title, metadata] = await Promise.all([
     page.title(),
     page.evaluate(() => window.butterPaper?.application.getMetadata()),
   ]);
-  const expectedTitle = `Butter Paper Dev · ${provenance.branch}@${provenance.commit.slice(0, 8)}${provenance.dirty ? ' dirty' : ''}`;
   if (title !== expectedTitle
     || metadata?.version !== provenance.version
     || metadata?.commit !== provenance.commit
