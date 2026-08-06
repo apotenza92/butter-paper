@@ -342,7 +342,7 @@ test.describe('shadcn Base UI shell accessibility', () => {
     const labelBounds = await thumbnailLabel.boundingBox();
     expect(previewBounds).not.toBeNull();
     expect(labelBounds).not.toBeNull();
-    expect(labelBounds.y).toBeGreaterThanOrEqual(previewBounds.y + previewBounds.height);
+    expect(labelBounds.y + labelBounds.height).toBeLessThanOrEqual(previewBounds.y);
 
     for (const testId of ['icon-fit-width', 'icon-fit-page', 'icon-continuous-view']) {
       const icon = documentPage.getByTestId(testId);
