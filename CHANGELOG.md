@@ -2,6 +2,13 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.18]
+
+- Replaced the stable and beta application icons with refreshed, channel-specific
+  artwork across macOS, Windows, and Linux.
+- Regenerated the complete platform icon sets from the canonical SVG sources
+  and added deterministic artwork and package-verification coverage.
+
 ## [0.0.17]
 
 - Standardized annotation interaction chrome across tools: hovering now shows
