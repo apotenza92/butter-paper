@@ -8,7 +8,7 @@ export function expectedReleaseAssetNames(channel) {
     throw new Error(`Release channel must be stable or beta, received: ${channel}`);
   }
   const variants = channel === 'stable' ? ['stable', 'beta'] : ['beta'];
-  const names = ['SHA256SUMS', 'homebrew-release.json'];
+  const names = ['SHA256SUMS', 'homebrew-publication.tar.gz', 'homebrew-release.json'];
   for (const variant of variants) {
     const prefix = variant === 'beta' ? 'Butter-Paper-Beta' : 'Butter-Paper';
     for (const arch of ['arm64', 'x64']) {

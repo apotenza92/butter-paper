@@ -43,8 +43,8 @@ describe('Homebrew cask renderer', () => {
     expect(workflow).toContain('arch: [arm64, x64]');
     expect(workflow).toContain('beta\\.[1-9]\\d*');
     expect(workflow).toContain('needs: [prepare, test-homebrew]');
-    expect(workflow).toContain('diff --recursive --unified validated/arm64 validated/x64');
-    expect(workflow).toContain('butter-paper-homebrew-publication-');
+    expect(workflow).toContain('homebrew-publication.tar.gz');
+    expect(workflow).toContain('build-homebrew-publication.mjs');
     expect(workflow).toContain('include-hidden-files: true');
     expect(workflow).toContain('brew tap "$TEST_TAP" "$TEST_TAP_REPO" --custom-remote');
     expect(workflow).toContain('HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}');
@@ -54,12 +54,12 @@ describe('Homebrew cask renderer', () => {
     expect(workflow).toContain('Draft release assets match the verified bundle by name, size, and SHA-256.');
   });
 
-  it('never commits, pushes, or exposes a Homebrew token', () => {
+  it('dispatches without directly committing or pushing the tap', () => {
     const workflow = readFileSync('.github/workflows/release.yml', 'utf8');
-    const publication = workflow.split('  prepare-homebrew-publication:', 2)[1];
-    expect(publication).toContain('actions/upload-artifact');
-    expect(publication).toContain('SHA256SUMS');
-    expect(publication).toContain('Apply these exact');
+    const publication = workflow.split('  dispatch-homebrew-publication:', 2)[1];
+    expect(publication).toContain('actions/create-github-app-token');
+    expect(publication).toContain('publish-homebrew-v1');
+    expect(publication).toContain('gh run watch');
     expect(publication).not.toContain('git commit');
     expect(publication).not.toContain('git push');
     expect(workflow).not.toContain('HOMEBREW_TAP_TOKEN');
