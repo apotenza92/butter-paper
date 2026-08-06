@@ -161,6 +161,8 @@ export function DocumentViewport({
   const pagesPerColumn = useViewerStore((state) => state.pagesPerColumn);
   const activeTool = useViewerStore((state) => state.activeTool);
   const currentPage = useViewerStore((state) => state.currentPage);
+  const leftSidebarOpen = useViewerStore((state) => state.leftSidebarOpen);
+  const rightSidebarOpen = useViewerStore((state) => state.rightSidebarOpen);
   const pendingPageScroll = useViewerStore((state) => state.pendingPageScroll);
   const setZoom = useViewerStore((state) => state.setZoom);
   const setZoomPreset = useViewerStore((state) => state.setZoomPreset);
@@ -354,6 +356,24 @@ export function DocumentViewport({
       }
     };
   }, [hasDocumentView]);
+
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+
+    // Sidebar visibility changes are discrete shell changes, so synchronise the
+    // fitted size before paint instead of waiting for the resize-drag debounce.
+    const nextSize = measureViewportSize(container);
+    pendingViewportSizeRef.current = nextSize;
+    setViewportSize((current) => (
+      current.width === nextSize.width && current.height === nextSize.height ? current : nextSize
+    ));
+    setFitViewportSize((current) => (
+      current.width === nextSize.width && current.height === nextSize.height ? current : nextSize
+    ));
+  }, [hasDocumentView, leftSidebarOpen, rightSidebarOpen]);
 
   const resolvePanScrollAndPadding = (
     container: HTMLDivElement,
@@ -651,6 +671,8 @@ export function DocumentViewport({
 
       markViewportInMotion();
       suppressContinuousCurrentPageFromScroll();
+      let panStartScrollLeft = container.scrollLeft;
+      let panStartScrollTop = container.scrollTop;
       if (useViewerStore.getState().zoomPreset !== 'manual') {
         if (layoutModeRef.current === 'single-page') {
           const currentLayout = pageLayoutListRef.current[0];
@@ -661,14 +683,27 @@ export function DocumentViewport({
               canvasPaddingRef.current,
             ));
           }
+        } else if (layoutModeRef.current === 'continuous') {
+          const currentPadding = canvasPaddingRef.current;
+          const nextPadding = materializeContinuousPanPadding(
+            currentPadding,
+            { width: container.clientWidth, height: container.clientHeight },
+          );
+          panStartScrollLeft += nextPadding.left - currentPadding.left;
+          panStartScrollTop += nextPadding.top - currentPadding.top;
+          pendingPanScrollRef.current = {
+            left: panStartScrollLeft,
+            top: panStartScrollTop,
+          };
+          updateCanvasPadding(nextPadding);
         }
         setZoomPreset('manual');
       }
       panState.current = {
         pointerId: event.pointerId,
         button: event.button,
-        x: event.clientX + container.scrollLeft,
-        y: event.clientY + container.scrollTop,
+        x: event.clientX + panStartScrollLeft,
+        y: event.clientY + panStartScrollTop,
         startClientX: event.clientX,
         startClientY: event.clientY,
         moved: false,
@@ -1211,14 +1246,18 @@ export function DocumentViewport({
     }
 
     for (const layout of overviewCanvasLayouts) {
-      const reusablePreview = session.getReusablePagePreviewInfo(layout.index);
+      const reusablePreview = session.getReusablePagePreviewInfo(
+        layout.index,
+        0,
+        pageByIndex.get(layout.index)?.rotation,
+      );
       if (reusablePreview) {
         urls.set(layout.index, reusablePreview.objectUrl);
       }
     }
 
     return urls;
-  }, [overviewCanvasLayouts, session, sessionVersion, useCanvasColumnOverview]);
+  }, [overviewCanvasLayouts, pageByIndex, session, sessionVersion, useCanvasColumnOverview]);
   const overviewCanvasStrictVisiblePageIndices = useMemo(() => {
     const pageIndices = new Set<number>();
     if (!useCanvasColumnOverview) {
@@ -1263,7 +1302,7 @@ export function DocumentViewport({
 
     return priorities;
   }, [pageLayouts.layouts, strictVisibleLayoutPositionSet, useCanvasColumnOverview, useColumnOverviewMode, visibleLayoutPositions]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (zoomPreset === 'manual') {
       if (!startupPageRenderReady) {
         setStartupPageRenderReady(true);
@@ -1358,7 +1397,7 @@ export function DocumentViewport({
     const pixelRatio = window.devicePixelRatio || 1;
     for (const pageIndex of uniqueCandidates) {
       const page = pageByIndex.get(pageIndex);
-      if (!page || session.getReusablePagePreviewInfo(pageIndex)) {
+      if (!page || session.getReusablePagePreviewInfo(pageIndex, 0, page.rotation)) {
         continue;
       }
 
@@ -1366,6 +1405,7 @@ export function DocumentViewport({
         priority: 100 - Math.abs(pageIndex - currentPage),
         urgency: 'prefetch',
         requestClass: 'warming',
+        rotation: page.rotation,
         signal: abortController.signal,
       }).catch(() => undefined);
     }
@@ -1625,6 +1665,15 @@ export function resolveVisiblePageViewportRect(
     y: top - layout.top,
     width: right - left,
     height: bottom - top,
+  };
+}
+
+export function measureViewportSize(
+  viewport: Pick<HTMLElement, 'clientWidth' | 'clientHeight'>,
+): { width: number; height: number } {
+  return {
+    width: Math.round(viewport.clientWidth),
+    height: Math.round(viewport.clientHeight),
   };
 }
 
@@ -2025,6 +2074,21 @@ export function materializeSinglePagePanPadding(
   };
 }
 
+export function materializeContinuousPanPadding(
+  currentPadding: CanvasPadding,
+  viewportSize: { readonly width: number; readonly height: number },
+): CanvasPadding {
+  const horizontalPanRoom = Math.max(0, viewportSize.width);
+  const verticalPanRoom = Math.max(0, viewportSize.height);
+
+  return {
+    left: currentPadding.left + horizontalPanRoom,
+    right: currentPadding.right + horizontalPanRoom,
+    top: currentPadding.top + verticalPanRoom,
+    bottom: currentPadding.bottom + verticalPanRoom,
+  };
+}
+
 export function clampWheelZoomFrameDelta(deltaY: number): number {
   if (!Number.isFinite(deltaY)) {
     return 0;
@@ -2334,7 +2398,11 @@ function ColumnOverviewCanvas({
           continue;
         }
 
-        if (session.getReusablePagePreviewInfo(layout.index, requiredWidth * 0.75)) {
+        if (session.getReusablePagePreviewInfo(
+          layout.index,
+          requiredWidth * 0.75,
+          pageByIndex.get(layout.index)?.rotation,
+        )) {
           availablePreviewPageIndices.add(layout.index);
         }
       }
@@ -2380,6 +2448,7 @@ function ColumnOverviewCanvas({
               : 2000 - batchIndex,
           urgency: isStrictlyVisible ? 'visible' : 'prefetch',
           requestClass: 'overview-thumbnail',
+          rotation: page.rotation,
         });
         if (cancelled) {
           return;
@@ -2718,7 +2787,7 @@ function PageOverviewTile({
       isFocusPage,
     });
     const minimumReusableWidth = previewBounds.maxWidth * 0.75;
-    const reusablePreview = renderCoordinator.getReusablePreviewUrl(page.index, minimumReusableWidth);
+    const reusablePreview = renderCoordinator.getReusablePreviewUrl(page.index, minimumReusableWidth, page.rotation);
 
     if (reusablePreview) {
       replaceSourceUrl(reusablePreview);
@@ -2737,6 +2806,7 @@ function PageOverviewTile({
       priority: isPointerPage ? renderPriority + 2000 : isFocusPage ? renderPriority + 1500 : renderPriority,
       urgency: 'visible',
       requestClass: 'overview-thumbnail',
+      rotation: page.rotation,
     }).then((nextUrl) => {
       if (!cancelled) {
         replaceSourceUrl(nextUrl);
@@ -2767,6 +2837,7 @@ function PageOverviewTile({
       priority: isPointerPage ? renderPriority + 2000 : isFocusPage ? renderPriority + 1500 : renderPriority,
       urgency: 'visible',
       requestClass: 'overview-thumbnail',
+      rotation: page.rotation,
     });
   }, [isFocusPage, isPointerPage, isStrictlyVisible, layout, page, renderCoordinator, renderPreview, renderPriority]);
 
@@ -2863,7 +2934,7 @@ function resolveColumnOverviewPreviewRequiredWidths({
       isPointerPage: layout.index === pointerPageIndex,
       isFocusPage: layout.index === focusPageIndex,
     });
-    if (!session.getReusablePagePreviewInfo(layout.index, previewBounds.maxWidth * 0.75)) {
+    if (!session.getReusablePagePreviewInfo(layout.index, previewBounds.maxWidth * 0.75, page.rotation)) {
       requiredWidths.set(layout.index, previewBounds.maxWidth);
     }
   }

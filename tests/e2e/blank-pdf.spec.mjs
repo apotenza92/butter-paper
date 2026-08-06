@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PDFDocument } from 'pdf-lib';
@@ -16,6 +16,42 @@ const PAPER_SIZES = [
 ];
 
 test.describe('New blank PDF', () => {
+  test('opens the size picker from the File menu and creates the selected page', async () => {
+    test.skip(!resolveDesktopEntryPoint(), 'Desktop app entrypoint not available yet');
+    const app = await launchButterPaper({ theme: 'light' });
+    if (!app) test.skip(true, 'Desktop app could not be launched');
+
+    const page = await firstWindow(app);
+    const outputDirectory = await mkdtemp(join(tmpdir(), 'butter-paper-blank-menu-e2e-'));
+
+    try {
+      await page.getByTestId('menu-trigger-file').click();
+      await page.getByTestId('menu-file-new-pdf').click();
+      const dialog = page.getByTestId('new-blank-pdf-dialog');
+      await expect(dialog).toBeVisible();
+      await expect(page.getByTestId('new-blank-pdf-dialog-paper-size')).toHaveValue('a3');
+      await page.getByTestId('new-blank-pdf-dialog-paper-size').selectOption('a4');
+      await page.getByTestId('new-blank-pdf-dialog-portrait').click();
+      await page.getByTestId('new-blank-pdf-dialog-create').click();
+
+      await expect(dialog).toHaveCount(0);
+      await expect.poll(async () => (await getDiagnostics(page))?.documentName).toBe('Untitled.pdf');
+      await expect(page.getByTestId('document-tab-new-pdf')).toHaveAttribute('aria-label', 'New blank PDF using A4 · Portrait');
+      const outputPath = join(outputDirectory, 'file-menu-a4-portrait.pdf');
+      await saveCurrentDocumentAs(page, outputPath);
+      const document = await PDFDocument.load(await readFile(outputPath), { updateMetadata: false });
+      expect(document.getPage(0).getWidth()).toBeCloseTo(210 * MILLIMETRES_TO_POINTS, 3);
+      expect(document.getPage(0).getHeight()).toBeCloseTo(297 * MILLIMETRES_TO_POINTS, 3);
+
+      await page.evaluate(async ({ path }) => {
+        await window.__butterPaperTestHooks?.closeTab(path);
+      }, { path: outputPath });
+    } finally {
+      await app.close();
+      await rm(outputDirectory, { recursive: true, force: true });
+    }
+  });
+
   test('keeps equally spaced document actions after the tabs, remembers the blank default, and protects a dirty tab', async () => {
     test.skip(!resolveDesktopEntryPoint(), 'Desktop app entrypoint not available yet');
     const app = await launchButterPaper({ theme: 'light' });
@@ -44,11 +80,13 @@ test.describe('New blank PDF', () => {
 
     const browserWindow = await app.browserWindow(page);
     await browserWindow.evaluate((window) => window.webContents.setZoomFactor(2));
-    const settingsBounds = await settings.boundingBox();
-    const constrainedViewportHeight = await page.evaluate(() => window.innerHeight);
-    expect(settingsBounds).not.toBeNull();
-    expect(settingsBounds.y).toBeGreaterThanOrEqual(0);
-    expect(settingsBounds.y + settingsBounds.height).toBeLessThanOrEqual(constrainedViewportHeight);
+    await expect.poll(async () => {
+      const settingsBounds = await settings.boundingBox();
+      const constrainedViewportHeight = await page.evaluate(() => window.innerHeight);
+      return settingsBounds !== null
+        && settingsBounds.y >= 0
+        && settingsBounds.y + settingsBounds.height <= constrainedViewportHeight;
+    }).toBe(true);
     await page.keyboard.press('Escape');
     await expect(settings).toHaveCount(0);
     await expect(settingsButton).toBeFocused();
@@ -98,13 +136,17 @@ test.describe('New blank PDF', () => {
 
     const temporarySourcePath = (await getDiagnostics(page))?.documentPath;
     expect(temporarySourcePath && existsSync(temporarySourcePath)).toBe(true);
+    await page.getByTestId('document-tab-0').hover();
     await page.getByRole('button', { name: 'Close Untitled.pdf' }).click();
-    await expect(page.getByTestId('unsaved-changes-dialog')).toBeVisible();
-    await page.getByRole('button', { name: 'Cancel' }).click();
-    await expect(page.getByRole('tab', { name: /Untitled\.pdf/ })).toBeVisible();
+    const unsavedDialog = page.getByTestId('unsaved-changes-dialog');
+    await expect(unsavedDialog).toBeVisible();
+    await unsavedDialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(unsavedDialog).toHaveCount(0);
+    await expect(page.getByTestId('document-tab-0')).toBeVisible();
+    await page.getByTestId('document-tab-0').hover();
     await page.getByRole('button', { name: 'Close Untitled.pdf' }).click();
-    await page.getByTestId('unsaved-discard').click();
-    await expect(page.getByRole('tab', { name: /Untitled\.pdf/ })).toHaveCount(0);
+    await unsavedDialog.getByTestId('unsaved-discard').click();
+    await expect(page.getByTestId('document-tab-0')).toHaveCount(0);
     expect(existsSync(temporarySourcePath)).toBe(false);
 
     await app.close();
@@ -136,9 +178,11 @@ test.describe('New blank PDF', () => {
           expect(document.getPage(0).getWidth()).toBeCloseTo(widthMm * MILLIMETRES_TO_POINTS, 3);
           expect(document.getPage(0).getHeight()).toBeCloseTo(heightMm * MILLIMETRES_TO_POINTS, 3);
 
-          await page.evaluate(async ({ path }) => {
-            await window.__butterPaperTestHooks?.closeTab(path);
-          }, { path: outputPath });
+          const canonicalOutputPath = await realpath(outputPath);
+          await expect.poll(async () => (await getDiagnostics(page))?.documentPath).toBe(canonicalOutputPath);
+          await page.evaluate(async () => {
+            await window.__butterPaperTestHooks?.closeTab(0);
+          });
           await expect.poll(async () => (await getDiagnostics(page))?.tabs?.length ?? 0).toBe(0);
         }
       }
@@ -152,6 +196,7 @@ test.describe('New blank PDF', () => {
     test.skip(!resolveDesktopEntryPoint(), 'Desktop app entrypoint not available yet');
     const app = await launchButterPaper({ theme: 'light' });
     if (!app) test.skip(true, 'Desktop app could not be launched');
+    const childProcess = app.process();
     const page = await firstWindow(app);
     const outputDirectory = await mkdtemp(join(tmpdir(), 'butter-paper-blank-annotation-e2e-'));
 
@@ -161,11 +206,11 @@ test.describe('New blank PDF', () => {
       });
       await expect.poll(async () => (await getDiagnostics(page))?.pageCount).toBe(1);
       const layer = page.getByTestId('annotation-layer-1');
-      const layerBounds = await layer.boundingBox();
-      expect(layerBounds).not.toBeNull();
+      await expect(layer).toBeVisible();
       await page.getByTestId('tool-rectangle').click();
-      await page.mouse.click(layerBounds.x + 50, layerBounds.y + 60);
-      await page.mouse.click(layerBounds.x + 160, layerBounds.y + 130);
+      await expect.poll(async () => (await getDiagnostics(page))?.activeTool).toBe('rectangle');
+      await layer.click({ position: { x: 50, y: 60 } });
+      await layer.click({ position: { x: 160, y: 130 } });
       await expect.poll(async () => (await getDiagnostics(page))?.markupCount).toBe(1);
 
       const temporarySourcePath = (await getDiagnostics(page))?.documentPath;
@@ -174,9 +219,9 @@ test.describe('New blank PDF', () => {
       await saveCurrentDocumentAs(page, savedPath);
       expect(existsSync(savedPath)).toBe(true);
       expect(existsSync(temporarySourcePath)).toBe(false);
-      await page.evaluate(async ({ path }) => {
-        await window.__butterPaperTestHooks?.closeTab(path);
-      }, { path: savedPath });
+      await page.evaluate(async () => {
+        await window.__butterPaperTestHooks?.closeTab(0);
+      });
       await expect.poll(async () => (await getDiagnostics(page))?.tabs?.length ?? 0).toBe(0);
       await page.evaluate(async ({ path }) => {
         await window.__butterPaperTestHooks?.openDocumentPath(path);
@@ -191,17 +236,19 @@ test.describe('New blank PDF', () => {
         await window.__butterPaperTestHooks?.createBlankPdf({ widthMm: 420, heightMm: 297 });
       });
       await expect.poll(async () => (await getDiagnostics(page))?.tabs?.filter((tab) => tab.dirty).length).toBe(2);
-      const browserWindow = await app.browserWindow(page);
-      await browserWindow.evaluate((window) => window.close());
+      await page.getByTestId('menu-trigger-butter-paper').click();
+      await page.getByTestId('menu-quit').click();
       await expect(page.getByTestId('unsaved-changes-dialog')).toContainText('Save All');
       await page.getByRole('button', { name: 'Cancel' }).click();
       await expect(page.getByTestId('app-root')).toBeVisible();
-      await browserWindow.evaluate((window) => window.close());
-      const closed = page.waitForEvent('close');
+      const closed = new Promise((resolve) => app.once('close', resolve));
+      await page.getByTestId('menu-trigger-butter-paper').click();
+      await page.getByTestId('menu-quit').click();
+      await expect(page.getByTestId('unsaved-changes-dialog')).toContainText('Save All');
       await page.getByTestId('unsaved-discard').click();
       await closed;
     } finally {
-      await app.close().catch(() => undefined);
+      if (childProcess.exitCode === null) childProcess.kill();
       await rm(outputDirectory, { recursive: true, force: true });
     }
   });

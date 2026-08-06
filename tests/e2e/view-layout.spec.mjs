@@ -575,6 +575,7 @@ async function waitForDiagnostics(page, expected) {
       zoomPreset: diagnostics?.zoomPreset ?? 'manual',
       pageColumnsEnabled: diagnostics?.pageColumnsEnabled ?? false,
       scrollWheelMode: diagnostics?.scrollWheelMode ?? 'scroll',
+      singlePageScrollWheelMode: diagnostics?.singlePageScrollWheelMode ?? 'zoom',
       cadViewOrganisation: diagnostics?.cadViewOrganisation ?? 'columns',
       pagesPerColumn: diagnostics?.pagesPerColumn ?? 10,
     };

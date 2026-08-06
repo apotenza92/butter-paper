@@ -3,9 +3,21 @@ import { createCalloutMarkup, createCloudPlusMarkup, createPageTransform, create
 import { getVerticallyCenteredAnnotationTextContentStyle } from '../pdf-tools/annotationStyles';
 import { expandViewportRect, isPointNearSelectionChromeEdge, projectChromeHandlePoint } from '../pdf-tools/selectionHitZones';
 import { layoutTextBoxLines, splitAnnotationTextLines } from '../pdf-tools/textLayout';
-import { autosizeTextBoxRect, autosizeTextBoxRectDownward, centeredCompositeTextBoxRect, cloudCursorHintPosition, isCloudPolygonClosePoint, isPostPlacementSelectionActive, scaleAnnotationDashArray, scaleAnnotationFirstBaselineOffset, scaleAnnotationFontSize, scaleAnnotationLineHeight, scaleAnnotationStrokeWidth, scaleAnnotationTextInset, selectionAfterMarkupClick, selectionCursorHintPosition, selectionToggleCursorIntent, selectionZoneCursorIntent, shouldCancelDraftForToolChange, shouldRenderMarkupAtZoom, shouldSelectMarkupAfterHandleTransform, textBoxCaretGeometry, updateMarkupTextAndCenterOnLeader } from './AnnotationLayer';
+import { autosizeTextBoxRect, autosizeTextBoxRectDownward, centeredCompositeTextBoxRect, getInteractionState, interactionContextForPage, isCloudPolygonClosePoint, isDirectManipulationTool, isPostPlacementSelectionActive, orthogonalAnchorForDraft, resolveAnnotationCursor, scaleAnnotationDashArray, scaleAnnotationFirstBaselineOffset, scaleAnnotationFontSize, scaleAnnotationLineHeight, scaleAnnotationStrokeWidth, scaleAnnotationTextInset, selectionAfterMarkupClick, shouldCancelDraftForToolChange, shouldConsumeSelectionClickAway, shouldRenderMarkupAtZoom, shouldSelectMarkupAfterHandleTransform, textBoxCaretGeometry, updateMarkupTextAndCenterOnLeader } from './AnnotationLayer';
 
 describe('annotation layer rendering', () => {
+  it('supplies page bounds and same-page markups to interaction algorithms', () => {
+    const page = { id: 'page-1', index: 1, size: { width: 612, height: 792 }, rotation: 0 } as const;
+    const onPage = createRectangleMarkup({ id: 'on-page', pageIndex: 1, rect: rect(10, 10, 20, 20) });
+    const offPage = createRectangleMarkup({ id: 'off-page', pageIndex: 2, rect: rect(10, 10, 20, 20) });
+
+    expect(interactionContextForPage(page, [offPage, onPage])).toEqual({
+      page,
+      pageBounds: rect(0, 0, 612, 792),
+      markups: [onPage],
+    });
+  });
+
   it('scales PDF text font sizes into thumbnail viewport space', () => {
     expect(scaleAnnotationFontSize(10, { zoom: 220 / 792 })).toBeCloseTo(2.78);
   });
@@ -186,25 +198,63 @@ describe('annotation layer rendering', () => {
     expect(selectionAfterMarkupClick(['rect-1', 'ellipse-1'], 'ellipse-1', true)).toEqual(['rect-1']);
   });
 
-  it('shows add and remove cursors for Shift-toggle selection without masking handle cursors', () => {
-    expect(selectionToggleCursorIntent('select', true, 'ellipse-1', ['rect-1'], false)).toBe('add');
-    expect(selectionToggleCursorIntent('select', true, 'rect-1', ['rect-1'], false)).toBe('remove');
-    expect(selectionToggleCursorIntent('select', true, 'rect-1', ['rect-1'], true)).toBeNull();
-    expect(selectionToggleCursorIntent('select', false, 'rect-1', ['rect-1'], false)).toBeNull();
-    expect(selectionToggleCursorIntent('rectangle', true, 'rect-1', ['rect-1'], false)).toBeNull();
-    expect(selectionZoneCursorIntent('select', true, false, null, false)).toBe('add');
-    expect(selectionZoneCursorIntent('select', false, true, null, false)).toBe('remove');
-    expect(selectionZoneCursorIntent('select', true, false, 'rect-1', false)).toBeNull();
+  it('consumes the first plain click away as deselection instead of starting a selection gesture', () => {
+    expect(shouldConsumeSelectionClickAway(['rect-1'], 'replace')).toBe(true);
+    expect(shouldConsumeSelectionClickAway([], 'replace')).toBe(false);
+    expect(shouldConsumeSelectionClickAway(['rect-1'], 'add')).toBe(false);
+    expect(shouldConsumeSelectionClickAway(['rect-1'], 'remove')).toBe(false);
   });
 
-  it('keeps the cursor-following selection shortcut hint inside the page', () => {
-    expect(selectionCursorHintPosition({ x: 40, y: 50 }, { width: 600, height: 400 })).toEqual({ x: 56, y: 66 });
-    expect(selectionCursorHintPosition({ x: 590, y: 390 }, { width: 600, height: 400 })).toEqual({ x: 298, y: 346 });
+  it('keeps direct-manipulation cursors exclusive to Select mode', () => {
+    const moveCursor = 'move-cursor';
+
+    expect(isDirectManipulationTool('select')).toBe(true);
+    expect(isDirectManipulationTool('rectangle')).toBe(false);
+    expect(resolveAnnotationCursor({ activeTool: 'select', hoverCursor: moveCursor })).toBe(moveCursor);
+    expect(resolveAnnotationCursor({ activeTool: 'rectangle', hoverCursor: moveCursor })).toBe('crosshair');
+    expect(resolveAnnotationCursor({
+      activeTool: 'rectangle',
+      hoverCursor: moveCursor,
+      postPlacementSelectionActive: true,
+    })).toBe('default');
   });
 
-  it('keeps the cloud gesture hint beside the pointer and inside the page', () => {
-    expect(cloudCursorHintPosition({ x: 40, y: 50 }, { width: 600, height: 400 })).toEqual({ x: 54, y: 64 });
-    expect(cloudCursorHintPosition({ x: 590, y: 390 }, { width: 600, height: 400 })).toEqual({ x: 390, y: 352 });
+  it('shows every live marquee candidate in hover state before selection is committed', () => {
+    const selectedMarkupIds = new Set(['rect-1']);
+    const marqueeHoveredMarkupIds = new Set(['rect-1', 'line-1']);
+
+    expect(getInteractionState('rect-1', selectedMarkupIds, 'rect-1', null, marqueeHoveredMarkupIds)).toBe('hovered');
+    expect(getInteractionState('line-1', selectedMarkupIds, 'rect-1', null, marqueeHoveredMarkupIds)).toBe('hovered');
+    expect(getInteractionState('ellipse-1', selectedMarkupIds, 'rect-1', null, marqueeHoveredMarkupIds)).toBe('idle');
+  });
+
+  it('uses the current segment origin for global Shift orthogonal placement', () => {
+    const start = pdfPoint(10, 20);
+    const latest = pdfPoint(40, 50);
+
+    expect(orthogonalAnchorForDraft({ kind: 'line', start, current: latest }, 'line')).toEqual(start);
+    expect(orthogonalAnchorForDraft({
+      kind: 'measurement-path',
+      tool: 'polylength',
+      start: latest,
+      current: latest,
+      points: [start, latest],
+    }, 'polylength')).toEqual(latest);
+    expect(orthogonalAnchorForDraft({
+      kind: 'cloud-node',
+      start: latest,
+      current: latest,
+      points: [start, latest],
+    }, 'cloud')).toEqual(latest);
+  });
+
+  it('does not collapse box gestures or constrain the arc bulge point', () => {
+    const start = pdfPoint(10, 20);
+    const current = pdfPoint(40, 50);
+
+    expect(orthogonalAnchorForDraft({ kind: 'line', start, current }, 'cloud')).toBeNull();
+    expect(orthogonalAnchorForDraft({ kind: 'rectangle', start, current }, 'rectangle')).toBeNull();
+    expect(orthogonalAnchorForDraft({ kind: 'arc', phase: 'mid', start, end: current, current }, 'arc')).toBeNull();
   });
 
   it('closes a cloud polygon within a zoom-independent screen-space threshold', () => {
@@ -240,6 +290,37 @@ describe('annotation layer rendering', () => {
     expect(centered.height).toBeCloseTo(53.4);
     expect(centered.y + centered.height * 0.5).toBeCloseTo(22);
     expect(updated).toMatchObject({ text, textBox: centered });
+    if (updated?.kind === 'callout' || updated?.kind === 'cloud-plus') {
+      expect(updated.leader.points.at(-1)?.y).toBeCloseTo(updated.textBox.y + updated.textBox.height * 0.5);
+    }
     expect(style.firstBaselineOffsetPt).toBeCloseTo(16.5);
+  });
+
+  it('restores a native Cloud+ leader when multiline inline text grows outside the cloud', () => {
+    const markup = createCloudPlusMarkup({
+      id: 'inline-cloud-plus',
+      pageIndex: 0,
+      cloud: {
+        controlPath: [pdfPoint(0, 0), pdfPoint(0, 140), pdfPoint(260, 140), pdfPoint(260, 0)],
+      },
+      leader: { points: [] },
+      textBox: rect(55, 48, 150, 44),
+      text: 'Inline',
+    });
+    const text = Array.from({ length: 12 }, (_, index) => `Line ${index + 1}`).join('\n');
+    const updated = updateMarkupTextAndCenterOnLeader({
+      id: 'document-1',
+      path: '/document.pdf',
+      metadata: {},
+      pages: [{ id: 'page-1', index: 0, size: { width: 612, height: 792 }, rotation: 0 }],
+      markups: [markup],
+    }, markup.id, text).markups[0];
+
+    expect(updated?.kind).toBe('cloud-plus');
+    if (updated?.kind === 'cloud-plus') {
+      expect(updated.textBox.height).toBeGreaterThan(140);
+      expect(updated.leader.points).toHaveLength(3);
+      expect(updated.leader.points.at(-1)?.y).toBeCloseTo(updated.textBox.y + updated.textBox.height * 0.5);
+    }
   });
 });

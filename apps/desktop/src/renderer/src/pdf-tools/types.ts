@@ -15,7 +15,12 @@ export interface ToolContext {
   readonly pageScale?: PageScale;
 }
 
-export interface ToolRenderContext extends ToolContext {
+export interface ToolInteractionContext extends ToolContext {
+  readonly markups?: readonly Markup[];
+  readonly pageBounds?: Rect;
+}
+
+export interface ToolRenderContext extends ToolInteractionContext {
   readonly phase: InteractionPhase;
 }
 
@@ -153,7 +158,7 @@ export interface ToolInteractionProvider<TMarkup extends Markup = Markup, TDraft
   readonly placement?: 'drag' | 'click';
   createDraft?(session: ToolInteractionSession): TDraft;
   updateDraft?(draft: TDraft, point: PdfPoint): TDraft;
-  commitDraft?(draft: TDraft, context: ToolContext & {
+  commitDraft?(draft: TDraft, context: ToolInteractionContext & {
     readonly hasExceededDragThreshold: boolean;
     createMarkupId(prefix: string): string;
   }): TMarkup | null;
@@ -162,12 +167,12 @@ export interface ToolInteractionProvider<TMarkup extends Markup = Markup, TDraft
     readonly handleBehavior: HandleBehavior;
     readonly startPoint: PdfPoint;
     readonly currentPoint: PdfPoint;
-  }): TMarkup;
+  }, context?: ToolInteractionContext): TMarkup;
   dragMarkup?(markup: TMarkup, input: {
     readonly componentId: string;
     readonly bodyDrag: BodyDragBehavior;
     readonly delta: PdfPoint;
-  }): TMarkup;
+  }, context?: ToolInteractionContext): TMarkup;
 }
 
 export type ToolPropertyDefinition =
@@ -197,6 +202,7 @@ export interface PdfToolDefinition<TMarkup extends Markup = Markup, TDraft = unk
   readonly id: MarkupToolId;
   readonly label: string;
   readonly shortcut?: string;
+  readonly shortcutLabel?: string;
   readonly category: ToolCategory;
   readonly cursor: string;
   readonly testId: string;

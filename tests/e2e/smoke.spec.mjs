@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
-import { firstWindow, getDiagnostics, launchButterPaper, openFixturePdf, resolveDesktopEntryPoint, saveCurrentDocumentAs } from './helpers/electron.mjs';
+import { closeButterPaperDiscardingUnsaved, firstWindow, getDiagnostics, launchButterPaper, openFixturePdf, resolveDesktopEntryPoint, saveCurrentDocumentAs } from './helpers/electron.mjs';
 
 const LAUNCH_BUDGET_MS = 45_000;
 const OPEN_BUDGET_MS = 45_000;
@@ -39,11 +39,11 @@ test.describe('Butter Paper electron workflows', () => {
     await expect(page.getByTestId('menu-trigger-document')).toHaveCount(0);
     await expect(page.getByTestId('document-tab-bar')).toBeVisible();
     await expect(page.getByTestId('viewer-toolbar')).toBeVisible();
-    await expect(page.getByTestId('viewer-set-page-scale')).toBeDisabled();
+    await expect(page.getByTestId('page-thumbnail-set-scale-1')).toHaveCount(0);
     await expect(page.getByTestId('left-rail')).toBeVisible();
     await expect(page.getByTestId('right-rail')).toBeVisible();
     await expectShellSizing(page);
-    await expect(page.getByTestId('left-rail-pages')).toHaveAttribute('aria-label', 'Pages');
+    await expect(page.getByTestId('left-rail-pages')).toHaveAttribute('aria-label', 'Page Thumbnails');
     await expect(page.getByTestId('tool-select')).toHaveAttribute('aria-label', 'Select');
     await expect(page.getByTestId('tool-pan')).toHaveAttribute('aria-label', 'Pan');
     await expect(page.getByTestId('tool-rectangle')).toHaveAttribute('aria-label', 'Rectangle');
@@ -69,7 +69,7 @@ test.describe('Butter Paper electron workflows', () => {
       lastPageRenderError: null,
       lastThumbnailRenderError: null,
     });
-    await expect(fixturePage.getByTestId('viewer-set-page-scale')).toBeEnabled();
+    await expect(fixturePage.getByTestId('page-thumbnail-set-scale-1')).toBeEnabled();
     const openElapsedMs = performance.now() - openStartedAt;
     expect(openElapsedMs).toBeLessThan(OPEN_BUDGET_MS);
 
@@ -138,7 +138,7 @@ test.describe('Butter Paper electron workflows', () => {
     await expect(page.getByTestId('right-rail')).toBeVisible();
     await expectShellSizing(page);
     await expectSidebarHeaders(page, { rightSidebarVisible: false });
-    await expect(page.getByTestId('left-rail-pages')).toHaveAttribute('aria-label', 'Pages');
+    await expect(page.getByTestId('left-rail-pages')).toHaveAttribute('aria-label', 'Page Thumbnails');
     await expect(page.getByTestId('tool-select')).toHaveAttribute('aria-label', 'Select');
     await expect(page.getByTestId('tool-pan')).toHaveAttribute('aria-label', 'Pan');
     await expect(page.getByTestId('tool-rectangle')).toHaveAttribute('aria-label', 'Rectangle');
@@ -211,15 +211,12 @@ test.describe('Butter Paper electron workflows', () => {
     };
     await page.mouse.move(selectionTogglePoint.x, selectionTogglePoint.y);
     await page.keyboard.down('Shift');
-    await expect(pageCanvas).toHaveAttribute('data-selection-toggle-intent', 'remove');
-    await expect(page.getByTestId('selection-cursor-hint')).toHaveAttribute('data-selection-operation', 'remove');
+    await expect(page.getByTestId('selection-cursor-hint')).toHaveCount(0);
     await page.mouse.click(selectionTogglePoint.x, selectionTogglePoint.y);
     await page.keyboard.up('Shift');
     await expect(rectangle.locator('[data-interaction-state="focused"]')).toHaveCount(0);
 
     await page.keyboard.down('Shift');
-    await expect(pageCanvas).toHaveAttribute('data-selection-toggle-intent', 'add');
-    await expect(page.getByTestId('selection-cursor-hint')).toHaveAttribute('data-selection-operation', 'add');
     await page.mouse.click(selectionTogglePoint.x, selectionTogglePoint.y);
     await page.keyboard.up('Shift');
     await expect(rectangle.locator('[data-interaction-state="focused"]')).toBeVisible();
@@ -245,7 +242,8 @@ test.describe('Butter Paper electron workflows', () => {
     await expect(windowMarquee).toHaveAttribute('data-selection-operation', 'replace');
     await expect(windowMarquee).toHaveAttribute('stroke', '#2563eb');
     await expect(windowMarquee).not.toHaveAttribute('stroke-dasharray');
-    await expect(page.getByTestId('selection-cursor-hint')).toHaveAttribute('data-selection-operation', 'replace');
+    await expect(page.getByTestId('selection-cursor-hint')).toHaveCount(0);
+    await expect(page.getByTestId('selection-marquee-operation')).toHaveCount(0);
     await page.mouse.click(windowEnd.x, windowEnd.y);
     await expect(rectangle.locator('[data-interaction-state="focused"]')).toBeVisible();
 
@@ -279,7 +277,6 @@ test.describe('Butter Paper electron workflows', () => {
     await page.keyboard.up('Alt');
     await page.mouse.move(windowEnd.x, windowEnd.y, { steps: 5 });
     await expect(page.getByTestId('selection-marquee')).toHaveAttribute('data-selection-operation', 'remove');
-    await expect(page.getByTestId('selection-marquee-operation')).toHaveAttribute('data-selection-operation', 'remove');
     await page.mouse.click(windowEnd.x, windowEnd.y);
     await expect(rectangle.locator('[data-interaction-state="focused"]')).toHaveCount(0);
 
@@ -288,7 +285,6 @@ test.describe('Butter Paper electron workflows', () => {
     await page.keyboard.up('Shift');
     await page.mouse.move(windowEnd.x, windowEnd.y, { steps: 5 });
     await expect(page.getByTestId('selection-marquee')).toHaveAttribute('data-selection-operation', 'add');
-    await expect(page.getByTestId('selection-marquee-operation')).toHaveAttribute('data-selection-operation', 'add');
     await page.mouse.click(windowEnd.x, windowEnd.y);
     await expect(rectangle.locator('[data-interaction-state="focused"]')).toBeVisible();
 
@@ -358,21 +354,19 @@ test.describe('Butter Paper electron workflows', () => {
 
     const initialDiagnostics = await getDiagnostics(page);
     const initialMarkupCount = initialDiagnostics?.markupCount ?? 0;
-    const pageCanvasBox = await page.locator('[data-testid="annotation-layer-1"]').boundingBox();
-    expect(pageCanvasBox).not.toBeNull();
+    const annotationLayer = page.getByTestId('annotation-layer-1');
+    await expect(annotationLayer).toBeVisible();
 
     await page.getByTestId('tool-rectangle').click();
-    const documentViewportBox = await page.locator('[data-testid="document-viewport"]').boundingBox();
-    expect(documentViewportBox).not.toBeNull();
-    const startY = Math.max(pageCanvasBox.y + 90, documentViewportBox.y + 90);
-    await page.mouse.click(pageCanvasBox.x + 80, startY);
-    await page.mouse.click(pageCanvasBox.x + 220, startY + 80);
+    await expect.poll(async () => (await getDiagnostics(page))?.activeTool).toBe('rectangle');
+    await annotationLayer.click({ position: { x: 80, y: 90 } });
+    await annotationLayer.click({ position: { x: 220, y: 170 } });
     await waitForMarkupDiagnostics(page, { markupCount: initialMarkupCount + 1 });
 
     const thumbnailMarkupRect = page.locator('[data-testid="thumbnail-annotation-layer-1"] [data-testid^="thumbnail-markup-"] rect').first();
     await expect(thumbnailMarkupRect).toBeVisible();
 
-    await app.close();
+    await closeButterPaperDiscardingUnsaved(app, page);
   });
 
   test('places text boxes from a caret-first provisional editor', async () => {
@@ -395,6 +389,7 @@ test.describe('Butter Paper electron workflows', () => {
     const initialDiagnostics = await getDiagnostics(page);
     const initialMarkupCount = initialDiagnostics?.markupCount ?? 0;
     const annotationLayer = page.getByTestId('annotation-layer-1');
+    await expect(annotationLayer).toBeVisible();
     const layerBox = await annotationLayer.boundingBox();
     expect(layerBox).not.toBeNull();
     const viewportBox = await page.getByTestId('document-viewport').boundingBox();
@@ -637,6 +632,7 @@ async function expectShellSizing(page) {
   const rightRailBox = await page.getByTestId('right-rail').boundingBox();
   const leftRailButtonBox = await page.getByTestId('left-rail-pages').boundingBox();
   const rightRailButtonBox = await page.getByTestId('tool-select').boundingBox();
+  const rightRailTrailingButtonBox = await page.getByTestId('tool-pan').boundingBox();
   const viewerToolbarBox = await page.getByTestId('viewer-toolbar').boundingBox();
   const viewerToolbarButtonBox = await page.getByTestId('viewer-zoom-out').boundingBox();
 
@@ -645,13 +641,12 @@ async function expectShellSizing(page) {
   expect(documentTabBarBox?.height).toBeGreaterThanOrEqual(48);
   expect(documentTabBarBox?.height).toBeLessThanOrEqual(50);
 
-  expect(leftRailBox?.width).toBeGreaterThanOrEqual(47);
-  expect(leftRailBox?.width).toBeLessThanOrEqual(49);
-  expect(rightRailBox?.width).toBeGreaterThanOrEqual(87);
-  expect(rightRailBox?.width).toBeLessThanOrEqual(89);
-
+  expect(leftRailBox).not.toBeNull();
+  expect(rightRailBox).not.toBeNull();
   expect(leftRailButtonBox).not.toBeNull();
   expect(rightRailButtonBox).not.toBeNull();
+  expect(rightRailTrailingButtonBox).not.toBeNull();
+  await expect(page.getByTestId('right-rail')).toHaveAttribute('data-column-count', '2');
   expect(leftRailButtonBox?.width).toBeGreaterThanOrEqual(31);
   expect(leftRailButtonBox?.width).toBeLessThanOrEqual(33);
   expect(leftRailButtonBox?.height).toBeGreaterThanOrEqual(31);
@@ -662,6 +657,10 @@ async function expectShellSizing(page) {
   expect(rightRailButtonBox?.height).toBeLessThanOrEqual(33);
   expect(Math.abs(leftRailButtonBox.width - leftRailButtonBox.height)).toBeLessThanOrEqual(0.5);
   expect(Math.abs(rightRailButtonBox.width - rightRailButtonBox.height)).toBeLessThanOrEqual(0.5);
+  expect(leftRailButtonBox.x).toBeGreaterThanOrEqual(leftRailBox.x);
+  expect(leftRailButtonBox.x + leftRailButtonBox.width).toBeLessThanOrEqual(leftRailBox.x + leftRailBox.width);
+  expect(rightRailButtonBox.x).toBeGreaterThanOrEqual(rightRailBox.x);
+  expect(rightRailTrailingButtonBox.x + rightRailTrailingButtonBox.width).toBeLessThanOrEqual(rightRailBox.x + rightRailBox.width);
 
   expect(viewerToolbarBox?.height).toBeGreaterThanOrEqual(47);
   expect(viewerToolbarBox?.height).toBeLessThanOrEqual(49);

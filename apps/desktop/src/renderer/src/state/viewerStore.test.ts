@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  DEFAULT_LEFT_SIDEBAR_WIDTH,
+  DEFAULT_RIGHT_SIDEBAR_WIDTH,
   MAX_LEFT_SIDEBAR_WIDTH,
   MAX_RIGHT_SIDEBAR_WIDTH,
   MIN_LEFT_SIDEBAR_WIDTH,
@@ -13,6 +15,13 @@ afterEach(() => {
 });
 
 describe('viewer store', () => {
+  it('starts both sidebars at 300 px', () => {
+    expect(DEFAULT_LEFT_SIDEBAR_WIDTH).toBe(300);
+    expect(DEFAULT_RIGHT_SIDEBAR_WIDTH).toBe(300);
+    expect(useViewerStore.getState().leftSidebarWidth).toBe(300);
+    expect(useViewerStore.getState().rightSidebarWidth).toBe(300);
+  });
+
   it('updates light UI state without heavy document data', () => {
     useViewerStore.getState().setZoom(1.5);
     useViewerStore.getState().setActiveTool('rectangle');
@@ -33,9 +42,13 @@ describe('viewer store', () => {
     expect(useViewerStore.getState().leftSidebarOpen).toBe(true);
     expect(useViewerStore.getState().rightSidebarOpen).toBe(true);
 
+    store.toggleLeftSidebar('pages');
+    expect(useViewerStore.getState().leftSidebarPanel).toBe('pages');
+    expect(useViewerStore.getState().leftSidebarOpen).toBe(false);
+
     store.toggleLeftSidebar();
     store.toggleRightSidebar();
-    expect(useViewerStore.getState().leftSidebarOpen).toBe(false);
+    expect(useViewerStore.getState().leftSidebarOpen).toBe(true);
     expect(useViewerStore.getState().rightSidebarOpen).toBe(false);
 
     const requestId = store.requestPageScroll(7);
@@ -88,6 +101,21 @@ describe('viewer store', () => {
     store.setPostPlacement({ markupId: 'rect-2', tool: 'rectangle' });
     store.setActiveTool('line');
     expect(useViewerStore.getState().postPlacement).toBeNull();
+  });
+
+  it('resets selection state and returns to the selection tool', () => {
+    const store = useViewerStore.getState();
+    store.setActiveTool('rectangle');
+    store.setSelectedMarkupIds(['rect-1', 'line-1']);
+    store.setPostPlacement({ markupId: 'rect-1', tool: 'rectangle' });
+
+    store.resetToSelectionTool();
+
+    expect(useViewerStore.getState()).toMatchObject({
+      activeTool: 'select',
+      selectedMarkupIds: [],
+      postPlacement: null,
+    });
   });
 
   it('tracks snap source toggles and clamps sensitivity', () => {
@@ -159,6 +187,7 @@ describe('viewer store', () => {
     store.setDocument({
       filePath: '/tmp/example.pdf',
       fileName: 'example.pdf',
+      documentAccess: { handle: `pdfdoc_${'b'.repeat(32)}` },
       document: {
         pages: [],
         markups: [],
@@ -184,6 +213,7 @@ describe('viewer store', () => {
     store.setDocument({
       filePath: '/tmp/example.pdf',
       fileName: 'example.pdf',
+      documentAccess: { handle: `pdfdoc_${'c'.repeat(32)}` },
       document: {
         pages: [],
         markups: [],

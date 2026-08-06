@@ -1,5 +1,10 @@
 import type { ArcMarkup, AreaMarkup, ArrowMarkup, CalloutMarkup, CloudMarkup, CloudPlusMarkup, DimensionMarkup, EllipseMarkup, HighlightMarkup, ImageMarkup, ImportedAnnotationMarkup, LengthMarkup, LineMarkup, PdfPoint, PenMarkup, PolygonMarkup, PolylengthMarkup, PolylineMarkup, Rect, RectangleMarkup, SnapshotMarkup, TextBoxMarkup } from '@butter-paper/core';
 
+export interface PdfPageRotation {
+  readonly pageIndex: number;
+  readonly rotation: 0 | 90 | 180 | 270;
+}
+
 export interface PdfDocumentMetadata {
   readonly title?: string;
   readonly author?: string;
@@ -14,6 +19,10 @@ export interface PdfPageInfo {
   readonly width: number;
   readonly height: number;
   readonly rotation: 0 | 90 | 180 | 270;
+  /** Effective visible page box from PDF.js `page.view`, in unrotated PDF coordinates. */
+  readonly viewBox?: Rect;
+  /** PDF /UserUnit multiplier. Real PDF.js pages provide this. */
+  readonly userUnit?: number;
 }
 
 export interface PdfRenderRequest {

@@ -10,6 +10,8 @@ import {
   distributeStrictVisibleOverviewLayouts,
   getContinuousCurrentPageLayout,
   isViewportPanButtonPressed,
+  measureViewportSize,
+  materializeContinuousPanPadding,
   materializeSinglePagePanPadding,
   resolveCadOverviewCenteredView,
   resolveCadOverviewEntryZoom,
@@ -35,6 +37,15 @@ import {
   shouldUseCanvasColumnOverview,
   shouldUseColumnOverviewMode,
 } from './DocumentViewport';
+
+describe('document viewport shell resize synchronisation', () => {
+  it('measures the committed viewport for a synchronous fitted-layout update', () => {
+    expect(measureViewportSize({ clientWidth: 803.6, clientHeight: 612.2 })).toEqual({
+      width: 804,
+      height: 612,
+    });
+  });
+});
 
 describe('document viewport panning buttons', () => {
   it('tracks the pressed state for the initiating pan button', () => {
@@ -711,6 +722,27 @@ describe('single-page fit preset pan transition', () => {
     });
     expect(trailingExpanded.totalWidth - fitted.totalWidth).toBe(viewport.width);
     expect(trailingExpanded.totalHeight - fitted.totalHeight).toBe(viewport.height);
+  });
+});
+
+describe('continuous fit preset pan transition', () => {
+  it('materializes pan room while preserving the fitted content under the pointer', () => {
+    const pages = [{ index: 0, width: 952, height: 1200 }];
+    const viewport = { width: 1000, height: 800 };
+    const gap = 24;
+    const fitted = buildPageLayouts(pages, 1, viewport.width, gap, EMPTY_CANVAS_PADDING, {
+      mode: 'continuous',
+      viewportHeight: viewport.height,
+    });
+    const panPadding = materializeContinuousPanPadding(EMPTY_CANVAS_PADDING, viewport);
+    const unlocked = buildPageLayouts(pages, 1, viewport.width, gap, panPadding, {
+      mode: 'continuous',
+      viewportHeight: viewport.height,
+    });
+
+    expect(panPadding).toEqual({ left: 1000, right: 1000, top: 800, bottom: 800 });
+    expect(unlocked.layouts[0]!.left - viewport.width).toBe(fitted.layouts[0]!.left);
+    expect(unlocked.layouts[0]!.top - viewport.height).toBe(fitted.layouts[0]!.top);
   });
 });
 

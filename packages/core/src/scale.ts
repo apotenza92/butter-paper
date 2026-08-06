@@ -172,6 +172,15 @@ export function scalePresetLabel(pdfLength: number, pdfUnits: ScaleUnit, realLen
   return `${formatNumber(pdfLength)} ${pdfUnits} = ${formatNumber(realLength)} ${realUnits}`;
 }
 
+export function formatPageScaleRatio(scale: PageScale): string {
+  const realUnitsPerPaperUnit = scale.scaleX * pointsPerUnit(scale.realUnits);
+  if (!Number.isFinite(realUnitsPerPaperUnit) || realUnitsPerPaperUnit <= 0) {
+    return scale.name;
+  }
+
+  return `1:${formatNumber(realUnitsPerPaperUnit)}`;
+}
+
 export function parsePageScaleRanges(input: string, pageCount: number): readonly PageScaleRange[] {
   const ranges: PageScaleRange[] = [];
   for (const part of input.split(',').map((value) => value.trim()).filter(Boolean)) {

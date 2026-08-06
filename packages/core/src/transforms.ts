@@ -4,6 +4,10 @@ import { pdfPoint, rectFromPoints, screenPoint, viewportPoint } from './points.j
 export interface PageGeometry {
   readonly size: Size;
   readonly rotation: 0 | 90 | 180 | 270;
+  /** Effective visible PDF page box in unrotated default-user-space coordinates. */
+  readonly viewBox?: Rect;
+  /** PDF /UserUnit multiplier. Defaults to 1 for legacy geometry. */
+  readonly userUnit?: number;
 }
 
 export interface PageTransform {
@@ -31,21 +35,26 @@ export function createPageTransform(
 ): PageTransform {
   const normalizedZoom = clampZoom(zoom);
   const rotation = ((geometry.rotation % 360) + 360) % 360 as 0 | 90 | 180 | 270;
+  const userUnit = resolvePageUserUnit(geometry);
+  const viewBox = resolvePageViewBox({ ...geometry, rotation, userUnit });
+  const viewportScale = normalizedZoom * userUnit;
   const pdfToViewport = (point: PdfPoint): ViewportPoint => {
-    const rotated = rotatePdfToUnscaledViewport(point, geometry.size, rotation);
-    return viewportPoint(rotated.x * normalizedZoom, rotated.y * normalizedZoom);
+    const rotated = rotatePdfToUnscaledViewport(point, viewBox, rotation);
+    return viewportPoint(rotated.x * viewportScale, rotated.y * viewportScale);
   };
   const viewportToPdf = (point: ViewportPoint): PdfPoint => {
     const unscaled = {
-      x: point.x / normalizedZoom,
-      y: point.y / normalizedZoom,
+      x: point.x / viewportScale,
+      y: point.y / viewportScale,
     };
-    return rotateUnscaledViewportToPdf(unscaled, geometry.size, rotation);
+    return rotateUnscaledViewportToPdf(unscaled, viewBox, rotation);
   };
   return {
     geometry: {
       size: geometry.size,
       rotation,
+      viewBox,
+      userUnit,
     },
     zoom: normalizedZoom,
     origin,
@@ -71,36 +80,65 @@ export function createPageTransform(
   };
 }
 
+export function resolvePageUserUnit(geometry: PageGeometry): number {
+  return typeof geometry.userUnit === 'number' && Number.isFinite(geometry.userUnit) && geometry.userUnit > 0
+    ? geometry.userUnit
+    : 1;
+}
+
+export function resolvePageViewBox(geometry: PageGeometry): Rect {
+  const candidate = geometry.viewBox;
+  if (candidate
+    && [candidate.x, candidate.y, candidate.width, candidate.height].every(Number.isFinite)
+    && candidate.width > 0
+    && candidate.height > 0) {
+    return { ...candidate };
+  }
+
+  const userUnit = resolvePageUserUnit(geometry);
+  const rotated = geometry.rotation === 90 || geometry.rotation === 270;
+  return {
+    x: 0,
+    y: 0,
+    width: (rotated ? geometry.size.height : geometry.size.width) / userUnit,
+    height: (rotated ? geometry.size.width : geometry.size.height) / userUnit,
+  };
+}
+
 function rotatePdfToUnscaledViewport(
   point: PdfPoint,
-  size: Size,
+  viewBox: Rect,
   rotation: 0 | 90 | 180 | 270,
 ): { x: number; y: number } {
+  const right = viewBox.x + viewBox.width;
+  const top = viewBox.y + viewBox.height;
   switch (rotation) {
     case 0:
-      return { x: point.x, y: size.height - point.y };
+      return { x: point.x - viewBox.x, y: top - point.y };
     case 90:
-      return { x: point.y, y: point.x };
+      return { x: point.y - viewBox.y, y: point.x - viewBox.x };
     case 180:
-      return { x: size.width - point.x, y: point.y };
+      return { x: right - point.x, y: point.y - viewBox.y };
     case 270:
-      return { x: size.height - point.y, y: size.width - point.x };
+      return { x: top - point.y, y: right - point.x };
   }
 }
 
 function rotateUnscaledViewportToPdf(
   point: { x: number; y: number },
-  size: Size,
+  viewBox: Rect,
   rotation: 0 | 90 | 180 | 270,
 ): PdfPoint {
+  const right = viewBox.x + viewBox.width;
+  const top = viewBox.y + viewBox.height;
   switch (rotation) {
     case 0:
-      return pdfPoint(point.x, size.height - point.y);
+      return pdfPoint(viewBox.x + point.x, top - point.y);
     case 90:
-      return pdfPoint(point.y, point.x);
+      return pdfPoint(viewBox.x + point.y, viewBox.y + point.x);
     case 180:
-      return pdfPoint(size.width - point.x, point.y);
+      return pdfPoint(right - point.x, viewBox.y + point.y);
     case 270:
-      return pdfPoint(size.width - point.y, size.height - point.x);
+      return pdfPoint(right - point.y, top - point.x);
   }
 }

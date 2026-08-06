@@ -4,6 +4,7 @@ import {
   createArmedBoxSelectionMarquee,
   createSelectionMarquee,
   isGeometrySelectedByMarquee,
+  resolvedSelectionMarqueeKind,
   selectionAfterMarquee,
   selectionMarqueeKind,
   selectionMarqueeOperationFromModifiers,
@@ -33,6 +34,38 @@ describe('CAD selection marquee', () => {
     expect(belowThreshold.active).toBe(false);
     expect(active.active).toBe(true);
     expect(updateSelectionMarquee(active, { x: 10, y: 10 }).active).toBe(true);
+  });
+
+  it('locks a drag lasso to its first clear horizontal direction', () => {
+    let windowLasso = createSelectionMarquee(1, { x: 10, y: 10 });
+    windowLasso = updateSelectionMarquee(windowLasso, { x: 18, y: 30 });
+    windowLasso = updateSelectionMarquee(windowLasso, { x: 0, y: 40 });
+
+    let crossingLasso = createSelectionMarquee(1, { x: 40, y: 10 });
+    crossingLasso = updateSelectionMarquee(crossingLasso, { x: 32, y: 30 });
+    crossingLasso = updateSelectionMarquee(crossingLasso, { x: 50, y: 40 });
+
+    expect(resolvedSelectionMarqueeKind(windowLasso)).toBe('window');
+    expect(resolvedSelectionMarqueeKind(crossingLasso)).toBe('crossing');
+  });
+
+  it('keeps lasso selection semantics stable after the pointer crosses its origin', () => {
+    const geometry = {
+      bounds: rect(5, 15, 25, 0),
+      components: [{
+        id: 'line.body',
+        role: 'shape' as const,
+        geometry: { kind: 'line' as const, start: pdfPoint(5, 15), end: pdfPoint(30, 15) },
+        bodyDrag: 'moveSelf' as const,
+      }],
+    };
+    let lasso = createSelectionMarquee(1, { x: 10, y: 10 });
+    lasso = updateSelectionMarquee(lasso, { x: 40, y: 10 }, 0);
+    lasso = updateSelectionMarquee(lasso, { x: 40, y: 40 }, 0);
+    lasso = updateSelectionMarquee(lasso, { x: 0, y: 40 }, 0);
+
+    expect(resolvedSelectionMarqueeKind(lasso)).toBe('window');
+    expect(isGeometrySelectedByMarquee(geometry, lasso, identityTransform as never)).toBe(false);
   });
 
   it('requires complete containment for window selection but accepts intersections when crossing', () => {

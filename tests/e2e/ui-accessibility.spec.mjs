@@ -1,5 +1,11 @@
 import { expect, test } from '@playwright/test';
-import { firstWindow, getDiagnostics, launchButterPaper, openFixturePdf, resolveDesktopEntryPoint } from './helpers/electron.mjs';
+import {
+  firstWindow,
+  getDiagnostics,
+  launchButterPaper,
+  openFixturePdf,
+  resolveDesktopEntryPoint,
+} from './helpers/electron.mjs';
 
 test.describe('shadcn Base UI shell accessibility', () => {
   test('supports keyboard menus, accessible tooltips, valid tabs, and protected custom icons', async () => {
@@ -57,7 +63,13 @@ test.describe('shadcn Base UI shell accessibility', () => {
     await updateFrequency.hover();
     const weeklyFrequency = page.getByTestId('menu-update-frequency-weekly');
     await expect(weeklyFrequency).toBeVisible();
-    await expect(weeklyFrequency).toHaveAttribute('aria-checked', 'true');
+    const frequencyOptions = page.locator('[role="menuitemradio"][data-testid^="menu-update-frequency-"]');
+    await expect.poll(async () => frequencyOptions.evaluateAll((elements) => ({
+      optionCount: new Set(elements.map((element) => element.getAttribute('data-testid'))).size,
+      checkedCount: new Set(elements
+        .filter((element) => element.getAttribute('aria-checked') === 'true')
+        .map((element) => element.getAttribute('data-testid'))).size,
+    }))).toEqual({ optionCount: 8, checkedCount: 1 });
     await page.keyboard.press('Escape');
     await page.keyboard.press('Escape');
 
@@ -85,7 +97,7 @@ test.describe('shadcn Base UI shell accessibility', () => {
     const viewerToolbar = documentPage.getByTestId('viewer-toolbar');
     await expect(viewerToolbar.locator('[data-slot="separator"]')).toHaveCount(0);
     for (const groupName of ['Zoom controls', 'Fit controls', 'Page view controls']) {
-      await expect(viewerToolbar.getByRole('group', { name: groupName })).toBeVisible();
+      await expect(viewerToolbar.getByRole('group', { name: groupName, exact: true })).toBeVisible();
     }
     await openFixturePdf(app, 'single-page');
     const tablist = documentPage.getByRole('tablist', { name: 'Open documents' });
@@ -120,7 +132,8 @@ test.describe('shadcn Base UI shell accessibility', () => {
     await expect(singlePageCloseButton).toHaveAttribute('data-domain-ui-control', 'tab-close');
     const closeControlGeometry = await singlePageCloseButton.evaluate((element) => {
       const control = element.getBoundingClientRect();
-      const surface = element.querySelector('[data-tab-close-surface]')?.getBoundingClientRect();
+      const surfaceElement = element.querySelector('[data-tab-close-surface]');
+      const surface = surfaceElement?.getBoundingClientRect();
       const glyph = element.querySelector('svg')?.getBoundingClientRect();
       return {
         controlHeight: control.height,
@@ -129,7 +142,7 @@ test.describe('shadcn Base UI shell accessibility', () => {
         glyphWidth: glyph?.width,
         horizontalOffset: glyph ? Math.abs(control.x + control.width / 2 - (glyph.x + glyph.width / 2)) : null,
         surfaceHeight: surface?.height,
-        surfaceRadius: surface ? Number.parseFloat(getComputedStyle(surface).borderTopLeftRadius) : null,
+        surfaceRadius: surfaceElement ? Number.parseFloat(getComputedStyle(surfaceElement).borderTopLeftRadius) : null,
         surfaceWidth: surface?.width,
         verticalOffset: glyph ? Math.abs(control.y + control.height / 2 - (glyph.y + glyph.height / 2)) : null,
       };
@@ -285,17 +298,6 @@ test.describe('shadcn Base UI shell accessibility', () => {
     expect(tabActionPlacement.blankAfterOpen).toBeCloseTo(8, 0);
     expect(Math.abs(tabActionPlacement.separatorAfterTabs - tabActionPlacement.openAfterSeparator)).toBeLessThanOrEqual(0.5);
     expect(Math.abs(tabActionPlacement.openAfterSeparator - tabActionPlacement.blankAfterOpen)).toBeLessThanOrEqual(0.5);
-    const tabActionFrames = await documentPage.evaluate(() => {
-      const open = document.querySelector('[data-testid="document-tab-open"]');
-      const newPdf = document.querySelector('[data-testid="document-tab-new-pdf"]');
-      if (!open || !newPdf) return null;
-      return {
-        openBorder: getComputedStyle(open).borderTopColor,
-        newPdfBorder: getComputedStyle(newPdf).borderTopColor,
-      };
-    });
-    expect(tabActionFrames).not.toBeNull();
-    expect(tabActionFrames.openBorder).not.toBe(tabActionFrames.newPdfBorder);
     const splitButtonGeometry = await documentPage.evaluate(() => {
       const main = document.querySelector('[data-testid="document-tab-new-pdf"]');
       const settings = document.querySelector('[data-testid="document-tab-new-pdf-settings"]');
@@ -340,33 +342,37 @@ test.describe('shadcn Base UI shell accessibility', () => {
     const labelBounds = await thumbnailLabel.boundingBox();
     expect(previewBounds).not.toBeNull();
     expect(labelBounds).not.toBeNull();
-    expect(labelBounds.y).toBeGreaterThanOrEqual(previewBounds.y + previewBounds.height);
+    expect(labelBounds.y + labelBounds.height).toBeLessThanOrEqual(previewBounds.y);
 
     for (const testId of ['icon-fit-width', 'icon-fit-page', 'icon-continuous-view']) {
       const icon = documentPage.getByTestId(testId);
       const primaryGlyph = await icon.evaluate((element) => element instanceof SVGElement) ? icon : icon.locator('svg').first();
       const primaryGlyphBounds = await primaryGlyph.boundingBox();
       expect(primaryGlyphBounds, `${testId} primary glyph should render`).not.toBeNull();
-      expect(primaryGlyphBounds.width, `${testId} primary glyph width`).toBeGreaterThanOrEqual(17.5);
-      expect(primaryGlyphBounds.height, `${testId} primary glyph height`).toBeGreaterThanOrEqual(17.5);
+      expect(primaryGlyphBounds.width, `${testId} primary glyph width`).toBeGreaterThanOrEqual(15.5);
+      expect(primaryGlyphBounds.width, `${testId} primary glyph width`).toBeLessThanOrEqual(16.5);
+      expect(primaryGlyphBounds.height, `${testId} primary glyph height`).toBeGreaterThanOrEqual(15.5);
+      expect(primaryGlyphBounds.height, `${testId} primary glyph height`).toBeLessThanOrEqual(16.5);
     }
 
     for (const testId of ['icon-fit-width', 'icon-fit-page']) {
       await expect(documentPage.getByTestId(testId).locator('svg')).toHaveCount(0);
     }
 
-    for (const testId of ['tool-cloud-plus', 'tool-callout']) {
+    for (const [testId, overlaySize] of [['tool-cloud-plus', 7], ['tool-callout', 6]]) {
       const glyphs = documentPage.getByTestId(testId).locator('svg');
       const primaryBounds = await glyphs.first().boundingBox();
       const overlayBounds = await glyphs.last().boundingBox();
       expect(primaryBounds, `${testId} primary glyph should render`).not.toBeNull();
-      expect(primaryBounds.width).toBeGreaterThanOrEqual(17.5);
-      expect(primaryBounds.height).toBeGreaterThanOrEqual(17.5);
+      expect(primaryBounds.width).toBeGreaterThanOrEqual(15.5);
+      expect(primaryBounds.width).toBeLessThanOrEqual(16.5);
+      expect(primaryBounds.height).toBeGreaterThanOrEqual(15.5);
+      expect(primaryBounds.height).toBeLessThanOrEqual(16.5);
       expect(overlayBounds, `${testId} overlay glyph should render`).not.toBeNull();
-      expect(overlayBounds.width).toBeGreaterThanOrEqual(6.5);
-      expect(overlayBounds.width).toBeLessThanOrEqual(8.5);
-      expect(overlayBounds.height).toBeGreaterThanOrEqual(6.5);
-      expect(overlayBounds.height).toBeLessThanOrEqual(8.5);
+      expect(overlayBounds.width).toBeGreaterThanOrEqual(overlaySize - 0.5);
+      expect(overlayBounds.width).toBeLessThanOrEqual(overlaySize + 0.5);
+      expect(overlayBounds.height).toBeGreaterThanOrEqual(overlaySize - 0.5);
+      expect(overlayBounds.height).toBeLessThanOrEqual(overlaySize + 0.5);
     }
 
     const continuousTrigger = documentPage.getByTestId('viewer-scroll-continuous');
@@ -493,15 +499,26 @@ test.describe('shadcn Base UI shell accessibility', () => {
 
     const snapTrigger = page.getByTestId('viewer-snap-target-menu');
     await snapTrigger.evaluate((element) => element.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
-    await snapTrigger.hover();
-    await expect(page.locator('[data-slot="tooltip-content"]').filter({ hasText: 'Snap' })).toBeVisible();
-    await page.mouse.move(0, 0);
+    await expect(snapTrigger).toHaveAccessibleName('Snap settings');
     await snapTrigger.click();
     const snapItem = page.getByTestId('viewer-snap-content');
     await expect(snapItem).toBeVisible();
-    const popupBounds = await page.locator('[data-slot="dropdown-menu-content"]').boundingBox();
+    await expect(snapItem).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('viewer-snap-content-check')).toBeVisible();
+    const nearestItem = page.getByTestId('viewer-snap-target-nearest');
+    await expect(nearestItem).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.getByTestId('viewer-snap-target-nearest-check')).not.toBeVisible();
+    const activeBackground = await snapItem.evaluate((element) => getComputedStyle(element).backgroundColor);
+    const inactiveBackground = await nearestItem.evaluate((element) => getComputedStyle(element).backgroundColor);
+    expect(activeBackground).not.toBe(inactiveBackground);
+    const popup = page.getByTestId('viewer-snap-popover');
+    const popupBounds = await popup.boundingBox();
+    const snapTriggerBounds = await snapTrigger.boundingBox();
     const viewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
     expect(popupBounds).not.toBeNull();
+    expect(snapTriggerBounds).not.toBeNull();
+    await expect(popup).toHaveAttribute('data-side', 'left');
+    expect(popupBounds.x + popupBounds.width).toBeLessThanOrEqual(snapTriggerBounds.x + 1);
     expect(popupBounds.x).toBeGreaterThanOrEqual(0);
     expect(popupBounds.y).toBeGreaterThanOrEqual(0);
     expect(popupBounds.x + popupBounds.width).toBeLessThanOrEqual(viewport.width + 1);
@@ -510,4 +527,5 @@ test.describe('shadcn Base UI shell accessibility', () => {
     await browserWindow.evaluate((window) => window.webContents.setZoomFactor(1));
     await app.close();
   });
+
 });

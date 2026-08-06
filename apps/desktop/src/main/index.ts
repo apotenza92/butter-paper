@@ -1,8 +1,10 @@
 import electron from 'electron';
+import { appendFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { ipcChannels } from '../shared/ipc';
 import { resolvePdfPathsFromCommandLine } from './openPdfPaths';
 import { enqueuePendingPdfPaths, hasPendingPdfPaths, takePendingPdfPaths } from './pendingPdfPaths';
+import { desktopPdfAccessRegistry } from './pdfAccessRegistry';
 import { bootstrapDesktop } from './window';
 
 const { app, BrowserWindow } = electron;
@@ -18,6 +20,10 @@ if (testUserDataDir) {
   app.setPath('sessionData', testUserDataDir);
 }
 
+recordTestStartupMilestone('main-module-loaded');
+app.on('ready', () => recordTestStartupMilestone('app-ready'));
+app.on('browser-window-created', () => recordTestStartupMilestone('browser-window-created'));
+
 process.on('unhandledRejection', (error) => {
   console.error('Unhandled rejection in main process:', error);
 });
@@ -32,15 +38,23 @@ enqueuePendingPdfPaths(initialPdfPaths);
 
 app.on('open-file', (event, filePath) => {
   event.preventDefault();
-  dispatchPdfPaths([filePath]);
+  void dispatchPdfPaths([filePath]);
 });
 
 if (!singleInstance) {
   app.quit();
 } else {
-  void bootstrapDesktop().then(() => {
-    flushPendingPdfPaths();
-  });
+  recordTestStartupMilestone('bootstrap-started');
+  void bootstrapDesktop()
+    .then(() => {
+      recordTestStartupMilestone('bootstrap-completed');
+      void flushPendingPdfPaths();
+    })
+    .catch((error) => {
+      recordTestStartupMilestone('bootstrap-failed', error);
+      console.error('Unable to start Butter Paper:', error);
+      app.exit(1);
+    });
 }
 
 app.on('second-instance', (_event, commandLine, workingDirectory) => {
@@ -51,7 +65,7 @@ app.on('second-instance', (_event, commandLine, workingDirectory) => {
     }
     focused.focus();
   }
-  dispatchPdfPaths(resolvePdfPathsFromCommandLine(commandLine, workingDirectory));
+  void dispatchPdfPaths(resolvePdfPathsFromCommandLine(commandLine, workingDirectory));
 });
 
 app.on('window-all-closed', () => {
@@ -60,7 +74,7 @@ app.on('window-all-closed', () => {
   }
 });
 
-function dispatchPdfPaths(filePaths: readonly string[]): void {
+async function dispatchPdfPaths(filePaths: readonly string[]): Promise<void> {
   const pdfPaths = resolvePdfPathsFromCommandLine(filePaths, process.cwd());
   if (pdfPaths.length === 0) {
     return;
@@ -77,7 +91,7 @@ function dispatchPdfPaths(filePaths: readonly string[]): void {
       pendingPdfFlushScheduled = true;
       window.webContents.once('did-finish-load', () => {
         pendingPdfFlushScheduled = false;
-        flushPendingPdfPaths();
+        void flushPendingPdfPaths();
       });
     }
     return;
@@ -87,17 +101,41 @@ function dispatchPdfPaths(filePaths: readonly string[]): void {
     window.restore();
   }
   window.focus();
-  window.webContents.send(ipcChannels.applicationOpenPdfPaths, pdfPaths);
+  try {
+    const authorizedPaths = await Promise.all(pdfPaths.map((filePath) => (
+      desktopPdfAccessRegistry.authorizeSource(window.webContents.id, filePath)
+    )));
+    if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+      window.webContents.send(ipcChannels.applicationOpenPdfPaths, authorizedPaths);
+    }
+  } catch {
+    console.error('Unable to authorize PDFs supplied by the operating system.');
+  }
 }
 
-function flushPendingPdfPaths(): void {
+async function flushPendingPdfPaths(): Promise<void> {
   if (!hasPendingPdfPaths()) {
     return;
   }
   const filePaths = takePendingPdfPaths();
-  dispatchPdfPaths(filePaths);
+  await dispatchPdfPaths(filePaths);
 }
 
 function queuePendingPdfPaths(filePaths: readonly string[]): void {
   enqueuePendingPdfPaths(filePaths);
+}
+
+function recordTestStartupMilestone(name: string, error?: unknown): void {
+  const logPath = process.env.BP_TEST_STARTUP_LOG_PATH?.trim();
+  if (!isTestMode || !logPath || !isAbsolute(logPath)) {
+    return;
+  }
+  const detail = error instanceof Error
+    ? `${error.name}: ${error.message}\n${error.stack ?? ''}`
+    : error == null ? '' : String(error);
+  try {
+    appendFileSync(logPath, `${new Date().toISOString()} ${name}${detail ? ` ${detail}` : ''}\n`);
+  } catch {
+    // Startup diagnostics must never affect application startup.
+  }
 }

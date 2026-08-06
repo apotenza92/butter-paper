@@ -8,6 +8,7 @@ const repoRoot = resolve(moduleDir, '../..');
 const fixtureManifestPath = resolve(repoRoot, 'tests/fixtures/generated/manifest.json');
 const desktopEntryPoint = resolve(repoRoot, 'apps/desktop/.vite/build/main.js');
 const rendererEntryPoint = resolve(repoRoot, 'apps/desktop/.vite/renderer/main_window/index.html');
+const developmentProvenance = resolve(repoRoot, 'test-results/desktop-dev-provenance.json');
 
 export default async function globalSetup() {
   ensurePnpmShim();
@@ -20,8 +21,16 @@ export default async function globalSetup() {
     });
   }
 
+  const pnpm = resolvePnpmCommand();
+  if (!existsSync(developmentProvenance)) {
+    execFileSync(pnpm.command, [...pnpm.args, 'predev:desktop'], {
+      cwd: repoRoot,
+      stdio: 'inherit',
+      env: process.env,
+    });
+  }
+
   if (!existsSync(desktopEntryPoint) || !existsSync(rendererEntryPoint)) {
-    const pnpm = resolvePnpmCommand();
     execFileSync(pnpm.command, [...pnpm.args, 'build:desktop'], {
       cwd: repoRoot,
       stdio: 'inherit',

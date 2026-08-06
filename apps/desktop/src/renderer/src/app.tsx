@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, DragEvent } from 'react';
 import {
+  rotateDocumentPage,
   type DocumentModel,
+  type PageRotationDirection,
   type PdfPoint,
 } from '@butter-paper/core';
 import { AppMenuBar } from './components/AppMenuBar';
 import { FINISH_CLOUD_POLYGON_EVENT } from './components/AnnotationLayer';
+import { CanvasContextMenu } from './components/CanvasContextMenu';
 import {
   formatBlankPdfSettings,
   loadBlankPdfSettings,
@@ -17,8 +20,9 @@ import { applyTabOrder, DocumentTabBar, resolveActiveTabId } from './components/
 import { DocumentViewport } from './components/DocumentViewport';
 import { LeftRail } from './components/LeftRail';
 import { LeftSidebar } from './components/LeftSidebar';
+import { NewBlankPdfDialog } from './components/NewBlankPdfDialog';
 import { PageScaleDialog } from './components/PageScaleDialog';
-import { RightRail } from './components/RightRail';
+import { RightRail, shouldDispatchToolSelection } from './components/RightRail';
 import { RightSidebar } from './components/RightSidebar';
 import { UnsavedChangesDialog } from './components/UnsavedChangesDialog';
 import { UpdateDialog } from './components/UpdateDialog';
@@ -27,11 +31,20 @@ import { useUpdater } from './hooks/useUpdater';
 import { LocalPdfSession, type DiagnosticsSnapshot } from './services/documentSession';
 import { getPerfSnapshot, initialisePerfTracking, recordComponentRender, recordWindowBounds, resetPerfTracking } from './services/perfTracker';
 import { getRenderCoordinatorDiagnostics } from './services/renderCoordinator';
-import { useViewerStore, type CadViewOrganisation, type LoadedDocumentState, type SnapSettings } from './state/viewerStore';
+import {
+  DEFAULT_LEFT_SIDEBAR_WIDTH,
+  DEFAULT_RIGHT_SIDEBAR_WIDTH,
+  useViewerStore,
+  type CadViewOrganisation,
+  type LeftSidebarPanel,
+  type LoadedDocumentState,
+  type SnapSettings,
+} from './state/viewerStore';
 import { subscribeToThemeMode } from './theme';
-import type { ApplicationMetadata, BlankPdfCreateRequest, LoadedDocumentPayload, ScrollMode, ScrollWheelMode, ThemeMode, ToolMode, ViewerDiagnostics, ZoomPreset } from '../../shared/protocol';
+import type { ApplicationMetadata, BlankPdfCreateRequest, LoadedDocumentPayload, PdfSaveTargetDescriptor, ScrollMode, ScrollWheelMode, ThemeMode, ToolMode, ViewerDiagnostics, ZoomPreset } from '../../shared/protocol';
 import { PDF_TOOL_REGISTRY } from './pdf-tools/toolRegistry';
 import { clampViewerZoom } from './utils/renderZoom';
+import { isEditableShortcutTarget, isToolShortcutBlockedTarget, normalizeShortcutKey, parseToolShortcut, resolveToolShortcut } from './utils/toolShortcuts';
 import { saveDocumentsInOrder } from './utils/unsavedDocuments';
 
 const INACTIVE_TRIM_DELAY_MS = 5000;
@@ -39,6 +52,14 @@ const SPACE_DOUBLE_TAP_MS = 300;
 const DEFAULT_APPLICATION_METADATA: ApplicationMetadata = {
   channel: 'stable',
   productName: 'Butter Paper',
+  version: '0.0.0',
+  commit: null,
+  branch: null,
+  dirty: false,
+  development: false,
+  checkoutId: null,
+  statusFingerprint: null,
+  windowTitle: 'Butter Paper',
 };
 const TOOL_SHORTCUTS = PDF_TOOL_REGISTRY
   .filter((tool) => tool.shortcut)
@@ -64,35 +85,6 @@ function extractPdfPathsFromDataTransfer(dataTransfer: DataTransfer): string[] {
   return Array.from(dataTransfer.files)
     .map((file) => (file as File & { path?: string }).path ?? '')
     .filter((path) => /\.pdf$/i.test(path));
-}
-
-function parseToolShortcut(shortcut: string): { key: string; shift: boolean; alt: boolean } {
-  const parts = shortcut.split('+').map((part) => part.trim()).filter(Boolean);
-  const key = parts.at(-1) ?? shortcut;
-  const modifiers = parts.slice(0, -1).map((part) => part.toLowerCase());
-  return {
-    key: normalizeShortcutKey(key),
-    shift: modifiers.includes('shift'),
-    alt: modifiers.includes('alt') || modifiers.includes('option'),
-  };
-}
-
-function normalizeShortcutKey(key: string): string {
-  if (key === ' ' || key.toLowerCase() === 'spacebar') {
-    return 'space';
-  }
-  return key.toLowerCase();
-}
-
-function isEditableShortcutTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) {
-    return false;
-  }
-  if (target.isContentEditable) {
-    return true;
-  }
-  const tagName = target.tagName.toLowerCase();
-  return tagName === 'input' || tagName === 'textarea' || tagName === 'select';
 }
 
 function isInteractiveShortcutTarget(target: EventTarget | null): boolean {
@@ -127,14 +119,14 @@ function isInteractiveShortcutTarget(target: EventTarget | null): boolean {
 }
 
 function toolForKeyboardEvent(event: KeyboardEvent): ToolMode | null {
-  if (event.metaKey || event.ctrlKey || isInteractiveShortcutTarget(event.target)) {
-    return null;
-  }
-
-  const key = normalizeShortcutKey(event.key);
-  const shift = event.shiftKey;
-  const alt = event.altKey;
-  return TOOL_SHORTCUTS.find((entry) => entry.shortcut.key === key && entry.shortcut.shift === shift && entry.shortcut.alt === alt)?.tool ?? null;
+  return resolveToolShortcut(TOOL_SHORTCUTS, {
+    key: event.key,
+    shiftKey: event.shiftKey,
+    altKey: event.altKey,
+    metaKey: event.metaKey,
+    ctrlKey: event.ctrlKey,
+    blockedByFocus: isToolShortcutBlockedTarget(event.target),
+  });
 }
 
 function emptySessionDiagnostics(): DiagnosticsSnapshot {
@@ -211,6 +203,7 @@ interface ViewerTabSnapshot {
   zoom: number;
   activeTool: ToolMode;
   leftSidebarOpen: boolean;
+  leftSidebarPanel: LeftSidebarPanel;
   rightSidebarOpen: boolean;
   leftSidebarWidth: number;
   rightSidebarWidth: number;
@@ -249,9 +242,10 @@ function initialViewSnapshot(): ViewerTabSnapshot {
     zoom: 1,
     activeTool: 'select',
     leftSidebarOpen: true,
+    leftSidebarPanel: 'pages',
     rightSidebarOpen: false,
-    leftSidebarWidth: 220,
-    rightSidebarWidth: 280,
+    leftSidebarWidth: DEFAULT_LEFT_SIDEBAR_WIDTH,
+    rightSidebarWidth: DEFAULT_RIGHT_SIDEBAR_WIDTH,
     scrollMode: 'continuous',
     continuousScrollWheelMode: 'scroll',
     singlePageScrollWheelMode: 'zoom',
@@ -277,6 +271,7 @@ function captureViewSnapshot(): ViewerTabSnapshot {
     zoom: state.zoom,
     activeTool: state.activeTool,
     leftSidebarOpen: state.leftSidebarOpen,
+    leftSidebarPanel: state.leftSidebarPanel,
     rightSidebarOpen: state.rightSidebarOpen,
     leftSidebarWidth: state.leftSidebarWidth,
     rightSidebarWidth: state.rightSidebarWidth,
@@ -320,6 +315,7 @@ export function App({ initialThemeMode }: AppProps) {
   const [pageScaleCalibrationPoints, setPageScaleCalibrationPoints] = useState<{ pageIndex: number; start: PdfPoint; end: PdfPoint } | null>(null);
   const [pageScaleCalibrationPick, setPageScaleCalibrationPick] = useState<PageScaleCalibrationPick | null>(null);
   const [blankPdfSettings, setBlankPdfSettings] = useState(() => loadBlankPdfSettings(window.localStorage));
+  const [newBlankPdfDialogOpen, setNewBlankPdfDialogOpen] = useState(false);
   const [pendingCloseTabId, setPendingCloseTabId] = useState<string | null>(null);
   const [applicationCloseRequested, setApplicationCloseRequested] = useState(false);
   const [closeActionBusy, setCloseActionBusy] = useState(false);
@@ -328,6 +324,7 @@ export function App({ initialThemeMode }: AppProps) {
   const setZoom = useViewerStore((state) => state.setZoom);
   const setZoomPreset = useViewerStore((state) => state.setZoomPreset);
   const setActiveTool = useViewerStore((state) => state.setActiveTool);
+  const resetToSelectionTool = useViewerStore((state) => state.resetToSelectionTool);
   const setPendingImageAsset = useViewerStore((state) => state.setPendingImageAsset);
   const setScrollMode = useViewerStore((state) => state.setScrollMode);
   const setContinuousScrollWheelMode = useViewerStore((state) => state.setContinuousScrollWheelMode);
@@ -337,7 +334,7 @@ export function App({ initialThemeMode }: AppProps) {
   const setPagesPerColumn = useViewerStore((state) => state.setPagesPerColumn);
   const openLeftSidebar = useViewerStore((state) => state.openLeftSidebar);
   const toggleLeftSidebar = useViewerStore((state) => state.toggleLeftSidebar);
-  const collapseRightSidebar = useViewerStore((state) => state.collapseRightSidebar);
+  const toggleRightSidebar = useViewerStore((state) => state.toggleRightSidebar);
   const requestPageScroll = useViewerStore((state) => state.requestPageScroll);
   const setStatusMessage = useViewerStore((state) => state.setStatusMessage);
   const setErrorMessage = useViewerStore((state) => state.setErrorMessage);
@@ -345,7 +342,9 @@ export function App({ initialThemeMode }: AppProps) {
   const setCurrentPage = useViewerStore((state) => state.setCurrentPage);
   const activeTool = useViewerStore((state) => state.activeTool);
   const documentState = useViewerStore((state) => state.document);
+  const documentMutationDisabled = false;
   const leftSidebarOpen = useViewerStore((state) => state.leftSidebarOpen);
+  const leftSidebarPanel = useViewerStore((state) => state.leftSidebarPanel);
   const rightSidebarOpen = useViewerStore((state) => state.rightSidebarOpen);
   const scrollMode = useViewerStore((state) => state.scrollMode);
   const continuousScrollWheelMode = useViewerStore((state) => state.continuousScrollWheelMode);
@@ -393,7 +392,7 @@ export function App({ initialThemeMode }: AppProps) {
       .then((metadata) => {
         if (!cancelled) {
           setApplicationMetadata(metadata);
-          document.title = metadata.productName;
+          document.title = metadata.windowTitle;
         }
       })
       .catch((error) => console.error('Unable to load application metadata.', error));
@@ -467,6 +466,7 @@ export function App({ initialThemeMode }: AppProps) {
     setErrorMessage(null); setStatusMessage(candidates.length === 1 ? 'Loading document' : `Loading ${candidates.length} documents`);
     const currentTabs = tabs;
     const created: DocumentTab[] = [];
+    let firstOpenError: Error | null = null;
     let duplicateToFocus: string | null = null;
     for (const filePath of candidates) {
       const normalizedPath = normalizeDocumentPath(filePath);
@@ -486,7 +486,8 @@ export function App({ initialThemeMode }: AppProps) {
         });
       } catch (error) {
         nextSession.dispose();
-        setErrorMessage(error instanceof Error ? error.message : `Failed to open ${filePath}`);
+        firstOpenError ??= error instanceof Error ? error : new Error(`Failed to open ${filePath}`);
+        setErrorMessage(firstOpenError.message);
       }
     }
     const nextTabs = [...currentTabs, ...created];
@@ -499,6 +500,9 @@ export function App({ initialThemeMode }: AppProps) {
       }
     });
     setStatusMessage(created.length > 1 ? `Loaded ${created.length} documents` : created.length === 1 ? `Loaded ${created[0].document.fileName}` : 'Focused existing document');
+    if (created.length === 0 && firstOpenError) {
+      throw firstOpenError;
+    }
   }
   openDocumentPathsRef.current = openDocumentPaths;
 
@@ -528,9 +532,6 @@ export function App({ initialThemeMode }: AppProps) {
       setErrorMessage(null);
     } catch (error) {
       nextSession?.dispose();
-      if (temporaryDocument) {
-        await window.butterPaper.pdf.releaseTemporaryDocument(temporaryDocument.temporarySourcePath).catch(() => undefined);
-      }
       await window.butterPaper.application.setCloseBlocked(
         tabs.some((tab) => documentStateForTab(tab).dirty),
       ).catch(() => undefined);
@@ -620,20 +621,29 @@ export function App({ initialThemeMode }: AppProps) {
   useEffect(() => {
     if (!isTestMode) { delete window.__butterPaperTestHooks; return; }
     window.__butterPaperTestHooks = {
-      openDocumentPath: loadDocumentFromPath,
-      openDocumentPaths,
+      openDocumentPath: async (filePath: string) => {
+        const authorizedPath = await window.butterPaper.test?.authorizePdfSource(filePath);
+        if (!authorizedPath) throw new Error('Test PDF source authorization is unavailable.');
+        await loadDocumentFromPath(authorizedPath);
+      },
+      openDocumentPaths: async (filePaths: string[]) => {
+        const authorizedPaths = await Promise.all(filePaths.map(async (filePath) => {
+          const authorizedPath = await window.butterPaper.test?.authorizePdfSource(filePath);
+          if (!authorizedPath) throw new Error('Test PDF source authorization is unavailable.');
+          return authorizedPath;
+        }));
+        await openDocumentPaths(authorizedPaths);
+      },
       createBlankPdf: handleCreateBlankPdf,
       getActiveDocument: () => documentState?.document ?? null,
-      openFixturePdf: async (fixtureName: string) => { const filePath = await window.butterPaper.test?.resolveFixturePath(fixtureName); if (!filePath) throw new Error(`Fixture not found: ${fixtureName}`); await loadDocumentFromPath(filePath); },
+      openFixturePdf: async (fixtureName: string) => { const filePath = await window.butterPaper.test?.resolveFixturePath(fixtureName.endsWith('.pdf') ? fixtureName : `${fixtureName}.pdf`); if (!filePath) throw new Error(`Fixture not found: ${fixtureName}`); await loadDocumentFromPath(filePath); },
       switchToTab: async (indexOrPath: number | string) => { const tab = typeof indexOrPath === 'number' ? tabs[indexOrPath] : tabs.find((candidate) => candidate.normalizedPath === normalizeDocumentPath(indexOrPath)); if (tab) activateTab(tab.id); },
       closeTab: async (indexOrPath: number | string) => { const tab = typeof indexOrPath === 'number' ? tabs[indexOrPath] : tabs.find((candidate) => candidate.normalizedPath === normalizeDocumentPath(indexOrPath)); if (tab) requestCloseTab(tab.id); },
       saveCurrentDocument: async () => { await handleSave(); },
-      saveCurrentDocumentAs: async (filePath?: string) => {
-        if (filePath && session && documentState) {
-          await saveTab(activeTab, filePath);
-          return;
-        }
-        await handleSaveAs();
+      saveCurrentDocumentAs: async (filePath: string) => {
+        const target = await window.butterPaper.test?.authorizePdfSaveTarget(filePath);
+        if (!target) throw new Error('Test PDF target authorization is unavailable.');
+        await saveTab(activeTab, target);
       },
       getDiagnostics: diagnostics,
       getPerfSnapshot: () => getPerfSnapshot(),
@@ -682,19 +692,19 @@ export function App({ initialThemeMode }: AppProps) {
     return tab.id === activeTabId ? useViewerStore.getState().document ?? tab.document : tab.document;
   }
 
-  async function saveTab(tab: DocumentTab | null, explicitTargetPath?: string): Promise<boolean> {
+  async function saveTab(tab: DocumentTab | null, explicitTarget?: PdfSaveTargetDescriptor): Promise<boolean> {
     if (!tab) return false;
     const sourceDocument = documentStateForTab(tab);
-    let targetPath = explicitTargetPath;
-    if (tab.temporarySourcePath && !targetPath) {
-      targetPath = await window.butterPaper.dialogs.savePdfAsDialog(sourceDocument.fileName) ?? undefined;
-      if (!targetPath) return false;
-    }
+    const target = explicitTarget ?? await window.butterPaper.dialogs.savePdfAsDialog(
+      tab.temporarySourcePath ? sourceDocument.fileName : saveDefaultName(sourceDocument.fileName),
+    ) ?? undefined;
+    if (!target) return false;
 
     const payload = await tab.session.save(
       sourceDocument.document.markups,
-      targetPath,
+      target,
       sourceDocument.document.pageScales,
+      sourceDocument.document.pages,
     );
     const nextDocument = loadedDocumentState({
       ...payload,
@@ -704,7 +714,6 @@ export function App({ initialThemeMode }: AppProps) {
         scalePresets: sourceDocument.document.scalePresets,
       },
     });
-    const temporarySourcePath = tab.temporarySourcePath;
     setTabs((currentTabs) => currentTabs.map((candidate) => candidate.id === tab.id
       ? {
           ...candidate,
@@ -718,12 +727,7 @@ export function App({ initialThemeMode }: AppProps) {
     if (tab.id === activeTabId) {
       useViewerStore.setState({ document: nextDocument });
     }
-    if (temporarySourcePath) {
-      await window.butterPaper.pdf.releaseTemporaryDocument(temporarySourcePath).catch((error) => {
-        console.warn('Unable to remove the blank PDF temporary source.', error);
-      });
-    }
-    setStatusMessage(`Saved ${payload.fileName}`);
+    setStatusMessage(`Saved new PDF ${payload.fileName}; the original was preserved.`);
     setErrorMessage(null);
     return true;
   }
@@ -741,10 +745,10 @@ export function App({ initialThemeMode }: AppProps) {
     if (!activeTab) return;
     const sourceDocument = documentStateForTab(activeTab);
     const defaultName = activeTab.temporarySourcePath ? sourceDocument.fileName : saveDefaultName(sourceDocument.fileName);
-    const path = await window.butterPaper.dialogs.savePdfAsDialog(defaultName);
-    if (!path) return;
+    const target = await window.butterPaper.dialogs.savePdfAsDialog(defaultName);
+    if (!target) return;
     try {
-      await saveTab(activeTab, path);
+      await saveTab(activeTab, target);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Save as failed.');
     }
@@ -755,9 +759,6 @@ export function App({ initialThemeMode }: AppProps) {
     if (closingIndex < 0) return;
     const closingTab = tabs[closingIndex];
     closingTab.session.dispose();
-    if (releaseTemporarySource && closingTab.temporarySourcePath) {
-      await window.butterPaper.pdf.releaseTemporaryDocument(closingTab.temporarySourcePath).catch(() => undefined);
-    }
     const nextTabs = tabs.filter((tab) => tab.id !== tabId);
     setTabs(nextTabs);
     if (activeTabId === tabId) activateTab(nextTabs[Math.min(closingIndex, nextTabs.length - 1)]?.id ?? null, nextTabs);
@@ -817,9 +818,6 @@ export function App({ initialThemeMode }: AppProps) {
     try {
       await Promise.all(tabs.map(async (tab) => {
         tab.session.dispose();
-        if (tab.temporarySourcePath) {
-          await window.butterPaper.pdf.releaseTemporaryDocument(tab.temporarySourcePath).catch(() => undefined);
-        }
       }));
       setApplicationCloseRequested(false);
       await window.butterPaper.application.confirmClose();
@@ -829,16 +827,14 @@ export function App({ initialThemeMode }: AppProps) {
   }
 
   function updateZoom(nextZoom: number) { setZoomPreset('manual'); setZoom(clampZoom(nextZoom)); }
-  function handleToolChange(tool: ToolMode) {
+  function handleToolChange(tool: ToolMode, clickCount = 1) {
+    if (!shouldDispatchToolSelection(clickCount)) {
+      return;
+    }
     heldPanRestoreToolRef.current = null;
     if (tool === 'image') {
       setActiveTool(tool);
       imageInputRef.current?.click();
-      return;
-    }
-
-    if (tool === activeTool && rightSidebarOpen) {
-      collapseRightSidebar();
       return;
     }
     setActiveTool(tool);
@@ -857,6 +853,18 @@ export function App({ initialThemeMode }: AppProps) {
       setPageScaleCalibrationPoints(null);
     }
     setPageScaleDialogOpen(true);
+  }
+
+  function openPageScaleDialogForPage(pageIndex: number): void {
+    setCurrentPage(pageIndex);
+    openPageScaleDialog();
+  }
+
+  function handleRotatePage(pageIndex: number, direction: PageRotationDirection): void {
+    updateDocument((document) => rotateDocumentPage(document, pageIndex, direction));
+    setCurrentPage(pageIndex);
+    setStatusMessage(`Rotated page ${pageIndex + 1} ${direction}`);
+    setErrorMessage(null);
   }
 
   function startPageScaleCalibrationPick(): void {
@@ -967,7 +975,7 @@ export function App({ initialThemeMode }: AppProps) {
       if (mod) {
         if (key === 'n') {
           event.preventDefault();
-          void handleCreateDefaultBlankPdf();
+          setNewBlankPdfDialogOpen(true);
         } else if (key === 'o') {
           event.preventDefault();
           void handleOpen();
@@ -1015,13 +1023,12 @@ export function App({ initialThemeMode }: AppProps) {
         return;
       }
 
-      if (key === 'escape' && !isInteractiveShortcutTarget(event.target)) {
+      if (key === 'escape' && !isToolShortcutBlockedTarget(event.target)) {
         event.preventDefault();
         const finishCloudPolygon = new Event(FINISH_CLOUD_POLYGON_EVENT, { cancelable: true });
-        if (!window.dispatchEvent(finishCloudPolygon)) {
-          return;
-        }
-        handleToolChange('select');
+        window.dispatchEvent(finishCloudPolygon);
+        heldPanRestoreToolRef.current = null;
+        resetToSelectionTool();
         return;
       }
 
@@ -1096,7 +1103,7 @@ export function App({ initialThemeMode }: AppProps) {
         canSave={canSave}
         productName={applicationMetadata.productName}
         updateStatus={updater.status}
-        onNewPdf={() => void handleCreateDefaultBlankPdf()}
+        onNewPdf={() => setNewBlankPdfDialogOpen(true)}
         onOpen={() => void handleOpen()}
         onSave={() => void handleSave()}
         onSaveAs={() => void handleSaveAs()}
@@ -1127,17 +1134,26 @@ export function App({ initialThemeMode }: AppProps) {
         className="hidden"
         tabIndex={-1}
         data-testid="insert-image-file-input"
+        disabled={documentMutationDisabled}
         onChange={(event) => { void handleImageFileChange(event); }}
       />
       <main className="min-h-0 flex-1">
         <div className="flex h-full min-h-0" data-testid="workspace-shell">
-          <LeftRail active={leftSidebarOpen && Boolean(documentState)} disabled={leftRailDisabled} onToggle={() => toggleLeftSidebar('pages')} />
+          <LeftRail
+            activePanel={leftSidebarOpen && documentState ? leftSidebarPanel : null}
+            disabled={leftRailDisabled}
+            onToggle={toggleLeftSidebar}
+          />
           {leftSidebarOpen && documentState ? (
             <LeftSidebar
               session={session}
               pages={pages}
+              panel={leftSidebarPanel}
               width={leftSidebarWidth}
+              mutationDisabled={documentMutationDisabled}
               onSelectPage={handleSelectPage}
+              onSetPageScale={openPageScaleDialogForPage}
+              onRotatePage={handleRotatePage}
               onWidthChange={setLeftSidebarWidth}
             />
           ) : null}
@@ -1148,17 +1164,47 @@ export function App({ initialThemeMode }: AppProps) {
             aria-labelledby={activeTabId ? `document-tab-trigger-${tabs.findIndex((tab) => tab.id === activeTabId)}` : undefined}
           >
             <>
-              <ViewerToolbar disabled={viewerControlsDisabled} zoom={zoom} zoomPreset={zoomPreset} scrollMode={scrollMode} continuousScrollWheelMode={continuousScrollWheelMode} singlePageScrollWheelMode={singlePageScrollWheelMode} pageColumnsEnabled={pageColumnsEnabled} cadViewOrganisation={cadViewOrganisation} pagesPerColumn={pagesPerColumn} snapSettings={snapSettings} onSnapSettingsChange={setSnapSettings} onSetPageScale={() => openPageScaleDialog()} onFitPage={() => setZoomPreset('fit-page')} onFitWidth={() => setZoomPreset('fit-width')} onScrollModeChange={setScrollMode} onContinuousScrollWheelModeChange={setContinuousScrollWheelMode} onSinglePageScrollWheelModeChange={setSinglePageScrollWheelMode} onPageColumnsEnabledChange={setPageColumnsEnabled} onCadViewOrganisationChange={setCadViewOrganisation} onPagesPerColumnChange={setPagesPerColumn} onZoomIn={() => updateZoom(zoom * 1.1)} onZoomOut={() => updateZoom(zoom / 1.1)} onZoomReset={() => updateZoom(1)} onZoomChange={updateZoom} />
+              <ViewerToolbar disabled={viewerControlsDisabled} zoom={zoom} zoomPreset={zoomPreset} scrollMode={scrollMode} continuousScrollWheelMode={continuousScrollWheelMode} singlePageScrollWheelMode={singlePageScrollWheelMode} pageColumnsEnabled={pageColumnsEnabled} cadViewOrganisation={cadViewOrganisation} pagesPerColumn={pagesPerColumn} onFitPage={() => setZoomPreset('fit-page')} onFitWidth={() => setZoomPreset('fit-width')} onScrollModeChange={setScrollMode} onContinuousScrollWheelModeChange={setContinuousScrollWheelMode} onSinglePageScrollWheelModeChange={setSinglePageScrollWheelMode} onPageColumnsEnabledChange={setPageColumnsEnabled} onCadViewOrganisationChange={setCadViewOrganisation} onPagesPerColumnChange={setPagesPerColumn} onZoomIn={() => updateZoom(zoom * 1.1)} onZoomOut={() => updateZoom(zoom / 1.1)} onZoomReset={() => updateZoom(1)} onZoomChange={updateZoom} />
               <div className="min-h-0 flex-1">
-                <DocumentViewport session={session} onOpenDocument={() => void handleOpen()} calibrationPick={pageScaleCalibrationPick ? { active: true, pointCount: pageScaleCalibrationPick.points.length } : null} onCalibrationPoint={handlePageScaleCalibrationPoint} onCancelCalibrationPick={cancelPageScaleCalibrationPick} />
+                <CanvasContextMenu
+                  disabled={viewerControlsDisabled}
+                  mutationDisabled={documentMutationDisabled}
+                  pageIndex={currentPage}
+                  onSelectTool={() => handleToolChange('select')}
+                  onPanTool={() => handleToolChange('pan')}
+                  onZoomIn={() => updateZoom(zoom * 1.1)}
+                  onZoomOut={() => updateZoom(zoom / 1.1)}
+                  onFitWidth={() => setZoomPreset('fit-width')}
+                  onFitPage={() => setZoomPreset('fit-page')}
+                  onSetPageScale={openPageScaleDialogForPage}
+                  onRotatePage={handleRotatePage}
+                >
+                  <DocumentViewport session={session} onOpenDocument={() => void handleOpen()} calibrationPick={!documentMutationDisabled && pageScaleCalibrationPick ? { active: true, pointCount: pageScaleCalibrationPick.points.length } : null} onCalibrationPoint={handlePageScaleCalibrationPoint} onCancelCalibrationPick={cancelPageScaleCalibrationPick} />
+                </CanvasContextMenu>
               </div>
             </>
           </div>
-          {rightSidebarOpen ? <RightSidebar activeTool={activeTool} width={rightSidebarWidth} onWidthChange={setRightSidebarWidth} /> : null}
-          <RightRail activeTool={activeTool} disabled={viewerControlsDisabled} onSelectTool={handleToolChange} />
+          {rightSidebarOpen ? <RightSidebar activeTool={activeTool} mutationDisabled={documentMutationDisabled} width={rightSidebarWidth} onWidthChange={setRightSidebarWidth} /> : null}
+          <RightRail
+            activeTool={activeTool}
+            disabled={viewerControlsDisabled}
+            mutationDisabled={documentMutationDisabled}
+            propertiesOpen={rightSidebarOpen}
+            snapSettings={snapSettings}
+            onSelectTool={handleToolChange}
+            onSnapSettingsChange={setSnapSettings}
+            onToggleProperties={() => toggleRightSidebar('tools')}
+          />
         </div>
       </main>
-      {pageScaleDialogOpen && documentState ? (
+      <NewBlankPdfDialog
+        open={newBlankPdfDialogOpen}
+        settings={blankPdfSettings}
+        onCreate={handleCreateBlankPdf}
+        onOpenChange={setNewBlankPdfDialogOpen}
+        onSettingsChange={handleBlankPdfSettingsChange}
+      />
+      {pageScaleDialogOpen && documentState && !documentMutationDisabled ? (
         <PageScaleDialog
           document={documentState.document}
           currentPage={pageScaleCalibrationPoints?.pageIndex ?? currentPage}

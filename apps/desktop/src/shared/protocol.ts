@@ -16,6 +16,14 @@ export type UpdateChannel = 'stable' | 'beta';
 export interface ApplicationMetadata {
   productName: 'Butter Paper' | 'Butter Paper Beta';
   channel: UpdateChannel;
+  version: string;
+  commit: string | null;
+  branch: string | null;
+  dirty: boolean;
+  development: boolean;
+  checkoutId: string | null;
+  statusFingerprint: string | null;
+  windowTitle: string;
 }
 export interface DefaultPdfAppResult {
   outcome: 'changed' | 'requires-confirmation';
@@ -67,6 +75,26 @@ export interface WindowState {
   focused: boolean;
   maximized: boolean;
   title: string;
+}
+
+export interface DesktopProcessMetric {
+  pid: number;
+  type: string;
+  name: string | null;
+  serviceName: string | null;
+  creationTime: number;
+  cpuPercent: number;
+  cumulativeCpuSeconds: number | null;
+  idleWakeupsPerSecond: number;
+  workingSetKiB: number;
+  peakWorkingSetKiB: number;
+}
+
+export interface DesktopProcessMetricsSnapshot {
+  capturedAt: number;
+  totalWorkingSetKiB: number;
+  totalPeakWorkingSetKiB: number;
+  processes: DesktopProcessMetric[];
 }
 
 export interface DocumentOpenStageTimings {
@@ -226,6 +254,8 @@ export interface LoadedDocumentPayload {
   filePath: string;
   fileName: string;
   document: DocumentModel;
+  /** Opaque owner-scoped capability for all privileged access to the loaded PDF. */
+  documentAccess: PdfDocumentAccessDescriptor;
   openStageTimings?: DocumentOpenStageTimings;
 }
 
@@ -240,33 +270,39 @@ export interface BlankPdfCreateResult {
   readonly temporarySourcePath: string;
 }
 
+export interface PdfDocumentAccessDescriptor {
+  readonly handle: string;
+}
+
+export interface PdfSaveTargetDescriptor {
+  readonly targetHandle: string;
+  /** Display metadata only. This path grants no renderer authority. */
+  readonly displayPath: string;
+}
+
+export interface PdfDocumentAccessRequest {
+  readonly documentHandle: string;
+}
+
 export interface SaveDocumentRequest {
-  sourcePath: string;
-  targetPath?: string;
+  readonly documentHandle: string;
+  readonly targetHandle: string;
   markups: readonly Markup[];
   pageScales?: DocumentModel['pageScales'];
+  pageRotations?: ReadonlyArray<{
+    readonly pageIndex: number;
+    readonly rotation: DocumentModel['pages'][number]['rotation'];
+  }>;
   mode: PdfSaveMode;
 }
 
+
 export interface PageGeometryRequest {
-  filePath: string;
+  documentHandle: string;
   pageIndex: number;
 }
 
-export type DesktopRenderBackend = 'pdfjs' | 'pdfium';
-export type DesktopRenderBackendSelectionSource = 'default' | 'env';
-export type RenderCoreErrorCode =
-  | 'not-implemented'
-  | 'backend-unavailable'
-  | 'invalid-request'
-  | 'not-found'
-  | 'process-failed'
-  | 'decode-failed';
-export type RenderCorePixelFormat = 'rgba8';
-export type RenderCoreSurfaceByteFormat = 'png';
-export type RenderCoreCliCommand = 'document-info' | 'page-info' | 'render-page' | 'other';
-export type RenderCoreRenderMode = 'full' | 'preview';
-export type RenderCoreRenderRequestClass =
+export type PdfRenderRequestClass =
   | 'target-page-hq'
   | 'target-page-crop'
   | 'target-page-preview'
@@ -277,190 +313,11 @@ export type RenderCoreRenderRequestClass =
   | 'nearby-prefetch'
   | 'warming';
 
-export interface DesktopRenderBackendConfig {
-  requestedBackend: DesktopRenderBackend;
-  selectionSource: DesktopRenderBackendSelectionSource;
-  envOverride: string | null;
-}
-
-export interface DesktopRenderBackendSelection {
-  configuredBackend: DesktopRenderBackend;
-  activeBackend: DesktopRenderBackend | null;
-  selectionSource: DesktopRenderBackendSelectionSource;
-}
-
-export interface DesktopRenderCapabilities {
-  backend: DesktopRenderBackend;
-  available: boolean;
-  canOpenDocument: boolean;
-  canGetPageInfo: boolean;
-  canRenderPage: boolean;
-  canReadSurface: boolean;
-  canReleaseSurface: boolean;
-  canCloseDocument: boolean;
-  notes: string[];
-}
-
-export interface RenderCoreCliCommandStats {
-  count: number;
-  failures: number;
-  totalMs: number;
-  maxMs: number;
-  lastMs: number | null;
-}
-
-export interface RenderCoreWorkerPoolStats {
-  queued: number;
-  active: number;
-  assignments: number;
-  totalQueueWaitMs: number;
-  maxQueueWaitMs: number;
-  lastQueueWaitMs: number | null;
-}
-
-export interface RenderCoreNativeStageStats {
-  count: number;
-  totalMs: number;
-  maxMs: number;
-  lastMs: number | null;
-}
-
-export interface RenderCoreNativeRenderPageStages {
-  resolvePdfPathMs: RenderCoreNativeStageStats;
-  loadDocumentMs: RenderCoreNativeStageStats;
-  getPageMs: RenderCoreNativeStageStats;
-  buildRenderConfigMs: RenderCoreNativeStageStats;
-  pdfiumRenderMs: RenderCoreNativeStageStats;
-  bitmapToImageMs: RenderCoreNativeStageStats;
-  pngEncodeMs: RenderCoreNativeStageStats;
-  nativeTotalMs: RenderCoreNativeStageStats;
-}
-
-export interface RenderCoreNativeRenderPageDiagnostics {
-  count: number;
-  failures: number;
-  totalMs: number;
-  maxMs: number;
-  lastMs: number | null;
-  stages: RenderCoreNativeRenderPageStages;
-  byRenderMode: Record<RenderCoreRenderMode, {
-    count: number;
-    failures: number;
-    totalMs: number;
-    maxMs: number;
-    lastMs: number | null;
-    stages: RenderCoreNativeRenderPageStages;
-  }>;
-  byRequestClass: Partial<Record<RenderCoreRenderRequestClass, {
-    count: number;
-    failures: number;
-    totalMs: number;
-    maxMs: number;
-    lastMs: number | null;
-    stages: RenderCoreNativeRenderPageStages;
-  }>>;
-}
-
-export interface RenderCoreDiagnostics {
-  backend: DesktopRenderBackend;
-  activeDocuments: number;
-  activeSurfaces: number;
-  activeSurfaceBytes: number;
-  surfacesByDocument?: Array<{ documentId: string; count: number; bytes: number }>;
-  cli: Record<RenderCoreCliCommand, RenderCoreCliCommandStats>;
-  renderPageWorkerPool: RenderCoreWorkerPoolStats | null;
-  renderPageNative: RenderCoreNativeRenderPageDiagnostics;
-}
-
-export interface RenderCoreError {
-  code: RenderCoreErrorCode;
-  message: string;
-  backend: DesktopRenderBackend;
-}
-
-export type RenderCoreResult<T> =
-  | {
-      ok: true;
-      value: T;
-    }
-  | {
-      ok: false;
-      error: RenderCoreError;
-    };
-
-export interface RenderCoreOpenDocumentRequest {
-  filePath: string;
-  password?: string | null;
-}
-
-export interface RenderCoreOpenDocumentResponse {
-  documentId: string;
-  pageCount: number;
-  backend: DesktopRenderBackend;
-}
-
-export interface RenderCoreGetPageInfoRequest {
-  documentId: string;
-  pageIndex: number;
-}
-
-export interface RenderCorePageInfo {
-  documentId: string;
-  pageIndex: number;
-  width: number;
-  height: number;
-  rotation: number;
-}
-
-export interface RenderCoreRenderTarget {
-  width: number;
-  height: number;
-  scale: number;
-}
-
-export interface RenderCorePdfRect {
+export interface PdfRect {
   x: number;
   y: number;
   width: number;
   height: number;
-}
-
-export interface RenderCoreRenderPageRequest {
-  documentId: string;
-  pageIndex: number;
-  target: RenderCoreRenderTarget;
-  cropPdfRect?: RenderCorePdfRect;
-  rotation?: number;
-  renderMode?: RenderCoreRenderMode;
-  requestClass?: RenderCoreRenderRequestClass;
-}
-
-export interface RenderCoreRenderPageResponse {
-  surfaceId: string;
-  pixelWidth: number;
-  pixelHeight: number;
-  pixelFormat: RenderCorePixelFormat;
-  surfaceByteFormat: RenderCoreSurfaceByteFormat;
-  byteLength: number;
-}
-
-export interface RenderCoreReadSurfaceRequest {
-  surfaceId: string;
-}
-
-export interface RenderCoreReadSurfaceResponse {
-  surfaceId: string;
-  byteFormat: RenderCoreSurfaceByteFormat;
-  bytes: Uint8Array;
-  byteLength: number;
-}
-
-export interface RenderCoreReleaseSurfaceRequest {
-  surfaceId: string;
-}
-
-export interface RenderCoreCloseDocumentRequest {
-  documentId: string;
 }
 
 export interface ButterPaperBridge {
@@ -496,35 +353,23 @@ export interface ButterPaperBridge {
   };
   readonly dialogs: {
     openPdfDialog(): Promise<string[] | null>;
-    savePdfAsDialog(defaultPath?: string): Promise<string | null>;
-  };
-  readonly files: {
-    readFile(filePath: string): Promise<Uint8Array>;
-    writeFile(filePath: string, bytes: Uint8Array): Promise<void>;
+    savePdfAsDialog(defaultPath?: string): Promise<PdfSaveTargetDescriptor | null>;
   };
   readonly pdf: {
     createBlankDocument(request: BlankPdfCreateRequest): Promise<BlankPdfCreateResult>;
-    releaseTemporaryDocument(temporarySourcePath: string): Promise<void>;
     loadDocument(filePath: string): Promise<LoadedDocumentPayload>;
+    readDocumentBytes(request: PdfDocumentAccessRequest): Promise<Uint8Array>;
+    releaseDocument(request: PdfDocumentAccessRequest): Promise<void>;
     getPageGeometry(request: PageGeometryRequest): Promise<PdfPageGeometryIndex>;
     saveDocument(request: SaveDocumentRequest): Promise<PdfSaveResult>;
   };
-  readonly renderCore: {
-    getBackendConfig(): Promise<DesktopRenderBackendConfig>;
-    getBackendSelection(): Promise<DesktopRenderBackendSelection>;
-    getCapabilities(): Promise<DesktopRenderCapabilities>;
-    getDiagnostics(): Promise<RenderCoreDiagnostics>;
-    openDocument(request: RenderCoreOpenDocumentRequest): Promise<RenderCoreResult<RenderCoreOpenDocumentResponse>>;
-    getPageInfo(request: RenderCoreGetPageInfoRequest): Promise<RenderCoreResult<RenderCorePageInfo>>;
-    renderPage(request: RenderCoreRenderPageRequest): Promise<RenderCoreResult<RenderCoreRenderPageResponse>>;
-    readSurface(request: RenderCoreReadSurfaceRequest): Promise<RenderCoreResult<RenderCoreReadSurfaceResponse>>;
-    releaseSurface(request: RenderCoreReleaseSurfaceRequest): Promise<RenderCoreResult<null>>;
-    closeDocument(request: RenderCoreCloseDocumentRequest): Promise<RenderCoreResult<null>>;
-  };
   readonly test: {
     resolveFixturePath(name: string): Promise<string | null>;
+    authorizePdfSource(filePath: string): Promise<string>;
+    authorizePdfSaveTarget(filePath: string): Promise<PdfSaveTargetDescriptor>;
     getWindowState(): Promise<WindowState | null>;
     setWindowBounds(bounds: Partial<WindowBounds>): Promise<WindowState | null>;
+    getProcessMetrics(): Promise<DesktopProcessMetricsSnapshot | null>;
   } | null;
 }
 
@@ -559,8 +404,8 @@ export interface ViewerDiagnostics {
   lastThumbnailRenderError?: string | null;
   thumbnailCacheEntries?: number;
   thumbnailCacheBytes?: number;
-  sessionBackendKind?: 'pdfjs' | 'pdfium-render-core' | null;
-  surfaceTransportKind?: 'pdfjs-blob-url' | 'pdfium-png-bridge' | null;
+  sessionBackendKind?: 'pdfjs' | null;
+  surfaceTransportKind?: 'pdfjs-blob-url' | null;
   openStageTimings?: DocumentOpenStageTimings | null;
   pageRendererMode?: 'raster' | 'tiled-raster' | 'vector-spike';
   cadRenderExperiment?: string | null;
@@ -598,7 +443,7 @@ export interface ViewerDiagnostics {
       firstVisiblePageIndex?: number | null;
       firstVisiblePageReady?: boolean;
       firstVisiblePageReadyAtMs?: number | null;
-      firstVisiblePageReadyRequestClass?: RenderCoreRenderRequestClass | null;
+      firstVisiblePageReadyRequestClass?: PdfRenderRequestClass | null;
       firstVisiblePageWarmupStatus?: 'idle' | 'queued' | 'ready' | 'aborted' | 'error';
       inactive?: boolean;
       queuedPageRenders?: number;

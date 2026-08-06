@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { createPageTransform, viewportPoint, type PageModel } from '@butter-paper/core';
 import {
   computePagePlaceholderSpinner,
   isDetailCropSurfaceGeometryCompatible,
   resolveCachePromotionMinimumWidth,
+  resolveDetailCrop,
   resolveNextPageImageQualityRequest,
   resolvePageImageQuality,
   shouldClearDetailCropSurfaceForViewport,
@@ -164,6 +166,40 @@ describe('page view cold prefetch gating', () => {
 });
 
 describe('page view detail crop overlay', () => {
+  it.each([0, 90, 180, 270] as const)(
+    'maps and clamps a nonzero CropBox with UserUnit at %i degrees',
+    (rotation) => {
+      const rotated = rotation === 90 || rotation === 270;
+      const page: PageModel = {
+        id: `page-${rotation}`,
+        index: 0,
+        viewBox: { x: 1_000, y: 2_000, width: 100, height: 200 },
+        userUnit: 2,
+        size: {
+          width: (rotated ? 200 : 100) * 2,
+          height: (rotated ? 100 : 200) * 2,
+        },
+        rotation,
+      };
+      const transform = createPageTransform(page, 1);
+
+      expect(resolveDetailCrop({
+        visiblePageViewportRect: { x: 0, y: 0, width: page.size.width, height: page.size.height },
+        page,
+        layout: page.size,
+        transform,
+      })).toEqual({
+        pdfRect: page.viewBox,
+        viewportRect: { x: 0, y: 0, width: page.size.width, height: page.size.height },
+      });
+
+      const input = viewportPoint(page.size.width * 0.25, page.size.height * 0.75);
+      const roundTripped = transform.pdfToViewport(transform.viewportToPdf(input));
+      expect(roundTripped.x).toBeCloseTo(input.x);
+      expect(roundTripped.y).toBeCloseTo(input.y);
+    },
+  );
+
   it('clears stale crop overlays while the viewport is moving', () => {
     expect(shouldClearDetailCropSurfaceForViewport({
       viewportInMotion: true,

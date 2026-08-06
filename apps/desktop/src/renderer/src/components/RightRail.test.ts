@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  getToolPropertiesDoubleClickTooltip,
+  getTopControlColumnCount,
   getRightRailWidth,
   resolveRightRailColumnCount,
+  shouldDispatchToolSelection,
+  shouldShowRightRailHeadings,
   RIGHT_RAIL_DEFAULT_COLUMNS,
   RIGHT_RAIL_MAX_COLUMNS,
 } from './RightRail';
@@ -11,7 +15,7 @@ describe('resizable right rail sizing', () => {
     expect(RIGHT_RAIL_DEFAULT_COLUMNS).toBe(2);
   });
 
-  it('uses compact widths that fit stock Nova toggles and 8px gaps', () => {
+  it('leaves even focus-safe widths around stock Nova toggles', () => {
     expect(getRightRailWidth(1)).toBe(48);
     expect(getRightRailWidth(2)).toBe(88);
     expect(getRightRailWidth(3)).toBe(128);
@@ -29,5 +33,28 @@ describe('resizable right rail sizing', () => {
     expect(resolveRightRailColumnCount(100_000)).toBe(RIGHT_RAIL_MAX_COLUMNS);
     expect(resolveRightRailColumnCount(Number.NaN)).toBe(RIGHT_RAIL_DEFAULT_COLUMNS);
     expect(getRightRailWidth(RIGHT_RAIL_MAX_COLUMNS + 1)).toBe(getRightRailWidth(RIGHT_RAIL_MAX_COLUMNS));
+  });
+
+  it('hides group headings only at the single-column width', () => {
+    expect(shouldShowRightRailHeadings(1)).toBe(false);
+    expect(shouldShowRightRailHeadings(2)).toBe(true);
+    expect(shouldShowRightRailHeadings(RIGHT_RAIL_MAX_COLUMNS)).toBe(true);
+  });
+
+  it('lays the four General controls out as pairs at multiple columns', () => {
+    expect(getTopControlColumnCount(1)).toBe(1);
+    expect(getTopControlColumnCount(2)).toBe(2);
+    expect(getTopControlColumnCount(RIGHT_RAIL_MAX_COLUMNS)).toBe(2);
+  });
+
+  it('dispatches one selection side effect for pointer and keyboard activation', () => {
+    expect(shouldDispatchToolSelection(0)).toBe(true);
+    expect(shouldDispatchToolSelection(1)).toBe(true);
+    expect(shouldDispatchToolSelection(2)).toBe(false);
+  });
+
+  it('describes the available properties gesture from the current panel state', () => {
+    expect(getToolPropertiesDoubleClickTooltip(false)).toBe('Double click to show properties');
+    expect(getToolPropertiesDoubleClickTooltip(true)).toBe('Double click to hide properties');
   });
 });

@@ -172,9 +172,11 @@ export const CALLOUT_TOOL_DEFINITION: PdfToolDefinition<CalloutMarkup, LineDraft
         if (!handle) {
           return markup;
         }
+        const textBox = resizeRectFromHandle(markup.textBox, handle, input.currentPoint);
         return createCalloutMarkup({
           ...markup,
-          textBox: resizeRectFromHandle(markup.textBox, handle, input.currentPoint),
+          textBox,
+          leader: { points: leaderPointsForResizedTextBox(markup.leader.points, markup.textBox, textBox) },
         });
       }
 
@@ -320,6 +322,24 @@ function pointsBounds(points: readonly PdfPoint[]): Rect {
   const maxX = Math.max(...points.map((point) => point.x));
   const maxY = Math.max(...points.map((point) => point.y));
   return rect(minX, minY, Math.max(1, maxX - minX), Math.max(1, maxY - minY));
+}
+
+function leaderPointsForResizedTextBox(
+  points: readonly PdfPoint[],
+  previousTextBox: Rect,
+  textBox: Rect,
+): readonly PdfPoint[] {
+  const connection = points[points.length - 1];
+  if (!connection) {
+    return points;
+  }
+  const attachedToLeft = Math.abs(connection.x - previousTextBox.x)
+    <= Math.abs(connection.x - (previousTextBox.x + previousTextBox.width));
+  const nextConnection = pdfPoint(
+    attachedToLeft ? textBox.x : textBox.x + textBox.width,
+    textBox.y + textBox.height * 0.5,
+  );
+  return points.map((point, index) => index === points.length - 1 ? nextConnection : point);
 }
 
 function openArrowHeadPoints(start: PdfPoint, end: PdfPoint, length: number, width: number): readonly PdfPoint[] {

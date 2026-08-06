@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PDFDocument } from 'pdf-lib';
@@ -21,6 +21,7 @@ describe('BlankPdfTemporaryStore', () => {
     const second = await store.create({ widthMm: 297, heightMm: 210 });
     expect(first.fileName).toBe('Untitled.pdf');
     expect(second.fileName).toBe('Untitled 2.pdf');
+    expect(first.filePath).toBe(await realpath(first.filePath));
 
     const document = await PDFDocument.load(await readFile(second.filePath));
     expect(document.getPageCount()).toBe(1);

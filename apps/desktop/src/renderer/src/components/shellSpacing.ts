@@ -2,11 +2,18 @@ export const MENU_BAR_HEIGHT = 'h-8';
 export const MENU_TRIGGER_HEIGHT = 'h-6';
 export const PRIMARY_BAND_HEIGHT = 'h-12';
 export const TAB_HEIGHT = 'h-8';
+export const RAIL_BUTTON_SIZE_PX = 32;
+export const RAIL_BUTTON_GAP_PX = 8;
+export const RAIL_FOCUS_GUTTER_PX = 8;
+export const RAIL_SINGLE_COLUMN_WIDTH_PX = RAIL_BUTTON_SIZE_PX
+  + 2 * RAIL_FOCUS_GUTTER_PX;
+export const RAIL_COLUMN_PITCH_PX = RAIL_BUTTON_SIZE_PX + RAIL_BUTTON_GAP_PX;
 export const RAIL_WIDTH = 'w-12';
 export const RAIL_BUTTON_SIZE = 'size-8';
-export const CONTROL_ICON_SIZE = 18;
+export const RAIL_HEADING_TEXT_CLASS = 'text-sm font-medium text-muted-foreground';
+export const CONTROL_ICON_SIZE = 16;
 export const CONTROL_ICON_STROKE_WIDTH = 1.5;
-export const CONTROL_ICON_SIZE_CLASS = 'size-[18px] shrink-0';
+export const CONTROL_ICON_SIZE_CLASS = 'size-4 shrink-0';
 
 export const SHELL_ROW_INSET_X = 'px-2';
 export const SHELL_CONTROL_GAP = 'gap-2';

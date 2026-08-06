@@ -201,6 +201,15 @@ const approvedDomainUiExceptions = new Map([
       rawElements: new Set(),
     },
   ],
+  [
+    `${domainUiDirectory}/PropertyControls.tsx`,
+    {
+      reason: 'Bluebeam-compatible property editors require reusable visual previews, mixed-value presentation, unit-aware numeric composition, and conditional multi-control groups that official single controls do not provide',
+      allowVisualStyling: true,
+      allowDynamicDragStyle: true,
+      rawElements: new Set(),
+    },
+  ],
 ]);
 const domainUiFiles = collectFiles(domainUiDirectory).filter((filePath) => filePath.endsWith('.tsx'));
 

@@ -30,9 +30,11 @@ import {
   formatScaledValue,
   formatScaledAreaLabel,
   formatScaledLengthLabel,
+  formatPageScaleRatio,
   measureScaledLength,
   measureScaledPolygonArea,
   measureScaledPolyline,
+  rotateDocumentPage,
   getPageScale,
   requirePageScale,
   saveScalePreset,
@@ -66,6 +68,50 @@ describe('core geometry', () => {
     expect(transform.viewportToPdf(transform.pdfToViewport(point))).toEqual(point);
   });
 
+  it.each([
+    { rotation: 0 as const, size: { width: 540, height: 720 }, expectedPoint: { x: 36, y: 684 }, expectedRect: { x: 36, y: 648, width: 72, height: 36 } },
+    { rotation: 90 as const, size: { width: 720, height: 540 }, expectedPoint: { x: 36, y: 36 }, expectedRect: { x: 36, y: 36, width: 36, height: 72 } },
+    { rotation: 180 as const, size: { width: 540, height: 720 }, expectedPoint: { x: 504, y: 36 }, expectedRect: { x: 432, y: 36, width: 72, height: 36 } },
+    { rotation: 270 as const, size: { width: 720, height: 540 }, expectedPoint: { x: 684, y: 504 }, expectedRect: { x: 648, y: 432, width: 36, height: 72 } },
+  ])('matches PDF.js CropBox geometry at $rotation degrees', ({ rotation, size: pageSize, expectedPoint, expectedRect }) => {
+    const transform = createPageTransform({
+      size: pageSize,
+      rotation,
+      viewBox: { x: 36, y: 72, width: 540, height: 720 },
+      userUnit: 1,
+    }, 1);
+    const point = pdfPoint(72, 108);
+    const pdfRect = { x: 72, y: 108, width: 72, height: 36 };
+
+    expect(transform.pdfToViewport(point)).toEqual(expectedPoint);
+    expect(transform.viewportToPdf(expectedPoint as never)).toEqual(point);
+    expect(transform.pdfRectToViewport(pdfRect)).toEqual(expectedRect);
+    expect(transform.viewportRectToPdf(expectedRect)).toEqual(pdfRect);
+  });
+
+  it('applies PDF UserUnit while preserving raw PDF coordinates', () => {
+    const transform = createPageTransform({
+      size: { width: 1080, height: 1440 },
+      rotation: 0,
+      viewBox: { x: 36, y: 72, width: 540, height: 720 },
+      userUnit: 2,
+    }, 1);
+
+    const point = pdfPoint(72, 108);
+    expect(transform.pdfToViewport(point)).toEqual({ x: 72, y: 1368 });
+    expect(transform.viewportToPdf({ x: 72, y: 1368 } as never)).toEqual(point);
+  });
+
+  it('derives unrotated legacy bounds from rotated layout size', () => {
+    const transform = createPageTransform({
+      size: { width: 720, height: 540 },
+      rotation: 90,
+    }, 1);
+
+    expect(transform.geometry.viewBox).toEqual({ x: 0, y: 0, width: 540, height: 720 });
+    expect(transform.viewportToPdf(transform.pdfToViewport(pdfPoint(72, 108)))).toEqual(pdfPoint(72, 108));
+  });
+
   it('keeps deep viewer zooms in the page transform', () => {
     const transform = createPageTransform(
       { size: { width: 792, height: 612 }, rotation: 0 },
@@ -80,6 +126,39 @@ describe('core geometry', () => {
 });
 
 describe('core commands', () => {
+  it('keeps explicit safe native annotation metadata when markups are transformed', () => {
+    const document = createDocument({
+      id: 'metadata-doc',
+      path: '/tmp/metadata.pdf',
+      metadata: {},
+      pages: [{ id: 'page-1', index: 0, size: { width: 200, height: 200 }, rotation: 0 }],
+      markups: [createRectangleMarkup({
+        id: 'metadata-rectangle',
+        pageIndex: 0,
+        rect: { x: 10, y: 20, width: 40, height: 50 },
+        source: {
+          annotationId: 'nm:BB-RECT',
+          annotationIds: ['nm:BB-RECT'],
+          annotationMetadata: [{
+            annotationId: 'nm:BB-RECT',
+            role: 'primary',
+            author: 'A. Reviewer',
+            subject: 'Structural review',
+            creationDate: 'D:20260804101500+10\'00\'',
+            contents: 'Keep this comment',
+            flags: 4,
+            statusModel: 'Review',
+            status: 'Accepted',
+          }],
+          source: 'imported',
+        },
+      })],
+    });
+
+    const moved = moveMarkup(document, 'metadata-rectangle', { x: 5, y: -5 });
+    expect(moved.markups[0]?.source?.annotationMetadata).toEqual(document.markups[0]?.source?.annotationMetadata);
+  });
+
   it('creates, moves and edits markups', () => {
     const document = createDocument({
       id: 'doc-1',
@@ -155,6 +234,7 @@ describe('core commands', () => {
       id: 'markup-11',
       pageIndex: 0,
       controlPath: [pdfPoint(130, 130), pdfPoint(150, 150), pdfPoint(170, 130)],
+      appearancePath: 'M 130 130 C 140 145 160 145 170 130 Z',
     });
 
     const withMarkup = createMarkup(createMarkup(createMarkup(createMarkup(createMarkup(createMarkup(createMarkup(createMarkup(createMarkup(createMarkup(createMarkup(createMarkup(document, rectangle), callout), textBox), ellipse), line), arrow), polyline), polygon), pen), highlight), cloud), dimension);
@@ -211,6 +291,7 @@ describe('core commands', () => {
     const movedCloud = moveMarkup(movedHighlight, 'markup-11', { x: 2, y: 3 });
     expect(movedCloud.markups[10]).toMatchObject({
       controlPath: [pdfPoint(132, 133), pdfPoint(152, 153), pdfPoint(172, 133)],
+      appearancePath: 'M 132 133 C 142 148 162 148 172 133 Z',
     });
 
     const movedDimension = moveMarkup(movedCloud, 'markup-12', { x: 5, y: -2 });
@@ -285,6 +366,18 @@ describe('page scale foundation', () => {
     expect(formatScaledValue(2.375, { mode: 'fraction', value: 8 })).toBe('2 3/8');
   });
 
+  it('formats compact dimensionless scale ratios', () => {
+    const metric = createCustomPageScale({
+      pageIndex: 0,
+      name: '1 cm = 1 m',
+      pdfUnits: 'cm',
+      realUnits: 'm',
+      pdfLength: 1,
+      realLength: 1,
+    });
+    expect(formatPageScaleRatio(metric)).toBe('1:100');
+  });
+
   it('measures scaled length, polylength and area', () => {
     const scale = createCustomPageScale({
       pageIndex: 0,
@@ -331,6 +424,29 @@ describe('page scale foundation', () => {
     expect(getPageScale(ranges, 0)?.scaleX).toBe(3);
     expect(all.pageScales?.map((pageScale) => pageScale.pageIndex)).toEqual([0, 1, 2]);
     expect(all.pageScales?.every((pageScale) => pageScale.scaleX === 4)).toBe(true);
+  });
+
+  it('rotates one page left or right and swaps its visible dimensions', () => {
+    const document = createDocument({
+      id: 'doc-rotation',
+      path: '/tmp/test.pdf',
+      metadata: {},
+      pages: [
+        { id: 'page-1', index: 0, size: { width: 200, height: 300 }, rotation: 0 },
+        { id: 'page-2', index: 1, size: { width: 400, height: 500 }, rotation: 90 },
+      ],
+    });
+
+    expect(rotateDocumentPage(document, 0, 'right').pages).toEqual([
+      { id: 'page-1', index: 0, size: { width: 300, height: 200 }, rotation: 90 },
+      document.pages[1],
+    ]);
+    expect(rotateDocumentPage(document, 1, 'left').pages[1]).toEqual({
+      id: 'page-2',
+      index: 1,
+      size: { width: 500, height: 400 },
+      rotation: 0,
+    });
   });
 
   it('parses Bluebeam-style custom page ranges from one-based input', () => {

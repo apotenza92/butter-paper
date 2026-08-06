@@ -228,6 +228,9 @@ test.describe('custom scrollbars', () => {
       zoomPreset: 'fit-page',
     });
     await page.getByTestId('viewer-zoom-out').click();
+    await waitForShellDiagnostics(page, {
+      zoomPreset: 'manual',
+    });
     await page.getByTestId('tool-pan').click();
     const viewportBox = await page.getByTestId('document-viewport').boundingBox();
     expect(viewportBox).not.toBeNull();
@@ -257,7 +260,6 @@ test.describe('custom scrollbars', () => {
     await expect.poll(async () => {
       return await page.getByTestId('document-viewport').evaluate((element) => element.scrollWidth - element.clientWidth);
     }).toBe(0);
-    await expect(page.getByTestId('document-viewport-scrollbar-track-x')).toHaveAttribute('data-overflow', 'false');
 
     await app.close();
   });

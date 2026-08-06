@@ -1,6 +1,7 @@
 import { _electron as electron } from '@playwright/test';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertIsolatedGuiTestEnvironment } from '../../../scripts/gui-test-environment.mjs';
@@ -10,6 +11,11 @@ assertIsolatedGuiTestEnvironment('Electron E2E');
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(moduleDir, '../../..');
 const require = createRequire(import.meta.url);
+const launchDiagnostics = new WeakMap();
+const firstWindowTimeoutMs = readPositiveInteger(
+  process.env.BP_E2E_FIRST_WINDOW_TIMEOUT_MS,
+  15_000,
+);
 
 export function resolveDesktopEntryPoint() {
   const explicit = process.env.BP_DESKTOP_ENTRY;
@@ -26,7 +32,7 @@ export function resolveDesktopEntryPoint() {
 }
 
 export async function launchButterPaper(options = {}) {
-  const { theme } = options;
+  const { fixtureDirectory, theme } = options;
   const entryPoint = resolveDesktopEntryPoint();
   if (!entryPoint) {
     return null;
@@ -41,22 +47,39 @@ export async function launchButterPaper(options = {}) {
   const launchArgs = explicitExecutablePath && executablePath === explicitExecutablePath
     ? []
     : [entryPoint];
+  const userDataDirectory = mkdtempSync(join(tmpdir(), 'butter-paper-e2e-'));
+  const startupLogPath = join(userDataDirectory, 'startup.log');
 
   const env = {
     ...process.env,
     BP_TEST_MODE: '1',
+    BP_TEST_USER_DATA_DIR: userDataDirectory,
+    BP_TEST_STARTUP_LOG_PATH: startupLogPath,
     BP_DISABLE_RENDERER_DEV_SERVER: '1',
-    BP_TEST_FIXTURE_DIR: resolve(repoRoot, 'tests/fixtures/generated'),
+    ELECTRON_ENABLE_LOGGING: '1',
+    BP_TEST_FIXTURE_DIR: fixtureDirectory
+      ? resolve(fixtureDirectory)
+      : resolve(repoRoot, 'tests/fixtures/generated'),
     ...(theme ? { BP_TEST_THEME: theme } : {}),
   };
   delete env.ELECTRON_RUN_AS_NODE;
 
-  return await electron.launch({
-    ...(executablePath ? { executablePath } : {}),
-    args: launchArgs,
-    env,
-    timeout: 60_000,
-  });
+  try {
+    const app = await electron.launch({
+      ...(executablePath ? { executablePath } : {}),
+      args: launchArgs,
+      env,
+      timeout: firstWindowTimeoutMs,
+    });
+    captureLaunchDiagnostics(app, startupLogPath);
+    app.once('close', () => {
+      rmSync(userDataDirectory, { recursive: true, force: true });
+    });
+    return app;
+  } catch (error) {
+    rmSync(userDataDirectory, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 export async function openFixturePdf(app, fixtureName = 'single-page') {
@@ -65,6 +88,10 @@ export async function openFixturePdf(app, fixtureName = 'single-page') {
     'tests/fixtures/generated',
     fixtureName.endsWith('.pdf') ? fixtureName : `${fixtureName}.pdf`,
   );
+  return await openPdfPath(app, filePath);
+}
+
+export async function openPdfPath(app, filePath) {
   const page = await firstWindow(app);
   await page.waitForFunction(() => Boolean(window.__butterPaperTestHooks?.openDocumentPath));
   await page.evaluate(async ({ path }) => {
@@ -79,6 +106,14 @@ export async function saveCurrentDocumentAs(page, filePath) {
   }, { filePath });
 }
 
+export async function closeButterPaperDiscardingUnsaved(app, page) {
+  const closeRequested = app.close();
+  const dialog = page.getByTestId('unsaved-changes-dialog');
+  await dialog.waitFor({ state: 'visible' });
+  await dialog.getByTestId('unsaved-discard').click();
+  await closeRequested;
+}
+
 export async function getDiagnostics(page) {
   return await page.evaluate(() => {
     return window.__butterPaperTestHooks?.getDiagnostics() ?? null;
@@ -86,9 +121,80 @@ export async function getDiagnostics(page) {
 }
 
 export async function firstWindow(app) {
-  const page = app.windows()[0] ?? await app.firstWindow({ timeout: 60_000 });
+  let page = app.windows()[0];
+  if (!page) {
+    let handleClose;
+    const closedBeforeWindow = new Promise((_, reject) => {
+      handleClose = () => reject(new Error(
+        'Butter Paper exited before creating its first window.',
+      ));
+      app.once('close', handleClose);
+    });
+    try {
+      page = await Promise.race([
+        app.firstWindow({ timeout: firstWindowTimeoutMs }),
+        closedBeforeWindow,
+      ]);
+    } catch (error) {
+      throw new Error(formatFirstWindowFailure(error, app), { cause: error });
+    } finally {
+      if (handleClose) {
+        app.off('close', handleClose);
+      }
+    }
+  }
   const browserWindow = await app.browserWindow(page);
   await browserWindow.evaluate((window) => window.webContents.setZoomFactor(1));
   await page.waitForLoadState('domcontentloaded');
   return page;
+}
+
+function captureLaunchDiagnostics(app, startupLogPath) {
+  const output = [];
+  launchDiagnostics.set(app, { output, startupLogPath });
+  const childProcess = app.process();
+  captureStream(childProcess.stdout, 'stdout', output);
+  captureStream(childProcess.stderr, 'stderr', output);
+}
+
+function captureStream(stream, label, output) {
+  stream?.on('data', (chunk) => {
+    output.push(`[${label}] ${String(chunk).trimEnd()}`);
+    while (output.join('\n').length > 20_000) {
+      output.shift();
+    }
+  });
+}
+
+function formatFirstWindowFailure(error, app) {
+  const childProcess = app.process();
+  const diagnostics = launchDiagnostics.get(app);
+  const output = diagnostics?.output.join('\n').trim();
+  const startupMilestones = readStartupMilestones(diagnostics?.startupLogPath);
+  const status = childProcess.exitCode == null
+    ? `still running (pid ${childProcess.pid ?? 'unknown'})`
+    : `exited with code ${childProcess.exitCode}`;
+  return [
+    `Butter Paper did not create its first window within ${firstWindowTimeoutMs}ms; process is ${status}.`,
+    error instanceof Error ? error.message : String(error),
+    `Spawn arguments: ${childProcess.spawnargs.join(' ')}`,
+    `Startup milestones:\n${startupMilestones}`,
+    output ? `Main-process output:\n${output}` : 'Main-process output: <none captured>',
+  ].join('\n');
+}
+
+function readStartupMilestones(logPath) {
+  if (!logPath) {
+    return '<startup log path unavailable>';
+  }
+  try {
+    return readFileSync(logPath, 'utf8').trim() || '<startup log empty>';
+  } catch {
+    return '<startup log missing; main module did not record a milestone>';
+  }
+}
+
+function readPositiveInteger(value, fallback) {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }

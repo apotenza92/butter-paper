@@ -1,0 +1,46 @@
+{
+  "schema": "butter-paper/bluebeam-tool-contract",
+  "version": 1,
+  "compatibilityPolicy": {
+    "untouchedImported": "verbatim-native-components",
+    "editedImported": "canonical-native-replacement",
+    "deletedImported": "remove-all-logical-components",
+    "safeImprovements": "persist-only-standard-native-geometry",
+    "unsupportedEditedProperties": [
+      {
+        "fields": ["custom-dash-pattern", "custom-line-ending"],
+        "policy": "canonical-tool-default",
+        "reason": "The core markup model cannot represent arbitrary native dash arrays or line endings. Untouched imports remain verbatim; an edited annotation is normalized to the Butter Paper tool default."
+      },
+      {
+        "fields": ["unsupported-native-media-encoding"],
+        "policy": "read-only-generic-import",
+        "reason": "Native media that cannot be decoded safely remains a generic imported annotation and is not replaced with lossy fallback content."
+      }
+    ]
+  },
+  "operationVocabulary": ["activate", "single-select", "multi-select", "move-selection", "navigate", "no-create", "no-mutation", "no-selection", "open", "select", "move", "resize", "reshape", "restyle", "text-edit", "measure-edit", "save", "resave", "reimport", "delete"],
+  "tools": [
+    { "id": "select", "kind": "navigation", "componentCount": 0, "components": [], "operations": ["activate", "single-select", "multi-select", "move-selection", "no-create"] },
+    { "id": "pan", "kind": "navigation", "componentCount": 0, "components": [], "operations": ["activate", "navigate", "no-selection", "no-mutation", "no-create"] },
+    { "id": "text-box", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "FreeText", "intent": null }], "operations": ["open", "select", "move", "resize", "restyle", "text-edit", "save", "resave", "reimport", "delete"] },
+    { "id": "arrow", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "Line", "intent": "LineArrow" }], "operations": ["open", "select", "move", "reshape", "restyle", "save", "resave", "reimport", "delete"] },
+    { "id": "pen", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "Ink", "intent": null }], "operations": ["open", "select", "move", "restyle", "save", "resave", "reimport", "delete"] },
+    { "id": "highlight", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "Ink", "intent": null, "blendMode": "Multiply" }], "operations": ["open", "select", "move", "restyle", "save", "resave", "reimport", "delete"] },
+    { "id": "cloud", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "Polygon", "intent": "PolygonCloud" }], "operations": ["open", "select", "move", "resize", "reshape", "restyle", "save", "resave", "reimport", "delete"] },
+    { "id": "cloud-plus", "kind": "annotation", "componentCount": 2, "components": [{ "role": "cloud", "subtype": "Polygon", "intent": "PolygonCloud" }, { "role": "text", "subtype": "FreeText", "intent": "FreeTextCallout" }], "operations": ["open", "select", "move", "resize", "reshape", "restyle", "text-edit", "save", "resave", "reimport", "delete"] },
+    { "id": "callout", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "FreeText", "intent": "FreeTextCallout" }], "operations": ["open", "select", "move", "resize", "reshape", "restyle", "text-edit", "save", "resave", "reimport", "delete"] },
+    { "id": "image", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "Square", "intent": "SquareImage" }], "operations": ["open", "select", "move", "resize", "save", "resave", "reimport", "delete"] },
+    { "id": "snapshot", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "Stamp", "intent": "StampSnapshot" }], "operations": ["open", "select", "move", "resize", "save", "resave", "reimport", "delete"] },
+    { "id": "rectangle", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "Square", "intent": null }], "operations": ["open", "select", "move", "resize", "restyle", "save", "resave", "reimport", "delete"] },
+    { "id": "ellipse", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "Circle", "intent": null }], "operations": ["open", "select", "move", "resize", "restyle", "save", "resave", "reimport", "delete"] },
+    { "id": "line", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "Line", "intent": null }], "operations": ["open", "select", "move", "reshape", "restyle", "save", "resave", "reimport", "delete"] },
+    { "id": "arc", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "Circle", "intent": "CircleArc" }], "operations": ["open", "select", "move", "reshape", "restyle", "save", "resave", "reimport", "delete"] },
+    { "id": "polyline", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "PolyLine", "intent": null }], "operations": ["open", "select", "move", "reshape", "restyle", "save", "resave", "reimport", "delete"] },
+    { "id": "polygon", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "Polygon", "intent": null }], "operations": ["open", "select", "move", "reshape", "restyle", "save", "resave", "reimport", "delete"] },
+    { "id": "dimension", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "Line", "intent": "LineDimension" }], "operations": ["open", "select", "move", "reshape", "restyle", "measure-edit", "save", "resave", "reimport", "delete"] },
+    { "id": "length", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "Line", "intent": "LineDimension", "measure": true }], "operations": ["open", "select", "move", "reshape", "restyle", "measure-edit", "save", "resave", "reimport", "delete"] },
+    { "id": "polylength", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "PolyLine", "intent": "PolyLineDimension", "measure": true }], "operations": ["open", "select", "move", "reshape", "restyle", "measure-edit", "save", "resave", "reimport", "delete"] },
+    { "id": "area", "kind": "annotation", "componentCount": 1, "components": [{ "role": "primary", "subtype": "Polygon", "intent": "PolygonDimension", "measure": true }], "operations": ["open", "select", "move", "reshape", "restyle", "measure-edit", "save", "resave", "reimport", "delete"] }
+  ]
+}

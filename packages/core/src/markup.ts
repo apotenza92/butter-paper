@@ -265,7 +265,7 @@ export function translateMarkup<MarkupType extends Markup>(
       return {
         ...markup,
         controlPath: markup.controlPath.map((point) => translatePoint(point, delta)),
-        appearancePath: undefined,
+        appearancePath: markup.appearancePath ? translateAbsoluteSvgPath(markup.appearancePath, delta) : undefined,
       } as MarkupType;
     case 'cloud-plus':
       return {
@@ -273,7 +273,7 @@ export function translateMarkup<MarkupType extends Markup>(
         cloud: {
           ...markup.cloud,
           controlPath: markup.cloud.controlPath.map((point) => translatePoint(point, delta)),
-          appearancePath: undefined,
+          appearancePath: markup.cloud.appearancePath ? translateAbsoluteSvgPath(markup.cloud.appearancePath, delta) : undefined,
         },
         leader: {
           points: markup.leader.points.map((point) => translatePoint(point, delta)),
@@ -296,6 +296,39 @@ export function translateMarkup<MarkupType extends Markup>(
   }
 
   return markup;
+}
+
+function translateAbsoluteSvgPath(path: string, delta: PointLike): string | undefined {
+  const tokens = path.match(/[MLCZ]|-?\d*\.?\d+(?:[eE][+-]?\d+)?/g) ?? [];
+  const commands: string[] = [];
+  let index = 0;
+  while (index < tokens.length) {
+    const operator = tokens[index++];
+    if (operator === 'M' || operator === 'L') {
+      const x = Number(tokens[index++]);
+      const y = Number(tokens[index++]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return undefined;
+      commands.push(`${operator} ${formatPathNumber(x + delta.x)} ${formatPathNumber(y + delta.y)}`);
+      continue;
+    }
+    if (operator === 'C') {
+      const values = tokens.slice(index, index + 6).map(Number);
+      index += 6;
+      if (values.length !== 6 || values.some((value) => !Number.isFinite(value))) return undefined;
+      commands.push(`C ${values.map((value, valueIndex) => formatPathNumber(value + (valueIndex % 2 === 0 ? delta.x : delta.y))).join(' ')}`);
+      continue;
+    }
+    if (operator === 'Z') {
+      commands.push('Z');
+      continue;
+    }
+    return undefined;
+  }
+  return commands.join(' ');
+}
+
+function formatPathNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
 }
 
 export function setCalloutText(markup: Markup, text: string): Markup {

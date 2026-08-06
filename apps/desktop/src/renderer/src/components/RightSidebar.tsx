@@ -17,11 +17,12 @@ import {
 
 interface RightSidebarProps {
   activeTool: ToolMode;
+  mutationDisabled?: boolean;
   width: number;
   onWidthChange: (width: number) => void;
 }
 
-export function RightSidebar({ activeTool, width, onWidthChange }: RightSidebarProps) {
+export function RightSidebar({ activeTool, mutationDisabled = false, width, onWidthChange }: RightSidebarProps) {
   const activeToolDefinition = getToolDefinition(activeTool);
   return (
     <aside
@@ -31,7 +32,7 @@ export function RightSidebar({ activeTool, width, onWidthChange }: RightSidebarP
     >
       <div
         className={[
-          'flex items-center border-b text-[12px] font-semibold',
+          'flex items-center justify-center border-b text-center text-[12px] font-semibold',
           PRIMARY_BAND_HEIGHT,
           SHELL_HEADER_INSET_X,
           SHELL_BORDER_SUBTLE,
@@ -39,9 +40,11 @@ export function RightSidebar({ activeTool, width, onWidthChange }: RightSidebarP
         ].join(' ')}
         data-testid="right-sidebar-header"
       >
-        {activeToolDefinition.label}
+        <span className="w-full truncate text-center" data-testid="right-sidebar-heading">
+          {activeToolDefinition.label}
+        </span>
       </div>
-      <ToolPropertiesPanel />
+      <ToolPropertiesPanel activeTool={activeTool} mutationDisabled={mutationDisabled} />
       <SidebarResizeHandle
         side="right"
         width={width}

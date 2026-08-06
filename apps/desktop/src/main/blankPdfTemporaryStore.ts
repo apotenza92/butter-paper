@@ -1,5 +1,5 @@
 import { rmSync } from 'node:fs';
-import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { createBlankPdf } from '@butter-paper/pdf';
 import type { BlankPdfCreateRequest, BlankPdfCreateResult } from '../shared/protocol';
@@ -68,10 +68,12 @@ export class BlankPdfTemporaryStore {
   }
 
   private getSessionDirectory(): Promise<string> {
-    this.sessionDirectoryPromise ??= mkdtemp(join(this.temporaryRoot, this.sessionPrefix)).then((sessionDirectory) => {
-      this.sessionDirectory = sessionDirectory;
-      return sessionDirectory;
-    });
+    this.sessionDirectoryPromise ??= mkdtemp(join(this.temporaryRoot, this.sessionPrefix))
+      .then((sessionDirectory) => realpath(sessionDirectory))
+      .then((sessionDirectory) => {
+        this.sessionDirectory = sessionDirectory;
+        return sessionDirectory;
+      });
     return this.sessionDirectoryPromise;
   }
 }

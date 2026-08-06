@@ -43,8 +43,12 @@ describe('thumbnail layout helpers', () => {
     expect(layouts[0]?.itemHeight).toBe(computeThumbnailItemHeight(THUMBNAIL_MAX_HEIGHT));
     expect(layouts[1]?.previewHeight).toBe(145);
     expect(layouts[1]?.itemHeight).toBe(computeThumbnailItemHeight(145));
-    expect(layouts[1]?.top).toBeGreaterThan(layouts[0]!.top + layouts[0]!.itemHeight);
-    expect(totalHeight).toBeGreaterThan(layouts[1]!.top + layouts[1]!.itemHeight);
+    expect(layouts[1]?.top).toBe(layouts[0]!.top + layouts[0]!.itemHeight);
+    expect(totalHeight).toBe(layouts[1]!.top + layouts[1]!.itemHeight);
+  });
+
+  it('reserves one toolbar-height action row and a full-width divider for every page', () => {
+    expect(computeThumbnailItemHeight(220)).toBe(48 + 220 + 16 + 1);
   });
 
   it('computes the visible range against variable item heights', () => {
