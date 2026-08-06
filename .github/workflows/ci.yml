@@ -258,7 +258,7 @@ jobs:
 
   manual-production-tuf-signing-audit:
     name: Manual production TUF signing audit
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     uses: ./.github/workflows/tuf-signing-audit.yml
     secrets: inherit
 

@@ -44,6 +44,13 @@ describe('macOS updater integration harness', () => {
     );
     expect(deterministicJob).not.toContain('playwright');
     expect(deterministicJob).not.toContain('test:package:desktop');
+    const productionSigningAuditJob = workflow.slice(
+      workflow.indexOf('  manual-production-tuf-signing-audit:'),
+      workflow.indexOf('\n  manual-nonmac-updater-audit:'),
+    );
+    expect(productionSigningAuditJob).toContain(
+      "if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'",
+    );
 
     const releaseWorkflow = readFileSync(resolve('.github/workflows/release.yml'), 'utf8');
     expect(releaseWorkflow).toContain('uses: ./.github/workflows/ci.yml');
