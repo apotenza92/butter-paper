@@ -151,7 +151,7 @@ test.describe('shell overflow controls', () => {
       await expect(rectangleTool).toHaveAttribute('aria-pressed', 'true');
 
       const dividers = page.locator('[data-testid^="right-rail-group-divider-"]');
-      await expect(dividers).toHaveCount(2);
+      await expect(dividers).toHaveCount(3);
       for (const [group, heading] of [
         [markupGroup, 'Markup'],
         [drawGroup, 'Draw'],
@@ -206,7 +206,7 @@ test.describe('shell overflow controls', () => {
       for (const group of groups) {
         await expect(group.getByRole('heading')).toHaveCount(0);
       }
-      await expect(dividers).toHaveCount(2);
+      await expect(dividers).toHaveCount(3);
       await expect(propertiesTrigger).toHaveText('');
       await expect(snapTrigger).toHaveText('');
       await expect(selectTrigger).toHaveText('');

@@ -132,7 +132,8 @@ test.describe('shadcn Base UI shell accessibility', () => {
     await expect(singlePageCloseButton).toHaveAttribute('data-domain-ui-control', 'tab-close');
     const closeControlGeometry = await singlePageCloseButton.evaluate((element) => {
       const control = element.getBoundingClientRect();
-      const surface = element.querySelector('[data-tab-close-surface]')?.getBoundingClientRect();
+      const surfaceElement = element.querySelector('[data-tab-close-surface]');
+      const surface = surfaceElement?.getBoundingClientRect();
       const glyph = element.querySelector('svg')?.getBoundingClientRect();
       return {
         controlHeight: control.height,
@@ -141,7 +142,7 @@ test.describe('shadcn Base UI shell accessibility', () => {
         glyphWidth: glyph?.width,
         horizontalOffset: glyph ? Math.abs(control.x + control.width / 2 - (glyph.x + glyph.width / 2)) : null,
         surfaceHeight: surface?.height,
-        surfaceRadius: surface ? Number.parseFloat(getComputedStyle(surface).borderTopLeftRadius) : null,
+        surfaceRadius: surfaceElement ? Number.parseFloat(getComputedStyle(surfaceElement).borderTopLeftRadius) : null,
         surfaceWidth: surface?.width,
         verticalOffset: glyph ? Math.abs(control.y + control.height / 2 - (glyph.y + glyph.height / 2)) : null,
       };
