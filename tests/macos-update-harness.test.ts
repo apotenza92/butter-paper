@@ -25,6 +25,10 @@ describe('macOS updater integration harness', () => {
     const ciTriggers = workflow.slice(workflow.indexOf('on:'), workflow.indexOf('permissions:'));
     expect(ciTriggers).toContain('workflow_call:');
     expect(ciTriggers).toContain('workflow_dispatch:');
+    expect(ciTriggers).toContain('scope:');
+    expect(ciTriggers).toContain('- gui');
+    expect(ciTriggers).toContain('- full');
+    expect(ciTriggers).toContain('default: gui');
     expect(ciTriggers).not.toContain('push:');
     expect(ciTriggers).not.toContain('pull_request:');
     for (const runner of [
@@ -54,8 +58,15 @@ describe('macOS updater integration harness', () => {
       workflow.indexOf('\n  manual-nonmac-updater-audit:'),
     );
     expect(productionSigningAuditJob).toContain(
-      "if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'",
+      "if: github.event_name == 'workflow_dispatch' && inputs.scope == 'full' && github.ref == 'refs/heads/main'",
     );
+    const manualPackageJob = workflow.slice(
+      workflow.indexOf('  manual-package-smoke:'),
+      workflow.indexOf('\n  manual-production-tuf-signing-audit:'),
+    );
+    expect(manualPackageJob).toContain("if: github.event_name == 'workflow_dispatch' && inputs.scope == 'full'");
+    const manualUpdaterAuditJob = workflow.slice(workflow.indexOf('  manual-nonmac-updater-audit:'));
+    expect(manualUpdaterAuditJob).toContain("if: github.event_name == 'workflow_dispatch' && inputs.scope == 'full'");
 
     const releaseWorkflow = readFileSync(resolve('.github/workflows/release.yml'), 'utf8');
     expect(releaseWorkflow).toContain('uses: ./.github/workflows/ci.yml');

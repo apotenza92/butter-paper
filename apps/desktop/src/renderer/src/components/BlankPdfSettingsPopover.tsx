@@ -69,7 +69,7 @@ export function BlankPdfSettingsPopover({ settings, onSettingsChange }: BlankPdf
       </Tooltip>
       <PopoverContent
         align="start"
-        className="w-[320px]"
+        className="max-h-[calc(100dvh-1rem)] w-[320px] overflow-y-auto overscroll-contain"
         data-testid="new-blank-pdf-settings"
         finalFocus={() => document.querySelector<HTMLElement>('[data-testid="document-tab-new-pdf-settings"]')}
       >

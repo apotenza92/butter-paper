@@ -172,9 +172,10 @@ test.describe('New blank PDF', () => {
           expect(document.getPage(0).getWidth()).toBeCloseTo(widthMm * MILLIMETRES_TO_POINTS, 3);
           expect(document.getPage(0).getHeight()).toBeCloseTo(heightMm * MILLIMETRES_TO_POINTS, 3);
 
-          await page.evaluate(async ({ path }) => {
-            await window.__butterPaperTestHooks?.closeTab(path);
-          }, { path: outputPath });
+          await expect.poll(async () => (await getDiagnostics(page))?.documentPath).toBe(outputPath);
+          await page.evaluate(async () => {
+            await window.__butterPaperTestHooks?.closeTab(0);
+          });
           await expect.poll(async () => (await getDiagnostics(page))?.tabs?.length ?? 0).toBe(0);
         }
       }
@@ -227,17 +228,19 @@ test.describe('New blank PDF', () => {
         await window.__butterPaperTestHooks?.createBlankPdf({ widthMm: 420, heightMm: 297 });
       });
       await expect.poll(async () => (await getDiagnostics(page))?.tabs?.filter((tab) => tab.dirty).length).toBe(2);
-      const browserWindow = await app.browserWindow(page);
-      await browserWindow.evaluate((window) => window.close());
+      await page.getByTestId('menu-trigger-butter-paper').click();
+      await page.getByTestId('menu-quit').click();
       await expect(page.getByTestId('unsaved-changes-dialog')).toContainText('Save All');
       await page.getByRole('button', { name: 'Cancel' }).click();
       await expect(page.getByTestId('app-root')).toBeVisible();
-      await browserWindow.evaluate((window) => window.close());
-      const closed = page.waitForEvent('close');
+      const closed = new Promise((resolve) => app.once('close', resolve));
+      await page.getByTestId('menu-trigger-butter-paper').click();
+      await page.getByTestId('menu-quit').click();
+      await expect(page.getByTestId('unsaved-changes-dialog')).toContainText('Save All');
       await page.getByTestId('unsaved-discard').click();
       await closed;
     } finally {
-      await app.close().catch(() => undefined);
+      if (app.process().exitCode === null) app.process().kill();
       await rm(outputDirectory, { recursive: true, force: true });
     }
   });
