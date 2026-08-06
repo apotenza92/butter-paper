@@ -1,4 +1,4 @@
-import { createCloudMarkup, pdfPoint, rect, type CloudMarkup, type PdfPoint, type Rect } from '@butter-paper/core';
+import { createCloudMarkup, pdfPoint, rect, translateMarkup, type CloudMarkup, type PdfPoint, type Rect } from '@butter-paper/core';
 import {
   createLineDraft,
   updateCloudNodeDraft,
@@ -9,7 +9,7 @@ import {
 } from '../annotationLifecycle';
 import { getAnnotationContentStyle } from '../annotationStyles';
 import { isPointNearPolygonEdge } from '../hitTesting';
-import { CLOUD_LINE_TYPE_RENDERER, DEFAULT_CLOUD_LINE_OPTIONS, generateCloudScallopPoints } from '../lineTypes';
+import { CLOUD_LINE_TYPE_RENDERER, DEFAULT_CLOUD_LINE_OPTIONS, generateCloudScallopPoints, sampleAbsoluteSvgPath } from '../lineTypes';
 import { getMoveCursor } from '../interactionChrome';
 import type { PdfToolDefinition, SelectionChromeDescriptor, ToolGeometryDescriptor, ToolHit } from '../types';
 
@@ -170,6 +170,7 @@ export const CLOUD_TOOL_DEFINITION: PdfToolDefinition<CloudMarkup, CloudDraft> &
           strokeWidth: 1,
           borderEffectIntensity: 2,
           scallopRadius: DEFAULT_CLOUD_LINE_OPTIONS.scallopRadius,
+          appearancePath: generatedCloudPath(draft.points),
           source: { source: 'butter' },
         });
       }
@@ -178,13 +179,15 @@ export const CLOUD_TOOL_DEFINITION: PdfToolDefinition<CloudMarkup, CloudDraft> &
         return null;
       }
 
+      const controlPath = rectangleControlPath(draft.start, draft.current);
       return createCloudMarkup({
         id: context.createMarkupId('cloud'),
         pageIndex: context.page.index,
-        controlPath: rectangleControlPath(draft.start, draft.current),
+        controlPath,
         strokeWidth: 1,
         borderEffectIntensity: 2,
         scallopRadius: DEFAULT_CLOUD_LINE_OPTIONS.scallopRadius,
+        appearancePath: generatedCloudPath(controlPath),
         source: { source: 'butter' },
       });
     },
@@ -197,10 +200,15 @@ export const CLOUD_TOOL_DEFINITION: PdfToolDefinition<CloudMarkup, CloudDraft> &
         return markup;
       }
 
+      const controlPath = markup.controlPath.map((point, index) => index === vertexIndex ? input.currentPoint : point);
       return createCloudMarkup({
         ...markup,
-        controlPath: markup.controlPath.map((point, index) => index === vertexIndex ? input.currentPoint : point),
+        controlPath,
+        appearancePath: generatedCloudPath(controlPath, markup),
       });
+    },
+    dragMarkup(markup, input) {
+      return translateMarkup(markup, input.delta);
     },
   },
   pdf: {
@@ -240,9 +248,11 @@ function cloudVisible(markup: Pick<CloudMarkup, 'controlPath' | 'borderEffectInt
       strokeWidth: 1,
       options: cloudLineOptions(markup),
     });
+    const appearancePoints = sampleAbsoluteSvgPath(markup.appearancePath);
     return {
       ...generated,
       d: markup.appearancePath,
+      points: appearancePoints.length > 1 ? appearancePoints : generated.points,
     };
   }
   return CLOUD_LINE_TYPE_RENDERER.render({
@@ -255,6 +265,18 @@ function cloudVisible(markup: Pick<CloudMarkup, 'controlPath' | 'borderEffectInt
 
 function cloudVisiblePath(markup: Pick<CloudMarkup, 'controlPath' | 'borderEffectIntensity' | 'scallopRadius' | 'appearancePath'>): readonly PdfPoint[] {
   return cloudVisible(markup).points;
+}
+
+function generatedCloudPath(
+  controlPath: readonly PdfPoint[],
+  markup: Pick<CloudMarkup, 'borderEffectIntensity' | 'scallopRadius'> = {},
+): string {
+  return CLOUD_LINE_TYPE_RENDERER.render({
+    controlPath,
+    closed: true,
+    strokeWidth: 1,
+    options: cloudLineOptions(markup),
+  }).d;
 }
 
 function rectangleControlPath(start: PdfPoint, current: PdfPoint): readonly PdfPoint[] {

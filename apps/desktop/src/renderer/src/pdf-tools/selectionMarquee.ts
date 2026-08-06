@@ -13,6 +13,7 @@ export interface ViewportPoint {
 export interface SelectionMarqueeState {
   readonly pointerId: number | null;
   readonly shape: SelectionMarqueeShape;
+  readonly kind: SelectionMarqueeKind | null;
   readonly operation: SelectionMarqueeOperation;
   readonly start: ViewportPoint;
   readonly current: ViewportPoint;
@@ -34,14 +35,14 @@ export function createSelectionMarquee(
   start: ViewportPoint,
   operation: SelectionMarqueeOperation = 'replace',
 ): SelectionMarqueeState {
-  return { pointerId, shape: 'lasso', operation, start, current: start, points: [start], active: false };
+  return { pointerId, shape: 'lasso', kind: null, operation, start, current: start, points: [start], active: false };
 }
 
 export function createArmedBoxSelectionMarquee(
   start: ViewportPoint,
   operation: SelectionMarqueeOperation = 'replace',
 ): SelectionMarqueeState {
-  return { pointerId: null, shape: 'box', operation, start, current: start, points: [start], active: false };
+  return { pointerId: null, shape: 'box', kind: null, operation, start, current: start, points: [start], active: false };
 }
 
 export function selectionMarqueeOperationFromModifiers(modifiers: {
@@ -59,8 +60,15 @@ export function updateSelectionMarquee(
   current: ViewportPoint,
   thresholdPx = SELECTION_MARQUEE_THRESHOLD_PX,
 ): SelectionMarqueeState {
+  const horizontalMovement = current.x - marquee.start.x;
+  const kind = marquee.shape === 'lasso'
+    ? marquee.kind ?? (Math.abs(horizontalMovement) > thresholdPx
+      ? selectionMarqueeKind(marquee.start, current)
+      : null)
+    : selectionMarqueeKind(marquee.start, current);
   return {
     ...marquee,
+    kind,
     current,
     points: marquee.shape === 'lasso' ? [...marquee.points, current] : [marquee.start, current],
     active: marquee.active || Math.hypot(current.x - marquee.start.x, current.y - marquee.start.y) > thresholdPx,
@@ -69,6 +77,15 @@ export function updateSelectionMarquee(
 
 export function selectionMarqueeKind(start: ViewportPoint, end: ViewportPoint): SelectionMarqueeKind {
   return end.x >= start.x ? 'window' : 'crossing';
+}
+
+export function resolvedSelectionMarqueeKind(
+  marquee: Pick<SelectionMarqueeState, 'start' | 'current' | 'shape' | 'kind'>,
+): SelectionMarqueeKind {
+  if (marquee.shape === 'lasso') {
+    return marquee.kind ?? 'window';
+  }
+  return marquee.kind ?? selectionMarqueeKind(marquee.start, marquee.current);
 }
 
 export function selectionMarqueeBounds(start: ViewportPoint, end: ViewportPoint): ViewportBounds {
@@ -99,10 +116,10 @@ export function selectionAfterMarquee(
 
 export function isGeometrySelectedByMarquee(
   geometry: ToolGeometryDescriptor,
-  marquee: Pick<SelectionMarqueeState, 'start' | 'current' | 'shape' | 'points'>,
+  marquee: Pick<SelectionMarqueeState, 'start' | 'current' | 'shape' | 'kind' | 'points'>,
   transform: Pick<PageTransform, 'pdfToViewport' | 'pdfRectToViewport'>,
 ): boolean {
-  const kind = selectionMarqueeKind(marquee.start, marquee.current);
+  const kind = resolvedSelectionMarqueeKind(marquee);
   const selectionPath = marquee.shape === 'box'
     ? boxPath(marquee.start, marquee.current)
     : marquee.points;

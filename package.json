@@ -34,7 +34,9 @@
     "test:macos-updater": "node scripts/test-macos-update.mjs",
     "check": "pnpm check:repo && pnpm check:icons && pnpm typecheck && pnpm build && pnpm test",
     "postinstall": "node scripts/ensure-native-deps.mjs",
+    "predev:desktop": "node scripts/prepare-desktop-dev.mjs && pnpm --filter @butter-paper/core build && pnpm --filter @butter-paper/pdf build",
     "dev:desktop": "pnpm --filter @butter-paper/desktop dev",
+    "benchmark:desktop:performance": "node scripts/prepare-desktop-dev.mjs && pnpm build:desktop && node scripts/benchmark-desktop-performance.mjs",
     "dev:cli": "pnpm --filter @butter-paper/cli dev",
     "build:desktop": "pnpm --filter @butter-paper/desktop... build",
     "package:desktop": "pnpm build:desktop && pnpm --dir apps/desktop package",
@@ -53,6 +55,7 @@
     "@playwright/test": "1.59.1",
     "@tufjs/canonical-json": "2.0.0",
     "@types/node": "25.6.0",
+    "jsdom": "29.1.1",
     "typescript": "6.0.2",
     "vitest": "4.1.4",
     "yaml": "2.9.0"

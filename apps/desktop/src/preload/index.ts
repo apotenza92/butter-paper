@@ -3,13 +3,8 @@ import { ipcChannels } from '../shared/ipc';
 import type {
   BlankPdfCreateRequest,
   ButterPaperBridge,
-  RenderCoreCloseDocumentRequest,
-  RenderCoreGetPageInfoRequest,
-  RenderCoreOpenDocumentRequest,
-  RenderCoreReadSurfaceRequest,
-  RenderCoreReleaseSurfaceRequest,
-  RenderCoreRenderPageRequest,
   PageGeometryRequest,
+  PdfDocumentAccessRequest,
   SaveDocumentRequest,
   ThemeSnapshot,
   UpdateFrequency,
@@ -120,59 +115,27 @@ const bridge: ButterPaperBridge = {
     openPdfDialog: async () => ipcRenderer.invoke(ipcChannels.dialogOpenPdf),
     savePdfAsDialog: async (defaultPath?: string) => ipcRenderer.invoke(ipcChannels.dialogSavePdfAs, defaultPath),
   },
-  files: {
-    readFile: async (filePath: string) => {
-      const bytes = await ipcRenderer.invoke(ipcChannels.fileRead, filePath);
-      return new Uint8Array(bytes);
-    },
-    writeFile: async (filePath: string, bytes: Uint8Array) => {
-      await ipcRenderer.invoke(ipcChannels.fileWrite, filePath, bytes);
-    },
-  },
   pdf: {
     createBlankDocument: async (request: BlankPdfCreateRequest) => ipcRenderer.invoke(ipcChannels.pdfCreateBlankDocument, request),
-    releaseTemporaryDocument: async (temporarySourcePath: string) => {
-      await ipcRenderer.invoke(ipcChannels.pdfReleaseTemporaryDocument, temporarySourcePath);
-    },
     loadDocument: async (filePath: string) => ipcRenderer.invoke(ipcChannels.pdfLoadDocument, filePath),
+    readDocumentBytes: async (request: PdfDocumentAccessRequest) => {
+      const bytes = await ipcRenderer.invoke(ipcChannels.fileRead, request);
+      return new Uint8Array(bytes);
+    },
+    releaseDocument: async (request: PdfDocumentAccessRequest) => {
+      await ipcRenderer.invoke(ipcChannels.pdfReleaseDocument, request);
+    },
     getPageGeometry: async (request: PageGeometryRequest) => ipcRenderer.invoke(ipcChannels.pdfGetPageGeometry, request),
     saveDocument: async (request: SaveDocumentRequest) => ipcRenderer.invoke(ipcChannels.pdfSaveDocument, request),
-  },
-  renderCore: {
-    getBackendConfig: async () => ipcRenderer.invoke(ipcChannels.renderCoreGetBackendConfig),
-    getBackendSelection: async () => ipcRenderer.invoke(ipcChannels.renderCoreGetBackendSelection),
-    getCapabilities: async () => ipcRenderer.invoke(ipcChannels.renderCoreGetCapabilities),
-    getDiagnostics: async () => ipcRenderer.invoke(ipcChannels.renderCoreGetDiagnostics),
-    openDocument: async (request: RenderCoreOpenDocumentRequest) =>
-      ipcRenderer.invoke(ipcChannels.renderCoreOpenDocument, request),
-    getPageInfo: async (request: RenderCoreGetPageInfoRequest) =>
-      ipcRenderer.invoke(ipcChannels.renderCoreGetPageInfo, request),
-    renderPage: async (request: RenderCoreRenderPageRequest) =>
-      ipcRenderer.invoke(ipcChannels.renderCoreRenderPage, request),
-    readSurface: async (request: RenderCoreReadSurfaceRequest) => {
-      const response = await ipcRenderer.invoke(ipcChannels.renderCoreReadSurface, request);
-      if (response && typeof response === 'object' && response.ok === true) {
-        return {
-          ...response,
-          value: {
-            ...response.value,
-            bytes: new Uint8Array(response.value.bytes),
-          },
-        };
-      }
-
-      return response;
-    },
-    releaseSurface: async (request: RenderCoreReleaseSurfaceRequest) =>
-      ipcRenderer.invoke(ipcChannels.renderCoreReleaseSurface, request),
-    closeDocument: async (request: RenderCoreCloseDocumentRequest) =>
-      ipcRenderer.invoke(ipcChannels.renderCoreCloseDocument, request),
   },
   test: isTestMode
     ? {
         resolveFixturePath: async (name: string) => ipcRenderer.invoke(ipcChannels.testResolveFixture, name),
+        authorizePdfSource: async (filePath: string) => ipcRenderer.invoke(ipcChannels.testAuthorizePdfSource, filePath),
+        authorizePdfSaveTarget: async (filePath: string) => ipcRenderer.invoke(ipcChannels.testAuthorizePdfSaveTarget, filePath),
         getWindowState: async () => ipcRenderer.invoke(ipcChannels.testGetWindowState),
         setWindowBounds: async (bounds) => ipcRenderer.invoke(ipcChannels.testSetWindowBounds, bounds),
+        getProcessMetrics: async () => ipcRenderer.invoke(ipcChannels.testGetProcessMetrics),
       }
     : null,
 };

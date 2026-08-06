@@ -36,6 +36,7 @@ function createPayload(filePath: string): LoadedDocumentPayload {
   return {
     filePath,
     fileName: 'fixture.pdf',
+    documentAccess: { handle: `pdfdoc_${'a'.repeat(32)}` },
     document: createDocument({
       id: filePath,
       path: filePath,
@@ -111,52 +112,8 @@ describe('LocalPdfSession', () => {
         },
         pdf: {
           loadDocument: vi.fn(async (filePath: string) => createPayload(filePath)),
-          saveDocument: vi.fn(async ({ targetPath, sourcePath }: { targetPath?: string; sourcePath: string }) => ({
-            path: targetPath ?? sourcePath,
-          })),
-        },
-        renderCore: {
-          getBackendConfig: vi.fn(async () => ({
-            requestedBackend: 'pdfjs',
-            selectionSource: 'default',
-            envOverride: null,
-          })),
-          getBackendSelection: vi.fn(async () => ({
-            configuredBackend: 'pdfjs',
-            activeBackend: null,
-            selectionSource: 'default',
-          })),
-          getDiagnostics: vi.fn(async () => ({
-            backend: 'pdfjs',
-            activeDocuments: 0,
-            activeSurfaces: 0,
-            activeSurfaceBytes: 0,
-            surfacesByDocument: [],
-            cli: {
-              'document-info': { count: 0, failures: 0, totalMs: 0, maxMs: 0, lastMs: null },
-              'page-info': { count: 0, failures: 0, totalMs: 0, maxMs: 0, lastMs: null },
-              'render-page': { count: 0, failures: 0, totalMs: 0, maxMs: 0, lastMs: null },
-              other: { count: 0, failures: 0, totalMs: 0, maxMs: 0, lastMs: null },
-            },
-            renderPageWorkerPool: null,
-          })),
-          getCapabilities: vi.fn(async () => ({
-            backend: 'pdfjs',
-            available: false,
-            canOpenDocument: false,
-            canGetPageInfo: false,
-            canRenderPage: false,
-            canReadSurface: false,
-            canReleaseSurface: false,
-            canCloseDocument: false,
-            notes: [],
-          })),
-          openDocument: vi.fn(),
-          getPageInfo: vi.fn(),
-          renderPage: vi.fn(),
-          readSurface: vi.fn(),
-          releaseSurface: vi.fn(),
-          closeDocument: vi.fn(),
+          readDocumentBytes: vi.fn(async () => new Uint8Array()),
+          releaseDocument: vi.fn(async () => undefined),
         },
         files: {
           readFile: vi.fn(async () => new Uint8Array([1, 2, 3])),
@@ -283,12 +240,15 @@ describe('LocalPdfSession', () => {
       },
     });
 
-    const saved = await session.save([]);
+    const target = { targetHandle: `pdftarget_${'b'.repeat(32)}`, displayPath: '/tmp/saved.pdf' };
+    const saved = await session.save([], target);
 
     expect(backend.save).toHaveBeenCalledWith({
-      sourcePath: '/tmp/injected.pdf',
-      targetPath: undefined,
+      documentHandle: `pdfdoc_${'a'.repeat(32)}`,
+      target,
       markups: [],
+      pageScales: undefined,
+      pageRotations: undefined,
     });
     expect(backend.open).toHaveBeenCalledTimes(2);
     expect(firstHandle.close).toHaveBeenCalledTimes(1);
@@ -329,7 +289,10 @@ describe('LocalPdfSession', () => {
     const session = new LocalPdfSession('/tmp/injected.pdf', backend);
     await session.open();
 
-    const savePromise = session.save([]);
+    const savePromise = session.save([], {
+      targetHandle: `pdftarget_${'b'.repeat(32)}`,
+      displayPath: '/tmp/saved.pdf',
+    });
     await vi.waitFor(() => expect(backend.open).toHaveBeenCalledTimes(2));
     const versionBeforeTransientRender = session.version;
 
@@ -500,212 +463,6 @@ describe('LocalPdfSession', () => {
     expect(shouldProtectFreshImageUrlCacheEntry('visible-page-hq-upgrade')).toBe(true);
     expect(shouldProtectFreshImageUrlCacheEntry('nearby-prefetch')).toBe(false);
     expect(shouldProtectFreshImageUrlCacheEntry(undefined)).toBe(false);
-  });
-
-  it('uses the pdfium render-core backend when selected and available', async () => {
-    let objectUrlCounter = 0;
-    vi.stubGlobal('URL', {
-      createObjectURL: vi.fn(() => `blob:rendered-${++objectUrlCounter}`),
-      revokeObjectURL: vi.fn(),
-    });
-    vi.stubGlobal('createImageBitmap', vi.fn(async () => createBitmap()));
-
-    const renderCore = window.butterPaper.renderCore;
-    vi.mocked(renderCore.getBackendSelection).mockResolvedValue({
-      configuredBackend: 'pdfium',
-      activeBackend: 'pdfium',
-      selectionSource: 'env',
-    });
-    vi.mocked(renderCore.getCapabilities).mockResolvedValue({
-      backend: 'pdfium',
-      available: true,
-      canOpenDocument: true,
-      canGetPageInfo: true,
-      canRenderPage: true,
-      canReadSurface: true,
-      canReleaseSurface: true,
-      canCloseDocument: true,
-      notes: [],
-    });
-    vi.mocked(renderCore.openDocument).mockResolvedValue({
-      ok: true,
-      value: {
-        documentId: 'doc-1',
-        pageCount: 1,
-        backend: 'pdfium',
-      },
-    });
-    vi.mocked(renderCore.getPageInfo).mockResolvedValue({
-      ok: true,
-      value: {
-        documentId: 'doc-1',
-        pageIndex: 0,
-        width: 320,
-        height: 480,
-        rotation: 0,
-      },
-    });
-    vi.mocked(renderCore.renderPage).mockResolvedValue({
-      ok: true,
-      value: {
-        surfaceId: 'surface-1',
-        pixelWidth: 320,
-        pixelHeight: 480,
-        pixelFormat: 'rgba8',
-        surfaceByteFormat: 'png',
-        byteLength: 4,
-      },
-    });
-    vi.mocked(renderCore.readSurface).mockResolvedValue({
-      ok: true,
-      value: {
-        surfaceId: 'surface-1',
-        byteFormat: 'png',
-        bytes: new Uint8Array([1, 2, 3, 4]),
-        byteLength: 4,
-      },
-    });
-    vi.mocked(renderCore.releaseSurface).mockResolvedValue({ ok: true, value: null });
-    vi.mocked(renderCore.closeDocument).mockResolvedValue({ ok: true, value: null });
-
-    const session = new LocalPdfSession('/tmp/pdfium.pdf');
-    await session.open();
-
-    const objectUrl = await session.renderPage(0, 1, 1, {
-      urgency: 'visible',
-      requestClass: 'target-page-preview',
-    });
-
-    expect(objectUrl).toBe('blob:rendered-1');
-    expect(renderCore.openDocument).toHaveBeenCalledWith({ filePath: '/tmp/pdfium.pdf', password: null });
-    expect(renderCore.getPageInfo).not.toHaveBeenCalled();
-    expect(renderCore.renderPage).toHaveBeenCalledTimes(1);
-    expect(renderCore.renderPage).toHaveBeenCalledWith({
-      documentId: 'doc-1',
-      pageIndex: 0,
-      target: {
-        width: 320,
-        height: 480,
-        scale: 1,
-      },
-      rotation: undefined,
-      renderMode: 'preview',
-      requestClass: 'target-page-preview',
-    });
-    expect(renderCore.readSurface).toHaveBeenCalledWith({ surfaceId: 'surface-1' });
-    expect(renderCore.releaseSurface).toHaveBeenCalledWith({ surfaceId: 'surface-1' });
-    expect(mockedOpenPdfDocumentFromBytes).not.toHaveBeenCalled();
-    expect(session.diagnostics()).toMatchObject({
-      sessionBackendKind: 'pdfium-render-core',
-      surfaceTransportKind: 'pdfium-png-bridge',
-    });
-
-    session.dispose();
-    await vi.waitFor(() => {
-      expect(renderCore.closeDocument).toHaveBeenCalledWith({ documentId: 'doc-1' });
-    });
-  });
-
-  it('falls back to render-core page info when the pdfium payload cache misses', async () => {
-    let objectUrlCounter = 0;
-    vi.stubGlobal('URL', {
-      createObjectURL: vi.fn(() => `blob:rendered-${++objectUrlCounter}`),
-      revokeObjectURL: vi.fn(),
-    });
-
-    const payloadWithoutPages = createPayload('/tmp/pdfium-missing-page.pdf');
-    vi.mocked(window.butterPaper.pdf.loadDocument).mockResolvedValueOnce({
-      ...payloadWithoutPages,
-      document: createDocument({
-        id: payloadWithoutPages.document.id,
-        path: payloadWithoutPages.document.path,
-        metadata: payloadWithoutPages.document.metadata,
-        pages: [],
-        markups: [],
-      }),
-    });
-
-    const renderCore = window.butterPaper.renderCore;
-    vi.mocked(renderCore.getBackendSelection).mockResolvedValue({
-      configuredBackend: 'pdfium',
-      activeBackend: 'pdfium',
-      selectionSource: 'env',
-    });
-    vi.mocked(renderCore.getCapabilities).mockResolvedValue({
-      backend: 'pdfium',
-      available: true,
-      canOpenDocument: true,
-      canGetPageInfo: true,
-      canRenderPage: true,
-      canReadSurface: true,
-      canReleaseSurface: true,
-      canCloseDocument: true,
-      notes: [],
-    });
-    vi.mocked(renderCore.openDocument).mockResolvedValue({
-      ok: true,
-      value: {
-        documentId: 'doc-2',
-        pageCount: 2,
-        backend: 'pdfium',
-      },
-    });
-    vi.mocked(renderCore.getPageInfo).mockResolvedValue({
-      ok: true,
-      value: {
-        documentId: 'doc-2',
-        pageIndex: 1,
-        width: 640,
-        height: 960,
-        rotation: 0,
-      },
-    });
-    vi.mocked(renderCore.renderPage).mockResolvedValue({
-      ok: true,
-      value: {
-        surfaceId: 'surface-2',
-        pixelWidth: 640,
-        pixelHeight: 960,
-        pixelFormat: 'rgba8',
-        surfaceByteFormat: 'png',
-        byteLength: 4,
-      },
-    });
-    vi.mocked(renderCore.readSurface).mockResolvedValue({
-      ok: true,
-      value: {
-        surfaceId: 'surface-2',
-        byteFormat: 'png',
-        bytes: new Uint8Array([1, 2, 3, 4]),
-        byteLength: 4,
-      },
-    });
-    vi.mocked(renderCore.releaseSurface).mockResolvedValue({ ok: true, value: null });
-    vi.mocked(renderCore.closeDocument).mockResolvedValue({ ok: true, value: null });
-
-    const session = new LocalPdfSession('/tmp/pdfium-missing-page.pdf');
-    await session.open();
-
-    const objectUrl = await session.renderPage(1, 1, 1, {
-      urgency: 'visible',
-      requestClass: 'target-page-preview',
-    });
-
-    expect(objectUrl).toBe('blob:rendered-1');
-    expect(renderCore.getPageInfo).toHaveBeenCalledTimes(1);
-    expect(renderCore.getPageInfo).toHaveBeenCalledWith({ documentId: 'doc-2', pageIndex: 1 });
-    expect(renderCore.renderPage).toHaveBeenCalledWith({
-      documentId: 'doc-2',
-      pageIndex: 1,
-      target: {
-        width: 640,
-        height: 960,
-        scale: 1,
-      },
-      rotation: undefined,
-      renderMode: 'preview',
-      requestClass: 'target-page-preview',
-    });
   });
 
   it('reuses a cached thumbnail raster as a page preview candidate', async () => {
@@ -1733,7 +1490,6 @@ describe('LocalPdfSession', () => {
     expect(browserHandle.renderPageToBlob).toHaveBeenCalledWith(expect.objectContaining({
       pageIndex: 0,
       requestClass: 'warming',
-      renderMode: 'preview',
     }));
     expect(session.diagnostics()).toMatchObject({
       firstVisiblePageIndex: 0,

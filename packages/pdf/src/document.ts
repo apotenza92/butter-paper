@@ -2,10 +2,11 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { Markup, MarkupAppearance, PageScale, PdfPoint, ResolvedMarkupAppearance, TextBoxRichTextRun } from '@butter-paper/core';
+import { deflateSync } from 'node:zlib';
+import type { AnnotationMetadata, AnnotationMetadataRole, Markup, MarkupAppearance, PageScale, PdfPoint, ResolvedMarkupAppearance, TextBoxRichTextRun } from '@butter-paper/core';
 import { convertScaledValueUnit, createArcMarkup, createAreaMarkup, createArrowMarkup, createCalloutMarkup, createCloudMarkup, createCloudPlusMarkup, createDimensionMarkup, createEllipseMarkup, createHighlightMarkup, createImageMarkup, createImportedAnnotationMarkup, createLengthMarkup, createLineMarkup, createPenMarkup, createPolygonMarkup, createPolylengthMarkup, createPolylineMarkup, createRectangleMarkup, createSnapshotMarkup, createTextBoxMarkup, formatScaledAreaLabel, formatScaledLengthLabel, measureScaledLength, measureScaledPolygonArea, measureScaledPolyline, pdfPoint, resolveMarkupAppearance } from '@butter-paper/core';
 import fontkit from '@pdf-lib/fontkit';
-import { decodePDFRawStream, PDFArray, PDFBool, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFString, StandardFonts, type PDFDict, type PDFFont, type PDFImage, type PDFPage, type PDFRef } from 'pdf-lib';
+import { decodePDFRawStream, degrees, PDFArray, PDFBool, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFString, StandardFonts, type PDFDict, type PDFFont, type PDFImage, type PDFObject, type PDFPage, type PDFRef } from 'pdf-lib';
 import { PdfRenderCache } from './cache.js';
 import { normalizePdfRect, pointArrayToPdfPoints } from './geometry.js';
 import { createBrowserCanvas, createNodeCanvasFactory } from './canvas.js';
@@ -14,6 +15,7 @@ import type {
   PdfCanvasLike,
   PdfDocumentMetadata,
   PdfPageInfo,
+  PdfPageRotation,
   PdfRenderRequest,
   PdfRenderedPage,
   PdfSaveMode,
@@ -26,7 +28,6 @@ const standardFontDataUrl = `${pathToFileURL(join(pdfjsPackageRoot, 'standard_fo
 let pdfjsModulePromise: Promise<any> | undefined;
 let pdfjsGlobalsReady = false;
 const managedAnnotationPrefix = 'bp:';
-const managedAnnotationSubject = 'Butter Paper';
 const bluebeamTextBoxFontSizePt = 12;
 const bluebeamTextBoxInsetPt = 5;
 const bluebeamTextBoxLineHeightRatio = 1.15;
@@ -42,6 +43,27 @@ interface PdfExportFonts {
   readonly helveticaOblique: PDFFont;
   readonly helveticaBoldOblique: PDFFont;
   readonly unicode?: PDFFont;
+}
+
+interface CreatedAnnotation {
+  readonly ref: PDFRef;
+  readonly role: AnnotationMetadataRole;
+}
+
+interface SourceAnnotationReconciliation {
+  readonly preserved: ReadonlySet<Markup>;
+  readonly replacementSourceIds: ReadonlyMap<Markup, readonly string[]>;
+  readonly reusableMediaAppearances: ReadonlyMap<Markup, ReusableMediaAppearance>;
+  readonly pendingReplyRetargets: readonly {
+    readonly annotation: PDFDict;
+    readonly sourceTargetId: string;
+    readonly relationship: 'IRT' | 'Parent';
+  }[];
+}
+
+interface ReusableMediaAppearance {
+  readonly appearance: PDFObject;
+  readonly state?: PDFName;
 }
 
 interface PdfTextBoxFont {
@@ -68,6 +90,8 @@ interface PdfJsDocumentLike {
 
 interface PdfJsPageLike {
   rotate: number;
+  view: readonly number[];
+  userUnit: number;
   getViewport(params: { scale: number; rotation?: number }): { width: number; height: number };
   render(params: { canvasContext: CanvasRenderingContext2D; viewport: { width: number; height: number }; annotationMode?: number }): { promise: Promise<void> };
   getAnnotations(params: { intent: 'display' }): Promise<readonly PdfJsAnnotation[]>;
@@ -116,9 +140,10 @@ export class PdfDocumentHandle {
   private constructor(
     readonly path: string,
     private readonly document: PdfJsDocumentLike,
+    annotationSource: string | Uint8Array,
     cacheLimits = { maxEntries: 6, maxBytes: 32 * 1024 * 1024 },
   ) {
-    this.annotations = new PdfAnnotationAdapter(path);
+    this.annotations = new PdfAnnotationAdapter(annotationSource);
     this.writer = new PdfAnnotationWriter(path);
     this.cache = new PdfRenderCache(cacheLimits);
   }
@@ -127,8 +152,14 @@ export class PdfDocumentHandle {
     return this.document.numPages;
   }
 
-  static async open(path: string, options?: { cacheLimits?: { maxEntries: number; maxBytes: number } }): Promise<PdfDocumentHandle> {
-    const data = new Uint8Array(await readFile(path));
+  static async open(path: string, options?: {
+    cacheLimits?: { maxEntries: number; maxBytes: number };
+    sourceBytes?: Uint8Array;
+  }): Promise<PdfDocumentHandle> {
+    const data = options?.sourceBytes
+      ? new Uint8Array(options.sourceBytes)
+      : new Uint8Array(await readFile(path));
+    const annotationSource = new Uint8Array(data);
     const pdfjs = await loadPdfJsModule();
     const loadingTask = pdfjs.getDocument({
       data,
@@ -137,7 +168,7 @@ export class PdfDocumentHandle {
       disableWorker: true,
     } as never);
     const document = (await loadingTask.promise) as unknown as PdfJsDocumentLike;
-    return new PdfDocumentHandle(path, document, options?.cacheLimits);
+    return new PdfDocumentHandle(path, document, annotationSource, options?.cacheLimits);
   }
 
   async getMetadata(): Promise<PdfDocumentMetadata> {
@@ -162,6 +193,8 @@ export class PdfDocumentHandle {
       width: viewport.width,
       height: viewport.height,
       rotation,
+      viewBox: normalizePdfRect(page.view),
+      userUnit: normalizeUserUnit(page.userUnit),
     };
   }
 
@@ -202,21 +235,21 @@ export class PdfDocumentHandle {
   }
 }
 
-export async function openPdfDocument(path: string): Promise<PdfDocumentHandle> {
-  return PdfDocumentHandle.open(path);
+export async function openPdfDocument(path: string, options?: { sourceBytes?: Uint8Array }): Promise<PdfDocumentHandle> {
+  return PdfDocumentHandle.open(path, options);
 }
 
 export class PdfAnnotationAdapter {
-  constructor(private readonly sourcePath: string) {}
+  constructor(private readonly source: string | Uint8Array) {}
 
   async readPageAnnotations(pageIndex: number): Promise<ImportedPdfMarkup[]> {
-    const sourceBytes = new Uint8Array(await readFile(this.sourcePath));
+    const sourceBytes = await this.readSourceBytes();
     const pdfDoc = await PDFDocument.load(sourceBytes);
     return readPageAnnotationMarkups(pdfDoc, pageIndex);
   }
 
   async readAllPageAnnotations(): Promise<ImportedPdfMarkup[][]> {
-    const sourceBytes = new Uint8Array(await readFile(this.sourcePath));
+    const sourceBytes = await this.readSourceBytes();
     const pdfDoc = await PDFDocument.load(sourceBytes);
     const annotationsByPage: ImportedPdfMarkup[][] = [];
 
@@ -226,26 +259,64 @@ export class PdfAnnotationAdapter {
 
     return annotationsByPage;
   }
+
+  private async readSourceBytes(): Promise<Uint8Array> {
+    return typeof this.source === 'string'
+      ? new Uint8Array(await readFile(this.source))
+      : new Uint8Array(this.source);
+  }
 }
 
 export class PdfAnnotationWriter {
-  constructor(private readonly sourcePath: string) {}
+  constructor(
+    private readonly sourcePath: string,
+    private readonly now: () => Date = () => new Date(),
+  ) {}
 
-  async save(_document: PdfDocumentHandle, markups: readonly Markup[], mode: PdfSaveMode, targetPath?: string, pageScales: readonly PageScale[] = []): Promise<PdfSaveResult> {
+  async save(
+    _document: PdfDocumentHandle,
+    markups: readonly Markup[],
+    mode: PdfSaveMode,
+    targetPath?: string,
+    pageScales: readonly PageScale[] = [],
+    pageRotations: readonly PdfPageRotation[] = [],
+  ): Promise<PdfSaveResult> {
     const sourceBytes = await readFile(this.sourcePath);
     const pdfDoc = await PDFDocument.load(sourceBytes, { updateMetadata: false });
     const pagesByIndex = groupMarkupsByPage(markups);
+    const rotationsByIndex = new Map(pageRotations.map((page) => [page.pageIndex, page.rotation]));
     const fonts = await createPdfExportFonts(pdfDoc, markups);
 
+    const modificationDate = formatPdfDate(this.now());
     for (let pageIndex = 0; pageIndex < pdfDoc.getPageCount(); pageIndex += 1) {
-      stripManagedAnnotations(pdfDoc, pdfDoc.getPage(pageIndex));
-    }
-
-    for (const [pageIndex, pageMarkups] of pagesByIndex.entries()) {
       const page = pdfDoc.getPage(pageIndex);
-      stripManagedAnnotations(pdfDoc, page);
+      const rotation = rotationsByIndex.get(pageIndex);
+      if (rotation !== undefined) {
+        page.setRotation(degrees(rotation));
+      }
+      const pageMarkups = pagesByIndex.get(pageIndex) ?? [];
+      const reconciliation = reconcileSourceAnnotations(pdfDoc, page, pageIndex, pageMarkups);
+      const replacementRefs = new Map<string, PDFRef>();
       for (const markup of pageMarkups) {
-        await addMarkupAnnotation(pdfDoc, page, markup, fonts, pageScales);
+        if (reconciliation.preserved.has(markup) || markup.kind === 'imported-annotation') {
+          continue;
+        }
+        const created = await addMarkupAnnotation(
+          pdfDoc,
+          page,
+          markup,
+          fonts,
+          pageScales,
+          modificationDate,
+          reconciliation.reusableMediaAppearances.get(markup),
+        );
+        mapReplacementAnnotationRefs(markup, reconciliation.replacementSourceIds.get(markup) ?? [], created, replacementRefs);
+      }
+      for (const pending of reconciliation.pendingReplyRetargets) {
+        const replacementRef = replacementRefs.get(pending.sourceTargetId);
+        if (replacementRef) {
+          pending.annotation.set(PDFName.of(pending.relationship), replacementRef);
+        }
       }
     }
 
@@ -255,7 +326,7 @@ export class PdfAnnotationWriter {
       throw new Error('saveAs requires a targetPath');
     }
 
-    await writeFile(outputPath, bytes);
+    await writeFile(outputPath, bytes, { flag: mode === 'saveAs' ? 'wx' : 'w' });
     return {
       path: outputPath,
       bytesWritten: bytes.length,
@@ -540,27 +611,218 @@ function groupMarkupsByPage(markups: readonly Markup[]): Map<number, readonly Ma
   return pages;
 }
 
-function stripManagedAnnotations(pdfDoc: PDFDocument, page: PDFPage): void {
-  const annots = page.node.Annots();
-  if (!annots) {
-    return;
+function reconcileSourceAnnotations(
+  pdfDoc: PDFDocument,
+  page: PDFPage,
+  pageIndex: number,
+  currentMarkups: readonly Markup[],
+): SourceAnnotationReconciliation {
+  const sourceMarkups = readPageAnnotationMarkups(pdfDoc, pageIndex);
+  const preserved = new Set<Markup>();
+  const removedAnnotationIds = new Set<string>();
+  const replacementSourceIds = new Map<Markup, readonly string[]>();
+  const replacementSourceMarkups = new Map<Markup, ImportedPdfMarkup>();
+
+  for (const sourceMarkup of sourceMarkups) {
+    if (sourceMarkup.kind === 'imported-annotation') {
+      continue;
+    }
+    const sourceIds = sourceMarkup.source?.annotationIds ?? [];
+    const current = currentMarkups.find((candidate) => annotationIdentitySetsOverlap(sourceIds, candidate.source?.annotationIds ?? []));
+    if (current && isUntouchedImportedMarkup(current)) {
+      preserved.add(current);
+      continue;
+    }
+    if (current) {
+      replacementSourceIds.set(current, sourceIds);
+      replacementSourceMarkups.set(current, sourceMarkup);
+    }
+    for (const annotationId of sourceIds) {
+      removedAnnotationIds.add(annotationId);
+    }
   }
 
-  const filtered = annots.asArray().filter((annotRef) => {
+  const annots = page.node.Annots();
+  if (!annots) {
+    return { preserved, replacementSourceIds, reusableMediaAppearances: new Map(), pendingReplyRetargets: [] };
+  }
+
+  const refs = annots.asArray();
+  const identitiesByRef = new Map<string, string>();
+  for (let index = 0; index < refs.length; index += 1) {
+    const annotation = pdfDoc.context.lookup(refs[index]);
+    if (isPdfDict(annotation)) {
+      identitiesByRef.set(String(refs[index]), annotationIdentity(pageIndex, annotation, index));
+    }
+  }
+  const reusableMediaAppearances = new Map<Markup, ReusableMediaAppearance>();
+  for (const [current, source] of replacementSourceMarkups) {
+    if (!canReuseNativeMediaAppearance(source, current)) {
+      continue;
+    }
+    const sourceIds = replacementSourceIds.get(current) ?? [];
+    const sourceIndex = refs.findIndex((ref, index) => {
+      const annotation = pdfDoc.context.lookup(ref);
+      return isPdfDict(annotation) && sourceIds.includes(annotationIdentity(pageIndex, annotation, index));
+    });
+    if (sourceIndex < 0) {
+      continue;
+    }
+    const sourceAnnotation = pdfDoc.context.lookup(refs[sourceIndex]);
+    if (!isPdfDict(sourceAnnotation)) {
+      continue;
+    }
+    const nativeAppearance = sourceAnnotation.get(PDFName.of('AP'));
+    if (nativeAppearance && getNormalAppearanceStream(sourceAnnotation)) {
+      const appearanceState = sourceAnnotation.context.lookup(sourceAnnotation.get(PDFName.of('AS')));
+      reusableMediaAppearances.set(current, {
+        appearance: nativeAppearance,
+        ...(appearanceState instanceof PDFName ? { state: appearanceState } : {}),
+      });
+    }
+  }
+  const pendingReplyRetargets: Array<{
+    annotation: PDFDict;
+    sourceTargetId: string;
+    relationship: 'IRT' | 'Parent';
+  }> = [];
+  const filtered = refs.filter((annotRef, index) => {
     const annot = pdfDoc.context.lookup(annotRef);
     if (!isPdfDict(annot)) {
       return true;
     }
 
-    const annotationName = readText(annot.get(PDFName.of('NM')));
-    const subject = readText(annot.get(PDFName.of('Subj')));
-    return !(annotationName?.startsWith(managedAnnotationPrefix) || subject === managedAnnotationSubject);
+    const identity = annotationIdentity(pageIndex, annot, index);
+    if (removedAnnotationIds.has(identity)) {
+      return false;
+    }
+
+    for (const relationship of ['IRT', 'Parent'] as const) {
+      const sourceTargetId = annotationRelationshipTargetId(pdfDoc, annot, relationship, identitiesByRef);
+      if (!sourceTargetId || !removedAnnotationIds.has(sourceTargetId)) {
+        continue;
+      }
+      const hasReplacement = [...replacementSourceIds.values()].some((sourceIds) => sourceIds.includes(sourceTargetId));
+      if (!hasReplacement) {
+        return false;
+      }
+      pendingReplyRetargets.push({ annotation: annot, sourceTargetId, relationship });
+    }
+    return true;
   });
 
   page.node.set(PDFName.of('Annots'), pdfDoc.context.obj(filtered));
+  return { preserved, replacementSourceIds, reusableMediaAppearances, pendingReplyRetargets };
 }
 
-async function addMarkupAnnotation(pdfDoc: PDFDocument, page: PDFPage, markup: Markup, fonts: PdfExportFonts, pageScales: readonly PageScale[] = []): Promise<void> {
+function canReuseNativeMediaAppearance(source: Markup, current: Markup): boolean {
+  if ((source.kind !== 'image' && source.kind !== 'snapshot') || source.kind !== current.kind) {
+    return false;
+  }
+  if (current.kind !== 'image' && current.kind !== 'snapshot') {
+    return false;
+  }
+  return source.dataUrl === current.dataUrl
+    && source.mimeType === current.mimeType
+    && JSON.stringify(resolveMarkupAppearance(source)) === JSON.stringify(resolveMarkupAppearance(current));
+}
+
+function annotationRelationshipTargetId(
+  pdfDoc: PDFDocument,
+  annotation: PDFDict,
+  relationship: 'IRT' | 'Parent',
+  identitiesByRef: ReadonlyMap<string, string>,
+): string | undefined {
+  const rawTarget = annotation.get(PDFName.of(relationship));
+  if (!rawTarget) {
+    return undefined;
+  }
+  const byRef = identitiesByRef.get(String(rawTarget));
+  if (byRef) {
+    return byRef;
+  }
+  const target = pdfDoc.context.lookup(rawTarget);
+  return isPdfDict(target)
+    ? annotationIdentity(-1, target, -1)
+    : undefined;
+}
+
+function mapReplacementAnnotationRefs(
+  markup: Markup,
+  sourceIds: readonly string[],
+  created: readonly CreatedAnnotation[],
+  replacements: Map<string, PDFRef>,
+): void {
+  const metadataById = new Map((markup.source?.annotationMetadata ?? []).map((metadata) => [metadata.annotationId, metadata]));
+  sourceIds.forEach((sourceId, index) => {
+    const metadata = metadataById.get(sourceId);
+    const replacement = created.find((item) => item.role === metadata?.role)
+      ?? created[index]
+      ?? created[0];
+    if (replacement) {
+      replacements.set(sourceId, replacement.ref);
+    }
+  });
+}
+
+function annotationIdentitySetsOverlap(first: readonly string[], second: readonly string[]): boolean {
+  return first.some((identity) => second.includes(identity));
+}
+
+function isUntouchedImportedMarkup(markup: Markup): boolean {
+  return markup.source?.source === 'imported'
+    && typeof markup.source.originalFingerprint === 'string'
+    && markup.source.originalFingerprint === markupFingerprint(markup);
+}
+
+async function addMarkupAnnotation(
+  pdfDoc: PDFDocument,
+  page: PDFPage,
+  markup: Markup,
+  fonts: PdfExportFonts,
+  pageScales: readonly PageScale[],
+  modificationDate: string,
+  reusableMediaAppearance?: ReusableMediaAppearance,
+): Promise<readonly CreatedAnnotation[]> {
+  const before = page.node.Annots()?.size() ?? 0;
+  await addMarkupAnnotationInternal(pdfDoc, page, markup, fonts, pageScales, reusableMediaAppearance);
+  const refs = page.node.Annots()?.asArray().slice(before) ?? [];
+  const created = refs.map((ref, index): CreatedAnnotation => ({
+    ref: ref as PDFRef,
+    role: markup.kind === 'cloud-plus'
+      ? index === 0 ? 'cloud' : 'text'
+      : 'primary',
+  }));
+
+  for (const item of created) {
+    const annotation = pdfDoc.context.lookup(item.ref);
+    if (isPdfDict(annotation)) {
+      applySafeAnnotationMetadata(annotation, markup, item.role, modificationDate);
+    }
+  }
+
+  if (markup.kind === 'cloud-plus' && created.length === 2) {
+    const cloud = pdfDoc.context.lookup(created[0]!.ref);
+    const text = pdfDoc.context.lookup(created[1]!.ref);
+    if (isPdfDict(cloud) && isPdfDict(text)) {
+      cloud.set(PDFName.of('IRT'), created[1]!.ref);
+      cloud.set(PDFName.of('RT'), PDFName.of('Group'));
+      text.delete(PDFName.of('IRT'));
+      text.delete(PDFName.of('RT'));
+    }
+  }
+
+  return created;
+}
+
+async function addMarkupAnnotationInternal(
+  pdfDoc: PDFDocument,
+  page: PDFPage,
+  markup: Markup,
+  fonts: PdfExportFonts,
+  pageScales: readonly PageScale[] = [],
+  reusableMediaAppearance?: ReusableMediaAppearance,
+): Promise<void> {
   const resolvedAppearance = resolveMarkupAppearance(markup);
   const stroke = resolvedAppearance.stroke;
   const fill = resolvedAppearance.fill;
@@ -582,7 +844,7 @@ async function addMarkupAnnotation(pdfDoc: PDFDocument, page: PDFPage, markup: M
         ...(fill?.color ? { IC: pdfColorArray(fill.color) } : {}),
         ...opacityFields,
         NM: PDFString.of(toManagedAnnotationId(markup.id)),
-        Subj: PDFString.of(managedAnnotationSubject),
+        Subj: PDFString.of('Rectangle'),
         Contents: PDFString.of(''),
         F: PDFNumber.of(4),
       });
@@ -816,6 +1078,7 @@ async function addMarkupAnnotation(pdfDoc: PDFDocument, page: PDFPage, markup: M
       return;
     }
     case 'polyline': {
+      const appearance = createSimplePathAppearance(pdfDoc, markup.points, false, resolvedAppearance);
       const annot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('PolyLine'),
@@ -833,11 +1096,13 @@ async function addMarkupAnnotation(pdfDoc: PDFDocument, page: PDFPage, markup: M
         Subj: PDFString.of('PolyLine'),
         Contents: PDFString.of(''),
         F: PDFNumber.of(4),
+        AP: pdfDoc.context.obj({ N: appearance.ref }),
       });
       appendAnnotation(page, pdfDoc, annot, resolvedAppearance);
       return;
     }
     case 'polygon': {
+      const appearance = createSimplePathAppearance(pdfDoc, markup.points, true, resolvedAppearance);
       const annot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('Polygon'),
@@ -856,6 +1121,7 @@ async function addMarkupAnnotation(pdfDoc: PDFDocument, page: PDFPage, markup: M
         Subj: PDFString.of('Polygon'),
         Contents: PDFString.of(''),
         F: PDFNumber.of(4),
+        AP: pdfDoc.context.obj({ N: appearance.ref }),
       });
       appendAnnotation(page, pdfDoc, annot, resolvedAppearance);
       return;
@@ -863,6 +1129,9 @@ async function addMarkupAnnotation(pdfDoc: PDFDocument, page: PDFPage, markup: M
     case 'cloud': {
       const intensity = markup.borderEffectIntensity ?? 2;
       const strokeWidth = stroke?.widthPt ?? 0;
+      const appearance = markup.appearancePath
+        ? createCloudAppearance(pdfDoc, markup.controlPath, markup.appearancePath, resolvedAppearance, markup.scallopRadius)
+        : undefined;
       const annot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('Polygon'),
@@ -886,6 +1155,7 @@ async function addMarkupAnnotation(pdfDoc: PDFDocument, page: PDFPage, markup: M
         Subj: PDFString.of('Cloud'),
         Contents: PDFString.of(''),
         F: PDFNumber.of(4),
+        ...(appearance ? { AP: pdfDoc.context.obj({ N: appearance.ref }) } : {}),
       });
       appendAnnotation(page, pdfDoc, annot, resolvedAppearance);
       return;
@@ -894,6 +1164,11 @@ async function addMarkupAnnotation(pdfDoc: PDFDocument, page: PDFPage, markup: M
       const intensity = markup.cloud.borderEffectIntensity ?? 2;
       const strokeWidth = stroke?.widthPt ?? 0;
       const groupName = toManagedAnnotationId(markup.id);
+      const cloudName = `${groupName}:cloud`;
+      const textName = `${groupName}:text`;
+      const cloudAppearance = markup.cloud.appearancePath
+        ? createCloudAppearance(pdfDoc, markup.cloud.controlPath, markup.cloud.appearancePath, resolvedAppearance, markup.cloud.scallopRadius)
+        : undefined;
       const cloudAnnot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('Polygon'),
@@ -914,48 +1189,57 @@ async function addMarkupAnnotation(pdfDoc: PDFDocument, page: PDFPage, markup: M
         }),
         IT: PDFName.of('PolygonCloud'),
         ITEx: PDFName.of('PolyText'),
-        GroupNesting: [PDFString.of('Cloud+'), PDFString.of(groupName)],
-        NM: PDFString.of(`${groupName}:cloud`),
+        NM: PDFString.of(cloudName),
         Subj: PDFString.of('Cloud+'),
         Contents: PDFString.of(markup.text),
         F: PDFNumber.of(4),
+        ...(cloudAppearance ? { AP: pdfDoc.context.obj({ N: cloudAppearance.ref }) } : {}),
       });
       appendAnnotation(page, pdfDoc, cloudAnnot, resolvedAppearance);
 
-      const flattenedPoints = markup.leader.points.flatMap((point) => [point.x, point.y]);
+      const inlineTextCenter = pdfPoint(
+        markup.textBox.x + markup.textBox.width * 0.5,
+        markup.textBox.y + markup.textBox.height * 0.5,
+      );
+      const serializedLeaderPoints = normalizeNativeCloudPlusLeader(markup.leader.points, inlineTextCenter);
+      const flattenedPoints = serializedLeaderPoints.flatMap((point) => [point.x, point.y]);
       const appearance = createCalloutAppearance(pdfDoc, {
         kind: 'callout',
         id: markup.id,
         pageIndex: markup.pageIndex,
-        leader: markup.leader,
+        leader: {
+          points: markup.leader.points.length === 0 ? [] : serializedLeaderPoints,
+        },
         textBox: markup.textBox,
         text: markup.text,
         color: markup.color,
         opacity: markup.opacity,
         appearance: markup.appearance,
         source: markup.source,
-      }, fonts);
+      }, fonts, { showArrow: false });
       const textAnnot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('FreeText'),
         IT: PDFName.of('FreeTextCallout'),
         ITEx: PDFName.of('PolyText'),
-        Rect: [markup.textBox.x, markup.textBox.y, markup.textBox.x + markup.textBox.width, markup.textBox.y + markup.textBox.height],
+        Rect: appearance.bounds,
+        RD: appearance.textBoxInsets,
         Contents: PDFString.of(markup.text),
         CL: flattenedPoints,
-        LE: [PDFName.of('None'), PDFName.of('OpenArrow')],
+        LE: [PDFName.of('None'), PDFName.of('None')],
         Q: PDFNumber.of(0),
         DA: PDFString.of(pdfTextDefaultAppearance(textAppearance)),
         DS: PDFString.of(pdfTextDefaultStyle(textAppearance)),
+        RC: createPdfTextString(createFreeTextRichContent(markup.text, textAppearance)),
         Border: [0, 0, 0],
         BS: pdfDoc.context.obj({ W: PDFNumber.of(0), S: PDFName.of('S'), Type: PDFName.of('Border') }),
-        NM: PDFString.of(`${groupName}:text`),
+        NM: PDFString.of(textName),
         Subj: PDFString.of('Cloud+'),
         F: PDFNumber.of(4),
-        C: pdfColorArray(stroke?.color),
+        C: [],
         ...opacityFields,
         P: page.ref,
-        GroupNesting: [PDFString.of('Cloud+'), PDFString.of(groupName)],
+        GroupNesting: [PDFString.of('Cloud+'), PDFName.of(textName), PDFName.of(cloudName)],
         AP: pdfDoc.context.obj({
           N: appearance.ref,
         }),
@@ -1024,28 +1308,34 @@ async function addMarkupAnnotation(pdfDoc: PDFDocument, page: PDFPage, markup: M
       return;
     }
     case 'callout': {
-      const flattenedPoints = markup.leader.points.reduce<number[]>((points, point) => {
+      const serializedLeaderPoints = normalizeNativeCalloutLeader(markup.leader.points, markup.textBox);
+      const flattenedPoints = serializedLeaderPoints.reduce<number[]>((points, point) => {
         points.push(point.x, point.y);
         return points;
       }, []);
-      const appearance = createCalloutAppearance(pdfDoc, markup, fonts);
+      const appearance = createCalloutAppearance(pdfDoc, {
+        ...markup,
+        leader: { points: serializedLeaderPoints },
+      }, fonts);
       const annot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('FreeText'),
         IT: PDFName.of('FreeTextCallout'),
-        Rect: [markup.textBox.x, markup.textBox.y, markup.textBox.x + markup.textBox.width, markup.textBox.y + markup.textBox.height],
+        Rect: appearance.bounds,
+        RD: appearance.textBoxInsets,
         Contents: PDFString.of(markup.text),
         CL: flattenedPoints,
         LE: [PDFName.of('None'), PDFName.of('OpenArrow')],
         Q: PDFNumber.of(textAlignToPdfQ(textAppearance?.align)),
         DA: PDFString.of(pdfTextDefaultAppearance(textAppearance)),
         DS: PDFString.of(pdfTextDefaultStyle(textAppearance)),
+        RC: createPdfTextString(createFreeTextRichContent(markup.text, textAppearance)),
         Border: [0, 0, 0],
         BS: pdfDoc.context.obj({ W: PDFNumber.of(0), S: PDFName.of('S'), Type: PDFName.of('Border') }),
         NM: PDFString.of(toManagedAnnotationId(markup.id)),
         Subj: PDFString.of('Callout'),
         F: PDFNumber.of(4),
-        C: pdfColorArray(stroke?.color),
+        C: [],
         ...opacityFields,
         P: page.ref,
         AP: pdfDoc.context.obj({
@@ -1056,8 +1346,9 @@ async function addMarkupAnnotation(pdfDoc: PDFDocument, page: PDFPage, markup: M
       return;
     }
     case 'image': {
-      const embeddedImage = await embedMarkupImage(pdfDoc, markup);
-      const appearance = createImageAppearance(pdfDoc, markup, embeddedImage);
+      const appearance = reusableMediaAppearance
+        ? undefined
+        : createImageAppearance(pdfDoc, markup, await embedMarkupImage(pdfDoc, markup));
       const annot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('Square'),
@@ -1074,9 +1365,8 @@ async function addMarkupAnnotation(pdfDoc: PDFDocument, page: PDFPage, markup: M
         F: PDFNumber.of(4),
         BPImageData: PDFString.of(markup.dataUrl),
         BPImageMimeType: PDFString.of(markup.mimeType),
-        AP: pdfDoc.context.obj({
-          N: appearance.ref,
-        }),
+        AP: reusableMediaAppearance?.appearance ?? pdfDoc.context.obj({ N: appearance!.ref }),
+        ...(reusableMediaAppearance?.state ? { AS: reusableMediaAppearance.state } : {}),
       });
       if (markup.rotation) {
         annot.set(PDFName.of('Rotation'), PDFNumber.of(normalizeFreeRotation(markup.rotation)));
@@ -1085,8 +1375,9 @@ async function addMarkupAnnotation(pdfDoc: PDFDocument, page: PDFPage, markup: M
       return;
     }
     case 'snapshot': {
-      const embeddedImage = await embedMarkupImage(pdfDoc, markup);
-      const appearance = createImageAppearance(pdfDoc, markup, embeddedImage);
+      const appearance = reusableMediaAppearance
+        ? undefined
+        : createImageAppearance(pdfDoc, markup, await embedMarkupImage(pdfDoc, markup));
       const annot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('Stamp'),
@@ -1099,9 +1390,8 @@ async function addMarkupAnnotation(pdfDoc: PDFDocument, page: PDFPage, markup: M
         ...opacityFields,
         BPSnapshotData: PDFString.of(markup.dataUrl),
         BPSnapshotMimeType: PDFString.of(markup.mimeType),
-        AP: pdfDoc.context.obj({
-          N: appearance.ref,
-        }),
+        AP: reusableMediaAppearance?.appearance ?? pdfDoc.context.obj({ N: appearance!.ref }),
+        ...(reusableMediaAppearance?.state ? { AS: reusableMediaAppearance.state } : {}),
       });
       if (markup.rotation) {
         annot.set(PDFName.of('Rotation'), PDFNumber.of(normalizeFreeRotation(markup.rotation)));
@@ -1329,6 +1619,49 @@ function measurementLabel(markup: Extract<Markup, { kind: 'length' | 'polylength
 
 function createLengthAppearance(pdfDoc: PDFDocument, markup: Extract<Markup, { kind: 'length' }>, label: string, fonts: PdfExportFonts): { ref: PDFRef } {
   return createPathMeasurementAppearance(pdfDoc, markup, false, label, fonts);
+}
+
+function createSimplePathAppearance(
+  pdfDoc: PDFDocument,
+  points: readonly PdfPoint[],
+  closed: boolean,
+  appearance: ResolvedMarkupAppearance,
+): { ref: PDFRef } {
+  const strokeAppearance = appearance.stroke!;
+  const stroke = colorToRgb(strokeAppearance.color);
+  const fill = appearance.fill?.color ? colorToRgb(appearance.fill.color) : undefined;
+  const path = points.length > 0
+    ? [
+        `${formatPdfNumber(points[0].x)} ${formatPdfNumber(points[0].y)} m`,
+        ...points.slice(1).map((point) => `${formatPdfNumber(point.x)} ${formatPdfNumber(point.y)} l`),
+        ...(closed ? ['h'] : []),
+      ]
+    : [];
+  const commands = [
+    'q /GS0 gs',
+    `${formatPdfNumber(stroke.red)} ${formatPdfNumber(stroke.green)} ${formatPdfNumber(stroke.blue)} RG`,
+    ...(fill ? [`${formatPdfNumber(fill.red)} ${formatPdfNumber(fill.green)} ${formatPdfNumber(fill.blue)} rg`] : []),
+    `${formatPdfNumber(strokeAppearance.widthPt)} w 1 J 1 j`,
+    ...path,
+    fill ? 'B' : 'S',
+    'Q',
+  ];
+  const stream = pdfDoc.context.flateStream(`${commands.join(' ')} `, {
+    Type: PDFName.of('XObject'),
+    Subtype: PDFName.of('Form'),
+    FormType: PDFNumber.of(1),
+    BBox: paddedPointBounds(points, Math.max(4, strokeAppearance.widthPt)),
+    Resources: pdfDoc.context.obj({
+      ExtGState: {
+        GS0: pdfDoc.context.obj({
+          Type: PDFName.of('ExtGState'),
+          CA: PDFNumber.of(appearance.opacity * stroke.alpha),
+          ca: PDFNumber.of(appearance.opacity * (fill?.alpha ?? 1)),
+        }),
+      },
+    } as any),
+  });
+  return { ref: pdfDoc.context.register(stream) as PDFRef };
 }
 
 function createPathMeasurementAppearance(
@@ -1640,6 +1973,77 @@ function cloudPadding(scallopRadius = 14.28): number {
   return scallopRadius * 0.6831;
 }
 
+function createCloudAppearance(
+  pdfDoc: PDFDocument,
+  controlPath: readonly PdfPoint[],
+  svgPath: string,
+  appearance: ResolvedMarkupAppearance,
+  scallopRadius?: number,
+): { ref: PDFRef } | undefined {
+  const pathCommands = svgCloudPathToPdfCommands(svgPath);
+  if (pathCommands.length === 0) {
+    return undefined;
+  }
+  const strokeAppearance = appearance.stroke!;
+  const stroke = colorToRgb(strokeAppearance.color);
+  const fill = appearance.fill?.color ? colorToRgb(appearance.fill.color) : undefined;
+  const padding = Math.max(cloudPadding(scallopRadius), strokeAppearance.widthPt);
+  const commands = [
+    'q /GS0 gs',
+    `${formatPdfNumber(stroke.red)} ${formatPdfNumber(stroke.green)} ${formatPdfNumber(stroke.blue)} RG`,
+    ...(fill ? [`${formatPdfNumber(fill.red)} ${formatPdfNumber(fill.green)} ${formatPdfNumber(fill.blue)} rg`] : []),
+    `${formatPdfNumber(strokeAppearance.widthPt)} w 1 J 1 j`,
+    ...pathCommands,
+    fill ? 'B' : 'S',
+    'Q',
+  ];
+  const stream = pdfDoc.context.flateStream(`${commands.join(' ')} `, {
+    Type: PDFName.of('XObject'),
+    Subtype: PDFName.of('Form'),
+    FormType: PDFNumber.of(1),
+    BBox: paddedPointBounds(controlPath, padding),
+    Resources: pdfDoc.context.obj({
+      ExtGState: {
+        GS0: pdfDoc.context.obj({
+          Type: PDFName.of('ExtGState'),
+          CA: PDFNumber.of(appearance.opacity * stroke.alpha),
+          ca: PDFNumber.of(appearance.opacity * (fill?.alpha ?? 1)),
+        }),
+      },
+    } as any),
+  });
+  return { ref: pdfDoc.context.register(stream) as PDFRef };
+}
+
+function svgCloudPathToPdfCommands(path: string): readonly string[] {
+  const tokens = path.match(/[MLCZmlcz]|-?\d*\.?\d+(?:[eE][+-]?\d+)?/g) ?? [];
+  const commands: string[] = [];
+  let index = 0;
+  while (index < tokens.length) {
+    const operator = tokens[index++];
+    if (operator === 'M' || operator === 'L') {
+      const x = Number(tokens[index++]);
+      const y = Number(tokens[index++]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return [];
+      commands.push(`${formatPdfNumber(x)} ${formatPdfNumber(y)} ${operator === 'M' ? 'm' : 'l'}`);
+      continue;
+    }
+    if (operator === 'C') {
+      const values = tokens.slice(index, index + 6).map(Number);
+      index += 6;
+      if (values.length !== 6 || values.some((value) => !Number.isFinite(value))) return [];
+      commands.push(`${values.map(formatPdfNumber).join(' ')} c`);
+      continue;
+    }
+    if (operator === 'Z') {
+      commands.push('h');
+      continue;
+    }
+    return [];
+  }
+  return commands;
+}
+
 function createTextBoxAppearance(pdfDoc: PDFDocument, markup: Extract<Markup, { kind: 'text-box' }>, fonts: PdfExportFonts): { ref: PDFRef; lines: readonly string[] } {
   const defaultFont = getTextBoxFont(markup, fonts, {});
   const richLines = markup.richTextRuns
@@ -1773,13 +2177,19 @@ function createTextBoxAppearanceFontResources(fonts: PdfExportFonts, defaultFont
   return resources;
 }
 
-function createCalloutAppearance(pdfDoc: PDFDocument, markup: Extract<Markup, { kind: 'callout' }>, fonts: PdfExportFonts): { ref: PDFRef } {
+function createCalloutAppearance(
+  pdfDoc: PDFDocument,
+  markup: Extract<Markup, { kind: 'callout' }>,
+  fonts: PdfExportFonts,
+  options: { readonly showArrow?: boolean } = {},
+): { ref: PDFRef; bounds: readonly number[]; textBoxInsets: readonly number[] } {
   const points = markup.leader.points;
   const tip = points[0] ?? pdfPoint(markup.textBox.x, markup.textBox.y);
   const afterTip = points[1] ?? tip;
   const connection = points[points.length - 1] ?? tip;
-  const arrow = openArrowHeadPoints(afterTip, tip, 10, 7);
-  const bounds = calloutAppearanceBounds(markup, arrow);
+  const arrow = options.showArrow === false ? [] : openArrowHeadPoints(afterTip, tip, 10, 7);
+  const bounds = paddedPdfBounds(calloutAppearanceBounds(markup, arrow), bluebeamFreeTextCalloutPaddingPt);
+  const textBoxInsets = freeTextRectangleDifferences(bounds, markup.textBox);
   const appearance = resolveMarkupAppearance(markup);
   const strokeAppearance = appearance.stroke!;
   const textAppearance = appearance.text!;
@@ -1787,7 +2197,10 @@ function createCalloutAppearance(pdfDoc: PDFDocument, markup: Extract<Markup, { 
   const text = colorToRgb(textAppearance.color);
   const inset = textAppearance.insetPt;
   const lines = wrapTextBoxText(markup.text, markup.textBox.width, fonts.helvetica, textAppearance.fontSizePt, inset);
-  const firstBaseline = markup.textBox.y + markup.textBox.height - inset - textAppearance.fontSizePt * (13 / 12);
+  const textBlockHeight = lines.length * textAppearance.lineHeightPt;
+  const lineBoxTop = Math.max(0, (markup.textBox.height - textBlockHeight) * 0.5);
+  const baselineWithinLine = (textAppearance.lineHeightPt - textAppearance.fontSizePt) * 0.5 + textAppearance.fontSizePt * 0.8;
+  const firstBaseline = markup.textBox.y + markup.textBox.height - lineBoxTop - baselineWithinLine;
   const textCommands = lines.flatMap((line, index) => {
     const measuredWidth = fonts.helvetica.widthOfTextAtSize(line, textAppearance.fontSizePt);
     const x = textAppearance.align === 'center'
@@ -1803,7 +2216,9 @@ function createCalloutAppearance(pdfDoc: PDFDocument, markup: Extract<Markup, { 
     `${formatPdfNumber(connection.x)} ${formatPdfNumber(connection.y)} m`,
     ...points.slice(0, -1).reverse().map((point) => `${formatPdfNumber(point.x)} ${formatPdfNumber(point.y)} l`),
     'S',
-    `${formatPdfNumber(arrow[0].x)} ${formatPdfNumber(arrow[0].y)} m ${formatPdfNumber(tip.x)} ${formatPdfNumber(tip.y)} l ${formatPdfNumber(arrow[2].x)} ${formatPdfNumber(arrow[2].y)} l S`,
+    ...(arrow.length === 3
+      ? [`${formatPdfNumber(arrow[0].x)} ${formatPdfNumber(arrow[0].y)} m ${formatPdfNumber(tip.x)} ${formatPdfNumber(tip.y)} l ${formatPdfNumber(arrow[2].x)} ${formatPdfNumber(arrow[2].y)} l S`]
+      : []),
     `0 w BT ${formatPdfNumber(text.red)} ${formatPdfNumber(text.green)} ${formatPdfNumber(text.blue)} rg /Helv ${formatPdfNumber(textAppearance.fontSizePt)} Tf`,
     ...textCommands,
     'ET Q',
@@ -1814,6 +2229,7 @@ function createCalloutAppearance(pdfDoc: PDFDocument, markup: Extract<Markup, { 
     Subtype: PDFName.of('Form'),
     FormType: PDFNumber.of(1),
     BBox: bounds,
+    Matrix: [1, 0, 0, 1, -bounds[0], -bounds[1]],
     Resources: pdfDoc.context.obj({
       ProcSet: [PDFName.of('PDF'), PDFName.of('Text')],
       Font: {
@@ -1834,7 +2250,25 @@ function createCalloutAppearance(pdfDoc: PDFDocument, markup: Extract<Markup, { 
     } as any),
   });
 
-  return { ref: pdfDoc.context.register(stream) as PDFRef };
+  return { ref: pdfDoc.context.register(stream) as PDFRef, bounds, textBoxInsets };
+}
+
+const bluebeamFreeTextCalloutPaddingPt = 5.5;
+
+function paddedPdfBounds(bounds: readonly number[], padding: number): readonly number[] {
+  return [bounds[0] - padding, bounds[1] - padding, bounds[2] + padding, bounds[3] + padding];
+}
+
+function freeTextRectangleDifferences(
+  bounds: readonly number[],
+  textBox: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
+): readonly number[] {
+  return [
+    textBox.x - bounds[0],
+    textBox.y - bounds[1],
+    bounds[2] - (textBox.x + textBox.width),
+    bounds[3] - (textBox.y + textBox.height),
+  ];
 }
 
 function calloutAppearanceBounds(markup: Extract<Markup, { kind: 'callout' }>, arrow: readonly PdfPoint[]): readonly number[] {
@@ -1904,6 +2338,454 @@ function createImageAppearance(pdfDoc: PDFDocument, markup: Extract<Markup, { ki
 function imageBytesFromDataUrl(dataUrl: string): Uint8Array {
   const base64 = dataUrl.includes(',') ? dataUrl.split(',').at(-1) ?? '' : dataUrl;
   return Uint8Array.from(Buffer.from(base64, 'base64'));
+}
+
+interface MediaImagePayload {
+  readonly dataUrl: string;
+  readonly mimeType: 'image/png' | 'image/jpeg';
+}
+
+interface DecodedRaster {
+  readonly width: number;
+  readonly height: number;
+  readonly rgba: Uint8Array;
+}
+
+interface NativeColorSpace {
+  readonly kind: 'gray' | 'rgb' | 'cmyk' | 'indexed';
+  readonly channels: number;
+  readonly highValue?: number;
+  readonly palette?: Uint8Array;
+  readonly paletteChannels?: number;
+}
+
+function readMediaAnnotationPayload(
+  annot: PDFDict,
+  privateDataKey: 'BPImageData' | 'BPSnapshotData',
+  privateMimeKey: 'BPImageMimeType' | 'BPSnapshotMimeType',
+): MediaImagePayload | undefined {
+  const nativePayload = readNativeAppearanceImagePayload(annot);
+  if (nativePayload) {
+    return nativePayload;
+  }
+
+  const dataUrl = readText(annot.get(PDFName.of(privateDataKey)));
+  const mimeType = readText(annot.get(PDFName.of(privateMimeKey))) === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+  return dataUrl && isValidMediaDataUrl(dataUrl, mimeType)
+    ? { dataUrl, mimeType }
+    : undefined;
+}
+
+function isValidMediaDataUrl(dataUrl: string, mimeType: 'image/png' | 'image/jpeg'): boolean {
+  if (!dataUrl.startsWith(`data:${mimeType};base64,`)) {
+    return false;
+  }
+  const bytes = imageBytesFromDataUrl(dataUrl);
+  return mimeType === 'image/jpeg'
+    ? bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes.at(-2) === 0xff && bytes.at(-1) === 0xd9
+    : bytes.length >= 8 && bytes.slice(0, 8).every((value, index) => value === pngSignature[index]);
+}
+
+function readNativeAppearanceImagePayload(annot: PDFDict): MediaImagePayload | undefined {
+  const normalAppearance = getNormalAppearanceStream(annot);
+  if (!normalAppearance) {
+    return undefined;
+  }
+  const images = collectPaintedImageXObjects(normalAppearance);
+  return images.length === 1 ? imageXObjectToPayload(images[0]!) : undefined;
+}
+
+function collectPaintedImageXObjects(appearance: PDFRawStream): readonly PDFRawStream[] {
+  const images = new Set<PDFRawStream>();
+  const visitedForms = new Set<PDFRawStream>();
+
+  const visit = (stream: PDFRawStream, inheritedResources?: PDFDict): boolean => {
+    const subtype = readName(stream.dict.get(PDFName.of('Subtype'))).toLowerCase();
+    if (subtype === 'image') {
+      images.add(stream);
+      return true;
+    }
+    if (visitedForms.has(stream)) {
+      return true;
+    }
+    visitedForms.add(stream);
+
+    const localResources = stream.dict.context.lookup(stream.dict.get(PDFName.of('Resources')));
+    const resources = isPdfDict(localResources) ? localResources : inheritedResources;
+    if (!resources) {
+      return false;
+    }
+    const xObjects = resources.context.lookup(resources.get(PDFName.of('XObject')));
+    if (!isPdfDict(xObjects)) {
+      return false;
+    }
+
+    let content: string;
+    try {
+      content = Buffer.from(decodePDFRawStream(stream).decode()).toString('latin1');
+    } catch {
+      return false;
+    }
+    const invokedNames = [...content.matchAll(/\/([^\s<>{}\[\]()%/]+)\s+Do\b/g)].map((match) => match[1]!);
+    if (invokedNames.length === 0) {
+      return false;
+    }
+    for (const invokedName of invokedNames) {
+      const key = xObjects.keys().find((candidate) => String(candidate).slice(1) === invokedName);
+      if (!key) {
+        return false;
+      }
+      const object = xObjects.context.lookup(xObjects.get(key));
+      if (!(object instanceof PDFRawStream) || !visit(object, resources)) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  return visit(appearance) ? [...images] : [];
+}
+
+function imageXObjectToPayload(image: PDFRawStream): MediaImagePayload | undefined {
+  const filters = readFilterNames(image.dict);
+  if (filters.length === 1 && filters[0] === 'DCTDecode' && !image.dict.has(PDFName.of('SMask')) && !image.dict.has(PDFName.of('Mask'))) {
+    const bytes = image.contents;
+    if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes.at(-2) === 0xff && bytes.at(-1) === 0xd9) {
+      return { dataUrl: dataUrlFromBytes('image/jpeg', bytes), mimeType: 'image/jpeg' };
+    }
+    return undefined;
+  }
+
+  const raster = decodeImageXObject(image);
+  return raster
+    ? { dataUrl: dataUrlFromBytes('image/png', encodeRgbaPng(raster)), mimeType: 'image/png' }
+    : undefined;
+}
+
+function readFilterNames(dict: PDFDict): readonly string[] {
+  const filter = dict.context.lookup(dict.get(PDFName.of('Filter')));
+  if (filter instanceof PDFName) {
+    return [readName(filter)];
+  }
+  if (filter instanceof PDFArray) {
+    return Array.from({ length: filter.size() }, (_, index) => readName(filter.lookup(index))).filter(Boolean);
+  }
+  return [];
+}
+
+function decodeImageXObject(image: PDFRawStream): DecodedRaster | undefined {
+  const width = readOptionalNumber(image.dict.get(PDFName.of('Width')));
+  const height = readOptionalNumber(image.dict.get(PDFName.of('Height')));
+  const bitsPerComponent = readOptionalNumber(image.dict.get(PDFName.of('BitsPerComponent'))) ?? 8;
+  const colorSpace = readNativeColorSpace(image.dict.get(PDFName.of('ColorSpace')), image.dict.context);
+  if (!width || !height || !Number.isInteger(width) || !Number.isInteger(height) || ![1, 2, 4, 8].includes(bitsPerComponent) || !colorSpace) {
+    return undefined;
+  }
+  const filters = readFilterNames(image.dict);
+  if (filters.some((filter) => !['FlateDecode', 'LZWDecode', 'ASCII85Decode', 'ASCIIHexDecode', 'RunLengthDecode'].includes(filter))) {
+    return undefined;
+  }
+
+  let decoded: Uint8Array;
+  try {
+    decoded = decodePDFRawStream(image).decode();
+  } catch {
+    return undefined;
+  }
+  const samples = unpackImageSamples(
+    applyImagePredictor(image.dict, decoded, width, height, colorSpace.channels, bitsPerComponent),
+    width,
+    height,
+    colorSpace.channels,
+    bitsPerComponent,
+  );
+  if (!samples) {
+    return undefined;
+  }
+
+  const rgba = new Uint8Array(width * height * 4);
+  const decode = readNumericArray(image.dict.context.lookup(image.dict.get(PDFName.of('Decode'))));
+  const sampleMax = (1 << bitsPerComponent) - 1;
+  for (let pixel = 0; pixel < width * height; pixel += 1) {
+    const sourceOffset = pixel * colorSpace.channels;
+    const targetOffset = pixel * 4;
+    const normalized = Array.from({ length: colorSpace.channels }, (_, channel) => {
+      const raw = samples[sourceOffset + channel] ?? 0;
+      const defaultEnd = colorSpace.kind === 'indexed' ? (colorSpace.highValue ?? sampleMax) : 1;
+      const start = decode[channel * 2] ?? 0;
+      const end = decode[channel * 2 + 1] ?? defaultEnd;
+      return start + (raw / sampleMax) * (end - start);
+    });
+    const [red, green, blue] = nativeSamplesToRgb(normalized, colorSpace);
+    rgba[targetOffset] = red;
+    rgba[targetOffset + 1] = green;
+    rgba[targetOffset + 2] = blue;
+    rgba[targetOffset + 3] = 255;
+  }
+
+  const softMask = image.dict.context.lookup(image.dict.get(PDFName.of('SMask')));
+  const hardMask = image.dict.context.lookup(image.dict.get(PDFName.of('Mask')));
+  const maskStream = softMask instanceof PDFRawStream
+    ? softMask
+    : hardMask instanceof PDFRawStream ? hardMask : undefined;
+  if (maskStream) {
+    const mask = decodeImageXObject(maskStream);
+    if (!mask || mask.width !== width || mask.height !== height) {
+      return undefined;
+    }
+    for (let pixel = 0; pixel < width * height; pixel += 1) {
+      rgba[pixel * 4 + 3] = mask.rgba[pixel * 4] ?? 255;
+    }
+  }
+
+  return { width, height, rgba };
+}
+
+function readNativeColorSpace(value: PDFObject | undefined, context: PDFDict['context']): NativeColorSpace | undefined {
+  const resolved = context.lookup(value);
+  if (resolved instanceof PDFName) {
+    const name = readName(resolved);
+    if (name === 'DeviceGray' || name === 'G' || name === 'CalGray') return { kind: 'gray', channels: 1 };
+    if (name === 'DeviceRGB' || name === 'RGB' || name === 'CalRGB') return { kind: 'rgb', channels: 3 };
+    if (name === 'DeviceCMYK' || name === 'CMYK') return { kind: 'cmyk', channels: 4 };
+    return undefined;
+  }
+  if (!(resolved instanceof PDFArray) || resolved.size() < 2) {
+    return undefined;
+  }
+  const family = readName(resolved.lookup(0));
+  if (family === 'ICCBased') {
+    const profile = context.lookup(resolved.get(1));
+    if (!(profile instanceof PDFRawStream)) return undefined;
+    const channels = readOptionalNumber(profile.dict.get(PDFName.of('N')));
+    return channels === 1 ? { kind: 'gray', channels: 1 }
+      : channels === 3 ? { kind: 'rgb', channels: 3 }
+        : channels === 4 ? { kind: 'cmyk', channels: 4 }
+          : undefined;
+  }
+  if (family !== 'Indexed' && family !== 'I') {
+    return undefined;
+  }
+  const base = readNativeColorSpace(resolved.get(1), context);
+  const highValue = readOptionalNumber(resolved.get(2));
+  const lookup = context.lookup(resolved.get(3));
+  const palette = lookup instanceof PDFString || lookup instanceof PDFHexString
+    ? lookup.asBytes()
+    : lookup instanceof PDFRawStream
+      ? decodePdfStreamBytes(lookup)
+      : undefined;
+  if (!base || base.kind === 'indexed' || highValue === undefined || !palette) {
+    return undefined;
+  }
+  return { kind: 'indexed', channels: 1, highValue, palette, paletteChannels: base.channels };
+}
+
+function decodePdfStreamBytes(stream: PDFRawStream): Uint8Array | undefined {
+  try {
+    return decodePDFRawStream(stream).decode();
+  } catch {
+    return undefined;
+  }
+}
+
+function applyImagePredictor(
+  dict: PDFDict,
+  bytes: Uint8Array,
+  width: number,
+  height: number,
+  channels: number,
+  bitsPerComponent: number,
+): Uint8Array {
+  const decodeParamsValue = dict.context.lookup(dict.get(PDFName.of('DecodeParms')));
+  const decodeParams = decodeParamsValue instanceof PDFArray
+    ? decodeParamsValue.asArray().map((item) => dict.context.lookup(item)).find(isPdfDict)
+    : isPdfDict(decodeParamsValue) ? decodeParamsValue : undefined;
+  const predictor = readOptionalNumber(decodeParams?.get(PDFName.of('Predictor'))) ?? 1;
+  if (predictor <= 1) {
+    return bytes;
+  }
+  const columns = readOptionalNumber(decodeParams?.get(PDFName.of('Columns'))) ?? width;
+  const colors = readOptionalNumber(decodeParams?.get(PDFName.of('Colors'))) ?? channels;
+  const bits = readOptionalNumber(decodeParams?.get(PDFName.of('BitsPerComponent'))) ?? bitsPerComponent;
+  const rowBytes = Math.ceil((columns * colors * bits) / 8);
+  const bytesPerPixel = Math.max(1, Math.ceil((colors * bits) / 8));
+  if (predictor === 2 && bits === 8 && bytes.length >= rowBytes * height) {
+    const output = bytes.slice(0, rowBytes * height);
+    for (let row = 0; row < height; row += 1) {
+      const rowStart = row * rowBytes;
+      for (let column = bytesPerPixel; column < rowBytes; column += 1) {
+        output[rowStart + column] = ((output[rowStart + column] ?? 0) + (output[rowStart + column - bytesPerPixel] ?? 0)) & 0xff;
+      }
+    }
+    return output;
+  }
+  if (predictor < 10 || predictor > 15) {
+    return bytes;
+  }
+
+  const hasRowFilters = bytes.length >= (rowBytes + 1) * height;
+  if (!hasRowFilters && bytes.length < rowBytes * height) {
+    return bytes;
+  }
+  const output = new Uint8Array(rowBytes * height);
+  for (let row = 0; row < height; row += 1) {
+    const sourceStart = hasRowFilters ? row * (rowBytes + 1) + 1 : row * rowBytes;
+    const filter = hasRowFilters ? bytes[sourceStart - 1] ?? 0 : predictor - 10;
+    const rowStart = row * rowBytes;
+    for (let column = 0; column < rowBytes; column += 1) {
+      const raw = bytes[sourceStart + column] ?? 0;
+      const left = column >= bytesPerPixel ? output[rowStart + column - bytesPerPixel] ?? 0 : 0;
+      const up = row > 0 ? output[rowStart - rowBytes + column] ?? 0 : 0;
+      const upperLeft = row > 0 && column >= bytesPerPixel ? output[rowStart - rowBytes + column - bytesPerPixel] ?? 0 : 0;
+      const reconstructed = filter === 1 ? raw + left
+        : filter === 2 ? raw + up
+          : filter === 3 ? raw + Math.floor((left + up) / 2)
+            : filter === 4 ? raw + paethPredictor(left, up, upperLeft)
+              : raw;
+      output[rowStart + column] = reconstructed & 0xff;
+    }
+  }
+  return output;
+}
+
+function paethPredictor(left: number, up: number, upperLeft: number): number {
+  const estimate = left + up - upperLeft;
+  const leftDistance = Math.abs(estimate - left);
+  const upDistance = Math.abs(estimate - up);
+  const upperLeftDistance = Math.abs(estimate - upperLeft);
+  return leftDistance <= upDistance && leftDistance <= upperLeftDistance ? left : upDistance <= upperLeftDistance ? up : upperLeft;
+}
+
+function unpackImageSamples(
+  bytes: Uint8Array,
+  width: number,
+  height: number,
+  channels: number,
+  bitsPerComponent: number,
+): Uint8Array | undefined {
+  const rowSamples = width * channels;
+  const rowBytes = Math.ceil((rowSamples * bitsPerComponent) / 8);
+  if (bytes.length < rowBytes * height) {
+    return undefined;
+  }
+  const samples = new Uint8Array(rowSamples * height);
+  const mask = (1 << bitsPerComponent) - 1;
+  for (let row = 0; row < height; row += 1) {
+    const rowStart = row * rowBytes;
+    for (let sample = 0; sample < rowSamples; sample += 1) {
+      const bitOffset = sample * bitsPerComponent;
+      const byte = bytes[rowStart + Math.floor(bitOffset / 8)] ?? 0;
+      const shift = 8 - bitsPerComponent - (bitOffset % 8);
+      samples[row * rowSamples + sample] = (byte >> shift) & mask;
+    }
+  }
+  return samples;
+}
+
+function nativeSamplesToRgb(samples: readonly number[], colorSpace: NativeColorSpace): readonly [number, number, number] {
+  if (colorSpace.kind === 'gray') {
+    const gray = unitSampleToByte(samples[0] ?? 0);
+    return [gray, gray, gray];
+  }
+  if (colorSpace.kind === 'rgb') {
+    return [unitSampleToByte(samples[0] ?? 0), unitSampleToByte(samples[1] ?? 0), unitSampleToByte(samples[2] ?? 0)];
+  }
+  if (colorSpace.kind === 'cmyk') {
+    const [cyan = 0, magenta = 0, yellow = 0, black = 0] = samples;
+    return [
+      unitSampleToByte(1 - Math.min(1, cyan + black)),
+      unitSampleToByte(1 - Math.min(1, magenta + black)),
+      unitSampleToByte(1 - Math.min(1, yellow + black)),
+    ];
+  }
+  const paletteChannels = colorSpace.paletteChannels ?? 3;
+  const paletteIndex = Math.max(0, Math.min(colorSpace.highValue ?? 0, Math.round(samples[0] ?? 0)));
+  const offset = paletteIndex * paletteChannels;
+  const palette = colorSpace.palette ?? new Uint8Array();
+  if (paletteChannels === 1) {
+    const gray = palette[offset] ?? 0;
+    return [gray, gray, gray];
+  }
+  if (paletteChannels === 4) {
+    const cyan = (palette[offset] ?? 0) / 255;
+    const magenta = (palette[offset + 1] ?? 0) / 255;
+    const yellow = (palette[offset + 2] ?? 0) / 255;
+    const black = (palette[offset + 3] ?? 0) / 255;
+    return [
+      unitSampleToByte(1 - Math.min(1, cyan + black)),
+      unitSampleToByte(1 - Math.min(1, magenta + black)),
+      unitSampleToByte(1 - Math.min(1, yellow + black)),
+    ];
+  }
+  return [palette[offset] ?? 0, palette[offset + 1] ?? 0, palette[offset + 2] ?? 0];
+}
+
+function unitSampleToByte(value: number): number {
+  return Math.round(Math.max(0, Math.min(1, value)) * 255);
+}
+
+function readNumericArray(value: unknown): readonly number[] {
+  return value instanceof PDFArray
+    ? Array.from({ length: value.size() }, (_, index) => readOptionalNumber(value.lookup(index))).filter((item): item is number => item !== undefined)
+    : [];
+}
+
+const pngSignature = Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10);
+
+function encodeRgbaPng(raster: DecodedRaster): Uint8Array {
+  const header = new Uint8Array(13);
+  const headerView = new DataView(header.buffer);
+  headerView.setUint32(0, raster.width);
+  headerView.setUint32(4, raster.height);
+  header[8] = 8;
+  header[9] = 6;
+  const rows = new Uint8Array(raster.height * (raster.width * 4 + 1));
+  for (let row = 0; row < raster.height; row += 1) {
+    const target = row * (raster.width * 4 + 1);
+    rows[target] = 0;
+    rows.set(raster.rgba.subarray(row * raster.width * 4, (row + 1) * raster.width * 4), target + 1);
+  }
+  return concatenateBytes([
+    pngSignature,
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(rows)),
+    pngChunk('IEND', new Uint8Array()),
+  ]);
+}
+
+function pngChunk(type: 'IHDR' | 'IDAT' | 'IEND', data: Uint8Array): Uint8Array {
+  const typeBytes = Uint8Array.from(Buffer.from(type, 'ascii'));
+  const chunk = new Uint8Array(12 + data.length);
+  new DataView(chunk.buffer).setUint32(0, data.length);
+  chunk.set(typeBytes, 4);
+  chunk.set(data, 8);
+  new DataView(chunk.buffer).setUint32(8 + data.length, crc32(concatenateBytes([typeBytes, data])));
+  return chunk;
+}
+
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function concatenateBytes(parts: readonly Uint8Array[]): Uint8Array {
+  const result = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    result.set(part, offset);
+    offset += part.length;
+  }
+  return result;
+}
+
+function dataUrlFromBytes(mimeType: 'image/png' | 'image/jpeg', bytes: Uint8Array): string {
+  return `data:${mimeType};base64,${Buffer.from(bytes).toString('base64')}`;
 }
 
 function fallbackImageDataUrl(): string {
@@ -2413,6 +3295,10 @@ function pdfTextDefaultStyle(
   ].join('; ');
 }
 
+function createFreeTextRichContent(text: string, appearance: ResolvedMarkupAppearance['text']): string {
+  return `<?xml version="1.0"?><body xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/" xfa:contentType="text/html" xfa:APIVersion="BluebeamPDFRevu:2018" xfa:spec="2.2.0" style="${pdfTextDefaultStyle(appearance)}" xmlns="http://www.w3.org/1999/xhtml"><p>${escapeXml(text)}</p></body>`;
+}
+
 function escapeXml(text: string): string {
   return text
     .replaceAll('&', '&amp;')
@@ -2490,7 +3376,10 @@ function readPageAnnotationMarkups(pdfDoc: PDFDocument, pageIndex: number): Impo
         return false;
       }
       const candidate = pdfDoc.context.lookup(candidateRef);
-      return isPdfDict(candidate) && isCloudPlusPart(candidate) && cloudPlusGroupKey(candidate) === cloudPlusGroupKey(annot) && readName(candidate.get(PDFName.of('Subtype'))) !== readName(annot.get(PDFName.of('Subtype')));
+      return isPdfDict(candidate)
+        && isCloudPlusPart(candidate)
+        && cloudPlusPartsBelongTogether(annot, candidate)
+        && readName(candidate.get(PDFName.of('Subtype'))) !== readName(annot.get(PDFName.of('Subtype')));
     });
     if (matchIndex < 0) {
       continue;
@@ -2502,7 +3391,10 @@ function readPageAnnotationMarkups(pdfDoc: PDFDocument, pageIndex: number): Impo
     }
     const mapped = mapCloudPlusPairToMarkup(pageIndex, annot, match, index);
     if (mapped) {
-      markups.push(mapped);
+      markups.push(withImportedTracking(mapped, [
+        readSafeAnnotationMetadata(pdfDoc, pageIndex, annot, index, refs, readName(annot.get(PDFName.of('Subtype'))).toLowerCase() === 'polygon' ? 'cloud' : 'text'),
+        readSafeAnnotationMetadata(pdfDoc, pageIndex, match, matchIndex, refs, readName(match.get(PDFName.of('Subtype'))).toLowerCase() === 'polygon' ? 'cloud' : 'text'),
+      ]));
       consumed.add(index);
       consumed.add(matchIndex);
     }
@@ -2519,7 +3411,7 @@ function readPageAnnotationMarkups(pdfDoc: PDFDocument, pageIndex: number): Impo
 
     const mapped = mapAnnotationDictToMarkup(pageIndex, annot, index);
     if (mapped) {
-      markups.push(mapped);
+      markups.push(withImportedTracking(mapped, [readSafeAnnotationMetadata(pdfDoc, pageIndex, annot, index, refs, 'primary')]));
     }
   }
 
@@ -2527,19 +3419,43 @@ function readPageAnnotationMarkups(pdfDoc: PDFDocument, pageIndex: number): Impo
 }
 
 function isCloudPlusPart(annot: PDFDict): boolean {
-  const subject = readText(annot.get(PDFName.of('Subj')));
   const intentEx = readName(annot.get(PDFName.of('ITEx')));
   const intent = readName(annot.get(PDFName.of('IT')));
   const subtype = readName(annot.get(PDFName.of('Subtype'))).toLowerCase();
-  return subject === 'Cloud+' && intentEx === 'PolyText' && (
-    (subtype === 'polygon' && intent === 'PolygonCloud')
-    || (subtype === 'freetext' && intent === 'FreeTextCallout')
+  const group = readTextArray(annot.get(PDFName.of('GroupNesting')));
+  return (
+    (subtype === 'polygon' && intent === 'PolygonCloud' && intentEx === 'PolyText')
+    || (subtype === 'freetext' && intent === 'FreeTextCallout' && (
+      intentEx === 'PolyText' || group.includes('Cloud+')
+    ))
   );
 }
 
-function cloudPlusGroupKey(annot: PDFDict): string {
-  const group = readTextArray(annot.get(PDFName.of('GroupNesting')));
-  return group.length > 0 ? group.join('|') : 'cloud-plus';
+function cloudPlusPartsBelongTogether(first: PDFDict, second: PDFDict): boolean {
+  const firstGroup = normalizedGroupNesting(first);
+  const secondGroup = normalizedGroupNesting(second);
+  if (firstGroup.length > 0 && secondGroup.length > 0 && firstGroup.join('|') === secondGroup.join('|')) {
+    return true;
+  }
+
+  const firstName = normalizePdfNameToken(readText(first.get(PDFName.of('NM'))));
+  const secondName = normalizePdfNameToken(readText(second.get(PDFName.of('NM'))));
+  const members = new Set([...firstGroup, ...secondGroup]);
+  if (firstName && secondName && members.has(firstName) && members.has(secondName)) {
+    return true;
+  }
+
+  return firstGroup.length === 0 && secondGroup.length === 0;
+}
+
+function normalizedGroupNesting(annot: PDFDict): readonly string[] {
+  return readTextArray(annot.get(PDFName.of('GroupNesting')))
+    .map(normalizePdfNameToken)
+    .filter((item) => item.length > 0 && item !== 'Cloud+');
+}
+
+function normalizePdfNameToken(value: string | undefined): string {
+  return (value ?? '').replace(/^\//, '');
 }
 
 function readTextArray(value: unknown): readonly string[] {
@@ -2549,16 +3465,94 @@ function readTextArray(value: unknown): readonly string[] {
   return value.asArray().map((item) => readText(item) ?? readName(item)).filter((item) => item.length > 0);
 }
 
+function annotationIdentity(pageIndex: number, annot: PDFDict, fallbackIndex: number): string {
+  const nativeName = readText(annot.get(PDFName.of('NM')));
+  return nativeName ? `nm:${nativeName}` : `page:${pageIndex}:annotation:${fallbackIndex}`;
+}
+
+function withImportedTracking(markup: ImportedPdfMarkup, annotationMetadata: readonly AnnotationMetadata[]): ImportedPdfMarkup {
+  const annotationIds = annotationMetadata.map((metadata) => metadata.annotationId);
+  const tracked = {
+    ...markup,
+    source: {
+      ...markup.source,
+      annotationId: markup.source?.annotationId ?? annotationIds[0],
+      annotationIds: [...annotationIds],
+      annotationMetadata: [...annotationMetadata],
+      source: 'imported' as const,
+    },
+  } as ImportedPdfMarkup;
+  return {
+    ...tracked,
+    source: {
+      ...tracked.source,
+      originalFingerprint: markupFingerprint(tracked),
+    },
+  } as ImportedPdfMarkup;
+}
+
+function readSafeAnnotationMetadata(
+  pdfDoc: PDFDocument,
+  pageIndex: number,
+  annotation: PDFDict,
+  fallbackIndex: number,
+  refs: readonly PDFObject[],
+  role: AnnotationMetadataRole,
+): AnnotationMetadata {
+  const rawReplyTarget = annotation.get(PDFName.of('IRT'));
+  const replyTargetIndex = rawReplyTarget
+    ? refs.findIndex((ref) => String(ref) === String(rawReplyTarget))
+    : -1;
+  const replyTarget = replyTargetIndex >= 0 ? pdfDoc.context.lookup(refs[replyTargetIndex]) : undefined;
+  const replyTypeName = readName(annotation.get(PDFName.of('RT')));
+  const replyType = replyTypeName === 'Reply' || replyTypeName === 'Group' ? replyTypeName : undefined;
+  return {
+    annotationId: annotationIdentity(pageIndex, annotation, fallbackIndex),
+    role,
+    author: readText(annotation.get(PDFName.of('T'))),
+    subject: readText(annotation.get(PDFName.of('Subj'))),
+    creationDate: readText(annotation.get(PDFName.of('CreationDate'))),
+    modificationDate: readText(annotation.get(PDFName.of('M'))),
+    contents: readText(annotation.get(PDFName.of('Contents'))),
+    flags: readOptionalNumber(annotation.get(PDFName.of('F'))),
+    status: readText(annotation.get(PDFName.of('State'))),
+    statusModel: readText(annotation.get(PDFName.of('StateModel'))),
+    replyType,
+    replyToAnnotationId: isPdfDict(replyTarget)
+      ? annotationIdentity(pageIndex, replyTarget, replyTargetIndex)
+      : undefined,
+  };
+}
+
+function markupFingerprint(markup: Markup): string {
+  const { id: _id, source: _source, ...content } = markup;
+  return JSON.stringify(sortFingerprintValue(content));
+}
+
+function sortFingerprintValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortFingerprintValue);
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, sortFingerprintValue(item)]));
+  }
+  return value;
+}
+
 function mapCloudPlusPairToMarkup(pageIndex: number, first: PDFDict, second: PDFDict, fallbackIndex: number): ImportedPdfMarkup | undefined {
   const firstSubtype = readName(first.get(PDFName.of('Subtype'))).toLowerCase();
   const cloudAnnot = firstSubtype === 'polygon' ? first : second;
   const textAnnot = firstSubtype === 'freetext' ? first : second;
-  const rect = readRect(textAnnot.get(PDFName.of('Rect'))) ?? { x: 0, y: 0, width: 0, height: 0 };
+  const rect = readFreeTextBox(textAnnot);
   const rawName = readText(cloudAnnot.get(PDFName.of('NM'))) ?? readText(textAnnot.get(PDFName.of('NM')));
   const managedId = fromManagedAnnotationId(rawName)?.replace(/:(cloud|text)$/, '');
   const id = managedId ?? rawName ?? `page-${pageIndex}-cloud-plus-${fallbackIndex}`;
   const points = readPointArray(cloudAnnot.get(PDFName.of('Vertices')));
   const linePoints = readPointArray(textAnnot.get(PDFName.of('CL')));
+  const normalizedLinePoints = isDegenerateLeader(linePoints) ? [] : linePoints;
   const cloudAppearance = readPdfAnnotationAppearance(cloudAnnot);
   const textAppearance = readPdfAnnotationAppearance(textAnnot);
   return createCloudPlusMarkup({
@@ -2576,7 +3570,11 @@ function mapCloudPlusPairToMarkup(pageIndex: number, first: PDFDict, second: PDF
       appearancePath: readCloudAppearancePath(cloudAnnot),
     },
     leader: {
-      points: linePoints.length > 0 ? linePoints : [pdfPoint(rect.x, rect.y), pdfPoint(rect.x + rect.width, rect.y + rect.height)],
+      points: normalizedLinePoints.length > 0
+        ? normalizedLinePoints
+        : textAnnot.has(PDFName.of('CL'))
+          ? []
+          : [pdfPoint(rect.x, rect.y), pdfPoint(rect.x + rect.width, rect.y + rect.height)],
     },
     textBox: rect,
     text: readText(textAnnot.get(PDFName.of('Contents'))) ?? readText(textAnnot.get(PDFName.of('RC'))) ?? '',
@@ -2585,6 +3583,13 @@ function mapCloudPlusPairToMarkup(pageIndex: number, first: PDFDict, second: PDF
       source: 'imported',
     },
   });
+}
+
+function isDegenerateLeader(points: readonly PdfPoint[]): boolean {
+  const first = points[0];
+  return Boolean(first && points.length > 1 && points.every((point) => (
+    Math.abs(point.x - first.x) < 0.000001 && Math.abs(point.y - first.y) < 0.000001
+  )));
 }
 
 function appendAnnotation(page: PDFPage, pdfDoc: PDFDocument, annot: PDFDict, appearance?: ResolvedMarkupAppearance): void {
@@ -2600,12 +3605,81 @@ function appendAnnotation(page: PDFPage, pdfDoc: PDFDocument, annot: PDFDict, ap
   }
 }
 
+function applySafeAnnotationMetadata(
+  annotation: PDFDict,
+  markup: Markup,
+  role: AnnotationMetadataRole,
+  modificationDate: string,
+): void {
+  const sourceMetadata = markup.source?.annotationMetadata ?? [];
+  const metadata = sourceMetadata.find((item) => item.role === role)
+    ?? (role === 'primary' ? sourceMetadata.find((item) => item.role === undefined) : undefined);
+
+  setOptionalPdfString(annotation, 'T', metadata?.author);
+  setOptionalPdfString(annotation, 'CreationDate', metadata?.creationDate);
+  setOptionalPdfString(annotation, 'Subj', metadata?.subject);
+  annotation.set(PDFName.of('M'), PDFString.of(modificationDate));
+
+  if (metadata?.flags !== undefined && Number.isInteger(metadata.flags) && metadata.flags >= 0) {
+    annotation.set(PDFName.of('F'), PDFNumber.of(metadata.flags));
+  }
+  if (metadata?.status && metadata.statusModel && isValidAnnotationStatus(metadata.statusModel, metadata.status)) {
+    annotation.set(PDFName.of('State'), PDFString.of(metadata.status));
+    annotation.set(PDFName.of('StateModel'), PDFString.of(metadata.statusModel));
+  }
+  if (metadata?.replyType) {
+    annotation.set(PDFName.of('RT'), PDFName.of(metadata.replyType));
+  }
+  if (metadata?.contents !== undefined && !markupOwnsAnnotationContents(markup)) {
+    annotation.set(PDFName.of('Contents'), PDFString.of(metadata.contents));
+  }
+}
+
+function isValidAnnotationStatus(statusModel: string, status: string): boolean {
+  if (statusModel === 'Marked') {
+    return status === 'Marked' || status === 'Unmarked';
+  }
+  if (statusModel === 'Review') {
+    return status === 'Accepted'
+      || status === 'Rejected'
+      || status === 'Cancelled'
+      || status === 'Completed'
+      || status === 'None';
+  }
+  return false;
+}
+
+function setOptionalPdfString(annotation: PDFDict, key: string, value: string | undefined): void {
+  if (value !== undefined) {
+    annotation.set(PDFName.of(key), PDFString.of(value));
+  }
+}
+
+function markupOwnsAnnotationContents(markup: Markup): boolean {
+  return markup.kind === 'text-box'
+    || markup.kind === 'callout'
+    || markup.kind === 'cloud-plus'
+    || markup.kind === 'dimension'
+    || markup.kind === 'length'
+    || markup.kind === 'polylength'
+    || markup.kind === 'area';
+}
+
+function formatPdfDate(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `D:${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}Z`;
+}
+
 function normalizeRotation(rotation: number): 0 | 90 | 180 | 270 {
   const normalized = ((rotation % 360) + 360) % 360;
   if (normalized === 90 || normalized === 180 || normalized === 270) {
     return normalized;
   }
   return 0;
+}
+
+function normalizeUserUnit(userUnit: number): number {
+  return Number.isFinite(userUnit) && userUnit > 0 ? userUnit : 1;
 }
 
 function stringOrUndefined(value: unknown): string | undefined {
@@ -2650,15 +3724,25 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
 
   if ((subtype === 'square' || subtype === 'rect') && (subject === 'Image' || intent.toLowerCase() === 'squareimage')) {
     const id = managedId ?? rawName ?? `page-${pageIndex}-image-${fallbackIndex}`;
-    const dataUrl = readText(annot.get(PDFName.of('BPImageData'))) ?? '';
-    const mimeType = readText(annot.get(PDFName.of('BPImageMimeType'))) === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+    const payload = readMediaAnnotationPayload(annot, 'BPImageData', 'BPImageMimeType');
+    if (!payload) {
+      return createImportedAnnotationMarkup({
+        id,
+        pageIndex,
+        rect,
+        subtype,
+        subject,
+        intent,
+        contents: readText(annot.get(PDFName.of('Contents'))),
+        source: { annotationId: id, source: 'imported' },
+      });
+    }
     return createImageMarkup({
       id,
       pageIndex,
       appearance: importedAppearance,
       rect,
-      dataUrl: dataUrl || fallbackImageDataUrl(),
-      mimeType,
+      ...payload,
       rotation: readOptionalNumber(annot.get(PDFName.of('Rotation'))),
       source: {
         annotationId: id,
@@ -2669,15 +3753,25 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
 
   if (subtype === 'stamp' && (subject === 'Snapshot' || intent.toLowerCase() === 'stampsnapshot')) {
     const id = managedId ?? rawName ?? `page-${pageIndex}-snapshot-${fallbackIndex}`;
-    const dataUrl = readText(annot.get(PDFName.of('BPSnapshotData'))) ?? '';
-    const mimeType = readText(annot.get(PDFName.of('BPSnapshotMimeType'))) === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+    const payload = readMediaAnnotationPayload(annot, 'BPSnapshotData', 'BPSnapshotMimeType');
+    if (!payload) {
+      return createImportedAnnotationMarkup({
+        id,
+        pageIndex,
+        rect,
+        subtype,
+        subject,
+        intent,
+        contents: readText(annot.get(PDFName.of('Contents'))),
+        source: { annotationId: id, source: 'imported' },
+      });
+    }
     return createSnapshotMarkup({
       id,
       pageIndex,
       appearance: importedAppearance,
       rect,
-      dataUrl: dataUrl || fallbackImageDataUrl(),
-      mimeType,
+      ...payload,
       rotation: readOptionalNumber(annot.get(PDFName.of('Rotation'))),
       source: {
         annotationId: id,
@@ -2693,6 +3787,7 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
       pageIndex,
       appearance: importedAppearance,
       rect,
+      rotation: readOptionalNumber(annot.get(PDFName.of('Rotation'))),
       source: {
         annotationId: id,
         source: 'imported',
@@ -2732,27 +3827,9 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
   }
 
   const normalizedIntent = intent.toLowerCase();
-  if ((subtype === 'square' || subtype === 'rect') && (subject === 'Image' || normalizedIntent === 'squareimage')) {
-    const id = managedId ?? rawName ?? `page-${pageIndex}-image-${fallbackIndex}`;
-    const dataUrl = readText(annot.get(PDFName.of('BPImageData'))) ?? '';
-    const mimeType = readText(annot.get(PDFName.of('BPImageMimeType'))) === 'image/jpeg' ? 'image/jpeg' : 'image/png';
-    return createImageMarkup({
-      id,
-      pageIndex,
-      appearance: importedAppearance,
-      rect,
-      dataUrl: dataUrl || fallbackImageDataUrl(),
-      mimeType,
-      rotation: readOptionalNumber(annot.get(PDFName.of('Rotation'))),
-      source: {
-        annotationId: id,
-        source: 'imported',
-      },
-    });
-  }
 
   if (subtype === 'line') {
-    if (isLengthMeasurementSubject(subject)) {
+    if (isLengthMeasurementSubject(subject) || (normalizedIntent === 'linedimension' && annot.has(PDFName.of('Measure')))) {
       const id = managedId ?? rawName ?? `page-${pageIndex}-length-${fallbackIndex}`;
       const linePoints = readPointArray(annot.get(PDFName.of('L')));
       const [start = pdfPoint(rect.x, rect.y), end = pdfPoint(rect.x + rect.width, rect.y + rect.height)] = linePoints;
@@ -2809,7 +3886,8 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
   }
 
   if (subtype === 'polyline') {
-    const isPolylength = isPolylengthMeasurementSubject(subject);
+    const isPolylength = isPolylengthMeasurementSubject(subject)
+      || (normalizedIntent === 'polylinedimension' && annot.has(PDFName.of('Measure')));
     const id = managedId ?? rawName ?? `page-${pageIndex}-${isPolylength ? 'polylength' : 'polyline'}-${fallbackIndex}`;
     const points = readPointArray(annot.get(PDFName.of('Vertices')));
     const createMarkup = isPolylength ? createPolylengthMarkup : createPolylineMarkup;
@@ -2846,7 +3924,8 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
   }
 
   if (subtype === 'polygon') {
-    const isArea = isAreaMeasurementSubject(subject);
+    const isArea = isAreaMeasurementSubject(subject)
+      || (normalizedIntent === 'polygondimension' && annot.has(PDFName.of('Measure')));
     const id = managedId ?? rawName ?? `page-${pageIndex}-${isArea ? 'area' : 'polygon'}-${fallbackIndex}`;
     const points = readPointArray(annot.get(PDFName.of('Vertices')));
     const createMarkup = isArea ? createAreaMarkup : createPolygonMarkup;
@@ -2885,7 +3964,7 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
 
   if (subtype === 'freetext' && (normalizedIntent === 'freetextcallout' || annot.get(PDFName.of('CL')))) {
     const id = managedId ?? rawName ?? `page-${pageIndex}-callout-${fallbackIndex}`;
-    const textBox = rect;
+    const textBox = readFreeTextBox(annot);
     const linePoints = readPointArray(annot.get(PDFName.of('CL')));
     const text = readText(annot.get(PDFName.of('Contents'))) ?? readText(annot.get(PDFName.of('RC'))) ?? '';
     return createCalloutMarkup({
@@ -2949,6 +4028,34 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
   });
 }
 
+function normalizeNativeCloudPlusLeader(
+  points: readonly PdfPoint[],
+  inlineTextCenter: PdfPoint,
+): readonly [PdfPoint, PdfPoint, PdfPoint] {
+  if (points.length === 0) {
+    return [inlineTextCenter, inlineTextCenter, inlineTextCenter];
+  }
+  const tip = points[0] ?? inlineTextCenter;
+  const connection = points.at(-1) ?? inlineTextCenter;
+  const knee = points.length === 2
+    ? pdfPoint((tip.x + connection.x) * 0.5, (tip.y + connection.y) * 0.5)
+    : points[Math.min(points.length - 2, Math.floor((points.length - 1) * 0.5))] ?? tip;
+  return [tip, knee, connection];
+}
+
+function normalizeNativeCalloutLeader(
+  points: readonly PdfPoint[],
+  textBox: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
+): readonly [PdfPoint, PdfPoint] | readonly [PdfPoint, PdfPoint, PdfPoint] {
+  const connection = points.at(-1) ?? pdfPoint(textBox.x, textBox.y + textBox.height * 0.5);
+  const tip = points[0] ?? connection;
+  if (points.length <= 2) {
+    return [tip, connection];
+  }
+  const knee = points[Math.min(points.length - 2, Math.floor((points.length - 1) * 0.5))] ?? tip;
+  return [tip, knee, connection];
+}
+
 function readFreeTextAppearanceBBox(annot: PDFDict): { x: number; y: number; width: number; height: number } | undefined {
   const normalAppearance = getNormalAppearanceStream(annot);
   if (!normalAppearance) {
@@ -2967,6 +4074,26 @@ function readRect(value: unknown): { x: number; y: number; width: number; height
   const x2 = readNumber(value.get(2));
   const y2 = readNumber(value.get(3));
   return normalizePdfRect([x1, y1, x2, y2]);
+}
+
+function readFreeTextBox(annot: PDFDict): { x: number; y: number; width: number; height: number } {
+  const outer = readRect(annot.get(PDFName.of('Rect'))) ?? { x: 0, y: 0, width: 0, height: 0 };
+  const differences = annot.get(PDFName.of('RD'));
+  if (!(differences instanceof PDFArray) || differences.size() < 4) {
+    return outer;
+  }
+  const left = readOptionalNumber(differences.get(0));
+  const bottom = readOptionalNumber(differences.get(1));
+  const right = readOptionalNumber(differences.get(2));
+  const top = readOptionalNumber(differences.get(3));
+  if ([left, bottom, right, top].some((value) => value === undefined || !Number.isFinite(value) || value < 0)) {
+    return outer;
+  }
+  const width = outer.width - left! - right!;
+  const height = outer.height - bottom! - top!;
+  return width > 0 && height > 0
+    ? { x: outer.x + left!, y: outer.y + bottom!, width, height }
+    : outer;
 }
 
 function readPointArray(value: unknown): readonly PdfPoint[] {
@@ -3047,7 +4174,26 @@ function getNormalAppearanceStream(annot: PDFDict): PDFRawStream | undefined {
     return undefined;
   }
   const normalAppearance = annot.context.lookup(appearance.get(PDFName.of('N')));
-  return normalAppearance instanceof PDFRawStream ? normalAppearance : undefined;
+  if (normalAppearance instanceof PDFRawStream) {
+    return normalAppearance;
+  }
+  if (!isPdfDict(normalAppearance)) {
+    return undefined;
+  }
+  const appearanceState = annot.context.lookup(annot.get(PDFName.of('AS')));
+  if (appearanceState instanceof PDFName) {
+    const selected = annot.context.lookup(normalAppearance.get(appearanceState));
+    if (selected instanceof PDFRawStream) {
+      return selected;
+    }
+  }
+  for (const key of normalAppearance.keys()) {
+    const candidate = annot.context.lookup(normalAppearance.get(key));
+    if (candidate instanceof PDFRawStream) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 function extractPdfTextShowStrings(content: string): readonly string[] {

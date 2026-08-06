@@ -10,12 +10,12 @@ import {
 } from './shellSpacing';
 
 interface LeftRailProps {
-  active: boolean;
+  activePanel: 'pages' | null;
   disabled?: boolean;
-  onToggle: () => void;
+  onToggle: (panel: 'pages') => void;
 }
 
-export function LeftRail({ active, disabled = false, onToggle }: LeftRailProps) {
+export function LeftRail({ activePanel, disabled = false, onToggle }: LeftRailProps) {
   return (
     <aside
       className={cn(
@@ -32,14 +32,15 @@ export function LeftRail({ active, disabled = false, onToggle }: LeftRailProps) 
       >
         <Toggle
           type="button"
-          pressed={active}
+          pressed={activePanel === 'pages'}
           data-testid="left-rail-pages"
-          data-rail-tooltip="Pages"
-          aria-label="Pages"
-          aria-expanded={active}
+          data-rail-tooltip="Page Thumbnails"
+          aria-label="Page Thumbnails"
+          aria-expanded={activePanel === 'pages'}
+          aria-controls="left-sidebar-panel"
           disabled={disabled}
           className={cn('relative shrink-0 p-0', RAIL_BUTTON_SIZE)}
-          onPressedChange={onToggle}
+          onPressedChange={() => onToggle('pages')}
         >
           <PagesRailIcon />
         </Toggle>

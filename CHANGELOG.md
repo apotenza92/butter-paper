@@ -4,10 +4,29 @@ All notable Butter Paper changes are recorded here.
 
 ## [0.0.18]
 
-- Replaced the stable and beta application icons with refreshed, channel-specific
-  artwork across macOS, Windows, and Linux.
-- Regenerated the complete platform icon sets from the canonical SVG sources
-  and added deterministic artwork and package-verification coverage.
+- Redesigned the PDF workspace with clearer toolbar and rail organisation,
+  resizable property panels, concise control hints, constrained menus, and
+  consistent Base UI Nova controls.
+- Expanded annotation workflows with improved snapping and visible snap
+  markers, richer property controls, context menus, page rotation, refined
+  selection and markup geometry, and stronger Cloud, Cloud+, Callout, and
+  measurement behaviour.
+- Added a complete blank-PDF workflow with reusable page settings and integrated
+  it with document tabs, thumbnails, open, Save As, and normal PDF.js rendering.
+- Removed the unused native Rust/PDFium renderer so the desktop app has one
+  supported PDF.js rendering path, fewer native build requirements, and no
+  dormant backend selector.
+- Hardened renderer file access with owner-scoped document and Save As
+  capabilities instead of renderer-supplied privileged paths.
+- Added development source freshness checks, exact build provenance in the
+  development window title, stale-renderer rejection, and repeatable desktop
+  performance measurements for empty, one-page, and 100-page workloads.
+- Replaced the stable and beta application icons with refreshed,
+  channel-specific artwork across macOS, Windows, and Linux, and added a public
+  download page with deterministic copy and asset checks.
+- Expanded deterministic and hosted GUI coverage for the redesigned shell,
+  properties, snapping, context menus, blank PDFs, page layouts, accessibility,
+  constrained windows, and application provenance.
 
 ## [0.0.17]
 

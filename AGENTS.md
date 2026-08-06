@@ -3,7 +3,7 @@
 ## Current architecture
 
 - Butter Paper is a pnpm monorepo with an Electron/React desktop app, a CLI, and shared `core` and `pdf` packages.
-- The normal renderer uses PDF.js. The native Rust/PDFium render core under `native/pdfium-render-core` is an opt-in backend selected with `BP_DESKTOP_RENDER_BACKEND=pdfium`.
+- PDF rendering uses PDF.js.
 - Electron Forge is used only for the development server. Electron Builder owns packaging and release configuration.
 - The renderer uses official shadcn/ui components with Base UI primitives and the Nova style. `apps/desktop/components.json` is the configuration source of truth.
 

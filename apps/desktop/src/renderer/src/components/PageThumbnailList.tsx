@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { Markup, PageModel } from '@butter-paper/core';
+import { getPageScale, type Markup, type PageModel, type PageRotationDirection } from '@butter-paper/core';
 import { isRenderBacklogIdle, type DiagnosticsSnapshot, type LocalPdfSession } from '../services/documentSession';
 import { useRenderCoordinator } from '../services/renderCoordinator';
 import { useSessionVersion } from '../services/sessionHooks';
@@ -19,20 +19,29 @@ const THUMBNAIL_MOTION_SETTLE_MS = 180;
 const THUMBNAIL_ACTIVE_SCROLL_MARGIN_PX = 24;
 const QUICK_VISIBLE_THUMBNAIL_WIDTH = 64;
 const EMPTY_MARKUPS: readonly Markup[] = [];
+export const PAGE_INLINE_ROTATION_ACTIONS_MIN_WIDTH = 280;
+
+export function shouldShowInlinePageRotationActions(viewportWidth: number): boolean {
+  return viewportWidth >= PAGE_INLINE_ROTATION_ACTIONS_MIN_WIDTH;
+}
 
 interface PageThumbnailListProps {
   session: LocalPdfSession;
   pages: readonly PageModel[];
+  mutationDisabled?: boolean;
   onSelectPage: (pageIndex: number, source?: 'thumbnail', previewUrl?: string | null) => void;
+  onSetPageScale: (pageIndex: number) => void;
+  onRotatePage: (pageIndex: number, direction: PageRotationDirection) => void;
 }
 
-export function PageThumbnailList({ session, pages, onSelectPage }: PageThumbnailListProps) {
+export function PageThumbnailList({ session, pages, mutationDisabled = false, onSelectPage, onSetPageScale, onRotatePage }: PageThumbnailListProps) {
   recordComponentRender('PageThumbnailList');
   const renderCoordinator = useRenderCoordinator(session);
   const currentPage = useViewerStore((state) => state.currentPage);
   const pendingThumbnailScroll = useViewerStore((state) => state.pendingThumbnailScroll);
   const consumeThumbnailScroll = useViewerStore((state) => state.consumeThumbnailScroll);
   const documentMarkups = useViewerStore((state) => state.document?.document.markups ?? EMPTY_MARKUPS);
+  const documentPageScales = useViewerStore((state) => state.document?.document.pageScales ?? []);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
@@ -147,6 +156,7 @@ export function PageThumbnailList({ session, pages, onSelectPage }: PageThumbnai
   }, []);
 
   const previewWidth = useMemo(() => computeThumbnailPreviewWidth(viewportWidth), [viewportWidth]);
+  const showInlineRotationActions = shouldShowInlinePageRotationActions(viewportWidth);
   const { layouts, totalHeight } = useMemo(() => buildThumbnailLayouts(pages, previewWidth), [pages, previewWidth]);
   const visibleRange = useMemo(
     () => computeVisibleThumbnailRange(layouts, scrollTop, viewportHeight, THUMBNAIL_VISIBLE_OVERSCAN, 0),
@@ -238,7 +248,7 @@ export function PageThumbnailList({ session, pages, onSelectPage }: PageThumbnai
     for (const layoutIndex of candidates) {
       const page = pages[layoutIndex];
       const layout = layouts[layoutIndex];
-      if (!page || !layout || session.getReusablePagePreviewInfo(page.index)) {
+      if (!page || !layout || session.getReusablePagePreviewInfo(page.index, 0, page.rotation)) {
         continue;
       }
 
@@ -251,6 +261,7 @@ export function PageThumbnailList({ session, pages, onSelectPage }: PageThumbnai
         priority: 50 - Math.abs(page.index - currentPage),
         urgency: 'prefetch',
         requestClass: 'warming',
+        rotation: page.rotation,
         signal: abortController.signal,
       }).catch(() => undefined);
     }
@@ -295,6 +306,7 @@ export function PageThumbnailList({ session, pages, onSelectPage }: PageThumbnai
           priority: 6000 - Math.abs(page.index - visiblePriorityAnchor),
           urgency: 'visible',
           requestClass: 'visible-thumbnail',
+          rotation: page.rotation,
           abortStartedRender: false,
         }).catch(() => undefined);
       }
@@ -311,6 +323,7 @@ export function PageThumbnailList({ session, pages, onSelectPage }: PageThumbnai
         priority: (isStrictlyVisible ? 5000 : 1000) - Math.abs(page.index - visiblePriorityAnchor),
         urgency: 'visible',
         requestClass: 'visible-thumbnail',
+        rotation: page.rotation,
         abortStartedRender: false,
       }).catch(() => undefined);
     }
@@ -357,11 +370,16 @@ export function PageThumbnailList({ session, pages, onSelectPage }: PageThumbnai
               previewHeight={layout.previewHeight}
               itemHeight={layout.itemHeight}
               markups={markupsByPage.get(page.index) ?? EMPTY_MARKUPS}
+              pageScale={getPageScale({ pageScales: documentPageScales }, page.index)}
+              mutationDisabled={mutationDisabled}
               isActive={page.index === currentPage}
+              showInlineRotationActions={showInlineRotationActions}
               renderPriority={(isStrictlyVisible ? 2000 : 1000) - Math.abs(page.index - visiblePriorityAnchor)}
               renderUrgency={isStrictlyVisible ? 'visible' : 'prefetch'}
               sessionVersion={sessionVersion}
               onSelect={(previewUrl) => onSelectPage(page.index, 'thumbnail', previewUrl)}
+              onSetPageScale={() => onSetPageScale(page.index)}
+              onRotate={(direction) => onRotatePage(page.index, direction)}
             />
           );
         })}

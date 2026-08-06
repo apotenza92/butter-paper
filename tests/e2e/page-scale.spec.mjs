@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { getDiagnostics, launchButterPaper, openFixturePdf, resolveDesktopEntryPoint } from './helpers/electron.mjs';
 
 test.describe('Page scale foundation', () => {
-  test('sets a preset scale from the viewer toolbar and applies it to all pages', async () => {
+  test('sets a preset scale from the page thumbnail actions and applies it to all pages', async () => {
     const entryPoint = resolveDesktopEntryPoint();
     test.skip(!entryPoint, 'Desktop app entrypoint not available yet');
 
@@ -18,7 +18,7 @@ test.describe('Page scale foundation', () => {
     }).toBe(6);
 
     await expect.poll(async () => (await getActiveDocument(page))?.pageScales?.length ?? 0).toBe(0);
-    await page.getByTestId('viewer-set-page-scale').click();
+    await page.getByTestId('page-thumbnail-set-scale-1').click();
     await expect(page.getByTestId('page-scale-dialog')).toBeVisible();
     await chooseSelectOption(page, 'page-scale-preset-select', '1:100');
     await chooseSelectOption(page, 'page-scale-pages', 'All Pages');
@@ -185,7 +185,7 @@ test.describe('Page scale foundation', () => {
 
     await page.keyboard.press('Escape');
     await expect(dialog).toHaveCount(0);
-    await expect(page.getByTestId('viewer-set-page-scale')).toBeFocused();
+    await expect(page.getByTestId('page-thumbnail-set-scale-1')).toBeFocused();
     await expect.poll(async () => (await getActiveDocument(page))?.pageScales?.length ?? 0).toBe(0);
 
     await app.close();
@@ -193,7 +193,7 @@ test.describe('Page scale foundation', () => {
 });
 
 async function openPageScaleDialog(page) {
-  await page.getByTestId('viewer-set-page-scale').click();
+  await page.getByTestId('page-thumbnail-set-scale-1').click();
   await expect(page.getByTestId('page-scale-dialog')).toBeVisible();
 }
 

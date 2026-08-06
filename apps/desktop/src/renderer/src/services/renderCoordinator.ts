@@ -1,11 +1,12 @@
 import { useMemo } from 'react';
-import type { RenderCorePdfRect } from '../../../shared/protocol';
+import type { PdfRect } from '../../../shared/protocol';
 import type {
   LocalPdfSession,
   PageRenderSurface,
   RenderRequestClass,
   ReusablePageImage,
 } from './documentSession';
+import type { PageModel } from '@butter-paper/core';
 
 export type RenderCoordinatorRole = 'target-page' | 'main-page' | 'overview-page' | 'sidebar-thumbnail';
 export type RenderCoordinatorQuality = 'stale-preview' | 'preview' | 'full' | 'detail';
@@ -46,7 +47,8 @@ export interface CoordinatedRenderOptions {
   readonly requestClass?: RenderRequestClass;
   readonly abortStartedRender?: boolean;
   readonly signal?: AbortSignal;
-  readonly cropPdfRect?: RenderCorePdfRect;
+  readonly cropPdfRect?: PdfRect;
+  readonly rotation?: PageModel['rotation'];
 }
 
 export interface RenderCoordinatorDiagnostics {
@@ -97,11 +99,13 @@ export class RenderCoordinator {
     minimumDisplayWidth,
     role,
     hasDisplayedSource,
+    rotation,
   }: {
     pageIndex: number;
     minimumDisplayWidth: number;
     role: RenderCoordinatorRole;
     hasDisplayedSource: boolean;
+    rotation?: PageModel['rotation'];
   }): ReusablePageImage | null {
     if (hasDisplayedSource) {
       globalRenderCoordinatorDiagnostics.staleRetentions += 1;
@@ -110,10 +114,10 @@ export class RenderCoordinator {
 
     globalRenderCoordinatorDiagnostics.sourceSelections += 1;
     const source = role === 'sidebar-thumbnail'
-      ? this.session.getBestReusableThumbnailImage(pageIndex, minimumDisplayWidth)
-        ?? this.session.getBestReusablePageImage(pageIndex, minimumDisplayWidth)
-      : this.session.getBestReusablePageImage(pageIndex, minimumDisplayWidth)
-        ?? this.session.getBestReusableThumbnailImage(pageIndex, minimumDisplayWidth);
+      ? this.session.getBestReusableThumbnailImage(pageIndex, minimumDisplayWidth, rotation)
+        ?? this.session.getBestReusablePageImage(pageIndex, minimumDisplayWidth, rotation)
+      : this.session.getBestReusablePageImage(pageIndex, minimumDisplayWidth, rotation)
+        ?? this.session.getBestReusableThumbnailImage(pageIndex, minimumDisplayWidth, rotation);
 
     if (source) {
       globalRenderCoordinatorDiagnostics.blankAvoidanceSelections += 1;
@@ -122,8 +126,12 @@ export class RenderCoordinator {
     return source;
   }
 
-  getReusablePreviewUrl(pageIndex: number, minimumRenderedWidth?: number): string | null {
-    return this.session.getReusablePagePreviewInfo(pageIndex, minimumRenderedWidth)?.objectUrl ?? null;
+  getReusablePreviewUrl(
+    pageIndex: number,
+    minimumRenderedWidth?: number,
+    rotation?: PageModel['rotation'],
+  ): string | null {
+    return this.session.getReusablePagePreviewInfo(pageIndex, minimumRenderedWidth, rotation)?.objectUrl ?? null;
   }
 
   consumePrimedPagePreview(pageIndex: number): string | null {
@@ -168,7 +176,7 @@ export class RenderCoordinator {
     pageIndex: number,
     zoom: number,
     pixelRatio: number,
-    options: Pick<CoordinatedRenderOptions, 'priority' | 'urgency' | 'requestClass'>,
+    options: Pick<CoordinatedRenderOptions, 'priority' | 'urgency' | 'requestClass' | 'rotation'>,
   ): void {
     this.recordIntent(role, options);
     this.session.updatePageRenderPriority(pageIndex, zoom, pixelRatio, options);
@@ -179,7 +187,7 @@ export class RenderCoordinator {
     pageIndex: number,
     zoom: number,
     pixelRatio: number,
-    options: Pick<CoordinatedRenderOptions, 'priority' | 'urgency' | 'requestClass'>,
+    options: Pick<CoordinatedRenderOptions, 'priority' | 'urgency' | 'requestClass' | 'rotation'>,
   ): void {
     this.recordIntent(role, options);
     this.session.updatePageBitmapRenderPriority(pageIndex, zoom, pixelRatio, options);
@@ -190,7 +198,7 @@ export class RenderCoordinator {
     pageIndex: number,
     bounds: ThumbnailRenderBounds,
     pixelRatio: number,
-    options: Pick<CoordinatedRenderOptions, 'priority' | 'urgency' | 'requestClass'>,
+    options: Pick<CoordinatedRenderOptions, 'priority' | 'urgency' | 'requestClass' | 'rotation'>,
   ): void {
     this.recordIntent(role, options);
     this.session.updateThumbnailRenderPriority(pageIndex, bounds, pixelRatio, options);

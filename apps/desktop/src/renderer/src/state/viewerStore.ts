@@ -24,6 +24,8 @@ export interface LoadedDocumentState extends LoadedDocumentPayload {
   dirty: boolean;
 }
 
+export type LeftSidebarPanel = 'pages';
+
 export type SnapTarget = 'endpoint' | 'midpoint' | 'center' | 'intersection' | 'nearest';
 export type ScrollWheelMode = 'zoom' | 'scroll';
 export type CadViewOrganisation = 'columns' | 'rows';
@@ -43,7 +45,7 @@ interface ViewerState {
   activeTool: ToolMode;
   leftSidebarOpen: boolean;
   rightSidebarOpen: boolean;
-  leftSidebarPanel: 'pages';
+  leftSidebarPanel: LeftSidebarPanel;
   rightSidebarPanel: 'tools';
   leftSidebarWidth: number;
   rightSidebarWidth: number;
@@ -68,11 +70,12 @@ interface ViewerState {
   updateDocument: (updater: (document: DocumentModel) => DocumentModel, markDirty?: boolean) => void;
   setZoom: (zoom: number) => void;
   setActiveTool: (tool: ToolMode) => void;
+  resetToSelectionTool: () => void;
   setLeftSidebarWidth: (width: number) => void;
   setRightSidebarWidth: (width: number) => void;
-  toggleLeftSidebar: (panel?: 'pages') => void;
+  toggleLeftSidebar: (panel?: LeftSidebarPanel) => void;
   toggleRightSidebar: (panel?: 'tools') => void;
-  openLeftSidebar: (panel: 'pages') => void;
+  openLeftSidebar: (panel: LeftSidebarPanel) => void;
   openRightSidebar: (panel: 'tools') => void;
   collapseLeftSidebar: () => void;
   collapseRightSidebar: () => void;
@@ -98,10 +101,10 @@ interface ViewerState {
   setErrorMessage: (message: string | null) => void;
 }
 
-export const DEFAULT_LEFT_SIDEBAR_WIDTH = 220;
+export const DEFAULT_LEFT_SIDEBAR_WIDTH = 300;
 export const MIN_LEFT_SIDEBAR_WIDTH = 180;
 export const MAX_LEFT_SIDEBAR_WIDTH = 360;
-export const DEFAULT_RIGHT_SIDEBAR_WIDTH = 280;
+export const DEFAULT_RIGHT_SIDEBAR_WIDTH = 300;
 export const MIN_RIGHT_SIDEBAR_WIDTH = 220;
 export const MAX_RIGHT_SIDEBAR_WIDTH = 420;
 export const DEFAULT_PAGES_PER_COLUMN = 10;
@@ -163,8 +166,9 @@ const initialState = {
 export const useViewerStore = create<ViewerState>((set, get) => ({
   ...initialState,
   setDocument: (document) =>
-    set(() => ({
+    set((state) => ({
       document: document ? { ...document, dirty: false } : null,
+      activeTool: state.activeTool,
       leftSidebarOpen: false,
       rightSidebarOpen: false,
       currentPage: 0,
@@ -187,7 +191,6 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
       if (!state.document) {
         return state;
       }
-
       return {
         document: {
           ...state.document,
@@ -198,6 +201,11 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
     }),
   setZoom: (zoom) => set({ zoom }),
   setActiveTool: (activeTool) => set({ activeTool, postPlacement: null }),
+  resetToSelectionTool: () => set({
+    activeTool: 'select',
+    selectedMarkupIds: [],
+    postPlacement: null,
+  }),
   setLeftSidebarWidth: (leftSidebarWidth) => set({ leftSidebarWidth: clampLeftSidebarWidth(leftSidebarWidth) }),
   setRightSidebarWidth: (rightSidebarWidth) => set({ rightSidebarWidth: clampRightSidebarWidth(rightSidebarWidth) }),
   toggleLeftSidebar: (panel = 'pages') =>

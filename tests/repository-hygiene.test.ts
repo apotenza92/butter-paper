@@ -51,6 +51,9 @@ describe('repository hygiene release guardrails', () => {
     const hygiene = readFileSync('scripts/check-repository-hygiene.mjs', 'utf8');
     const documentTabBar = readFileSync('apps/desktop/src/renderer/src/components/DocumentTabBar.tsx', 'utf8');
     const blankPdfSettings = readFileSync('apps/desktop/src/renderer/src/components/BlankPdfSettingsPopover.tsx', 'utf8');
+    const blankPdfSettingsFields = readFileSync('apps/desktop/src/renderer/src/components/BlankPdfSettingsFields.tsx', 'utf8');
+    const newBlankPdfDialog = readFileSync('apps/desktop/src/renderer/src/components/NewBlankPdfDialog.tsx', 'utf8');
+    const appRenderer = readFileSync('apps/desktop/src/renderer/src/app.tsx', 'utf8');
     const closableTab = readFileSync('apps/desktop/src/renderer/src/components/domain-ui/ClosableDocumentTab.tsx', 'utf8');
     const splitButtonSegment = readFileSync('apps/desktop/src/renderer/src/components/domain-ui/SplitButtonSegment.tsx', 'utf8');
     const styles = readFileSync('apps/desktop/src/renderer/src/styles.css', 'utf8');
@@ -80,7 +83,14 @@ describe('repository hygiene release guardrails', () => {
     expect(blankPdfSettings).toContain('<SplitButtonSegment');
     expect(blankPdfSettings).toContain('data-testid="document-tab-new-pdf-settings"');
     expect(blankPdfSettings).toContain('data-testid="new-blank-pdf-settings"');
+    expect(blankPdfSettings).toContain('<BlankPdfSettingsFields');
     expect(blankPdfSettings).not.toContain('Change default');
+    expect(blankPdfSettingsFields).toContain('formatBlankPdfPaperPresetOption(value, settings.orientation)');
+    expect(newBlankPdfDialog).toContain('<DialogTitle>New Blank PDF</DialogTitle>');
+    expect(newBlankPdfDialog).toContain('testIdPrefix="new-blank-pdf-dialog"');
+    expect(newBlankPdfDialog).toContain('data-testid="new-blank-pdf-dialog-create"');
+    expect(appRenderer).toContain('onNewPdf={() => setNewBlankPdfDialogOpen(true)}');
+    expect(appRenderer).toContain('onNewPdf={() => void handleCreateDefaultBlankPdf()}');
     expect(documentTabBar).not.toContain('<div className="min-w-0 flex-1" aria-hidden="true"');
     expect(closableTab).not.toMatch(/\bdata-active=|\bjustify-start\b|\bmin-w-24\b|\bmax-w-\[|\bflex-none\b|\btouch-none\b|\bcursor-default\b/);
     expect(closableTab).toContain('className="h-8! bg-background! data-active:bg-muted! group-data-[dragging]/document-tab:after:opacity-0!"');
@@ -91,20 +101,28 @@ describe('repository hygiene release guardrails', () => {
     expect(styles).not.toMatch(/\[data-domain-ui-exception="closable-document-tab"\][^{]*\[data-slot="tabs-trigger"\]/);
   });
 
-  it('keeps shell controls on stock Nova treatments', () => {
+  it('keeps shell controls and top rail actions on stock neutral Nova treatments', () => {
     const leftRail = readFileSync('apps/desktop/src/renderer/src/components/LeftRail.tsx', 'utf8');
     const rightRail = readFileSync('apps/desktop/src/renderer/src/components/RightRail.tsx', 'utf8');
+    const snapSettings = readFileSync('apps/desktop/src/renderer/src/components/SnapSettingsMenu.tsx', 'utf8');
     const menuBar = readFileSync('apps/desktop/src/renderer/src/components/AppMenuBar.tsx', 'utf8');
     const viewerToolbar = readFileSync('apps/desktop/src/renderer/src/components/ViewerToolbar.tsx', 'utf8');
 
     expect(leftRail).not.toContain('variant="outline"');
     expect(rightRail).not.toContain('variant="outline"');
+    expect(snapSettings.match(/variant="outline"/g)).toHaveLength(2);
     expect(leftRail).not.toContain('RailSettingsPopover');
     expect(rightRail).not.toContain('RailSettingsPopover');
     expect(leftRail).not.toContain('data-expanded');
     expect(rightRail).not.toContain('data-expanded');
-    expect(rightRail).toContain('heading="Review"');
-    expect(rightRail).toContain('heading="Draw"');
+    expect(rightRail).toContain("const TOP_RAIL_TOOL_IDS = ['select', 'pan'] as const;");
+    expect(rightRail).not.toContain("{ group: 'general', heading: 'General' }");
+    expect(rightRail).toContain('data-testid="right-rail-general-heading"');
+    expect(rightRail).toContain("{ group: 'markup', heading: 'Markup' }");
+    expect(rightRail).toContain("{ group: 'draw', heading: 'Draw' }");
+    expect(rightRail).toContain("{ group: 'measure', heading: 'Measure' }");
+    expect(rightRail).toContain('{shouldShowRightRailHeadings(columnCount) ? (');
+    expect(rightRail).toContain('data-testid={`right-rail-group-divider-${group}`}');
     expect(menuBar).toContain('data-testid="menu-quit"');
     expect(menuBar).toContain('<X aria-hidden="true" />');
     expect(menuBar).toContain('Quit {productName}');

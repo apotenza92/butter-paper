@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 
 const external = [
   'electron',
+  'node:crypto',
   'node:fs',
   'node:fs/promises',
   'node:http',

@@ -15,7 +15,7 @@ declare global {
       switchToTab: (indexOrPath: number | string) => Promise<void>;
       closeTab: (indexOrPath: number | string) => Promise<void>;
       saveCurrentDocument: () => Promise<void>;
-      saveCurrentDocumentAs: (filePath?: string) => Promise<void>;
+      saveCurrentDocumentAs: (filePath: string) => Promise<void>;
       getDiagnostics: () => ViewerDiagnostics;
       getPerfSnapshot: () => PerfSnapshot;
       resetPerfSnapshot: () => void;

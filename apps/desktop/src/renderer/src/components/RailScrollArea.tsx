@@ -1,5 +1,5 @@
 import { Ellipsis } from 'lucide-react';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type WheelEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode, type WheelEvent } from 'react';
 import {
   CONTROL_ICON_STROKE_WIDTH,
   RAIL_BUTTON_GAP,
@@ -13,6 +13,8 @@ const RAIL_OVERFLOW_TOOLTIP = 'Scroll to see other tools';
 const RAIL_OVERFLOW_BOTTOM_FADE = 'linear-gradient(to top, var(--background) 0%, var(--background) 72%, transparent 100%)';
 const RAIL_OVERFLOW_TOP_FADE = 'linear-gradient(to bottom, var(--background) 0%, var(--background) 72%, transparent 100%)';
 const RAIL_TOOLTIP_ATTRIBUTE = 'data-rail-tooltip';
+const RAIL_DOUBLE_CLICK_TOOLTIP_ATTRIBUTE = 'data-rail-double-click-tooltip';
+const RAIL_DOUBLE_CLICK_TOOLTIP_DURATION_MS = 2_000;
 
 interface RailTooltipState {
   label: string;
@@ -41,6 +43,7 @@ export function resolveRailTooltipAnchor(
 
 interface RailScrollAreaProps {
   children: ReactNode;
+  contentClassName?: string;
   overflowIndicatorTestId: string;
   overflowSide: 'left' | 'right';
   viewportTestId?: string;
@@ -48,6 +51,7 @@ interface RailScrollAreaProps {
 
 export function RailScrollArea({
   children,
+  contentClassName,
   overflowIndicatorTestId,
   overflowSide,
   viewportTestId,
@@ -58,7 +62,11 @@ export function RailScrollArea({
   const [canScrollUp, setCanScrollUp] = useState(false);
   const [canScrollDown, setCanScrollDown] = useState(false);
   const [tooltip, setTooltip] = useState<RailTooltipState | null>(null);
+  const [doubleClickTooltip, setDoubleClickTooltip] = useState<RailTooltipState | null>(null);
   const activeTooltipTriggerRef = useRef<HTMLElement | null>(null);
+  const doubleClickTooltipTriggerRef = useRef<HTMLElement | null>(null);
+  const suppressedTooltipTriggerRef = useRef<HTMLElement | null>(null);
+  const doubleClickTooltipTimerRef = useRef<number | null>(null);
   const canShowTooltip = useCallback(() => {
     const trigger = activeTooltipTriggerRef.current;
     if (!trigger) {
@@ -81,6 +89,27 @@ export function RailScrollArea({
     setTooltip(null);
   }, [hideDelayedTooltip]);
 
+  const clearDoubleClickTooltipTimer = useCallback(() => {
+    if (doubleClickTooltipTimerRef.current === null) {
+      return;
+    }
+    window.clearTimeout(doubleClickTooltipTimerRef.current);
+    doubleClickTooltipTimerRef.current = null;
+  }, []);
+
+  const hideDoubleClickTooltip = useCallback((suppressOrdinaryTooltip = false) => {
+    const trigger = doubleClickTooltipTriggerRef.current;
+    clearDoubleClickTooltipTimer();
+    doubleClickTooltipTriggerRef.current = null;
+    suppressedTooltipTriggerRef.current = suppressOrdinaryTooltip ? trigger : null;
+    setDoubleClickTooltip(null);
+  }, [clearDoubleClickTooltipTimer]);
+
+  const hideAllTooltips = useCallback(() => {
+    hideDoubleClickTooltip();
+    hideTooltip();
+  }, [hideDoubleClickTooltip, hideTooltip]);
+
   const updateTooltip = useCallback((target: EventTarget | null, clearWhenMissing = true, immediate = false) => {
     if (!(target instanceof HTMLElement)) {
       if (clearWhenMissing) {
@@ -96,6 +125,17 @@ export function RailScrollArea({
       }
       return;
     }
+
+    if (doubleClickTooltipTriggerRef.current === trigger) {
+      return;
+    }
+    if (doubleClickTooltipTriggerRef.current) {
+      hideDoubleClickTooltip();
+    }
+    if (suppressedTooltipTriggerRef.current === trigger) {
+      return;
+    }
+    suppressedTooltipTriggerRef.current = null;
 
     const label = trigger.getAttribute(RAIL_TOOLTIP_ATTRIBUTE);
     if (!label) {
@@ -120,7 +160,38 @@ export function RailScrollArea({
     } else if (!isSameTrigger) {
       showTooltipAfterDelay();
     }
-  }, [canShowTooltip, hideTooltip, showTooltip, showTooltipAfterDelay]);
+  }, [canShowTooltip, hideDoubleClickTooltip, hideTooltip, showTooltip, showTooltipAfterDelay]);
+
+  const showDoubleClickTooltip = useCallback((event: MouseEvent<HTMLDivElement>) => {
+    if (event.detail > 1 || !(event.target instanceof HTMLElement) || !rootRef.current) {
+      return;
+    }
+
+    const trigger = event.target.closest<HTMLElement>(`[${RAIL_DOUBLE_CLICK_TOOLTIP_ATTRIBUTE}]`);
+    const label = trigger?.getAttribute(RAIL_DOUBLE_CLICK_TOOLTIP_ATTRIBUTE);
+    if (!trigger || !label || !contentRef.current?.contains(trigger)) {
+      return;
+    }
+
+    const triggerRect = trigger.getBoundingClientRect();
+    const rootRect = rootRef.current.getBoundingClientRect();
+    clearDoubleClickTooltipTimer();
+    hideTooltip();
+    suppressedTooltipTriggerRef.current = null;
+    doubleClickTooltipTriggerRef.current = trigger;
+    setDoubleClickTooltip({
+      label,
+      ...resolveRailTooltipAnchor(triggerRect, rootRect),
+    });
+    doubleClickTooltipTimerRef.current = window.setTimeout(() => {
+      doubleClickTooltipTimerRef.current = null;
+      doubleClickTooltipTriggerRef.current = null;
+      suppressedTooltipTriggerRef.current = trigger;
+      setDoubleClickTooltip(null);
+    }, RAIL_DOUBLE_CLICK_TOOLTIP_DURATION_MS);
+  }, [clearDoubleClickTooltipTimer, hideTooltip]);
+
+  useEffect(() => clearDoubleClickTooltipTimer, [clearDoubleClickTooltipTimer]);
 
   const updateOverflow = useCallback(() => {
     const viewport = viewportRef.current;
@@ -135,26 +206,31 @@ export function RailScrollArea({
     hideTooltip();
   }, [hideTooltip]);
 
+  const handleViewportChange = useCallback(() => {
+    hideDoubleClickTooltip();
+    updateOverflow();
+  }, [hideDoubleClickTooltip, updateOverflow]);
+
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) {
       return;
     }
 
-    const observer = new ResizeObserver(updateOverflow);
+    const observer = new ResizeObserver(handleViewportChange);
     observer.observe(viewport);
     if (contentRef.current) {
       observer.observe(contentRef.current);
     }
 
-    viewport.addEventListener('scroll', updateOverflow, { passive: true });
+    viewport.addEventListener('scroll', handleViewportChange, { passive: true });
     updateOverflow();
 
     return () => {
       observer.disconnect();
-      viewport.removeEventListener('scroll', updateOverflow);
+      viewport.removeEventListener('scroll', handleViewportChange);
     };
-  }, [updateOverflow]);
+  }, [handleViewportChange, updateOverflow]);
 
   useEffect(() => {
     updateOverflow();
@@ -168,8 +244,8 @@ export function RailScrollArea({
 
     event.preventDefault();
     viewport.scrollTop += event.deltaY;
-    updateOverflow();
-  }, [updateOverflow]);
+    handleViewportChange();
+  }, [handleViewportChange]);
 
   const tooltipSide = overflowSide === 'left' ? 'left' : 'right';
 
@@ -220,21 +296,35 @@ export function RailScrollArea({
       >
         <div
           ref={contentRef}
-          className={['flex flex-col items-center', RAIL_BUTTON_GAP].join(' ')}
+          className={['flex flex-col items-center', RAIL_BUTTON_GAP, contentClassName].filter(Boolean).join(' ')}
           onBlurCapture={(event) => {
             if (!contentRef.current?.contains(event.relatedTarget as Node | null)) {
-              hideTooltip();
+              hideAllTooltips();
             }
           }}
+          onClick={showDoubleClickTooltip}
+          onDoubleClick={() => hideDoubleClickTooltip(true)}
           onFocusCapture={(event) => updateTooltip(event.target, true, true)}
-          onPointerLeave={hideTooltip}
+          onPointerLeave={hideAllTooltips}
           onPointerMove={(event) => updateTooltip(event.target)}
           onPointerOver={(event) => updateTooltip(event.target)}
         >
           {children}
         </div>
       </div>
-      {tooltip && tooltipVisible ? (
+      {doubleClickTooltip ? (
+        <Tooltip
+          side={tooltipSide}
+          style={{
+            left: doubleClickTooltip.left,
+            top: doubleClickTooltip.top,
+            width: doubleClickTooltip.width,
+          }}
+          testId="rail-double-click-tooltip"
+        >
+          {doubleClickTooltip.label}
+        </Tooltip>
+      ) : tooltip && tooltipVisible ? (
         <Tooltip
           side={tooltipSide}
           style={{ left: tooltip.left, top: tooltip.top, width: tooltip.width }}

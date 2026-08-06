@@ -30,6 +30,27 @@ export interface SnapResult {
   readonly distancePx: number;
 }
 
+export type OrthogonalAxis = 'horizontal' | 'vertical';
+
+export interface OrthogonalConstraint {
+  readonly anchor: PdfPoint;
+  readonly point: PdfPoint;
+  readonly axis: OrthogonalAxis;
+}
+
+export type AcquiredTrackingPoint = Extract<SnapCandidate, { readonly kind: 'point' }>;
+
+export interface ObjectSnapTrackingGuide {
+  readonly origin: PdfPoint;
+  readonly axis: OrthogonalAxis;
+}
+
+export interface ObjectSnapTrackingResult {
+  readonly point: PdfPoint;
+  readonly guides: readonly ObjectSnapTrackingGuide[];
+  readonly distancePx: number;
+}
+
 export interface AnnotationSnapOptions {
   readonly excludeMarkupIds?: ReadonlySet<string> | readonly string[];
 }
@@ -41,6 +62,8 @@ export interface FindSnapOptions {
 }
 
 const DEFAULT_SNAP_TOLERANCE_PX = 8;
+const DEFAULT_TRACKING_TOLERANCE_PX = 6;
+const MAX_ACQUIRED_TRACKING_POINTS = 4;
 const MAX_INTERSECTION_EDGE_PAIRS = 50000;
 const pdfContentSnapCandidateCache = new WeakMap<PdfPageGeometryIndex, readonly SnapCandidate[]>();
 
@@ -139,6 +162,134 @@ export function findNearestSnapPoint(
   }
 
   return best;
+}
+
+export function constrainPointOrthogonally(anchor: PdfPoint, point: PdfPoint): OrthogonalConstraint {
+  const dx = point.x - anchor.x;
+  const dy = point.y - anchor.y;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return {
+      anchor,
+      point: pdfPoint(point.x, anchor.y),
+      axis: 'horizontal',
+    };
+  }
+
+  return {
+    anchor,
+    point: pdfPoint(anchor.x, point.y),
+    axis: 'vertical',
+  };
+}
+
+export function isPointOnOrthogonalConstraint(
+  point: PdfPoint,
+  constraint: Pick<OrthogonalConstraint, 'anchor' | 'axis'>,
+  epsilon = 0.0001,
+): boolean {
+  return constraint.axis === 'horizontal'
+    ? Math.abs(point.y - constraint.anchor.y) <= epsilon
+    : Math.abs(point.x - constraint.anchor.x) <= epsilon;
+}
+
+export function trackingPointKey(point: Pick<AcquiredTrackingPoint, 'point'>): string {
+  return `${Math.round(point.point.x * 1000)}:${Math.round(point.point.y * 1000)}`;
+}
+
+export function toggleAcquiredTrackingPoint(
+  acquired: readonly AcquiredTrackingPoint[],
+  candidate: AcquiredTrackingPoint,
+  maximum = MAX_ACQUIRED_TRACKING_POINTS,
+): readonly AcquiredTrackingPoint[] {
+  const key = trackingPointKey(candidate);
+  const existingIndex = acquired.findIndex((point) => trackingPointKey(point) === key);
+  if (existingIndex >= 0) {
+    return acquired.filter((_, index) => index !== existingIndex);
+  }
+
+  const next = [...acquired, candidate];
+  return next.length > maximum ? next.slice(next.length - maximum) : next;
+}
+
+export function findObjectSnapTrackingPoint(
+  point: PdfPoint,
+  acquired: readonly AcquiredTrackingPoint[],
+  transform: Pick<PageTransform, 'zoom'>,
+  options: {
+    readonly tolerancePx?: number;
+    readonly allowedGuideAxes?: readonly OrthogonalAxis[];
+  } = {},
+): ObjectSnapTrackingResult | null {
+  if (acquired.length === 0) {
+    return null;
+  }
+
+  const tolerancePx = options.tolerancePx ?? DEFAULT_TRACKING_TOLERANCE_PX;
+  const zoom = Math.max(transform.zoom, Number.EPSILON);
+  const allowedAxes = new Set<OrthogonalAxis>(options.allowedGuideAxes ?? ['horizontal', 'vertical']);
+  let nearestHorizontal: { readonly guide: ObjectSnapTrackingGuide; readonly distancePx: number } | null = null;
+  let nearestVertical: { readonly guide: ObjectSnapTrackingGuide; readonly distancePx: number } | null = null;
+
+  for (const acquiredPoint of acquired) {
+    if (allowedAxes.has('horizontal')) {
+      const distancePx = Math.abs(point.y - acquiredPoint.point.y) * zoom;
+      if (distancePx <= tolerancePx && (!nearestHorizontal || distancePx < nearestHorizontal.distancePx)) {
+        nearestHorizontal = {
+          guide: { origin: acquiredPoint.point, axis: 'horizontal' },
+          distancePx,
+        };
+      }
+    }
+
+    if (allowedAxes.has('vertical')) {
+      const distancePx = Math.abs(point.x - acquiredPoint.point.x) * zoom;
+      if (distancePx <= tolerancePx && (!nearestVertical || distancePx < nearestVertical.distancePx)) {
+        nearestVertical = {
+          guide: { origin: acquiredPoint.point, axis: 'vertical' },
+          distancePx,
+        };
+      }
+    }
+  }
+
+  if (
+    nearestHorizontal
+    && nearestVertical
+    && trackingPointKey({ point: nearestHorizontal.guide.origin }) !== trackingPointKey({ point: nearestVertical.guide.origin })
+  ) {
+    const trackedPoint = pdfPoint(nearestVertical.guide.origin.x, nearestHorizontal.guide.origin.y);
+    return {
+      point: trackedPoint,
+      guides: [nearestHorizontal.guide, nearestVertical.guide],
+      distancePx: Math.sqrt(squaredDistance(point, trackedPoint)) * zoom,
+    };
+  }
+
+  if (nearestHorizontal && nearestVertical) {
+    if (nearestHorizontal.distancePx <= nearestVertical.distancePx) {
+      nearestVertical = null;
+    } else {
+      nearestHorizontal = null;
+    }
+  }
+
+  if (nearestHorizontal) {
+    return {
+      point: pdfPoint(point.x, nearestHorizontal.guide.origin.y),
+      guides: [nearestHorizontal.guide],
+      distancePx: nearestHorizontal.distancePx,
+    };
+  }
+
+  if (nearestVertical) {
+    return {
+      point: pdfPoint(nearestVertical.guide.origin.x, point.y),
+      guides: [nearestVertical.guide],
+      distancePx: nearestVertical.distancePx,
+    };
+  }
+
+  return null;
 }
 
 function snapCandidatesForPdfContentPrimitive(primitive: PdfContentPrimitive): readonly SnapCandidate[] {

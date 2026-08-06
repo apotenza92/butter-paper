@@ -1,7 +1,26 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Separator } from '@/components/ui/separator';
 import { Spinner } from '@/components/ui/spinner';
-import { createPageTransform, type Markup, type PageModel } from '@butter-paper/core';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import {
+  createPageTransform,
+  formatPageScaleRatio,
+  type Markup,
+  type PageModel,
+  type PageRotationDirection,
+  type PageScale,
+} from '@butter-paper/core';
+import { MoreHorizontal, RotateCcw, RotateCw, ScanLine } from 'lucide-react';
 import { isRenderUnavailableError, type LocalPdfSession, type PageRenderSurface } from '../services/documentSession';
 import { recordComponentRender, recordPlaceholderShow } from '../services/perfTracker';
 import { useRenderCoordinator } from '../services/renderCoordinator';
@@ -17,11 +36,16 @@ interface PageThumbnailItemProps {
   previewHeight: number;
   itemHeight: number;
   markups: readonly Markup[];
+  pageScale?: PageScale;
+  mutationDisabled?: boolean;
   isActive: boolean;
+  showInlineRotationActions: boolean;
   renderPriority: number;
   renderUrgency: 'visible' | 'prefetch';
   sessionVersion: number;
   onSelect: (previewUrl: string | null) => void;
+  onSetPageScale: () => void;
+  onRotate: (direction: PageRotationDirection) => void;
 }
 
 export function PageThumbnailItem({
@@ -32,11 +56,16 @@ export function PageThumbnailItem({
   previewHeight,
   itemHeight,
   markups,
+  pageScale,
+  mutationDisabled = false,
   isActive,
+  showInlineRotationActions,
   renderPriority,
   renderUrgency,
   sessionVersion,
   onSelect,
+  onSetPageScale,
+  onRotate,
 }: PageThumbnailItemProps) {
   recordComponentRender('PageThumbnailItem', page.index);
   const renderCoordinator = useRenderCoordinator(session);
@@ -152,6 +181,7 @@ export function PageThumbnailItem({
       minimumDisplayWidth: minimumReusableWidth,
       role: 'sidebar-thumbnail',
       hasDisplayedSource: hasDisplayedImage,
+      rotation: page.rotation,
     });
 
     if (reusableImage?.kind === 'surface') {
@@ -186,6 +216,7 @@ export function PageThumbnailItem({
       priority: renderPriorityRef.current,
       urgency: thumbnailUrgency,
       requestClass: thumbnailUrgency === 'prefetch' ? 'nearby-prefetch' : 'visible-thumbnail',
+      rotation: page.rotation,
       abortStartedRender: true,
       signal: abortController.signal,
     })
@@ -197,6 +228,7 @@ export function PageThumbnailItem({
             minimumDisplayWidth: previewWidth * thumbnailPixelRatio,
             role: 'sidebar-thumbnail',
             hasDisplayedSource: false,
+            rotation: page.rotation,
           });
           if (reusableImage?.kind === 'surface') {
             clearSourceUrl();
@@ -224,6 +256,7 @@ export function PageThumbnailItem({
     };
   }, [
     page.index,
+    page.rotation,
     previewWidth,
     renderCoordinator,
     renderRetryTick,
@@ -237,8 +270,9 @@ export function PageThumbnailItem({
       priority: renderPriority,
       urgency: renderUrgency,
       requestClass: renderUrgency === 'prefetch' ? 'nearby-prefetch' : 'visible-thumbnail',
+      rotation: page.rotation,
     });
-  }, [page.index, renderCoordinator, renderPriority, renderUrgency, thumbnailBounds]);
+  }, [page.index, page.rotation, renderCoordinator, renderPriority, renderUrgency, thumbnailBounds]);
 
   useEffect(() => {
     const thumbnailPixelRatio = capThumbnailPixelRatio(window.devicePixelRatio || 1);
@@ -248,6 +282,7 @@ export function PageThumbnailItem({
       minimumDisplayWidth: targetRenderedWidth,
       role: 'sidebar-thumbnail',
       hasDisplayedSource: false,
+      rotation: page.rotation,
     });
     if (!reusableImage) {
       return;
@@ -271,7 +306,7 @@ export function PageThumbnailItem({
       replaceSourceUrl(reusableImage.objectUrl, reusableImage.renderedWidth);
     }
     setHasError(false);
-  }, [page.index, previewWidth, renderCoordinator, session, sessionVersion]);
+  }, [page.index, page.rotation, previewWidth, renderCoordinator, session, sessionVersion]);
 
   useEffect(() => {
     if (renderUrgency !== 'visible') {
@@ -289,6 +324,7 @@ export function PageThumbnailItem({
       priority: renderPriority + 6000,
       urgency: 'visible',
       requestClass: 'visible-thumbnail',
+      rotation: page.rotation,
       abortStartedRender: false,
     })
       .then((nextUrl) => {
@@ -301,6 +337,7 @@ export function PageThumbnailItem({
           minimumDisplayWidth: targetRenderedWidth,
           role: 'sidebar-thumbnail',
           hasDisplayedSource: false,
+          rotation: page.rotation,
         });
         if (reusableImage?.kind === 'surface') {
           clearSourceUrl();
@@ -323,7 +360,7 @@ export function PageThumbnailItem({
     return () => {
       cancelled = true;
     };
-  }, [page.index, previewWidth, renderCoordinator, renderPriority, renderUrgency, thumbnailBounds]);
+  }, [page.index, page.rotation, previewWidth, renderCoordinator, renderPriority, renderUrgency, thumbnailBounds]);
 
   useEffect(() => {
     const canvas = bitmapCanvasRef.current;
@@ -352,17 +389,97 @@ export function PageThumbnailItem({
   }, [pageSurface]);
 
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      className="absolute left-2 right-2 flex-col text-center whitespace-normal"
+    <div
+      className="absolute left-0 right-0 flex flex-col"
       data-testid={`page-thumbnail-item-${page.index + 1}`}
-      onClick={() => onSelect(sourceUrlRef.current)}
       style={{ top: `${top}px`, height: `${itemHeight}px` }}
     >
-      <div
-        className="flex w-full items-center justify-center overflow-visible"
+      <div className="flex h-12 shrink-0 items-center gap-1 px-2" data-testid={`page-thumbnail-actions-${page.index + 1}`}>
+        <Button
+          type="button"
+          variant="ghost"
+          className="min-w-0 flex-1 justify-start px-1.5"
+          onClick={() => onSelect(sourceUrlRef.current)}
+          data-testid={`page-thumbnail-label-${page.index + 1}`}
+        >
+          <span className="truncate text-[12px] font-medium tabular-nums">Page {page.index + 1}</span>
+          {pageScale ? (
+            <Badge variant="secondary" data-testid={`page-thumbnail-scale-badge-${page.index + 1}`}>
+              {formatPageScaleRatio(pageScale)}
+            </Badge>
+          ) : null}
+        </Button>
+        <PageThumbnailActionButton
+          icon={ScanLine}
+          label="Set page scale"
+          testId={`page-thumbnail-set-scale-${page.index + 1}`}
+          onClick={onSetPageScale}
+          disabled={mutationDisabled}
+        />
+        {showInlineRotationActions ? (
+          <>
+            <PageThumbnailActionButton
+              icon={RotateCcw}
+              label="Rotate left"
+              testId={`page-thumbnail-rotate-left-${page.index + 1}`}
+              onClick={() => onRotate('left')}
+              disabled={mutationDisabled}
+            />
+            <PageThumbnailActionButton
+              icon={RotateCw}
+              label="Rotate right"
+              testId={`page-thumbnail-rotate-right-${page.index + 1}`}
+              onClick={() => onRotate('right')}
+              disabled={mutationDisabled}
+            />
+          </>
+        ) : null}
+        <DropdownMenu disabled={mutationDisabled}>
+          <Tooltip>
+            <TooltipTrigger render={(
+              <DropdownMenuTrigger render={(
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label={`Page ${page.index + 1} actions`}
+                  data-testid={`page-thumbnail-more-${page.index + 1}`}
+                  disabled={mutationDisabled}
+                >
+                  <MoreHorizontal aria-hidden="true" />
+                </Button>
+              )} />
+            )} />
+            <TooltipContent>More page actions</TooltipContent>
+          </Tooltip>
+          <DropdownMenuContent align="end" className="w-max min-w-40 whitespace-nowrap">
+            <DropdownMenuGroup>
+              <DropdownMenuItem disabled={mutationDisabled} onClick={mutationDisabled ? undefined : onSetPageScale}>
+                <ScanLine aria-hidden="true" />
+                Set page scale
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuItem disabled={mutationDisabled} onClick={mutationDisabled ? undefined : () => onRotate('left')}>
+                <RotateCcw aria-hidden="true" />
+                Rotate left
+              </DropdownMenuItem>
+              <DropdownMenuItem disabled={mutationDisabled} onClick={mutationDisabled ? undefined : () => onRotate('right')}>
+                <RotateCw aria-hidden="true" />
+                Rotate right
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      <Button
+        type="button"
+        variant="ghost"
+        className="flex w-full items-center justify-center rounded-none p-0"
         data-testid={`page-thumbnail-preview-${page.index + 1}`}
+        aria-label={`Open page ${page.index + 1}`}
+        onClick={() => onSelect(sourceUrlRef.current)}
         style={{ height: `${previewHeight}px` }}
       >
         <div
@@ -425,12 +542,36 @@ export function PageThumbnailItem({
             </div>
           )}
         </div>
-      </div>
-      <div className={[
-        'mt-1.5 h-4 truncate text-center text-[12px] font-medium leading-4 text-muted-foreground tabular-nums',
-      ].join(' ')}>
-        Page {page.index + 1}
-      </div>
+      </Button>
+      <div className="h-4 shrink-0" aria-hidden="true" />
+      <Separator data-testid={`page-thumbnail-separator-${page.index + 1}`} />
+    </div>
+  );
+}
+
+function PageThumbnailActionButton({
+  icon: Icon,
+  label,
+  onClick,
+  testId,
+  disabled = false,
+}: {
+  icon: ComponentType<{ 'aria-hidden'?: boolean | 'true' | 'false' }>;
+  label: string;
+  onClick: () => void;
+  testId: string;
+  disabled?: boolean;
+}) {
+  const button = (
+    <Button type="button" variant="ghost" size="icon" aria-label={label} data-testid={testId} disabled={disabled} onClick={disabled ? undefined : onClick}>
+      <Icon aria-hidden="true" />
     </Button>
+  );
+
+  return (
+    <Tooltip>
+      <TooltipTrigger render={button} />
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   );
 }

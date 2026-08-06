@@ -19,7 +19,7 @@ import { TEXT_BOX_TOOL_DEFINITION } from './builtins/textBoxTool';
 import type { PdfToolDefinition } from './types';
 
 type RegistryToolDefinition = PdfToolDefinition & { readonly id: ToolMode };
-export type PdfToolRailGroup = 'normal' | 'cad';
+export type PdfToolRailGroup = 'markup' | 'draw' | 'measure';
 
 export const PDF_TOOL_REGISTRY = [
   {
@@ -37,6 +37,7 @@ export const PDF_TOOL_REGISTRY = [
     id: 'pan',
     label: 'Pan',
     shortcut: 'Space',
+    shortcutLabel: 'Hold Space',
     category: 'navigation',
     cursor: 'grab',
     testId: 'tool-pan',
@@ -66,9 +67,7 @@ export const PDF_TOOL_REGISTRY = [
 ] as const satisfies readonly RegistryToolDefinition[];
 
 export const PDF_TOOL_RAIL_GROUPS = {
-  normal: [
-    'select',
-    'pan',
+  markup: [
     'text-box',
     'arrow',
     'pen',
@@ -79,7 +78,7 @@ export const PDF_TOOL_RAIL_GROUPS = {
     'image',
     'snapshot',
   ],
-  cad: [
+  draw: [
     'rectangle',
     'ellipse',
     'line',
@@ -87,6 +86,8 @@ export const PDF_TOOL_RAIL_GROUPS = {
     'polyline',
     'polygon',
     'dimension',
+  ],
+  measure: [
     'length',
     'polylength',
     'area',

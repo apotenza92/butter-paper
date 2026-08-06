@@ -175,7 +175,7 @@ export function PageScaleDialog({
         }
       }}
     >
-      <DialogContent className="max-h-[calc(100vh-2rem)] w-[520px] max-w-[calc(100%-2rem)] overflow-hidden sm:max-w-[520px]" data-testid="page-scale-dialog" finalFocus={() => getPageScaleReturnFocus()} showCloseButton={false}>
+      <DialogContent className="max-h-[calc(100vh-2rem)] w-[520px] max-w-[calc(100%-2rem)] overflow-hidden sm:max-w-[520px]" data-testid="page-scale-dialog" finalFocus={() => getPageScaleReturnFocus(currentPage)} showCloseButton={false}>
         <DialogHeader className="flex-row items-center justify-between">
           <div className="min-w-0">
             <DialogTitle>Set Page Scale</DialogTitle>
@@ -370,8 +370,9 @@ function readPositiveOrZero(value: string, label: string): number {
   return number;
 }
 
-function getPageScaleReturnFocus(): HTMLElement | null {
-  return globalThis.document.querySelector<HTMLElement>('[data-testid="viewer-set-page-scale"]');
+function getPageScaleReturnFocus(pageIndex: number): HTMLElement | null {
+  return globalThis.document.querySelector<HTMLElement>(`[data-testid="page-thumbnail-set-scale-${pageIndex + 1}"]`)
+    ?? globalThis.document.querySelector<HTMLElement>('[data-testid="canvas-context-menu-trigger"]');
 }
 
 function LabeledField({ label, controlId, children }: { label: string; controlId: string; children: ReactNode }) {

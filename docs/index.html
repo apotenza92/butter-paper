@@ -1,0 +1,906 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="description" content="Butter Paper is a free, open-source, cross-platform alternative to Bluebeam Revu for PDF review and markup in architecture, engineering, and construction—available on macOS, Windows, and Linux." />
+    <title>Download Butter Paper</title>
+    <link id="favicon" rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23faeeb4'/%3E%3Cpath d='M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z' transform='translate(8 8) scale(2)' fill='none' stroke='%23e2433d' stroke-opacity='.72' stroke-width='1.0625' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M23.125 40.875 40.875 23.125m-7.625 0h7.625v7.625' fill='none' stroke='%23e2433d' stroke-width='2.875' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      :root {
+        color-scheme: light dark;
+        --accent: #b7791f;
+        --accent-hover: #925f17;
+        --action-text: #8b5a16;
+        --background: linear-gradient(135deg, #fffdf7 0%, #f7efd9 50%, #fffaf0 100%);
+        --border: #ded2b9;
+        --button-shadow: rgba(183, 121, 31, 0.24);
+        --code-background: #f7f1e4;
+        --text: #241f17;
+        --text-muted: #6e6251;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --accent: #dcae51;
+          --accent-hover: #e9c773;
+          --action-text: #e9c773;
+          --background: linear-gradient(135deg, #0d0b08 0%, #19140c 50%, #100d09 100%);
+          --border: #443923;
+          --button-shadow: rgba(220, 174, 81, 0.22);
+          --code-background: #1d180f;
+          --text: #fffaf0;
+          --text-muted: #c1b49c;
+        }
+      }
+
+      body {
+        align-items: flex-start;
+        background: var(--background);
+        color: var(--text);
+        display: flex;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        justify-content: center;
+        min-height: 100vh;
+        padding-top: 3rem;
+      }
+
+      body.beta-mode {
+        --accent: #0a5e9d;
+        --accent-hover: #043f6f;
+        --action-text: #07558d;
+        --background: linear-gradient(135deg, #f7fcff 0%, #e7f5fc 50%, #f4fbff 100%);
+        --border: #bdd9e8;
+        --button-shadow: rgba(10, 94, 157, 0.24);
+        --code-background: #eef7fb;
+        --text: #102632;
+        --text-muted: #4f6b79;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        body.beta-mode {
+          --accent: #1478b5;
+          --accent-hover: #168bcb;
+          --action-text: #68d0f2;
+          --background: linear-gradient(135deg, #06121a 0%, #0a2231 50%, #071721 100%);
+          --border: #244b60;
+          --button-shadow: rgba(53, 177, 222, 0.23);
+          --code-background: #0d2532;
+          --text: #eefbff;
+          --text-muted: #a6c4d2;
+        }
+      }
+
+      .container {
+        align-items: center;
+        display: flex;
+        flex-direction: column;
+        gap: 1.6rem;
+        max-width: 640px;
+        padding: 2.25rem 2rem 3rem;
+        text-align: center;
+        width: 100%;
+      }
+
+      .icon {
+        border-radius: 21px;
+        height: 96px;
+        width: 96px;
+      }
+
+      h1 {
+        font-size: 1.8rem;
+        font-weight: 650;
+        letter-spacing: -0.02em;
+      }
+
+      .subtitle,
+      .early-stage-note,
+      .unsigned-package-notice,
+      .beta-notice {
+        color: var(--text-muted);
+        font-size: 0.92rem;
+        line-height: 1.55;
+      }
+
+      .subtitle {
+        max-width: 500px;
+      }
+
+      .early-stage-note {
+        margin-top: -0.5rem;
+        max-width: 470px;
+      }
+
+      a:not(.download-button) {
+        color: var(--action-text);
+        font-weight: 600;
+        text-decoration: none;
+      }
+
+      a:not(.download-button):hover {
+        text-decoration: underline;
+      }
+
+      .hero-download,
+      .selection-flow,
+      .download-section,
+      .release-controls {
+        align-items: center;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .hero-download {
+        gap: 0.85rem;
+        width: 100%;
+      }
+
+      .hero-download .download-button {
+        font-size: 1rem;
+        justify-content: center;
+        min-height: 48px;
+        min-width: min(100%, 330px);
+        padding: 0.8rem 1.35rem;
+      }
+
+      .hero-meta {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.85rem;
+        justify-content: center;
+        min-height: 1.5rem;
+      }
+
+      .github-link {
+        align-items: center;
+        display: inline-flex;
+        font-size: 0.85rem;
+        gap: 0.45rem;
+      }
+
+      .github-link svg {
+        height: 22px;
+        width: 22px;
+      }
+
+      .version-display {
+        color: var(--action-text);
+        display: none;
+        font-size: 0.8rem;
+        font-weight: 650;
+      }
+
+      .version-display.visible {
+        display: block;
+      }
+
+      .unsigned-package-notice {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        max-width: 480px;
+        padding: 0.75rem 0.9rem;
+      }
+
+      .download-options {
+        width: 100%;
+      }
+
+      .download-options summary {
+        align-items: center;
+        color: var(--action-text);
+        cursor: pointer;
+        display: inline-flex;
+        font-size: 0.85rem;
+        font-weight: 650;
+        gap: 0.45rem;
+        list-style: none;
+        padding: 0.15rem 0;
+      }
+
+      .download-options summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .download-options summary::after {
+        background: currentColor;
+        clip-path: polygon(50% 72%, 12% 34%, 26% 20%, 50% 44%, 74% 20%, 88% 34%);
+        content: "";
+        height: 0.58rem;
+        transition: transform 0.2s ease;
+        width: 0.72rem;
+      }
+
+      .download-options[open] summary::after {
+        transform: rotate(180deg);
+      }
+
+      .selection-flow {
+        gap: 1.5rem;
+        margin-top: 1.6rem;
+        width: 100%;
+      }
+
+      .release-controls {
+        gap: 0.55rem;
+      }
+
+      .channel-toggle,
+      .platform-toggle,
+      .arch-toggle,
+      .format-toggle {
+        display: flex;
+        justify-content: center;
+      }
+
+      .selector-button {
+        align-items: center;
+        background: none;
+        border: 1px solid var(--border);
+        color: var(--text-muted);
+        cursor: pointer;
+        display: inline-flex;
+        font: inherit;
+        font-size: 0.85rem;
+        gap: 0.45rem;
+        padding: 0.5rem 1rem;
+        transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+      }
+
+      .selector-button:first-child {
+        border-radius: 8px 0 0 8px;
+      }
+
+      .selector-button:last-child {
+        border-radius: 0 8px 8px 0;
+      }
+
+      .selector-button:not(:first-child) {
+        margin-left: -1px;
+      }
+
+      .selector-button:hover:not(.active) {
+        border-color: var(--accent);
+        color: var(--accent);
+        position: relative;
+      }
+
+      .selector-button.active {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: white;
+        position: relative;
+      }
+
+      .selector-button:focus-visible,
+      .download-button:focus-visible,
+      .command-box:focus-visible,
+      summary:focus-visible {
+        outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent);
+        outline-offset: 3px;
+      }
+
+      .platform-toggle svg {
+        height: 15px;
+        width: 15px;
+      }
+
+      .beta-notice {
+        background: color-mix(in srgb, var(--accent) 10%, transparent);
+        border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+        border-radius: 8px;
+        display: none;
+        max-width: 430px;
+        padding: 0.65rem 1rem;
+      }
+
+      body.beta-mode .beta-notice {
+        display: block;
+      }
+
+      .download-section {
+        gap: 1.2rem;
+        width: 100%;
+      }
+
+      .download-button {
+        align-items: center;
+        background: var(--accent);
+        border-radius: 8px;
+        box-shadow: 0 8px 22px var(--button-shadow);
+        color: white;
+        display: inline-flex;
+        font-size: 0.92rem;
+        font-weight: 600;
+        gap: 0.55rem;
+        padding: 0.68rem 1.25rem;
+        text-decoration: none;
+        transition: background 0.2s ease, transform 0.2s ease;
+      }
+
+      .download-button:hover {
+        background: var(--accent-hover);
+        transform: translateY(-1px);
+      }
+
+      .download-button[aria-disabled="true"] {
+        box-shadow: none;
+        cursor: default;
+        opacity: 0.72;
+        pointer-events: none;
+        transform: none;
+      }
+
+      .download-button svg {
+        height: 16px;
+        width: 16px;
+      }
+
+      .download-copy {
+        align-items: flex-start;
+        display: flex;
+        flex-direction: column;
+        gap: 0.15rem;
+        text-align: left;
+      }
+
+      .download-detail {
+        font-size: 0.72rem;
+        opacity: 0.78;
+      }
+
+      .homebrew-section {
+        width: min(100%, 440px);
+      }
+
+      .command-box {
+        align-items: stretch;
+        background: var(--code-background);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--text);
+        cursor: pointer;
+        display: inline-flex;
+        flex-direction: column;
+        gap: 0.45rem;
+        min-width: min(100%, 270px);
+        padding: 0.58rem 0.85rem 0.68rem;
+        transition: border-color 0.2s ease, transform 0.2s ease;
+      }
+
+      .command-box:hover {
+        border-color: var(--accent);
+        transform: translateY(-1px);
+      }
+
+      .command-label {
+        color: var(--text-muted);
+        font-size: 0.75rem;
+      }
+
+      .format-command {
+        align-items: center;
+        display: flex;
+        gap: 0.85rem;
+      }
+
+      .format-command code {
+        flex: 1 1 auto;
+        font-size: 0.72rem;
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+        text-align: left;
+        user-select: all;
+      }
+
+      .copy-button {
+        align-items: center;
+        background: none;
+        border: none;
+        color: var(--action-text);
+        cursor: pointer;
+        display: flex;
+        font: inherit;
+        font-size: 0.72rem;
+        font-weight: 650;
+        gap: 0.4rem;
+        padding: 0;
+      }
+
+      .copy-button svg {
+        height: 15px;
+        width: 15px;
+      }
+
+      @media (max-width: 560px) {
+        body {
+          padding-top: 1.25rem;
+        }
+
+        .container {
+          padding: 1.5rem 1.15rem 2.25rem;
+        }
+
+        .platform-toggle,
+        .arch-toggle,
+        .format-toggle {
+          flex-wrap: wrap;
+          gap: 0.7rem;
+        }
+
+        .platform-toggle .selector-button,
+        .arch-toggle .selector-button,
+        .format-toggle .selector-button {
+          border-radius: 8px;
+          margin-left: 0;
+        }
+
+        .hero-download .download-button {
+          min-width: 100%;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="container">
+      <img id="app-icon" class="icon" src="../apps/desktop/assets/icon.png" alt="Butter Paper icon" />
+      <h1 id="page-title">Butter Paper</h1>
+      <p class="subtitle">Butter Paper is a free, open-source, cross-platform alternative to Bluebeam Revu for PDF review and markup in architecture, engineering, and construction—available on macOS, Windows, and Linux.</p>
+      <p class="early-stage-note">Butter Paper is early-stage software. Expect rough edges, and please report bugs or workflow issues through <a href="https://github.com/apotenza92/butter-paper/issues">GitHub Issues</a>.</p>
+
+      <section class="hero-download" aria-label="Recommended download">
+        <a id="hero-download-button" class="download-button" href="#" aria-disabled="true" tabindex="-1">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <path d="M7 10l5 5 5-5" />
+            <path d="M12 15V3" />
+          </svg>
+          <span id="hero-download-label">Choose your download</span>
+        </a>
+        <div class="hero-meta">
+          <a class="github-link" href="https://github.com/apotenza92/butter-paper" aria-label="View Butter Paper on GitHub">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M12 .5a12 12 0 0 0-3.8 23.39c.6.11.82-.26.82-.58v-2.22c-3.34.73-4.04-1.42-4.04-1.42-.55-1.4-1.34-1.77-1.34-1.77-1.09-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49.99.11-.78.42-1.3.76-1.6-2.67-.31-5.47-1.34-5.47-5.94 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.53.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.65.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.62-2.81 5.63-5.49 5.93.43.38.82 1.11.82 2.24v3.32c0 .32.22.7.83.58A12 12 0 0 0 12 .5Z" />
+            </svg>
+            <span>Open source</span>
+          </a>
+          <div id="version-display" class="version-display"></div>
+        </div>
+      </section>
+
+      <p id="unsigned-package-notice" class="unsigned-package-notice" hidden>Windows and Linux packages are currently unsigned. Automatic updates are authenticated with TUF, and every release includes public checksums and provenance.</p>
+
+      <details id="download-options" class="download-options">
+        <summary>Choose another platform or test upcoming updates in beta</summary>
+        <div class="selection-flow">
+          <div class="release-controls">
+            <div class="channel-toggle" aria-label="Release channel">
+              <button id="channel-stable" class="selector-button channel-button active" data-channel="stable" type="button">Stable</button>
+              <button id="channel-beta" class="selector-button channel-button" data-channel="beta" type="button">Beta</button>
+            </div>
+          </div>
+          <p class="beta-notice">Beta builds can change quickly and may be less stable than the stable channel.</p>
+
+          <div class="platform-toggle" aria-label="Platform">
+            <button id="platform-mac" class="selector-button platform-button" type="button">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M17.6 12.6c0-2.2 1.8-3.3 1.9-3.4-1-1.5-2.6-1.7-3.2-1.8-1.4-.1-2.6.8-3.3.8s-1.8-.8-2.9-.8c-1.5 0-2.9.9-3.7 2.2-1.6 2.8-.4 6.9 1.1 9.1.8 1.1 1.7 2.4 2.9 2.3 1.1 0 1.6-.7 3-.7s1.8.7 3 .7c1.2 0 2-1.1 2.8-2.3.9-1.3 1.2-2.5 1.2-2.6 0 0-2.8-1.1-2.8-3.5Z" />
+                <path d="M15.4 5.9c.6-.8 1.1-1.8 1-2.9-1 .1-2 .6-2.7 1.3-.6.7-1.1 1.8-1 2.8 1 .1 2-.5 2.7-1.2Z" />
+              </svg>
+              macOS
+            </button>
+            <button id="platform-windows" class="selector-button platform-button" type="button">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 4.9 10.6 4v7.2H3V4.9Zm8.6-1L21 2.5v8.7h-9.4V3.9ZM3 12.2h7.6v7.3L3 18.5v-6.3Zm8.6 0H21v9.3l-9.4-1.3v-8Z" /></svg>
+              Windows
+            </button>
+            <button id="platform-linux" class="selector-button platform-button" type="button">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2c-2.1 0-3.8 1.8-3.8 4.2 0 1.2.3 2.3.8 3.3-.9 1.2-1.6 2.8-1.8 4.8l-2.3 3.5c-.5.7-.3 1.6.4 2.1.7.5 1.7.3 2.1-.4l1.4-2.1h6.4l1.4 2.1c.5.7 1.4.9 2.1.4.7-.5.9-1.4.4-2.1l-2.3-3.5c-.2-2-.9-3.6-1.8-4.8.5-1 .8-2.1.8-3.3C15.8 3.8 14.1 2 12 2Z" /></svg>
+              Linux
+            </button>
+          </div>
+
+          <div class="arch-toggle" aria-label="Architecture">
+            <button id="arch-arm64" class="selector-button arch-button" type="button">ARM64</button>
+            <button id="arch-x64" class="selector-button arch-button" type="button">x64</button>
+          </div>
+
+          <div id="format-toggle" class="format-toggle" aria-label="Package format">
+            <button id="format-dmg" class="selector-button format-button" data-platform="mac" type="button">DMG</button>
+            <button id="format-zip" class="selector-button format-button" data-platform="mac" type="button">ZIP</button>
+            <button id="format-appimage" class="selector-button format-button" data-platform="linux" type="button">AppImage</button>
+            <button id="format-deb" class="selector-button format-button" data-platform="linux" type="button">Ubuntu / Debian (.deb)</button>
+            <button id="format-rpm" class="selector-button format-button" data-platform="linux" type="button">Fedora / RHEL (.rpm)</button>
+          </div>
+
+          <section class="download-section" aria-label="Selected download">
+            <a id="download-button" class="download-button" href="#">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <path d="M7 10l5 5 5-5" />
+                <path d="M12 15V3" />
+              </svg>
+              <span class="download-copy">
+                <span id="download-label">Choose your download</span>
+                <span id="download-detail" class="download-detail" hidden></span>
+              </span>
+            </a>
+
+            <div id="homebrew-section" class="homebrew-section">
+              <div id="homebrew-box" class="command-box" role="button" tabindex="0" aria-label="Copy Homebrew install command">
+                <div id="homebrew-label" class="command-label">Or install via Homebrew:</div>
+                <div class="format-command">
+                  <code id="homebrew-code">brew tap apotenza92/tap &amp;&amp; brew install --cask butter-paper</code>
+                  <button id="homebrew-copy" class="copy-button" type="button" title="Copy command">
+                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1Zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2Zm0 16H8V7h11v14Z" /></svg>
+                    <span>Copy</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </details>
+    </main>
+
+    <script>
+      const repo = "apotenza92/butter-paper";
+      const iconRoot = location.pathname.includes("/docs/")
+        ? "../apps/desktop/assets"
+        : "./assets/icons";
+      const assetSizes = {};
+      const releaseVersions = { stable: "", beta: "" };
+      const releaseTags = { stable: "latest", beta: "latest" };
+      const releaseAvailable = { stable: true, beta: true };
+      const detectedSystem = detectSystem();
+      const state = {
+        arch: detectedSystem.platform === "mac" && !detectedSystem.archKnown
+          ? "arm64"
+          : detectedSystem.arch || "x64",
+        channel: "stable",
+        linuxFormat: "AppImage",
+        macFormat: "dmg",
+        platform: detectedSystem.platform || "windows"
+      };
+      let manualSelection = false;
+      let copyStatusResetTimer = null;
+
+      function detectSystem(extra = {}) {
+        const userAgentData = navigator.userAgentData || {};
+        const platformText = `${extra.platform || userAgentData.platform || navigator.platform || ""} ${navigator.userAgent || ""}`.toLowerCase();
+        const architectureText = `${extra.architecture || userAgentData.architecture || ""} ${extra.bitness || ""}`.toLowerCase();
+        const platform = platformText.includes("win")
+          ? "windows"
+          : platformText.includes("mac")
+            ? "mac"
+            : platformText.includes("linux") || platformText.includes("x11")
+              ? "linux"
+              : "";
+        return {
+          arch: /arm64|aarch64|\barm\b/.test(architectureText) ? "arm64" : "x64",
+          archKnown: Boolean(architectureText),
+          known: Boolean(platform),
+          platform
+        };
+      }
+
+      async function refineDetectedSystem() {
+        const userAgentData = navigator.userAgentData;
+        if (!userAgentData?.getHighEntropyValues) return;
+        try {
+          const values = await userAgentData.getHighEntropyValues(["architecture", "bitness", "platform"]);
+          const refined = detectSystem(values);
+          if (!manualSelection && refined.known) {
+            state.platform = refined.platform;
+            state.arch = refined.arch;
+            updateDownload();
+          }
+        } catch {
+          // Low-entropy detection remains available when high-entropy hints are blocked.
+        }
+      }
+
+      function productName(channel) {
+        return channel === "beta" ? "Butter Paper Beta" : "Butter Paper";
+      }
+
+      function assetPrefix(channel) {
+        return channel === "beta" ? "Butter-Paper-Beta" : "Butter-Paper";
+      }
+
+      function assetName(selection) {
+        const prefix = assetPrefix(selection.channel);
+        if (selection.platform === "mac") {
+          return `${prefix}-macOS-${selection.arch}.${selection.macFormat}`;
+        }
+        if (selection.platform === "windows") {
+          return `${prefix}-Windows-${selection.arch}-Setup.exe`;
+        }
+        return `${prefix}-Linux-${selection.arch}.${selection.linuxFormat}`;
+      }
+
+      function assetUrl(selection) {
+        return `https://github.com/${repo}/releases/${releaseTags[selection.channel] === "latest" ? "latest/download" : `download/${releaseTags[selection.channel]}`}/${assetName(selection)}`;
+      }
+
+      function formatAssetSize(bytes) {
+        return Number.isFinite(bytes) && bytes > 0 ? `${Math.round(bytes / 1_000_000)} MB` : "";
+      }
+
+      function selectedLabel(selection) {
+        const name = productName(selection.channel);
+        const architecture = selection.arch === "arm64" ? "ARM64" : "x64";
+        if (selection.platform === "mac") {
+          const mac = selection.arch === "arm64" ? "Apple Silicon Mac" : "Intel Mac";
+          return `Download ${name} ${selection.macFormat.toUpperCase()} for ${mac}`;
+        }
+        if (selection.platform === "windows") {
+          return `Download ${name} for Windows ${architecture}`;
+        }
+        const format = selection.linuxFormat === "deb"
+          ? ".deb for Ubuntu / Debian"
+          : selection.linuxFormat === "rpm"
+            ? ".rpm for Fedora / RHEL"
+            : "AppImage for Linux";
+        return `Download ${name} ${format} ${architecture}`;
+      }
+
+      function resolveDownload(selection) {
+        if (!releaseAvailable[selection.channel]) {
+          return {
+            available: false,
+            label: "Choose your download",
+            message: selection.channel === "beta"
+              ? "Butter Paper beta downloads will appear after the next beta release."
+              : "Butter Paper downloads will appear after the next stable release."
+          };
+        }
+        const url = assetUrl(selection);
+        return {
+          available: true,
+          detail: [releaseVersions[selection.channel], formatAssetSize(assetSizes[assetName(selection)])].filter(Boolean).join(" · "),
+          label: selectedLabel(selection),
+          url
+        };
+      }
+
+      function setActive(selector, activeId) {
+        document.querySelectorAll(selector).forEach((button) => {
+          const active = button.id === activeId;
+          button.classList.toggle("active", active);
+          button.setAttribute("aria-pressed", String(active));
+        });
+      }
+
+      function setDownloadLink(link, label, detail, resolved, includeDetail) {
+        if (!resolved.available) {
+          link.href = "#";
+          link.setAttribute("aria-disabled", "true");
+          link.setAttribute("tabindex", "-1");
+          label.textContent = resolved.label;
+          if (detail) detail.hidden = true;
+          return;
+        }
+        link.href = resolved.url;
+        link.removeAttribute("aria-disabled");
+        link.removeAttribute("tabindex");
+        const size = formatAssetSize(assetSizes[assetName(state)]);
+        label.textContent = includeDetail || !size ? resolved.label : `${resolved.label} · ${size}`;
+        if (detail) {
+          detail.textContent = resolved.detail;
+          detail.hidden = !resolved.detail;
+        }
+      }
+
+      function updateDownload() {
+        const resolved = resolveDownload(state);
+        const formatForPlatform = state.platform === "mac"
+          ? `format-${state.macFormat}`
+          : state.platform === "linux"
+            ? `format-${state.linuxFormat.toLowerCase()}`
+            : "";
+
+        document.body.classList.toggle("beta-mode", state.channel === "beta");
+        const iconSource = state.channel === "beta"
+          ? `${iconRoot}/beta/icon.png`
+          : `${iconRoot}/icon.png`;
+        document.getElementById("app-icon").src = iconSource;
+        document.getElementById("favicon").href = iconSource;
+        document.getElementById("page-title").textContent = productName(state.channel);
+        document.title = `Download ${productName(state.channel)}`;
+        document.getElementById("version-display").textContent = releaseVersions[state.channel];
+        document.getElementById("version-display").classList.toggle("visible", Boolean(releaseVersions[state.channel]));
+
+        setActive(".channel-button", `channel-${state.channel}`);
+        setActive(".platform-button", `platform-${state.platform}`);
+        setActive(".arch-button", `arch-${state.arch}`);
+        setActive(".format-button", formatForPlatform);
+
+        document.querySelectorAll(".format-button").forEach((button) => {
+          button.hidden = button.dataset.platform !== state.platform;
+        });
+        document.getElementById("format-toggle").hidden = state.platform === "windows";
+        document.getElementById("unsigned-package-notice").hidden = (
+          state.platform === "mac"
+          || !resolved.available
+          || (!detectedSystem.known && !manualSelection)
+        );
+
+        setDownloadLink(
+          document.getElementById("hero-download-button"),
+          document.getElementById("hero-download-label"),
+          null,
+          !detectedSystem.known && !manualSelection
+            ? { available: false, label: "Choose your download" }
+            : resolved,
+          false
+        );
+        setDownloadLink(
+          document.getElementById("download-button"),
+          document.getElementById("download-label"),
+          document.getElementById("download-detail"),
+          resolved,
+          true
+        );
+
+        const homebrewSection = document.getElementById("homebrew-section");
+        homebrewSection.hidden = state.platform !== "mac";
+        document.getElementById("homebrew-label").textContent = state.channel === "beta"
+          ? "Or install via Homebrew (Beta):"
+          : "Or install via Homebrew:";
+        document.getElementById("homebrew-code").textContent = state.channel === "beta"
+          ? "brew tap apotenza92/tap && brew install --cask butter-paper@beta"
+          : "brew tap apotenza92/tap && brew install --cask butter-paper";
+        document.querySelector("#homebrew-copy span").textContent = "Copy";
+      }
+
+      function markManualSelection() {
+        manualSelection = true;
+      }
+
+      function updateAssetSizes(release) {
+        if (!Array.isArray(release?.assets)) return;
+        release.assets.forEach((asset) => {
+          if (asset.name && Number.isFinite(asset.size)) assetSizes[asset.name] = asset.size;
+        });
+      }
+
+      function hasAsset(release, name) {
+        return Array.isArray(release?.assets) && release.assets.some((asset) => asset.name === name);
+      }
+
+      async function loadReleaseInfo() {
+        try {
+          const stableResponse = await fetch(`https://api.github.com/repos/${repo}/releases/latest`);
+          if (stableResponse.ok) {
+            const stable = await stableResponse.json();
+            releaseVersions.stable = stable.tag_name || "";
+            releaseTags.stable = stable.tag_name || "latest";
+            updateAssetSizes(stable);
+            if (hasAsset(stable, "Butter-Paper-Beta-macOS-arm64.dmg")) {
+              releaseVersions.beta = stable.tag_name || "";
+              releaseTags.beta = stable.tag_name || "latest";
+            }
+          }
+          const releasesResponse = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=20`);
+          if (releasesResponse.ok) {
+            const releases = await releasesResponse.json();
+            const beta = releases.find((release) => release.prerelease);
+            if (beta) {
+              releaseVersions.beta = beta.tag_name || "";
+              releaseTags.beta = beta.tag_name || "latest";
+              updateAssetSizes(beta);
+            }
+          }
+        } catch {
+          // Static downloads remain usable during GitHub API downtime or rate limiting.
+        }
+      }
+
+      async function copyText(text) {
+        if (navigator.clipboard?.writeText) {
+          try {
+            await navigator.clipboard.writeText(text);
+            return;
+          } catch {
+            // Use the selection fallback for local files or denied clipboard access.
+          }
+        }
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "");
+        textarea.style.left = "-9999px";
+        textarea.style.position = "fixed";
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+          if (!document.execCommand("copy")) throw new Error("Copy command was not accepted");
+        } finally {
+          textarea.remove();
+        }
+      }
+
+      function setCopyStatus(text) {
+        const label = document.querySelector("#homebrew-copy span");
+        label.textContent = text;
+        if (copyStatusResetTimer) clearTimeout(copyStatusResetTimer);
+        if (text !== "Copy") {
+          copyStatusResetTimer = window.setTimeout(() => {
+            label.textContent = "Copy";
+            copyStatusResetTimer = null;
+          }, 1800);
+        }
+      }
+
+      document.querySelectorAll(".channel-button").forEach((button) => {
+        button.addEventListener("click", () => {
+          markManualSelection();
+          state.channel = button.dataset.channel;
+          updateDownload();
+        });
+      });
+      document.querySelectorAll(".platform-button").forEach((button) => {
+        button.addEventListener("click", () => {
+          markManualSelection();
+          state.platform = button.id.replace("platform-", "");
+          state.arch = state.platform === "mac" ? "arm64" : "x64";
+          updateDownload();
+        });
+      });
+      document.querySelectorAll(".arch-button").forEach((button) => {
+        button.addEventListener("click", () => {
+          markManualSelection();
+          state.arch = button.id.replace("arch-", "");
+          updateDownload();
+        });
+      });
+      document.querySelectorAll(".format-button").forEach((button) => {
+        button.addEventListener("click", () => {
+          markManualSelection();
+          const format = button.id.replace("format-", "");
+          if (button.dataset.platform === "mac") state.macFormat = format;
+          if (button.dataset.platform === "linux") state.linuxFormat = format === "appimage" ? "AppImage" : format;
+          updateDownload();
+        });
+      });
+      document.getElementById("homebrew-box").addEventListener("click", async () => {
+        try {
+          await copyText(document.getElementById("homebrew-code").textContent);
+          setCopyStatus("Copied");
+        } catch {
+          setCopyStatus("Copy failed");
+        }
+      });
+      document.getElementById("homebrew-box").addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          event.currentTarget.click();
+        }
+      });
+
+      loadReleaseInfo().then(updateDownload);
+      updateDownload();
+      refineDetectedSystem();
+    </script>
+  </body>
+</html>

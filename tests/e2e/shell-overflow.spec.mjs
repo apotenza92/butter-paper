@@ -4,9 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { firstWindow, getDiagnostics, launchButterPaper, resolveDesktopEntryPoint } from './helpers/electron.mjs';
 
-const NORMAL_TOOL_TEST_IDS = [
-  'tool-select',
-  'tool-pan',
+const MARKUP_TOOL_TEST_IDS = [
   'tool-text-box',
   'tool-arrow',
   'tool-pen',
@@ -17,7 +15,7 @@ const NORMAL_TOOL_TEST_IDS = [
   'tool-image',
   'tool-snapshot',
 ];
-const CAD_TOOL_TEST_IDS = [
+const DRAW_TOOL_TEST_IDS = [
   'tool-rectangle',
   'tool-ellipse',
   'tool-line',
@@ -25,6 +23,8 @@ const CAD_TOOL_TEST_IDS = [
   'tool-polyline',
   'tool-polygon',
   'tool-dimension',
+];
+const MEASURE_TOOL_TEST_IDS = [
   'tool-length',
   'tool-polylength',
   'tool-area',
@@ -78,7 +78,7 @@ test.describe('shell overflow controls', () => {
     }
   });
 
-  test('keeps normal and CAD tools grouped while the rail snaps between flowing column widths', async () => {
+  test('keeps tools semantically grouped while the rail snaps between flowing column widths', async () => {
     test.skip(!resolveDesktopEntryPoint(), 'Desktop app entrypoint not available yet');
     const app = await launchButterPaper({ theme: 'light' });
     if (!app) test.skip(true, 'Desktop app could not be launched');
@@ -92,62 +92,155 @@ test.describe('shell overflow controls', () => {
       await expect.poll(async () => (await getDiagnostics(page))?.pageCount).toBe(1);
 
       const rightRail = page.getByTestId('right-rail');
-      const normalGroup = page.getByTestId('right-rail-normal');
-      const cadGroup = page.getByTestId('right-rail-cad');
+      const markupGroup = page.getByTestId('right-rail-markup');
+      const drawGroup = page.getByTestId('right-rail-draw');
+      const measureGroup = page.getByTestId('right-rail-measure');
+      const groups = [markupGroup, drawGroup, measureGroup];
       const rightRailBounds = await rightRail.boundingBox();
-      expect(rightRailBounds?.width).toBeGreaterThanOrEqual(87);
-      expect(rightRailBounds?.width).toBeLessThanOrEqual(89);
+      const topControlSlot = page.getByTestId('properties-trigger-slot');
+      const propertiesTrigger = page.getByTestId('properties-sidebar-trigger');
+      const snapTrigger = page.getByTestId('viewer-snap-target-menu');
+      const selectTrigger = page.getByTestId('tool-select');
+      const panTrigger = page.getByTestId('tool-pan');
+      expect(rightRailBounds?.width).toBeGreaterThanOrEqual(91);
+      expect(rightRailBounds?.width).toBeLessThanOrEqual(93);
       await expect(rightRail).toHaveAttribute('data-column-count', '2');
-      await expect(rightRail).toHaveText('');
-      for (const testId of NORMAL_TOOL_TEST_IDS) {
-        await expect(normalGroup.getByTestId(testId)).toBeVisible();
-        await expect(cadGroup.getByTestId(testId)).toHaveCount(0);
+      await expect(rightRail).not.toContainText('General');
+      await expect(rightRail).toContainText('Markup');
+      await expect(propertiesTrigger).toContainText('Properties');
+      await expect(snapTrigger).toContainText('Snap');
+      await expect(selectTrigger).toHaveText('');
+      await expect(panTrigger).toHaveText('');
+      await expect(propertiesTrigger).toHaveCSS('border-top-width', '1px');
+      await expect(snapTrigger).toHaveCSS('border-top-width', '1px');
+      await expect(selectTrigger).toHaveCSS('border-top-width', '1px');
+      await expect(panTrigger).toHaveCSS('border-top-width', '1px');
+      const initialTopControlSlotBounds = await topControlSlot.boundingBox();
+      const initialPropertiesBounds = await propertiesTrigger.boundingBox();
+      const initialSnapBounds = await snapTrigger.boundingBox();
+      const initialPropertiesIconBounds = await propertiesTrigger.locator('svg').boundingBox();
+      const initialPropertiesLabelBounds = await page.getByTestId('properties-sidebar-label').boundingBox();
+      const initialSnapIconBounds = await snapTrigger.locator('svg').boundingBox();
+      const initialSnapLabelBounds = await page.getByTestId('viewer-snap-label').boundingBox();
+      const initialSelectBounds = await selectTrigger.boundingBox();
+      const initialPanBounds = await panTrigger.boundingBox();
+      const initialSelectIconBounds = await selectTrigger.locator('svg').boundingBox();
+      const initialPanIconBounds = await panTrigger.locator('svg').boundingBox();
+      const initialMarkupBounds = await markupGroup.boundingBox();
+      expect(initialTopControlSlotBounds?.height).toBeCloseTo(168, 0);
+      expect(initialPropertiesBounds?.x).toBeCloseTo(initialSnapBounds.x, 0);
+      expect(initialPropertiesBounds?.width).toBeCloseTo(initialSnapBounds.width, 0);
+      expect(initialSelectBounds?.width).toBeCloseTo(32, 0);
+      expect(initialPanBounds?.width).toBeCloseTo(32, 0);
+      expect(initialSnapBounds.y - (initialPropertiesBounds.y + initialPropertiesBounds.height)).toBeCloseTo(8, 0);
+      expect((initialPropertiesIconBounds.x + initialPropertiesLabelBounds.x + initialPropertiesLabelBounds.width) / 2).toBeCloseTo(initialPropertiesBounds.x + initialPropertiesBounds.width / 2, 0);
+      expect((initialSnapIconBounds.x + initialSnapLabelBounds.x + initialSnapLabelBounds.width) / 2).toBeCloseTo(initialSnapBounds.x + initialSnapBounds.width / 2, 0);
+      expect(initialSelectIconBounds.x + initialSelectIconBounds.width / 2).toBeCloseTo(initialSelectBounds.x + initialSelectBounds.width / 2, 0);
+      expect(initialPanIconBounds.x + initialPanIconBounds.width / 2).toBeCloseTo(initialPanBounds.x + initialPanBounds.width / 2, 0);
+      expect(initialSelectBounds.y - (initialSnapBounds.y + initialSnapBounds.height)).toBeCloseTo(8, 0);
+      expect(initialPanBounds.y - (initialSelectBounds.y + initialSelectBounds.height)).toBeCloseTo(8, 0);
+      for (const [group, testIds] of [
+        [markupGroup, MARKUP_TOOL_TEST_IDS],
+        [drawGroup, DRAW_TOOL_TEST_IDS],
+        [measureGroup, MEASURE_TOOL_TEST_IDS],
+      ]) {
+        for (const testId of testIds) {
+          await expect(group.getByTestId(testId)).toBeVisible();
+          for (const otherGroup of groups.filter((candidate) => candidate !== group)) {
+            await expect(otherGroup.getByTestId(testId)).toHaveCount(0);
+          }
+        }
       }
-      for (const testId of CAD_TOOL_TEST_IDS) {
-        await expect(cadGroup.getByTestId(testId)).toBeVisible();
-        await expect(normalGroup.getByTestId(testId)).toHaveCount(0);
-      }
-      await expect(normalGroup.getByTestId('tool-select')).toHaveAccessibleName('Select');
-      const rectangleTool = cadGroup.getByTestId('tool-rectangle');
+      await expect(selectTrigger).toHaveAccessibleName('Select');
+      const rectangleTool = drawGroup.getByTestId('tool-rectangle');
       await expect(rectangleTool).toHaveAccessibleName('Rectangle');
       await rectangleTool.hover();
       await expect(page.locator('[data-slot="tooltip-content"]').filter({ hasText: 'Rectangle (R)' })).toBeVisible();
       await rectangleTool.click();
       await expect(rectangleTool).toHaveAttribute('aria-pressed', 'true');
 
-      const divider = page.getByTestId('right-rail-group-divider');
-      await expect(normalGroup.getByRole('heading', { name: 'Review' })).toBeVisible();
-      await expect(cadGroup.getByRole('heading', { name: 'Draw' })).toBeVisible();
-      const dividerBounds = await divider.boundingBox();
-      expect(dividerBounds?.width).toBeGreaterThanOrEqual(71);
-      expect(dividerBounds?.width).toBeLessThanOrEqual(73);
+      const dividers = page.locator('[data-testid^="right-rail-group-divider-"]');
+      await expect(dividers).toHaveCount(2);
+      for (const [group, heading] of [
+        [markupGroup, 'Markup'],
+        [drawGroup, 'Draw'],
+        [measureGroup, 'Measure'],
+      ]) {
+        await expect(group.getByRole('heading', { name: heading })).toBeVisible();
+      }
+      for (const divider of await dividers.all()) {
+        const dividerBounds = await divider.boundingBox();
+        expect(dividerBounds?.width).toBeGreaterThanOrEqual(71);
+        expect(dividerBounds?.width).toBeLessThanOrEqual(73);
+      }
 
       const resizeHandle = page.getByTestId('right-rail-resize-handle');
       await resizeHandle.focus();
       await page.keyboard.press('ArrowRight');
       await expect(rightRail).toHaveAttribute('data-column-count', '3');
-      await expect.poll(async () => (await rightRail.boundingBox())?.width).toBeGreaterThanOrEqual(127);
-      const selectBounds = await normalGroup.getByTestId('tool-select').boundingBox();
-      const panBounds = await normalGroup.getByTestId('tool-pan').boundingBox();
-      const textBoxBounds = await normalGroup.getByTestId('tool-text-box').boundingBox();
-      const arrowBounds = await normalGroup.getByTestId('tool-arrow').boundingBox();
-      expect(selectBounds).not.toBeNull();
-      expect(panBounds?.x).toBeGreaterThan(selectBounds.x);
-      expect(textBoxBounds?.x).toBeGreaterThan(panBounds.x);
-      expect(arrowBounds?.y).toBeGreaterThan(selectBounds.y);
-      const widenedDividerBounds = await divider.boundingBox();
-      expect(widenedDividerBounds?.width).toBeGreaterThanOrEqual(111);
-      expect(widenedDividerBounds?.width).toBeLessThanOrEqual(113);
+      const widePropertiesBounds = await propertiesTrigger.boundingBox();
+      const widePropertiesIconBounds = await propertiesTrigger.locator('svg').boundingBox();
+      const widePropertiesLabelBounds = await page.getByTestId('properties-sidebar-label').boundingBox();
+      const wideSnapBounds = await snapTrigger.boundingBox();
+      const wideSnapIconBounds = await snapTrigger.locator('svg').boundingBox();
+      const wideSnapLabelBounds = await page.getByTestId('viewer-snap-label').boundingBox();
+      const wideSelectBounds = await selectTrigger.boundingBox();
+      const wideSelectIconBounds = await selectTrigger.locator('svg').boundingBox();
+      const widePanBounds = await panTrigger.boundingBox();
+      const widePanIconBounds = await panTrigger.locator('svg').boundingBox();
+      expect((widePropertiesIconBounds.x + widePropertiesLabelBounds.x + widePropertiesLabelBounds.width) / 2).toBeCloseTo(widePropertiesBounds.x + widePropertiesBounds.width / 2, 0);
+      expect((wideSnapIconBounds.x + wideSnapLabelBounds.x + wideSnapLabelBounds.width) / 2).toBeCloseTo(wideSnapBounds.x + wideSnapBounds.width / 2, 0);
+      expect(wideSelectBounds?.width).toBeCloseTo(32, 0);
+      expect(widePanBounds?.width).toBeCloseTo(32, 0);
+      expect(wideSelectIconBounds.x + wideSelectIconBounds.width / 2).toBeCloseTo(wideSelectBounds.x + wideSelectBounds.width / 2, 0);
+      expect(widePanIconBounds.x + widePanIconBounds.width / 2).toBeCloseTo(widePanBounds.x + widePanBounds.width / 2, 0);
+      await expect.poll(async () => (await rightRail.boundingBox())?.width).toBeGreaterThanOrEqual(131);
+      const textBoxBounds = await markupGroup.getByTestId('tool-text-box').boundingBox();
+      const arrowBounds = await markupGroup.getByTestId('tool-arrow').boundingBox();
+      const penBounds = await markupGroup.getByTestId('tool-pen').boundingBox();
+      const imageBounds = await markupGroup.getByTestId('tool-image').boundingBox();
+      const snapshotBounds = await markupGroup.getByTestId('tool-snapshot').boundingBox();
+      expect(textBoxBounds).not.toBeNull();
+      expect(arrowBounds?.x).toBeGreaterThan(textBoxBounds.x);
+      expect(penBounds?.x).toBeGreaterThan(arrowBounds.x);
+      expect(imageBounds?.y).toBeGreaterThan(textBoxBounds.y);
+      expect(snapshotBounds?.x).toBeGreaterThan(imageBounds.x);
+      for (const divider of await dividers.all()) {
+        const widenedDividerBounds = await divider.boundingBox();
+        expect(widenedDividerBounds?.width).toBeGreaterThanOrEqual(111);
+        expect(widenedDividerBounds?.width).toBeLessThanOrEqual(113);
+      }
 
       await resizeHandle.focus();
       await page.keyboard.press('Home');
       await expect(rightRail).toHaveAttribute('data-column-count', '1');
       await page.getByTestId('document-viewport').hover();
-      await expect.poll(async () => (await rightRail.boundingBox())?.width).toBeLessThanOrEqual(49);
+      await expect.poll(async () => (await rightRail.boundingBox())?.width).toBeLessThanOrEqual(53);
 
-      await normalGroup.getByTestId('tool-select').hover();
-      await expect.poll(async () => (await rightRail.boundingBox())?.width).toBeLessThanOrEqual(49);
-      await expect(normalGroup.getByTestId('tool-select')).not.toContainText('Select');
+      for (const group of groups) {
+        await expect(group.getByRole('heading')).toHaveCount(0);
+      }
+      await expect(dividers).toHaveCount(2);
+      await expect(propertiesTrigger).toHaveText('');
+      await expect(snapTrigger).toHaveText('');
+      await expect(selectTrigger).toHaveText('');
+      await expect(panTrigger).toHaveText('');
+      const compactTopControlSlotBounds = await topControlSlot.boundingBox();
+      const compactPropertiesBounds = await propertiesTrigger.boundingBox();
+      const compactSnapBounds = await snapTrigger.boundingBox();
+      const compactSelectBounds = await selectTrigger.boundingBox();
+      const compactPanBounds = await panTrigger.boundingBox();
+      const compactMarkupBounds = await markupGroup.boundingBox();
+      expect(compactTopControlSlotBounds?.height).toBeCloseTo(168, 0);
+      expect(compactPropertiesBounds?.y).toBeCloseTo(initialPropertiesBounds.y, 0);
+      expect(compactSnapBounds?.y).toBeCloseTo(initialSnapBounds.y, 0);
+      expect(compactSelectBounds?.y).toBeCloseTo(initialSelectBounds.y, 0);
+      expect(compactPanBounds?.y).toBeCloseTo(initialPanBounds.y, 0);
+      expect(compactMarkupBounds?.y).toBeCloseTo(initialMarkupBounds.y, 0);
+
+      await selectTrigger.hover();
+      await expect.poll(async () => (await rightRail.boundingBox())?.width).toBeLessThanOrEqual(53);
+      await expect(selectTrigger).not.toContainText('Select');
       await expect(page.locator('[data-slot="tooltip-content"]').filter({ hasText: 'Select' })).toBeVisible();
 
       const browserWindow = await app.browserWindow(page);

@@ -45,6 +45,7 @@ import {
   type TransformDraft,
 } from '../pdf-tools/annotationLifecycle';
 import { createArcMarkupFromThreePoints } from '../pdf-tools/builtins/arcTool';
+import { updateCloudPlusTextBox } from '../pdf-tools/builtins/cloudPlusTool';
 import { createAreaMeasurementMarkup, createLengthMeasurementMarkup, createPolylengthMeasurementMarkup } from '../pdf-tools/builtins/measurementTool';
 import { dimensionCaptionRect } from '../pdf-tools/builtins/dimensionTool';
 import { annotationFontCssFamily, getAnnotationContentStyle, getAnnotationTextContentStyle, getVerticallyCenteredAnnotationTextContentStyle } from '../pdf-tools/annotationStyles';
@@ -53,36 +54,43 @@ import { getChromeHandleStyle, getChromeStyle, getMoveCursor, getResizeCursor, g
 import { expandViewportRect, projectChromeHandlePoint, unrotateViewportPointAroundBounds } from '../pdf-tools/selectionHitZones';
 import { layoutTextBoxLines, measureAnnotationText, splitAnnotationTextLines, type TextMeasurementContext } from '../pdf-tools/textLayout';
 import { getMarkupToolDefinition, getToolDefinition } from '../pdf-tools/toolRegistry';
-import { findNearestSnapPoint, getAnnotationSnapCandidates, type SnapCandidate, type SnapResult } from '../pdf-tools/snapping';
+import {
+  constrainPointOrthogonally,
+  findNearestSnapPoint,
+  findObjectSnapTrackingPoint,
+  getAnnotationSnapCandidates,
+  isPointOnOrthogonalConstraint,
+  toggleAcquiredTrackingPoint,
+  trackingPointKey,
+  type AcquiredTrackingPoint,
+  type ObjectSnapTrackingResult,
+  type OrthogonalConstraint,
+  type SnapCandidate,
+  type SnapResult,
+} from '../pdf-tools/snapping';
+import { SNAP_MARKER_COLOR } from './snapMarkerVisuals';
 import {
   createArmedBoxSelectionMarquee,
   createSelectionMarquee,
   isGeometrySelectedByMarquee,
+  resolvedSelectionMarqueeKind,
   selectionAfterMarquee,
   selectionMarqueeBounds,
-  selectionMarqueeKind,
   selectionMarqueeOperationFromModifiers,
   updateSelectionMarquee,
   type SelectionMarqueeState,
   type ViewportPoint,
 } from '../pdf-tools/selectionMarquee';
-import type { RenderPrimitive, SelectionChromeDescriptor, ToolHandleDescriptor, ToolHit } from '../pdf-tools/types';
+import type { RenderPrimitive, SelectionChromeDescriptor, ToolHandleDescriptor, ToolHit, ToolInteractionContext } from '../pdf-tools/types';
 
 type PageTransform = ReturnType<typeof createPageTransform>;
 const IMPORTED_MARKUP_MIN_RENDER_ZOOM = 0.35;
 const TEXT_BOX_GHOST_CURSOR = createTextBoxGhostCursor();
-const SELECTION_ADD_CURSOR = createSelectionToggleCursor('add');
-const SELECTION_REMOVE_CURSOR = createSelectionToggleCursor('remove');
 export const FINISH_CLOUD_POLYGON_EVENT = 'butter-paper:finish-cloud-polygon';
 
 interface TextEditState {
   readonly markupId: string;
   readonly text: string;
-}
-
-interface CursorHintPoint {
-  readonly x: number;
-  readonly y: number;
 }
 
 interface HotHandleState {
@@ -104,6 +112,8 @@ interface TextBoxCaretGeometryOptions extends TextMeasurementContext {
 interface SnapPointOptions {
   readonly enabled: boolean;
   readonly excludeMarkupIds?: readonly string[];
+  readonly orthogonalAnchor?: PdfPoint | null;
+  readonly acquireTracking?: boolean;
 }
 
 type EditableTextMarkup = Extract<Markup, { kind: 'text-box' | 'callout' | 'cloud-plus' | 'dimension' }>;
@@ -155,34 +165,50 @@ export function selectionAfterMarkupClick(
     : [...selectedMarkupIds, markupId];
 }
 
-export function selectionToggleCursorIntent(
-  activeTool: ToolMode,
-  shiftActive: boolean,
-  hoveredMarkupId: string | null,
+export function shouldConsumeSelectionClickAway(
   selectedMarkupIds: readonly string[],
-  handleActive: boolean,
-): 'add' | 'remove' | null {
-  if (activeTool !== 'select' || !shiftActive || !hoveredMarkupId || handleActive) {
-    return null;
-  }
-
-  return selectedMarkupIds.includes(hoveredMarkupId) ? 'remove' : 'add';
+  operation: SelectionMarqueeState['operation'],
+): boolean {
+  return selectedMarkupIds.length > 0 && operation === 'replace';
 }
 
-export function selectionZoneCursorIntent(
-  activeTool: ToolMode,
-  shiftActive: boolean,
-  altActive: boolean,
-  hoveredMarkupId: string | null,
-  marqueeActive: boolean,
-): 'add' | 'remove' | null {
-  if (activeTool !== 'select' || hoveredMarkupId || marqueeActive) {
-    return null;
+export function isDirectManipulationTool(activeTool: ToolMode): boolean {
+  return activeTool === 'select';
+}
+
+export function resolveAnnotationCursor({
+  activeTool,
+  calibrationPickActive = false,
+  selectionMarqueeActive = false,
+  pendingTextBoxActive = false,
+  textEditActive = false,
+  postPlacementSelectionActive = false,
+  hoverCursor = null,
+}: {
+  readonly activeTool: ToolMode;
+  readonly calibrationPickActive?: boolean;
+  readonly selectionMarqueeActive?: boolean;
+  readonly pendingTextBoxActive?: boolean;
+  readonly textEditActive?: boolean;
+  readonly postPlacementSelectionActive?: boolean;
+  readonly hoverCursor?: string | null;
+}): string {
+  if (calibrationPickActive || selectionMarqueeActive) {
+    return 'crosshair';
   }
-  if (altActive) {
-    return 'remove';
+  if (activeTool === 'text-box' && pendingTextBoxActive) {
+    return 'default';
   }
-  return shiftActive ? 'add' : null;
+  if (activeTool === 'text-box' && !textEditActive) {
+    return TEXT_BOX_GHOST_CURSOR;
+  }
+  if (postPlacementSelectionActive) {
+    return 'default';
+  }
+  if (!isDirectManipulationTool(activeTool)) {
+    return getToolDefinition(activeTool).cursor;
+  }
+  return hoverCursor ?? getToolDefinition(activeTool).cursor;
 }
 
 interface AnnotationLayerProps {
@@ -261,6 +287,7 @@ export function AnnotationLayer({
   onCalibrationPoint,
 }: AnnotationLayerProps) {
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const trackingHoverKeyRef = useRef<string | null>(null);
   const [draft, setDraft] = useState<AnnotationDraft | null>(null);
   const activeToolRef = useRef(activeTool);
   const clickPlacementToolRef = useRef<ToolMode | null>(null);
@@ -270,16 +297,19 @@ export function AnnotationLayer({
   const [textEdit, setTextEdit] = useState<TextEditState | null>(null);
   const [pendingTextBox, setPendingTextBox] = useState<TextBoxMarkup | null>(null);
   const [snapResult, setSnapResult] = useState<SnapResult | null>(null);
-  const [cursorHintPoint, setCursorHintPoint] = useState<CursorHintPoint | null>(null);
-  const [shiftSelectionActive, setShiftSelectionActive] = useState(false);
-  const [altSelectionActive, setAltSelectionActive] = useState(false);
+  const [acquiredTrackingPoints, setAcquiredTrackingPoints] = useState<readonly AcquiredTrackingPoint[]>([]);
+  const [objectSnapTrackingResult, setObjectSnapTrackingResult] = useState<ObjectSnapTrackingResult | null>(null);
+  const [orthogonalConstraint, setOrthogonalConstraint] = useState<OrthogonalConstraint | null>(null);
   const [selectionMarquee, setSelectionMarquee] = useState<SelectionMarqueeState | null>(null);
-  const [selectionCursorPoint, setSelectionCursorPoint] = useState<ViewportPoint | null>(null);
 
   const selectedMarkupIdSet = useMemo(() => new Set(selectedMarkupIds), [selectedMarkupIds]);
   const visibleMarkups = useMemo(() => (
     markups.filter((markup) => shouldRenderMarkupAtZoom(markup, transform))
   ), [markups, transform.zoom]);
+  const toolInteractionContext = useMemo(
+    () => interactionContextForPage(page, markups),
+    [markups, page],
+  );
   const annotationSnapCandidates = useMemo(() => (
     getAnnotationSnapCandidates(visibleMarkups, page)
   ), [visibleMarkups, page]);
@@ -289,38 +319,6 @@ export function AnnotationLayer({
     selectedMarkupIds,
     draft !== null,
   );
-  const selectedManipulationActive = selectedMarkupIds.length > 0 && draft === null;
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Shift') {
-        setShiftSelectionActive(true);
-      }
-      if (event.key === 'Alt') {
-        setAltSelectionActive(true);
-      }
-    };
-    const handleKeyUp = (event: KeyboardEvent) => {
-      if (event.key === 'Shift') {
-        setShiftSelectionActive(false);
-      }
-      if (event.key === 'Alt') {
-        setAltSelectionActive(false);
-      }
-    };
-    const handleBlur = () => {
-      setShiftSelectionActive(false);
-      setAltSelectionActive(false);
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    window.addEventListener('blur', handleBlur);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-      window.removeEventListener('blur', handleBlur);
-    };
-  }, []);
 
   useEffect(() => {
     const previousTool = activeToolRef.current;
@@ -330,7 +328,14 @@ export function AnnotationLayer({
 
     activeToolRef.current = activeTool;
     setPostPlacement(null);
+    setHoveredMarkupId(null);
     setHotHandle(null);
+    setHoverCursor(null);
+    setSnapResult(null);
+    setAcquiredTrackingPoints([]);
+    setObjectSnapTrackingResult(null);
+    setOrthogonalConstraint(null);
+    trackingHoverKeyRef.current = null;
     setSelectionMarquee(null);
     if (!shouldCancelDraftForToolChange(previousTool, activeTool, draft)) {
       return;
@@ -338,20 +343,31 @@ export function AnnotationLayer({
 
     setDraft(null);
     clickPlacementToolRef.current = null;
-    setSnapResult(null);
-    setHoveredMarkupId(null);
-    setHoverCursor(null);
   }, [activeTool, draft]);
+
+  const previousDraftRef = useRef<AnnotationDraft | null>(draft);
+  useEffect(() => {
+    if (previousDraftRef.current && !draft) {
+      setAcquiredTrackingPoints([]);
+      setObjectSnapTrackingResult(null);
+      setOrthogonalConstraint(null);
+      trackingHoverKeyRef.current = null;
+    }
+    previousDraftRef.current = draft;
+  }, [draft]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || isEditableKeyboardTarget(event.target)) {
+      if (isEditableKeyboardTarget(event.target)) {
         return;
       }
       if (event.key === 'Escape' && selectionMarquee) {
         event.preventDefault();
         setSelectionMarquee(null);
         setSnapResult(null);
+        return;
+      }
+      if (event.defaultPrevented) {
         return;
       }
       if (event.key === 'Escape' && draft?.kind === 'measurement-path') {
@@ -375,11 +391,19 @@ export function AnnotationLayer({
           setDraft(null);
           setSnapResult(null);
         }
+        return;
+      }
+      if (event.key === 'Escape' && !draft && acquiredTrackingPoints.length > 0) {
+        event.preventDefault();
+        setAcquiredTrackingPoints([]);
+        setObjectSnapTrackingResult(null);
+        setOrthogonalConstraint(null);
+        trackingHoverKeyRef.current = null;
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [draft, page.index, pageScale, selectionMarquee]);
+  }, [acquiredTrackingPoints.length, draft, page.index, pageScale, selectionMarquee]);
 
   useEffect(() => {
     const finishCloudPolygon = (event: Event) => {
@@ -417,31 +441,75 @@ export function AnnotationLayer({
   function snapPdfPoint(point: PdfPoint, options: SnapPointOptions): PdfPoint {
     if (!options.enabled) {
       setSnapResult(null);
+      setObjectSnapTrackingResult(null);
+      setOrthogonalConstraint(null);
       return point;
     }
 
+    const constraint = options.orthogonalAnchor
+      ? constrainPointOrthogonally(options.orthogonalAnchor, point)
+      : null;
+    const constrainedPoint = constraint?.point ?? point;
     const excludedIds = options.excludeMarkupIds ? new Set(options.excludeMarkupIds) : undefined;
-    if ((!snapToMarkup || annotationSnapCandidates.length === 0) && (!snapToContent || pdfContentSnapCandidates.length === 0)) {
-      setSnapResult(null);
-      return point;
-    }
-
     const markupResult = snapToMarkup
-      ? findNearestSnapPoint(point, annotationSnapCandidates, transform, {
+      ? findNearestSnapPoint(constrainedPoint, annotationSnapCandidates, transform, {
         tolerancePx: snapTolerancePx,
         excludeOwnerIds: excludedIds,
         snapTargets,
       })
       : null;
     const contentResult = snapToContent
-      ? findNearestSnapPoint(point, pdfContentSnapCandidates, transform, {
+      ? findNearestSnapPoint(constrainedPoint, pdfContentSnapCandidates, transform, {
         tolerancePx: snapTolerancePx,
         snapTargets,
       })
       : null;
-    const result = nearestSnapResult(markupResult, contentResult);
+    const nearestResult = nearestSnapResult(markupResult, contentResult);
+    const result = nearestResult && (!constraint || isPointOnOrthogonalConstraint(nearestResult.point, constraint))
+      ? nearestResult
+      : null;
+
+    if (options.acquireTracking) {
+      updateTrackingAcquisition(result);
+    }
+
     setSnapResult(result);
-    return result?.point ?? point;
+    if (result) {
+      setObjectSnapTrackingResult(null);
+      setOrthogonalConstraint(constraint ? { ...constraint, point: result.point } : null);
+      return result.point;
+    }
+
+    const eligibleTrackingPoints = acquiredTrackingPoints.filter((trackingPoint) => (
+      trackingPoint.source === 'annotation' ? snapToMarkup : snapToContent
+    ));
+    const allowedGuideAxes = constraint
+      ? [constraint.axis === 'horizontal' ? 'vertical' as const : 'horizontal' as const]
+      : undefined;
+    const trackingResult = findObjectSnapTrackingPoint(constrainedPoint, eligibleTrackingPoints, transform, {
+      tolerancePx: snapTolerancePx,
+      allowedGuideAxes,
+    });
+    const resolvedPoint = trackingResult?.point ?? constrainedPoint;
+    setObjectSnapTrackingResult(trackingResult);
+    setOrthogonalConstraint(constraint ? { ...constraint, point: resolvedPoint } : null);
+    return resolvedPoint;
+  }
+
+  function updateTrackingAcquisition(result: SnapResult | null): void {
+    const candidate = result?.candidate.kind === 'point' ? result.candidate : null;
+    if (!candidate) {
+      trackingHoverKeyRef.current = null;
+      return;
+    }
+
+    const key = trackingPointKey(candidate);
+    if (trackingHoverKeyRef.current === key) {
+      return;
+    }
+
+    trackingHoverKeyRef.current = key;
+    setAcquiredTrackingPoints((current) => toggleAcquiredTrackingPoint(current, candidate));
   }
 
   function handlePointerDown(event: React.PointerEvent<SVGSVGElement>): void {
@@ -467,13 +535,8 @@ export function AnnotationLayer({
       return;
     }
 
-    setSelectionCursorPoint(toViewportPoint(event));
     const rawPoint = toPdfPoint(event);
-    if ((activeTool === 'select' || selectedManipulationActive) && beginHandleTransform(event, rawPoint)) {
-      return;
-    }
-
-    if (activeTool !== 'select' && selectedManipulationActive && beginSelectedMarkupMoveFromHit(event, rawPoint)) {
+    if (isDirectManipulationTool(activeTool) && beginHandleTransform(event, rawPoint)) {
       return;
     }
 
@@ -489,7 +552,10 @@ export function AnnotationLayer({
       return;
     }
 
-    const point = snapPdfPoint(rawPoint, { enabled: shouldSnapCreationTool(activeTool) });
+    const point = snapPdfPoint(rawPoint, {
+      enabled: shouldSnapCreationTool(activeTool),
+      orthogonalAnchor: event.shiftKey ? orthogonalAnchorForDraft(draft, activeTool) : null,
+    });
     if (activeTool === 'text-box') {
       beginTextBoxPlacement(point);
       event.stopPropagation();
@@ -548,10 +614,21 @@ export function AnnotationLayer({
     }
 
     if (activeTool === 'select') {
+      const operation = selectionMarqueeOperationFromModifiers(event);
+      if (shouldConsumeSelectionClickAway(selectedMarkupIds, operation)) {
+        setSelectedMarkupIds([]);
+        setHoveredMarkupId(null);
+        setHotHandle(null);
+        setHoverCursor(null);
+        setSnapResult(null);
+        event.stopPropagation();
+        event.preventDefault();
+        return;
+      }
       setSelectionMarquee(createSelectionMarquee(
         event.pointerId,
         toViewportPoint(event),
-        selectionMarqueeOperationFromModifiers(event),
+        operation,
       ));
       setHoveredMarkupId(null);
       setHotHandle(null);
@@ -647,7 +724,7 @@ export function AnnotationLayer({
       const startPoint = transform.pdfToViewport(dimensionDraft.start);
       const currentPoint = transform.pdfToViewport(dimensionDraft.current);
       const markup = activeDefinition.interaction?.commitDraft?.(dimensionDraft as never, {
-        page,
+        ...toolInteractionContext,
         hasExceededDragThreshold: hasExceededDragThreshold(startPoint, currentPoint),
         createMarkupId,
       });
@@ -749,7 +826,7 @@ export function AnnotationLayer({
   function commitCloudNodeDraft(cloudDraft: Extract<AnnotationDraft, { kind: 'cloud-node' }>): boolean {
     const definition = getToolDefinition(activeTool);
     const markup = definition.interaction?.commitDraft?.(cloudDraft as never, {
-      page,
+      ...toolInteractionContext,
       hasExceededDragThreshold: true,
       createMarkupId,
     });
@@ -868,7 +945,7 @@ export function AnnotationLayer({
     const definition = getToolDefinition(tool);
     const finalDraft = updateClickPlacementDraft(draft, point);
     const markup = definition.interaction?.commitDraft?.(finalDraft as never, {
-      page,
+      ...toolInteractionContext,
       hasExceededDragThreshold: true,
       createMarkupId,
     });
@@ -902,7 +979,6 @@ export function AnnotationLayer({
 
   function handlePointerMove(event: React.PointerEvent<SVGSVGElement>): void {
     const viewportPoint = toViewportPoint(event);
-    setSelectionCursorPoint(viewportPoint);
     if (selectionMarquee) {
       if (selectionMarquee.pointerId !== null && selectionMarquee.pointerId !== event.pointerId) {
         return;
@@ -916,21 +992,8 @@ export function AnnotationLayer({
     }
 
     const rawPoint = toPdfPoint(event);
-    if (isCloudTool(activeTool)) {
-      const viewportPoint = transform.pdfToViewport(rawPoint);
-      setCursorHintPoint(cloudCursorHintPosition(viewportPoint, {
-        width: event.currentTarget.clientWidth,
-        height: event.currentTarget.clientHeight,
-      }));
-    } else if (cursorHintPoint) {
-      setCursorHintPoint(null);
-    }
     if (!draft) {
-      const hit = activeTool === 'select'
-        ? hitTestSelectMode(rawPoint)
-        : selectedManipulationActive
-          ? hitTestSelectedMode(rawPoint)
-          : null;
+      const hit = isDirectManipulationTool(activeTool) ? hitTestSelectMode(rawPoint) : null;
       setHoveredMarkupId(hit?.markupId ?? null);
       setHotHandle(hit?.handleId ? { markupId: hit.markupId, handleId: hit.handleId } : null);
       setHoverCursor(hit?.cursor ?? cursorForHit(hit));
@@ -958,7 +1021,11 @@ export function AnnotationLayer({
       return;
     }
 
-    const point = snapPdfPoint(rawPoint, { enabled: shouldSnapCreationTool(activeTool) });
+    const point = snapPdfPoint(rawPoint, {
+      enabled: shouldSnapCreationTool(activeTool),
+      orthogonalAnchor: event.shiftKey ? orthogonalAnchorForDraft(draft, activeTool) : null,
+      acquireTracking: shouldSnapCreationTool(activeTool),
+    });
 
     if (!draft) {
       return;
@@ -992,7 +1059,7 @@ export function AnnotationLayer({
 
       const delta = moveDelta(draft, point);
       if (delta.x !== 0 || delta.y !== 0) {
-        updateDocument((document) => moveDraftMarkups(document, draft, delta));
+        updateDocument((document) => moveDraftMarkups(document, draft, delta, page));
         setDraft({ ...draft, lastPoint: point });
       }
     }
@@ -1054,7 +1121,10 @@ export function AnnotationLayer({
       return;
     }
 
-    const point = snapPdfPoint(rawPoint, { enabled: shouldSnapCreationTool(activeTool) });
+    const point = snapPdfPoint(rawPoint, {
+      enabled: shouldSnapCreationTool(activeTool),
+      orthogonalAnchor: event.shiftKey ? orthogonalAnchorForDraft(draft, activeTool) : null,
+    });
     if (isClickPlacementDraft(draft)) {
       return;
     }
@@ -1091,7 +1161,7 @@ export function AnnotationLayer({
       }
 
       const markup = activeDefinition.interaction.commitDraft(draft as never, {
-        page,
+        ...toolInteractionContext,
         hasExceededDragThreshold: exceededDragThreshold,
         createMarkupId,
       });
@@ -1119,7 +1189,10 @@ export function AnnotationLayer({
 
   function handleDoubleClick(event: React.MouseEvent<SVGSVGElement>): void {
     if (draft?.kind === 'measurement-path') {
-      const point = snapPdfPoint(toPdfPoint(event), { enabled: shouldSnapCreationTool(activeTool) });
+      const point = snapPdfPoint(toPdfPoint(event), {
+        enabled: shouldSnapCreationTool(activeTool),
+        orthogonalAnchor: event.shiftKey ? orthogonalAnchorForDraft(draft, activeTool) : null,
+      });
       const finalDraft = addMeasurementPathDraftPoint(draft, point);
       if (commitMeasurementPathDraft(finalDraft)) {
         event.stopPropagation();
@@ -1170,12 +1243,7 @@ export function AnnotationLayer({
   }
 
   function beginMarkupMove(event: React.PointerEvent<SVGElement>, markup: Markup): void {
-    if (event.button !== 0) {
-      return;
-    }
-
-    const canManipulateSelection = selectedMarkupIds.includes(markup.id);
-    if (activeTool !== 'select' && !canManipulateSelection) {
+    if (event.button !== 0 || !isDirectManipulationTool(activeTool)) {
       return;
     }
 
@@ -1214,28 +1282,6 @@ export function AnnotationLayer({
       bodyDrag: hit.bodyDrag,
     }));
     svgRef.current?.setPointerCapture(event.pointerId);
-  }
-
-  function beginSelectedMarkupMoveFromHit(event: React.PointerEvent<SVGElement>, point: PdfPoint): boolean {
-    const hit = hitTestSelectedMode(point);
-    if (!hit?.bodyDrag || hit.region === 'handle') {
-      return false;
-    }
-
-    const markup = visibleMarkups.find((candidate) => candidate.id === hit.markupId);
-    if (!markup) {
-      return false;
-    }
-
-    event.stopPropagation();
-    setHoveredMarkupId(markup.id);
-    setHotHandle(null);
-    setDraft(createMoveDraft(event.pointerId, [markup.id], point, {
-      componentId: hit.componentId,
-      bodyDrag: hit.bodyDrag,
-    }));
-    svgRef.current?.setPointerCapture(event.pointerId);
-    return true;
   }
 
   function beginMarkupMoveFromHit(event: React.PointerEvent<SVGElement>, point: PdfPoint): boolean {
@@ -1307,7 +1353,7 @@ export function AnnotationLayer({
       handleBehavior: transformDraft.handleBehavior,
       startPoint: transformDraft.startPoint,
       currentPoint: point,
-    });
+    }, toolInteractionContext);
 
     if (transformed && transformed !== transformDraft.originalMarkup) {
       updateDocument((document) => ({
@@ -1324,19 +1370,6 @@ export function AnnotationLayer({
     }
 
     return hitTestToolMarkups(visibleMarkups, point, { page, tolerance: pdfToleranceForScale(transform.zoom), transform });
-  }
-
-  function hitTestSelectedMode(point: PdfPoint): ToolHit | null {
-    const handleHit = hitTestSelectedHandles(point);
-    if (handleHit) {
-      return handleHit;
-    }
-
-    return hitTestToolMarkups(
-      visibleMarkups.filter((markup) => selectedMarkupIdSet.has(markup.id)),
-      point,
-      { page, tolerance: pdfToleranceForScale(transform.zoom), transform },
-    );
   }
 
   function hitTestInteractiveHandles(point: PdfPoint): ToolHit | null {
@@ -1425,41 +1458,18 @@ export function AnnotationLayer({
     setHotHandle(null);
   }
 
-  const objectSelectionToggleIntent = selectionToggleCursorIntent(
+  const toolCursor = resolveAnnotationCursor({
     activeTool,
-    shiftSelectionActive,
-    hoveredMarkupId,
-    selectedMarkupIds,
-    hotHandle !== null || selectionMarquee !== null,
-  );
-  const selectionCursorIntent = objectSelectionToggleIntent ?? selectionZoneCursorIntent(
-    activeTool,
-    shiftSelectionActive,
-    altSelectionActive,
-    hoveredMarkupId,
-    selectionMarquee !== null,
-  );
-  const selectionToggleCursor = selectionCursorIntent === 'add'
-    ? SELECTION_ADD_CURSOR
-    : selectionCursorIntent === 'remove'
-      ? SELECTION_REMOVE_CURSOR
-      : null;
-  const selectionHintOperation = selectionMarquee?.operation ?? selectionCursorIntent;
-  const selectionHintPoint = selectionMarquee?.current ?? selectionCursorPoint;
-  const toolCursor = calibrationPickActive
-    ? 'crosshair'
-    : selectionMarquee
-      ? 'crosshair'
-    : activeTool === 'text-box' && pendingTextBox
-      ? 'default'
-      : activeTool === 'text-box' && !textEdit
-        ? TEXT_BOX_GHOST_CURSOR
-      : postPlacementSelectionActive
-        ? hoverCursor ?? 'default'
-        : selectionToggleCursor ?? hoverCursor ?? getToolDefinition(activeTool).cursor;
+    calibrationPickActive,
+    selectionMarqueeActive: selectionMarquee !== null,
+    pendingTextBoxActive: pendingTextBox !== null,
+    textEditActive: textEdit !== null,
+    postPlacementSelectionActive,
+    hoverCursor,
+  });
   const activeDefinition = getToolDefinition(activeTool);
   const draftPrimitives = draft && activeDefinition.render?.getDraftPrimitives
-    ? activeDefinition.render.getDraftPrimitives(draft as never, { page, pageScale, phase: 'draft' })
+    ? activeDefinition.render.getDraftPrimitives(draft as never, { ...toolInteractionContext, pageScale, phase: 'draft' })
     : [];
   const editingMarkup = textEdit
       ? visibleMarkups.find((markup): markup is EditableTextMarkup => (
@@ -1467,6 +1477,9 @@ export function AnnotationLayer({
       && (markup.kind === 'text-box' || markup.kind === 'callout' || markup.kind === 'cloud-plus' || markup.kind === 'dimension')
     ))
     : null;
+  const marqueeHoveredMarkupIdSet = new Set(
+    selectionMarquee?.active ? markupIdsSelectedByMarquee(selectionMarquee) : [],
+  );
 
   return (
     <svg
@@ -1474,7 +1487,6 @@ export function AnnotationLayer({
       className="absolute inset-0 z-20 h-full w-full overflow-visible"
       data-testid={`annotation-layer-${page.index + 1}`}
       data-annotation-canvas="true"
-      data-selection-toggle-intent={selectionCursorIntent ?? undefined}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -1482,8 +1494,9 @@ export function AnnotationLayer({
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
       onPointerLeave={() => {
-        setCursorHintPoint(null);
-        setSelectionCursorPoint(null);
+        setObjectSnapTrackingResult(null);
+        setOrthogonalConstraint(null);
+        trackingHoverKeyRef.current = null;
         if (!draft) {
           setHoveredMarkupId(null);
           setHotHandle(null);
@@ -1497,7 +1510,13 @@ export function AnnotationLayer({
       {visibleMarkups.map((markup) => {
         const definition = getMarkupToolDefinition(markup);
         if (definition?.render) {
-          const interactionState = getInteractionState(markup.id, selectedMarkupIdSet, selectedMarkupIds[0], hoveredMarkupId);
+          const interactionState = getInteractionState(
+            markup.id,
+            selectedMarkupIdSet,
+            selectedMarkupIds[0],
+            hoveredMarkupId,
+            marqueeHoveredMarkupIdSet,
+          );
           return (
             <PrimitiveAnnotation
               key={markup.id}
@@ -1506,6 +1525,7 @@ export function AnnotationLayer({
               transform={transform}
               page={page}
               pageScale={pageScale}
+              interactionContext={toolInteractionContext}
               interactionState={interactionState}
               hotHandleId={hotHandle?.markupId === markup.id ? hotHandle.handleId : null}
               editingText={textEdit?.markupId === markup.id ? textEdit.text : null}
@@ -1528,6 +1548,7 @@ export function AnnotationLayer({
           transform={transform}
           page={page}
           pageScale={pageScale}
+          interactionContext={toolInteractionContext}
           interactionState="focused"
           hotHandleId={null}
           editingText={pendingTextBox.text}
@@ -1538,18 +1559,16 @@ export function AnnotationLayer({
       {draftPrimitives.map((primitive, index) => (
         <RenderPrimitiveElement key={`draft-${index}`} primitive={primitive} transform={transform} />
       ))}
-      {selectionMarquee?.active ? <SelectionMarquee marquee={selectionMarquee} /> : null}
-      {activeTool === 'select' && selectionHintOperation && selectionHintPoint ? (
-        <SelectionCursorHint
-          point={selectionHintPoint}
-          operation={selectionHintOperation}
-          viewport={selectionViewportSize(transform)}
+      {acquiredTrackingPoints.length > 0 || objectSnapTrackingResult || orthogonalConstraint ? (
+        <DraftingGuides
+          acquiredPoints={acquiredTrackingPoints}
+          trackingResult={objectSnapTrackingResult}
+          orthogonalConstraint={orthogonalConstraint}
+          transform={transform}
         />
       ) : null}
+      {selectionMarquee?.active ? <SelectionMarquee marquee={selectionMarquee} /> : null}
       {snapResult ? <SnapIndicator result={snapResult} transform={transform} /> : null}
-      {isCloudTool(activeTool) && cursorHintPoint && !textEdit && !pendingTextBox && !postPlacementSelectionActive ? (
-        <CloudCursorHint point={cursorHintPoint} />
-      ) : null}
       {pendingTextBox ? (
         <TextBoxEditor
           markup={pendingTextBox}
@@ -1582,26 +1601,6 @@ export function AnnotationLayer({
   );
 }
 
-const CLOUD_CURSOR_HINT_WIDTH = 202;
-const CLOUD_CURSOR_HINT_HEIGHT = 24;
-const CLOUD_CURSOR_HINT_OFFSET = 14;
-const CLOUD_CURSOR_HINT_MARGIN = 8;
-
-export function cloudCursorHintPosition(
-  pointer: CursorHintPoint,
-  viewport: { readonly width: number; readonly height: number },
-): CursorHintPoint {
-  const preferredX = pointer.x + CLOUD_CURSOR_HINT_OFFSET;
-  const preferredY = pointer.y + CLOUD_CURSOR_HINT_OFFSET;
-  const x = Math.max(CLOUD_CURSOR_HINT_MARGIN, Math.min(preferredX, viewport.width - CLOUD_CURSOR_HINT_WIDTH - CLOUD_CURSOR_HINT_MARGIN));
-  const yBelow = preferredY + CLOUD_CURSOR_HINT_HEIGHT <= viewport.height - CLOUD_CURSOR_HINT_MARGIN;
-  const y = yBelow ? preferredY : pointer.y - CLOUD_CURSOR_HINT_HEIGHT - CLOUD_CURSOR_HINT_OFFSET;
-  return {
-    x: Math.max(CLOUD_CURSOR_HINT_MARGIN, x),
-    y: Math.max(CLOUD_CURSOR_HINT_MARGIN, Math.min(y, viewport.height - CLOUD_CURSOR_HINT_HEIGHT - CLOUD_CURSOR_HINT_MARGIN)),
-  };
-}
-
 export function isCloudPolygonClosePoint(
   firstPoint: PdfPoint,
   currentPoint: PdfPoint,
@@ -1613,25 +1612,9 @@ export function isCloudPolygonClosePoint(
   return Math.hypot(current.x - first.x, current.y - first.y) <= thresholdPx;
 }
 
-function CloudCursorHint({ point }: { point: CursorHintPoint }) {
-  return (
-    <g
-      data-testid="cloud-cursor-hint"
-      className="pointer-events-none select-none"
-      aria-hidden="true"
-      transform={`translate(${point.x} ${point.y})`}
-    >
-      <rect width={CLOUD_CURSOR_HINT_WIDTH} height={CLOUD_CURSOR_HINT_HEIGHT} rx="6" fill="rgba(15, 23, 42, 0.92)" />
-      <text x="10" y="16" fill="#ffffff" fontFamily="Geist Variable, sans-serif" fontSize="12">
-        Drag for rectangle · Click for points
-      </text>
-    </g>
-  );
-}
-
 function SelectionMarquee({ marquee }: { marquee: SelectionMarqueeState }) {
   const bounds = selectionMarqueeBounds(marquee.start, marquee.current);
-  const kind = selectionMarqueeKind(marquee.start, marquee.current);
+  const kind = resolvedSelectionMarqueeKind(marquee);
   const crossing = kind === 'crossing';
   const commonProps = {
     'data-testid': 'selection-marquee',
@@ -1657,99 +1640,7 @@ function SelectionMarquee({ marquee }: { marquee: SelectionMarqueeState }) {
         height={bounds.bottom - bounds.top}
       />
     );
-  const operationBadge = marquee.operation === 'replace' ? null : (
-    <g
-      data-testid="selection-marquee-operation"
-      data-selection-operation={marquee.operation}
-      transform={`translate(${marquee.current.x + 18} ${marquee.current.y - 18})`}
-      pointerEvents="none"
-      aria-hidden="true"
-    >
-      <circle r="10" fill={marquee.operation === 'add' ? '#16a34a' : '#dc2626'} stroke="rgba(255,255,255,0.88)" strokeWidth="2" />
-      <path
-        d={marquee.operation === 'add' ? 'M -6 0 H 6 M 0 -6 V 6' : 'M -6 0 H 6'}
-        fill="none"
-        stroke="#ffffff"
-        strokeWidth="2.4"
-        strokeLinecap="round"
-      />
-    </g>
-  );
-
-  return (
-    <>
-      {selectionShape}
-      {operationBadge}
-    </>
-  );
-}
-
-const SELECTION_CURSOR_HINT_WIDTH = 294;
-const SELECTION_CURSOR_HINT_HEIGHT = 28;
-const SELECTION_CURSOR_HINT_OFFSET = 16;
-const SELECTION_CURSOR_HINT_MARGIN = 8;
-
-export function selectionCursorHintPosition(
-  pointer: ViewportPoint,
-  viewport: { readonly width: number; readonly height: number },
-): ViewportPoint {
-  const preferredX = pointer.x + SELECTION_CURSOR_HINT_OFFSET;
-  const preferredY = pointer.y + SELECTION_CURSOR_HINT_OFFSET;
-  const x = Math.max(
-    SELECTION_CURSOR_HINT_MARGIN,
-    Math.min(preferredX, viewport.width - SELECTION_CURSOR_HINT_WIDTH - SELECTION_CURSOR_HINT_MARGIN),
-  );
-  const yBelow = preferredY + SELECTION_CURSOR_HINT_HEIGHT <= viewport.height - SELECTION_CURSOR_HINT_MARGIN;
-  const y = yBelow ? preferredY : pointer.y - SELECTION_CURSOR_HINT_HEIGHT - SELECTION_CURSOR_HINT_OFFSET;
-  return {
-    x,
-    y: Math.max(
-      SELECTION_CURSOR_HINT_MARGIN,
-      Math.min(y, viewport.height - SELECTION_CURSOR_HINT_HEIGHT - SELECTION_CURSOR_HINT_MARGIN),
-    ),
-  };
-}
-
-function selectionViewportSize(transform: PageTransform): { width: number; height: number } {
-  const rotated = transform.geometry.rotation === 90 || transform.geometry.rotation === 270;
-  return {
-    width: (rotated ? transform.geometry.size.height : transform.geometry.size.width) * transform.zoom,
-    height: (rotated ? transform.geometry.size.width : transform.geometry.size.height) * transform.zoom,
-  };
-}
-
-function SelectionCursorHint({
-  point,
-  operation,
-  viewport,
-}: {
-  point: ViewportPoint;
-  operation: 'replace' | 'add' | 'remove';
-  viewport: { readonly width: number; readonly height: number };
-}) {
-  const position = selectionCursorHintPosition(point, viewport);
-  const isMac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac');
-  const removeShortcut = isMac ? '⌥ Remove' : 'Alt Remove';
-  const operationLabel = operation === 'add'
-    ? 'Add to selection'
-    : operation === 'remove'
-      ? 'Remove from selection'
-      : 'Replace selection';
-  return (
-    <g
-      data-testid="selection-cursor-hint"
-      data-selection-operation={operation}
-      transform={`translate(${position.x} ${position.y})`}
-      pointerEvents="none"
-      aria-hidden="true"
-    >
-      <rect width={SELECTION_CURSOR_HINT_WIDTH} height={SELECTION_CURSOR_HINT_HEIGHT} rx="6" fill="rgba(15, 23, 42, 0.94)" />
-      <text x="10" y="18" fontFamily="Geist Variable, sans-serif" fontSize="12">
-        <tspan fill="#ffffff">{operationLabel}</tspan>
-        <tspan fill="#94a3b8">{'  ·  ⇧ Add  ·  '}{removeShortcut}</tspan>
-      </text>
-    </g>
-  );
+  return selectionShape;
 }
 
 function ReadOnlyMarkup({
@@ -1792,6 +1683,7 @@ function PrimitiveAnnotation({
   transform,
   page,
   pageScale,
+  interactionContext,
   interactionState,
   hotHandleId,
   editingText,
@@ -1802,6 +1694,7 @@ function PrimitiveAnnotation({
   transform: PageTransform;
   page: PageModel;
   pageScale?: PageScale;
+  interactionContext?: ToolInteractionContext;
   interactionState: InteractionState;
   hotHandleId: string | null;
   editingText: string | null;
@@ -1812,9 +1705,15 @@ function PrimitiveAnnotation({
   }
 
   const isInteractive = interactionState !== 'idle';
-  const renderedMarkup = editingText !== null && (markup.kind === 'callout' || markup.kind === 'cloud-plus')
-    ? { ...markup, text: editingText, textBox: centeredCompositeTextBoxRect(markup, editingText) }
-    : markup;
+  const renderedMarkup = editingText !== null && markup.kind === 'cloud-plus'
+    ? updateCloudPlusTextBox(
+      { ...markup, text: editingText },
+      centeredCompositeTextBoxRect(markup, editingText),
+      interactionContext,
+    )
+    : editingText !== null && markup.kind === 'callout'
+      ? { ...markup, text: editingText, textBox: centeredCompositeTextBoxRect(markup, editingText) }
+      : markup;
   const primitives = (definition.render?.getContentPrimitives(renderedMarkup as never, { page, pageScale, phase: interactionState }) ?? [])
     .map((primitive) => (
       editingText !== null && (markup.kind === 'text-box' || markup.kind === 'callout' || markup.kind === 'cloud-plus' || markup.kind === 'dimension') && primitive.kind === 'textBox'
@@ -2344,21 +2243,6 @@ function createTextBoxGhostCursor(): string {
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 16 12, default`;
 }
 
-function createSelectionToggleCursor(intent: 'add' | 'remove'): string {
-  const badgeFill = intent === 'add' ? '#16a34a' : '#dc2626';
-  const badgeGlyph = intent === 'add'
-    ? '<path d="M23 18.5v9M18.5 23h9" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>'
-    : '<path d="M18.5 23h9" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>';
-  const svg = [
-    '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">',
-    '<path d="M3 2.5v20l5.4-5.2 4.1 9.2 3.7-1.7-4.1-9.1H20z" fill="#ffffff" stroke="#0f172a" stroke-width="1.5" stroke-linejoin="round"/>',
-    `<circle cx="23" cy="23" r="7.5" fill="${badgeFill}" stroke="#ffffff" stroke-width="1.5"/>`,
-    badgeGlyph,
-    '</svg>',
-  ].join('');
-  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 3 3, default`;
-}
-
 function initialTextBoxRectAtPointer(
   point: PdfPoint,
   transform: PageTransform,
@@ -2451,7 +2335,17 @@ export function centeredCompositeTextBoxRect(
   const requiredHeight = lineCount * lineHeightPt + 12;
   const height = Math.max(markup.textBox.height, requiredHeight);
   const connection = markup.leader.points.at(-1);
-  const centerY = connection?.y ?? markup.textBox.y + markup.textBox.height * 0.5;
+  const existingCenterY = markup.textBox.y + markup.textBox.height * 0.5;
+  const connectsToVerticalSide = connection
+    ? Math.min(
+      Math.abs(connection.x - markup.textBox.x),
+      Math.abs(connection.x - (markup.textBox.x + markup.textBox.width)),
+    ) <= Math.min(
+      Math.abs(connection.y - markup.textBox.y),
+      Math.abs(connection.y - (markup.textBox.y + markup.textBox.height)),
+    )
+    : false;
+  const centerY = connection && connectsToVerticalSide ? connection.y : existingCenterY;
   return rect(markup.textBox.x, centerY - height * 0.5, markup.textBox.width, height);
 }
 
@@ -2465,10 +2359,21 @@ export function updateMarkupTextAndCenterOnLeader(
     return updateMarkupText(document, markupId, text);
   }
 
+  const markupPage = document.pages.find((page) => page.index === markup.pageIndex);
+  const interactionContext = markupPage
+    ? interactionContextForPage(markupPage, document.markups)
+    : undefined;
+
   return {
     ...document,
     markups: document.markups.map((candidate) => candidate.id === markupId
-      ? { ...markup, text, textBox: centeredCompositeTextBoxRect(markup, text) }
+      ? markup.kind === 'cloud-plus'
+        ? updateCloudPlusTextBox(
+          { ...markup, text },
+          centeredCompositeTextBoxRect(markup, text),
+          interactionContext,
+        )
+        : { ...markup, text, textBox: centeredCompositeTextBoxRect(markup, text) }
       : candidate),
   };
 }
@@ -2639,15 +2544,15 @@ function SnapIndicator({
         <path
           d={`M ${point.x} ${point.y - radius - 1} L ${point.x + radius + 1} ${point.y + radius} L ${point.x - radius - 1} ${point.y + radius} Z`}
           fill="none"
-          stroke="#2563eb"
+          stroke={SNAP_MARKER_COLOR}
           strokeWidth={1.5}
         />
       ) : role === 'center' ? (
-        <circle cx={point.x} cy={point.y} r={radius} fill="none" stroke="#2563eb" strokeWidth={1.5} />
+        <circle cx={point.x} cy={point.y} r={radius} fill="none" stroke={SNAP_MARKER_COLOR} strokeWidth={1.5} />
       ) : role === 'intersection' ? (
         <>
-          <line x1={point.x - radius} y1={point.y - radius} x2={point.x + radius} y2={point.y + radius} stroke="#2563eb" strokeWidth={1.5} />
-          <line x1={point.x + radius} y1={point.y - radius} x2={point.x - radius} y2={point.y + radius} stroke="#2563eb" strokeWidth={1.5} />
+          <line x1={point.x - radius} y1={point.y - radius} x2={point.x + radius} y2={point.y + radius} stroke={SNAP_MARKER_COLOR} strokeWidth={1.5} />
+          <line x1={point.x + radius} y1={point.y - radius} x2={point.x - radius} y2={point.y + radius} stroke={SNAP_MARKER_COLOR} strokeWidth={1.5} />
         </>
       ) : role === 'edge' || role === 'bounds' ? (
         <rect
@@ -2657,7 +2562,7 @@ function SnapIndicator({
           height={radius * 2}
           transform={`rotate(45 ${point.x} ${point.y})`}
           fill="none"
-          stroke="#2563eb"
+          stroke={SNAP_MARKER_COLOR}
           strokeWidth={1.5}
         />
       ) : (
@@ -2667,10 +2572,103 @@ function SnapIndicator({
           width={radius * 2}
           height={radius * 2}
           fill="none"
-          stroke="#2563eb"
+          stroke={SNAP_MARKER_COLOR}
           strokeWidth={1.5}
         />
       )}
+    </g>
+  );
+}
+
+function DraftingGuides({
+  acquiredPoints,
+  trackingResult,
+  orthogonalConstraint,
+  transform,
+}: {
+  acquiredPoints: readonly AcquiredTrackingPoint[];
+  trackingResult: ObjectSnapTrackingResult | null;
+  orthogonalConstraint: OrthogonalConstraint | null;
+  transform: PageTransform;
+}) {
+  const resolvedPoint = trackingResult?.point ?? orthogonalConstraint?.point ?? null;
+  const viewportResolvedPoint = resolvedPoint ? transform.pdfToViewport(resolvedPoint) : null;
+
+  return (
+    <g
+      className="pointer-events-none"
+      data-testid="drafting-guides"
+      data-tracking-guide-count={trackingResult?.guides.length ?? 0}
+      data-orthogonal-axis={orthogonalConstraint?.axis}
+      aria-hidden="true"
+    >
+      {orthogonalConstraint ? (() => {
+        const start = transform.pdfToViewport(orthogonalConstraint.anchor);
+        const end = transform.pdfToViewport(orthogonalConstraint.point);
+        return (
+          <line
+            data-testid="orthogonal-guide"
+            x1={start.x}
+            y1={start.y}
+            x2={end.x}
+            y2={end.y}
+            stroke="#2563eb"
+            strokeWidth={1.25}
+            strokeDasharray="6 4"
+            opacity={0.82}
+          />
+        );
+      })() : null}
+      {trackingResult?.guides.map((guide, index) => {
+        const origin = transform.pdfToViewport(guide.origin);
+        if (!viewportResolvedPoint) {
+          return null;
+        }
+        return (
+          <line
+            key={`${trackingPointKey({ point: guide.origin })}-${guide.axis}-${index}`}
+            data-testid="object-snap-tracking-guide"
+            data-tracking-axis={guide.axis}
+            x1={origin.x}
+            y1={origin.y}
+            x2={viewportResolvedPoint.x}
+            y2={viewportResolvedPoint.y}
+            stroke="#16a34a"
+            strokeWidth={1.25}
+            strokeDasharray="4 4"
+            opacity={0.9}
+          />
+        );
+      })}
+      {acquiredPoints.map((acquiredPoint) => {
+        const point = transform.pdfToViewport(acquiredPoint.point);
+        return (
+          <g key={trackingPointKey(acquiredPoint)} data-testid="acquired-tracking-point">
+            <line x1={point.x - 4} y1={point.y} x2={point.x + 4} y2={point.y} stroke="#16a34a" strokeWidth={1.5} />
+            <line x1={point.x} y1={point.y - 4} x2={point.x} y2={point.y + 4} stroke="#16a34a" strokeWidth={1.5} />
+          </g>
+        );
+      })}
+      {trackingResult && viewportResolvedPoint ? (
+        <g data-testid="object-snap-tracking-point">
+          <line
+            x1={viewportResolvedPoint.x - 5}
+            y1={viewportResolvedPoint.y - 5}
+            x2={viewportResolvedPoint.x + 5}
+            y2={viewportResolvedPoint.y + 5}
+            stroke="#16a34a"
+            strokeWidth={1.5}
+          />
+          <line
+            x1={viewportResolvedPoint.x + 5}
+            y1={viewportResolvedPoint.y - 5}
+            x2={viewportResolvedPoint.x - 5}
+            y2={viewportResolvedPoint.y + 5}
+            stroke="#16a34a"
+            strokeWidth={1.5}
+          />
+        </g>
+      ) : null}
     </g>
   );
 }
@@ -2744,12 +2742,17 @@ function ReadOnlyCalloutAnnotation({ markup, transform }: { markup: Extract<Mark
   );
 }
 
-function getInteractionState(
+export function getInteractionState(
   markupId: string,
   selectedMarkupIds: ReadonlySet<string>,
   primaryMarkupId: string | undefined,
   hoveredMarkupId: string | null,
+  marqueeHoveredMarkupIds?: ReadonlySet<string>,
 ): InteractionState {
+  if (marqueeHoveredMarkupIds?.has(markupId)) {
+    return 'hovered';
+  }
+
   if (selectedMarkupIds.has(markupId)) {
     return primaryMarkupId === markupId ? 'focused' : 'selected';
   }
@@ -2781,6 +2784,26 @@ function shouldSnapCreationTool(tool: ToolMode): boolean {
     && tool !== 'pen'
     && tool !== 'highlight'
     && tool !== 'snapshot';
+}
+
+export function orthogonalAnchorForDraft(draft: AnnotationDraft | null, activeTool: ToolMode): PdfPoint | null {
+  if (!draft) {
+    return null;
+  }
+
+  if (draft.kind === 'line') {
+    return isCloudTool(activeTool) ? null : draft.start;
+  }
+
+  if (draft.kind === 'measurement-path' || draft.kind === 'cloud-node') {
+    return draft.points.at(-1) ?? draft.start;
+  }
+
+  if (draft.kind === 'arc' && draft.phase === 'end') {
+    return draft.start;
+  }
+
+  return null;
 }
 
 function isMeasurementTool(tool: ToolMode): tool is Extract<ToolMode, 'length' | 'polylength' | 'area'> {
@@ -2929,7 +2952,13 @@ function hitTestToolMarkups(
   return null;
 }
 
-function moveDraftMarkups(document: DocumentModel, draft: Extract<AnnotationDraft, { kind: 'move' }>, delta: PdfPoint): DocumentModel {
+function moveDraftMarkups(
+  document: DocumentModel,
+  draft: Extract<AnnotationDraft, { kind: 'move' }>,
+  delta: PdfPoint,
+  page: PageModel,
+): DocumentModel {
+  const interactionContext = interactionContextForPage(page, document.markups);
   return {
     ...document,
     markups: document.markups.map((markup) => {
@@ -2942,10 +2971,18 @@ function moveDraftMarkups(document: DocumentModel, draft: Extract<AnnotationDraf
         componentId: draft.componentId ?? '',
         bodyDrag: draft.bodyDrag ?? 'moveSelf',
         delta,
-      });
+      }, interactionContext);
       return dragged ?? translateMarkup(markup, delta);
     }),
   };
+}
+
+export function interactionContextForPage(page: PageModel, markups: readonly Markup[]) {
+  return {
+    page,
+    pageBounds: rect(0, 0, page.size.width, page.size.height),
+    markups: markups.filter((markup) => markup.pageIndex === page.index),
+  } as const;
 }
 
 function distance(a: { readonly x: number; readonly y: number }, b: { readonly x: number; readonly y: number }): number {

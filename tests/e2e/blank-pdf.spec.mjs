@@ -16,6 +16,42 @@ const PAPER_SIZES = [
 ];
 
 test.describe('New blank PDF', () => {
+  test('opens the size picker from the File menu and creates the selected page', async () => {
+    test.skip(!resolveDesktopEntryPoint(), 'Desktop app entrypoint not available yet');
+    const app = await launchButterPaper({ theme: 'light' });
+    if (!app) test.skip(true, 'Desktop app could not be launched');
+
+    const page = await firstWindow(app);
+    const outputDirectory = await mkdtemp(join(tmpdir(), 'butter-paper-blank-menu-e2e-'));
+
+    try {
+      await page.getByTestId('menu-trigger-file').click();
+      await page.getByTestId('menu-file-new-pdf').click();
+      const dialog = page.getByTestId('new-blank-pdf-dialog');
+      await expect(dialog).toBeVisible();
+      await expect(page.getByTestId('new-blank-pdf-dialog-paper-size')).toHaveValue('a3');
+      await page.getByTestId('new-blank-pdf-dialog-paper-size').selectOption('a4');
+      await page.getByTestId('new-blank-pdf-dialog-portrait').click();
+      await page.getByTestId('new-blank-pdf-dialog-create').click();
+
+      await expect(dialog).toHaveCount(0);
+      await expect.poll(async () => (await getDiagnostics(page))?.documentName).toBe('Untitled.pdf');
+      await expect(page.getByTestId('document-tab-new-pdf')).toHaveAttribute('aria-label', 'New blank PDF using A4 · Portrait');
+      const outputPath = join(outputDirectory, 'file-menu-a4-portrait.pdf');
+      await saveCurrentDocumentAs(page, outputPath);
+      const document = await PDFDocument.load(await readFile(outputPath), { updateMetadata: false });
+      expect(document.getPage(0).getWidth()).toBeCloseTo(210 * MILLIMETRES_TO_POINTS, 3);
+      expect(document.getPage(0).getHeight()).toBeCloseTo(297 * MILLIMETRES_TO_POINTS, 3);
+
+      await page.evaluate(async ({ path }) => {
+        await window.__butterPaperTestHooks?.closeTab(path);
+      }, { path: outputPath });
+    } finally {
+      await app.close();
+      await rm(outputDirectory, { recursive: true, force: true });
+    }
+  });
+
   test('keeps equally spaced document actions after the tabs, remembers the blank default, and protects a dirty tab', async () => {
     test.skip(!resolveDesktopEntryPoint(), 'Desktop app entrypoint not available yet');
     const app = await launchButterPaper({ theme: 'light' });

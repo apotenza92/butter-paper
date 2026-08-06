@@ -26,7 +26,7 @@ export function resolveDesktopEntryPoint() {
 }
 
 export async function launchButterPaper(options = {}) {
-  const { theme } = options;
+  const { fixtureDirectory, theme } = options;
   const entryPoint = resolveDesktopEntryPoint();
   if (!entryPoint) {
     return null;
@@ -46,7 +46,9 @@ export async function launchButterPaper(options = {}) {
     ...process.env,
     BP_TEST_MODE: '1',
     BP_DISABLE_RENDERER_DEV_SERVER: '1',
-    BP_TEST_FIXTURE_DIR: resolve(repoRoot, 'tests/fixtures/generated'),
+    BP_TEST_FIXTURE_DIR: fixtureDirectory
+      ? resolve(fixtureDirectory)
+      : resolve(repoRoot, 'tests/fixtures/generated'),
     ...(theme ? { BP_TEST_THEME: theme } : {}),
   };
   delete env.ELECTRON_RUN_AS_NODE;
@@ -65,6 +67,10 @@ export async function openFixturePdf(app, fixtureName = 'single-page') {
     'tests/fixtures/generated',
     fixtureName.endsWith('.pdf') ? fixtureName : `${fixtureName}.pdf`,
   );
+  return await openPdfPath(app, filePath);
+}
+
+export async function openPdfPath(app, filePath) {
   const page = await firstWindow(app);
   await page.waitForFunction(() => Boolean(window.__butterPaperTestHooks?.openDocumentPath));
   await page.evaluate(async ({ path }) => {

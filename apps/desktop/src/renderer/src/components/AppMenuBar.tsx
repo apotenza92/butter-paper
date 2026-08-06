@@ -51,11 +51,13 @@ const UPDATE_FREQUENCIES: Array<{ value: UpdateFrequency; label: string }> = [
   { value: 'monthly', label: 'Monthly' },
 ];
 
+export const APP_MENU_CONTENT_CLASS_NAME = 'w-max whitespace-nowrap';
+
 export function AppMenuBar({ canSave, productName, updateStatus, onNewPdf, onOpen, onSave, onSaveAs, onSetAsDefaultPdfApp, onCheckForUpdates, onOpenReleasePage, onUpdateFrequencyChange, onQuit }: AppMenuBarProps) {
   const fileItems = useMemo<AppMenuItem[]>(() => {
     return [
       {
-        label: 'New Blank PDF',
+        label: 'New Blank PDF...',
         onSelect: onNewPdf,
         testId: 'menu-file-new-pdf',
       },
@@ -94,7 +96,7 @@ export function AppMenuBar({ canSave, productName, updateStatus, onNewPdf, onOpe
           <MenubarTrigger data-testid={`menu-trigger-${menu.key}`}>
             {menu.label}
           </MenubarTrigger>
-          <MenubarContent className="min-w-[168px]">
+          <MenubarContent className={APP_MENU_CONTENT_CLASS_NAME}>
             {menu.key === 'butter-paper' ? (
               <>
                 <MenubarGroup>
@@ -126,7 +128,7 @@ export function AppMenuBar({ canSave, productName, updateStatus, onNewPdf, onOpe
                     <MenubarSubTrigger data-testid="menu-update-frequency" disabled={!updateStatus}>
                       Check Automatically
                     </MenubarSubTrigger>
-                    <MenubarSubContent>
+                    <MenubarSubContent className={APP_MENU_CONTENT_CLASS_NAME}>
                       <MenubarRadioGroup
                         value={updateStatus?.frequency ?? 'daily'}
                         onValueChange={(value) => onUpdateFrequencyChange(value as UpdateFrequency)}

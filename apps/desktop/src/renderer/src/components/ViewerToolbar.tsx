@@ -2,15 +2,11 @@ import {
   ChevronDown,
   Expand,
   Grid2x2,
-  Magnet,
   MoveHorizontal,
   MoveVertical,
   RectangleVertical,
   RotateCcw,
-  Ruler,
   Search,
-  Shapes,
-  VectorSquare,
   ZoomIn,
   ZoomOut,
   type LucideIcon,
@@ -20,7 +16,6 @@ import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuLabel,
@@ -43,7 +38,7 @@ import {
   SHELL_SURFACE_PANEL,
   VIEWER_TOOLBAR_INSET_X,
 } from './shellSpacing';
-import type { CadViewOrganisation, ScrollWheelMode, SnapSettings, SnapTarget } from '../state/viewerStore';
+import type { CadViewOrganisation, ScrollWheelMode } from '../state/viewerStore';
 import { SplitButtonSegment } from './domain-ui/SplitButtonSegment';
 
 interface ViewerToolbarProps {
@@ -56,7 +51,6 @@ interface ViewerToolbarProps {
   pageColumnsEnabled: boolean;
   cadViewOrganisation: CadViewOrganisation;
   pagesPerColumn: number;
-  snapSettings: SnapSettings;
   onZoomOut: () => void;
   onZoomReset: () => void;
   onZoomIn: () => void;
@@ -69,8 +63,6 @@ interface ViewerToolbarProps {
   onPageColumnsEnabledChange: (enabled: boolean) => void;
   onCadViewOrganisationChange: (organisation: CadViewOrganisation) => void;
   onPagesPerColumnChange: (count: number) => void;
-  onSnapSettingsChange: (settings: Partial<SnapSettings>) => void;
-  onSetPageScale: () => void;
 }
 
 interface ToolbarIconProps {
@@ -221,14 +213,6 @@ function ToolbarIconButton({
   );
 }
 
-const snapTargetOptions: ReadonlyArray<{ target: SnapTarget; label: string; hint: string }> = [
-  { target: 'endpoint', label: 'Ends + Corners', hint: 'Endpoint' },
-  { target: 'midpoint', label: 'Midpoints', hint: 'Midpoint' },
-  { target: 'center', label: 'Centers', hint: 'Center' },
-  { target: 'intersection', label: 'Intersections', hint: 'Intersection' },
-  { target: 'nearest', label: 'Nearest', hint: 'Anywhere on edge' },
-];
-
 const zoomPresetOptions: ReadonlyArray<number> = [
   0.0625,
   0.1,
@@ -311,97 +295,6 @@ function ZoomDropdown({
         </DropdownMenuRadioGroup>
       </DropdownMenuContent>
     </DropdownMenu>
-  );
-}
-
-function SnapDropdown({
-  disabled,
-  snapSettings,
-  onSnapSettingsChange,
-}: {
-  disabled?: boolean;
-  snapSettings: SnapSettings;
-  onSnapSettingsChange: (settings: Partial<SnapSettings>) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const targets = snapSettings.snapTargets;
-  const selectedTargets = new Set(targets);
-
-  function toggleTarget(target: SnapTarget): void {
-    const next = selectedTargets.has(target)
-      ? targets.filter((candidate) => candidate !== target)
-      : [...targets, target];
-    onSnapSettingsChange({ snapTargets: next });
-  }
-
-  useEffect(() => {
-    if (disabled) {
-      setOpen(false);
-    }
-  }, [disabled, setOpen]);
-
-  return (
-    <div data-testid="viewer-snap-controls">
-      <DropdownMenu open={open} onOpenChange={setOpen} disabled={disabled}>
-        <ShadcnTooltip disabled={disabled || open}>
-          <TooltipTrigger render={(
-            <DropdownMenuTrigger render={(
-              <Button
-                type="button"
-                variant={TOOLBAR_ACTION_BUTTON_VARIANT}
-                size="default"
-                disabled={disabled}
-                data-testid="viewer-snap-target-menu"
-                aria-label="Snap settings"
-              >
-                <Magnet data-icon="inline-start" aria-hidden="true" />
-                <ChevronDown data-icon="inline-end" aria-hidden="true" />
-              </Button>
-            )} />
-          )} />
-          <TooltipContent>Snap</TooltipContent>
-        </ShadcnTooltip>
-        <DropdownMenuContent align="start" className="min-w-[240px]">
-          <DropdownMenuGroup>
-            <DropdownMenuCheckboxItem
-              checked={snapSettings.snapToContent}
-              data-testid="viewer-snap-content"
-              onCheckedChange={(checked) => onSnapSettingsChange({ snapToContent: checked })}
-            >
-              <VectorSquare aria-hidden="true" />
-              <span>Content</span>
-            </DropdownMenuCheckboxItem>
-            <DropdownMenuCheckboxItem
-              checked={snapSettings.snapToMarkup}
-              data-testid="viewer-snap-markup"
-              onCheckedChange={(checked) => onSnapSettingsChange({ snapToMarkup: checked })}
-            >
-              <Shapes aria-hidden="true" />
-              <span>Markup</span>
-            </DropdownMenuCheckboxItem>
-          </DropdownMenuGroup>
-          <DropdownMenuSeparator />
-          <DropdownMenuGroup>
-            {snapTargetOptions.map((option) => {
-              const selected = selectedTargets.has(option.target);
-              return (
-                <DropdownMenuCheckboxItem
-                  key={option.target}
-                  checked={selected}
-                  data-testid={`viewer-snap-target-${option.target}`}
-                  onCheckedChange={() => toggleTarget(option.target)}
-                >
-                  <span className="flex min-w-0 flex-1 items-center justify-between gap-3">
-                    <span>{option.label}</span>
-                    <span className="text-[11px] text-muted-foreground">{option.hint}</span>
-                  </span>
-                </DropdownMenuCheckboxItem>
-              );
-            })}
-          </DropdownMenuGroup>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </div>
   );
 }
 
@@ -747,7 +640,6 @@ export function ViewerToolbar({
   pageColumnsEnabled,
   cadViewOrganisation,
   pagesPerColumn,
-  snapSettings,
   onZoomOut,
   onZoomReset,
   onZoomIn,
@@ -760,8 +652,6 @@ export function ViewerToolbar({
   onPageColumnsEnabledChange,
   onCadViewOrganisationChange,
   onPagesPerColumnChange,
-  onSnapSettingsChange,
-  onSetPageScale,
 }: ViewerToolbarProps) {
   const [gestureHint, setGestureHint] = useState<GestureHintState | null>(null);
   const gestureHintTimerRef = useRef<number | null>(null);
@@ -962,20 +852,6 @@ export function ViewerToolbar({
           onPagesPerColumnChange={onPagesPerColumnChange}
         />
       </ButtonGroup>
-
-      <SnapDropdown
-        disabled={disabled}
-        snapSettings={snapSettings}
-        onSnapSettingsChange={onSnapSettingsChange}
-      />
-
-      <ToolbarIconButton
-        disabled={disabled}
-        icon={Ruler}
-        label="Set Page Scale"
-        onClick={onSetPageScale}
-        testId="viewer-set-page-scale"
-      />
     </div>
   );
 }

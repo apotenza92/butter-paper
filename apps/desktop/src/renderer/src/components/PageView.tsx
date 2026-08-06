@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   createPageTransform,
   getPageScale,
+  resolvePageViewBox,
   type PageModel,
   type PdfPoint,
   type Rect,
@@ -112,10 +113,12 @@ export function PageView({
       {
         size: page.size,
         rotation: page.rotation,
+        viewBox: page.viewBox,
+        userUnit: page.userUnit,
       },
       zoom,
     );
-  }, [page.rotation, page.size, zoom]);
+  }, [page.rotation, page.size, page.userUnit, page.viewBox, zoom]);
 
   const pageMarkups = useMemo(() => {
     return documentState?.document.markups.filter((markup) => markup.pageIndex === page.index) ?? [];
@@ -303,38 +306,12 @@ export function PageView({
     setDisplayedRenderedWidth(renderedWidth);
   };
 
-  const detailCrop = useMemo(() => {
-    if (!visiblePageViewportRect || visiblePageViewportRect.width <= 0 || visiblePageViewportRect.height <= 0) {
-      return null;
-    }
-
-    const padPx = Math.max(24, Math.min(96, Math.max(visiblePageViewportRect.width, visiblePageViewportRect.height) * 0.08));
-    const viewportRect = {
-      x: Math.max(0, visiblePageViewportRect.x - padPx),
-      y: Math.max(0, visiblePageViewportRect.y - padPx),
-      width: Math.min(layout.width, visiblePageViewportRect.x + visiblePageViewportRect.width + padPx) - Math.max(0, visiblePageViewportRect.x - padPx),
-      height: Math.min(layout.height, visiblePageViewportRect.y + visiblePageViewportRect.height + padPx) - Math.max(0, visiblePageViewportRect.y - padPx),
-    };
-    if (viewportRect.width <= 0 || viewportRect.height <= 0) {
-      return null;
-    }
-
-    const pdfRect = transform.viewportRectToPdf(viewportRect);
-    const clampedPdfRect = {
-      x: Math.max(0, Math.min(page.size.width, pdfRect.x)),
-      y: Math.max(0, Math.min(page.size.height, pdfRect.y)),
-      width: Math.min(page.size.width - Math.max(0, pdfRect.x), pdfRect.width),
-      height: Math.min(page.size.height - Math.max(0, pdfRect.y), pdfRect.height),
-    };
-    if (clampedPdfRect.width <= 0 || clampedPdfRect.height <= 0) {
-      return null;
-    }
-
-    return {
-      pdfRect: clampedPdfRect,
-      viewportRect: transform.pdfRectToViewport(clampedPdfRect),
-    };
-  }, [layout.height, layout.width, page.size.height, page.size.width, transform, visiblePageViewportRect]);
+  const detailCrop = useMemo(() => resolveDetailCrop({
+    visiblePageViewportRect,
+    page,
+    layout,
+    transform,
+  }), [layout, page, transform, visiblePageViewportRect]);
   const detailCropKey = detailCrop ? cropRectKey(detailCrop.pdfRect) : null;
   useEffect(() => {
     sourceUrlRef.current = sourceUrl;
@@ -400,6 +377,7 @@ export function PageView({
       minimumDisplayWidth: displayRasterLod.minimumReusableDisplayWidth,
       role: coordinatorRole,
       hasDisplayedSource: hasDisplayedImage,
+      rotation: page.rotation,
     });
     const primedPreviewUrl = hasDisplayedImage || bestReusableImage
       ? null
@@ -474,6 +452,7 @@ export function PageView({
           priority: renderPriorityRef.current + priorityOffset + navigationTargetPriorityOffset,
           urgency: fullUrgency,
           requestClass,
+          rotation: page.rotation,
           cropPdfRect,
           abortStartedRender: fullUrgency === 'prefetch',
           signal: abortController.signal,
@@ -517,6 +496,7 @@ export function PageView({
         priority: renderPriorityRef.current + priorityOffset + navigationTargetPriorityOffset,
         urgency: fullUrgency,
         requestClass,
+        rotation: page.rotation,
         cropPdfRect,
         abortStartedRender: fullUrgency === 'prefetch',
         signal: abortController.signal,
@@ -613,6 +593,7 @@ export function PageView({
     isTargetPage,
     layout.index,
     page.index,
+    page.rotation,
     page.size,
     previewRasterZoom,
     rasterZoom,
@@ -634,6 +615,7 @@ export function PageView({
         currentRenderedWidth,
         desiredDisplayWidth: displayRasterLod.desiredDisplayWidth,
       }),
+      page.rotation,
     );
     if (!betterImage || betterImage.renderedWidth <= currentRenderedWidth) {
       return;
@@ -652,7 +634,7 @@ export function PageView({
     }
     setDisplayedQuality(nextQuality, betterImage.renderedWidth);
     setRenderState('ready');
-  }, [displayRasterLod.desiredDisplayWidth, displayRasterLod.upgradeDisplayWidth, displayedRenderedWidth, page.index, session, sessionVersion]);
+  }, [displayRasterLod.desiredDisplayWidth, displayRasterLod.upgradeDisplayWidth, displayedRenderedWidth, page.index, page.rotation, session, sessionVersion]);
 
   useEffect(() => {
     if (!detailCropSurface) {
@@ -705,6 +687,7 @@ export function PageView({
         priority: renderPriority - 25,
         urgency: 'visible',
         requestClass,
+        rotation: page.rotation,
         cropPdfRect,
         signal: abortController.signal,
       }).then((surface) => {
@@ -721,6 +704,7 @@ export function PageView({
               priority: renderPriority - 25,
               urgency: 'visible',
               requestClass: 'target-page-hq',
+              rotation: page.rotation,
               signal: abortController.signal,
             }).then((fallbackSurface) => {
               if (cancelled) {
@@ -784,6 +768,7 @@ export function PageView({
     layout.index,
     layout.width,
     page.size,
+    page.rotation,
     rasterZoom,
     renderCoordinator,
     renderPriority,
@@ -806,24 +791,28 @@ export function PageView({
           priority: renderPriority + 250,
           urgency: 'visible',
           requestClass: 'target-page-preview',
+          rotation: page.rotation,
         });
       } else {
         renderCoordinator.updatePageUrlPriority('target-page', layout.index, initialRasterZoom, pixelRatio, {
           priority: renderPriority + 250,
           urgency: 'visible',
           requestClass: 'target-page-preview',
+          rotation: page.rotation,
         });
       }
       renderCoordinator.updatePageSurfacePriority('target-page', layout.index, rasterZoom, pixelRatio, {
         priority: renderPriority,
         urgency: renderUrgency,
         requestClass: 'target-page-hq',
+        rotation: page.rotation,
       });
       if (detailRasterZoom > rasterZoom) {
         renderCoordinator.updatePageSurfacePriority('target-page', layout.index, detailRasterZoom, pixelRatio, {
           priority: renderPriority - 25,
           urgency: 'visible',
           requestClass: cadRenderExperiment.targetCropPrototype ? 'target-page-crop' : 'target-page-hq',
+          rotation: page.rotation,
         });
       }
       return;
@@ -835,6 +824,7 @@ export function PageView({
       requestClass: renderUrgency === 'prefetch'
         ? 'nearby-prefetch'
         : (isTargetPage ? 'target-page-preview' : 'visible-page-preview'),
+      rotation: page.rotation,
     });
     renderCoordinator.updatePageUrlPriority(isTargetPage ? 'target-page' : 'main-page', layout.index, rasterZoom, pixelRatio, {
       priority: renderPriority,
@@ -842,8 +832,9 @@ export function PageView({
       requestClass: renderUrgency === 'prefetch'
         ? 'nearby-prefetch'
         : (isTargetPage ? 'target-page-hq' : 'visible-page-hq-upgrade'),
+      rotation: page.rotation,
     });
-  }, [cadRenderExperiment.targetCropPrototype, detailRasterZoom, devicePixelRatio, displayRasterLod.desiredRasterZoom, isTargetPage, layout.index, page.index, previewRasterZoom, rasterZoom, renderCoordinator, renderPriority, renderUrgency, session]);
+  }, [cadRenderExperiment.targetCropPrototype, detailRasterZoom, devicePixelRatio, displayRasterLod.desiredRasterZoom, isTargetPage, layout.index, page.index, page.rotation, previewRasterZoom, rasterZoom, renderCoordinator, renderPriority, renderUrgency, session]);
 
   useEffect(() => {
     const canvas = bitmapCanvasRef.current;
@@ -863,7 +854,7 @@ export function PageView({
       context.drawImage(pageSurface.bitmap, 0, 0, canvas.width, canvas.height);
     } catch (error) {
       if (error instanceof DOMException && error.name === 'InvalidStateError') {
-        const fallbackImage = session.getBestReusablePageImageAtLeast(page.index, displayedRenderedWidth ?? 0);
+        const fallbackImage = session.getBestReusablePageImageAtLeast(page.index, displayedRenderedWidth ?? 0, page.rotation);
         if (fallbackImage?.kind === 'object-url') {
           clearPageSurface();
           replaceSourceUrl(fallbackImage.objectUrl);
@@ -1228,6 +1219,52 @@ export function isDetailCropSurfaceGeometryCompatible(
   const viewportAspect = viewportRect.width / viewportRect.height;
   const relativeDelta = Math.abs(surfaceAspect - viewportAspect) / Math.max(surfaceAspect, viewportAspect);
   return relativeDelta <= 0.02;
+}
+
+export function resolveDetailCrop({
+  visiblePageViewportRect,
+  page,
+  layout,
+  transform,
+}: {
+  visiblePageViewportRect: Rect | null | undefined;
+  page: PageModel;
+  layout: Pick<PageLayout, 'width' | 'height'>;
+  transform: ReturnType<typeof createPageTransform>;
+}): { pdfRect: Rect; viewportRect: Rect } | null {
+  if (!visiblePageViewportRect || visiblePageViewportRect.width <= 0 || visiblePageViewportRect.height <= 0) {
+    return null;
+  }
+
+  const padPx = Math.max(24, Math.min(96, Math.max(visiblePageViewportRect.width, visiblePageViewportRect.height) * 0.08));
+  const viewportRect = {
+    x: Math.max(0, visiblePageViewportRect.x - padPx),
+    y: Math.max(0, visiblePageViewportRect.y - padPx),
+    width: Math.min(layout.width, visiblePageViewportRect.x + visiblePageViewportRect.width + padPx) - Math.max(0, visiblePageViewportRect.x - padPx),
+    height: Math.min(layout.height, visiblePageViewportRect.y + visiblePageViewportRect.height + padPx) - Math.max(0, visiblePageViewportRect.y - padPx),
+  };
+  if (viewportRect.width <= 0 || viewportRect.height <= 0) {
+    return null;
+  }
+
+  const viewBox = resolvePageViewBox(page);
+  const pdfRect = transform.viewportRectToPdf(viewportRect);
+  const clampedX = Math.max(viewBox.x, pdfRect.x);
+  const clampedY = Math.max(viewBox.y, pdfRect.y);
+  const clampedPdfRect = {
+    x: clampedX,
+    y: clampedY,
+    width: Math.min(viewBox.x + viewBox.width, pdfRect.x + pdfRect.width) - clampedX,
+    height: Math.min(viewBox.y + viewBox.height, pdfRect.y + pdfRect.height) - clampedY,
+  };
+  if (clampedPdfRect.width <= 0 || clampedPdfRect.height <= 0) {
+    return null;
+  }
+
+  return {
+    pdfRect: clampedPdfRect,
+    viewportRect: transform.pdfRectToViewport(clampedPdfRect),
+  };
 }
 
 function cropRectKey(rect: Rect): string {

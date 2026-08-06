@@ -1,5 +1,11 @@
 import { expect, test } from '@playwright/test';
-import { firstWindow, getDiagnostics, launchButterPaper, openFixturePdf, resolveDesktopEntryPoint } from './helpers/electron.mjs';
+import {
+  firstWindow,
+  getDiagnostics,
+  launchButterPaper,
+  openFixturePdf,
+  resolveDesktopEntryPoint,
+} from './helpers/electron.mjs';
 
 test.describe('shadcn Base UI shell accessibility', () => {
   test('supports keyboard menus, accessible tooltips, valid tabs, and protected custom icons', async () => {
@@ -347,26 +353,30 @@ test.describe('shadcn Base UI shell accessibility', () => {
       const primaryGlyph = await icon.evaluate((element) => element instanceof SVGElement) ? icon : icon.locator('svg').first();
       const primaryGlyphBounds = await primaryGlyph.boundingBox();
       expect(primaryGlyphBounds, `${testId} primary glyph should render`).not.toBeNull();
-      expect(primaryGlyphBounds.width, `${testId} primary glyph width`).toBeGreaterThanOrEqual(17.5);
-      expect(primaryGlyphBounds.height, `${testId} primary glyph height`).toBeGreaterThanOrEqual(17.5);
+      expect(primaryGlyphBounds.width, `${testId} primary glyph width`).toBeGreaterThanOrEqual(15.5);
+      expect(primaryGlyphBounds.width, `${testId} primary glyph width`).toBeLessThanOrEqual(16.5);
+      expect(primaryGlyphBounds.height, `${testId} primary glyph height`).toBeGreaterThanOrEqual(15.5);
+      expect(primaryGlyphBounds.height, `${testId} primary glyph height`).toBeLessThanOrEqual(16.5);
     }
 
     for (const testId of ['icon-fit-width', 'icon-fit-page']) {
       await expect(documentPage.getByTestId(testId).locator('svg')).toHaveCount(0);
     }
 
-    for (const testId of ['tool-cloud-plus', 'tool-callout']) {
+    for (const [testId, overlaySize] of [['tool-cloud-plus', 7], ['tool-callout', 6]]) {
       const glyphs = documentPage.getByTestId(testId).locator('svg');
       const primaryBounds = await glyphs.first().boundingBox();
       const overlayBounds = await glyphs.last().boundingBox();
       expect(primaryBounds, `${testId} primary glyph should render`).not.toBeNull();
-      expect(primaryBounds.width).toBeGreaterThanOrEqual(17.5);
-      expect(primaryBounds.height).toBeGreaterThanOrEqual(17.5);
+      expect(primaryBounds.width).toBeGreaterThanOrEqual(15.5);
+      expect(primaryBounds.width).toBeLessThanOrEqual(16.5);
+      expect(primaryBounds.height).toBeGreaterThanOrEqual(15.5);
+      expect(primaryBounds.height).toBeLessThanOrEqual(16.5);
       expect(overlayBounds, `${testId} overlay glyph should render`).not.toBeNull();
-      expect(overlayBounds.width).toBeGreaterThanOrEqual(6.5);
-      expect(overlayBounds.width).toBeLessThanOrEqual(8.5);
-      expect(overlayBounds.height).toBeGreaterThanOrEqual(6.5);
-      expect(overlayBounds.height).toBeLessThanOrEqual(8.5);
+      expect(overlayBounds.width).toBeGreaterThanOrEqual(overlaySize - 0.5);
+      expect(overlayBounds.width).toBeLessThanOrEqual(overlaySize + 0.5);
+      expect(overlayBounds.height).toBeGreaterThanOrEqual(overlaySize - 0.5);
+      expect(overlayBounds.height).toBeLessThanOrEqual(overlaySize + 0.5);
     }
 
     const continuousTrigger = documentPage.getByTestId('viewer-scroll-continuous');
@@ -499,9 +509,22 @@ test.describe('shadcn Base UI shell accessibility', () => {
     await snapTrigger.click();
     const snapItem = page.getByTestId('viewer-snap-content');
     await expect(snapItem).toBeVisible();
-    const popupBounds = await page.locator('[data-slot="dropdown-menu-content"]').boundingBox();
+    await expect(snapItem).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('viewer-snap-content-check')).toBeVisible();
+    const nearestItem = page.getByTestId('viewer-snap-target-nearest');
+    await expect(nearestItem).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.getByTestId('viewer-snap-target-nearest-check')).not.toBeVisible();
+    const activeBackground = await snapItem.evaluate((element) => getComputedStyle(element).backgroundColor);
+    const inactiveBackground = await nearestItem.evaluate((element) => getComputedStyle(element).backgroundColor);
+    expect(activeBackground).not.toBe(inactiveBackground);
+    const popup = page.getByTestId('viewer-snap-popover');
+    const popupBounds = await popup.boundingBox();
+    const snapTriggerBounds = await snapTrigger.boundingBox();
     const viewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
     expect(popupBounds).not.toBeNull();
+    expect(snapTriggerBounds).not.toBeNull();
+    await expect(popup).toHaveAttribute('data-side', 'left');
+    expect(popupBounds.x + popupBounds.width).toBeLessThanOrEqual(snapTriggerBounds.x + 1);
     expect(popupBounds.x).toBeGreaterThanOrEqual(0);
     expect(popupBounds.y).toBeGreaterThanOrEqual(0);
     expect(popupBounds.x + popupBounds.width).toBeLessThanOrEqual(viewport.width + 1);
@@ -510,4 +533,5 @@ test.describe('shadcn Base UI shell accessibility', () => {
     await browserWindow.evaluate((window) => window.webContents.setZoomFactor(1));
     await app.close();
   });
+
 });

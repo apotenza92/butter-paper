@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { createArcMarkup, createAreaMarkup, createCalloutMarkup, createCloudPlusMarkup, createCustomPageScale, createDimensionMarkup, createImageMarkup, createImportedAnnotationMarkup, createLengthMarkup, createPageTransform, createPolylengthMarkup, createSnapshotMarkup, pdfPoint, rect } from '@butter-paper/core';
+import type { PdfPoint, Rect } from '@butter-paper/core';
 import type { ToolMode } from '../../../shared/protocol';
+import { cloudPlusRoutingObstacles } from './builtins/cloudPlusTool';
 import { DEFAULT_IMAGE_DATA_URL } from './builtins/imageTool';
 import { addCloudNodeDraftPoint, createCloudNodeDraft, createRectangleDraft, createTextBoxDraft, hasExceededDragThreshold, rectangleDraftToRect, resizeRectFromHandle, resizeRotatedRectFromHandle, shouldCommitRectangle, textBoxDraftToRect, updateCloudNodeDraft } from './annotationLifecycle';
 import { getAnnotationContentStyle } from './annotationStyles';
 import { hitTestHandles, hitTestMarkup, hitTestMarkups } from './hitTesting';
 import { getChromeHandleStyle, getChromeStyle, getMoveCursor, getResizeCursor, getRotateCursor, getResizeHandles, getRotationHandle } from './interactionChrome';
-import { DEFAULT_CLOUD_LINE_OPTIONS, CLOUD_LINE_TYPE_RENDERER, generateCloudScallopPoints } from './lineTypes';
+import { DEFAULT_CLOUD_LINE_OPTIONS, CLOUD_LINE_TYPE_RENDERER, generateCloudScallopPoints, sampleAbsoluteSvgPath } from './lineTypes';
 import { getMarkupToolDefinition, getToolDefinition, PDF_TOOL_RAIL_GROUPS, PDF_TOOL_REGISTRY } from './toolRegistry';
 
 describe('PDF tool registry', () => {
@@ -33,15 +35,18 @@ describe('PDF tool registry', () => {
     expect(getToolDefinition('snapshot')).toMatchObject({ label: 'Snapshot', shortcut: 'G' });
   });
 
-  it('assigns every visible tool to exactly one ordered normal or CAD rail group', () => {
-    expect(PDF_TOOL_RAIL_GROUPS.normal).toEqual([
-      'select', 'pan', 'text-box', 'arrow', 'pen', 'highlight', 'cloud', 'cloud-plus', 'callout', 'image', 'snapshot',
+  it('assigns every visible tool to exactly one ordered rail group', () => {
+    expect(PDF_TOOL_RAIL_GROUPS.markup).toEqual([
+      'text-box', 'arrow', 'pen', 'highlight', 'cloud', 'cloud-plus', 'callout', 'image', 'snapshot',
     ]);
-    expect(PDF_TOOL_RAIL_GROUPS.cad).toEqual([
-      'rectangle', 'ellipse', 'line', 'arc', 'polyline', 'polygon', 'dimension', 'length', 'polylength', 'area',
+    expect(PDF_TOOL_RAIL_GROUPS.draw).toEqual([
+      'rectangle', 'ellipse', 'line', 'arc', 'polyline', 'polygon', 'dimension',
+    ]);
+    expect(PDF_TOOL_RAIL_GROUPS.measure).toEqual([
+      'length', 'polylength', 'area',
     ]);
 
-    const groupedToolIds = [...PDF_TOOL_RAIL_GROUPS.normal, ...PDF_TOOL_RAIL_GROUPS.cad];
+    const groupedToolIds = ['select', 'pan', ...Object.values(PDF_TOOL_RAIL_GROUPS).flat()];
     expect(new Set(groupedToolIds).size).toBe(groupedToolIds.length);
     expect(new Set(groupedToolIds)).toEqual(new Set(PDF_TOOL_REGISTRY.map((tool) => tool.id)));
   });
@@ -220,6 +225,12 @@ describe('PDF tool registry', () => {
     });
     const definition = getMarkupToolDefinition(markup);
     const geometry = definition?.geometry?.getGeometry(markup, { page: pageStub() });
+    const resized = definition?.interaction?.transformMarkup?.(markup, {
+      handleId: 'cloud-plus.textBox.resize.n',
+      handleBehavior: 'resizeSelf',
+      startPoint: pdfPoint(180, 55),
+      currentPoint: pdfPoint(180, 75),
+    });
 
     expect(getMarkupToolDefinition(markup)?.id).toBe('cloud-plus');
     expect(geometry?.components.map((component) => [component.id, component.bodyDrag])).toEqual([
@@ -230,6 +241,86 @@ describe('PDF tool registry', () => {
     expect(definition?.selection?.getSelectionChrome(markup, { page: pageStub(), phase: 'focused' }).bounds).toMatchObject({
       kind: 'group',
     });
+    expect(definition?.render?.getContentPrimitives(markup, { page: pageStub(), phase: 'idle' }).map((primitive) => primitive.kind)).toEqual([
+      'path',
+      'polyline',
+      'textBox',
+    ]);
+    expect(resized?.kind).toBe('cloud-plus');
+    if (resized?.kind === 'cloud-plus') {
+      expect(resized.textBox).toEqual(rect(130, 15, 100, 60));
+      expect(resized.leader.points.at(-1)).toEqual(pdfPoint(130, 45));
+      expect(resized.leader.points[0].x).toBeGreaterThan(90);
+      expect(resized.leader.points[0].y).toBeCloseTo(resized.leader.points[1].y);
+      expect(resized.leader.points[1].x).toBeCloseTo((resized.leader.points[0].x + 130) * 0.5);
+    }
+  });
+
+  it('extracts deterministic same-page routing obstacles while excluding the active Cloud+', () => {
+    const active = createCloudPlusMarkup({
+      id: 'active-cloud-plus',
+      pageIndex: 0,
+      cloud: { controlPath: [pdfPoint(10, 10), pdfPoint(10, 60), pdfPoint(90, 60), pdfPoint(90, 10)] },
+      leader: { points: [pdfPoint(90, 35), pdfPoint(100, 35), pdfPoint(110, 35)] },
+      textBox: rect(110, 13, 150, 44),
+      text: 'Active',
+    });
+    const callout = createCalloutMarkup({
+      id: 'a-callout',
+      pageIndex: 0,
+      leader: { points: [pdfPoint(300, 20), pdfPoint(280, 30), pdfPoint(260, 40)] },
+      textBox: rect(260, 18, 120, 44),
+      text: 'Obstacle',
+    });
+    const image = createImageMarkup({
+      id: 'b-image',
+      pageIndex: 0,
+      rect: rect(200, 100, 80, 60),
+      dataUrl: DEFAULT_IMAGE_DATA_URL,
+      mimeType: 'image/png',
+    });
+
+    const forward = cloudPlusRoutingObstacles([image, active, callout], active.id);
+    const reverse = cloudPlusRoutingObstacles([callout, active, image], active.id);
+
+    expect(forward).toEqual(reverse);
+    expect(forward.map((obstacle) => obstacle.id)).toEqual([
+      'a-callout:text',
+      'a-callout:leader',
+      'b-image',
+    ]);
+    expect(forward.some((obstacle) => obstacle.id?.startsWith(active.id))).toBe(false);
+  });
+
+  it('keeps obstacle-aware Cloud+ draft preview geometry identical to commit geometry', () => {
+    const definition = getToolDefinition('cloud-plus');
+    const page = pageStub();
+    const obstacle = createImageMarkup({
+      id: 'right-side-obstacle',
+      pageIndex: page.index,
+      rect: rect(105, -30, 220, 180),
+      dataUrl: DEFAULT_IMAGE_DATA_URL,
+      mimeType: 'image/png',
+    });
+    const draft = { kind: 'line', start: pdfPoint(10, 10), current: pdfPoint(90, 60) } as const;
+    const sharedContext = {
+      page,
+      pageBounds: rect(0, 0, page.size.width, page.size.height),
+      markups: [obstacle],
+    };
+    const preview = definition.render?.getDraftPrimitives?.(draft, { ...sharedContext, phase: 'draft' });
+    const committed = definition.interaction?.commitDraft?.(draft, {
+      ...sharedContext,
+      hasExceededDragThreshold: true,
+      createMarkupId: () => 'cloud-plus-preview-commit',
+    });
+
+    expect(committed?.kind).toBe('cloud-plus');
+    if (committed?.kind === 'cloud-plus') {
+      const rendered = definition.render?.getContentPrimitives(committed, { ...sharedContext, phase: 'idle' });
+      expect(preview?.find((primitive) => primitive.kind === 'polyline')).toEqual(rendered?.find((primitive) => primitive.kind === 'polyline'));
+      expect(preview?.find((primitive) => primitive.kind === 'textBox')).toEqual(rendered?.find((primitive) => primitive.kind === 'textBox'));
+    }
   });
 
   it('moves Cloud+ components according to Bluebeam-like composite semantics', () => {
@@ -262,9 +353,169 @@ describe('PDF tool registry', () => {
     expect(textMoved?.kind).toBe('cloud-plus');
     if (textMoved?.kind === 'cloud-plus') {
       expect(textMoved.cloud.controlPath[0]).toEqual(pdfPoint(10, 10));
-      expect(textMoved.leader.points[0]).toEqual(pdfPoint(90, 35));
+      expect(textMoved.leader.points[0].x).toBeGreaterThan(90);
+      expect(textMoved.leader.points[0].y).toBeCloseTo(textMoved.leader.points[1].y);
       expect(textMoved.leader.points[2]).toEqual(pdfPoint(135, 42));
+      expect(textMoved.leader.points[1].x).toBeCloseTo((textMoved.leader.points[0].x + 135) * 0.5);
       expect(textMoved.textBox).toEqual(rect(135, 22, 100, 40));
+    }
+  });
+
+  it('translates a custom Cloud+ appearance path exactly during whole-group movement', () => {
+    const markup = createCloudPlusMarkup({
+      id: 'cloud-plus-custom-appearance',
+      pageIndex: 0,
+      cloud: {
+        controlPath: [pdfPoint(10, 10), pdfPoint(10, 60), pdfPoint(90, 60), pdfPoint(90, 10)],
+        appearancePath: 'M 0 0 L 0 20 L 20 20 L 20 0 Z',
+      },
+      leader: { points: [pdfPoint(90, 35), pdfPoint(110, 35), pdfPoint(130, 35)] },
+      textBox: rect(130, 15, 100, 40),
+      text: 'Cloud+',
+    });
+    const moved = getMarkupToolDefinition(markup)?.interaction?.dragMarkup?.(markup, {
+      componentId: 'cloud-plus.cloud',
+      bodyDrag: 'moveGroup',
+      delta: pdfPoint(5, 7),
+    });
+
+    expect(moved?.kind).toBe('cloud-plus');
+    if (moved?.kind === 'cloud-plus') {
+      expect(moved.cloud.appearancePath).toBe('M 5 7 L 5 27 L 25 27 L 25 7 Z');
+      expect(moved.cloud.controlPath[0]).toEqual(pdfPoint(15, 17));
+      expect(moved.leader.points[0]).toEqual(pdfPoint(95, 42));
+      expect(moved.textBox).toEqual(rect(135, 22, 100, 40));
+    }
+  });
+
+  it('routes and snaps against the stored visible Cloud+ appearance path', () => {
+    const markup = createCloudPlusMarkup({
+      id: 'cloud-plus-stored-appearance',
+      pageIndex: 0,
+      cloud: {
+        controlPath: [pdfPoint(0, 0), pdfPoint(0, 100), pdfPoint(100, 100), pdfPoint(100, 0)],
+        appearancePath: 'M -20 -20 L -20 120 L 120 120 L 120 -20 Z',
+      },
+      leader: { points: [pdfPoint(0, 50), pdfPoint(-35, 50), pdfPoint(-70, 50)] },
+      textBox: rect(-170, 28, 100, 44),
+      text: 'Cloud+',
+    });
+    const rerouted = getMarkupToolDefinition(markup)?.interaction?.dragMarkup?.(markup, {
+      componentId: 'cloud-plus.textBox',
+      bodyDrag: 'moveSelf',
+      delta: pdfPoint(0, 0),
+    });
+    const adjustedConnection = getMarkupToolDefinition(markup)?.interaction?.transformMarkup?.(markup, {
+      handleId: 'cloud-plus.leader.connection',
+      handleBehavior: 'moveEndpoint',
+      startPoint: pdfPoint(-70, 50),
+      currentPoint: pdfPoint(-120, 200),
+    });
+
+    expect(sampleAbsoluteSvgPath(markup.cloud.appearancePath!)).toContainEqual(pdfPoint(-20, 120));
+    expect(rerouted?.kind).toBe('cloud-plus');
+    if (rerouted?.kind === 'cloud-plus') {
+      expect(rerouted.leader.points[0].x).toBeCloseTo(-20);
+      expect(rerouted.leader.points.at(-1)).toEqual(pdfPoint(-70, 50));
+    }
+    expect(adjustedConnection?.kind).toBe('cloud-plus');
+    if (adjustedConnection?.kind === 'cloud-plus') {
+      const connection = adjustedConnection.leader.points.at(-1)!;
+      const onHorizontalEdge = connection.y === markup.textBox.y || connection.y === markup.textBox.y + markup.textBox.height;
+      const onVerticalEdge = connection.x === markup.textBox.x || connection.x === markup.textBox.x + markup.textBox.width;
+      expect(onHorizontalEdge || onVerticalEdge).toBe(true);
+    }
+  });
+
+  it('reattaches Cloud+ to the cloud-facing edge instead of preserving a stale leader side', () => {
+    const rectanglePath = [pdfPoint(10, 10), pdfPoint(10, 60), pdfPoint(90, 60), pdfPoint(90, 10)];
+    const reattach = (controlPath: readonly PdfPoint[], textBox: Rect) => {
+      const markup = createCloudPlusMarkup({
+        id: 'cloud-plus-smart-leader',
+        pageIndex: 0,
+        cloud: { controlPath },
+        leader: { points: [pdfPoint(90, 35), pdfPoint(110, 35), pdfPoint(130, 35)] },
+        textBox,
+        text: 'Cloud+',
+      });
+      const moved = getMarkupToolDefinition(markup)?.interaction?.dragMarkup?.(markup, {
+        componentId: 'cloud-plus.textBox',
+        bodyDrag: 'moveSelf',
+        delta: pdfPoint(0, 0),
+      });
+      expect(moved?.kind).toBe('cloud-plus');
+      if (moved?.kind !== 'cloud-plus') {
+        throw new Error('Expected Cloud+ markup');
+      }
+      const [tip, knee, connection] = moved.leader.points;
+      expect(knee.x).toBeCloseTo((tip.x + connection.x) * 0.5);
+      expect(knee.y).toBeCloseTo(connection.y);
+      return { tip, connection };
+    };
+
+    const right = reattach(rectanglePath, rect(130, 15, 100, 40));
+    expect(right.connection).toEqual(pdfPoint(130, 35));
+    expect(right.tip.x).toBeGreaterThan(90);
+    expect(right.tip.y).toBeCloseTo(35);
+
+    const left = reattach(rectanglePath, rect(-120, 15, 100, 40));
+    expect(left.connection).toEqual(pdfPoint(-20, 35));
+    expect(left.tip.x).toBeLessThan(10);
+    expect(left.tip.y).toBeCloseTo(35);
+
+    const above = reattach(rectanglePath, rect(0, 90, 100, 40));
+    expect([0, 100]).toContain(above.connection.x);
+    expect(above.connection.y).toBe(110);
+    expect(above.tip.y).toBeGreaterThan(60);
+
+    const below = reattach(rectanglePath, rect(0, -60, 100, 40));
+    expect([0, 100]).toContain(below.connection.x);
+    expect(below.connection.y).toBe(-40);
+    expect(below.tip.y).toBeLessThan(10);
+
+    const polygonAbove = reattach(
+      [pdfPoint(10, 10), pdfPoint(90, 10), pdfPoint(50, 80)],
+      rect(0, 110, 100, 40),
+    );
+    expect([0, 100]).toContain(polygonAbove.connection.x);
+    expect(polygonAbove.connection.y).toBe(130);
+    expect(polygonAbove.tip.y).toBeGreaterThan(80);
+  });
+
+  it('hides the Cloud+ leader while its text is inside the cloud and restores it outside', () => {
+    const markup = createCloudPlusMarkup({
+      id: 'cloud-plus-inline-text',
+      pageIndex: 0,
+      cloud: {
+        controlPath: [pdfPoint(10, 10), pdfPoint(10, 100), pdfPoint(160, 100), pdfPoint(160, 10)],
+      },
+      leader: { points: [pdfPoint(160, 55), pdfPoint(180, 55), pdfPoint(200, 55)] },
+      textBox: rect(35, 35, 100, 40),
+      text: 'Inside',
+    });
+    const definition = getMarkupToolDefinition(markup);
+    const inside = definition?.interaction?.dragMarkup?.(markup, {
+      componentId: 'cloud-plus.textBox',
+      bodyDrag: 'moveSelf',
+      delta: pdfPoint(0, 0),
+    });
+    expect(inside?.kind).toBe('cloud-plus');
+    if (inside?.kind !== 'cloud-plus') {
+      throw new Error('Expected Cloud+ markup');
+    }
+    expect(inside.leader.points).toEqual([]);
+    expect(definition?.render?.getContentPrimitives(inside, { page: pageStub(), phase: 'idle' }))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'polyline', points: [] })]));
+
+    const outside = definition?.interaction?.dragMarkup?.(inside, {
+      componentId: 'cloud-plus.textBox',
+      bodyDrag: 'moveSelf',
+      delta: pdfPoint(170, 0),
+    });
+    expect(outside?.kind).toBe('cloud-plus');
+    if (outside?.kind === 'cloud-plus') {
+      expect(outside.leader.points).toHaveLength(3);
+      expect(outside.leader.points.at(-1)?.x).toBe(outside.textBox.x);
     }
   });
 
@@ -1120,6 +1371,7 @@ describe('hit testing', () => {
       kind: 'cloud',
       controlPath: [pdfPoint(10, 10), pdfPoint(40, 50), pdfPoint(90, 10)],
       borderEffectIntensity: 2,
+      appearancePath: expect.stringContaining('C'),
     });
   });
 
@@ -1153,12 +1405,22 @@ describe('hit testing', () => {
 
     expect(polygon).toMatchObject({
       kind: 'cloud-plus',
-      cloud: { controlPath: [pdfPoint(10, 10), pdfPoint(40, 50), pdfPoint(90, 10)] },
+      cloud: {
+        controlPath: [pdfPoint(10, 10), pdfPoint(40, 50), pdfPoint(90, 10)],
+        appearancePath: expect.stringContaining('C'),
+      },
     });
     expect(rectangle).toMatchObject({
       kind: 'cloud-plus',
-      cloud: { controlPath: [pdfPoint(10, 10), pdfPoint(10, 60), pdfPoint(90, 60), pdfPoint(90, 10)] },
+      cloud: {
+        controlPath: [pdfPoint(10, 10), pdfPoint(10, 60), pdfPoint(90, 60), pdfPoint(90, 10)],
+        appearancePath: expect.stringContaining('C'),
+      },
     });
+    if (rectangle?.kind === 'cloud-plus') {
+      expect(rectangle.leader.points[0].x).toBeGreaterThan(90);
+      expect(rectangle.leader.points[0].y).toBeCloseTo(rectangle.leader.points[1].y);
+    }
   });
 
   it('backs callout with composite text box and leader primitives', () => {
@@ -1166,11 +1428,17 @@ describe('hit testing', () => {
       id: 'callout-1',
       pageIndex: 0,
       textBox: rect(100, 60, 130, 42),
-      leader: { points: [pdfPoint(100, 81), pdfPoint(70, 81), pdfPoint(40, 40)] },
+      leader: { points: [pdfPoint(40, 40), pdfPoint(70, 81), pdfPoint(100, 81)] },
       text: 'Need to check',
       color: '#ff0000',
     });
     const definition = getMarkupToolDefinition(markup);
+    const resized = definition?.interaction?.transformMarkup?.(markup, {
+      handleId: 'callout.textBox.resize.n',
+      handleBehavior: 'resizeSelf',
+      startPoint: pdfPoint(165, 102),
+      currentPoint: pdfPoint(165, 122),
+    });
 
     expect(definition?.geometry?.getGeometry(markup, { page: pageStub() }).components).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'callout.textBox', role: 'textBox', bodyDrag: 'moveSelf' }),
@@ -1198,6 +1466,11 @@ describe('hit testing', () => {
       ]),
       controlPaths: [expect.objectContaining({ id: 'callout.leaderPath', closed: false })],
     });
+    expect(resized?.kind).toBe('callout');
+    if (resized?.kind === 'callout') {
+      expect(resized.textBox).toEqual(rect(100, 60, 130, 62));
+      expect(resized.leader.points.at(-1)).toEqual(pdfPoint(100, 91));
+    }
   });
 
   it('moves callout text boxes independently while preserving the leader connection', () => {
@@ -1205,7 +1478,7 @@ describe('hit testing', () => {
       id: 'callout-1',
       pageIndex: 0,
       textBox: rect(100, 60, 130, 42),
-      leader: { points: [pdfPoint(100, 81), pdfPoint(70, 81), pdfPoint(40, 40)] },
+      leader: { points: [pdfPoint(40, 40), pdfPoint(70, 81), pdfPoint(100, 81)] },
       text: 'Need to check',
     });
     const definition = getMarkupToolDefinition(markup);
@@ -1224,11 +1497,13 @@ describe('hit testing', () => {
     expect(movedGroup?.kind).toBe('callout');
     if (movedTextBox?.kind === 'callout') {
       expect(movedTextBox.textBox).toEqual(rect(110, 55, 130, 42));
-      expect(movedTextBox.leader.points).toEqual([pdfPoint(100, 81), pdfPoint(70, 81), pdfPoint(50, 35)]);
+      expect(movedTextBox.leader.points).toEqual([pdfPoint(40, 40), pdfPoint(70, 81), pdfPoint(110, 76)]);
+      expect(movedTextBox.leader.points.at(-1)?.y).toBe(movedTextBox.textBox.y + movedTextBox.textBox.height * 0.5);
     }
     if (movedGroup?.kind === 'callout') {
       expect(movedGroup.textBox).toEqual(rect(110, 55, 130, 42));
-      expect(movedGroup.leader.points).toEqual([pdfPoint(110, 76), pdfPoint(80, 76), pdfPoint(50, 35)]);
+      expect(movedGroup.leader.points).toEqual([pdfPoint(50, 35), pdfPoint(80, 76), pdfPoint(110, 76)]);
+      expect(movedGroup.leader.points.at(-1)?.y).toBe(movedGroup.textBox.y + movedGroup.textBox.height * 0.5);
     }
   });
 
@@ -1392,23 +1667,124 @@ describe('generated line types', () => {
     });
   });
 
-  it('fits default cloud scallop bounds to the measured Bluebeam cloud sample', () => {
-    const points = generateCloudScallopPoints([
-      pdfPoint(45.76695, 589.2418),
-      pdfPoint(45.76695, 532.2991),
-      pdfPoint(160.1843, 532.2991),
-      pdfPoint(160.1843, 589.2418),
-    ], true, DEFAULT_CLOUD_LINE_OPTIONS);
+  it('matches the measured Bluebeam scallop extent at the default cloud radius', () => {
+    const controlPath = [
+      pdfPoint(130.6838, 614.8984),
+      pdfPoint(130.6838, 497.783),
+      pdfPoint(298.5018, 497.783),
+      pdfPoint(298.5018, 614.8984),
+    ];
+    const rendered = CLOUD_LINE_TYPE_RENDERER.render({
+      controlPath,
+      closed: true,
+      strokeWidth: 1,
+      options: DEFAULT_CLOUD_LINE_OPTIONS,
+    });
+    const points = rendered.points;
     const xs = points.map((point) => point.x);
     const ys = points.map((point) => point.y);
 
-    expect(Math.min(...xs)).toBeCloseTo(36.01125, 2);
-    expect(Math.min(...ys)).toBeCloseTo(522.5434, 2);
-    expect(Math.max(...xs)).toBeCloseTo(169.9401, 2);
-    expect(Math.max(...ys)).toBeCloseTo(598.9975, 2);
+    expect(rendered.d.match(/ C /g)).toHaveLength(124);
+    expect(Math.min(...xs)).toBeCloseTo(122.134, 1);
+    expect(Math.min(...ys)).toBeCloseTo(489.234, 1);
+    expect(Math.max(...xs)).toBeCloseTo(307.052, 1);
+    expect(Math.max(...ys)).toBeCloseTo(623.447, 1);
   });
 
-  it('builds one closed path whose scallops meet at every rectangle edge and corner', () => {
+  it('matches the measured Bluebeam Cloud+ corner phase at its saved control size', () => {
+    const controlPath = [
+      pdfPoint(125.685, 432.7981),
+      pdfPoint(125.685, 336.392),
+      pdfPoint(308.4994, 336.392),
+      pdfPoint(308.4994, 432.7981),
+    ];
+    const rendered = CLOUD_LINE_TYPE_RENDERER.render({
+      controlPath,
+      closed: true,
+      strokeWidth: 1,
+      options: DEFAULT_CLOUD_LINE_OPTIONS,
+    });
+    const xs = rendered.points.map((point) => point.x);
+    const ys = rendered.points.map((point) => point.y);
+
+    expect(rendered.d.match(/ C /g)).toHaveLength(120);
+    expect(Math.abs(Math.min(...xs) - 117.092)).toBeLessThan(0.06);
+    expect(Math.abs(Math.min(...ys) - 327.799)).toBeLessThan(0.06);
+    expect(Math.abs(Math.max(...xs) - 317.093)).toBeLessThan(0.06);
+    expect(Math.abs(Math.max(...ys) - 441.39)).toBeLessThan(0.06);
+
+    const exactPhaseCorner = pdfPoint(308.4994, 336.392);
+    const diagonalCusps = rendered.points.filter((point) => {
+      const xOffset = point.x - exactPhaseCorner.x;
+      const yOffset = point.y - exactPhaseCorner.y;
+      return xOffset > 1
+        && xOffset < 2
+        && yOffset < -1
+        && yOffset > -2
+        && Math.abs(xOffset + yOffset) < 0.01;
+    });
+    expect(diagonalCusps).toHaveLength(1);
+  });
+
+  it('keeps the scallop phase and connected corner profile translation invariant for arbitrary polygons', () => {
+    const controlPath = [
+      pdfPoint(25, 95),
+      pdfPoint(141, 82),
+      pdfPoint(168, 24),
+      pdfPoint(76, 5),
+      pdfPoint(11, 47),
+    ];
+    const translated = controlPath.map((point) => pdfPoint(point.x + 37.25, point.y - 18.75));
+    const original = CLOUD_LINE_TYPE_RENDERER.render({
+      controlPath,
+      closed: true,
+      strokeWidth: 1,
+      options: DEFAULT_CLOUD_LINE_OPTIONS,
+    });
+    const moved = CLOUD_LINE_TYPE_RENDERER.render({
+      controlPath: translated,
+      closed: true,
+      strokeWidth: 1,
+      options: DEFAULT_CLOUD_LINE_OPTIONS,
+    });
+
+    expect(original.d.match(/\bM\b/g)).toHaveLength(1);
+    expect(original.d).toMatch(/ Z$/);
+    expect(original.points[0]).toEqual(original.points.at(-1));
+    expect(moved.points).toHaveLength(original.points.length);
+    for (let index = 0; index < original.points.length; index += 1) {
+      expect(moved.points[index].x - original.points[index].x).toBeCloseTo(37.25, 3);
+      expect(moved.points[index].y - original.points[index].y).toBeCloseTo(-18.75, 3);
+    }
+  });
+
+  it('keeps the measured Bluebeam lobe phase continuous through arbitrary Cloud+ corners', () => {
+    const controlPath = [
+      pdfPoint(367.0785, 610.284),
+      pdfPoint(494.705, 598.1291),
+      pdfPoint(525.0923, 519.1221),
+      pdfPoint(458.2403, 464.425),
+      pdfPoint(354.9235, 506.9672),
+    ];
+    const rendered = CLOUD_LINE_TYPE_RENDERER.render({
+      controlPath,
+      closed: true,
+      strokeWidth: 1,
+      options: DEFAULT_CLOUD_LINE_OPTIONS,
+    });
+    const xs = rendered.points.map((point) => point.x);
+    const ys = rendered.points.map((point) => point.y);
+
+    expect(rendered.d.match(/\bM\b/g)).toHaveLength(1);
+    expect(rendered.d.match(/ C /g)).toHaveLength(113);
+    expect(rendered.d).toMatch(/ Z$/);
+    expect(Math.abs(Math.min(...xs) - 346.795)).toBeLessThan(2);
+    expect(Math.abs(Math.min(...ys) - 456.292)).toBeLessThan(2);
+    expect(Math.abs(Math.max(...xs) - 532.341)).toBeLessThan(2);
+    expect(Math.abs(Math.max(...ys) - 618.867)).toBeLessThan(2);
+  });
+
+  it('builds one closed path with a dedicated diagonal scallop across every rectangle corner', () => {
     const controlPath = [
       pdfPoint(45.76695, 589.2418),
       pdfPoint(45.76695, 532.2991),
@@ -1427,7 +1803,20 @@ describe('generated line types', () => {
     expect(d).toMatch(/ Z$/);
     expect(points[0]).toEqual(points.at(-1));
     for (const corner of controlPath) {
-      expect(points).toContainEqual(corner);
+      expect(points).not.toContainEqual(corner);
+    }
+
+    const minX = Math.min(...controlPath.map((point) => point.x));
+    const maxX = Math.max(...controlPath.map((point) => point.x));
+    const minY = Math.min(...controlPath.map((point) => point.y));
+    const maxY = Math.max(...controlPath.map((point) => point.y));
+    for (const isInOuterCorner of [
+      (point: PdfPoint) => point.x < minX && point.y < minY,
+      (point: PdfPoint) => point.x > maxX && point.y < minY,
+      (point: PdfPoint) => point.x > maxX && point.y > maxY,
+      (point: PdfPoint) => point.x < minX && point.y > maxY,
+    ]) {
+      expect(points.some(isInOuterCorner)).toBe(true);
     }
   });
 });

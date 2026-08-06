@@ -1,7 +1,12 @@
-import type { Markup, PageScale } from '@butter-paper/core';
+import type { Markup, PageModel, PageScale } from '@butter-paper/core';
 import type { PdfPageGeometryIndex } from '@butter-paper/pdf';
-import type { DocumentOpenStageTimings, LoadedDocumentPayload } from '../../../shared/protocol';
-import type { RenderCorePdfRect } from '../../../shared/protocol';
+import type {
+  DocumentOpenStageTimings,
+  LoadedDocumentPayload,
+  PdfRect,
+  PdfRenderRequestClass,
+  PdfSaveTargetDescriptor,
+} from '../../../shared/protocol';
 import {
   createDesktopSessionBackend,
   type PdfSessionBackend,
@@ -25,11 +30,12 @@ import {
 
 interface ThumbnailCacheEntry {
   pageIndex: number;
+  rotation?: PageModel['rotation'];
   objectUrl: string;
   byteSize: number;
   renderedWidth: number;
   renderedHeight: number;
-  cropPdfRect?: RenderCorePdfRect;
+  cropPdfRect?: PdfRect;
   sourceRequestClass?: RenderRequestClass;
   lastUsedAt: number;
   protectedUntil: number;
@@ -38,11 +44,12 @@ interface ThumbnailCacheEntry {
 interface PageRenderCacheEntry {
   cacheKey: string;
   pageIndex: number;
+  rotation?: PageModel['rotation'];
   bitmap: ImageBitmap;
   byteSize: number;
   renderedWidth: number;
   renderedHeight: number;
-  cropPdfRect?: RenderCorePdfRect;
+  cropPdfRect?: PdfRect;
   sourceRequestClass?: RenderRequestClass;
   lastUsedAt: number;
   refCount: number;
@@ -77,7 +84,7 @@ export interface PageRenderSurface {
   bitmap: ImageBitmap;
   renderedWidth: number;
   renderedHeight: number;
-  cropPdfRect?: RenderCorePdfRect;
+  cropPdfRect?: PdfRect;
 }
 
 export interface ReusablePagePreviewInfo {
@@ -104,16 +111,7 @@ type NormalisedThumbnailRenderOptions = ThumbnailRenderOptions & {
 
 type RenderUrgency = 'visible' | 'prefetch';
 type NavigationIntentSource = 'generic' | 'thumbnail';
-export type RenderRequestClass =
-  | 'target-page-hq'
-  | 'target-page-crop'
-  | 'target-page-preview'
-  | 'visible-page-preview'
-  | 'visible-page-hq-upgrade'
-  | 'overview-thumbnail'
-  | 'visible-thumbnail'
-  | 'nearby-prefetch'
-  | 'warming';
+export type RenderRequestClass = PdfRenderRequestClass;
 
 interface RenderRequestOptions {
   signal?: AbortSignal;
@@ -121,7 +119,8 @@ interface RenderRequestOptions {
   urgency?: RenderUrgency;
   requestClass?: RenderRequestClass;
   abortStartedRender?: boolean;
-  cropPdfRect?: RenderCorePdfRect;
+  cropPdfRect?: PdfRect;
+  rotation?: PageModel['rotation'];
 }
 
 interface QueuedRenderTask {
@@ -159,8 +158,8 @@ export interface DiagnosticsSnapshot {
   firstVisiblePageWarmupStatus: 'idle' | 'queued' | 'ready' | 'aborted' | 'error';
   lastPageRenderError: string | null;
   lastThumbnailRenderError: string | null;
-  sessionBackendKind: 'pdfjs' | 'pdfium-render-core' | null;
-  surfaceTransportKind: 'pdfjs-blob-url' | 'pdfium-png-bridge' | null;
+  sessionBackendKind: 'pdfjs' | null;
+  surfaceTransportKind: 'pdfjs-blob-url' | null;
   openStageTimings: DocumentOpenStageTimings | null;
   inactive: boolean;
   viewportInMotion: boolean;
@@ -227,6 +226,7 @@ export class LocalPdfSession {
   private filePath: string;
   private fileName: string;
   private documentHandle: PdfSessionDocumentHandle | null = null;
+  private documentAccessHandle: string | null = null;
   private readonly renderCache = new Map<string, PageRenderCacheEntry>();
   private readonly retiredPageRenderCache = new Map<string, PageRenderCacheEntry>();
   private readonly pageUrlCache = new Map<string, ThumbnailCacheEntry>();
@@ -287,8 +287,8 @@ export class LocalPdfSession {
   private openStartedAt: number | null = null;
   private lastPageRenderError: string | null = null;
   private lastThumbnailRenderError: string | null = null;
-  private sessionBackendKind: 'pdfjs' | 'pdfium-render-core' | null = null;
-  private surfaceTransportKind: 'pdfjs-blob-url' | 'pdfium-png-bridge' | null = null;
+  private sessionBackendKind: 'pdfjs' | null = null;
+  private surfaceTransportKind: 'pdfjs-blob-url' | null = null;
   private openStageTimings: DocumentOpenStageTimings | null = null;
   private snapIndexBuilds = 0;
   private snapIndexPrimitiveCount = 0;
@@ -307,6 +307,10 @@ export class LocalPdfSession {
     return this.versionCounter;
   }
 
+  getDocumentAccessHandle(): string {
+    return this.requireDocumentAccessHandle();
+  }
+
   async open(): Promise<LoadedDocumentPayload> {
     this.disposed = false;
     await this.disposeDocumentResources();
@@ -320,10 +324,14 @@ export class LocalPdfSession {
 
     if (!this.isResourceEpochCurrent(openEpoch)) {
       await handle.close();
+      await window.butterPaper.pdf.releaseDocument({
+        documentHandle: payload.documentAccess.handle,
+      }).catch(() => undefined);
       throw createAbortError();
     }
 
     this.documentHandle = handle;
+    this.documentAccessHandle = payload.documentAccess.handle;
     this.previewReuseEnabled = false;
     this.viewportInMotion = false;
     this.thumbnailListInMotion = false;
@@ -366,12 +374,18 @@ export class LocalPdfSession {
     };
   }
 
-  async save(markups: readonly Markup[], targetPath?: string, pageScales?: readonly PageScale[]): Promise<LoadedDocumentPayload> {
+  async save(
+    markups: readonly Markup[],
+    target: PdfSaveTargetDescriptor,
+    pageScales?: readonly PageScale[],
+    pages?: readonly PageModel[],
+  ): Promise<LoadedDocumentPayload> {
     const result = await this.backend.save({
-      sourcePath: this.filePath,
-      targetPath,
+      documentHandle: this.requireDocumentAccessHandle(),
+      target,
       markups,
       pageScales,
+      pageRotations: pages?.map((page) => ({ pageIndex: page.index, rotation: page.rotation })),
     });
 
     await this.disposeDocumentResources();
@@ -387,7 +401,7 @@ export class LocalPdfSession {
     options: RenderRequestOptions = {},
   ): Promise<string> {
     const scale = Math.max(0.1, zoom) * pixelRatio;
-    const cacheKey = this.createPageCacheKey(pageIndex, zoom, pixelRatio, 'url', options.cropPdfRect);
+    const cacheKey = this.createPageCacheKey(pageIndex, zoom, pixelRatio, 'url', options.cropPdfRect, options.rotation);
     const cached = this.pageUrlCache.get(cacheKey);
     if (cached) {
       cached.lastUsedAt = performance.now();
@@ -434,8 +448,8 @@ export class LocalPdfSession {
           const rendered = await handle.renderPageToBlob({
             pageIndex,
             scale,
+            rotation: options.rotation,
             signal: options.abortStartedRender ? resolveStartedRenderSignal(task) : undefined,
-            renderMode: renderModeForRequestClass(requestClass),
             requestClass,
             cropPdfRect: options.cropPdfRect,
           });
@@ -447,6 +461,7 @@ export class LocalPdfSession {
           }
           this.pageUrlCache.set(cacheKey, {
             pageIndex,
+            rotation: options.rotation,
             objectUrl,
             byteSize: rendered.blob.size,
             renderedWidth: rendered.width,
@@ -502,7 +517,7 @@ export class LocalPdfSession {
     options: RenderRequestOptions = {},
   ): Promise<PageRenderSurface> {
     const scale = Math.max(0.1, zoom) * pixelRatio;
-    const cacheKey = this.createPageCacheKey(pageIndex, zoom, pixelRatio, 'bitmap', options.cropPdfRect);
+    const cacheKey = this.createPageCacheKey(pageIndex, zoom, pixelRatio, 'bitmap', options.cropPdfRect, options.rotation);
     const cached = this.renderCache.get(cacheKey);
     if (cached) {
       cached.lastUsedAt = performance.now();
@@ -550,8 +565,8 @@ export class LocalPdfSession {
           const rendered = await handle.renderPageToBitmap({
             pageIndex,
             scale,
+            rotation: options.rotation,
             signal: options.abortStartedRender ? resolveStartedRenderSignal(task) : undefined,
-            renderMode: renderModeForRequestClass(requestClass),
             requestClass,
             cropPdfRect: options.cropPdfRect,
           });
@@ -566,6 +581,7 @@ export class LocalPdfSession {
           const entry: PageRenderCacheEntry = {
             cacheKey,
             pageIndex,
+            rotation: options.rotation,
             bitmap: renderedBitmap,
             byteSize: estimateBitmapByteSize(rendered.width, rendered.height),
             renderedWidth: rendered.width,
@@ -622,7 +638,7 @@ export class LocalPdfSession {
     requestOptions: RenderRequestOptions = {},
   ): Promise<string> {
     const thumbnailOptions = normaliseThumbnailOptions(optionsOrWidth, pixelRatio);
-    const cacheKey = this.createThumbnailCacheKey(pageIndex, thumbnailOptions);
+    const cacheKey = this.createThumbnailCacheKey(pageIndex, thumbnailOptions, requestOptions.rotation);
     const cached = this.thumbnailCache.get(cacheKey);
     if (cached) {
       cached.lastUsedAt = performance.now();
@@ -675,8 +691,8 @@ export class LocalPdfSession {
           const rendered = await handle.renderPageToBlob({
             pageIndex,
             scale,
+            rotation: requestOptions.rotation,
             signal: resolveStartedRenderSignal(task, requestOptions.abortStartedRender),
-            renderMode: 'preview',
             requestClass,
           });
           this.throwIfResourceStale(requestEpoch, handle);
@@ -687,6 +703,7 @@ export class LocalPdfSession {
           }
           this.thumbnailCache.set(cacheKey, {
             pageIndex,
+            rotation: requestOptions.rotation,
             objectUrl,
             byteSize: rendered.blob.size,
             renderedWidth: rendered.width,
@@ -734,11 +751,11 @@ export class LocalPdfSession {
     pageIndex: number,
     zoom: number,
     pixelRatio = window.devicePixelRatio || 1,
-    options: Pick<RenderRequestOptions, 'priority' | 'urgency' | 'requestClass'> = {},
+    options: Pick<RenderRequestOptions, 'priority' | 'urgency' | 'requestClass' | 'rotation'> = {},
   ): void {
     this.reprioritiseQueuedRenderTask(
       'page',
-      this.createPageCacheKey(pageIndex, zoom, pixelRatio, 'url'),
+      this.createPageCacheKey(pageIndex, zoom, pixelRatio, 'url', undefined, options.rotation),
       options,
     );
   }
@@ -747,11 +764,11 @@ export class LocalPdfSession {
     pageIndex: number,
     zoom: number,
     pixelRatio = window.devicePixelRatio || 1,
-    options: Pick<RenderRequestOptions, 'priority' | 'urgency' | 'requestClass'> = {},
+    options: Pick<RenderRequestOptions, 'priority' | 'urgency' | 'requestClass' | 'rotation'> = {},
   ): void {
     this.reprioritiseQueuedRenderTask(
       'page',
-      this.createPageCacheKey(pageIndex, zoom, pixelRatio, 'bitmap'),
+      this.createPageCacheKey(pageIndex, zoom, pixelRatio, 'bitmap', undefined, options.rotation),
       options,
     );
   }
@@ -760,12 +777,12 @@ export class LocalPdfSession {
     pageIndex: number,
     optionsOrWidth: number | ThumbnailRenderOptions = 156,
     pixelRatio = window.devicePixelRatio || 1,
-    options: Pick<RenderRequestOptions, 'priority' | 'urgency' | 'requestClass'> = {},
+    options: Pick<RenderRequestOptions, 'priority' | 'urgency' | 'requestClass' | 'rotation'> = {},
   ): void {
     const thumbnailOptions = normaliseThumbnailOptions(optionsOrWidth, pixelRatio);
     this.reprioritiseQueuedRenderTask(
       'thumbnail',
-      this.createThumbnailCacheKey(pageIndex, thumbnailOptions),
+      this.createThumbnailCacheKey(pageIndex, thumbnailOptions, options.rotation),
       options,
     );
   }
@@ -866,16 +883,16 @@ export class LocalPdfSession {
     return objectUrl;
   }
 
-  hasReusablePagePreview(pageIndex: number, minimumWidth = 0): boolean {
-    return this.findReusablePagePreview(pageIndex, minimumWidth) !== null;
+  hasReusablePagePreview(pageIndex: number, minimumWidth = 0, rotation?: PageModel['rotation']): boolean {
+    return this.findReusablePagePreview(pageIndex, minimumWidth, rotation) !== null;
   }
 
-  getReusablePagePreview(pageIndex: number, minimumWidth = 0): string | null {
-    return this.getReusablePagePreviewInfo(pageIndex, minimumWidth)?.objectUrl ?? null;
+  getReusablePagePreview(pageIndex: number, minimumWidth = 0, rotation?: PageModel['rotation']): string | null {
+    return this.getReusablePagePreviewInfo(pageIndex, minimumWidth, rotation)?.objectUrl ?? null;
   }
 
-  getReusablePageSurface(pageIndex: number, minimumWidth = 0): PageRenderSurface | null {
-    const selectedEntry = this.findReusablePageSurface(pageIndex, minimumWidth);
+  getReusablePageSurface(pageIndex: number, minimumWidth = 0, rotation?: PageModel['rotation']): PageRenderSurface | null {
+    const selectedEntry = this.findReusablePageSurface(pageIndex, minimumWidth, rotation);
     if (!selectedEntry) {
       return null;
     }
@@ -884,9 +901,9 @@ export class LocalPdfSession {
     return this.acquirePageRenderSurface(selectedEntry);
   }
 
-  getBestReusablePageImage(pageIndex: number, desiredWidth: number): ReusablePageImage | null {
+  getBestReusablePageImage(pageIndex: number, desiredWidth: number, rotation?: PageModel['rotation']): ReusablePageImage | null {
     const safeDesiredWidth = Number.isFinite(desiredWidth) && desiredWidth > 0 ? desiredWidth : 0;
-    const bitmapEntry = this.findBestPageBitmapImage(pageIndex, safeDesiredWidth);
+    const bitmapEntry = this.findBestPageBitmapImage(pageIndex, safeDesiredWidth, rotation);
     if (bitmapEntry) {
       bitmapEntry.lastUsedAt = performance.now();
       return {
@@ -900,7 +917,7 @@ export class LocalPdfSession {
       };
     }
 
-    const pageUrlEntry = this.findBestPageUrlImage(pageIndex, safeDesiredWidth);
+    const pageUrlEntry = this.findBestPageUrlImage(pageIndex, safeDesiredWidth, rotation);
     if (pageUrlEntry) {
       pageUrlEntry.lastUsedAt = performance.now();
       return {
@@ -914,7 +931,7 @@ export class LocalPdfSession {
       };
     }
 
-    const thumbnailEntry = this.findBestThumbnailImage(pageIndex);
+    const thumbnailEntry = this.findBestThumbnailImage(pageIndex, rotation);
     if (!thumbnailEntry) {
       return null;
     }
@@ -931,9 +948,9 @@ export class LocalPdfSession {
     };
   }
 
-  getBestReusablePageImageAtLeast(pageIndex: number, minimumWidth: number): ReusablePageImage | null {
+  getBestReusablePageImageAtLeast(pageIndex: number, minimumWidth: number, rotation?: PageModel['rotation']): ReusablePageImage | null {
     const safeMinimumWidth = Number.isFinite(minimumWidth) && minimumWidth > 0 ? minimumWidth : 0;
-    const bitmapEntry = this.findBestPageBitmapImageAtLeast(pageIndex, safeMinimumWidth);
+    const bitmapEntry = this.findBestPageBitmapImageAtLeast(pageIndex, safeMinimumWidth, rotation);
     if (bitmapEntry) {
       bitmapEntry.lastUsedAt = performance.now();
       return {
@@ -947,7 +964,7 @@ export class LocalPdfSession {
       };
     }
 
-    const pageUrlEntry = this.findBestPageUrlImageAtLeast(pageIndex, safeMinimumWidth);
+    const pageUrlEntry = this.findBestPageUrlImageAtLeast(pageIndex, safeMinimumWidth, rotation);
     if (!pageUrlEntry) {
       return null;
     }
@@ -964,9 +981,9 @@ export class LocalPdfSession {
     };
   }
 
-  getBestReusableThumbnailImage(pageIndex: number, desiredWidth: number): ReusablePageImage | null {
+  getBestReusableThumbnailImage(pageIndex: number, desiredWidth: number, rotation?: PageModel['rotation']): ReusablePageImage | null {
     const safeDesiredWidth = Number.isFinite(desiredWidth) && desiredWidth > 0 ? desiredWidth : 0;
-    const thumbnailEntry = this.findBestReusableImageEntry(this.thumbnailCache.values(), pageIndex, safeDesiredWidth);
+    const thumbnailEntry = this.findBestReusableImageEntry(this.thumbnailCache.values(), pageIndex, safeDesiredWidth, rotation);
     if (!thumbnailEntry) {
       return null;
     }
@@ -1068,8 +1085,12 @@ export class LocalPdfSession {
     }
   }
 
-  getReusablePagePreviewInfo(pageIndex: number, minimumWidth = 0): ReusablePagePreviewInfo | null {
-    const thumbnailEntry = this.findReusablePagePreview(pageIndex, minimumWidth);
+  getReusablePagePreviewInfo(
+    pageIndex: number,
+    minimumWidth = 0,
+    rotation?: PageModel['rotation'],
+  ): ReusablePagePreviewInfo | null {
+    const thumbnailEntry = this.findReusablePagePreview(pageIndex, minimumWidth, rotation);
     if (thumbnailEntry) {
       thumbnailEntry.lastUsedAt = performance.now();
       return {
@@ -1081,7 +1102,7 @@ export class LocalPdfSession {
       };
     }
 
-    const pageUrlEntry = this.findReusablePageUrlPreview(pageIndex, minimumWidth);
+    const pageUrlEntry = this.findReusablePageUrlPreview(pageIndex, minimumWidth, rotation);
     if (!pageUrlEntry) {
       return null;
     }
@@ -1096,8 +1117,12 @@ export class LocalPdfSession {
     };
   }
 
-  getReusablePagePreviewInfoAtLeast(pageIndex: number, minimumWidth: number): ReusablePagePreviewInfo | null {
-    const thumbnailEntry = this.findReusablePagePreviewAtLeast(pageIndex, minimumWidth);
+  getReusablePagePreviewInfoAtLeast(
+    pageIndex: number,
+    minimumWidth: number,
+    rotation?: PageModel['rotation'],
+  ): ReusablePagePreviewInfo | null {
+    const thumbnailEntry = this.findReusablePagePreviewAtLeast(pageIndex, minimumWidth, rotation);
     if (thumbnailEntry) {
       thumbnailEntry.lastUsedAt = performance.now();
       return {
@@ -1109,7 +1134,7 @@ export class LocalPdfSession {
       };
     }
 
-    const pageUrlEntry = this.findReusablePageUrlPreviewAtLeast(pageIndex, minimumWidth);
+    const pageUrlEntry = this.findReusablePageUrlPreviewAtLeast(pageIndex, minimumWidth, rotation);
     if (!pageUrlEntry) {
       return null;
     }
@@ -1132,7 +1157,7 @@ export class LocalPdfSession {
 
     const buildStartedAt = performance.now();
     const promise = window.butterPaper.pdf.getPageGeometry({
-      filePath: this.filePath,
+      documentHandle: this.requireDocumentAccessHandle(),
       pageIndex,
     }).then((index) => {
       this.snapIndexBuilds += 1;
@@ -1286,6 +1311,11 @@ export class LocalPdfSession {
     this.activePrefetchThumbnailRenderCount = 0;
     await this.documentHandle?.close();
     this.documentHandle = null;
+    const documentAccessHandle = this.documentAccessHandle;
+    this.documentAccessHandle = null;
+    if (documentAccessHandle) {
+      await window.butterPaper.pdf.releaseDocument({ documentHandle: documentAccessHandle }).catch(() => undefined);
+    }
     this.previewReuseEnabled = false;
     this.viewportInMotion = false;
     this.thumbnailListInMotion = false;
@@ -1315,6 +1345,13 @@ export class LocalPdfSession {
     this.lastDeepZoomRenderMs = null;
   }
 
+  private requireDocumentAccessHandle(): string {
+    if (!this.documentAccessHandle) {
+      throw new Error('PDF document access is unavailable.');
+    }
+    return this.documentAccessHandle;
+  }
+
   private recordDeepZoomRender(zoom: number, startedAt: number): void {
     if (zoom < 64) {
       return;
@@ -1342,12 +1379,16 @@ export class LocalPdfSession {
     }
   }
 
-  private findReusablePagePreview(pageIndex: number, minimumWidth: number): ThumbnailCacheEntry | null {
+  private findReusablePagePreview(
+    pageIndex: number,
+    minimumWidth: number,
+    rotation?: PageModel['rotation'],
+  ): ThumbnailCacheEntry | null {
     let fallbackEntry: ThumbnailCacheEntry | null = null;
     let bestEntry: ThumbnailCacheEntry | null = null;
 
     for (const entry of this.thumbnailCache.values()) {
-      if (entry.pageIndex !== pageIndex) {
+      if (entry.pageIndex !== pageIndex || (rotation !== undefined && entry.rotation !== rotation)) {
         continue;
       }
 
@@ -1367,11 +1408,19 @@ export class LocalPdfSession {
     return bestEntry ?? fallbackEntry;
   }
 
-  private findReusablePagePreviewAtLeast(pageIndex: number, minimumWidth: number): ThumbnailCacheEntry | null {
+  private findReusablePagePreviewAtLeast(
+    pageIndex: number,
+    minimumWidth: number,
+    rotation?: PageModel['rotation'],
+  ): ThumbnailCacheEntry | null {
     let bestEntry: ThumbnailCacheEntry | null = null;
 
     for (const entry of this.thumbnailCache.values()) {
-      if (entry.pageIndex !== pageIndex || entry.renderedWidth < minimumWidth) {
+      if (
+        entry.pageIndex !== pageIndex
+        || (rotation !== undefined && entry.rotation !== rotation)
+        || entry.renderedWidth < minimumWidth
+      ) {
         continue;
       }
 
@@ -1383,12 +1432,16 @@ export class LocalPdfSession {
     return bestEntry;
   }
 
-  private findReusablePageUrlPreview(pageIndex: number, minimumWidth: number): ThumbnailCacheEntry | null {
+  private findReusablePageUrlPreview(
+    pageIndex: number,
+    minimumWidth: number,
+    rotation?: PageModel['rotation'],
+  ): ThumbnailCacheEntry | null {
     let fallbackEntry: ThumbnailCacheEntry | null = null;
     let bestEntry: ThumbnailCacheEntry | null = null;
 
     for (const entry of this.pageUrlCache.values()) {
-      if (entry.pageIndex !== pageIndex) {
+      if (entry.pageIndex !== pageIndex || (rotation !== undefined && entry.rotation !== rotation)) {
         continue;
       }
 
@@ -1408,11 +1461,19 @@ export class LocalPdfSession {
     return bestEntry ?? fallbackEntry;
   }
 
-  private findReusablePageUrlPreviewAtLeast(pageIndex: number, minimumWidth: number): ThumbnailCacheEntry | null {
+  private findReusablePageUrlPreviewAtLeast(
+    pageIndex: number,
+    minimumWidth: number,
+    rotation?: PageModel['rotation'],
+  ): ThumbnailCacheEntry | null {
     let bestEntry: ThumbnailCacheEntry | null = null;
 
     for (const entry of this.pageUrlCache.values()) {
-      if (entry.pageIndex !== pageIndex || entry.renderedWidth < minimumWidth) {
+      if (
+        entry.pageIndex !== pageIndex
+        || (rotation !== undefined && entry.rotation !== rotation)
+        || entry.renderedWidth < minimumWidth
+      ) {
         continue;
       }
       if (entry.cropPdfRect) {
@@ -1427,12 +1488,16 @@ export class LocalPdfSession {
     return bestEntry;
   }
 
-  private findReusablePageSurface(pageIndex: number, minimumWidth: number): PageRenderCacheEntry | null {
+  private findReusablePageSurface(
+    pageIndex: number,
+    minimumWidth: number,
+    rotation?: PageModel['rotation'],
+  ): PageRenderCacheEntry | null {
     let fallbackEntry: PageRenderCacheEntry | null = null;
     let bestEntry: PageRenderCacheEntry | null = null;
 
     for (const entry of this.renderCache.values()) {
-      if (entry.pageIndex !== pageIndex) {
+      if (entry.pageIndex !== pageIndex || (rotation !== undefined && entry.rotation !== rotation)) {
         continue;
       }
       if (entry.cropPdfRect) {
@@ -1455,26 +1520,26 @@ export class LocalPdfSession {
     return bestEntry ?? fallbackEntry;
   }
 
-  private findBestPageBitmapImage(pageIndex: number, desiredWidth: number): PageRenderCacheEntry | null {
-    return this.findBestReusableImageEntry(this.renderCache.values(), pageIndex, desiredWidth);
+  private findBestPageBitmapImage(pageIndex: number, desiredWidth: number, rotation?: PageModel['rotation']): PageRenderCacheEntry | null {
+    return this.findBestReusableImageEntry(this.renderCache.values(), pageIndex, desiredWidth, rotation);
   }
 
-  private findBestPageBitmapImageAtLeast(pageIndex: number, minimumWidth: number): PageRenderCacheEntry | null {
-    return this.findBestReusableImageEntryAtLeast(this.renderCache.values(), pageIndex, minimumWidth);
+  private findBestPageBitmapImageAtLeast(pageIndex: number, minimumWidth: number, rotation?: PageModel['rotation']): PageRenderCacheEntry | null {
+    return this.findBestReusableImageEntryAtLeast(this.renderCache.values(), pageIndex, minimumWidth, rotation);
   }
 
-  private findBestPageUrlImage(pageIndex: number, desiredWidth: number): ThumbnailCacheEntry | null {
-    return this.findBestReusableImageEntry(this.pageUrlCache.values(), pageIndex, desiredWidth);
+  private findBestPageUrlImage(pageIndex: number, desiredWidth: number, rotation?: PageModel['rotation']): ThumbnailCacheEntry | null {
+    return this.findBestReusableImageEntry(this.pageUrlCache.values(), pageIndex, desiredWidth, rotation);
   }
 
-  private findBestPageUrlImageAtLeast(pageIndex: number, minimumWidth: number): ThumbnailCacheEntry | null {
-    return this.findBestReusableImageEntryAtLeast(this.pageUrlCache.values(), pageIndex, minimumWidth);
+  private findBestPageUrlImageAtLeast(pageIndex: number, minimumWidth: number, rotation?: PageModel['rotation']): ThumbnailCacheEntry | null {
+    return this.findBestReusableImageEntryAtLeast(this.pageUrlCache.values(), pageIndex, minimumWidth, rotation);
   }
 
-  private findBestThumbnailImage(pageIndex: number): ThumbnailCacheEntry | null {
+  private findBestThumbnailImage(pageIndex: number, rotation?: PageModel['rotation']): ThumbnailCacheEntry | null {
     let bestEntry: ThumbnailCacheEntry | null = null;
     for (const entry of this.thumbnailCache.values()) {
-      if (entry.pageIndex !== pageIndex) {
+      if (entry.pageIndex !== pageIndex || (rotation !== undefined && entry.rotation !== rotation)) {
         continue;
       }
 
@@ -1486,16 +1551,17 @@ export class LocalPdfSession {
     return bestEntry;
   }
 
-  private findBestReusableImageEntry<T extends { pageIndex: number; renderedWidth: number }>(
+  private findBestReusableImageEntry<T extends { pageIndex: number; renderedWidth: number; rotation?: PageModel['rotation'] }>(
     entries: Iterable<T>,
     pageIndex: number,
     desiredWidth: number,
+    rotation?: PageModel['rotation'],
   ): T | null {
     let smallestAdequateEntry: T | null = null;
     let widestLowerEntry: T | null = null;
 
     for (const entry of entries) {
-      if (entry.pageIndex !== pageIndex) {
+      if (entry.pageIndex !== pageIndex || (rotation !== undefined && entry.rotation !== rotation)) {
         continue;
       }
       if ('cropPdfRect' in entry && entry.cropPdfRect) {
@@ -1517,15 +1583,20 @@ export class LocalPdfSession {
     return smallestAdequateEntry ?? widestLowerEntry;
   }
 
-  private findBestReusableImageEntryAtLeast<T extends { pageIndex: number; renderedWidth: number }>(
+  private findBestReusableImageEntryAtLeast<T extends { pageIndex: number; renderedWidth: number; rotation?: PageModel['rotation'] }>(
     entries: Iterable<T>,
     pageIndex: number,
     minimumWidth: number,
+    rotation?: PageModel['rotation'],
   ): T | null {
     let smallestAdequateEntry: T | null = null;
 
     for (const entry of entries) {
-      if (entry.pageIndex !== pageIndex || entry.renderedWidth < minimumWidth) {
+      if (
+        entry.pageIndex !== pageIndex
+        || (rotation !== undefined && entry.rotation !== rotation)
+        || entry.renderedWidth < minimumWidth
+      ) {
         continue;
       }
       if ('cropPdfRect' in entry && entry.cropPdfRect) {
@@ -1586,7 +1657,8 @@ export class LocalPdfSession {
     zoom: number,
     pixelRatio: number,
     transport: 'url' | 'bitmap' = 'url',
-    cropPdfRect?: RenderCorePdfRect,
+    cropPdfRect?: PdfRect,
+    rotation?: PageModel['rotation'],
   ): string {
     const cropKey = cropPdfRect
       ? [
@@ -1597,12 +1669,17 @@ export class LocalPdfSession {
         cropPdfRect.height.toFixed(2),
       ].join(':')
       : 'full';
-    return `${transport}:${pageIndex}:${zoom.toFixed(3)}:${pixelRatio.toFixed(2)}:${cropKey}`;
+    return `${transport}:${pageIndex}:${zoom.toFixed(3)}:${pixelRatio.toFixed(2)}:${rotation ?? 'source'}:${cropKey}`;
   }
 
-  private createThumbnailCacheKey(pageIndex: number, options: NormalisedThumbnailRenderOptions): string {
+  private createThumbnailCacheKey(
+    pageIndex: number,
+    options: NormalisedThumbnailRenderOptions,
+    rotation?: PageModel['rotation'],
+  ): string {
     return [
       pageIndex,
+      rotation ?? 'source',
       options.maxWidth.toFixed(1),
       options.maxHeight.toFixed(1),
       options.pixelRatio.toFixed(2),
@@ -2484,13 +2561,6 @@ const REQUEST_CLASS_RANK: Record<RenderRequestClass, number> = {
   'nearby-prefetch': 5,
   warming: 6,
 };
-
-function renderModeForRequestClass(requestClass: RenderRequestClass | undefined): 'full' | 'preview' {
-  return requestClass === 'target-page-hq' || requestClass === 'visible-page-hq-upgrade'
-    || requestClass === 'target-page-crop'
-    ? 'full'
-    : 'preview';
-}
 
 function resolvePageRendererMode(): DiagnosticsSnapshot['pageRendererMode'] {
   const requestedMode = String(import.meta.env.VITE_BP_PAGE_RENDERER_MODE ?? '').trim();

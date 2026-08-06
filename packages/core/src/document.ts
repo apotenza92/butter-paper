@@ -5,6 +5,10 @@ export type MarkupId = string;
 export interface PageModel {
   readonly id: string;
   readonly index: number;
+  /** Effective visible PDF page box in unrotated default-user-space coordinates. */
+  readonly viewBox?: Rect;
+  /** PDF /UserUnit multiplier. Real loaded pages provide this; legacy models default to 1. */
+  readonly userUnit?: number;
   readonly size: Size;
   readonly rotation: 0 | 90 | 180 | 270;
 }
@@ -26,6 +30,8 @@ export interface DocumentModel {
   readonly pageScales?: readonly PageScale[];
   readonly scalePresets?: readonly ScalePreset[];
 }
+
+export type PageRotationDirection = 'left' | 'right';
 
 export type ScaleSource = 'preset' | 'custom' | 'calibrated';
 export type ScaleUnit = 'in' | 'ft' | 'mm' | 'cm' | 'm';
@@ -60,7 +66,34 @@ export interface ScalePreset {
 
 export interface MarkupSource {
   readonly annotationId?: string;
+  /** All native PDF annotation objects that make up this logical markup. */
+  readonly annotationIds?: readonly string[];
+  /**
+   * Audited, non-geometric metadata from each native annotation object.
+   * Geometry, appearances, object ids and relationships are always rebuilt by
+   * the target document writer instead of being copied through this model.
+   */
+  readonly annotationMetadata?: readonly AnnotationMetadata[];
+  /** Stable snapshot used to preserve untouched imported annotations verbatim. */
+  readonly originalFingerprint?: string;
   readonly source?: 'butter' | 'imported';
+}
+
+export type AnnotationMetadataRole = 'primary' | 'cloud' | 'text';
+
+export interface AnnotationMetadata {
+  readonly annotationId: string;
+  readonly role?: AnnotationMetadataRole;
+  readonly author?: string;
+  readonly subject?: string;
+  readonly creationDate?: string;
+  readonly modificationDate?: string;
+  readonly contents?: string;
+  readonly flags?: number;
+  readonly status?: string;
+  readonly statusModel?: string;
+  readonly replyType?: 'Reply' | 'Group';
+  readonly replyToAnnotationId?: string;
 }
 
 export interface AnnotationStrokeAppearance {
@@ -323,6 +356,31 @@ export function createDocument(
     markups: params.markups ?? [],
     pageScales: params.pageScales ?? [],
     scalePresets: params.scalePresets ?? [],
+  };
+}
+
+export function rotateDocumentPage(
+  document: DocumentModel,
+  pageIndex: number,
+  direction: PageRotationDirection,
+): DocumentModel {
+  const delta = direction === 'right' ? 90 : -90;
+  return {
+    ...document,
+    pages: document.pages.map((page) => {
+      if (page.index !== pageIndex) {
+        return page;
+      }
+
+      return {
+        ...page,
+        size: {
+          width: page.size.height,
+          height: page.size.width,
+        },
+        rotation: ((page.rotation + delta + 360) % 360) as PageModel['rotation'],
+      };
+    }),
   };
 }
 

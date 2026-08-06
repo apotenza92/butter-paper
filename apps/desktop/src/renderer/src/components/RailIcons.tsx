@@ -11,10 +11,10 @@ import {
   Image,
   ScanSearch,
   Minus,
-  MoveHorizontal,
   PenLine,
   Route,
   Ruler,
+  RulerDimensionLine,
   Waypoints,
   Pentagon,
   Spline,
@@ -133,7 +133,7 @@ export function ArrowRailIcon({ className }: RailIconProps) {
 
 export function DimensionRailIcon({ className }: RailIconProps) {
   return (
-    <MoveHorizontal
+    <RulerDimensionLine
       aria-hidden="true"
       size={CONTROL_ICON_SIZE}
       strokeWidth={CONTROL_ICON_STROKE_WIDTH}
@@ -241,7 +241,7 @@ export function CloudRailIcon({ className }: RailIconProps) {
 
 export function CloudPlusRailIcon({ className }: RailIconProps) {
   return (
-    <span aria-hidden="true" className="relative inline-flex size-[18px] items-center justify-center">
+    <span aria-hidden="true" className="relative inline-flex size-4 items-center justify-center">
       <Cloud
         size={CONTROL_ICON_SIZE}
         strokeWidth={CONTROL_ICON_STROKE_WIDTH}
@@ -252,7 +252,7 @@ export function CloudPlusRailIcon({ className }: RailIconProps) {
         size={Math.round(CONTROL_ICON_SIZE * 0.42)}
         strokeWidth={CONTROL_ICON_STROKE_WIDTH}
         absoluteStrokeWidth
-        className="absolute -right-0.5 -top-0.5 size-[8px]"
+        className="absolute -right-0.5 -top-0.5 size-[7px]"
       />
     </span>
   );
@@ -272,7 +272,7 @@ export function TextBoxRailIcon({ className }: RailIconProps) {
 
 export function CalloutRailIcon({ className }: RailIconProps) {
   return (
-    <span aria-hidden="true" className="relative inline-flex size-[18px] items-center justify-center">
+    <span aria-hidden="true" className="relative inline-flex size-4 items-center justify-center">
       <MessageSquare
         size={CONTROL_ICON_SIZE}
         strokeWidth={CONTROL_ICON_STROKE_WIDTH}
@@ -283,7 +283,7 @@ export function CalloutRailIcon({ className }: RailIconProps) {
         size={Math.round(CONTROL_ICON_SIZE * 0.4)}
         strokeWidth={CONTROL_ICON_STROKE_WIDTH}
         absoluteStrokeWidth
-        className="absolute size-[7px]"
+        className="absolute size-[6px]"
       />
     </span>
   );

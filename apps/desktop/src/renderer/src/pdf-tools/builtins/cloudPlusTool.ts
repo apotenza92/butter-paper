@@ -1,4 +1,4 @@
-import { createCloudPlusMarkup, pdfPoint, rect, translatePoint, translateRect, type CloudPlusMarkup, type PdfPoint, type Rect } from '@butter-paper/core';
+import { createCloudPlusMarkup, pdfPoint, rect, translateMarkup, translatePoint, translateRect, type CloudPlusMarkup, type Markup, type PdfPoint, type Rect } from '@butter-paper/core';
 import {
   createLineDraft,
   resizeRectFromHandle,
@@ -10,10 +10,12 @@ import {
   type RectResizeHandle,
 } from '../annotationLifecycle';
 import { getAnnotationContentStyle, getVerticallyCenteredAnnotationTextContentStyle } from '../annotationStyles';
+import { placeInitialCloudPlusTextBox, routeCloudPlusLeader, snapCloudPlusLeaderTip, type CloudPlusObstacle, type CloudPlusRoutingContext } from '../cloudPlusRouting';
 import { isPointInRect, isPointNearPolygonEdge, isPointNearPolyline } from '../hitTesting';
 import { getMoveCursor, getResizeHandles } from '../interactionChrome';
-import { CLOUD_LINE_TYPE_RENDERER, DEFAULT_CLOUD_LINE_OPTIONS } from '../lineTypes';
-import type { PdfToolDefinition, SelectionChromeDescriptor, ToolGeometryDescriptor, ToolHit } from '../types';
+import { CLOUD_LINE_TYPE_RENDERER, DEFAULT_CLOUD_LINE_OPTIONS, sampleAbsoluteSvgPath } from '../lineTypes';
+import type { PdfToolDefinition, SelectionChromeDescriptor, ToolGeometryDescriptor, ToolHit, ToolInteractionContext } from '../types';
+import { dimensionCaptionRect } from './dimensionTool';
 
 const DEFAULT_TEXT = 'Cloud+';
 const DEFAULT_TEXT_BOX_WIDTH = 150;
@@ -123,8 +125,6 @@ export const CLOUD_PLUS_TOOL_DEFINITION: PdfToolDefinition<CloudPlusMarkup, Clou
       const style = getAnnotationContentStyle(markup);
       const visible = cloudVisible(markup);
       const points = markup.leader.points;
-      const tip = points[0] ?? pdfPoint(markup.textBox.x, markup.textBox.y);
-      const afterTip = points[1] ?? tip;
       return [
         {
           kind: 'path',
@@ -146,12 +146,6 @@ export const CLOUD_PLUS_TOOL_DEFINITION: PdfToolDefinition<CloudPlusMarkup, Clou
           pointerEvents: 'visibleStroke',
         },
         {
-          kind: 'polyline',
-          points: openArrowHeadPoints(afterTip, tip, 10, 7),
-          style: { stroke: style.stroke, fill: 'none', strokeWidth: style.strokeWidth, opacity: style.opacity },
-          pointerEvents: 'none',
-        },
-        {
           kind: 'textBox',
           rect: markup.textBox,
           text: markup.text,
@@ -160,8 +154,11 @@ export const CLOUD_PLUS_TOOL_DEFINITION: PdfToolDefinition<CloudPlusMarkup, Clou
         },
       ];
     },
-    getDraftPrimitives(draft) {
-      return CLOUD_PLUS_TOOL_DEFINITION.render?.getContentPrimitives(draftToCloudPlusPreview(draft, 'cloud-plus-draft', 0), { page: { id: 'draft', index: 0, size: { width: 0, height: 0 }, rotation: 0 }, phase: 'draft' }) ?? [];
+    getDraftPrimitives(draft, context) {
+      return CLOUD_PLUS_TOOL_DEFINITION.render?.getContentPrimitives(
+        draftToCloudPlusPreview(draft, 'cloud-plus-draft', context.page.index, cloudPlusRoutingContext(context)),
+        context,
+      ) ?? [];
     },
   },
   selection: {
@@ -202,27 +199,43 @@ export const CLOUD_PLUS_TOOL_DEFINITION: PdfToolDefinition<CloudPlusMarkup, Clou
         if (draft.points.length < 3) {
           return null;
         }
-        return cloudPlusFromControlPath(draft.points, context.createMarkupId('cloud-plus'), context.page.index);
+        return cloudPlusFromControlPath(
+          draft.points,
+          context.createMarkupId('cloud-plus'),
+          context.page.index,
+          cloudPlusRoutingContext(context),
+        );
       }
 
       if (!context.hasExceededDragThreshold || !shouldCommitLine(draft.start, draft.current)) {
         return null;
       }
-      return draftToCloudPlusPreview(draft, context.createMarkupId('cloud-plus'), context.page.index);
+      return cloudPlusFromControlPath(
+        rectangleControlPath(draft.start, draft.current),
+        context.createMarkupId('cloud-plus'),
+        context.page.index,
+        cloudPlusRoutingContext(context),
+      );
     },
-    transformMarkup(markup, input) {
+    transformMarkup(markup, input, context) {
+      const routingContext = cloudPlusRoutingContext(context, markup.id);
       if (input.handleBehavior === 'reshapeVertex') {
         const vertexIndex = Number(input.handleId.split('.').at(-1));
         if (!Number.isInteger(vertexIndex) || vertexIndex < 0 || vertexIndex >= markup.cloud.controlPath.length) {
           return markup;
         }
-        return createCloudPlusMarkup({
+        const controlPath = markup.cloud.controlPath.map((point, index) => index === vertexIndex ? input.currentPoint : point);
+        const reshaped = createCloudPlusMarkup({
           ...markup,
           cloud: {
             ...markup.cloud,
-            controlPath: markup.cloud.controlPath.map((point, index) => index === vertexIndex ? input.currentPoint : point),
-            appearancePath: undefined,
+            controlPath,
+            appearancePath: generatedCloudPath(controlPath, markup),
           },
+        });
+        return createCloudPlusMarkup({
+          ...reshaped,
+          leader: { points: leaderPointsForTextBox(reshaped, reshaped.textBox, routingContext, markup.leader.points) },
         });
       }
 
@@ -231,7 +244,12 @@ export const CLOUD_PLUS_TOOL_DEFINITION: PdfToolDefinition<CloudPlusMarkup, Clou
         if (!handle) {
           return markup;
         }
-        return createCloudPlusMarkup({ ...markup, textBox: resizeRectFromHandle(markup.textBox, handle, input.currentPoint) });
+        const textBox = resizeRectFromHandle(markup.textBox, handle, input.currentPoint);
+        return createCloudPlusMarkup({
+          ...markup,
+          textBox,
+          leader: { points: leaderPointsForTextBox(markup, textBox, routingContext, markup.leader.points) },
+        });
       }
 
       if (input.handleBehavior === 'moveEndpoint' || input.handleBehavior === 'moveKnee') {
@@ -239,35 +257,35 @@ export const CLOUD_PLUS_TOOL_DEFINITION: PdfToolDefinition<CloudPlusMarkup, Clou
         if (pointIndex === null) {
           return markup;
         }
+        if (pointIndex === markup.leader.points.length - 1) {
+          const hintedLeader = markup.leader.points.map((point, index) => index === pointIndex ? input.currentPoint : point);
+          return createCloudPlusMarkup({
+            ...markup,
+            leader: { points: leaderPointsForTextBox(markup, markup.textBox, routingContext, hintedLeader) },
+          });
+        }
+        const nextPoint = pointIndex === 0
+          ? snapCloudPlusLeaderTip(cloudVisiblePath(markup), input.currentPoint)
+          : input.currentPoint;
         return createCloudPlusMarkup({
           ...markup,
-          leader: { points: markup.leader.points.map((point, index) => index === pointIndex ? input.currentPoint : point) },
+          leader: { points: markup.leader.points.map((point, index) => index === pointIndex ? nextPoint : point) },
         });
       }
 
       return markup;
     },
-    dragMarkup(markup, input) {
+    dragMarkup(markup, input, context) {
       if (input.componentId === 'cloud-plus.cloud' || input.bodyDrag === 'moveGroup') {
-        return createCloudPlusMarkup({
-          ...markup,
-          cloud: {
-            ...markup.cloud,
-            controlPath: markup.cloud.controlPath.map((point) => translatePoint(point, input.delta)),
-            appearancePath: undefined,
-          },
-          textBox: translateRect(markup.textBox, input.delta),
-          leader: { points: markup.leader.points.map((point) => translatePoint(point, input.delta)) },
-        });
+        return translateMarkup(markup, input.delta);
       }
 
       if (input.componentId === 'cloud-plus.textBox') {
+        const textBox = translateRect(markup.textBox, input.delta);
         return createCloudPlusMarkup({
           ...markup,
-          textBox: translateRect(markup.textBox, input.delta),
-          leader: {
-            points: markup.leader.points.map((point, index) => index === markup.leader.points.length - 1 ? translatePoint(point, input.delta) : point),
-          },
+          textBox,
+          leader: { points: leaderPointsForTextBox(markup, textBox, cloudPlusRoutingContext(context, markup.id), markup.leader.points) },
         });
       }
 
@@ -302,19 +320,38 @@ export const CLOUD_PLUS_TOOL_DEFINITION: PdfToolDefinition<CloudPlusMarkup, Clou
   },
 };
 
-function draftToCloudPlusPreview(draft: CloudPlusDraft, id: string, pageIndex: number): CloudPlusMarkup {
+function draftToCloudPlusPreview(
+  draft: CloudPlusDraft,
+  id: string,
+  pageIndex: number,
+  routingContext: CloudPlusRoutingContext = {},
+): CloudPlusMarkup {
   const cloudPath = draft.kind === 'cloud-node'
     ? cloudNodePreviewPath(draft)
     : rectangleControlPath(draft.start, draft.current);
-  return cloudPlusFromControlPath(cloudPath, id, pageIndex);
+  return cloudPlusFromControlPath(cloudPath, id, pageIndex, routingContext);
 }
 
-function cloudPlusFromControlPath(cloudPath: readonly PdfPoint[], id: string, pageIndex: number): CloudPlusMarkup {
-  const cloudBounds = pointsBounds(cloudPath);
-  const textBox = rect(cloudBounds.x + cloudBounds.width + 24, cloudBounds.y + cloudBounds.height * 0.5 - DEFAULT_TEXT_BOX_HEIGHT * 0.5, DEFAULT_TEXT_BOX_WIDTH, DEFAULT_TEXT_BOX_HEIGHT);
-  const tip = pdfPoint(cloudBounds.x + cloudBounds.width, cloudBounds.y + cloudBounds.height * 0.5);
-  const connection = pdfPoint(textBox.x, textBox.y + textBox.height * 0.5);
-  const knee = pdfPoint((connection.x + tip.x) * 0.5, connection.y);
+function cloudPlusFromControlPath(
+  cloudPath: readonly PdfPoint[],
+  id: string,
+  pageIndex: number,
+  routingContext: CloudPlusRoutingContext = {},
+): CloudPlusMarkup {
+  const visible = CLOUD_LINE_TYPE_RENDERER.render({
+    controlPath: cloudPath,
+    closed: true,
+    strokeWidth: 1,
+    options: DEFAULT_CLOUD_LINE_OPTIONS,
+  });
+  const placement = placeInitialCloudPlusTextBox({
+    controlPath: cloudPath,
+    visiblePath: visible.points,
+    width: DEFAULT_TEXT_BOX_WIDTH,
+    height: DEFAULT_TEXT_BOX_HEIGHT,
+    gap: 24,
+    ...routingContext,
+  });
   return createCloudPlusMarkup({
     id,
     pageIndex,
@@ -323,9 +360,10 @@ function cloudPlusFromControlPath(cloudPath: readonly PdfPoint[], id: string, pa
       strokeWidth: 1,
       borderEffectIntensity: 2,
       scallopRadius: DEFAULT_CLOUD_LINE_OPTIONS.scallopRadius,
+      appearancePath: visible.d,
     },
-    leader: { points: [tip, knee, connection] },
-    textBox,
+    leader: { points: placement.leader.points },
+    textBox: placement.textBox,
     text: DEFAULT_TEXT,
     color: '#ff0000',
     source: { source: 'butter' },
@@ -414,7 +452,12 @@ function cloudVisible(markup: CloudPlusMarkup) {
       strokeWidth: 1,
       options: cloudLineOptions(markup),
     });
-    return { ...generated, d: markup.cloud.appearancePath };
+    const appearancePoints = sampleAbsoluteSvgPath(markup.cloud.appearancePath);
+    return {
+      ...generated,
+      d: markup.cloud.appearancePath,
+      points: appearancePoints.length > 1 ? appearancePoints : generated.points,
+    };
   }
   return CLOUD_LINE_TYPE_RENDERER.render({
     controlPath: markup.cloud.controlPath,
@@ -426,6 +469,15 @@ function cloudVisible(markup: CloudPlusMarkup) {
 
 function cloudVisiblePath(markup: CloudPlusMarkup): readonly PdfPoint[] {
   return cloudVisible(markup).points;
+}
+
+function generatedCloudPath(controlPath: readonly PdfPoint[], markup: CloudPlusMarkup): string {
+  return CLOUD_LINE_TYPE_RENDERER.render({
+    controlPath,
+    closed: true,
+    strokeWidth: 1,
+    options: cloudLineOptions(markup),
+  }).d;
 }
 
 function cloudLineOptions(markup: CloudPlusMarkup) {
@@ -498,20 +550,102 @@ function readLeaderPoints(value: unknown, fallbackBox: Rect): readonly PdfPoint[
   ];
 }
 
-function openArrowHeadPoints(start: PdfPoint, end: PdfPoint, length: number, width: number): readonly PdfPoint[] {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const distance = Math.hypot(dx, dy);
-  if (distance === 0) {
-    return [end, end, end];
+function cloudPlusRoutingContext(
+  context: ToolInteractionContext | undefined,
+  excludeMarkupId?: string,
+): CloudPlusRoutingContext {
+  if (!context) {
+    return {};
   }
-  const ux = dx / distance;
-  const uy = dy / distance;
-  const base = pdfPoint(end.x - ux * length, end.y - uy * length);
-  const perpendicular = { x: -uy, y: ux };
-  return [
-    pdfPoint(base.x + perpendicular.x * width * 0.5, base.y + perpendicular.y * width * 0.5),
-    end,
-    pdfPoint(base.x - perpendicular.x * width * 0.5, base.y - perpendicular.y * width * 0.5),
-  ];
+  return {
+    pageBounds: context.pageBounds ?? rect(0, 0, context.page.size.width, context.page.size.height),
+    obstacles: cloudPlusRoutingObstacles(context.markups ?? [], excludeMarkupId),
+  };
+}
+
+export function cloudPlusRoutingObstacles(
+  markups: readonly Markup[],
+  excludeMarkupId?: string,
+): readonly CloudPlusObstacle[] {
+  return [...markups]
+    .filter((markup) => markup.id !== excludeMarkupId)
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .flatMap((markup): readonly CloudPlusObstacle[] => {
+      const id = markup.id;
+      switch (markup.kind) {
+        case 'text-box':
+        case 'rectangle':
+        case 'ellipse':
+        case 'arc':
+        case 'image':
+        case 'snapshot':
+        case 'imported-annotation':
+          return [{ id, kind: 'rect', rect: markup.rect }];
+        case 'callout':
+          return [
+            { id: `${id}:text`, kind: 'rect', rect: markup.textBox },
+            { id: `${id}:leader`, kind: 'polyline', points: markup.leader.points },
+          ];
+        case 'cloud-plus':
+          return [
+            { id: `${id}:text`, kind: 'rect', rect: markup.textBox },
+            { id: `${id}:leader`, kind: 'polyline', points: markup.leader.points },
+            { id: `${id}:cloud`, kind: 'polygon', points: cloudVisiblePath(markup) },
+          ];
+        case 'dimension':
+          return [
+            { id: `${id}:caption`, kind: 'rect', rect: dimensionCaptionRect(markup) },
+            { id: `${id}:line`, kind: 'polyline', points: [markup.start, markup.end] },
+          ];
+        case 'line':
+        case 'arrow':
+        case 'length':
+          return [{ id, kind: 'polyline', points: [markup.start, markup.end] }];
+        case 'polyline':
+        case 'polylength':
+          return [{ id, kind: 'polyline', points: markup.points }];
+        case 'polygon':
+        case 'area':
+          return [{ id, kind: 'polygon', points: markup.points }];
+        case 'cloud':
+          return [{ id, kind: 'polygon', points: markup.controlPath }];
+        case 'pen':
+        case 'highlight':
+          return markup.paths.map((points, index) => ({ id: `${id}:path:${index}`, kind: 'polyline' as const, points }));
+      }
+    });
+}
+
+function leaderPointsForTextBox(
+  markup: CloudPlusMarkup,
+  textBox: Rect,
+  routingContext?: CloudPlusRoutingContext,
+  previousLeader: readonly PdfPoint[] = markup.leader.points,
+): readonly PdfPoint[] {
+  return routeCloudPlusLeader({
+    controlPath: markup.cloud.controlPath,
+    visiblePath: cloudVisiblePath(markup),
+    textBox,
+    previousLeader,
+    ...routingContext,
+  }).points;
+}
+
+export function updateCloudPlusTextBox(
+  markup: CloudPlusMarkup,
+  textBox: Rect,
+  context?: ToolInteractionContext,
+): CloudPlusMarkup {
+  return createCloudPlusMarkup({
+    ...markup,
+    textBox,
+    leader: {
+      points: leaderPointsForTextBox(
+        markup,
+        textBox,
+        cloudPlusRoutingContext(context, markup.id),
+        markup.leader.points,
+      ),
+    },
+  });
 }

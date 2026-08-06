@@ -1,70 +1,29 @@
 # Butter Paper
 
-Butter Paper is a cross-platform desktop app for reviewing and marking up PDFs,
-with a focus on architecture, engineering, and construction workflows.
+<p align="center">
+  <img src="assets/butter-paper-icon.svg" alt="Butter Paper icon" width="144" />
+</p>
 
-The current release candidate is version 0.0.15. Stable and beta are
-intentionally maintained as separate application identities, so both can be
-installed at once without sharing settings or updater trust.
+Butter Paper is a free, open-source, cross-platform alternative to Bluebeam Revu
+for PDF review and markup in architecture, engineering, and
+construction—available on macOS, Windows, and Linux.
 
-## Development
+Open drawings and documents, add familiar construction markups, and keep review
+work clear without the weight of a complicated document suite.
 
-Requirements:
+## What you can do
 
-- Node.js 24.16.0
-- pnpm 10.33.0
+- Draw, highlight, add text, shapes, callouts, dimensions, and measurements.
+- Mark revisions with familiar CAD-style annotation tools.
+- Review several PDFs together in one desktop workspace.
+- Create blank pages for sketches, notes, and quick ideas.
+- Work on macOS, Windows, or Linux.
 
-Install dependencies and run the local quality gate:
+## Why Butter Paper exists
 
-```sh
-pnpm install --frozen-lockfile
-pnpm check
-```
+PDF review should feel direct, visual, and easy to pick up. Butter Paper aims to
+bring the useful parts of professional construction markup into a simpler,
+open-source app that can grow with the people who use it.
 
-Start the desktop app:
-
-```sh
-pnpm dev:desktop
-```
-
-GUI-driven Electron E2E, packaged-app smoke, and updater tests run only on
-disposable GitHub Actions runners. Local macOS quality checks remain headless
-and do not open application windows.
-
-## Releases and automatic updates
-
-The tagged release workflow targets native ARM64 and x64 hosts on macOS,
-Windows, and Linux:
-
-- macOS DMG and ZIP packages are Developer ID signed, hardened, notarized,
-  stapled, and Gatekeeper verified. The app updates automatically.
-- Windows NSIS installers are currently unsigned. The app authenticates update
-  metadata with TUF before Electron Updater verifies and installs the declared
-  package bytes.
-- Linux AppImages are currently unsigned and self-update through the same
-  TUF-authenticated path. DEB and RPM upgrades remain the responsibility of the
-  system package manager.
-
-Windows and Linux users on 0.0.11 need to install 0.0.15 manually once because
-those older packages did not contain the TUF updater. Automatic updates apply
-after that bootstrap install. Existing 0.0.13 and 0.0.14 installations update
-automatically. A stable release advances both the stable and beta feeds, while
-a beta prerelease advances only the beta feed. A stable install remains stable
-and a beta install remains beta.
-
-Every release publishes SHA-256 checksums, GitHub build provenance, exact
-updater metadata, and release notes extracted from [CHANGELOG.md](CHANGELOG.md).
-Those notes are also shown in the in-app update dialog. The TUF root private
-key is kept offline; separate protected keys sign targets, snapshot, and
-timestamp metadata. Production update feeds require HTTPS and fail closed if
-metadata or payloads are corrupt, expired, redirected, missing, or signed by
-an untrusted key.
-
-Electron supplies most of the installed footprint. The package configuration
-still removes source maps, unused Electron locales, duplicate renderer
-dependencies, and native canvas binaries for other operating systems and
-architectures.
-
-## License
-
-[MIT](LICENSE)
+[Download Butter Paper](https://apotenza92.github.io/butter-paper/) ·
+[Share feedback or report an issue](https://github.com/apotenza92/butter-paper/issues)

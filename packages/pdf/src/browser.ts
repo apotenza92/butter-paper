@@ -5,6 +5,7 @@ import type {
   PdfRenderedBitmap,
   PdfRenderedBlob,
 } from './types.js';
+import { normalizePdfRect } from './geometry.js';
 
 interface PdfJsDocumentLike {
   numPages: number;
@@ -20,6 +21,8 @@ interface PdfJsRenderTaskLike {
 
 interface PdfJsPageLike {
   rotate: number;
+  view: readonly number[];
+  userUnit: number;
   getViewport(params: { scale: number; rotation?: number }): { width: number; height: number };
   render(params: {
     canvasContext: CanvasRenderingContext2D;
@@ -85,6 +88,8 @@ export class BrowserPdfDocumentHandle {
       width: viewport.width,
       height: viewport.height,
       rotation,
+      viewBox: normalizePdfRect(page.view),
+      userUnit: normalizeUserUnit(page.userUnit),
     };
   }
 
@@ -237,6 +242,10 @@ function normalizeRotation(rotation: number): 0 | 90 | 180 | 270 {
   }
 
   return 0;
+}
+
+function normalizeUserUnit(userUnit: number): number {
+  return Number.isFinite(userUnit) && userUnit > 0 ? userUnit : 1;
 }
 
 function createAbortError(): Error {

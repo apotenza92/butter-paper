@@ -1,0 +1,58 @@
+name: Prepare Butter Paper Download Page Publication
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: download-page
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Butter Paper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prepare public site artefact
+        run: |
+          mkdir -p _site/assets/icons/beta
+          cp docs/index.html _site/index.html
+          cp apps/desktop/assets/icon.png _site/assets/icons/icon.png
+          cp apps/desktop/assets/beta/icon.png _site/assets/icons/beta/icon.png
+          touch _site/.nojekyll
+
+      - name: Seal Pages publication bundle
+        run: |
+          set -euo pipefail
+          mkdir -p publication/butter-paper
+          cp -R _site/. publication/butter-paper/
+          touch publication/.nojekyll
+          (
+            cd publication
+            {
+              printf '.nojekyll\0'
+              find butter-paper -type f -print0 | LC_ALL=C sort -z
+            } |
+              xargs -0 sha256sum > SHA256SUMS
+          )
+          printf '%s\n' \
+            "Butter Paper download-page publication bundle" \
+            "source-commit=${{ github.sha }}" \
+            "destination=apotenza92/apotenza92.github.io:butter-paper/" \
+            "Apply these exact reviewed bytes manually." \
+            > publication/PUBLICATION.txt
+
+      - name: Upload Pages publication bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: butter-paper-pages-publication-${{ github.sha }}
+          path: publication
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 14
