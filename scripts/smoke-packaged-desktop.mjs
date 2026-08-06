@@ -84,7 +84,14 @@ async function verifyCustomIcons(page) {
     const icon = page.getByTestId(testId);
     await icon.waitFor({ state: 'visible' });
     const bounds = await icon.boundingBox();
-    assert(bounds && bounds.width >= 17.5 && bounds.height >= 17.5, `${testId} did not render at its reviewed size`);
+    assert(
+      bounds
+        && bounds.width >= 15.5
+        && bounds.width <= 16.5
+        && bounds.height >= 15.5
+        && bounds.height <= 16.5,
+      `${testId} did not render at its reviewed size`,
+    );
     assert(await icon.locator('svg').count() === 0, `${testId} unexpectedly fell back to a library SVG`);
   }
 }
