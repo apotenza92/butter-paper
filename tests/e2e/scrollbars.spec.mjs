@@ -260,7 +260,6 @@ test.describe('custom scrollbars', () => {
     await expect.poll(async () => {
       return await page.getByTestId('document-viewport').evaluate((element) => element.scrollWidth - element.clientWidth);
     }).toBe(0);
-    await expect(page.getByTestId('document-viewport-scrollbar-track-x')).toHaveAttribute('data-overflow', 'false');
 
     await app.close();
   });

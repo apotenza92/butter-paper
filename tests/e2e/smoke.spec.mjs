@@ -356,16 +356,11 @@ test.describe('Butter Paper electron workflows', () => {
     const initialMarkupCount = initialDiagnostics?.markupCount ?? 0;
     const annotationLayer = page.getByTestId('annotation-layer-1');
     await expect(annotationLayer).toBeVisible();
-    const pageCanvasBox = await annotationLayer.boundingBox();
-    expect(pageCanvasBox).not.toBeNull();
 
     await page.getByTestId('tool-rectangle').click();
     await expect.poll(async () => (await getDiagnostics(page))?.activeTool).toBe('rectangle');
-    const documentViewportBox = await page.locator('[data-testid="document-viewport"]').boundingBox();
-    expect(documentViewportBox).not.toBeNull();
-    const startY = Math.max(pageCanvasBox.y + 90, documentViewportBox.y + 90);
-    await page.mouse.click(pageCanvasBox.x + 80, startY);
-    await page.mouse.click(pageCanvasBox.x + 220, startY + 80);
+    await annotationLayer.click({ position: { x: 80, y: 90 } });
+    await annotationLayer.click({ position: { x: 220, y: 170 } });
     await waitForMarkupDiagnostics(page, { markupCount: initialMarkupCount + 1 });
 
     const thumbnailMarkupRect = page.locator('[data-testid="thumbnail-annotation-layer-1"] [data-testid^="thumbnail-markup-"] rect').first();

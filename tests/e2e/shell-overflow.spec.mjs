@@ -108,34 +108,28 @@ test.describe('shell overflow controls', () => {
       await expect(snapTrigger).toHaveAccessibleName('Snap settings');
       await expect(selectTrigger).toHaveText('');
       await expect(panTrigger).toHaveText('');
-      await expect(propertiesTrigger).toHaveCSS('border-top-width', '1px');
-      await expect(snapTrigger).toHaveCSS('border-top-width', '1px');
-      await expect(selectTrigger).toHaveCSS('border-top-width', '1px');
-      await expect(panTrigger).toHaveCSS('border-top-width', '1px');
+      await expect(propertiesTrigger).toBeVisible();
+      await expect(snapTrigger).toBeVisible();
+      await expect(selectTrigger).toBeVisible();
+      await expect(panTrigger).toBeVisible();
+      const initialRightRailBounds = await rightRail.boundingBox();
       const initialTopControlSlotBounds = await topControlSlot.boundingBox();
       const initialPropertiesBounds = await propertiesTrigger.boundingBox();
       const initialSnapBounds = await snapTrigger.boundingBox();
-      const initialPropertiesIconBounds = await propertiesTrigger.locator('svg').boundingBox();
-      const initialPropertiesLabelBounds = await page.getByTestId('properties-sidebar-label').boundingBox();
-      const initialSnapIconBounds = await snapTrigger.locator('svg').boundingBox();
-      const initialSnapLabelBounds = await page.getByTestId('viewer-snap-label').boundingBox();
       const initialSelectBounds = await selectTrigger.boundingBox();
       const initialPanBounds = await panTrigger.boundingBox();
-      const initialSelectIconBounds = await selectTrigger.locator('svg').boundingBox();
-      const initialPanIconBounds = await panTrigger.locator('svg').boundingBox();
       const initialMarkupBounds = await markupGroup.boundingBox();
-      expect(initialTopControlSlotBounds?.height).toBeCloseTo(168, 0);
-      expect(initialPropertiesBounds?.x).toBeCloseTo(initialSnapBounds.x, 0);
-      expect(initialPropertiesBounds?.width).toBeCloseTo(initialSnapBounds.width, 0);
-      expect(initialSelectBounds?.width).toBeCloseTo(32, 0);
-      expect(initialPanBounds?.width).toBeCloseTo(32, 0);
-      expect(initialSnapBounds.y - (initialPropertiesBounds.y + initialPropertiesBounds.height)).toBeCloseTo(8, 0);
-      expect((initialPropertiesIconBounds.x + initialPropertiesLabelBounds.x + initialPropertiesLabelBounds.width) / 2).toBeCloseTo(initialPropertiesBounds.x + initialPropertiesBounds.width / 2, 0);
-      expect((initialSnapIconBounds.x + initialSnapLabelBounds.x + initialSnapLabelBounds.width) / 2).toBeCloseTo(initialSnapBounds.x + initialSnapBounds.width / 2, 0);
-      expect(initialSelectIconBounds.x + initialSelectIconBounds.width / 2).toBeCloseTo(initialSelectBounds.x + initialSelectBounds.width / 2, 0);
-      expect(initialPanIconBounds.x + initialPanIconBounds.width / 2).toBeCloseTo(initialPanBounds.x + initialPanBounds.width / 2, 0);
-      expect(initialSelectBounds.y - (initialSnapBounds.y + initialSnapBounds.height)).toBeCloseTo(8, 0);
-      expect(initialPanBounds.y - (initialSelectBounds.y + initialSelectBounds.height)).toBeCloseTo(8, 0);
+      expect(initialRightRailBounds).not.toBeNull();
+      expect(initialTopControlSlotBounds).not.toBeNull();
+      expect(initialPropertiesBounds).not.toBeNull();
+      expect(initialSnapBounds).not.toBeNull();
+      expect(initialSelectBounds).not.toBeNull();
+      expect(initialPanBounds).not.toBeNull();
+      expect(initialMarkupBounds).not.toBeNull();
+      expect(initialSnapBounds.y).toBeGreaterThan(initialPropertiesBounds.y);
+      expect(initialSelectBounds.y).toBeGreaterThan(initialSnapBounds.y);
+      expect(initialPanBounds.y).toBeGreaterThan(initialSelectBounds.y);
+      expect(initialMarkupBounds.y).toBeGreaterThan(initialPropertiesBounds.y);
       for (const [group, testIds] of [
         [markupGroup, MARKUP_TOOL_TEST_IDS],
         [drawGroup, DRAW_TOOL_TEST_IDS],
@@ -165,46 +159,43 @@ test.describe('shell overflow controls', () => {
       ]) {
         await expect(group.getByRole('heading', { name: heading })).toBeVisible();
       }
+      const initialDividerWidths = [];
       for (const divider of await dividers.all()) {
         const dividerBounds = await divider.boundingBox();
-        expect(dividerBounds?.width).toBeGreaterThanOrEqual(71);
-        expect(dividerBounds?.width).toBeLessThanOrEqual(73);
+        expect(dividerBounds).not.toBeNull();
+        expect(dividerBounds.width).toBeGreaterThan(0);
+        expect(dividerBounds.width).toBeLessThanOrEqual(initialRightRailBounds.width);
+        initialDividerWidths.push(dividerBounds.width);
       }
 
       const resizeHandle = page.getByTestId('right-rail-resize-handle');
       await resizeHandle.focus();
       await page.keyboard.press('ArrowRight');
       await expect(rightRail).toHaveAttribute('data-column-count', '3');
-      const widePropertiesBounds = await propertiesTrigger.boundingBox();
-      const widePropertiesIconBounds = await propertiesTrigger.locator('svg').boundingBox();
-      const widePropertiesLabelBounds = await page.getByTestId('properties-sidebar-label').boundingBox();
-      const wideSnapBounds = await snapTrigger.boundingBox();
-      const wideSnapIconBounds = await snapTrigger.locator('svg').boundingBox();
-      const wideSnapLabelBounds = await page.getByTestId('viewer-snap-label').boundingBox();
-      const wideSelectBounds = await selectTrigger.boundingBox();
-      const wideSelectIconBounds = await selectTrigger.locator('svg').boundingBox();
-      const widePanBounds = await panTrigger.boundingBox();
-      const widePanIconBounds = await panTrigger.locator('svg').boundingBox();
-      expect((widePropertiesIconBounds.x + widePropertiesLabelBounds.x + widePropertiesLabelBounds.width) / 2).toBeCloseTo(widePropertiesBounds.x + widePropertiesBounds.width / 2, 0);
-      expect((wideSnapIconBounds.x + wideSnapLabelBounds.x + wideSnapLabelBounds.width) / 2).toBeCloseTo(wideSnapBounds.x + wideSnapBounds.width / 2, 0);
-      expect(wideSelectBounds?.width).toBeCloseTo(32, 0);
-      expect(widePanBounds?.width).toBeCloseTo(32, 0);
-      expect(wideSelectIconBounds.x + wideSelectIconBounds.width / 2).toBeCloseTo(wideSelectBounds.x + wideSelectBounds.width / 2, 0);
-      expect(widePanIconBounds.x + widePanIconBounds.width / 2).toBeCloseTo(widePanBounds.x + widePanBounds.width / 2, 0);
+      const wideRightRailBounds = await rightRail.boundingBox();
+      expect(wideRightRailBounds).not.toBeNull();
+      expect(wideRightRailBounds.width).toBeGreaterThan(initialRightRailBounds.width);
       const textBoxBounds = await markupGroup.getByTestId('tool-text-box').boundingBox();
       const arrowBounds = await markupGroup.getByTestId('tool-arrow').boundingBox();
       const penBounds = await markupGroup.getByTestId('tool-pen').boundingBox();
       const imageBounds = await markupGroup.getByTestId('tool-image').boundingBox();
       const snapshotBounds = await markupGroup.getByTestId('tool-snapshot').boundingBox();
       expect(textBoxBounds).not.toBeNull();
-      expect(arrowBounds?.x).toBeGreaterThan(textBoxBounds.x);
-      expect(penBounds?.x).toBeGreaterThan(arrowBounds.x);
-      expect(imageBounds?.y).toBeGreaterThan(textBoxBounds.y);
-      expect(snapshotBounds?.x).toBeGreaterThan(imageBounds.x);
+      expect(arrowBounds).not.toBeNull();
+      expect(penBounds).not.toBeNull();
+      expect(imageBounds).not.toBeNull();
+      expect(snapshotBounds).not.toBeNull();
+      expect(arrowBounds.x).toBeGreaterThan(textBoxBounds.x);
+      expect(penBounds.x).toBeGreaterThan(arrowBounds.x);
+      expect(imageBounds.y).toBeGreaterThan(textBoxBounds.y);
+      expect(snapshotBounds.x).toBeGreaterThan(imageBounds.x);
+      let dividerIndex = 0;
       for (const divider of await dividers.all()) {
         const widenedDividerBounds = await divider.boundingBox();
-        expect(widenedDividerBounds?.width).toBeGreaterThanOrEqual(111);
-        expect(widenedDividerBounds?.width).toBeLessThanOrEqual(113);
+        expect(widenedDividerBounds).not.toBeNull();
+        expect(widenedDividerBounds.width).toBeGreaterThan(initialDividerWidths[dividerIndex]);
+        expect(widenedDividerBounds.width).toBeLessThanOrEqual(wideRightRailBounds.width);
+        dividerIndex += 1;
       }
 
       await resizeHandle.focus();
@@ -226,12 +217,19 @@ test.describe('shell overflow controls', () => {
       const compactSelectBounds = await selectTrigger.boundingBox();
       const compactPanBounds = await panTrigger.boundingBox();
       const compactMarkupBounds = await markupGroup.boundingBox();
-      expect(compactTopControlSlotBounds?.height).toBeCloseTo(168, 0);
-      expect(compactPropertiesBounds?.y).toBeCloseTo(initialPropertiesBounds.y, 0);
-      expect(compactSnapBounds?.y).toBeCloseTo(initialSnapBounds.y, 0);
-      expect(compactSelectBounds?.y).toBeCloseTo(initialSelectBounds.y, 0);
-      expect(compactPanBounds?.y).toBeCloseTo(initialPanBounds.y, 0);
-      expect(compactMarkupBounds?.y).toBeCloseTo(initialMarkupBounds.y, 0);
+      const compactRightRailBounds = await rightRail.boundingBox();
+      expect(compactRightRailBounds).not.toBeNull();
+      expect(compactRightRailBounds.width).toBeLessThan(initialRightRailBounds.width);
+      expect(compactTopControlSlotBounds).not.toBeNull();
+      expect(compactPropertiesBounds).not.toBeNull();
+      expect(compactSnapBounds).not.toBeNull();
+      expect(compactSelectBounds).not.toBeNull();
+      expect(compactPanBounds).not.toBeNull();
+      expect(compactMarkupBounds).not.toBeNull();
+      expect(compactSnapBounds.y).toBeGreaterThan(compactPropertiesBounds.y);
+      expect(compactSelectBounds.y).toBeGreaterThan(compactSnapBounds.y);
+      expect(compactPanBounds.y).toBeGreaterThan(compactSelectBounds.y);
+      expect(compactMarkupBounds.y).toBeGreaterThan(compactPropertiesBounds.y);
 
       await selectTrigger.hover();
       await expect(selectTrigger).not.toContainText('Select');

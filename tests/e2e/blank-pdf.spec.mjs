@@ -137,12 +137,14 @@ test.describe('New blank PDF', () => {
     const temporarySourcePath = (await getDiagnostics(page))?.documentPath;
     expect(temporarySourcePath && existsSync(temporarySourcePath)).toBe(true);
     await page.getByRole('button', { name: 'Close Untitled.pdf' }).click();
-    await expect(page.getByTestId('unsaved-changes-dialog')).toBeVisible();
-    await page.getByRole('button', { name: 'Cancel' }).click();
-    await expect(page.getByRole('tab', { name: /Untitled\.pdf/ })).toBeVisible();
+    const unsavedDialog = page.getByTestId('unsaved-changes-dialog');
+    await expect(unsavedDialog).toBeVisible();
+    await unsavedDialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(unsavedDialog).toHaveCount(0);
+    await expect(page.getByTestId('document-tab-0')).toBeVisible();
     await page.getByRole('button', { name: 'Close Untitled.pdf' }).click();
-    await page.getByTestId('unsaved-discard').click();
-    await expect(page.getByRole('tab', { name: /Untitled\.pdf/ })).toHaveCount(0);
+    await unsavedDialog.getByTestId('unsaved-discard').click();
+    await expect(page.getByTestId('document-tab-0')).toHaveCount(0);
     expect(existsSync(temporarySourcePath)).toBe(false);
 
     await app.close();
@@ -202,12 +204,10 @@ test.describe('New blank PDF', () => {
       await expect.poll(async () => (await getDiagnostics(page))?.pageCount).toBe(1);
       const layer = page.getByTestId('annotation-layer-1');
       await expect(layer).toBeVisible();
-      const layerBounds = await layer.boundingBox();
-      expect(layerBounds).not.toBeNull();
       await page.getByTestId('tool-rectangle').click();
       await expect.poll(async () => (await getDiagnostics(page))?.activeTool).toBe('rectangle');
-      await page.mouse.click(layerBounds.x + 50, layerBounds.y + 60);
-      await page.mouse.click(layerBounds.x + 160, layerBounds.y + 130);
+      await layer.click({ position: { x: 50, y: 60 } });
+      await layer.click({ position: { x: 160, y: 130 } });
       await expect.poll(async () => (await getDiagnostics(page))?.markupCount).toBe(1);
 
       const temporarySourcePath = (await getDiagnostics(page))?.documentPath;

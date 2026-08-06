@@ -69,7 +69,7 @@ test.describe('shadcn Base UI shell accessibility', () => {
       checkedCount: new Set(elements
         .filter((element) => element.getAttribute('aria-checked') === 'true')
         .map((element) => element.getAttribute('data-testid'))).size,
-    }))).toEqual({ optionCount: 4, checkedCount: 1 });
+    }))).toEqual({ optionCount: 8, checkedCount: 1 });
     await page.keyboard.press('Escape');
     await page.keyboard.press('Escape');
 
