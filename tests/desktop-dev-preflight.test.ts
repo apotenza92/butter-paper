@@ -66,7 +66,12 @@ describe('desktop development preflight', () => {
   it('keeps checkout-specific development provenance outside packaged app inputs', () => {
     const preflight = readFileSync('scripts/prepare-desktop-dev.mjs', 'utf8');
     const builderConfig = readFileSync('apps/desktop/electron-builder.config.cjs', 'utf8');
+    const electronE2eSetup = readFileSync('tests/e2e/global-setup.mjs', 'utf8');
+    const electronE2eHelper = readFileSync('tests/e2e/helpers/electron.mjs', 'utf8');
     expect(preflight).toContain("'test-results/desktop-dev-provenance.json'");
     expect(builderConfig).not.toContain('desktop-dev-provenance.json');
+    expect(electronE2eSetup).toContain("'predev:desktop'");
+    expect(electronE2eSetup).toContain('test-results/desktop-dev-provenance.json');
+    expect(electronE2eHelper).toContain("app.once('close'");
   });
 });

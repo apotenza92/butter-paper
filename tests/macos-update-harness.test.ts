@@ -44,6 +44,11 @@ describe('macOS updater integration harness', () => {
     );
     expect(deterministicJob).not.toContain('playwright');
     expect(deterministicJob).not.toContain('test:package:desktop');
+    const manualElectronJob = workflow.slice(
+      workflow.indexOf('  manual-gui-e2e:'),
+      workflow.indexOf('\n  manual-package-smoke:'),
+    );
+    expect(manualElectronJob).toContain('fetch-depth: 0');
     const productionSigningAuditJob = workflow.slice(
       workflow.indexOf('  manual-production-tuf-signing-audit:'),
       workflow.indexOf('\n  manual-nonmac-updater-audit:'),

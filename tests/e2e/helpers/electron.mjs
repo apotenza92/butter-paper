@@ -92,7 +92,14 @@ export async function getDiagnostics(page) {
 }
 
 export async function firstWindow(app) {
-  const page = app.windows()[0] ?? await app.firstWindow({ timeout: 60_000 });
+  const page = app.windows()[0] ?? await Promise.race([
+    app.firstWindow({ timeout: 60_000 }),
+    new Promise((_, reject) => {
+      app.once('close', () => reject(new Error(
+        'Butter Paper exited before creating its first window. Check main-process startup diagnostics.',
+      )));
+    }),
+  ]);
   const browserWindow = await app.browserWindow(page);
   await browserWindow.evaluate((window) => window.webContents.setZoomFactor(1));
   await page.waitForLoadState('domcontentloaded');
