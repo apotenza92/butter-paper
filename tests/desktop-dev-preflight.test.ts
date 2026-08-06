@@ -79,6 +79,7 @@ describe('desktop development preflight', () => {
     expect(electronE2eHelper).toContain('Main-process output:');
     expect(electronStartupProbe).toContain('Electron startup provenance mismatch');
     expect(workflow).toContain('Manual Electron startup probe');
+    expect(workflow.match(/runs-on: macos-26/g)?.length).toBeGreaterThanOrEqual(2);
     expect(workflow).toContain('pnpm test:e2e --shard=${{ matrix.shard }}');
   });
 });
