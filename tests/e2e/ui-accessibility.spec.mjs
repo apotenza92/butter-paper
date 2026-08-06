@@ -97,7 +97,7 @@ test.describe('shadcn Base UI shell accessibility', () => {
     const viewerToolbar = documentPage.getByTestId('viewer-toolbar');
     await expect(viewerToolbar.locator('[data-slot="separator"]')).toHaveCount(0);
     for (const groupName of ['Zoom controls', 'Fit controls', 'Page view controls']) {
-      await expect(viewerToolbar.getByRole('group', { name: groupName })).toBeVisible();
+      await expect(viewerToolbar.getByRole('group', { name: groupName, exact: true })).toBeVisible();
     }
     await openFixturePdf(app, 'single-page');
     const tablist = documentPage.getByRole('tablist', { name: 'Open documents' });

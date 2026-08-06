@@ -136,12 +136,14 @@ test.describe('New blank PDF', () => {
 
     const temporarySourcePath = (await getDiagnostics(page))?.documentPath;
     expect(temporarySourcePath && existsSync(temporarySourcePath)).toBe(true);
+    await page.getByTestId('document-tab-0').hover();
     await page.getByRole('button', { name: 'Close Untitled.pdf' }).click();
     const unsavedDialog = page.getByTestId('unsaved-changes-dialog');
     await expect(unsavedDialog).toBeVisible();
     await unsavedDialog.getByRole('button', { name: 'Cancel' }).click();
     await expect(unsavedDialog).toHaveCount(0);
     await expect(page.getByTestId('document-tab-0')).toBeVisible();
+    await page.getByTestId('document-tab-0').hover();
     await page.getByRole('button', { name: 'Close Untitled.pdf' }).click();
     await unsavedDialog.getByTestId('unsaved-discard').click();
     await expect(page.getByTestId('document-tab-0')).toHaveCount(0);
@@ -194,6 +196,7 @@ test.describe('New blank PDF', () => {
     test.skip(!resolveDesktopEntryPoint(), 'Desktop app entrypoint not available yet');
     const app = await launchButterPaper({ theme: 'light' });
     if (!app) test.skip(true, 'Desktop app could not be launched');
+    const childProcess = app.process();
     const page = await firstWindow(app);
     const outputDirectory = await mkdtemp(join(tmpdir(), 'butter-paper-blank-annotation-e2e-'));
 
@@ -245,7 +248,7 @@ test.describe('New blank PDF', () => {
       await page.getByTestId('unsaved-discard').click();
       await closed;
     } finally {
-      if (app.process().exitCode === null) app.process().kill();
+      if (childProcess.exitCode === null) childProcess.kill();
       await rm(outputDirectory, { recursive: true, force: true });
     }
   });

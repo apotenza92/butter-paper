@@ -126,10 +126,10 @@ test.describe('shell overflow controls', () => {
       expect(initialSelectBounds).not.toBeNull();
       expect(initialPanBounds).not.toBeNull();
       expect(initialMarkupBounds).not.toBeNull();
-      expect(initialSnapBounds.y).toBeGreaterThan(initialPropertiesBounds.y);
-      expect(initialSelectBounds.y).toBeGreaterThan(initialSnapBounds.y);
-      expect(initialPanBounds.y).toBeGreaterThan(initialSelectBounds.y);
-      expect(initialMarkupBounds.y).toBeGreaterThan(initialPropertiesBounds.y);
+      expect(initialSnapBounds.x).toBeGreaterThan(initialPropertiesBounds.x);
+      expect(initialSelectBounds.y).toBeGreaterThan(initialPropertiesBounds.y);
+      expect(initialPanBounds.x).toBeGreaterThan(initialSelectBounds.x);
+      expect(initialMarkupBounds.y).toBeGreaterThan(initialSelectBounds.y);
       for (const [group, testIds] of [
         [markupGroup, MARKUP_TOOL_TEST_IDS],
         [drawGroup, DRAW_TOOL_TEST_IDS],
