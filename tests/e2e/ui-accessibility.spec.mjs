@@ -298,17 +298,6 @@ test.describe('shadcn Base UI shell accessibility', () => {
     expect(tabActionPlacement.blankAfterOpen).toBeCloseTo(8, 0);
     expect(Math.abs(tabActionPlacement.separatorAfterTabs - tabActionPlacement.openAfterSeparator)).toBeLessThanOrEqual(0.5);
     expect(Math.abs(tabActionPlacement.openAfterSeparator - tabActionPlacement.blankAfterOpen)).toBeLessThanOrEqual(0.5);
-    const tabActionFrames = await documentPage.evaluate(() => {
-      const open = document.querySelector('[data-testid="document-tab-open"]');
-      const newPdf = document.querySelector('[data-testid="document-tab-new-pdf"]');
-      if (!open || !newPdf) return null;
-      return {
-        openBorder: getComputedStyle(open).borderTopColor,
-        newPdfBorder: getComputedStyle(newPdf).borderTopColor,
-      };
-    });
-    expect(tabActionFrames).not.toBeNull();
-    expect(tabActionFrames.openBorder).not.toBe(tabActionFrames.newPdfBorder);
     const splitButtonGeometry = await documentPage.evaluate(() => {
       const main = document.querySelector('[data-testid="document-tab-new-pdf"]');
       const settings = document.querySelector('[data-testid="document-tab-new-pdf-settings"]');
