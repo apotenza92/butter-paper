@@ -109,19 +109,20 @@ async function verifyPdfWorkflow(page, outputDirectory) {
   if (!(await annotationLayer.isVisible().catch(() => false))) {
     if (process.platform !== 'win32') {
       await annotationLayer.waitFor({ state: 'visible', timeout: 60_000 });
+    } else {
+      await readOnlyAnnotationLayer.waitFor({ state: 'visible', timeout: 60_000 });
+      const statusBanner = page.getByTestId('signature-status-banner');
+      await statusBanner.waitFor({ state: 'visible', timeout: 30_000 });
+      assert(
+        (await statusBanner.textContent())?.includes('read-only') === true,
+        'Packaged PDF validation did not expose the required read-only safety state',
+      );
+      assert(
+        await page.getByTestId('tool-rectangle').isDisabled(),
+        'Packaged PDF controls remained enabled while signature validation was unavailable',
+      );
+      return 'read-only';
     }
-    await readOnlyAnnotationLayer.waitFor({ state: 'visible', timeout: 60_000 });
-    const statusBanner = page.getByTestId('signature-status-banner');
-    await statusBanner.waitFor({ state: 'visible', timeout: 30_000 });
-    assert(
-      (await statusBanner.textContent())?.includes('read-only') === true,
-      'Packaged PDF validation did not expose the required read-only safety state',
-    );
-    assert(
-      await page.getByTestId('tool-rectangle').isDisabled(),
-      'Packaged PDF controls remained enabled while signature validation was unavailable',
-    );
-    return 'read-only';
   }
   await annotationLayer.waitFor({ state: 'visible', timeout: 60_000 });
   const layerBounds = await annotationLayer.boundingBox();
