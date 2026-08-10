@@ -1,36 +1,24 @@
-version: 0.0.18
+version: 0.0.19
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.18/Butter-Paper-macOS-arm64.zip
-    sha512: GMMc1J5mpgTJiCR5O/NvBhvf3en2SCvGiO87VXVHe2lWiic7UjXtmxuEKm6KoU4dkE7fznYV5H1JEz0NI4GfRA==
-    size: 126457661
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.18/Butter-Paper-macOS-arm64.dmg
-    sha512: 16iqbI5DW28fJoQr8WdhqaoBOqB+yjNnHhDQZ/2ehaK1eEdT6RZMyzKXrtedPGlxTDAhWwm2Tb7re1gbTW+qnA==
-    size: 120275930
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.18/Butter-Paper-macOS-arm64.zip
-sha512: GMMc1J5mpgTJiCR5O/NvBhvf3en2SCvGiO87VXVHe2lWiic7UjXtmxuEKm6KoU4dkE7fznYV5H1JEz0NI4GfRA==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.19/Butter-Paper-macOS-arm64.zip
+    sha512: sSWlQebDNmvWOsncfcQ5tYIXdB2Uu6/h/blzaZvLoG6Iyhf931s5nI9agT05B+oZ87DtyF+7Wk6YQIJ8tOwGSQ==
+    size: 128635738
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.19/Butter-Paper-macOS-arm64.dmg
+    sha512: FfEzfxAFjY0RCs4xOQrMHpXyyFvtoCbUEDCz3WPlcbKO1T4DarOScDZAizd2dXVHJuHlqVgVCZ5Hnte2LN7osA==
+    size: 123285117
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.19/Butter-Paper-macOS-arm64.zip
+sha512: sSWlQebDNmvWOsncfcQ5tYIXdB2Uu6/h/blzaZvLoG6Iyhf931s5nI9agT05B+oZ87DtyF+7Wk6YQIJ8tOwGSQ==
 releaseNotes: |-
-  - Redesigned the PDF workspace with clearer toolbar and rail organisation,
-    resizable property panels, concise control hints, constrained menus, and
-    consistent Base UI Nova controls.
-  - Expanded annotation workflows with improved snapping and visible snap
-    markers, richer property controls, context menus, page rotation, refined
-    selection and markup geometry, and stronger Cloud, Cloud+, Callout, and
-    measurement behaviour.
-  - Added a complete blank-PDF workflow with reusable page settings and integrated
-    it with document tabs, thumbnails, open, Save As, and normal PDF.js rendering.
-  - Removed the unused native Rust/PDFium renderer so the desktop app has one
-    supported PDF.js rendering path, fewer native build requirements, and no
-    dormant backend selector.
-  - Hardened renderer file access with owner-scoped document and Save As
-    capabilities instead of renderer-supplied privileged paths.
-  - Added development source freshness checks, exact build provenance in the
-    development window title, stale-renderer rejection, and repeatable desktop
-    performance measurements for empty, one-page, and 100-page workloads.
-  - Replaced the stable and beta application icons with refreshed,
-    channel-specific artwork across macOS, Windows, and Linux, and added a public
-    download page with deterministic copy and asset checks.
-  - Expanded deterministic and hosted GUI coverage for the redesigned shell,
-    properties, snapping, context menus, blank PDFs, page layouts, accessibility,
-    constrained windows, and application provenance.
-releaseDate: 2026-08-06T13:27:34.102Z
+  - Made CAD View an explicit opt-in while preserving safe snapshot restoration
+    when the feature is unavailable.
+  - Stabilized toolbar tooltip behaviour across pointer and keyboard interaction,
+    including constrained popover and menu controls.
+  - Replaced the stable and beta icon artwork with the approved textured quill
+    and faceted ink-pot mark, regenerated for macOS, Windows, Linux, and the
+    download page, with dark artwork using the exact light-artwork black-to-white
+    contour swap.
+  - Added deterministic checks for the icon geometry, channel palettes, release
+    asset contract, download-page assets, Homebrew publication, and non-signing
+    release boundary.
+releaseDate: 2026-08-10T04:12:20.425Z
 butterPaperChannel: stable

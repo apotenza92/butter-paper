@@ -1,40 +1,28 @@
-version: 0.0.18
+version: 0.0.19
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.18/Butter-Paper-Beta-Linux-arm64.AppImage
-    sha512: A2UnHyPuNpkB9Imaq7hmc7Pt479isbZpc6qsvajNkdXL9hNiR1aa+xmOlHoqbiygtk2SS9z11s3JWzLPDJhyfg==
-    size: 101163510
-    blockMapSize: 105794
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.18/Butter-Paper-Beta-Linux-arm64.deb
-    sha512: zaYVpwKANpOjOFyYhEopes+n55O3W0ucyLcPFFs8hmofu8/E56A+POOmn+uQg6pWp01z1RZGVRTsMFzJ6eAy9Q==
-    size: 100446892
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.18/Butter-Paper-Beta-Linux-arm64.rpm
-    sha512: SBE2k1zZ3Fva3BG5yVQKMwok1Mk3A8ka8ljZPSaRQUbvFD5ji5hoRAsM2+I5QeWm/Ydtc1KG1nf7P9iCLg4V2w==
-    size: 87394649
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.18/Butter-Paper-Beta-Linux-arm64.AppImage
-sha512: A2UnHyPuNpkB9Imaq7hmc7Pt479isbZpc6qsvajNkdXL9hNiR1aa+xmOlHoqbiygtk2SS9z11s3JWzLPDJhyfg==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.19/Butter-Paper-Beta-Linux-arm64.AppImage
+    sha512: ACpduk///N4eftwoEoJ4SU0rwcHYKGCdljL7viJUaIFoTuBnsSbJV+BxBUD3Ww0FK43SLW1hctesd16vUOOtNg==
+    size: 101667818
+    blockMapSize: 106294
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.19/Butter-Paper-Beta-Linux-arm64.deb
+    sha512: dQ9HCqPBmxJo6jtezLO833G64qjKsCqU/OBKn8bXmNytuM9mbdb8NomRBQrqaJoDGR1xu4DM67eCm2sFEUO83g==
+    size: 100948712
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.19/Butter-Paper-Beta-Linux-arm64.rpm
+    sha512: B0X0BM/eDpD95v9M36ibqCadkin3psg+srU2LqORfEkXkdUrVm8v1pF9JoS4mcDMeT80FuZRs97tk92LWxomOw==
+    size: 87899901
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.19/Butter-Paper-Beta-Linux-arm64.AppImage
+sha512: ACpduk///N4eftwoEoJ4SU0rwcHYKGCdljL7viJUaIFoTuBnsSbJV+BxBUD3Ww0FK43SLW1hctesd16vUOOtNg==
 releaseNotes: |-
-  - Redesigned the PDF workspace with clearer toolbar and rail organisation,
-    resizable property panels, concise control hints, constrained menus, and
-    consistent Base UI Nova controls.
-  - Expanded annotation workflows with improved snapping and visible snap
-    markers, richer property controls, context menus, page rotation, refined
-    selection and markup geometry, and stronger Cloud, Cloud+, Callout, and
-    measurement behaviour.
-  - Added a complete blank-PDF workflow with reusable page settings and integrated
-    it with document tabs, thumbnails, open, Save As, and normal PDF.js rendering.
-  - Removed the unused native Rust/PDFium renderer so the desktop app has one
-    supported PDF.js rendering path, fewer native build requirements, and no
-    dormant backend selector.
-  - Hardened renderer file access with owner-scoped document and Save As
-    capabilities instead of renderer-supplied privileged paths.
-  - Added development source freshness checks, exact build provenance in the
-    development window title, stale-renderer rejection, and repeatable desktop
-    performance measurements for empty, one-page, and 100-page workloads.
-  - Replaced the stable and beta application icons with refreshed,
-    channel-specific artwork across macOS, Windows, and Linux, and added a public
-    download page with deterministic copy and asset checks.
-  - Expanded deterministic and hosted GUI coverage for the redesigned shell,
-    properties, snapping, context menus, blank PDFs, page layouts, accessibility,
-    constrained windows, and application provenance.
-releaseDate: 2026-08-06T13:21:45.022Z
+  - Made CAD View an explicit opt-in while preserving safe snapshot restoration
+    when the feature is unavailable.
+  - Stabilized toolbar tooltip behaviour across pointer and keyboard interaction,
+    including constrained popover and menu controls.
+  - Replaced the stable and beta icon artwork with the approved textured quill
+    and faceted ink-pot mark, regenerated for macOS, Windows, Linux, and the
+    download page, with dark artwork using the exact light-artwork black-to-white
+    contour swap.
+  - Added deterministic checks for the icon geometry, channel palettes, release
+    asset contract, download-page assets, Homebrew publication, and non-signing
+    release boundary.
+releaseDate: 2026-08-10T04:10:31.069Z
 butterPaperChannel: beta
