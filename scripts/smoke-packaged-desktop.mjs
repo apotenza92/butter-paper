@@ -107,6 +107,9 @@ async function verifyPdfWorkflow(page, outputDirectory) {
   const annotationLayer = page.getByTestId('annotation-layer-1');
   const readOnlyAnnotationLayer = page.getByTestId('read-only-annotation-layer-1');
   if (!(await annotationLayer.isVisible().catch(() => false))) {
+    if (process.platform !== 'win32') {
+      await annotationLayer.waitFor({ state: 'visible', timeout: 60_000 });
+    }
     await readOnlyAnnotationLayer.waitFor({ state: 'visible', timeout: 60_000 });
     const statusBanner = page.getByTestId('signature-status-banner');
     await statusBanner.waitFor({ state: 'visible', timeout: 30_000 });
