@@ -114,6 +114,12 @@ jobs:
           node-version: 24.16.0
           cache: pnpm
 
+      - name: Setup Java
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '21'
+
       - name: Verify native runner
         shell: bash
         run: |
@@ -132,7 +138,7 @@ jobs:
         env:
           BP_RELEASE_PLATFORM: darwin
           BP_RELEASE_ARCH: ${{ matrix.arch }}
-        run: pnpm build:signature-core -- --platform "$BP_RELEASE_PLATFORM" --arch "$BP_RELEASE_ARCH"
+        run: node scripts/build-pdf-signature-core.mjs --platform "$BP_RELEASE_PLATFORM" --arch "$BP_RELEASE_ARCH"
 
       - name: Build desktop application without release credentials
         run: pnpm build:desktop
@@ -222,6 +228,12 @@ jobs:
           node-version: 24.16.0
           cache: pnpm
 
+      - name: Setup Java
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '21'
+
       - name: Verify native runner
         shell: bash
         run: test "$(node -p 'process.arch')" = "${{ matrix.arch }}"
@@ -236,7 +248,7 @@ jobs:
         env:
           BP_RELEASE_PLATFORM: win32
           BP_RELEASE_ARCH: ${{ matrix.arch }}
-        run: pnpm build:signature-core -- --platform "$BP_RELEASE_PLATFORM" --arch "$BP_RELEASE_ARCH"
+        run: node scripts/build-pdf-signature-core.mjs --platform "$BP_RELEASE_PLATFORM" --arch "$BP_RELEASE_ARCH"
 
       - name: Build desktop application
         run: pnpm build:desktop
@@ -323,6 +335,12 @@ jobs:
           node-version: 24.16.0
           cache: pnpm
 
+      - name: Setup Java
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '21'
+
       - name: Verify native runner
         shell: bash
         run: test "$(node -p 'process.arch')" = "${{ matrix.arch }}"
@@ -363,7 +381,7 @@ jobs:
         env:
           BP_RELEASE_PLATFORM: linux
           BP_RELEASE_ARCH: ${{ matrix.arch }}
-        run: pnpm build:signature-core -- --platform "$BP_RELEASE_PLATFORM" --arch "$BP_RELEASE_ARCH"
+        run: node scripts/build-pdf-signature-core.mjs --platform "$BP_RELEASE_PLATFORM" --arch "$BP_RELEASE_ARCH"
 
       - name: Build desktop application
         run: pnpm build:desktop

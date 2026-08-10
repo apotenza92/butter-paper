@@ -73,6 +73,12 @@ jobs:
           node-version: 24.16.0
           cache: pnpm
 
+      - name: Setup Java
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '21'
+
       - name: Require the matching native runner
         shell: bash
         run: |
@@ -97,7 +103,7 @@ jobs:
           set -euo pipefail
           pnpm install --frozen-lockfile
           pnpm generate:fixtures
-          pnpm build:signature-core -- --platform "$BP_AUDIT_PLATFORM" --arch "$BP_AUDIT_ARCH"
+          node scripts/build-pdf-signature-core.mjs --platform "$BP_AUDIT_PLATFORM" --arch "$BP_AUDIT_ARCH"
           pnpm build:desktop
 
       - name: Create disposable loopback-only TUF trust
