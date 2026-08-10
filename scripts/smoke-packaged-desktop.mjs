@@ -147,7 +147,7 @@ async function verifyPdfWorkflow(page, outputDirectory) {
   await page.locator('[data-testid^="markup-rect-"]').first().waitFor({ state: 'visible' });
 }
 
-async function verifyBlankPdfWorkflow(page, outputDirectory) {
+async function verifyBlankPdfWorkflow(page, outputDirectory, pdfWorkflowMode) {
   await page.getByTestId('document-tab-new-pdf-settings').click();
   await page.getByTestId('new-blank-pdf-settings').waitFor({ state: 'visible' });
   assert(await page.getByTestId('new-blank-pdf-paper-size').inputValue() === 'a3', 'Blank PDF settings did not default to A3');
@@ -156,6 +156,18 @@ async function verifyBlankPdfWorkflow(page, outputDirectory) {
   await page.getByTestId('document-tab-new-pdf').click();
   await waitForDiagnostics(page, { pageCount: 1, documentName: 'Untitled.pdf' });
   await page.waitForFunction(() => window.__butterPaperTestHooks?.getDiagnostics()?.tabs?.at(-1)?.dirty === true);
+
+  if (process.platform === 'win32' && pdfWorkflowMode === 'read-only') {
+    await page.getByTestId('menu-trigger-butter-paper').click();
+    const saveAsMenuItem = page.getByTestId('menu-file-save-as');
+    await saveAsMenuItem.waitFor({ state: 'visible' });
+    assert(
+      await saveAsMenuItem.isDisabled(),
+      'Blank PDF Save As remained enabled while packaged signature validation was unavailable',
+    );
+    await page.keyboard.press('Escape');
+    return 'read-only';
+  }
 
   const savedPdfPath = join(outputDirectory, 'packaged-blank-pdf.pdf');
   console.log(`Packaged blank-PDF save target: ${savedPdfPath}`);
@@ -172,6 +184,7 @@ async function verifyBlankPdfWorkflow(page, outputDirectory) {
     await window.__butterPaperTestHooks?.openDocumentPath(filePath);
   }, { filePath: savedPdfPath });
   await waitForDiagnostics(page, { pageCount: 1, documentName: 'packaged-blank-pdf.pdf' });
+  return 'round-trip';
 }
 
 async function closePackagedApp() {
@@ -259,11 +272,11 @@ try {
   const pdfWorkflowMode = await verifyPdfWorkflow(page, temporaryDirectory);
   console.log(`Packaged smoke phase: PDF workflow complete (${pdfWorkflowMode}).`);
   console.log('Packaged smoke phase: blank-PDF workflow starting.');
-  await verifyBlankPdfWorkflow(page, temporaryDirectory);
-  console.log('Packaged smoke phase: blank-PDF workflow complete.');
+  const blankPdfWorkflowMode = await verifyBlankPdfWorkflow(page, temporaryDirectory, pdfWorkflowMode);
+  console.log(`Packaged smoke phase: blank-PDF workflow complete (${blankPdfWorkflowMode}).`);
   const diagnostics = await getDiagnostics(page);
   console.log(
-    `Packaged ${expectedProductName} smoke test passed: channel identity, ${pdfWorkflowMode === 'read-only' ? 'read-only PDF rendering safety' : 'PDF annotation round-trip'}, blank PDF creation, custom icons, and fit controls (${diagnostics.sessionBackendKind} backend).`,
+    `Packaged ${expectedProductName} smoke test passed: channel identity, ${pdfWorkflowMode === 'read-only' ? 'read-only PDF rendering safety' : 'PDF annotation round-trip'}, ${blankPdfWorkflowMode === 'read-only' ? 'read-only blank PDF safety' : 'blank PDF creation'}, custom icons, and fit controls (${diagnostics.sessionBackendKind} backend).`,
   );
   console.log(`Packaged application close state: ${JSON.stringify({
     dirtyTabs: diagnostics.tabs?.filter((tab) => tab.dirty).map((tab) => tab.fileName) ?? [],
