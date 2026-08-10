@@ -114,7 +114,6 @@ export class BrowserPdfDocumentHandle {
   }
 
   async close(): Promise<void> {
-    await this.document.destroy();
     await this.loadingTask.destroy();
   }
 

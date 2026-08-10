@@ -26,7 +26,7 @@ import {
 } from '../utils/renderZoom';
 import { resolveCadRenderExperimentConfig } from '../utils/cadRenderExperiment';
 import type { PageLayout } from '../utils/virtualisation';
-import { AnnotationLayer } from './AnnotationLayer';
+import { AnnotationLayer, ReadOnlyAnnotationLayer } from './AnnotationLayer';
 import { Spinner } from '@/components/ui/spinner';
 
 interface PageViewProps {
@@ -47,6 +47,7 @@ interface PageViewProps {
   onCalibrationPoint?: (pageIndex: number, point: PdfPoint) => void;
   onSelectPage?: (pageIndex: number) => void;
   onHoverPage?: (pageIndex: number) => void;
+  mutationDisabled?: boolean;
 }
 
 const FULL_QUALITY_DELAY_MS = 360;
@@ -71,6 +72,7 @@ export function PageView({
   onCalibrationPoint,
   onSelectPage,
   onHoverPage,
+  mutationDisabled = false,
 }: PageViewProps) {
   recordComponentRender('PageView', page.index);
   const renderCoordinator = useRenderCoordinator(session);
@@ -1046,29 +1048,39 @@ export function PageView({
           data-render-quality="detail-crop"
         />
       ) : null}
-      <AnnotationLayer
-        page={page}
-        pageScale={pageScale}
-        markups={pageMarkups}
-        transform={transform}
-        pdfContentSnapCandidates={pdfContentSnapCandidates}
-        snapToContent={snapSettings.snapToContent}
-        snapToMarkup={snapSettings.snapToMarkup}
-        snapTolerancePx={snapSettings.sensitivityPx}
-        snapTargets={snapSettings.snapTargets}
-        activeTool={activeTool}
-        selectedMarkupIds={selectedMarkupIds}
-        postPlacement={postPlacement}
-        pendingImageAsset={pendingImageAsset}
-        setSelectedMarkupIds={setSelectedMarkupIds}
-        setPostPlacement={setPostPlacement}
-        consumePendingImageAsset={consumePendingImageAsset}
-        createSnapshotDataUrl={createSnapshotDataUrl}
-        updateDocument={updateDocument}
-        onToolError={setStatusMessage}
-        calibrationPickActive={calibrationPickActive}
-        onCalibrationPoint={onCalibrationPoint}
-      />
+      {mutationDisabled ? (
+        <ReadOnlyAnnotationLayer
+          page={page}
+          pageScale={pageScale}
+          markups={pageMarkups}
+          transform={transform}
+          testId={`read-only-annotation-layer-${page.index + 1}`}
+        />
+      ) : (
+        <AnnotationLayer
+          page={page}
+          pageScale={pageScale}
+          markups={pageMarkups}
+          transform={transform}
+          pdfContentSnapCandidates={pdfContentSnapCandidates}
+          snapToContent={snapSettings.snapToContent}
+          snapToMarkup={snapSettings.snapToMarkup}
+          snapTolerancePx={snapSettings.sensitivityPx}
+          snapTargets={snapSettings.snapTargets}
+          activeTool={activeTool}
+          selectedMarkupIds={selectedMarkupIds}
+          postPlacement={postPlacement}
+          pendingImageAsset={pendingImageAsset}
+          setSelectedMarkupIds={setSelectedMarkupIds}
+          setPostPlacement={setPostPlacement}
+          consumePendingImageAsset={consumePendingImageAsset}
+          createSnapshotDataUrl={createSnapshotDataUrl}
+          updateDocument={updateDocument}
+          onToolError={setStatusMessage}
+          calibrationPickActive={calibrationPickActive}
+          onCalibrationPoint={onCalibrationPoint}
+        />
+      )}
     </div>
   );
 }

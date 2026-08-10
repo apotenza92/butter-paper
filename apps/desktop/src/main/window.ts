@@ -1,5 +1,6 @@
 import electron from 'electron';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { BrowserWindow as BrowserWindowInstance, Event as ElectronEvent, RenderProcessGoneDetails } from 'electron';
@@ -7,6 +8,7 @@ import { ipcChannels } from '../shared/ipc';
 import type {
   ApplicationMetadata,
   BlankPdfCreateRequest,
+  LoadedDocumentSignatureProtection,
   PageGeometryRequest,
   PdfDocumentAccessRequest,
   SaveDocumentRequest,
@@ -20,7 +22,32 @@ import { BlankPdfTemporaryStore } from './blankPdfTemporaryStore';
 import { setAsDefaultPdfApp } from './defaultPdfApp';
 import { takePendingPdfPaths } from './pendingPdfPaths';
 import { desktopPdfAccessRegistry } from './pdfAccessRegistry';
-import { loadDocumentPayload, loadPageGeometryIndex, saveDocumentPayload } from './pdfSession';
+import {
+  loadDocumentPayload,
+  loadPageGeometryIndex,
+  PdfSignedSourcePolicyError,
+  saveDocumentPayload,
+} from './pdfSession';
+import {
+  analyzePdfSignatureDocument,
+  createDefaultPdfSignatureDocumentAnalysisDependencies,
+} from './pdfSignatureDocumentAnalysis';
+import { PdfSignatureCoreSigningClient } from './pdfSignatureCoreSigning';
+import {
+  PdfSigningIdentityRegistry,
+  PdfSigningIdentityRegistryError,
+  type PdfSigningIdentityOwnerLease,
+} from './pdfSigningIdentityRegistry';
+import { PdfSigningQuarantine } from './pdfSigningQuarantine';
+import { executePdfSigningApproval } from './pdfSigningApprovalOrchestrator';
+import { createPdfSignedMutation } from './pdfSignedMutationWorkflow';
+import { SignatureDocumentRegistry } from './signatureDocumentRegistry';
+import {
+  assertSigningApprovalRequest,
+  signingCapabilityDisabledResult,
+  signingIdentitySelectionDisabledResult,
+} from './signingApprovalBoundary';
+import { offlineSignatureTrustConfigurationSha256 } from './signatureTrustPolicy';
 import { createDesktopProcessMetricsSnapshot } from './processMetrics';
 import { getFocusedWindowState, isTestModeEnabled, resolveFixturePath, setFocusedWindowBounds } from './testMode';
 import { DesktopUpdaterService, loadElectronAutoUpdater } from './updater';
@@ -42,6 +69,41 @@ let themeListenerRegistered = false;
 let updaterService: DesktopUpdaterService | null = null;
 let unsubscribeUpdaterStatus: (() => void) | null = null;
 let blankPdfTemporaryStore: BlankPdfTemporaryStore | null = null;
+let signingQuarantine: PdfSigningQuarantine | null = null;
+const signatureDocumentRegistry = new SignatureDocumentRegistry();
+const signatureDocumentHandleByPdfHandle = new Map<string, string>();
+const signatureProtectionByPdfHandle = new Map<string, LoadedDocumentSignatureProtection>();
+const signatureOwnerWebContentsIdByPdfHandle = new Map<string, number>();
+const signingIdentityOwnerLeaseByWebContentsId = new Map<number, PdfSigningIdentityOwnerLease>();
+// The initial release keeps certificate mutation disabled until the commercial,
+// platform, legal, and security gates are independently accepted.
+const PDF_CERTIFICATE_SIGNING_ENABLED = false as const;
+const signingIdentityRegistry = new PdfSigningIdentityRegistry(
+  {
+    pickPkcs12File: async (ownerWindowId) => {
+      const ownerWindow = BrowserWindow.fromId(ownerWindowId);
+      const result = ownerWindow
+        ? await dialog.showOpenDialog(ownerWindow, {
+            title: 'Choose signing identity',
+            properties: ['openFile'],
+            filters: [{ name: 'PKCS#12 identity', extensions: ['p12', 'pfx'] }],
+          })
+        : await dialog.showOpenDialog({
+            title: 'Choose signing identity',
+            properties: ['openFile'],
+            filters: [{ name: 'PKCS#12 identity', extensions: ['p12', 'pfx'] }],
+          });
+      return result.canceled || !result.filePaths[0]
+        ? { canceled: true as const }
+        : { canceled: false as const, filePath: result.filePaths[0] };
+    },
+  },
+  {
+    inspectPkcs12: async (pkcs12Frame, options) => (
+      new PdfSignatureCoreSigningClient(createPdfSignatureCoreOptions()).inspectPkcs12(pkcs12Frame, options)
+    ),
+  },
+);
 let applicationQuitRequested = false;
 const closeBlockedWebContents = new Set<number>();
 const closeConfirmedWebContents = new Set<number>();
@@ -250,6 +312,30 @@ export function createMainWindow(): BrowserWindowInstance {
     console.error('Failed to construct main window', error);
     throw error;
   }
+  const webContentsId = window.webContents.id;
+  const ownerLease = signingIdentityRegistry.registerOwner(window.id);
+  signingIdentityOwnerLeaseByWebContentsId.set(webContentsId, ownerLease);
+  let ownerCapabilitiesCleared = false;
+  const clearOwnerCapabilities = () => {
+    if (ownerCapabilitiesCleared) {
+      return;
+    }
+    ownerCapabilitiesCleared = true;
+    signingIdentityRegistry.revokeWindow(window.id, ownerLease.generation);
+    if (signingIdentityOwnerLeaseByWebContentsId.get(webContentsId) === ownerLease) {
+      signingIdentityOwnerLeaseByWebContentsId.delete(webContentsId);
+    }
+    for (const documentHandle of desktopPdfAccessRegistry.listDocumentHandles(webContentsId)) {
+      forgetSignatureDocument(documentHandle);
+    }
+    for (const [documentHandle, ownerId] of signatureOwnerWebContentsIdByPdfHandle) {
+      if (ownerId === webContentsId) forgetSignatureDocument(documentHandle);
+    }
+    const cleanupPaths = desktopPdfAccessRegistry.clearOwner(webContentsId);
+    for (const cleanupPath of cleanupPaths) {
+      void blankPdfTemporaryStore?.release(cleanupPath).catch(() => undefined);
+    }
+  };
 
   if (!testMode) {
     window.once('ready-to-show', () => {
@@ -281,7 +367,10 @@ export function createMainWindow(): BrowserWindowInstance {
 
   window.webContents.on('render-process-gone', (_event: ElectronEvent, details: RenderProcessGoneDetails) => {
     console.error('Renderer process gone', details);
+    clearOwnerCapabilities();
+    if (!window.isDestroyed()) window.destroy();
   });
+  window.webContents.once('destroyed', clearOwnerCapabilities);
 
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event) => {
@@ -294,7 +383,6 @@ export function createMainWindow(): BrowserWindowInstance {
     void window.loadFile(rendererHtmlPath);
   }
 
-  const webContentsId = window.webContents.id;
   let windowStateSaveTimer: ReturnType<typeof setTimeout> | null = null;
   const saveWindowState = () => {
     if (windowStateSaveTimer != null) {
@@ -342,6 +430,7 @@ export function createMainWindow(): BrowserWindowInstance {
     if (mainWindow === window) {
       mainWindow = null;
     }
+    clearOwnerCapabilities();
   });
 
   mainWindow = window;
@@ -504,7 +593,7 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(ipcChannels.pdfReleaseDocument, async (event, request: PdfDocumentAccessRequest) => {
     assertPdfDocumentAccessRequest(request, []);
-    const temporarySourcePath = desktopPdfAccessRegistry.releaseDocument(event.sender.id, request.documentHandle);
+    const temporarySourcePath = releasePdfDocumentAccess(event.sender.id, request.documentHandle);
     if (temporarySourcePath) await requireBlankPdfTemporaryStore().release(temporarySourcePath);
   });
 
@@ -514,13 +603,35 @@ export function registerIpcHandlers(): void {
     }
     const openedAccess = await desktopPdfAccessRegistry.openAuthorizedSource(event.sender.id, filePath);
     let keepAccess = false;
+    let signatureDocumentHandle: string | undefined;
     try {
       const payload = await loadDocumentPayload(openedAccess.sourcePath);
+      const signatureAnalysis = await analyzePdfSignatureDocument(
+        openedAccess.sourcePath,
+        await readFile(openedAccess.sourcePath),
+        createDefaultPdfSignatureDocumentAnalysisDependencies(
+          createPdfSignatureCoreOptions(),
+          signatureDocumentRegistry,
+        ),
+      );
+      signatureDocumentHandle = signatureAnalysis.document?.handle;
       await desktopPdfAccessRegistry.resolveDocument(event.sender.id, openedAccess.descriptor.handle);
       keepAccess = true;
-      return { ...payload, documentAccess: openedAccess.descriptor };
+      if (signatureDocumentHandle) {
+        signatureDocumentHandleByPdfHandle.set(openedAccess.descriptor.handle, signatureDocumentHandle);
+      }
+      signatureProtectionByPdfHandle.set(openedAccess.descriptor.handle, signatureAnalysis.protection);
+      signatureOwnerWebContentsIdByPdfHandle.set(openedAccess.descriptor.handle, event.sender.id);
+      return {
+        ...payload,
+        documentAccess: openedAccess.descriptor,
+        signatureDocument: signatureAnalysis.document,
+        signatureProtection: signatureAnalysis.protection,
+        signatureValidation: signatureAnalysis.validation,
+      };
     } finally {
       if (!keepAccess) {
+        if (signatureDocumentHandle) signatureDocumentRegistry.release(signatureDocumentHandle);
         let temporarySourcePath: string | null = null;
         try {
           temporarySourcePath = desktopPdfAccessRegistry.releaseDocument(
@@ -549,6 +660,10 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(ipcChannels.pdfSaveDocument, async (event, request: SaveDocumentRequest) => {
     assertSaveDocumentRequest(request);
     const source = await desktopPdfAccessRegistry.resolveDocument(event.sender.id, request.documentHandle);
+    const signatureProtection = signatureProtectionByPdfHandle.get(request.documentHandle);
+    if (signatureProtection?.sourceReadOnly === true || signatureProtection?.status !== 'unsigned') {
+      throw new PdfSignedSourcePolicyError();
+    }
     const target = await desktopPdfAccessRegistry.takeSaveTarget(event.sender.id, request.targetHandle);
     const result = await saveDocumentPayload(
       source.sourcePath,
@@ -561,6 +676,171 @@ export function registerIpcHandlers(): void {
     );
     await desktopPdfAccessRegistry.resolveDocument(event.sender.id, request.documentHandle);
     await desktopPdfAccessRegistry.authorizeSource(event.sender.id, result.path);
+    return result;
+  });
+
+  ipcMain.handle(ipcChannels.signingChooseIdentity, async (event) => {
+    if (!PDF_CERTIFICATE_SIGNING_ENABLED) {
+      return signingIdentitySelectionDisabledResult();
+    }
+    try {
+      const ownerWindow = BrowserWindow.fromWebContents(event.sender);
+      if (!ownerWindow || ownerWindow.isDestroyed()) {
+        return { outcome: 'failed' as const, errorCode: 'IDENTITY_UNAVAILABLE' as const };
+      }
+      const ownerLease = requireOwnerLease(event.sender.id, ownerWindow.id);
+      const selection = await signingIdentityRegistry.choose(ownerWindow.id, {
+        generation: ownerLease.generation,
+        signal: ownerLease.signal,
+      });
+      assertOwnerLeaseActive(ownerLease);
+      if (!selection) return { outcome: 'cancelled' as const };
+      const certificate = selection.certificates.find((candidate) => candidate.suitableForSigning);
+      if (!certificate) {
+        signingIdentityRegistry.revoke(selection.handle, ownerWindow.id);
+        return { outcome: 'failed' as const, errorCode: 'IDENTITY_UNAVAILABLE' as const };
+      }
+      return {
+        outcome: 'selected' as const,
+        identity: {
+          identityHandle: selection.handle,
+          certificateSha256: certificate.sha256Fingerprint,
+          subject: certificate.subjectDisplayName,
+          issuer: certificate.issuerDisplayName,
+          serialNumber: certificate.serialNumber,
+          validFrom: certificate.notBefore,
+          validTo: certificate.notAfter,
+          keyAlgorithm: certificate.publicKeyAlgorithm,
+          privateKeyExported: false as const,
+          passwordRemembered: false as const,
+        },
+      };
+    } catch (error) {
+      return {
+        outcome: 'failed' as const,
+        errorCode: error instanceof PdfSigningIdentityRegistryError && error.code === 'INSPECTION_FAILED'
+          ? 'ENGINE_UNAVAILABLE' as const
+          : 'IDENTITY_UNAVAILABLE' as const,
+      };
+    }
+  });
+
+  ipcMain.handle(ipcChannels.signingApprove, async (event, request: unknown) => {
+    assertSigningApprovalRequest(request);
+    const ownerWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!ownerWindow || ownerWindow.isDestroyed()) {
+      return signingCapabilityDisabledResult(request.operation);
+    }
+    const ownerLease = requireOwnerLease(event.sender.id, ownerWindow.id);
+    assertOwnerLeaseActive(ownerLease);
+    const result = await executePdfSigningApproval(event.sender.id, ownerWindow.id, request, {
+      signingEnabled: PDF_CERTIFICATE_SIGNING_ENABLED,
+      signal: ownerLease.signal,
+      currentTrustConfigurationSha256: offlineSignatureTrustConfigurationSha256([]),
+      resolveDocument: async (ownerWebContentsId, documentHandle) => {
+        assertOwnerLeaseActive(ownerLease);
+        const source = await desktopPdfAccessRegistry.resolveDocument(ownerWebContentsId, documentHandle);
+        assertOwnerLeaseActive(ownerLease);
+        return source;
+      },
+      resolveProtection: (documentHandle) => {
+        assertOwnerLeaseActive(ownerLease);
+        return signatureProtectionByPdfHandle.get(documentHandle);
+      },
+      resolveSignatureDocumentHandle: (documentHandle) => {
+        assertOwnerLeaseActive(ownerLease);
+        return signatureDocumentHandleByPdfHandle.get(documentHandle);
+      },
+      resolveSignatureDocument: async (handle, currentTrustConfigurationSha256) => {
+        assertOwnerLeaseActive(ownerLease);
+        const document = await signatureDocumentRegistry.resolve(handle, currentTrustConfigurationSha256);
+        assertOwnerLeaseActive(ownerLease);
+        return document;
+      },
+      describeIdentity: (identityHandle, ownerWindowId) => {
+        assertOwnerLeaseActive(ownerLease);
+        return signingIdentityRegistry.describe(identityHandle, ownerWindowId, { generation: ownerLease.generation });
+      },
+      withPkcs12Frame: (identityHandle, ownerWindowId, consume) => (
+        signingIdentityRegistry.withPkcs12Frame(identityHandle, ownerWindowId, consume, {
+          generation: ownerLease.generation,
+          signal: ownerLease.signal,
+        })
+      ),
+      takeSaveTarget: async (ownerWebContentsId, targetHandle) => {
+        assertOwnerLeaseActive(ownerLease);
+        const target = await desktopPdfAccessRegistry.takeSaveTarget(ownerWebContentsId, targetHandle);
+        assertOwnerLeaseActive(ownerLease);
+        return target;
+      },
+      createSigningClient: () => {
+        assertOwnerLeaseActive(ownerLease);
+        return new PdfSignatureCoreSigningClient({
+          ...createPdfSignatureCoreOptions(),
+          allowExperimentalProofOperations: PDF_CERTIFICATE_SIGNING_ENABLED,
+        });
+      },
+      createMutation: (options) => createPdfSignedMutation({
+        ...options,
+        quarantine: signingQuarantine ?? undefined,
+        signal: ownerLease.signal,
+      }),
+      authorizePublishedDocument: async (ownerWebContentsId, targetPath) => {
+        let authorized = false;
+        let openedHandle: string | undefined;
+        let signatureDocumentHandle: string | undefined;
+        let signatureDocumentCommitted = false;
+        try {
+          assertOwnerLeaseActive(ownerLease);
+          await desktopPdfAccessRegistry.authorizeSource(ownerWebContentsId, targetPath);
+          authorized = true;
+          assertOwnerLeaseActive(ownerLease);
+          const opened = await desktopPdfAccessRegistry.openAuthorizedSource(ownerWebContentsId, targetPath);
+          openedHandle = opened.descriptor.handle;
+          assertOwnerLeaseActive(ownerLease);
+          await desktopPdfAccessRegistry.resolveDocument(ownerWebContentsId, openedHandle);
+          assertOwnerLeaseActive(ownerLease);
+          const signatureAnalysis = await analyzePdfSignatureDocument(
+            opened.sourcePath,
+            await readFile(opened.sourcePath),
+            createDefaultPdfSignatureDocumentAnalysisDependencies(
+              createPdfSignatureCoreOptions(),
+              signatureDocumentRegistry,
+            ),
+          );
+          signatureDocumentHandle = signatureAnalysis.document?.handle;
+          assertOwnerLeaseActive(ownerLease);
+          await desktopPdfAccessRegistry.resolveDocument(ownerWebContentsId, openedHandle);
+          assertOwnerLeaseActive(ownerLease);
+          if (signatureAnalysis.document) {
+            signatureDocumentHandleByPdfHandle.set(openedHandle, signatureAnalysis.document.handle);
+          }
+          signatureProtectionByPdfHandle.set(openedHandle, signatureAnalysis.protection);
+          signatureOwnerWebContentsIdByPdfHandle.set(openedHandle, ownerWebContentsId);
+          signatureDocumentCommitted = true;
+          return openedHandle;
+        } catch (error) {
+          if (!signatureDocumentCommitted && signatureDocumentHandle) {
+            signatureDocumentRegistry.release(signatureDocumentHandle);
+          }
+          if (openedHandle) {
+            try {
+              releasePdfDocumentAccess(ownerWebContentsId, openedHandle);
+            } catch {
+              // Owner teardown or stale-document revocation already removed it.
+            }
+          } else if (authorized) {
+            await desktopPdfAccessRegistry.revokeSourceGrant(ownerWebContentsId, targetPath).catch(() => undefined);
+          }
+          throw error;
+        }
+      },
+      releaseDocument: (ownerWebContentsId, documentHandle) => {
+        if (!isOwnerLeaseActive(ownerLease)) return;
+        releasePdfDocumentAccess(ownerWebContentsId, documentHandle);
+      },
+    });
+    assertOwnerLeaseActive(ownerLease);
     return result;
   });
 
@@ -621,6 +901,12 @@ export async function bootstrapDesktop(): Promise<void> {
   await app.whenReady();
   const metadata = getApplicationMetadata();
   blankPdfTemporaryStore = new BlankPdfTemporaryStore(app.getPath('temp'), `butter-paper-${metadata.channel}-blank-`);
+  // Windows signing remains fail-closed until native ACL hooks are available;
+  // the quarantine instance is therefore only constructed where its storage
+  // boundary can currently be verified by this process.
+  if (process.platform !== 'win32') {
+    signingQuarantine = new PdfSigningQuarantine(join(app.getPath('userData'), 'pdf-signing-quarantine'));
+  }
   await blankPdfTemporaryStore.cleanupStaleSessions().catch((error) => {
     console.warn('Unable to remove stale blank PDF temporary files.', error);
   });
@@ -672,6 +958,62 @@ export async function bootstrapDesktop(): Promise<void> {
 function requireBlankPdfTemporaryStore(): BlankPdfTemporaryStore {
   blankPdfTemporaryStore ??= new BlankPdfTemporaryStore(app.getPath('temp'));
   return blankPdfTemporaryStore;
+}
+
+function requireOwnerLease(ownerWebContentsId: number, ownerWindowId: number): PdfSigningIdentityOwnerLease {
+  const lease = signingIdentityOwnerLeaseByWebContentsId.get(ownerWebContentsId);
+  if (!lease || lease.ownerWindowId !== ownerWindowId || !isOwnerLeaseActive(lease)) {
+    throw new PdfSigningIdentityRegistryError('OWNER_UNAVAILABLE', 'The renderer owner is unavailable.');
+  }
+  return lease;
+}
+
+function assertOwnerLeaseActive(lease: PdfSigningIdentityOwnerLease): void {
+  if (!isOwnerLeaseActive(lease)) {
+    throw new PdfSigningIdentityRegistryError('OWNER_UNAVAILABLE', 'The renderer owner is unavailable.');
+  }
+}
+
+function isOwnerLeaseActive(lease: PdfSigningIdentityOwnerLease): boolean {
+  const ownerWindow = BrowserWindow.fromId(lease.ownerWindowId);
+  return !lease.signal.aborted
+    && ownerWindow != null
+    && !ownerWindow.isDestroyed()
+    && !ownerWindow.webContents.isDestroyed()
+    && desktopPdfAccessRegistry.isOwnerActive(ownerWindow.webContents.id)
+    && signingIdentityRegistry.isOwnerGenerationActive(lease.ownerWindowId, lease.generation);
+}
+
+function forgetSignatureDocument(documentHandle: string): void {
+  const signatureDocumentHandle = signatureDocumentHandleByPdfHandle.get(documentHandle);
+  signatureDocumentHandleByPdfHandle.delete(documentHandle);
+  signatureProtectionByPdfHandle.delete(documentHandle);
+  signatureOwnerWebContentsIdByPdfHandle.delete(documentHandle);
+  if (signatureDocumentHandle) signatureDocumentRegistry.release(signatureDocumentHandle);
+}
+
+function releasePdfDocumentAccess(ownerWebContentsId: number, documentHandle: string): string | null {
+  const temporarySourcePath = desktopPdfAccessRegistry.releaseDocument(ownerWebContentsId, documentHandle);
+  forgetSignatureDocument(documentHandle);
+  return temporarySourcePath;
+}
+
+function createPdfSignatureCoreOptions() {
+  const developmentRoot = app.isPackaged ? undefined : resolvePdfSignatureCoreDevelopmentRoot();
+  return {
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+    ...(developmentRoot ? { developmentRoot } : {}),
+  } as const;
+}
+
+function resolvePdfSignatureCoreDevelopmentRoot(): string | undefined {
+  return ancestorFileCandidates(
+    app.getAppPath(),
+    'native/pdf-signature-core/build/package',
+    6,
+  ).find((candidate) => existsSync(join(candidate, `${process.platform}-${process.arch}`)));
 }
 
 function assertPdfDocumentAccessRequest(

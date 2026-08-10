@@ -25,6 +25,8 @@ export const ipcChannels = {
   pdfLoadDocument: 'pdf:load-document',
   pdfGetPageGeometry: 'pdf:get-page-geometry',
   pdfSaveDocument: 'pdf:save-document',
+  signingChooseIdentity: 'signing:choose-identity',
+  signingApprove: 'signing:approve',
   testResolveFixture: 'test:resolve-fixture',
   testAuthorizePdfSource: 'test:authorize-pdf-source',
   testAuthorizePdfSaveTarget: 'test:authorize-pdf-save-target',

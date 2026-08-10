@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+MAVEN_VERSION=3.9.11
+MAVEN_SHA512=bcfe4fe305c962ace56ac7b5fc7a08b87d5abd8b7e89027ab251069faebee516b0ded8961445d6d91ec1985dfe30f8153268843c89aa392733d1a3ec956c9978
+BASE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+MAVEN_DIR="$BASE_DIR/.mvn/apache-maven-$MAVEN_VERSION"
+ARCHIVE="$BASE_DIR/.mvn/apache-maven-$MAVEN_VERSION-bin.tar.gz"
+URL="https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/$MAVEN_VERSION/apache-maven-$MAVEN_VERSION-bin.tar.gz"
+if [ -z "${JAVA_HOME:-}" ] || [ ! -x "$JAVA_HOME/bin/java" ]; then
+  echo "pdf-signature-core build requires JAVA_HOME pointing to a Java 21 JDK" >&2
+  exit 2
+fi
+JAVA_FEATURE=$($JAVA_HOME/bin/java -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.specification.version = //p')
+if [ "$JAVA_FEATURE" != "21" ]; then
+  echo "pdf-signature-core requires Java 21; found Java $JAVA_FEATURE" >&2
+  exit 2
+fi
+if [ ! -x "$MAVEN_DIR/bin/mvn" ]; then
+  mkdir -p "$BASE_DIR/.mvn"
+  if [ ! -f "$ARCHIVE" ]; then
+    curl --fail --location --proto '=https' --tlsv1.2 --output "$ARCHIVE" "$URL"
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    ACTUAL=$(shasum -a 512 "$ARCHIVE" | awk '{print $1}')
+  else
+    ACTUAL=$(sha512sum "$ARCHIVE" | awk '{print $1}')
+  fi
+  if [ "$ACTUAL" != "$MAVEN_SHA512" ]; then
+    echo "Maven archive checksum mismatch" >&2
+    exit 3
+  fi
+  TAR_ARCHIVE=$ARCHIVE
+  TAR_DESTINATION="$BASE_DIR/.mvn"
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      TAR_ARCHIVE=$(cygpath -u "$TAR_ARCHIVE")
+      TAR_DESTINATION=$(cygpath -u "$TAR_DESTINATION")
+      ;;
+  esac
+  tar -xzf "$TAR_ARCHIVE" -C "$TAR_DESTINATION"
+fi
+exec "$MAVEN_DIR/bin/mvn" "$@"

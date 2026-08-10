@@ -114,6 +114,12 @@ jobs:
           node-version: 24.16.0
           cache: pnpm
 
+      - name: Setup Java
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '21.0.12'
+
       - name: Verify native runner
         shell: bash
         run: |
@@ -127,6 +133,9 @@ jobs:
 
       - name: Generate PDF fixtures
         run: pnpm generate:fixtures
+
+      - name: Build matching native PDF signature core package
+        run: node scripts/build-pdf-signature-core.mjs --platform "darwin" --arch "${{ matrix.arch }}"
 
       - name: Build desktop application without release credentials
         run: pnpm build:desktop
@@ -216,6 +225,12 @@ jobs:
           node-version: 24.16.0
           cache: pnpm
 
+      - name: Setup Java
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '21.0.12'
+
       - name: Verify native runner
         shell: bash
         run: test "$(node -p 'process.arch')" = "${{ matrix.arch }}"
@@ -225,6 +240,9 @@ jobs:
 
       - name: Generate PDF fixtures
         run: pnpm generate:fixtures
+
+      - name: Build matching native PDF signature core package
+        run: node scripts/build-pdf-signature-core.mjs --platform "win32" --arch "${{ matrix.arch }}"
 
       - name: Build desktop application
         run: pnpm build:desktop
@@ -311,6 +329,12 @@ jobs:
           node-version: 24.16.0
           cache: pnpm
 
+      - name: Setup Java
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '21.0.12'
+
       - name: Verify native runner
         shell: bash
         run: test "$(node -p 'process.arch')" = "${{ matrix.arch }}"
@@ -346,6 +370,9 @@ jobs:
 
       - name: Generate PDF fixtures
         run: pnpm generate:fixtures
+
+      - name: Build matching native PDF signature core package
+        run: node scripts/build-pdf-signature-core.mjs --platform "linux" --arch "${{ matrix.arch }}"
 
       - name: Build desktop application
         run: pnpm build:desktop

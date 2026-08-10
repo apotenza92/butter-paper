@@ -49,6 +49,12 @@ const canvasTargetByPlatform = {
   linux: { arm64: 'linux-arm64-gnu', x64: 'linux-x64-gnu' },
 };
 const targetCanvasSuffix = canvasTargetByPlatform[releasePlatform][releaseArch];
+const pdfSignatureCoreTarget = `${releasePlatform}-${releaseArch}`;
+const pdfSignatureCorePackagePath = path.resolve(
+  __dirname,
+  '../../native/pdf-signature-core/build/package',
+  pdfSignatureCoreTarget,
+);
 const canvasPlatformSuffixes = [
   'android-arm64',
   'darwin-arm64',
@@ -116,6 +122,13 @@ module.exports = {
     '**/*.node',
   ],
   extraResources: [
+    {
+      // The main-process resolver uses resources/pdf-signature-core/<target>.
+      // Keep this required so a release build cannot silently ship without the
+      // verified sidecar package; the package build lane must run first.
+      from: pdfSignatureCorePackagePath,
+      to: `pdf-signature-core/${pdfSignatureCoreTarget}`,
+    },
     ...(existsSync(tufRootPath) ? [{
       from: tufRootPath,
       to: 'update-trust/root.json',

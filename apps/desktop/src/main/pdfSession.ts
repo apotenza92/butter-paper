@@ -36,7 +36,7 @@ const maxGeometryDocumentCacheEntries = 4;
 const geometryDocumentCache = new Map<string, CachedGeometryDocument>();
 export async function loadDocumentPayload(
   filePath: string,
-): Promise<Omit<LoadedDocumentPayload, 'documentAccess'>> {
+): Promise<Omit<LoadedDocumentPayload, 'documentAccess' | 'signatureDocument' | 'signatureProtection' | 'signatureValidation'>> {
   const loadStartedAt = performance.now();
   const sourceBytes = new Uint8Array(await readFile(filePath));
   const handle = await openPdfDocument(filePath, { sourceBytes });
@@ -226,6 +226,15 @@ export class PdfOutputPublicationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'PdfOutputPublicationError';
+  }
+}
+
+export class PdfSignedSourcePolicyError extends Error {
+  readonly code = 'SIGNED_SOURCE_POLICY' as const;
+
+  constructor() {
+    super('This PDF is signed or may contain a signature and remains read-only. Create a new validated output through a supported signing workflow.');
+    this.name = 'PdfSignedSourcePolicyError';
   }
 }
 

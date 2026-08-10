@@ -48,6 +48,16 @@ describe('PdfAccessRegistry', () => {
     await expectCode(registry.resolveDocument(1, opened.descriptor.handle), 'STALE_DOCUMENT');
   });
 
+  it('can revoke an authorized source grant after a failed open handoff', async () => {
+    const sourcePath = await createPdf('failed-handoff.pdf');
+    const registry = createRegistry();
+
+    await registry.authorizeSource(1, sourcePath);
+    await registry.revokeSourceGrant(1, sourcePath);
+
+    await expectCode(registry.openAuthorizedSource(1, sourcePath), 'UNAUTHORIZED_SOURCE');
+  });
+
   it('reads bytes through an identity-bound file descriptor and invalidates a replaced source', async () => {
     const directory = await createDirectory();
     const sourcePath = join(directory, 'source.pdf');
@@ -101,6 +111,7 @@ describe('PdfAccessRegistry', () => {
     expect(() => registry.releaseDocument(2, first.descriptor.handle)).toThrowError(
       expect.objectContaining({ code: 'NOT_FOUND' }),
     );
+    expect(registry.listDocumentHandles(1)).toEqual([first.descriptor.handle]);
     expect(registry.releaseDocument(1, first.descriptor.handle)).toBe(canonicalFirstPath);
     expect(registry.clearOwner(1)).toEqual([canonicalSecondPath]);
   });

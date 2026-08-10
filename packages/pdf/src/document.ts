@@ -85,7 +85,11 @@ interface PdfJsDocumentLike {
   numPages: number;
   getMetadata(): Promise<{ info?: Record<string, unknown> }>;
   getPage(pageNumber: number): Promise<PdfJsPageLike>;
-  destroy(): Promise<void>;
+}
+
+interface PdfLoadingTaskLike {
+  promise: Promise<PdfJsDocumentLike>;
+  destroy(): Promise<void> | void;
 }
 
 interface PdfJsPageLike {
@@ -139,6 +143,7 @@ export class PdfDocumentHandle {
 
   private constructor(
     readonly path: string,
+    private readonly loadingTask: PdfLoadingTaskLike,
     private readonly document: PdfJsDocumentLike,
     annotationSource: string | Uint8Array,
     cacheLimits = { maxEntries: 6, maxBytes: 32 * 1024 * 1024 },
@@ -167,8 +172,8 @@ export class PdfDocumentHandle {
       useSystemFonts: true,
       disableWorker: true,
     } as never);
-    const document = (await loadingTask.promise) as unknown as PdfJsDocumentLike;
-    return new PdfDocumentHandle(path, document, annotationSource, options?.cacheLimits);
+    const document = await loadingTask.promise;
+    return new PdfDocumentHandle(path, loadingTask, document, annotationSource, options?.cacheLimits);
   }
 
   async getMetadata(): Promise<PdfDocumentMetadata> {
@@ -231,7 +236,7 @@ export class PdfDocumentHandle {
   }
 
   async close(): Promise<void> {
-    await this.document.destroy();
+    await this.loadingTask.destroy();
   }
 }
 

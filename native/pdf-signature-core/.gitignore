@@ -1,0 +1,4 @@
+/build/
+/target/
+/.mvn/apache-maven-*/
+/.mvn/apache-maven-*-bin.*

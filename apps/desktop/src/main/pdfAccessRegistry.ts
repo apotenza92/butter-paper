@@ -187,6 +187,13 @@ export class PdfAccessRegistry {
     });
   }
 
+  async revokeSourceGrant(ownerWebContentsId: number, requestedPath: string): Promise<void> {
+    return this.exclusive(async () => {
+      this.assertOwnerActive(ownerWebContentsId);
+      this.sourceGrants.delete(sourceGrantKey(ownerWebContentsId, normalizeAbsolutePath(requestedPath)));
+    });
+  }
+
   async resolveDocument(ownerWebContentsId: number, handle: string): Promise<ResolvedPdfDocumentAccess> {
     return this.exclusive(async () => {
       this.assertOwnerActive(ownerWebContentsId);
@@ -312,6 +319,13 @@ export class PdfAccessRegistry {
       this.assertOwnerActive(ownerWebContentsId);
       return { targetPath: entry.targetPath, directoryIdentity: entry.directoryIdentity };
     });
+  }
+
+  listDocumentHandles(ownerWebContentsId: number): readonly string[] {
+    assertOwner(ownerWebContentsId);
+    return [...this.documents.values()]
+      .filter((entry) => entry.ownerWebContentsId === ownerWebContentsId)
+      .map((entry) => entry.handle);
   }
 
   clearOwner(ownerWebContentsId: number): readonly string[] {

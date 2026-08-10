@@ -6,3 +6,4 @@ export * from './appearance.js';
 export * from './scale.js';
 export { createSelection, replaceSelection, addToSelection, clearSelection } from './selection.js';
 export * from './commands.js';
+export * from './signatures.js';
