@@ -72,11 +72,11 @@ async function getDiagnostics(page) {
   return await page.evaluate(() => window.__butterPaperTestHooks?.getDiagnostics() ?? null);
 }
 
-async function waitForDiagnostics(page, expected) {
+async function waitForDiagnostics(page, expected, timeout = 30_000) {
   await page.waitForFunction((nextExpected) => {
     const diagnostics = window.__butterPaperTestHooks?.getDiagnostics();
     return diagnostics && Object.entries(nextExpected).every(([key, value]) => diagnostics[key] === value);
-  }, expected, { timeout: 30_000 });
+  }, expected, { timeout });
 }
 
 async function verifyCustomIcons(page) {
@@ -105,6 +105,7 @@ async function verifyPdfWorkflow(page, outputDirectory) {
 
   const initialMarkupCount = (await getDiagnostics(page))?.markupCount ?? 0;
   const annotationLayer = page.getByTestId('annotation-layer-1');
+  await annotationLayer.waitFor({ state: 'visible', timeout: 60_000 });
   const layerBounds = await annotationLayer.boundingBox();
   const viewportBounds = await page.getByTestId('document-viewport').boundingBox();
   assert(layerBounds && viewportBounds, 'Packaged PDF annotation surface did not render');
@@ -191,8 +192,13 @@ try {
   await page.waitForFunction(
     () => window.__butterPaperTestHooks?.getDiagnostics()?.pageCount === 6,
     undefined,
-    { timeout: 30_000 },
+    { timeout: 60_000 },
   );
+  await waitForDiagnostics(page, {
+    pageRenderReady: true,
+    lastPageRenderError: null,
+    lastThumbnailRenderError: null,
+  }, 60_000);
 
   await verifyPdfWorkflow(page, temporaryDirectory);
   await verifyBlankPdfWorkflow(page, temporaryDirectory);

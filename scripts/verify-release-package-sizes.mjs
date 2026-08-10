@@ -5,7 +5,10 @@ import { resolve } from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
-const MAX_ARM64_INSTALLER_BYTES = 150 * 1024 * 1024;
+// The release now bundles one matching Java 21 sidecar runtime. Keep enough
+// headroom for that intentional runtime while retaining the ARM64:x64 ratio
+// guard and rejecting an additional/duplicated runtime footprint.
+const MAX_ARM64_INSTALLER_BYTES = 250 * 1024 * 1024;
 const MAX_ARM64_TO_X64_RATIO = 1.25;
 
 export function validateWindowsArm64InstallerSize(filePath, label = 'Windows ARM64 installer') {

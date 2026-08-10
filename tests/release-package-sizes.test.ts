@@ -41,11 +41,11 @@ describe('release package size guard', () => {
     }
   });
 
-  it('rejects the duplicated ARM64 runtime footprint', () => {
+  it('rejects an excessively duplicated ARM64 runtime footprint', () => {
     const directory = mkdtempSync(join(tmpdir(), 'butter-paper-sizes-'));
     try {
       const candidate = installerPath(directory, 'stable', 'arm64');
-      createSizedFile(candidate, 200 * 1024 * 1024);
+      createSizedFile(candidate, 260 * 1024 * 1024);
       expect(() => validateWindowsArm64InstallerSize(candidate))
         .toThrow(/unexpectedly large/);
     } finally {
