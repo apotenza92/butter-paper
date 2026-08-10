@@ -55,6 +55,8 @@ describe('Butter Paper download page', () => {
     expect(readmeProductDescription).toBe(productDescription);
     expect(dom.window.document.querySelector('.subtitle')!.textContent).toBe(readmeProductDescription);
     expect(dom.window.document.querySelector('meta[name="description"]')!.getAttribute('content')).toBe(readmeProductDescription);
+    expect(dom.window.document.getElementById('app-icon')!.getAttribute('src')).toBe('./assets/icons/icon.png');
+    expect(dom.window.document.getElementById('favicon')!.getAttribute('href')).toBe('./assets/icons/icon.png');
     expect(readme).toContain('https://apotenza92.github.io/butter-paper/');
   });
 
