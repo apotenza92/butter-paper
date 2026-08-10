@@ -373,7 +373,7 @@ export class PdfSignatureCoreClient {
           stdio: ['pipe', 'pipe', 'pipe'],
         });
       } catch (error) {
-        rejectPromise(new PdfSignatureCoreError('LAUNCH_FAILED', launchFailureMessage(error), { cause: error }));
+        rejectPromise(new PdfSignatureCoreError('LAUNCH_FAILED', 'PDF signature core could not be launched.', { cause: error }));
         return;
       }
 
@@ -459,7 +459,7 @@ export class PdfSignatureCoreClient {
 
       child.once('error', (error) => {
         cleanupProcess();
-        rejectOnce(new PdfSignatureCoreError('LAUNCH_FAILED', launchFailureMessage(error), { cause: error }));
+        rejectOnce(new PdfSignatureCoreError('LAUNCH_FAILED', 'PDF signature core could not be launched.', { cause: error }));
       });
       child.stderr.on('data', (chunk: Buffer) => {
         if (stderrBuffer.byteLength >= MAX_STDERR_BYTES) return;
@@ -574,15 +574,6 @@ function decodeProtocolLine(line: Uint8Array): string {
   } catch (error) {
     throw protocolError('sidecar emitted invalid UTF-8', error);
   }
-}
-
-function launchFailureMessage(error: unknown): string {
-  if (error instanceof Error) {
-    const code = 'code' in error && typeof error.code === 'string' ? `${error.code}:` : '';
-    const message = error.message.replace(/(?:[A-Za-z]:)?[\\/][^\s"'`]+/g, '<path>');
-    return `PDF signature core could not be launched (${error.name}:${code}${message}).`;
-  }
-  return 'PDF signature core could not be launched.';
 }
 
 function serializeRequest(request: PdfSignatureCoreRequest): string {

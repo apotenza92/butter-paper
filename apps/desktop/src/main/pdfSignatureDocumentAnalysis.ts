@@ -108,9 +108,6 @@ export async function analyzePdfSignatureDocument(
       },
     };
   } catch (error) {
-    if (process.env.BP_TEST_MODE === '1') {
-      console.error(`PDF signature validation unavailable in test mode: ${describeAnalysisError(error)}`);
-    }
     return unavailableAnalysis(fallbackProtection, mapUnavailableError(error));
   }
 }
@@ -166,19 +163,4 @@ function mapUnavailableError(error: unknown): SignatureAnalysisErrorCode {
     if (error.code === 'PROTOCOL_ERROR' || error.code === 'ENGINE_ERROR') return 'PROTOCOL_ERROR';
   }
   return 'ENGINE_UNAVAILABLE';
-}
-
-function describeAnalysisError(error: unknown): string {
-  if (error instanceof PdfSignatureCoreError) {
-    if (error.code !== 'LAUNCH_FAILED') return error.code;
-    const cause = error.cause;
-    const causeCode = cause && typeof cause === 'object' && 'code' in cause && typeof cause.code === 'string'
-      ? cause.code
-      : null;
-    return `${error.code}:${error.message}${causeCode ? `:${causeCode}` : ''}`;
-  }
-  if (error instanceof Error && error.message.startsWith('Invalid PDF signature core package:')) {
-    return error.message.replace(/^Invalid PDF signature core package:\s*/, '').replace(/\.$/, '');
-  }
-  return error instanceof Error ? error.name : 'UNKNOWN_ERROR';
 }

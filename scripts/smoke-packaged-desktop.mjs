@@ -105,19 +105,7 @@ async function verifyPdfWorkflow(page, outputDirectory) {
 
   const initialMarkupCount = (await getDiagnostics(page))?.markupCount ?? 0;
   const annotationLayer = page.getByTestId('annotation-layer-1');
-  let layerBounds;
-  try {
-    layerBounds = await annotationLayer.boundingBox();
-  } catch (error) {
-    const signatureBanner = await page.locator('[data-testid="signature-status-banner"]').allTextContents();
-    const readOnlyLayerCount = await page.locator('[data-testid^="read-only-annotation-layer-"]').count();
-    console.error(`Packaged PDF annotation diagnostics: ${JSON.stringify({
-      diagnostics: await getDiagnostics(page),
-      signatureBanner,
-      readOnlyLayerCount,
-    })}`);
-    throw error;
-  }
+  const layerBounds = await annotationLayer.boundingBox();
   const viewportBounds = await page.getByTestId('document-viewport').boundingBox();
   assert(layerBounds && viewportBounds, 'Packaged PDF annotation surface did not render');
   const startY = Math.max(layerBounds.y + 90, viewportBounds.y + 90);
