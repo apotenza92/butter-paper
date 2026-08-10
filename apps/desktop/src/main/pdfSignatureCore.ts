@@ -373,7 +373,7 @@ export class PdfSignatureCoreClient {
           stdio: ['pipe', 'pipe', 'pipe'],
         });
       } catch (error) {
-        rejectPromise(new PdfSignatureCoreError('LAUNCH_FAILED', 'PDF signature core could not be launched.', { cause: error }));
+        rejectPromise(new PdfSignatureCoreError('LAUNCH_FAILED', launchFailureMessage(error), { cause: error }));
         return;
       }
 
