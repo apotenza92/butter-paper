@@ -16,6 +16,7 @@ const fixturePath = resolve(repoRoot, 'tests/fixtures/generated/multi-page.pdf')
 const releaseChannel = process.env.BP_RELEASE_CHANNEL || 'stable';
 const expectedProductName = releaseChannel === 'beta' ? 'Butter Paper Beta' : 'Butter Paper';
 const expectedExecutableName = releaseChannel === 'beta' ? 'butter-paper-beta' : 'butter-paper';
+const appCloseTimeoutMs = 30_000;
 
 function findPackagedExecutable() {
   const explicit = process.env.BP_ELECTRON_EXECUTABLE_PATH;
@@ -167,6 +168,27 @@ async function verifyBlankPdfWorkflow(page, outputDirectory) {
   await waitForDiagnostics(page, { pageCount: 1, documentName: 'packaged-blank-pdf.pdf' });
 }
 
+async function closePackagedApp() {
+  if (!app) return;
+  let timeoutId;
+  try {
+    await Promise.race([
+      app.close(),
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(`Packaged Electron application did not close within ${appCloseTimeoutMs}ms`));
+        }, appCloseTimeoutMs);
+      }),
+    ]);
+  } catch (error) {
+    console.error('Packaged application close failed; terminating the test process.', error);
+    app.process().kill();
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 try {
   temporaryDirectory = await mkdtemp(join(tmpdir(), 'butter-paper-packaged-smoke-'));
   app = await electron.launch({
@@ -225,6 +247,10 @@ try {
   console.log(
     `Packaged ${expectedProductName} smoke test passed: channel identity, ${pdfWorkflowMode === 'read-only' ? 'read-only PDF rendering safety' : 'PDF annotation round-trip'}, blank PDF creation, custom icons, and fit controls (${diagnostics.sessionBackendKind} backend).`,
   );
+  console.log(`Packaged application close state: ${JSON.stringify({
+    dirtyTabs: diagnostics.tabs?.filter((tab) => tab.dirty).map((tab) => tab.fileName) ?? [],
+    tabCount: diagnostics.tabs?.length ?? 0,
+  })}`);
 } catch (error) {
   if (page) {
     console.error(`Packaged app page at failure: title=${JSON.stringify(await page.title())} url=${page.url()}`);
@@ -235,7 +261,7 @@ try {
   }
   throw error;
 } finally {
-  await app?.close();
+  await closePackagedApp();
   if (temporaryDirectory) {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
