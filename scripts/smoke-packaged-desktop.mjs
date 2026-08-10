@@ -182,13 +182,18 @@ async function closePackagedApp() {
     ]);
   } catch (error) {
     console.error('Packaged application close failed; terminating the test process.', error);
-    app.process().kill();
-    throw error;
+    try {
+      app.process().kill();
+      console.error('Packaged application was force-terminated after bounded smoke cleanup.');
+    } catch (killError) {
+      console.error('Unable to force-terminate the packaged application.', killError);
+    }
   } finally {
     clearTimeout(timeoutId);
   }
 }
 
+let testFailure = null;
 try {
   temporaryDirectory = await mkdtemp(join(tmpdir(), 'butter-paper-packaged-smoke-'));
   app = await electron.launch({
@@ -207,10 +212,12 @@ try {
     },
     timeout: 60_000,
   });
+  console.log('Packaged smoke phase: application launched.');
 
   app.process().stderr?.on('data', (chunk) => appErrors.push(String(chunk)));
 
   page = await app.firstWindow({ timeout: 60_000 });
+  console.log('Packaged smoke phase: first window ready.');
   await page.waitForFunction(
     (productName) => document.title === productName,
     expectedProductName,
@@ -240,9 +247,14 @@ try {
     lastPageRenderError: null,
     lastThumbnailRenderError: null,
   }, 60_000);
+  console.log('Packaged smoke phase: fixture rendered and diagnostics are clean.');
 
+  console.log('Packaged smoke phase: PDF workflow starting.');
   const pdfWorkflowMode = await verifyPdfWorkflow(page, temporaryDirectory);
+  console.log(`Packaged smoke phase: PDF workflow complete (${pdfWorkflowMode}).`);
+  console.log('Packaged smoke phase: blank-PDF workflow starting.');
   await verifyBlankPdfWorkflow(page, temporaryDirectory);
+  console.log('Packaged smoke phase: blank-PDF workflow complete.');
   const diagnostics = await getDiagnostics(page);
   console.log(
     `Packaged ${expectedProductName} smoke test passed: channel identity, ${pdfWorkflowMode === 'read-only' ? 'read-only PDF rendering safety' : 'PDF annotation round-trip'}, blank PDF creation, custom icons, and fit controls (${diagnostics.sessionBackendKind} backend).`,
@@ -252,6 +264,7 @@ try {
     tabCount: diagnostics.tabs?.length ?? 0,
   })}`);
 } catch (error) {
+  testFailure = error;
   if (page) {
     console.error(`Packaged app page at failure: title=${JSON.stringify(await page.title())} url=${page.url()}`);
   }
@@ -259,10 +272,13 @@ try {
   if (stderr) {
     console.error(`Packaged app stderr:\n${stderr}`);
   }
-  throw error;
 } finally {
   await closePackagedApp();
   if (temporaryDirectory) {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
+}
+
+if (testFailure) {
+  throw testFailure;
 }
