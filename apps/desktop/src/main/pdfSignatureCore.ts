@@ -577,9 +577,10 @@ function decodeProtocolLine(line: Uint8Array): string {
 }
 
 function launchFailureMessage(error: unknown): string {
-  if (error && typeof error === 'object'
-    && 'code' in error && typeof error.code === 'string') {
-    return `PDF signature core could not be launched (${error.code}).`;
+  if (error instanceof Error) {
+    const code = 'code' in error && typeof error.code === 'string' ? `${error.code}:` : '';
+    const message = error.message.replace(/(?:[A-Za-z]:)?[\\/][^\s"'`]+/g, '<path>');
+    return `PDF signature core could not be launched (${error.name}:${code}${message}).`;
   }
   return 'PDF signature core could not be launched.';
 }
