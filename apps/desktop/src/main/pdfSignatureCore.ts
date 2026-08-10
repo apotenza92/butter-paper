@@ -577,8 +577,7 @@ function decodeProtocolLine(line: Uint8Array): string {
 }
 
 function launchFailureMessage(error: unknown): string {
-  if (process.env.BP_TEST_MODE === '1'
-    && error && typeof error === 'object'
+  if (error && typeof error === 'object'
     && 'code' in error && typeof error.code === 'string') {
     return `PDF signature core could not be launched (${error.code}).`;
   }
