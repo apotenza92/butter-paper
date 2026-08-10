@@ -105,6 +105,21 @@ async function verifyPdfWorkflow(page, outputDirectory) {
 
   const initialMarkupCount = (await getDiagnostics(page))?.markupCount ?? 0;
   const annotationLayer = page.getByTestId('annotation-layer-1');
+  const readOnlyAnnotationLayer = page.getByTestId('read-only-annotation-layer-1');
+  if (!(await annotationLayer.isVisible().catch(() => false))) {
+    await readOnlyAnnotationLayer.waitFor({ state: 'visible', timeout: 60_000 });
+    const statusBanner = page.getByTestId('signature-status-banner');
+    await statusBanner.waitFor({ state: 'visible', timeout: 30_000 });
+    assert(
+      (await statusBanner.textContent())?.includes('read-only') === true,
+      'Packaged PDF validation did not expose the required read-only safety state',
+    );
+    assert(
+      await page.getByTestId('tool-rectangle').isDisabled(),
+      'Packaged PDF controls remained enabled while signature validation was unavailable',
+    );
+    return 'read-only';
+  }
   await annotationLayer.waitFor({ state: 'visible', timeout: 60_000 });
   const layerBounds = await annotationLayer.boundingBox();
   const viewportBounds = await page.getByTestId('document-viewport').boundingBox();
@@ -200,11 +215,11 @@ try {
     lastThumbnailRenderError: null,
   }, 60_000);
 
-  await verifyPdfWorkflow(page, temporaryDirectory);
+  const pdfWorkflowMode = await verifyPdfWorkflow(page, temporaryDirectory);
   await verifyBlankPdfWorkflow(page, temporaryDirectory);
   const diagnostics = await getDiagnostics(page);
   console.log(
-    `Packaged ${expectedProductName} smoke test passed: channel identity, PDF annotation round-trip, blank PDF creation, custom icons, and fit controls (${diagnostics.sessionBackendKind} backend).`,
+    `Packaged ${expectedProductName} smoke test passed: channel identity, ${pdfWorkflowMode === 'read-only' ? 'read-only PDF rendering safety' : 'PDF annotation round-trip'}, blank PDF creation, custom icons, and fit controls (${diagnostics.sessionBackendKind} backend).`,
   );
 } catch (error) {
   if (page) {
