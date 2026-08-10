@@ -1,6 +1,6 @@
 import { _electron as electron } from '@playwright/test';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { assertIsolatedGuiTestEnvironment } from './gui-test-environment.mjs';
@@ -158,9 +158,15 @@ async function verifyBlankPdfWorkflow(page, outputDirectory) {
   await page.waitForFunction(() => window.__butterPaperTestHooks?.getDiagnostics()?.tabs?.at(-1)?.dirty === true);
 
   const savedPdfPath = join(outputDirectory, 'packaged-blank-pdf.pdf');
+  console.log(`Packaged blank-PDF save target: ${savedPdfPath}`);
   await page.evaluate(async ({ filePath }) => {
     await window.__butterPaperTestHooks?.saveCurrentDocumentAs(filePath);
   }, { filePath: savedPdfPath });
+  console.log(`Packaged blank-PDF save result: ${JSON.stringify({
+    targetExists: existsSync(savedPdfPath),
+    activeFilePath: (await getDiagnostics(page))?.filePath ?? null,
+    directoryEntries: await readdir(outputDirectory),
+  })}`);
   assert(existsSync(savedPdfPath), 'Packaged blank PDF save did not create its output file');
   await page.evaluate(async ({ filePath }) => {
     await window.__butterPaperTestHooks?.openDocumentPath(filePath);
