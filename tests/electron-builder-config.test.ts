@@ -102,7 +102,7 @@ describe('Electron Builder release identity', () => {
       afterPack: 'build/after-pack.cjs',
       compression: 'maximum',
       electronLanguages: ['en-US'],
-      releaseNotes: expect.stringContaining('Replaced the stable and beta application icons'),
+      releaseNotes: expect.stringContaining('Replaced the stable and beta icon artwork'),
       nsisInclude: 'build/installer.nsh',
       nsisOneClick: false,
       macMinimumSystemVersion: '12.0',

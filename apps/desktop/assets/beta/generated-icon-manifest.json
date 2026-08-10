@@ -1,67 +1,67 @@
 {
   "schemaVersion": 1,
   "source": "assets/butter-paper-icon-beta.svg",
-  "sourceSha256": "18515a970b677fb2f913f2da02492955940135987332a371f64cecd44a917bb5",
+  "sourceSha256": "c51bdfacb0fbae2c0134626d4e06ace95e05edd68375481b5065f81165d97adc",
   "outputs": {
     "icon.icns": {
-      "sha256": "7e9e89cbd39d11194b56d2e72a24c2c5f42a17a513dcf0eca70988cb22969d66",
-      "size": 390119
+      "sha256": "2f36f01d21aa5a4cf2e5d219266074e7b9ef7dfb06d7c100b0b9b28857aaa4cd",
+      "size": 1028469
     },
     "icon.ico": {
-      "sha256": "425866627b2c817437f9451db3d4b79eb54403b91794b9955db95a753e67c645",
-      "size": 44806
+      "sha256": "9ba8107fab18b57086667d9c53f407925eec84ca8f8f33bc6634a5a4a83c2d26",
+      "size": 79515
     },
     "icon.png": {
-      "sha256": "0676561098f0e491e4090a0641ca73a8fde3a8ff3588d8f233da4c4fe7dea717",
-      "size": 67064
+      "sha256": "663345ba874c6fd4714592cb10738b95cc57b5325c18b258ab5b03a205492d6f",
+      "size": 177057
     },
     "linux/1024x1024.png": {
-      "sha256": "db7788533ab6cc8b6e598ba1ee850f1abd269cae7ceeb706008c90ad5390c839",
-      "size": 184235
+      "sha256": "51f7a2a0a31926d8c8a7d2b148309b9a87eb43fd233df0739352b46a3e5041e4",
+      "size": 538687
     },
     "linux/128x128.png": {
-      "sha256": "1b42abea0378a0961971ff38380425deff00b2ace8b19008a61c7e2346527b69",
-      "size": 9851
+      "sha256": "8ce707c4179e001efd76fbaf48689c37b7edec04780233137bca61fbbe66351f",
+      "size": 15633
     },
     "linux/16x16.png": {
-      "sha256": "86ec7c0e33d843dbcc9afd5fb4ad143ef9b64316a07abe8902f167b0f1675914",
-      "size": 667
+      "sha256": "d1c7e954b56eca55a756492834460cf35c95d3dd4d39c82943557647985b9c6d",
+      "size": 479
     },
     "linux/22x22.png": {
-      "sha256": "4ff629e83114f58563cd0a94a1355e57a945ed7879cec6743f6a35fcdd9368e8",
-      "size": 883
+      "sha256": "c7a898ac600693433d19c0adc2c54f89cef2f32fb3e30aefdcb798fa9cd831f4",
+      "size": 826
     },
     "linux/24x24.png": {
-      "sha256": "bace1b1eaa56cd6ea405374bf5e6da37ee36f86bdcaf43c74d74841c77ec0314",
-      "size": 1015
+      "sha256": "a376d96eecf8ea2cb4c7d181d8184ca4804ea197da499e76c92739d736cc4f72",
+      "size": 883
     },
     "linux/256x256.png": {
-      "sha256": "3812bc0a03b8b6708af625be65b9c662b1ec7560fd01afbaee74894e4847f523",
-      "size": 25492
+      "sha256": "2e161fb23e01f0ddadd13852cad0b52444910598e790fed371e725c982f85a4d",
+      "size": 53860
     },
     "linux/32x32.png": {
-      "sha256": "bd8529933e1f81741cde0ef6ad22ccf333f050e66c69814829aec945fb3ab34a",
-      "size": 1435
+      "sha256": "93ba272cba0c483c350ff82dd5ec0e31a8f3565a011cdbc555e857419cea89b9",
+      "size": 1367
     },
     "linux/48x48.png": {
-      "sha256": "92955fdc5abfb04ea3fbfbb1945d88dd2ee09ce55f792974e3f22956db098f20",
-      "size": 2584
+      "sha256": "8ff3dda8a7672863f4a68d0b6ff8ea57fda30ebb46dd6e473e81c3335b111a04",
+      "size": 2672
     },
     "linux/512x512.png": {
-      "sha256": "0676561098f0e491e4090a0641ca73a8fde3a8ff3588d8f233da4c4fe7dea717",
-      "size": 67064
+      "sha256": "663345ba874c6fd4714592cb10738b95cc57b5325c18b258ab5b03a205492d6f",
+      "size": 177057
     },
     "linux/64x64.png": {
-      "sha256": "60fbb1b78b1ae93cce431686bdf03973474cb724190e9e475a89e0f643abe7cf",
-      "size": 3644
+      "sha256": "74592c5121833d7fdeb549efb5d0e6327f1380d40c7fa147a689d0122e556eac",
+      "size": 4503
     },
     "linux/72x72.png": {
-      "sha256": "2eaca887f5d95a1ea2e2788a7a2e1e2e45e8aca06271ee988eaf7456d98f7a44",
-      "size": 4259
+      "sha256": "44ef781e78bb676694f859637622e142902c73d85df3da88daa8da91521fc92e",
+      "size": 5364
     },
     "linux/96x96.png": {
-      "sha256": "11603aa3cb249b0612b1ebf591a1ca51ef17b03855322f56075ad9c60fec2143",
-      "size": 6300
+      "sha256": "ee93623113ac1fe9b29f3ea00353d5c168dafe5ce96eefa059c19a3709d8febf",
+      "size": 9337
     }
   }
 }

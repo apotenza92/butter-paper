@@ -1,5 +1,6 @@
 import electron from 'electron';
 import { ipcChannels } from '../shared/ipc';
+import { resolveCadViewEnabled } from '../shared/featureFlags';
 import type {
   BlankPdfCreateRequest,
   ButterPaperBridge,
@@ -35,6 +36,7 @@ const bridge: ButterPaperBridge = {
   environment: {
     testMode: isTestMode,
     defaultSamplePdfPath,
+    cadViewEnabled: resolveCadViewEnabled(process.env.BP_CAD_VIEW_ENABLED),
     cadRenderExperiment: process.env.BP_CAD_RENDER_EXPERIMENT ?? null,
     renderCoordinatorV2: process.env.BP_RENDER_COORDINATOR_V2 === '1',
   },

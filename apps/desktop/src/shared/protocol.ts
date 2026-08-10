@@ -324,6 +324,7 @@ export interface ButterPaperBridge {
   readonly environment: {
     readonly testMode: boolean;
     readonly defaultSamplePdfPath: string | null;
+    readonly cadViewEnabled: boolean;
     readonly cadRenderExperiment: string | null;
     readonly renderCoordinatorV2: boolean;
   };

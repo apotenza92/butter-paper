@@ -362,6 +362,7 @@ export function App({ initialThemeMode }: AppProps) {
   const setLeftSidebarWidth = useViewerStore((state) => state.setLeftSidebarWidth);
   const setRightSidebarWidth = useViewerStore((state) => state.setRightSidebarWidth);
   const isTestMode = window.butterPaper.environment.testMode;
+  const cadViewEnabled = window.butterPaper.environment.cadViewEnabled;
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
   const session = activeTab?.session ?? null;
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -406,6 +407,12 @@ export function App({ initialThemeMode }: AppProps) {
   }, [activeTool]);
 
   useEffect(() => {
+    if (!cadViewEnabled && pageColumnsEnabled) {
+      setPageColumnsEnabled(false);
+    }
+  }, [cadViewEnabled, pageColumnsEnabled, setPageColumnsEnabled]);
+
+  useEffect(() => {
     document.documentElement.dataset.testMode = isTestMode ? 'true' : 'false';
     if (isTestMode) { initialisePerfTracking(); resetPerfTracking(); }
     return () => { delete document.documentElement.dataset.testMode; };
@@ -446,6 +453,7 @@ export function App({ initialThemeMode }: AppProps) {
     useViewerStore.setState({
       document: nextTab.document,
       ...nextTab.viewSnapshot,
+      pageColumnsEnabled: cadViewEnabled && nextTab.viewSnapshot.pageColumnsEnabled,
       activeTool: restoreableTool(nextTab.viewSnapshot.activeTool),
       postPlacement: null,
       pendingImageAsset: null,
@@ -1164,7 +1172,7 @@ export function App({ initialThemeMode }: AppProps) {
             aria-labelledby={activeTabId ? `document-tab-trigger-${tabs.findIndex((tab) => tab.id === activeTabId)}` : undefined}
           >
             <>
-              <ViewerToolbar disabled={viewerControlsDisabled} zoom={zoom} zoomPreset={zoomPreset} scrollMode={scrollMode} continuousScrollWheelMode={continuousScrollWheelMode} singlePageScrollWheelMode={singlePageScrollWheelMode} pageColumnsEnabled={pageColumnsEnabled} cadViewOrganisation={cadViewOrganisation} pagesPerColumn={pagesPerColumn} onFitPage={() => setZoomPreset('fit-page')} onFitWidth={() => setZoomPreset('fit-width')} onScrollModeChange={setScrollMode} onContinuousScrollWheelModeChange={setContinuousScrollWheelMode} onSinglePageScrollWheelModeChange={setSinglePageScrollWheelMode} onPageColumnsEnabledChange={setPageColumnsEnabled} onCadViewOrganisationChange={setCadViewOrganisation} onPagesPerColumnChange={setPagesPerColumn} onZoomIn={() => updateZoom(zoom * 1.1)} onZoomOut={() => updateZoom(zoom / 1.1)} onZoomReset={() => updateZoom(1)} onZoomChange={updateZoom} />
+              <ViewerToolbar disabled={viewerControlsDisabled} cadViewEnabled={cadViewEnabled} zoom={zoom} zoomPreset={zoomPreset} scrollMode={scrollMode} continuousScrollWheelMode={continuousScrollWheelMode} singlePageScrollWheelMode={singlePageScrollWheelMode} pageColumnsEnabled={pageColumnsEnabled} cadViewOrganisation={cadViewOrganisation} pagesPerColumn={pagesPerColumn} onFitPage={() => setZoomPreset('fit-page')} onFitWidth={() => setZoomPreset('fit-width')} onScrollModeChange={setScrollMode} onContinuousScrollWheelModeChange={setContinuousScrollWheelMode} onSinglePageScrollWheelModeChange={setSinglePageScrollWheelMode} onPageColumnsEnabledChange={setPageColumnsEnabled} onCadViewOrganisationChange={setCadViewOrganisation} onPagesPerColumnChange={setPagesPerColumn} onZoomIn={() => updateZoom(zoom * 1.1)} onZoomOut={() => updateZoom(zoom / 1.1)} onZoomReset={() => updateZoom(1)} onZoomChange={updateZoom} />
               <div className="min-h-0 flex-1">
                 <CanvasContextMenu
                   disabled={viewerControlsDisabled}
