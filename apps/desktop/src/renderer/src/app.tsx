@@ -1169,7 +1169,7 @@ export function App({ initialThemeMode }: AppProps) {
         onChange={(event) => { void handleImageFileChange(event); }}
       />
       <main className="min-h-0 min-w-0 flex-1">
-        <div className="flex h-full min-h-0" data-testid="workspace-shell">
+        <div className="flex h-full min-h-0 min-w-0 overflow-hidden" data-testid="workspace-shell">
           <LeftRail
             activePanel={leftSidebarOpen && documentState ? leftSidebarPanel : null}
             disabled={leftRailDisabled}
