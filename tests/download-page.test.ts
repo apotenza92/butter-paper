@@ -55,6 +55,8 @@ describe('Butter Paper download page', () => {
     expect(readmeProductDescription).toBe(productDescription);
     expect(dom.window.document.querySelector('.subtitle')!.textContent).toBe(readmeProductDescription);
     expect(dom.window.document.querySelector('meta[name="description"]')!.getAttribute('content')).toBe(readmeProductDescription);
+    expect(dom.window.document.getElementById('app-icon')!.getAttribute('src')).toBe('./assets/icons/icon.png');
+    expect(dom.window.document.getElementById('favicon')!.getAttribute('href')).toBe('./assets/icons/icon.png');
     expect(readme).toContain('https://apotenza92.github.io/butter-paper/');
   });
 
@@ -104,7 +106,7 @@ describe('Butter Paper download page', () => {
     expect(document.getElementById('app-icon')!.getAttribute('src')).toBe('./assets/icons/beta/icon.png');
     expect(document.getElementById('favicon')!.getAttribute('href')).toBe('./assets/icons/beta/icon.png');
     expect(dom.window.getComputedStyle(document.body).getPropertyValue('--accent').trim()).toBe('#0a5e9d');
-    expect(betaIcon).toContain('#0a5e9d');
+    expect(betaIcon).toContain('#1b57f3');
     expect(html).not.toContain('#cc4f47');
     expect(hero(dom).label).toBe('Download Butter Paper Beta DMG for Apple Silicon Mac');
     expect(hero(dom).href).toContain('Butter-Paper-Beta-macOS-arm64.dmg');

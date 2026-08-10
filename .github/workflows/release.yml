@@ -681,6 +681,25 @@ jobs:
           fs.writeFileSync(path.join(assetsDir, 'homebrew-release.json'), `${JSON.stringify({ tag, version, channels }, null, 2)}\n`);
           NODE
 
+      - name: Build standard Homebrew publication bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          node source/scripts/build-homebrew-publication.mjs \
+            --release publish/assets/homebrew-release.json \
+            --assets publish/assets \
+            --output homebrew-publication
+          (
+            cd homebrew-publication
+            find manifest.json Casks -type f -print0 |
+              LC_ALL=C sort -z |
+              xargs -0 sha256sum > SHA256SUMS
+            sha256sum --check --strict SHA256SUMS
+            tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+              -czf ../publish/assets/homebrew-publication.tar.gz \
+              manifest.json SHA256SUMS Casks
+          )
+
       - name: Create release checksums
         working-directory: publish/assets
         shell: bash
@@ -1321,58 +1340,47 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  prepare-homebrew-publication:
-    name: Prepare validated Homebrew publication
+  dispatch-homebrew-publication:
+    name: Dispatch and await tap-owned Homebrew publication
     needs: [prepare, test-homebrew]
     runs-on: ubuntu-24.04
+    environment: homebrew-dispatch
     permissions:
       contents: read
     steps:
-      - name: Download ARM64 validated casks
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Mint dispatch-only tap token
+        id: dispatcher
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2
         with:
-          name: homebrew-casks-arm64
-          path: validated/arm64
+          app-id: ${{ vars.HOMEBREW_DISPATCHER_APP_ID }}
+          private-key: ${{ secrets.HOMEBREW_DISPATCHER_PRIVATE_KEY }}
+          owner: apotenza92
+          repositories: homebrew-tap
 
-      - name: Download Intel validated casks
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: homebrew-casks-x64
-          path: validated/x64
-
-      - name: Compare native validation outputs
-        run: diff --recursive --unified validated/arm64 validated/x64
-
-      - name: Seal Homebrew publication bundle
+      - name: Dispatch trusted publication and wait for exact correlation
+        env:
+          GH_TOKEN: ${{ steps.dispatcher.outputs.token }}
+          TAP_REPOSITORY: apotenza92/homebrew-tap
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p publication/Casks
-          cp validated/arm64/butter-paper*.rb publication/Casks/
-          casks="$(find publication/Casks -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort | paste -sd ' ' -)"
-          if [ "${{ needs.prepare.outputs.channel }}" = beta ]; then
-            [[ "$casks" == 'butter-paper@beta.rb' ]]
-          else
-            [[ "$casks" == 'butter-paper.rb butter-paper@beta.rb' ]]
-          fi
-          (
-            cd publication
-            find Casks -type f -name '*.rb' -print0 |
-              LC_ALL=C sort -z |
-              xargs -0 sha256sum > SHA256SUMS
-          )
-          printf '%s\n' \
-            "Butter Paper Homebrew publication bundle" \
-            "release-tag=${{ github.ref_name }}" \
-            "release-commit=${{ github.sha }}" \
-            "destination=apotenza92/homebrew-tap:Casks/" \
-            "Apply these exact natively validated bytes manually after the release approval gate." \
-            > publication/PUBLICATION.txt
-
-      - name: Upload Homebrew publication bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: butter-paper-homebrew-publication-${{ github.ref_name }}
-          path: publication
-          if-no-files-found: error
-          retention-days: 14
+          correlation="${GITHUB_REPOSITORY}:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${GITHUB_REF_NAME}"
+          started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          jq -n \
+            --arg product butter-paper \
+            --arg tag "$GITHUB_REF_NAME" \
+            --arg release_commit "$GITHUB_SHA" \
+            --arg source_run_id "$GITHUB_RUN_ID" \
+            --arg source_run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg correlation_id "$correlation" \
+            '{event_type:"publish-homebrew-v1",client_payload:{product:$product,tag:$tag,release_commit:$release_commit,source_run_id:$source_run_id,source_run_attempt:$source_run_attempt,correlation_id:$correlation_id}}' |
+            gh api --method POST "repos/$TAP_REPOSITORY/dispatches" --input -
+          run_id=''
+          for _ in {1..30}; do
+            run_id="$(gh api "repos/$TAP_REPOSITORY/actions/workflows/publish-homebrew.yml/runs?event=repository_dispatch&per_page=30" \
+              --jq ".workflow_runs[] | select(.display_title == \"$correlation\" and .created_at >= \"$started\") | .id" | head -n1)"
+            [[ -n "$run_id" ]] && break
+            sleep 2
+          done
+          [[ -n "$run_id" ]]
+          gh run watch "$run_id" --repo "$TAP_REPOSITORY" --exit-status

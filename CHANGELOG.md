@@ -2,6 +2,20 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.19]
+
+- Made CAD View an explicit opt-in while preserving safe snapshot restoration
+  when the feature is unavailable.
+- Stabilized toolbar tooltip behaviour across pointer and keyboard interaction,
+  including constrained popover and menu controls.
+- Replaced the stable and beta icon artwork with the approved textured quill
+  and faceted ink-pot mark, regenerated for macOS, Windows, Linux, and the
+  download page, with dark artwork using the exact light-artwork black-to-white
+  contour swap.
+- Added deterministic checks for the icon geometry, channel palettes, release
+  asset contract, download-page assets, Homebrew publication, and non-signing
+  release boundary.
+
 ## [0.0.18]
 
 - Redesigned the PDF workspace with clearer toolbar and rail organisation,
@@ -22,8 +36,9 @@ All notable Butter Paper changes are recorded here.
   development window title, stale-renderer rejection, and repeatable desktop
   performance measurements for empty, one-page, and 100-page workloads.
 - Replaced the stable and beta application icons with refreshed,
-  channel-specific artwork across macOS, Windows, and Linux, and added a public
-  download page with deterministic copy and asset checks.
+  channel-specific artwork across macOS, Windows, and Linux, simplifying the
+  composition to one centred, faceted pen, and added a public download page
+  with deterministic copy and asset checks.
 - Expanded deterministic and hosted GUI coverage for the redesigned shell,
   properties, snapping, context menus, blank PDFs, page layouts, accessibility,
   constrained windows, and application provenance.

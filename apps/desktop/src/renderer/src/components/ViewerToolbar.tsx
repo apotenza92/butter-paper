@@ -43,6 +43,7 @@ import { SplitButtonSegment } from './domain-ui/SplitButtonSegment';
 
 interface ViewerToolbarProps {
   disabled?: boolean;
+  cadViewEnabled: boolean;
   zoom: number;
   zoomPreset: 'manual' | 'fit-width' | 'fit-page';
   scrollMode: 'continuous' | 'single-page';
@@ -75,6 +76,7 @@ interface ToolbarIconProps {
 type ToolbarIconComponent = ComponentType<ToolbarIconProps>;
 
 export const TOOLBAR_ACTION_BUTTON_VARIANT = 'ghost' as const;
+const TOOLBAR_TOOLTIP_TRIGGER_ATTRIBUTE = 'data-toolbar-tooltip-trigger';
 
 interface GestureHintState {
   id: string;
@@ -167,8 +169,8 @@ function ToolbarTriggerTooltip({
   }
 
   return (
-    <ShadcnTooltip disabled={suppressTooltip} open={hint ? true : undefined}>
-      <TooltipTrigger render={trigger} />
+    <ShadcnTooltip disableHoverablePopup disabled={suppressTooltip} open={hint ? true : undefined}>
+      <TooltipTrigger data-toolbar-tooltip-trigger="" render={trigger} />
       <TooltipContent data-testid={hint ? hintTestId : testId}>{hint ?? label}</TooltipContent>
     </ShadcnTooltip>
   );
@@ -206,8 +208,8 @@ function ToolbarIconButton({
   }
 
   return (
-    <ShadcnTooltip>
-      <TooltipTrigger render={button} />
+    <ShadcnTooltip disableHoverablePopup>
+      <TooltipTrigger data-toolbar-tooltip-trigger="" render={button} />
       <TooltipContent data-testid={`${testId}-tooltip`}>{label}</TooltipContent>
     </ShadcnTooltip>
   );
@@ -258,8 +260,8 @@ function ZoomDropdown({
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen} disabled={disabled}>
-      <ShadcnTooltip disabled={disabled || open}>
-        <TooltipTrigger render={(
+      <ShadcnTooltip disableHoverablePopup disabled={disabled || open}>
+        <TooltipTrigger data-toolbar-tooltip-trigger="" render={(
           <DropdownMenuTrigger render={(
             <Button
               type="button"
@@ -443,10 +445,11 @@ function ViewWheelControl({
         )}
       />
       <DropdownMenu open={open} onOpenChange={setOpen} disabled={disabled}>
-        <ShadcnTooltip disabled={disabled || open}>
+        <ShadcnTooltip disableHoverablePopup disabled={disabled || open}>
           <DropdownMenuTrigger
             render={(
               <TooltipTrigger
+                data-toolbar-tooltip-trigger=""
                 render={(
                   <SplitButtonSegment
                     type="button"
@@ -544,10 +547,11 @@ function CadViewButton({
         )}
       />
       <Popover open={open} onOpenChange={setOpen}>
-        <ShadcnTooltip disabled={disabled || open}>
+        <ShadcnTooltip disableHoverablePopup disabled={disabled || open}>
           <PopoverTrigger
             render={(
               <TooltipTrigger
+                data-toolbar-tooltip-trigger=""
                 render={(
                   <SplitButtonSegment
                     type="button"
@@ -632,6 +636,7 @@ function CadViewButton({
 
 export function ViewerToolbar({
   disabled = false,
+  cadViewEnabled,
   zoom,
   zoomPreset,
   scrollMode,
@@ -696,6 +701,22 @@ export function ViewerToolbar({
         SHELL_SURFACE_PANEL,
       ].join(' ')}
       data-testid="viewer-toolbar"
+      onPointerOverCapture={(event) => {
+        const hoveredTrigger = event.target instanceof Element
+          ? event.target.closest<HTMLElement>(`[${TOOLBAR_TOOLTIP_TRIGGER_ATTRIBUTE}]`)
+          : null;
+        const focusedTrigger = event.currentTarget.ownerDocument.activeElement;
+        if (
+          hoveredTrigger &&
+          event.currentTarget.contains(hoveredTrigger) &&
+          focusedTrigger instanceof HTMLElement &&
+          focusedTrigger !== hoveredTrigger &&
+          event.currentTarget.contains(focusedTrigger) &&
+          focusedTrigger.hasAttribute(TOOLBAR_TOOLTIP_TRIGGER_ATTRIBUTE)
+        ) {
+          focusedTrigger.blur();
+        }
+      }}
     >
       <ButtonGroup aria-label="Zoom controls">
         <ToolbarIconButton
@@ -840,17 +861,19 @@ export function ViewerToolbar({
           onDoubleClick={onFitPage}
           onModeChange={onSinglePageScrollWheelModeChange}
         />
-        <CadViewButton
-          disabled={disabled}
-          scrollMode={scrollMode}
-          pageColumnsEnabled={pageColumnsEnabled}
-          cadViewOrganisation={cadViewOrganisation}
-          pagesPerColumn={pagesPerColumn}
-          onScrollModeChange={onScrollModeChange}
-          onPageColumnsEnabledChange={onPageColumnsEnabledChange}
-          onCadViewOrganisationChange={onCadViewOrganisationChange}
-          onPagesPerColumnChange={onPagesPerColumnChange}
-        />
+        {cadViewEnabled ? (
+          <CadViewButton
+            disabled={disabled}
+            scrollMode={scrollMode}
+            pageColumnsEnabled={pageColumnsEnabled}
+            cadViewOrganisation={cadViewOrganisation}
+            pagesPerColumn={pagesPerColumn}
+            onScrollModeChange={onScrollModeChange}
+            onPageColumnsEnabledChange={onPageColumnsEnabledChange}
+            onCadViewOrganisationChange={onCadViewOrganisationChange}
+            onPagesPerColumnChange={onPagesPerColumnChange}
+          />
+        ) : null}
       </ButtonGroup>
     </div>
   );

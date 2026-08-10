@@ -32,7 +32,7 @@ export function resolveDesktopEntryPoint() {
 }
 
 export async function launchButterPaper(options = {}) {
-  const { fixtureDirectory, theme } = options;
+  const { cadViewEnabled = true, fixtureDirectory, theme } = options;
   const entryPoint = resolveDesktopEntryPoint();
   if (!entryPoint) {
     return null;
@@ -53,6 +53,7 @@ export async function launchButterPaper(options = {}) {
   const env = {
     ...process.env,
     BP_TEST_MODE: '1',
+    BP_CAD_VIEW_ENABLED: cadViewEnabled ? '1' : '0',
     BP_TEST_USER_DATA_DIR: userDataDirectory,
     BP_TEST_STARTUP_LOG_PATH: startupLogPath,
     BP_DISABLE_RENDERER_DEV_SERVER: '1',

@@ -137,20 +137,33 @@ describe('macOS release contract', () => {
           const layerPath = join(contract.iconSourcePath, 'Assets', image.value);
           expect(existsSync(layerPath)).toBe(true);
           const layerSource = readFileSync(layerPath, 'utf8');
-          expect(layerSource).toContain('viewBox="0 0 1254 1254"');
-          expect(layerSource).toContain('<rect width="1254" height="1254" rx="150"/>');
-          expect(layerSource).toContain('<g id="clean-stable-marker"');
-          expect(layerSource).toContain('<path d="M 627 627 C ');
+          expect(layerSource).toContain(
+            'width="1024" height="1024" viewBox="0 0 1024 1024"',
+          );
+          expect(layerSource).toContain('data-layout="corner-equal-padding"');
+          expect(layerSource).toContain('data-artwork-scale="0.87"');
+          expect(layerSource).toContain('data-cube-padding="58"');
+          expect(layerSource).toContain('data-feather-padding="46"');
+          expect(layerSource).toContain('data-feather-to-pot="58/42"');
+          expect(layerSource).toContain('data-source-artwork="approved-raster-direct-trace"');
+          expect(layerSource).toContain('data-efficiency-pass="none"');
+          expect(layerSource).not.toContain('<rect');
+          expect(layerSource).not.toContain('angled-pen-shadow');
+          expect(layerSource).toContain('<g id="quill-ink-mark"');
+          expect(layerSource.match(/<path\b/g)?.length).toBeGreaterThan(1000);
+          expect(layerSource).not.toContain('<circle');
           expect(layerSource).not.toMatch(/<filter\b|filter=|<image\b|pencil|sketch/i);
-          const gradientId = channel === 'stable'
-            ? (image.appearance === 'dark' ? 'darkButter' : 'paper')
-            : (image.appearance === 'dark' ? 'betaDarkPaper' : 'betaPaper');
-          expect(layerSource.match(new RegExp(`fill="url\\(#${gradientId}\\)"`, 'g')))
-            .toHaveLength(9);
           if (channel === 'stable') {
-            expect(layerSource).toContain('fill="#d31d17"');
+            expect(layerSource).toContain('data-source-artwork="approved-raster-direct-trace"');
           } else {
-            expect(layerSource).toContain('fill="#e5f7ff"');
+            expect(layerSource).toContain('data-source-artwork="approved-raster-direct-trace"');
+          }
+          if (image.appearance === 'dark') {
+            expect(layerSource).toContain('data-dark-outline="white-pure-black-swap"');
+            expect(layerSource).toContain('fill="#ffffff"');
+          } else {
+            expect(layerSource).toContain('data-dark-outline="black"');
+            expect(layerSource).not.toContain('fill="#ffffff"');
           }
         }
       }
