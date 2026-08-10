@@ -1,5 +1,10 @@
 import type { DocumentModel, Markup } from '@butter-paper/core';
 import type { PdfPageGeometryIndex, PdfSaveMode, PdfSaveResult } from '@butter-paper/pdf';
+import type {
+  SigningApprovalRequest,
+  SigningApprovalResult,
+  SigningIdentitySelectionResult,
+} from './signingProtocol';
 
 export type ToolMode = 'select' | 'pan' | 'text-box' | 'rectangle' | 'ellipse' | 'arc' | 'line' | 'arrow' | 'dimension' | 'length' | 'polylength' | 'area' | 'polyline' | 'polygon' | 'pen' | 'highlight' | 'cloud' | 'cloud-plus' | 'callout' | 'image' | 'snapshot';
 export type ScrollMode = 'continuous' | 'single-page';
@@ -256,7 +261,59 @@ export interface LoadedDocumentPayload {
   document: DocumentModel;
   /** Opaque owner-scoped capability for all privileged access to the loaded PDF. */
   documentAccess: PdfDocumentAccessDescriptor;
+  /** Main-owned signature-sensitive capability; never contains a source path. */
+  signatureDocument?: SignatureDocumentDescriptor | null;
+  signatureProtection?: LoadedDocumentSignatureProtection;
+  signatureValidation?: LoadedDocumentSignatureValidation;
   openStageTimings?: DocumentOpenStageTimings;
+}
+
+export type LoadedDocumentSignatureValidation =
+  | {
+      readonly status: 'complete';
+      readonly inputSha256: string;
+      readonly signaturePresence: 'unsigned' | 'signed' | 'certified' | 'indeterminate';
+      readonly validationMode: 'offline';
+      readonly validationTime: string;
+      readonly validationTimeProvenance: 'observed-system-utc' | 'caller-supplied-fixed-reference';
+      readonly trust: SignatureDocumentTrustSnapshot;
+      readonly signatureCount: number;
+      readonly issueCount: number;
+    }
+  | {
+      readonly status: 'unavailable';
+      readonly errorCode: 'ENGINE_UNAVAILABLE' | 'PROTOCOL_ERROR' | 'TIMEOUT' | 'CANCELLED';
+      /** Cautious renderer-safe text; never includes paths or provider diagnostics. */
+      readonly message: string;
+    };
+
+export interface LoadedDocumentSignatureProtection {
+  /** Signed or uncertain documents remain read-only through the legacy writer. */
+  readonly sourceReadOnly: boolean;
+  readonly status: 'unsigned' | 'potentially-signed' | 'signed' | 'certified' | 'indeterminate';
+  readonly detection: 'no-byte-range-marker' | 'byte-range-marker' | 'validation-report' | 'validation-unavailable';
+}
+
+export interface SignatureDocumentTrustSnapshot {
+  readonly policyId: string;
+  readonly policyVersion: number;
+  readonly configurationSha256: string;
+}
+
+export interface SignatureDocumentDescriptor {
+  readonly handle: string;
+  readonly inputSha256: string;
+  readonly byteLength: number;
+  readonly signaturePresence: 'unsigned' | 'signed' | 'certified' | 'indeterminate';
+  readonly trust: SignatureDocumentTrustSnapshot;
+  readonly registeredAt: string;
+  readonly capabilities: {
+    readonly createUnsignedCopy: boolean;
+    readonly certificateSign: boolean;
+    readonly certify: boolean;
+    readonly signatureIncrementalWrite: boolean;
+    readonly signedIncrementalEdit: boolean;
+  };
 }
 
 export interface BlankPdfCreateRequest {
@@ -362,6 +419,10 @@ export interface ButterPaperBridge {
     releaseDocument(request: PdfDocumentAccessRequest): Promise<void>;
     getPageGeometry(request: PageGeometryRequest): Promise<PdfPageGeometryIndex>;
     saveDocument(request: SaveDocumentRequest): Promise<PdfSaveResult>;
+  };
+  readonly signing: {
+    chooseIdentity(): Promise<SigningIdentitySelectionResult>;
+    approve(request: SigningApprovalRequest): Promise<SigningApprovalResult>;
   };
   readonly test: {
     resolveFixturePath(name: string): Promise<string | null>;

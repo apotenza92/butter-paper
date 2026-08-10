@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "licenses": {
+    "Apache-2.0": {
+      "acceptedSbomLicenses": ["Apache-2.0"],
+      "file": "Apache-2.0.txt",
+      "sourceUrl": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    "Bouncy-Castle": {
+      "acceptedSbomLicenses": ["Bouncy Castle Licence"],
+      "file": "Bouncy-Castle-Licence.html",
+      "sourceUrl": "https://raw.githubusercontent.com/bcgit/bc-java/r1rv83/LICENSE.html",
+      "sha256": "edbbb10380b1271998b867a2e36b1cbee226e03d438726e1a91f80c5dde11849"
+    },
+    "BSD-3-Clause": {
+      "acceptedSbomLicenses": ["BSD-3-Clause"],
+      "file": "BSD-3-Clause.txt",
+      "sourceUrl": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/BSD-3-Clause.txt",
+      "sha256": "5a93d5831e1297ab10fe643e1a631e83be392896da14ee2951285a79012df69d"
+    },
+    "LGPL-2.1-text": {
+      "acceptedSbomLicenses": ["GNU Lesser General Public License"],
+      "file": "LGPL-2.1.txt",
+      "sourceUrl": "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt",
+      "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95"
+    },
+    "MIT-SLF4J": {
+      "acceptedSbomLicenses": ["MIT"],
+      "file": "MIT-SLF4J.txt",
+      "sourceUrl": "https://raw.githubusercontent.com/qos-ch/slf4j/v_2.0.17/LICENSE.txt",
+      "sha256": "6fbe2eaf44b193b8a40eed9208f52848572224ad8d7672dd09418aa174847e73"
+    }
+  },
+  "correspondingSources": [
+    {
+      "archiveRoot": "dss-6.4/",
+      "bytes": 137227450,
+      "file": "dss-6.4-source.tar.gz",
+      "packagePath": "source/upstream/dss-6.4-source.tar.gz",
+      "requiredCoordinatePrefix": "eu.europa.ec.joinup.sd-dss:",
+      "resolvedCommit": "26a2e3338d8d4fe6c6281c2b53d13546fa64c9bf",
+      "sha256": "5f2421d6bf1c6073aa1e3c1ed4b44d2f058c6d751a4d89dbf326082860b224a4",
+      "sourceUrl": "https://github.com/esig/dss/archive/refs/tags/6.4.tar.gz",
+      "version": "6.4"
+    }
+  ],
+  "components": [
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-alert:6.4","jar":"dss-alert-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-cades:6.4","jar":"dss-cades-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-cms:6.4","jar":"dss-cms-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-cms-object:6.4","jar":"dss-cms-object-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-crl-parser:6.4","jar":"dss-crl-parser-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-crl-parser-x509crl:6.4","jar":"dss-crl-parser-x509crl-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-detailed-report-jaxb:6.4","jar":"dss-detailed-report-jaxb-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-diagnostic-jaxb:6.4","jar":"dss-diagnostic-jaxb-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-document:6.4","jar":"dss-document-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-enumerations:6.4","jar":"dss-enumerations-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-i18n:6.4","jar":"dss-i18n-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-jaxb-common:6.4","jar":"dss-jaxb-common-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-jaxb-parsers:6.4","jar":"dss-jaxb-parsers-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-model:6.4","jar":"dss-model-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-pades:6.4","jar":"dss-pades-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-pades-pdfbox:6.4","jar":"dss-pades-pdfbox-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-simple-certificate-report-jaxb:6.4","jar":"dss-simple-certificate-report-jaxb-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-simple-report-jaxb:6.4","jar":"dss-simple-report-jaxb-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-spi:6.4","jar":"dss-spi-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-token:6.4","jar":"dss-token-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-utils:6.4","jar":"dss-utils-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-utils-apache-commons:6.4","jar":"dss-utils-apache-commons-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-validation:6.4","jar":"dss-validation-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:dss-xml-common:6.4","jar":"dss-xml-common-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:specs-trusted-list-v211:6.4","jar":"specs-trusted-list-v211-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:specs-validation-report:6.4","jar":"specs-validation-report-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:specs-xades:6.4","jar":"specs-xades-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"eu.europa.ec.joinup.sd-dss:specs-xmldsig:6.4","jar":"specs-xmldsig-6.4.jar","license":"LGPL-2.1-text"},
+    {"coordinate":"org.bouncycastle:bcpkix-jdk18on:1.84","jar":"bcpkix-jdk18on-1.84.jar","license":"Bouncy-Castle"},
+    {"coordinate":"org.bouncycastle:bcprov-jdk18on:1.84","jar":"bcprov-jdk18on-1.84.jar","license":"Bouncy-Castle"},
+    {"coordinate":"org.bouncycastle:bcutil-jdk18on:1.84","jar":"bcutil-jdk18on-1.84.jar","license":"Bouncy-Castle"},
+    {"coordinate":"org.slf4j:slf4j-api:2.0.17","jar":"slf4j-api-2.0.17.jar","license":"MIT-SLF4J"},
+    {"coordinate":"org.slf4j:slf4j-nop:2.0.17","jar":"slf4j-nop-2.0.17.jar","license":"MIT-SLF4J"},
+    {"coordinate":"org.apache.pdfbox:pdfbox:3.0.6","jar":"pdfbox-3.0.6.jar","license":"Apache-2.0"},
+    {"coordinate":"org.apache.pdfbox:pdfbox-io:3.0.6","jar":"pdfbox-io-3.0.6.jar","license":"Apache-2.0"},
+    {"coordinate":"org.apache.pdfbox:fontbox:3.0.6","jar":"fontbox-3.0.6.jar","license":"Apache-2.0"},
+    {"coordinate":"commons-codec:commons-codec:1.18.0","jar":"commons-codec-1.18.0.jar","license":"Apache-2.0"},
+    {"coordinate":"commons-io:commons-io:2.21.0","jar":"commons-io-2.21.0.jar","license":"Apache-2.0"},
+    {"coordinate":"commons-logging:commons-logging:1.3.5","jar":"commons-logging-1.3.5.jar","license":"Apache-2.0"},
+    {"coordinate":"org.apache.commons:commons-collections4:4.5.0","jar":"commons-collections4-4.5.0.jar","license":"Apache-2.0"},
+    {"coordinate":"org.apache.commons:commons-lang3:3.20.0","jar":"commons-lang3-3.20.0.jar","license":"Apache-2.0"},
+    {"coordinate":"jakarta.xml.bind:jakarta.xml.bind-api:3.0.1","jar":"jakarta.xml.bind-api-3.0.1.jar","license":"BSD-3-Clause"},
+    {"coordinate":"com.sun.activation:jakarta.activation:2.0.1","jar":"jakarta.activation-2.0.1.jar","license":"BSD-3-Clause"},
+    {"coordinate":"com.sun.istack:istack-commons-runtime:4.0.1","jar":"istack-commons-runtime-4.0.1.jar","license":"BSD-3-Clause"},
+    {"coordinate":"org.glassfish.jaxb:jaxb-core:3.0.2","jar":"jaxb-core-3.0.2.jar","license":"BSD-3-Clause"},
+    {"coordinate":"org.glassfish.jaxb:jaxb-runtime:3.0.2","jar":"jaxb-runtime-3.0.2.jar","license":"BSD-3-Clause"},
+    {"coordinate":"org.glassfish.jaxb:txw2:3.0.2","jar":"txw2-3.0.2.jar","license":"BSD-3-Clause"},
+    {"coordinate":"com.fasterxml.jackson.core:jackson-databind:2.21.5","jar":"jackson-databind-2.21.5.jar","license":"Apache-2.0"},
+    {"coordinate":"com.fasterxml.jackson.core:jackson-annotations:2.21","jar":"jackson-annotations-2.21.jar","license":"Apache-2.0"},
+    {"coordinate":"com.fasterxml.jackson.core:jackson-core:2.21.5","jar":"jackson-core-2.21.5.jar","license":"Apache-2.0"}
+  ]
+}

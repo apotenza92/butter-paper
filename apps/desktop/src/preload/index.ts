@@ -10,6 +10,7 @@ import type {
   UpdateFrequency,
   UpdateStatus,
 } from '../shared/protocol';
+import type { SigningApprovalRequest } from '../shared/signingProtocol';
 
 const { contextBridge, ipcRenderer } = electron;
 
@@ -127,6 +128,10 @@ const bridge: ButterPaperBridge = {
     },
     getPageGeometry: async (request: PageGeometryRequest) => ipcRenderer.invoke(ipcChannels.pdfGetPageGeometry, request),
     saveDocument: async (request: SaveDocumentRequest) => ipcRenderer.invoke(ipcChannels.pdfSaveDocument, request),
+  },
+  signing: {
+    chooseIdentity: async () => ipcRenderer.invoke(ipcChannels.signingChooseIdentity),
+    approve: async (request: SigningApprovalRequest) => ipcRenderer.invoke(ipcChannels.signingApprove, request),
   },
   test: isTestMode
     ? {

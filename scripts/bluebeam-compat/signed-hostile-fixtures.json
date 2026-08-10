@@ -1,0 +1,17 @@
+{
+  "schema": "butter-paper/signed-hostile-fixtures",
+  "version": 1,
+  "fixtures": [
+    { "id": "malformed-byte-range", "category": "pdf-structure", "description": "ByteRange has the wrong arity or escapes the file.", "expected": "reject-structural-inspection" },
+    { "id": "corrupt-cms", "category": "pdf-structure", "description": "Contents is present but is not a structurally valid DER CMS container.", "expected": "reject-structural-inspection" },
+    { "id": "changed-signed-bytes", "category": "pdf-integrity", "description": "A byte inside a declared signed range changes after signing.", "expected": "reject-postvalidation" },
+    { "id": "prohibited-change", "category": "policy", "description": "A requested change is outside the allowed signed-document profile.", "expected": "reject-before-save" },
+    { "id": "output-collision", "category": "filesystem", "description": "The Save As target already exists and is not an approved empty output.", "expected": "reject-before-save" },
+    { "id": "source-race", "category": "filesystem", "description": "The source identity changes between preflight and write.", "expected": "reject-and-preserve-source" },
+    { "id": "symlink-source-or-output", "category": "filesystem", "description": "Source or output traverses a symlink or escapes the evidence root.", "expected": "reject-before-save" },
+    { "id": "cancellation", "category": "control-flow", "description": "The operation is cancelled before publication.", "expected": "reject-and-preserve-source" },
+    { "id": "failed-postvalidation", "category": "postvalidation", "description": "A writer reports success but independent output checks fail.", "expected": "reject-and-preserve-source" },
+    { "id": "secret-leakage", "category": "evidence", "description": "Evidence includes a private key, password, token, or raw secret-bearing path.", "expected": "reject-manifest" },
+    { "id": "path-leakage", "category": "evidence", "description": "Evidence includes an absolute machine path or path traversal.", "expected": "reject-manifest" }
+  ]
+}

@@ -137,6 +137,7 @@ type ScrollDirection = 'down' | 'up' | 'none';
 interface DocumentViewportProps {
   session: LocalPdfSession | null;
   onOpenDocument: () => void;
+  mutationDisabled?: boolean;
   calibrationPick?: { active: boolean; pointCount: number } | null;
   onCalibrationPoint?: (pageIndex: number, point: PdfPoint) => void;
   onCancelCalibrationPick?: () => void;
@@ -145,6 +146,7 @@ interface DocumentViewportProps {
 export function DocumentViewport({
   session,
   onOpenDocument,
+  mutationDisabled = false,
   calibrationPick = null,
   onCalibrationPoint,
   onCancelCalibrationPick,
@@ -1604,6 +1606,7 @@ export function DocumentViewport({
             onCalibrationPoint={onCalibrationPoint}
             onSelectPage={handleSelectPage}
             onHoverPage={setPointerPageIndex}
+            mutationDisabled={mutationDisabled}
           />
         );
       }) : (

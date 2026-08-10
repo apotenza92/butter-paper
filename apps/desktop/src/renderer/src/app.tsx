@@ -24,6 +24,7 @@ import { NewBlankPdfDialog } from './components/NewBlankPdfDialog';
 import { PageScaleDialog } from './components/PageScaleDialog';
 import { RightRail, shouldDispatchToolSelection } from './components/RightRail';
 import { RightSidebar } from './components/RightSidebar';
+import { SignatureStatusBanner } from './components/SignatureStatusBanner';
 import { UnsavedChangesDialog } from './components/UnsavedChangesDialog';
 import { UpdateDialog } from './components/UpdateDialog';
 import { ViewerToolbar } from './components/ViewerToolbar';
@@ -46,6 +47,7 @@ import { PDF_TOOL_REGISTRY } from './pdf-tools/toolRegistry';
 import { clampViewerZoom } from './utils/renderZoom';
 import { isEditableShortcutTarget, isToolShortcutBlockedTarget, normalizeShortcutKey, parseToolShortcut, resolveToolShortcut } from './utils/toolShortcuts';
 import { saveDocumentsInOrder } from './utils/unsavedDocuments';
+import { isDocumentMutationDisabled } from './components/signatureMutationPolicy';
 
 const INACTIVE_TRIM_DELAY_MS = 5000;
 const SPACE_DOUBLE_TAP_MS = 300;
@@ -342,7 +344,7 @@ export function App({ initialThemeMode }: AppProps) {
   const setCurrentPage = useViewerStore((state) => state.setCurrentPage);
   const activeTool = useViewerStore((state) => state.activeTool);
   const documentState = useViewerStore((state) => state.document);
-  const documentMutationDisabled = false;
+  const documentMutationDisabled = isDocumentMutationDisabled(documentState?.signatureProtection);
   const leftSidebarOpen = useViewerStore((state) => state.leftSidebarOpen);
   const leftSidebarPanel = useViewerStore((state) => state.leftSidebarPanel);
   const rightSidebarOpen = useViewerStore((state) => state.rightSidebarOpen);
@@ -404,6 +406,12 @@ export function App({ initialThemeMode }: AppProps) {
   useEffect(() => {
     activeToolRef.current = activeTool;
   }, [activeTool]);
+
+  useEffect(() => {
+    if (documentMutationDisabled && activeTool !== 'select' && activeTool !== 'pan') {
+      setActiveTool('select');
+    }
+  }, [activeTool, documentMutationDisabled, setActiveTool]);
 
   useEffect(() => {
     document.documentElement.dataset.testMode = isTestMode ? 'true' : 'false';
@@ -695,6 +703,10 @@ export function App({ initialThemeMode }: AppProps) {
   async function saveTab(tab: DocumentTab | null, explicitTarget?: PdfSaveTargetDescriptor): Promise<boolean> {
     if (!tab) return false;
     const sourceDocument = documentStateForTab(tab);
+    if (isDocumentMutationDisabled(sourceDocument.signatureProtection)) {
+      setErrorMessage('This signed or uncertain PDF is read-only until a supported validated workflow is available.');
+      return false;
+    }
     const target = explicitTarget ?? await window.butterPaper.dialogs.savePdfAsDialog(
       tab.temporarySourcePath ? sourceDocument.fileName : saveDefaultName(sourceDocument.fileName),
     ) ?? undefined;
@@ -733,7 +745,7 @@ export function App({ initialThemeMode }: AppProps) {
   }
 
   async function handleSave(): Promise<void> {
-    if (!activeTab) return;
+    if (!activeTab || documentMutationDisabled) return;
     try {
       await saveTab(activeTab);
     } catch (error) {
@@ -742,7 +754,7 @@ export function App({ initialThemeMode }: AppProps) {
   }
 
   async function handleSaveAs(): Promise<void> {
-    if (!activeTab) return;
+    if (!activeTab || documentMutationDisabled) return;
     const sourceDocument = documentStateForTab(activeTab);
     const defaultName = activeTab.temporarySourcePath ? sourceDocument.fileName : saveDefaultName(sourceDocument.fileName);
     const target = await window.butterPaper.dialogs.savePdfAsDialog(defaultName);
@@ -828,7 +840,8 @@ export function App({ initialThemeMode }: AppProps) {
 
   function updateZoom(nextZoom: number) { setZoomPreset('manual'); setZoom(clampZoom(nextZoom)); }
   function handleToolChange(tool: ToolMode, clickCount = 1) {
-    if (!shouldDispatchToolSelection(clickCount)) {
+    if (!shouldDispatchToolSelection(clickCount)
+      || (documentMutationDisabled && tool !== 'select' && tool !== 'pan')) {
       return;
     }
     heldPanRestoreToolRef.current = null;
@@ -841,6 +854,7 @@ export function App({ initialThemeMode }: AppProps) {
   }
 
   function handlePageScaleApply(updater: (document: DocumentModel) => DocumentModel, message: string): void {
+    if (documentMutationDisabled) return;
     updateDocument(updater);
     setStatusMessage(message);
     setErrorMessage(null);
@@ -848,6 +862,7 @@ export function App({ initialThemeMode }: AppProps) {
   }
 
   function openPageScaleDialog(mode: 'preset' | 'custom' | 'calibrate' = 'preset'): void {
+    if (documentMutationDisabled) return;
     setPageScaleDialogInitialMode(mode);
     if (mode !== 'calibrate') {
       setPageScaleCalibrationPoints(null);
@@ -861,6 +876,7 @@ export function App({ initialThemeMode }: AppProps) {
   }
 
   function handleRotatePage(pageIndex: number, direction: PageRotationDirection): void {
+    if (documentMutationDisabled) return;
     updateDocument((document) => rotateDocumentPage(document, pageIndex, direction));
     setCurrentPage(pageIndex);
     setStatusMessage(`Rotated page ${pageIndex + 1} ${direction}`);
@@ -868,6 +884,7 @@ export function App({ initialThemeMode }: AppProps) {
   }
 
   function startPageScaleCalibrationPick(): void {
+    if (documentMutationDisabled) return;
     setPageScaleDialogOpen(false);
     setPageScaleCalibrationPick({ points: [], pageIndex: null });
     setStatusMessage('Click the first point of a known distance.');
@@ -880,6 +897,7 @@ export function App({ initialThemeMode }: AppProps) {
   }
 
   function handlePageScaleCalibrationPoint(pageIndex: number, point: PdfPoint): void {
+    if (documentMutationDisabled) return;
     setCurrentPage(pageIndex);
     setPageScaleCalibrationPick((current) => {
       if (!current || current.points.length >= 2) {
@@ -906,6 +924,7 @@ export function App({ initialThemeMode }: AppProps) {
   }
 
   function deleteSelectedMarkups(): boolean {
+    if (documentMutationDisabled) return false;
     const ids = useViewerStore.getState().selectedMarkupIds;
     if (ids.length === 0) {
       return false;
@@ -924,6 +943,10 @@ export function App({ initialThemeMode }: AppProps) {
   async function handleImageFileChange(event: ChangeEvent<HTMLInputElement>): Promise<void> {
     const file = event.currentTarget.files?.[0] ?? null;
     event.currentTarget.value = '';
+    if (documentMutationDisabled) {
+      setPendingImageAsset(null);
+      return;
+    }
     if (!file) {
       setPendingImageAsset(null);
       return;
@@ -1065,7 +1088,7 @@ export function App({ initialThemeMode }: AppProps) {
   });
 
   const pages = documentState?.document.pages ?? [];
-  const canSave = Boolean(session && documentState);
+  const canSave = Boolean(session && documentState && !documentMutationDisabled);
   const hasDirtyDocuments = tabs.some((tab) => (
     tab.id === activeTabId && documentState ? documentState.dirty : tab.document.dirty
   ));
@@ -1164,7 +1187,8 @@ export function App({ initialThemeMode }: AppProps) {
             aria-labelledby={activeTabId ? `document-tab-trigger-${tabs.findIndex((tab) => tab.id === activeTabId)}` : undefined}
           >
             <>
-              <ViewerToolbar disabled={viewerControlsDisabled} zoom={zoom} zoomPreset={zoomPreset} scrollMode={scrollMode} continuousScrollWheelMode={continuousScrollWheelMode} singlePageScrollWheelMode={singlePageScrollWheelMode} pageColumnsEnabled={pageColumnsEnabled} cadViewOrganisation={cadViewOrganisation} pagesPerColumn={pagesPerColumn} onFitPage={() => setZoomPreset('fit-page')} onFitWidth={() => setZoomPreset('fit-width')} onScrollModeChange={setScrollMode} onContinuousScrollWheelModeChange={setContinuousScrollWheelMode} onSinglePageScrollWheelModeChange={setSinglePageScrollWheelMode} onPageColumnsEnabledChange={setPageColumnsEnabled} onCadViewOrganisationChange={setCadViewOrganisation} onPagesPerColumnChange={setPagesPerColumn} onZoomIn={() => updateZoom(zoom * 1.1)} onZoomOut={() => updateZoom(zoom / 1.1)} onZoomReset={() => updateZoom(1)} onZoomChange={updateZoom} />
+            <ViewerToolbar disabled={viewerControlsDisabled} zoom={zoom} zoomPreset={zoomPreset} scrollMode={scrollMode} continuousScrollWheelMode={continuousScrollWheelMode} singlePageScrollWheelMode={singlePageScrollWheelMode} pageColumnsEnabled={pageColumnsEnabled} cadViewOrganisation={cadViewOrganisation} pagesPerColumn={pagesPerColumn} onFitPage={() => setZoomPreset('fit-page')} onFitWidth={() => setZoomPreset('fit-width')} onScrollModeChange={setScrollMode} onContinuousScrollWheelModeChange={setContinuousScrollWheelMode} onSinglePageScrollWheelModeChange={setSinglePageScrollWheelMode} onPageColumnsEnabledChange={setPageColumnsEnabled} onCadViewOrganisationChange={setCadViewOrganisation} onPagesPerColumnChange={setPagesPerColumn} onZoomIn={() => updateZoom(zoom * 1.1)} onZoomOut={() => updateZoom(zoom / 1.1)} onZoomReset={() => updateZoom(1)} onZoomChange={updateZoom} />
+              <SignatureStatusBanner protection={documentState?.signatureProtection} validation={documentState?.signatureValidation} />
               <div className="min-h-0 flex-1">
                 <CanvasContextMenu
                   disabled={viewerControlsDisabled}
@@ -1179,7 +1203,7 @@ export function App({ initialThemeMode }: AppProps) {
                   onSetPageScale={openPageScaleDialogForPage}
                   onRotatePage={handleRotatePage}
                 >
-                  <DocumentViewport session={session} onOpenDocument={() => void handleOpen()} calibrationPick={!documentMutationDisabled && pageScaleCalibrationPick ? { active: true, pointCount: pageScaleCalibrationPick.points.length } : null} onCalibrationPoint={handlePageScaleCalibrationPoint} onCancelCalibrationPick={cancelPageScaleCalibrationPick} />
+                  <DocumentViewport session={session} onOpenDocument={() => void handleOpen()} mutationDisabled={documentMutationDisabled} calibrationPick={!documentMutationDisabled && pageScaleCalibrationPick ? { active: true, pointCount: pageScaleCalibrationPick.points.length } : null} onCalibrationPoint={handlePageScaleCalibrationPoint} onCancelCalibrationPick={cancelPageScaleCalibrationPick} />
                 </CanvasContextMenu>
               </div>
             </>

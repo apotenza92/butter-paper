@@ -1,0 +1,95 @@
+{
+  "schema": "butter-paper/signed-interop-contract",
+  "version": 1,
+  "claimPolicy": {
+    "structuralInspection": "descriptive-only",
+    "cryptographicValidity": "requires-independent-oracle",
+    "signatureWidget": "not-proof-of-signature",
+    "missingCommercialEvidence": "not-run"
+  },
+  "participants": [
+    { "id": "butter-paper", "kind": "application", "versionPolicy": "record-exact-version" },
+    { "id": "bluebeam-revu", "kind": "commercial-application", "versionPolicy": "record-exact-version" },
+    { "id": "pyhanko", "kind": "independent-oracle", "versionPolicy": "pinned-package" },
+    { "id": "dss", "kind": "independent-oracle", "versionPolicy": "pinned-sidecar" }
+  ],
+  "oraclePins": {
+    "pyhanko": { "package": "pyHanko", "version": "0.29.0", "commandContract": "pyhanko sign validate --pretty-print" },
+    "dss": { "product": "EU DSS", "version": "6.4.0", "profile": "PAdES Baseline B-B" }
+  },
+  "requiredEvidence": [
+    "source-sha256",
+    "output-sha256",
+    "signed-pdf-structural-inspection",
+    "independent-cryptographic-oracle",
+    "save-as-new-proof",
+    "source-preservation-proof",
+    "commercial-application-capture-or-not-run"
+  ],
+  "flows": [
+    {
+      "id": "A",
+      "name": "Butter signs, Revu opens",
+      "sequence": ["butter-paper", "bluebeam-revu"],
+      "signedRevisionPolicy": "Revu must open the new signed output without replacing the source.",
+      "requiredAxes": ["structure", "cryptographic", "commercial"],
+      "status": "not-run"
+    },
+    {
+      "id": "B",
+      "name": "Revu markup, Butter imports",
+      "sequence": ["bluebeam-revu", "butter-paper"],
+      "signedRevisionPolicy": "Butter must preserve imported Revu markup and write any signed result as a new file.",
+      "requiredAxes": ["annotation-round-trip", "structure", "cryptographic"],
+      "status": "not-run"
+    },
+    {
+      "id": "C",
+      "name": "Butter signs, Revu reviews, Butter reopens",
+      "sequence": ["butter-paper", "bluebeam-revu", "butter-paper"],
+      "signedRevisionPolicy": "The original signed bytes remain unchanged across the review round trip.",
+      "requiredAxes": ["revision-ancestry", "structure", "cryptographic", "source-preservation"],
+      "status": "not-run"
+    },
+    {
+      "id": "D",
+      "name": "Revu reviews, Butter signs, Revu reopens",
+      "sequence": ["bluebeam-revu", "butter-paper", "bluebeam-revu"],
+      "signedRevisionPolicy": "The Butter output is a distinct Save As result accepted by the exact Revu version.",
+      "requiredAxes": ["annotation-round-trip", "structure", "cryptographic", "commercial"],
+      "status": "not-run"
+    },
+    {
+      "id": "E",
+      "name": "Alternating countersignatures starting in Butter",
+      "sequence": ["butter-paper", "bluebeam-revu", "butter-paper", "bluebeam-revu"],
+      "signedRevisionPolicy": "Each signer appends an independently inspected revision; no signer overwrites prior signed bytes.",
+      "requiredAxes": ["revision-ancestry", "countersignature-order", "cryptographic", "commercial"],
+      "status": "not-run"
+    },
+    {
+      "id": "F",
+      "name": "Alternating countersignatures starting in Revu",
+      "sequence": ["bluebeam-revu", "butter-paper", "bluebeam-revu", "butter-paper"],
+      "signedRevisionPolicy": "Every appended signature is correlated to its source revision and independently postvalidated.",
+      "requiredAxes": ["revision-ancestry", "countersignature-order", "cryptographic", "commercial"],
+      "status": "not-run"
+    },
+    {
+      "id": "G",
+      "name": "Safe-save rejection and recovery",
+      "sequence": ["butter-paper"],
+      "signedRevisionPolicy": "Cancellation, collision, race, prohibited-change, or postvalidation failure preserves the source and publishes no replacement.",
+      "requiredAxes": ["source-preservation", "save-as-new-proof", "failure-cleanup"],
+      "status": "not-run"
+    },
+    {
+      "id": "H",
+      "name": "Independent oracle and evidence availability",
+      "sequence": ["pyhanko", "dss"],
+      "signedRevisionPolicy": "Unavailable or unrun oracle evidence is recorded explicitly and cannot be promoted to cryptographic validity.",
+      "requiredAxes": ["oracle-state", "claim-gating", "commercial-not-run"],
+      "status": "not-run"
+    }
+  ]
+}

@@ -128,6 +128,12 @@ jobs:
       - name: Generate PDF fixtures
         run: pnpm generate:fixtures
 
+      - name: Build matching native PDF signature core package
+        env:
+          BP_RELEASE_PLATFORM: darwin
+          BP_RELEASE_ARCH: ${{ matrix.arch }}
+        run: pnpm build:signature-core -- --platform "$BP_RELEASE_PLATFORM" --arch "$BP_RELEASE_ARCH"
+
       - name: Build desktop application without release credentials
         run: pnpm build:desktop
 
@@ -225,6 +231,12 @@ jobs:
 
       - name: Generate PDF fixtures
         run: pnpm generate:fixtures
+
+      - name: Build matching native PDF signature core package
+        env:
+          BP_RELEASE_PLATFORM: win32
+          BP_RELEASE_ARCH: ${{ matrix.arch }}
+        run: pnpm build:signature-core -- --platform "$BP_RELEASE_PLATFORM" --arch "$BP_RELEASE_ARCH"
 
       - name: Build desktop application
         run: pnpm build:desktop
@@ -346,6 +358,12 @@ jobs:
 
       - name: Generate PDF fixtures
         run: pnpm generate:fixtures
+
+      - name: Build matching native PDF signature core package
+        env:
+          BP_RELEASE_PLATFORM: linux
+          BP_RELEASE_ARCH: ${{ matrix.arch }}
+        run: pnpm build:signature-core -- --platform "$BP_RELEASE_PLATFORM" --arch "$BP_RELEASE_ARCH"
 
       - name: Build desktop application
         run: pnpm build:desktop
