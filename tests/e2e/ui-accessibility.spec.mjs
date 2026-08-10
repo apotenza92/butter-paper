@@ -453,6 +453,7 @@ test.describe('shadcn Base UI shell accessibility', () => {
     if (!app) test.skip(true, 'Desktop app could not be launched');
 
     const { page } = await openFixturePdf(app, 'zoom-target');
+    await expect.poll(async () => (await getDiagnostics(page))?.pageCount).toBeGreaterThan(0);
     const splitSurfaceState = async () => page.evaluate(() => {
       const background = (testId) => {
         const element = document.querySelector(`[data-testid="${testId}"]`);
