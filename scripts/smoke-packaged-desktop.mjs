@@ -158,7 +158,7 @@ async function verifyBlankPdfWorkflow(page, outputDirectory, pdfWorkflowMode) {
   await page.waitForFunction(() => window.__butterPaperTestHooks?.getDiagnostics()?.tabs?.at(-1)?.dirty === true);
 
   if (process.platform === 'win32' && pdfWorkflowMode === 'read-only') {
-    await page.getByTestId('menu-trigger-butter-paper').click();
+    await page.getByTestId('menu-trigger-file').click();
     const saveAsMenuItem = page.getByTestId('menu-file-save-as');
     await saveAsMenuItem.waitFor({ state: 'visible' });
     assert(
