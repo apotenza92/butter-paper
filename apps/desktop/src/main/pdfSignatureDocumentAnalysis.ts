@@ -170,7 +170,12 @@ function mapUnavailableError(error: unknown): SignatureAnalysisErrorCode {
 
 function describeAnalysisError(error: unknown): string {
   if (error instanceof PdfSignatureCoreError) {
-    return error.code === 'LAUNCH_FAILED' ? `${error.code}:${error.message}` : error.code;
+    if (error.code !== 'LAUNCH_FAILED') return error.code;
+    const cause = error.cause;
+    const causeCode = cause && typeof cause === 'object' && 'code' in cause && typeof cause.code === 'string'
+      ? cause.code
+      : null;
+    return `${error.code}:${error.message}${causeCode ? `:${causeCode}` : ''}`;
   }
   if (error instanceof Error && error.message.startsWith('Invalid PDF signature core package:')) {
     return error.message.replace(/^Invalid PDF signature core package:\s*/, '').replace(/\.$/, '');
