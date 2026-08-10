@@ -999,11 +999,21 @@ function releasePdfDocumentAccess(ownerWebContentsId: number, documentHandle: st
 }
 
 function createPdfSignatureCoreOptions() {
+  const developmentRoot = app.isPackaged ? undefined : resolvePdfSignatureCoreDevelopmentRoot();
   return {
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
     appPath: app.getAppPath(),
+    ...(developmentRoot ? { developmentRoot } : {}),
   } as const;
+}
+
+function resolvePdfSignatureCoreDevelopmentRoot(): string | undefined {
+  return ancestorFileCandidates(
+    app.getAppPath(),
+    'native/pdf-signature-core/build/package',
+    6,
+  ).find((candidate) => existsSync(join(candidate, `${process.platform}-${process.arch}`)));
 }
 
 function assertPdfDocumentAccessRequest(
