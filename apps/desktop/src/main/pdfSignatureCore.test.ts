@@ -588,7 +588,7 @@ describe('PDF signature core main-process client', () => {
       createdChild.ignoredSignals.add('SIGKILL');
     });
 
-    await expect(client.inspectFile(fixture.inputPath, { timeoutMs: 5 })).rejects.toMatchObject({
+    await expect(client.inspectFile(fixture.inputPath, { timeoutMs: 50 })).rejects.toMatchObject({
       code: 'TIMEOUT',
       message: expect.stringMatching(/did not confirm termination/),
     });
