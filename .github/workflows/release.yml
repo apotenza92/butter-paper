@@ -118,7 +118,7 @@ jobs:
         uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '21.0.12'
 
       - name: Verify native runner
         shell: bash
@@ -135,10 +135,7 @@ jobs:
         run: pnpm generate:fixtures
 
       - name: Build matching native PDF signature core package
-        env:
-          BP_RELEASE_PLATFORM: darwin
-          BP_RELEASE_ARCH: ${{ matrix.arch }}
-        run: node scripts/build-pdf-signature-core.mjs --platform "$BP_RELEASE_PLATFORM" --arch "$BP_RELEASE_ARCH"
+        run: node scripts/build-pdf-signature-core.mjs --platform "darwin" --arch "${{ matrix.arch }}"
 
       - name: Build desktop application without release credentials
         run: pnpm build:desktop
@@ -232,7 +229,7 @@ jobs:
         uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '21.0.12'
 
       - name: Verify native runner
         shell: bash
@@ -245,10 +242,7 @@ jobs:
         run: pnpm generate:fixtures
 
       - name: Build matching native PDF signature core package
-        env:
-          BP_RELEASE_PLATFORM: win32
-          BP_RELEASE_ARCH: ${{ matrix.arch }}
-        run: node scripts/build-pdf-signature-core.mjs --platform "$BP_RELEASE_PLATFORM" --arch "$BP_RELEASE_ARCH"
+        run: node scripts/build-pdf-signature-core.mjs --platform "win32" --arch "${{ matrix.arch }}"
 
       - name: Build desktop application
         run: pnpm build:desktop
@@ -339,7 +333,7 @@ jobs:
         uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '21.0.12'
 
       - name: Verify native runner
         shell: bash
@@ -378,10 +372,7 @@ jobs:
         run: pnpm generate:fixtures
 
       - name: Build matching native PDF signature core package
-        env:
-          BP_RELEASE_PLATFORM: linux
-          BP_RELEASE_ARCH: ${{ matrix.arch }}
-        run: node scripts/build-pdf-signature-core.mjs --platform "$BP_RELEASE_PLATFORM" --arch "$BP_RELEASE_ARCH"
+        run: node scripts/build-pdf-signature-core.mjs --platform "linux" --arch "${{ matrix.arch }}"
 
       - name: Build desktop application
         run: pnpm build:desktop
