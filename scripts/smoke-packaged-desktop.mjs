@@ -1,8 +1,10 @@
 import { _electron as electron } from '@playwright/test';
+import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { assertIsolatedGuiTestEnvironment } from './gui-test-environment.mjs';
 
 assertIsolatedGuiTestEnvironment('Packaged desktop smoke test');
@@ -17,6 +19,7 @@ const releaseChannel = process.env.BP_RELEASE_CHANNEL || 'stable';
 const expectedProductName = releaseChannel === 'beta' ? 'Butter Paper Beta' : 'Butter Paper';
 const expectedExecutableName = releaseChannel === 'beta' ? 'butter-paper-beta' : 'butter-paper';
 const appCloseTimeoutMs = 30_000;
+const execFileAsync = promisify(execFile);
 
 function findPackagedExecutable() {
   const explicit = process.env.BP_ELECTRON_EXECUTABLE_PATH;
@@ -202,7 +205,12 @@ async function closePackagedApp() {
   } catch (error) {
     console.error('Packaged application close failed; terminating the test process.', error);
     try {
-      app.process().kill();
+      const pid = app.process().pid;
+      if (process.platform === 'win32' && pid) {
+        await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+      } else {
+        app.process().kill('SIGKILL');
+      }
       console.error('Packaged application was force-terminated after bounded smoke cleanup.');
     } catch (killError) {
       console.error('Unable to force-terminate the packaged application.', killError);
