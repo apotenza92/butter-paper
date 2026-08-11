@@ -3,7 +3,6 @@ import { useEffect, useState } from 'react';
 import {
   Popover,
   PopoverContent,
-  PopoverDescription,
   PopoverHeader,
   PopoverTitle,
   PopoverTrigger,
@@ -11,14 +10,16 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { resolveBlankPdfDimensions, type BlankPdfSettings } from './blankPdfSettings';
 import { BlankPdfSettingsFields } from './BlankPdfSettingsFields';
+import { BlankPdfPagePreview } from './domain-ui/BlankPdfPagePreview';
 import { SplitButtonSegment } from './domain-ui/SplitButtonSegment';
 
 interface BlankPdfSettingsPopoverProps {
   settings: BlankPdfSettings;
+  tooltipSide?: 'top' | 'bottom';
   onSettingsChange: (settings: BlankPdfSettings) => void;
 }
 
-export function BlankPdfSettingsPopover({ settings, onSettingsChange }: BlankPdfSettingsPopoverProps) {
+export function BlankPdfSettingsPopover({ settings, tooltipSide, onSettingsChange }: BlankPdfSettingsPopoverProps) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(settings);
   const [error, setError] = useState<string | null>(null);
@@ -76,7 +77,7 @@ export function BlankPdfSettingsPopover({ settings, onSettingsChange }: BlankPdf
             />
           )}
         />
-        <TooltipContent>Blank PDF settings</TooltipContent>
+        <TooltipContent side={tooltipSide}>Blank PDF settings</TooltipContent>
       </Tooltip>
       <PopoverContent
         align="start"
@@ -85,9 +86,9 @@ export function BlankPdfSettingsPopover({ settings, onSettingsChange }: BlankPdf
         finalFocus={() => document.querySelector<HTMLElement>('[data-testid="document-tab-new-pdf-settings"]')}
         style={{ maxHeight: Math.max(0, viewportHeight - 16) }}
       >
-        <PopoverHeader>
+        <PopoverHeader className="gap-2">
           <PopoverTitle>Blank PDF default</PopoverTitle>
-          <PopoverDescription>Choose the settings used for new PDFs. Changes are saved automatically.</PopoverDescription>
+          <BlankPdfPagePreview settings={draft} />
         </PopoverHeader>
         <BlankPdfSettingsFields
           settings={draft}

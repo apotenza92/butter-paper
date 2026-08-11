@@ -210,6 +210,15 @@ const approvedDomainUiExceptions = new Map([
       rawElements: new Set(),
     },
   ],
+  [
+    `${domainUiDirectory}/BlankPdfPagePreview.tsx`,
+    {
+      reason: 'the blank PDF settings popover needs an exact aspect-ratio and vector paper-pattern preview that no official shadcn control provides',
+      allowVisualStyling: true,
+      allowDynamicDragStyle: true,
+      rawElements: new Set(['svg']),
+    },
+  ],
 ]);
 const domainUiFiles = collectFiles(domainUiDirectory).filter((filePath) => filePath.endsWith('.tsx'));
 
@@ -255,6 +264,9 @@ const approvedRawElements = new Map([
   ['apps/desktop/src/renderer/src/components/DocumentViewport.tsx', new Set(['canvas'])],
   ['apps/desktop/src/renderer/src/components/PageThumbnailItem.tsx', new Set(['canvas'])],
   ['apps/desktop/src/renderer/src/components/PageView.tsx', new Set(['canvas'])],
+  // Signature Pad requires a canvas because pointer strokes become a transparent
+  // image appearance. It is PDF markup behavior, not a standard form control.
+  ['apps/desktop/src/renderer/src/components/SignatureMenu.tsx', new Set(['canvas'])],
   ['apps/desktop/src/renderer/src/components/ViewerToolbar.tsx', new Set(['svg'])],
 ]);
 
@@ -338,6 +350,8 @@ if (existsSync(blankPdfSettingsPopoverPath)) {
   if (!blankPdfSettingsPopover.includes('<Popover open={open} onOpenChange={handleOpenChange}>')
     || !blankPdfSettingsPopover.includes('data-testid="new-blank-pdf-settings"')
     || !blankPdfSettingsPopover.includes('<SplitButtonSegment')
+    || !blankPdfSettingsPopover.includes('<BlankPdfPagePreview')
+    || blankPdfSettingsPopover.includes('Choose the settings used for new PDFs')
     || blankPdfSettingsPopover.includes('Change default')) {
     violations.push(`${blankPdfSettingsPopoverPath}: blank PDF settings must appear directly in the split-button popover and save in place`);
   }

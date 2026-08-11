@@ -58,7 +58,10 @@ export function createSmokeEnvironment(source, overrides = {}) {
 const allowedEntitlements = new Set([
   'com.apple.security.cs.allow-jit',
   'com.apple.security.cs.allow-unsigned-executable-memory',
+  'com.apple.security.device.camera',
 ]);
+const CAMERA_USAGE_DESCRIPTION = 'Butter Paper uses the camera only when you choose to take a signature photo.';
+const LOCAL_NETWORK_USAGE_DESCRIPTION = 'Butter Paper uses your local network only when you choose to transfer a signature from your phone.';
 const machOMagic = new Set([
   'feedface',
   'feedfacf',
@@ -251,7 +254,7 @@ export function validateExactArchitecture(output, expectedArch, label) {
   return expectedLipoArch;
 }
 
-export function validateEntitlements(entitlements, label) {
+export function validateEntitlements(entitlements, label, requiredEntitlements = []) {
   for (const key of Object.keys(entitlements)) {
     if (key === 'com.apple.security.get-task-allow') {
       fail(`${label} includes the forbidden com.apple.security.get-task-allow entitlement`);
@@ -261,6 +264,11 @@ export function validateEntitlements(entitlements, label) {
     }
     if (entitlements[key] !== true) {
       fail(`${label} entitlement ${key} must be true when present`);
+    }
+  }
+  for (const key of requiredEntitlements) {
+    if (entitlements[key] !== true) {
+      fail(`${label} is missing required entitlement ${key}`);
     }
   }
 }
@@ -495,7 +503,7 @@ function validateCodeObject(targetPath, context, options = {}) {
   run('codesign', ['--verify', '--strict', '--verbose=2', targetPath]);
   const metadata = parseCodesignMetadata(run('codesign', ['-dvvv', targetPath]).output);
   validateSignatureMetadata(metadata, context.expectations, label);
-  validateEntitlements(parseEntitlements(targetPath), label);
+  validateEntitlements(parseEntitlements(targetPath), label, options.requiredEntitlements);
   extractAndValidateCertificate(
     targetPath,
     context.certificateDir,
@@ -605,6 +613,8 @@ function verifyApp(appPath, context) {
     CFBundleShortVersionString: context.version,
     CFBundleVersion: context.version,
     CFBundleExecutable: context.contract.executableName,
+    NSCameraUsageDescription: CAMERA_USAGE_DESCRIPTION,
+    NSLocalNetworkUsageDescription: LOCAL_NETWORK_USAGE_DESCRIPTION,
   };
   for (const [key, expected] of Object.entries(plistExpectations)) {
     const actual = readPlistValue(infoPlistPath, key);
@@ -680,7 +690,12 @@ function verifyApp(appPath, context) {
   };
   let appMetadata;
   for (const bundlePath of bundlePaths) {
-    const metadata = validateCodeObject(bundlePath, codeContext, { validateChain: bundlePath === resolvedAppPath });
+    const metadata = validateCodeObject(bundlePath, codeContext, {
+      validateChain: bundlePath === resolvedAppPath,
+      requiredEntitlements: bundlePath === resolvedAppPath
+        ? ['com.apple.security.device.camera']
+        : [],
+    });
     if (bundlePath === resolvedAppPath) {
       appMetadata = metadata;
     }

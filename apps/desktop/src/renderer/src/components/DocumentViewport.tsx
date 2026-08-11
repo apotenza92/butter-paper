@@ -25,6 +25,7 @@ import { CustomScrollArea } from './CustomScrollArea';
 import { PageView, shouldRetryBrokenPageImageSource } from './PageView';
 
 const DOCUMENT_VISIBLE_OVERSCAN_PX = 1200;
+const DOCUMENT_MOTION_OVERSCAN_PX = 480;
 const COLUMN_VISIBLE_OVERSCAN_PX = 320;
 const COLUMN_OVERVIEW_ZOOM_THRESHOLD = 0.3;
 const COLUMN_OVERVIEW_ZOOM_EXIT_THRESHOLD = 0.42;
@@ -164,10 +165,12 @@ export function DocumentViewport({
   const leftSidebarOpen = useViewerStore((state) => state.leftSidebarOpen);
   const rightSidebarOpen = useViewerStore((state) => state.rightSidebarOpen);
   const pendingPageScroll = useViewerStore((state) => state.pendingPageScroll);
+  const pendingDocumentScroll = useViewerStore((state) => state.pendingDocumentScroll);
   const setZoom = useViewerStore((state) => state.setZoom);
   const setZoomPreset = useViewerStore((state) => state.setZoomPreset);
   const setActiveTool = useViewerStore((state) => state.setActiveTool);
   const consumePageScroll = useViewerStore((state) => state.consumePageScroll);
+  const consumeDocumentScroll = useViewerStore((state) => state.consumeDocumentScroll);
   const requestPageScroll = useViewerStore((state) => state.requestPageScroll);
   const requestThumbnailScroll = useViewerStore((state) => state.requestThumbnailScroll);
   const setCurrentPage = useViewerStore((state) => state.setCurrentPage);
@@ -315,6 +318,30 @@ export function DocumentViewport({
       suppressContinuousCurrentPageScrollRef.current = false;
     }, CONTINUOUS_CURRENT_PAGE_SCROLL_SUPPRESSION_MS);
   };
+
+  useLayoutEffect(() => {
+    layoutTransitionSnapshotRef.current = null;
+    pendingPanScrollRef.current = null;
+    pendingWheelZoomAnchorRef.current = null;
+    wheelZoomTargetRef.current = null;
+    singlePageWheelDeltaRef.current = 0;
+    scrollDirectionRef.current = 'none';
+    lastObservedScrollTopRef.current = 0;
+
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+
+    suppressContinuousCurrentPageFromScroll();
+    resetViewportContentOffset();
+    resetCanvasPadding();
+    container.scrollTo({ left: 0, top: 0, behavior: 'auto' });
+    pendingScrollLeftRef.current = 0;
+    pendingScrollTopRef.current = 0;
+    setScrollLeft(0);
+    setScrollTop(0);
+  }, [documentState?.filePath, session]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -1454,22 +1481,51 @@ export function DocumentViewport({
   }, [effectiveScrollLeft, effectiveScrollTop, layoutMode, pageLayouts.layouts, setCurrentPage, viewportSize]);
 
   useEffect(() => {
+    if (!pendingDocumentScroll || !containerRef.current) {
+      return;
+    }
+
+    const container = containerRef.current;
+    markViewportInMotion();
+    suppressContinuousCurrentPageFromScroll();
+    resetViewportContentOffset();
+    resetCanvasPadding();
+    container.scrollTo({
+      left: pendingDocumentScroll.edge === 'top' ? 0 : container.scrollLeft,
+      top: pendingDocumentScroll.edge === 'top'
+        ? 0
+        : Math.max(0, container.scrollHeight - container.clientHeight),
+      behavior: 'auto',
+    });
+
+    const frameId = window.requestAnimationFrame(() => {
+      consumeDocumentScroll(pendingDocumentScroll.requestId);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [consumeDocumentScroll, pendingDocumentScroll]);
+
+  useEffect(() => {
     if (!pendingPageScroll || !containerRef.current) {
       return;
     }
 
     const targetLayout = pageLayouts.layouts.find((layout) => layout.index === pendingPageScroll.pageIndex);
-    if (targetLayout) {
-      markViewportInMotion();
-      suppressContinuousCurrentPageFromScroll();
-      resetViewportContentOffset();
-      resetCanvasPadding();
-      containerRef.current.scrollTo({
-        left: Math.max(0, targetLayout.left - pageLayoutGap),
-        top: Math.max(0, targetLayout.top - pageLayoutGap),
-        behavior: 'auto',
-      });
+    if (!targetLayout) {
+      return;
     }
+
+    markViewportInMotion();
+    suppressContinuousCurrentPageFromScroll();
+    resetViewportContentOffset();
+    resetCanvasPadding();
+    containerRef.current.scrollTo({
+      left: Math.max(0, targetLayout.left - pageLayoutGap),
+      top: Math.max(0, targetLayout.top - pageLayoutGap),
+      behavior: 'auto',
+    });
 
     const frameId = window.requestAnimationFrame(() => {
       consumePageScroll(pendingPageScroll.requestId);
@@ -1690,7 +1746,11 @@ export function resolveViewportVisibleOverscanPx({
     return COLUMN_VISIBLE_OVERSCAN_PX;
   }
 
-  if (viewportInMotion || !renderBacklogIdle) {
+  if (viewportInMotion) {
+    return DOCUMENT_MOTION_OVERSCAN_PX;
+  }
+
+  if (!renderBacklogIdle) {
     return 0;
   }
 

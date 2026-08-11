@@ -3,6 +3,7 @@ import { X } from 'lucide-react';
 import {
   Menubar,
   MenubarContent,
+  MenubarCheckboxItem,
   MenubarGroup,
   MenubarItem,
   MenubarMenu,
@@ -15,8 +16,14 @@ import {
   MenubarTrigger,
 } from './ui/menubar';
 import type { UpdateFrequency, UpdateStatus } from '../../../shared/protocol';
+import {
+  APPLICATION_MENU_BAR_VISIBILITY_LABEL,
+  APPLICATION_MENU_COMMANDS,
+  APPLICATION_MENU_UPDATE_FREQUENCIES,
+  updateCheckMenuLabel,
+} from '../../../shared/applicationMenu';
 
-type MenuKey = 'butter-paper' | 'file';
+type MenuKey = 'butter-paper' | 'file' | 'edit' | 'view';
 
 interface AppMenuItem {
   label: string;
@@ -29,10 +36,27 @@ interface AppMenuBarProps {
   canSave: boolean;
   productName: string;
   updateStatus: UpdateStatus | null;
+  menuBarVisible: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  canCut: boolean;
+  canCopy: boolean;
+  canPaste: boolean;
+  canSelectAll: boolean;
   onNewPdf: () => void;
   onOpen: () => void;
   onSave: () => void;
   onSaveAs: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  onCut: () => void;
+  onCopy: () => void;
+  onPaste: () => void;
+  onSelectAll: () => void;
+  onMenuBarVisibilityChange: (visible: boolean) => void;
+  onReload: () => void;
+  onForceReload: () => void;
+  onToggleFullScreen: () => void;
   onSetAsDefaultPdfApp: () => void;
   onCheckForUpdates: () => void;
   onOpenReleasePage: () => void;
@@ -40,40 +64,30 @@ interface AppMenuBarProps {
   onQuit: () => void;
 }
 
-const UPDATE_FREQUENCIES: Array<{ value: UpdateFrequency; label: string }> = [
-  { value: 'never', label: 'Never' },
-  { value: 'startup', label: 'At startup' },
-  { value: 'hourly', label: 'Hourly' },
-  { value: 'sixHours', label: 'Every 6 hours' },
-  { value: 'twelveHours', label: 'Every 12 hours' },
-  { value: 'daily', label: 'Daily' },
-  { value: 'weekly', label: 'Weekly' },
-  { value: 'monthly', label: 'Monthly' },
-];
-
 export const APP_MENU_CONTENT_CLASS_NAME = 'w-max whitespace-nowrap';
+export const APP_MENU_KEYS: readonly MenuKey[] = ['butter-paper', 'file', 'edit', 'view'];
 
-export function AppMenuBar({ canSave, productName, updateStatus, onNewPdf, onOpen, onSave, onSaveAs, onSetAsDefaultPdfApp, onCheckForUpdates, onOpenReleasePage, onUpdateFrequencyChange, onQuit }: AppMenuBarProps) {
+export function AppMenuBar({ canSave, productName, updateStatus, menuBarVisible, canUndo, canRedo, canCut, canCopy, canPaste, canSelectAll, onNewPdf, onOpen, onSave, onSaveAs, onUndo, onRedo, onCut, onCopy, onPaste, onSelectAll, onMenuBarVisibilityChange, onReload, onForceReload, onToggleFullScreen, onSetAsDefaultPdfApp, onCheckForUpdates, onOpenReleasePage, onUpdateFrequencyChange, onQuit }: AppMenuBarProps) {
   const fileItems = useMemo<AppMenuItem[]>(() => {
     return [
       {
-        label: 'New Blank PDF...',
+        label: APPLICATION_MENU_COMMANDS.newPdf.label,
         onSelect: onNewPdf,
         testId: 'menu-file-new-pdf',
       },
       {
-        label: 'Open...',
+        label: APPLICATION_MENU_COMMANDS.openPdf.label,
         onSelect: onOpen,
         testId: 'menu-file-open',
       },
       {
-        label: 'Save',
+        label: APPLICATION_MENU_COMMANDS.save.label,
         disabled: !canSave,
         onSelect: canSave ? onSave : undefined,
         testId: 'menu-file-save',
       },
       {
-        label: 'Save As...',
+        label: APPLICATION_MENU_COMMANDS.saveAs.label,
         disabled: !canSave,
         onSelect: canSave ? onSaveAs : undefined,
         testId: 'menu-file-save-as',
@@ -84,6 +98,8 @@ export function AppMenuBar({ canSave, productName, updateStatus, onNewPdf, onOpe
   const menus: Array<{ key: MenuKey; label: string; items: AppMenuItem[] }> = [
     { key: 'butter-paper', label: productName, items: [] },
     { key: 'file', label: 'File', items: fileItems },
+    { key: 'edit', label: 'Edit', items: [] },
+    { key: 'view', label: 'View', items: [] },
   ];
 
   return (
@@ -101,7 +117,7 @@ export function AppMenuBar({ canSave, productName, updateStatus, onNewPdf, onOpe
               <>
                 <MenubarGroup>
                   <MenubarItem data-testid="menu-set-default-pdf-app" onClick={onSetAsDefaultPdfApp}>
-                    Set as Default PDF App...
+                    {APPLICATION_MENU_COMMANDS.setDefaultPdfApp.label}
                   </MenubarItem>
                 </MenubarGroup>
                 <MenubarSeparator />
@@ -114,15 +130,7 @@ export function AppMenuBar({ canSave, productName, updateStatus, onNewPdf, onOpe
                       || updateStatus.phase === 'downloading'}
                     onClick={onCheckForUpdates}
                   >
-                    {updateStatus?.phase === 'checking'
-                      ? 'Checking for Updates...'
-                      : updateStatus?.phase === 'available' || updateStatus?.phase === 'downloading'
-                        ? `Downloading Update${updateStatus.downloadPercent == null
-                          ? '...'
-                          : ` (${Math.round(updateStatus.downloadPercent)}%)`}`
-                        : updateStatus?.phase === 'downloaded'
-                          ? 'Update Ready...'
-                          : 'Check for Updates...'}
+                    {updateCheckMenuLabel(updateStatus?.phase ?? 'idle', updateStatus?.downloadPercent ?? null)}
                   </MenubarItem>
                   <MenubarSub>
                     <MenubarSubTrigger data-testid="menu-update-frequency" disabled={!updateStatus}>
@@ -133,7 +141,7 @@ export function AppMenuBar({ canSave, productName, updateStatus, onNewPdf, onOpe
                         value={updateStatus?.frequency ?? 'daily'}
                         onValueChange={(value) => onUpdateFrequencyChange(value as UpdateFrequency)}
                       >
-                        {UPDATE_FREQUENCIES.map((frequency) => (
+                        {APPLICATION_MENU_UPDATE_FREQUENCIES.map((frequency) => (
                           <MenubarRadioItem
                             key={frequency.value}
                             data-testid={`menu-update-frequency-${frequency.value}`}
@@ -146,7 +154,7 @@ export function AppMenuBar({ canSave, productName, updateStatus, onNewPdf, onOpe
                     </MenubarSubContent>
                   </MenubarSub>
                   <MenubarItem data-testid="menu-open-release-page" onClick={onOpenReleasePage}>
-                    View Releases...
+                    {APPLICATION_MENU_COMMANDS.openReleasePage.label}
                   </MenubarItem>
                   {updateStatus?.disabledReason ? (
                     <MenubarItem disabled>
@@ -160,6 +168,37 @@ export function AppMenuBar({ canSave, productName, updateStatus, onNewPdf, onOpe
                     <X aria-hidden="true" />
                     Quit {productName}
                   </MenubarItem>
+                </MenubarGroup>
+              </>
+            ) : menu.key === 'edit' ? (
+              <>
+                <MenubarGroup>
+                  <MenubarItem disabled={!canUndo} onClick={onUndo}>{APPLICATION_MENU_COMMANDS.undo.label}</MenubarItem>
+                  <MenubarItem disabled={!canRedo} onClick={onRedo}>{APPLICATION_MENU_COMMANDS.redo.label}</MenubarItem>
+                </MenubarGroup>
+                <MenubarSeparator />
+                <MenubarGroup>
+                  <MenubarItem disabled={!canCut} onClick={onCut}>{APPLICATION_MENU_COMMANDS.cut.label}</MenubarItem>
+                  <MenubarItem disabled={!canCopy} onClick={onCopy}>{APPLICATION_MENU_COMMANDS.copy.label}</MenubarItem>
+                  <MenubarItem disabled={!canPaste} onClick={onPaste}>{APPLICATION_MENU_COMMANDS.paste.label}</MenubarItem>
+                  <MenubarItem disabled={!canSelectAll} onClick={onSelectAll}>{APPLICATION_MENU_COMMANDS.selectAll.label}</MenubarItem>
+                </MenubarGroup>
+              </>
+            ) : menu.key === 'view' ? (
+              <>
+                <MenubarGroup>
+                  <MenubarCheckboxItem
+                    checked={menuBarVisible}
+                    onCheckedChange={(checked) => onMenuBarVisibilityChange(checked === true)}
+                  >
+                    {APPLICATION_MENU_BAR_VISIBILITY_LABEL}
+                  </MenubarCheckboxItem>
+                </MenubarGroup>
+                <MenubarSeparator />
+                <MenubarGroup>
+                  <MenubarItem onClick={onReload}>Reload</MenubarItem>
+                  <MenubarItem onClick={onForceReload}>Force Reload</MenubarItem>
+                  <MenubarItem onClick={onToggleFullScreen}>Toggle Full Screen</MenubarItem>
                 </MenubarGroup>
               </>
             ) : (

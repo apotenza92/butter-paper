@@ -3,7 +3,7 @@ import { createCalloutMarkup, createCloudPlusMarkup, createPageTransform, create
 import { getVerticallyCenteredAnnotationTextContentStyle } from '../pdf-tools/annotationStyles';
 import { expandViewportRect, isPointNearSelectionChromeEdge, projectChromeHandlePoint } from '../pdf-tools/selectionHitZones';
 import { layoutTextBoxLines, splitAnnotationTextLines } from '../pdf-tools/textLayout';
-import { autosizeTextBoxRect, autosizeTextBoxRectDownward, centeredCompositeTextBoxRect, getInteractionState, interactionContextForPage, isCloudPolygonClosePoint, isDirectManipulationTool, isPostPlacementSelectionActive, orthogonalAnchorForDraft, resolveAnnotationCursor, scaleAnnotationDashArray, scaleAnnotationFirstBaselineOffset, scaleAnnotationFontSize, scaleAnnotationLineHeight, scaleAnnotationStrokeWidth, scaleAnnotationTextInset, selectionAfterMarkupClick, shouldCancelDraftForToolChange, shouldConsumeSelectionClickAway, shouldRenderMarkupAtZoom, shouldSelectMarkupAfterHandleTransform, textBoxCaretGeometry, updateMarkupTextAndCenterOnLeader } from './AnnotationLayer';
+import { autosizeTextBoxRect, autosizeTextBoxRectDownward, centeredCompositeTextBoxRect, getInteractionState, imagePlacementRect, interactionContextForPage, isCloudPolygonClosePoint, isDirectManipulationTool, isPostPlacementSelectionActive, orthogonalAnchorForDraft, resolveAnnotationCursor, scaleAnnotationDashArray, scaleAnnotationFirstBaselineOffset, scaleAnnotationFontSize, scaleAnnotationLineHeight, scaleAnnotationStrokeWidth, scaleAnnotationTextInset, selectionAfterMarkupClick, shouldCancelDraftForToolChange, shouldConsumeSelectionClickAway, shouldRenderMarkupAtZoom, shouldSelectMarkupAfterHandleTransform, textBoxCaretGeometry, updateMarkupTextAndCenterOnLeader } from './AnnotationLayer';
 
 describe('annotation layer rendering', () => {
   it('supplies page bounds and same-page markups to interaction algorithms', () => {
@@ -211,12 +211,29 @@ describe('annotation layer rendering', () => {
     expect(isDirectManipulationTool('select')).toBe(true);
     expect(isDirectManipulationTool('rectangle')).toBe(false);
     expect(resolveAnnotationCursor({ activeTool: 'select', hoverCursor: moveCursor })).toBe(moveCursor);
+    expect(resolveAnnotationCursor({ activeTool: 'select', transformDragActive: true })).toBe('crosshair');
+    expect(resolveAnnotationCursor({ activeTool: 'select', transformDragActive: true, transformSnapActive: true })).toBe('none');
     expect(resolveAnnotationCursor({ activeTool: 'rectangle', hoverCursor: moveCursor })).toBe('crosshair');
+    expect(resolveAnnotationCursor({ activeTool: 'image', pendingImagePreviewActive: true })).toBe('none');
     expect(resolveAnnotationCursor({
       activeTool: 'rectangle',
       hoverCursor: moveCursor,
       postPlacementSelectionActive: true,
     })).toBe('default');
+  });
+
+  it('centres and clamps an image preview with the same geometry used for placement', () => {
+    const page = { id: 'page-1', index: 0, size: { width: 612, height: 792 }, rotation: 0 } as const;
+    const asset = {
+      dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+      mimeType: 'image/png' as const,
+      width: 200,
+      height: 80,
+      fileName: 'signature.png',
+    };
+
+    expect(imagePlacementRect(pdfPoint(200, 300), page, asset)).toEqual(rect(100, 260, 200, 80));
+    expect(imagePlacementRect(pdfPoint(10, 10), page, asset)).toEqual(rect(0, 0, 200, 80));
   });
 
   it('shows every live marquee candidate in hover state before selection is committed', () => {
@@ -226,6 +243,21 @@ describe('annotation layer rendering', () => {
     expect(getInteractionState('rect-1', selectedMarkupIds, 'rect-1', null, marqueeHoveredMarkupIds)).toBe('hovered');
     expect(getInteractionState('line-1', selectedMarkupIds, 'rect-1', null, marqueeHoveredMarkupIds)).toBe('hovered');
     expect(getInteractionState('ellipse-1', selectedMarkupIds, 'rect-1', null, marqueeHoveredMarkupIds)).toBe('idle');
+  });
+
+  it('shows an unselected annotation snap source with the existing hover perimeter', () => {
+    const snapSourceMarkupIds = new Set(['signature-1']);
+
+    expect(getInteractionState('signature-1', new Set(), undefined, null, undefined, snapSourceMarkupIds)).toBe('hovered');
+    expect(getInteractionState('signature-2', new Set(), undefined, null, undefined, snapSourceMarkupIds)).toBe('idle');
+    expect(getInteractionState(
+      'signature-1',
+      new Set(['signature-1']),
+      'signature-1',
+      null,
+      undefined,
+      snapSourceMarkupIds,
+    )).toBe('focused');
   });
 
   it('uses the current segment origin for global Shift orthogonal placement', () => {

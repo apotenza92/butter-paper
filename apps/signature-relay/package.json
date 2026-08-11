@@ -1,0 +1,21 @@
+{
+  "name": "@butter-paper/signature-relay",
+  "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "dev": "wrangler dev --var RELAY_ENABLED:true",
+    "test": "vitest run",
+    "types": "wrangler types worker-configuration.d.ts --strict-vars=false",
+    "types:check": "wrangler types worker-configuration.d.ts --strict-vars=false --check",
+    "typecheck": "wrangler types --check && tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.21.0",
+    "typescript": "6.0.2",
+    "vitest": "4.1.4",
+    "wrangler": "4.120.1"
+  }
+}

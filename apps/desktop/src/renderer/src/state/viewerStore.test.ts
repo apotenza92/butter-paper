@@ -34,6 +34,26 @@ describe('viewer store', () => {
     expect(useViewerStore.getState().visiblePageIndices).toEqual([2, 3]);
   });
 
+  it('keeps property defaults separate per tool and resets only the requested tool', () => {
+    const store = useViewerStore.getState();
+    store.setToolPropertyValue('pen', 'strokeColor', '#123456');
+    store.setToolPropertyValue('pen', 'smoothCurves', false);
+    store.setToolPropertyValue('rectangle', 'strokeColor', '#abcdef');
+
+    expect(useViewerStore.getState().toolPropertyValues.pen).toMatchObject({
+      strokeColor: '#123456',
+      smoothCurves: false,
+    });
+    expect(useViewerStore.getState().toolPropertyValues.rectangle).toMatchObject({ strokeColor: '#abcdef' });
+
+    store.resetToolPropertyValues('pen');
+    expect(useViewerStore.getState().toolPropertyValues.pen).toMatchObject({
+      strokeColor: '#ff0000',
+      smoothCurves: true,
+    });
+    expect(useViewerStore.getState().toolPropertyValues.rectangle).toMatchObject({ strokeColor: '#abcdef' });
+  });
+
   it('tracks sidebar toggles and page scroll requests', () => {
     const store = useViewerStore.getState();
 
@@ -57,8 +77,19 @@ describe('viewer store', () => {
       requestId,
     });
 
-    store.consumePageScroll(requestId);
+    const documentScrollRequestId = store.requestDocumentScroll('bottom');
     expect(useViewerStore.getState().pendingPageScroll).toBeNull();
+    expect(useViewerStore.getState().pendingDocumentScroll).toEqual({
+      edge: 'bottom',
+      requestId: documentScrollRequestId,
+    });
+    store.consumePageScroll(requestId);
+    expect(useViewerStore.getState().pendingDocumentScroll).toEqual({
+      edge: 'bottom',
+      requestId: documentScrollRequestId,
+    });
+    store.consumeDocumentScroll(documentScrollRequestId);
+    expect(useViewerStore.getState().pendingDocumentScroll).toBeNull();
 
     const thumbnailRequestId = store.requestThumbnailScroll(4);
     expect(useViewerStore.getState().pendingThumbnailScroll).toEqual({
@@ -85,11 +116,35 @@ describe('viewer store', () => {
     expect(useViewerStore.getState().pendingImageAsset).toBeNull();
   });
 
+  it('clears an unplaced image when placement mode is abandoned', () => {
+    const asset = {
+      dataUrl: 'data:image/png;base64,AAAA',
+      mimeType: 'image/png' as const,
+      width: 320,
+      height: 180,
+      fileName: 'private-signature.png',
+    };
+    const store = useViewerStore.getState();
+    store.setPendingImageAsset(asset);
+    store.setActiveTool('image');
+    expect(useViewerStore.getState().pendingImageAsset).toEqual(asset);
+
+    store.setActiveTool('select');
+    expect(useViewerStore.getState().pendingImageAsset).toBeNull();
+  });
+
   it('shares post-placement direct manipulation across pages until selection or tool changes', () => {
     const store = useViewerStore.getState();
     store.setActiveTool('rectangle');
     store.setSelectedMarkupIds(['rect-1']);
     store.setPostPlacement({ markupId: 'rect-1', tool: 'rectangle' });
+    store.setPendingImageAsset({
+      dataUrl: 'data:image/png;base64,AAAA',
+      mimeType: 'image/png',
+      width: 320,
+      height: 180,
+      fileName: 'private-signature.png',
+    });
 
     expect(useViewerStore.getState().postPlacement).toEqual({ markupId: 'rect-1', tool: 'rectangle' });
     store.setSelectedMarkupIds(['rect-1']);
@@ -115,6 +170,7 @@ describe('viewer store', () => {
       activeTool: 'select',
       selectedMarkupIds: [],
       postPlacement: null,
+      pendingImageAsset: null,
     });
   });
 
@@ -126,6 +182,8 @@ describe('viewer store', () => {
       snapToMarkup: true,
       sensitivityPx: 8,
       snapTargets: ['endpoint', 'midpoint', 'center', 'intersection'],
+      snapGuidesEnabled: true,
+      snapGuideTypes: ['alignment', 'equal-size', 'equal-spacing'],
     });
 
     store.setSnapSettings({ snapToContent: false, sensitivityPx: 99, snapTargets: ['nearest', 'midpoint', 'nearest'] });
@@ -134,14 +192,24 @@ describe('viewer store', () => {
       snapToMarkup: true,
       sensitivityPx: 24,
       snapTargets: ['nearest', 'midpoint'],
+      snapGuidesEnabled: true,
+      snapGuideTypes: ['alignment', 'equal-size', 'equal-spacing'],
     });
 
-    store.setSnapSettings({ snapToMarkup: false, sensitivityPx: 1, snapTargets: [] });
+    store.setSnapSettings({
+      snapToMarkup: false,
+      sensitivityPx: 1,
+      snapTargets: [],
+      snapGuidesEnabled: false,
+      snapGuideTypes: ['equal-spacing', 'equal-spacing'],
+    });
     expect(useViewerStore.getState().snapSettings).toEqual({
       snapToContent: false,
       snapToMarkup: false,
       sensitivityPx: 2,
       snapTargets: ['endpoint', 'midpoint', 'center', 'intersection'],
+      snapGuidesEnabled: false,
+      snapGuideTypes: ['equal-spacing'],
     });
   });
 
@@ -223,6 +291,7 @@ describe('viewer store', () => {
     expect(useViewerStore.getState().leftSidebarOpen).toBe(false);
     expect(useViewerStore.getState().rightSidebarOpen).toBe(false);
     expect(useViewerStore.getState().pendingPageScroll).toBeNull();
+    expect(useViewerStore.getState().pendingDocumentScroll).toBeNull();
     expect(useViewerStore.getState().zoomPreset).toBe('manual');
     expect(useViewerStore.getState().scrollMode).toBe('continuous');
     expect(useViewerStore.getState().continuousScrollWheelMode).toBe('scroll');
@@ -230,5 +299,43 @@ describe('viewer store', () => {
     expect(useViewerStore.getState().pageColumnsEnabled).toBe(false);
     expect(useViewerStore.getState().cadViewOrganisation).toBe('columns');
     expect(useViewerStore.getState().pagesPerColumn).toBe(10);
+  });
+
+  it('tracks document revisions, clears redo after a new edit, and follows the saved revision', () => {
+    const store = useViewerStore.getState();
+    const payload = {
+      filePath: '/tmp/history.pdf',
+      fileName: 'history.pdf',
+      documentAccess: { handle: `pdfdoc_${'d'.repeat(32)}` },
+      document: {
+        id: 'document-1',
+        path: '/tmp/history.pdf',
+        metadata: {},
+        pages: [],
+        markups: [],
+      },
+    } as never;
+    store.setDocument(payload);
+    store.updateDocument((document) => ({ ...document, metadata: { title: 'First edit' } }));
+    store.updateDocument((document) => ({ ...document, metadata: { title: 'Second edit' } }));
+
+    expect(useViewerStore.getState().document?.dirty).toBe(true);
+    expect(useViewerStore.getState().documentHistory.past).toHaveLength(2);
+    expect(useViewerStore.getState().undoDocument()).toBe(true);
+    expect(useViewerStore.getState().document?.document.metadata.title).toBe('First edit');
+    expect(useViewerStore.getState().documentHistory.future).toHaveLength(1);
+
+    useViewerStore.getState().replaceDocumentAfterSave(useViewerStore.getState().document!);
+    expect(useViewerStore.getState().document?.dirty).toBe(false);
+
+    expect(useViewerStore.getState().redoDocument()).toBe(true);
+    expect(useViewerStore.getState().document?.document.metadata.title).toBe('Second edit');
+    expect(useViewerStore.getState().document?.dirty).toBe(true);
+    expect(useViewerStore.getState().undoDocument()).toBe(true);
+    expect(useViewerStore.getState().document?.dirty).toBe(false);
+
+    useViewerStore.getState().updateDocument((document) => ({ ...document, metadata: { title: 'Replacement edit' } }));
+    expect(useViewerStore.getState().documentHistory.future).toHaveLength(0);
+    expect(useViewerStore.getState().redoDocument()).toBe(false);
   });
 });

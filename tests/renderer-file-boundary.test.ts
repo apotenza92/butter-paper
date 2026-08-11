@@ -40,6 +40,22 @@ describe('renderer filesystem boundary', () => {
     expect(app).not.toContain('openDocumentPath: loadDocumentFromPath');
   });
 
+  it('authorizes operating-system-backed dropped PDFs before opening them', () => {
+    const channels = readFileSync('apps/desktop/src/shared/ipc.ts', 'utf8');
+    const protocol = readFileSync('apps/desktop/src/shared/protocol.ts', 'utf8');
+    const preload = readFileSync('apps/desktop/src/preload/index.ts', 'utf8');
+    const main = readFileSync('apps/desktop/src/main/window.ts', 'utf8');
+    const app = readFileSync('apps/desktop/src/renderer/src/app.tsx', 'utf8');
+
+    expect(channels).toContain("applicationAuthorizeDroppedPdf: 'application:authorize-dropped-pdf'");
+    expect(protocol).toContain('authorizeDroppedPdf(file: File): Promise<string>');
+    expect(preload).toContain('webUtils.getPathForFile(file)');
+    expect(preload).toContain('ipcRenderer.invoke(ipcChannels.applicationAuthorizeDroppedPdf, filePath)');
+    expect(main).toContain('desktopPdfAccessRegistry.authorizeSource(event.sender.id, filePath)');
+    expect(app).toContain('openDocumentPaths(pdfPaths, { forceNewTabs: true })');
+    expect(app).not.toMatch(/File & \{ path\?: string \}/);
+  });
+
   it('locks packaged renderer navigation to local content and ships a restrictive CSP', () => {
     const main = readFileSync('apps/desktop/src/main/window.ts', 'utf8');
     const html = readFileSync('apps/desktop/src/renderer/index.html', 'utf8');
@@ -55,5 +71,8 @@ describe('renderer filesystem boundary', () => {
   it('keeps Node crypto native in the Electron main bundle', () => {
     const config = readFileSync('apps/desktop/vite.main.config.ts', 'utf8');
     expect(config).toContain("'node:crypto'");
+    expect(config).toContain('BP_SIGNATURE_RELAY_PRODUCTION_ORIGIN');
+    const main = readFileSync('apps/desktop/src/main/window.ts', 'utf8');
+    expect(main).toContain("!app.isPackaged && process.env.BP_SIGNATURE_RELAY_TEST_MODE === '1'");
   });
 });

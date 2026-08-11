@@ -15,6 +15,7 @@ const ARC_PROPERTIES = {
 
 export const DEFAULT_ARC_ANGLE1 = 90;
 export const DEFAULT_ARC_ANGLE2 = 180;
+const ARC_SAMPLE_SEGMENTS = 64;
 
 export const ARC_TOOL_DEFINITION: PdfToolDefinition<ArcMarkup, ArcDraft> & { readonly id: 'arc' } = {
   id: 'arc',
@@ -31,23 +32,23 @@ export const ARC_TOOL_DEFINITION: PdfToolDefinition<ArcMarkup, ArcDraft> & { rea
     opacity: 1,
   },
   geometry: {
-    getGeometry(markup): ToolGeometryDescriptor {
+    getGeometry(markup, context): ToolGeometryDescriptor {
       const points = arcControlPoints(markup);
       return {
-        bounds: markup.rect,
+        bounds: arcBounds(markup),
         components: [
           {
             id: 'arc.body',
             role: 'shape',
-            geometry: { kind: 'polyline', points: sampleArcPoints(markup, 24) },
+            geometry: { kind: 'polyline', points: sampleArcPoints(markup, ARC_SAMPLE_SEGMENTS) },
             bodyDrag: 'moveSelf',
           },
         ],
-        handles: arcHandles(points),
+        handles: arcHandles(points, context.page.rotation),
       };
     },
     hitTest(markup, point, context): ToolHit | null {
-      const points = sampleArcPoints(markup, 24);
+      const points = sampleArcPoints(markup, ARC_SAMPLE_SEGMENTS);
       for (let index = 1; index < points.length; index += 1) {
         if (isPointNearLineSegment(point, points[index - 1], points[index], context.tolerance)) {
           return {
@@ -67,8 +68,8 @@ export const ARC_TOOL_DEFINITION: PdfToolDefinition<ArcMarkup, ArcDraft> & { rea
       const style = getAnnotationContentStyle(markup);
       return [
         {
-          kind: 'path',
-          d: arcSvgPath(markup),
+          kind: 'polyline',
+          points: sampleArcPoints(markup, ARC_SAMPLE_SEGMENTS),
           style: {
             stroke: style.stroke,
             fill: 'none',
@@ -96,8 +97,8 @@ export const ARC_TOOL_DEFINITION: PdfToolDefinition<ArcMarkup, ArcDraft> & { rea
       const markup = createArcMarkupFromThreePoints('draft-arc', 0, draft.start, draft.end ?? draft.current, draft.current);
       return markup
         ? [{
-            kind: 'path',
-            d: arcSvgPath(markup),
+            kind: 'polyline',
+            points: sampleArcPoints(markup, ARC_SAMPLE_SEGMENTS),
             style: { stroke: '#ff0000', fill: 'none', strokeWidth: 1 },
             pointerEvents: 'none',
           }]
@@ -110,14 +111,14 @@ export const ARC_TOOL_DEFINITION: PdfToolDefinition<ArcMarkup, ArcDraft> & { rea
     },
   },
   selection: {
-    getSelectionChrome(markup): SelectionChromeDescriptor {
+    getSelectionChrome(markup, context): SelectionChromeDescriptor {
       return {
         bounds: {
-          rect: markup.rect,
+          rect: arcBounds(markup),
           kind: 'child',
         },
-        handles: arcHandles(arcControlPoints(markup)),
-        controlPaths: [{ id: 'arc.path', points: sampleArcPoints(markup, 24), closed: false }],
+        handles: arcHandles(arcControlPoints(markup), context.page.rotation),
+        controlPaths: [{ id: 'arc.path', points: sampleArcPoints(markup, ARC_SAMPLE_SEGMENTS), closed: false }],
       };
     },
     getDraftChrome(draft): SelectionChromeDescriptor {
@@ -141,8 +142,10 @@ export const ARC_TOOL_DEFINITION: PdfToolDefinition<ArcMarkup, ArcDraft> & { rea
         return createArcMarkupFromThreePoints(markup.id, markup.pageIndex, controls.start, input.currentPoint, controls.mid) ?? markup;
       }
       if (input.handleId === 'arc.point.mid') {
-        const snapped = snapArcMidpoint(controls.start, controls.end, input.currentPoint);
-        return createArcMarkupFromThreePoints(markup.id, markup.pageIndex, controls.start, controls.end, snapped) ?? markup;
+        const bulgePoint = input.shiftKey
+          ? snapArcBulgePoint(controls.start, controls.end, input.currentPoint).point
+          : constrainArcBulgePoint(controls.start, controls.end, input.currentPoint);
+        return createArcMarkupFromThreePoints(markup.id, markup.pageIndex, controls.start, controls.end, bulgePoint) ?? markup;
       }
       return markup;
     },
@@ -212,17 +215,36 @@ export function arcControlPoints(markup: ArcMarkup): { start: PdfPoint; end: Pdf
   return { start, end, mid };
 }
 
-function arcHandles(points: { start: PdfPoint; end: PdfPoint; mid: PdfPoint }): readonly ToolHandleDescriptor[] {
+function arcHandles(
+  points: { start: PdfPoint; end: PdfPoint; mid: PdfPoint },
+  pageRotation: number,
+): readonly ToolHandleDescriptor[] {
   return [
-    { id: 'arc.point.start', componentId: 'arc.body', point: points.start, behavior: 'reshapeArc', cursor: getResizeCursor('nw') },
-    { id: 'arc.point.mid', componentId: 'arc.body', point: points.mid, behavior: 'reshapeArc', cursor: getResizeCursor('n') },
-    { id: 'arc.point.end', componentId: 'arc.body', point: points.end, behavior: 'reshapeArc', cursor: getResizeCursor('ne') },
+    { id: 'arc.point.start', componentId: 'arc.body', point: points.start, behavior: 'reshapeArc', cursor: getMoveCursor() },
+    { id: 'arc.point.mid', componentId: 'arc.body', point: points.mid, behavior: 'reshapeArc', cursor: arcBulgeCursor(points.start, points.end, pageRotation) },
+    { id: 'arc.point.end', componentId: 'arc.body', point: points.end, behavior: 'reshapeArc', cursor: getMoveCursor() },
   ];
+}
+
+function arcBulgeCursor(start: PdfPoint, end: PdfPoint, pageRotation: number): string {
+  const chordX = end.x - start.x;
+  const chordY = end.y - start.y;
+  const pdfNormalAngle = (Math.atan2(chordX, -chordY) * 180) / Math.PI;
+  return getResizeCursor('e', pageRotation - pdfNormalAngle);
 }
 
 function sampleArcPoints(markup: ArcMarkup, segments: number): readonly PdfPoint[] {
   const delta = normalizedArcDelta(markup.angle1, markup.angle2);
   return Array.from({ length: segments + 1 }, (_, index) => arcPoint(markup.rect, markup.angle1 + (delta * index) / segments));
+}
+
+function arcBounds(markup: ArcMarkup): Rect {
+  const points = sampleArcPoints(markup, ARC_SAMPLE_SEGMENTS);
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  return createRect(minX, minY, Math.max(...xs) - minX, Math.max(...ys) - minY);
 }
 
 function arcPoint(rect: Rect, angleDegrees: number): PdfPoint {
@@ -262,7 +284,12 @@ function endAngleThrough(start: number, end: number, through: number): number {
   return start - positiveDelta(end, start);
 }
 
-function snapArcMidpoint(start: PdfPoint, end: PdfPoint, point: PdfPoint): PdfPoint {
+export function constrainArcBulgePoint(
+  start: PdfPoint,
+  end: PdfPoint,
+  point: PdfPoint,
+  minimumBulge = 1,
+): PdfPoint {
   const chordMid = pdfPoint((start.x + end.x) * 0.5, (start.y + end.y) * 0.5);
   const chord = pdfPoint(end.x - start.x, end.y - start.y);
   const length = Math.hypot(chord.x, chord.y);
@@ -271,7 +298,45 @@ function snapArcMidpoint(start: PdfPoint, end: PdfPoint, point: PdfPoint): PdfPo
   }
   const normal = pdfPoint(-chord.y / length, chord.x / length);
   const projection = (point.x - chordMid.x) * normal.x + (point.y - chordMid.y) * normal.y;
-  return pdfPoint(chordMid.x + normal.x * projection, chordMid.y + normal.y * projection);
+  const direction = projection < 0 ? -1 : 1;
+  const constrainedProjection = direction * Math.max(Math.abs(projection), Math.max(0, minimumBulge));
+  return pdfPoint(
+    chordMid.x + normal.x * constrainedProjection,
+    chordMid.y + normal.y * constrainedProjection,
+  );
+}
+
+export type ArcSnapAngle = 90 | 180 | 270;
+
+export function snapArcBulgePoint(
+  start: PdfPoint,
+  end: PdfPoint,
+  point: PdfPoint,
+): { readonly point: PdfPoint; readonly angle: ArcSnapAngle } {
+  const chordMid = pdfPoint((start.x + end.x) * 0.5, (start.y + end.y) * 0.5);
+  const chord = pdfPoint(end.x - start.x, end.y - start.y);
+  const length = Math.hypot(chord.x, chord.y);
+  if (length < 1) {
+    return { point, angle: 90 };
+  }
+
+  const normal = pdfPoint(-chord.y / length, chord.x / length);
+  const projection = (point.x - chordMid.x) * normal.x + (point.y - chordMid.y) * normal.y;
+  const freeAngle = (4 * Math.atan2(2 * Math.abs(projection), length) * 180) / Math.PI;
+  const angles: readonly ArcSnapAngle[] = [90, 180, 270];
+  const angle = angles.reduce((nearest, candidate) => (
+    Math.abs(candidate - freeAngle) < Math.abs(nearest - freeAngle) ? candidate : nearest
+  ));
+  const direction = projection < 0 ? -1 : 1;
+  const snappedProjection = direction * length * 0.5 * Math.tan((angle * Math.PI) / 720);
+
+  return {
+    angle,
+    point: pdfPoint(
+      chordMid.x + normal.x * snappedProjection,
+      chordMid.y + normal.y * snappedProjection,
+    ),
+  };
 }
 
 function draftBounds(draft: ArcDraft): Rect | null {

@@ -13,6 +13,8 @@ export type PageScaleApplyTarget =
 
 export const BUILT_IN_SCALE_PRESETS: readonly ScalePreset[] = [
   createMetricRatioScalePreset(1),
+  createMetricRatioScalePreset(2),
+  createMetricRatioScalePreset(5),
   createMetricRatioScalePreset(10),
   createMetricRatioScalePreset(20),
   createMetricRatioScalePreset(50),

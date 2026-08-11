@@ -1269,6 +1269,9 @@ async function addMarkupAnnotationInternal(
         Contents: PDFString.of(''),
         F: PDFNumber.of(4),
         ...(resolvedAppearance.blendMode === 'multiply' ? { BM: PDFName.of('Multiply') } : {}),
+        ...(markup.kind === 'pen' ? {
+          BPSmoothCurves: markup.smoothCurves ? PDFBool.True : PDFBool.False,
+        } : {}),
       });
       appendAnnotation(page, pdfDoc, annot, resolvedAppearance);
       return;
@@ -1365,6 +1368,7 @@ async function addMarkupAnnotationInternal(
         F: PDFNumber.of(4),
         BPImageData: PDFString.of(markup.dataUrl),
         BPImageMimeType: PDFString.of(markup.mimeType),
+        ...(markup.aspectRatioLocked ? { BPAspectRatioLocked: PDFBool.True } : {}),
         AP: reusableMediaAppearance?.appearance ?? pdfDoc.context.obj({ N: appearance!.ref }),
         ...(reusableMediaAppearance?.state ? { AS: reusableMediaAppearance.state } : {}),
       });
@@ -3744,6 +3748,7 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
       rect,
       ...payload,
       rotation: readOptionalNumber(annot.get(PDFName.of('Rotation'))),
+      aspectRatioLocked: readOptionalBoolean(annot.get(PDFName.of('BPAspectRatioLocked'))),
       source: {
         annotationId: id,
         source: 'imported',
@@ -3953,6 +3958,7 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
       pageIndex,
       appearance: importedAppearance,
       paths: paths.length > 0 ? paths : [[pdfPoint(rect.x, rect.y), pdfPoint(rect.x + rect.width, rect.y + rect.height)]],
+      ...(isHighlight ? {} : { smoothCurves: readOptionalBoolean(annot.get(PDFName.of('BPSmoothCurves'))) }),
       strokeWidth: readBorderWidth(annot),
       color: readColorArray(annot.get(PDFName.of('C'))),
       source: {
@@ -4602,6 +4608,12 @@ function parsePdfAppearancePathCommands(content: string): Array<{ operator: stri
 function readOptionalNumber(value: unknown): number | undefined {
   return value && typeof (value as { asNumber?: unknown }).asNumber === 'function'
     ? (value as { asNumber(): number }).asNumber()
+    : undefined;
+}
+
+function readOptionalBoolean(value: unknown): boolean | undefined {
+  return value && typeof (value as { asBoolean?: unknown }).asBoolean === 'function'
+    ? (value as { asBoolean(): boolean }).asBoolean()
     : undefined;
 }
 

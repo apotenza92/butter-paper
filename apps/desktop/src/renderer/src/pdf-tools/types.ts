@@ -155,7 +155,7 @@ export interface ToolInteractionResult<TDraft = unknown> {
 }
 
 export interface ToolInteractionProvider<TMarkup extends Markup = Markup, TDraft = unknown> {
-  readonly placement?: 'drag' | 'click';
+  readonly placement?: 'drag' | 'click' | 'click-or-drag';
   createDraft?(session: ToolInteractionSession): TDraft;
   updateDraft?(draft: TDraft, point: PdfPoint): TDraft;
   commitDraft?(draft: TDraft, context: ToolInteractionContext & {
@@ -167,6 +167,7 @@ export interface ToolInteractionProvider<TMarkup extends Markup = Markup, TDraft
     readonly handleBehavior: HandleBehavior;
     readonly startPoint: PdfPoint;
     readonly currentPoint: PdfPoint;
+    readonly shiftKey?: boolean;
   }, context?: ToolInteractionContext): TMarkup;
   dragMarkup?(markup: TMarkup, input: {
     readonly componentId: string;

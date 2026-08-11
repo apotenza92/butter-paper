@@ -158,6 +158,16 @@ body {
   letter-spacing: 0;
 }
 
+.bp-window-titlebar {
+  app-region: drag;
+  display: flex;
+  flex: none;
+  height: env(titlebar-area-height);
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
 button,
 input,
 select,

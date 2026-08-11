@@ -33,6 +33,7 @@ const inspectScript = `
     linuxSyncDesktopName: config.linux.syncDesktopName,
     afterPack: config.afterPack,
     macMinimumSystemVersion: config.mac.minimumSystemVersion,
+    macExtendInfo: config.mac.extendInfo,
     extraResources: config.extraResources,
     files: config.files,
   }));
@@ -102,10 +103,14 @@ describe('Electron Builder release identity', () => {
       afterPack: 'build/after-pack.cjs',
       compression: 'maximum',
       electronLanguages: ['en-US'],
-      releaseNotes: expect.stringContaining('Replaced the stable and beta icon artwork'),
+      releaseNotes: expect.stringContaining('Replaced the quill artwork with the reviewed glass-document icon'),
       nsisInclude: 'build/installer.nsh',
       nsisOneClick: false,
       macMinimumSystemVersion: '12.0',
+      macExtendInfo: {
+        NSCameraUsageDescription: 'Butter Paper uses the camera only when you choose to take a signature photo.',
+        NSLocalNetworkUsageDescription: 'Butter Paper uses your local network only when you choose to transfer a signature from your phone.',
+      },
     });
     expect(config.files).toContain('!**/*.map');
     expect(config.files).toContain('!node_modules/@base-ui/**/*');
@@ -113,6 +118,8 @@ describe('Electron Builder release identity', () => {
     expect(config.files).toContain('!node_modules/lucide-react/**/*');
     expect(config.files).toContain('!node_modules/@napi-rs/canvas-darwin-x64/**/*');
     expect(config.files).not.toContain('!node_modules/@napi-rs/canvas-darwin-arm64/**/*');
+    expect(readFileSync(resolve(desktopDir, 'build/entitlements.mac.plist'), 'utf8'))
+      .toContain('com.apple.security.device.camera');
   });
 
   it('keeps the beta Windows identity separate with an authenticated update feed', () => {

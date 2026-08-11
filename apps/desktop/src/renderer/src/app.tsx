@@ -3,8 +3,10 @@ import type { ChangeEvent, DragEvent } from 'react';
 import {
   rotateDocumentPage,
   type DocumentModel,
+  type Markup,
   type PageRotationDirection,
   type PdfPoint,
+  type SignatureAppearanceAsset,
 } from '@butter-paper/core';
 import { AppMenuBar } from './components/AppMenuBar';
 import { FINISH_CLOUD_POLYGON_EVENT } from './components/AnnotationLayer';
@@ -27,6 +29,7 @@ import { RightSidebar } from './components/RightSidebar';
 import { UnsavedChangesDialog } from './components/UnsavedChangesDialog';
 import { UpdateDialog } from './components/UpdateDialog';
 import { ViewerToolbar } from './components/ViewerToolbar';
+import { formatWindowTitle, WindowTitleBar } from './components/WindowTitleBar';
 import { useUpdater } from './hooks/useUpdater';
 import { LocalPdfSession, type DiagnosticsSnapshot } from './services/documentSession';
 import { getPerfSnapshot, initialisePerfTracking, recordComponentRender, recordWindowBounds, resetPerfTracking } from './services/perfTracker';
@@ -34,18 +37,35 @@ import { getRenderCoordinatorDiagnostics } from './services/renderCoordinator';
 import {
   DEFAULT_LEFT_SIDEBAR_WIDTH,
   DEFAULT_RIGHT_SIDEBAR_WIDTH,
+  createDocumentHistory,
   useViewerStore,
   type CadViewOrganisation,
   type LeftSidebarPanel,
   type LoadedDocumentState,
+  type DocumentHistorySnapshot,
   type SnapSettings,
 } from './state/viewerStore';
 import { subscribeToThemeMode } from './theme';
-import type { ApplicationMetadata, BlankPdfCreateRequest, LoadedDocumentPayload, PdfSaveTargetDescriptor, ScrollMode, ScrollWheelMode, ThemeMode, ToolMode, ViewerDiagnostics, ZoomPreset } from '../../shared/protocol';
+import type { ApplicationMenuCommand, ApplicationMenuState, ApplicationMetadata, BlankPdfCreateRequest, LoadedDocumentPayload, PdfSaveTargetDescriptor, ScrollMode, ScrollWheelMode, ThemeMode, ToolMode, ViewerDiagnostics, ZoomPreset } from '../../shared/protocol';
 import { PDF_TOOL_REGISTRY } from './pdf-tools/toolRegistry';
 import { clampViewerZoom } from './utils/renderZoom';
-import { isEditableShortcutTarget, isToolShortcutBlockedTarget, normalizeShortcutKey, parseToolShortcut, resolveToolShortcut } from './utils/toolShortcuts';
+import { resolveDocumentKeyboardNavigation } from './utils/documentKeyboardNavigation';
+import { selectDroppedPdfFiles } from './utils/droppedPdfFiles';
+import { resolveMacosFullScreenLayout } from './utils/macosFullScreenLayout';
+import { resolveMenuBarVisibility } from './utils/menuBarVisibility';
+import { signatureAppearanceToPendingImageAsset } from './utils/signaturePlacement';
+import {
+  dismissToolShortcutPopup,
+  isEditableShortcutTarget,
+  isToolShortcutBlockedTarget,
+  normalizeShortcutKey,
+  parseToolShortcut,
+  resolvePdfZoomShortcut,
+  resolveToolShortcut,
+  shouldResetToolOnEscape,
+} from './utils/toolShortcuts';
 import { saveDocumentsInOrder } from './utils/unsavedDocuments';
+import { markupIdsOnPage, pasteCanvasMarkups, selectedCanvasMarkups } from './utils/canvasEdit';
 
 const INACTIVE_TRIM_DELAY_MS = 5000;
 const SPACE_DOUBLE_TAP_MS = 300;
@@ -64,6 +84,7 @@ const DEFAULT_APPLICATION_METADATA: ApplicationMetadata = {
 const TOOL_SHORTCUTS = PDF_TOOL_REGISTRY
   .filter((tool) => tool.shortcut)
   .map((tool) => ({ tool: tool.id, shortcut: parseToolShortcut(tool.shortcut ?? '') }));
+const MENU_BAR_VISIBILITY_STORAGE_KEY = 'butterPaper.alwaysShowMenuBarInAppWindow';
 
 function clampZoom(zoom: number): number {
   return clampViewerZoom(zoom);
@@ -79,12 +100,6 @@ function normalizeDocumentPath(filePath: string): string {
   return navigator.platform.toLowerCase().includes('mac') || navigator.platform.toLowerCase().includes('win')
     ? normalized.toLowerCase()
     : normalized;
-}
-
-function extractPdfPathsFromDataTransfer(dataTransfer: DataTransfer): string[] {
-  return Array.from(dataTransfer.files)
-    .map((file) => (file as File & { path?: string }).path ?? '')
-    .filter((path) => /\.pdf$/i.test(path));
 }
 
 function isInteractiveShortcutTarget(target: EventTarget | null): boolean {
@@ -197,6 +212,13 @@ function readImageDimensions(dataUrl: string): Promise<{ width: number; height: 
   });
 }
 
+function createCanvasMarkupId(kind: Markup['kind']): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return `${kind}-${crypto.randomUUID()}`;
+  }
+  return `${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 interface AppProps { initialThemeMode: ThemeMode; }
 
 interface ViewerTabSnapshot {
@@ -218,6 +240,7 @@ interface ViewerTabSnapshot {
   visiblePageIndices: number[];
   selectedMarkupIds: string[];
   snapSettings: SnapSettings;
+  documentHistory: DocumentHistorySnapshot;
 }
 
 interface DocumentTab {
@@ -237,7 +260,7 @@ interface PageScaleCalibrationPick {
 
 let nextTabId = 1;
 
-function initialViewSnapshot(): ViewerTabSnapshot {
+function initialViewSnapshot(initiallyDirty = false): ViewerTabSnapshot {
   return {
     zoom: 1,
     activeTool: 'select',
@@ -261,7 +284,10 @@ function initialViewSnapshot(): ViewerTabSnapshot {
       snapToMarkup: true,
       sensitivityPx: 8,
       snapTargets: ['endpoint', 'midpoint', 'center', 'intersection'],
+      snapGuidesEnabled: true,
+      snapGuideTypes: ['alignment', 'equal-size', 'equal-spacing'],
     },
+    documentHistory: createDocumentHistory(initiallyDirty),
   };
 }
 
@@ -286,6 +312,7 @@ function captureViewSnapshot(): ViewerTabSnapshot {
     visiblePageIndices: [...state.visiblePageIndices],
     selectedMarkupIds: [...state.selectedMarkupIds],
     snapSettings: state.snapSettings,
+    documentHistory: state.documentHistory,
   };
 }
 
@@ -318,9 +345,16 @@ export function App({ initialThemeMode }: AppProps) {
   const [newBlankPdfDialogOpen, setNewBlankPdfDialogOpen] = useState(false);
   const [pendingCloseTabId, setPendingCloseTabId] = useState<string | null>(null);
   const [applicationCloseRequested, setApplicationCloseRequested] = useState(false);
+  const [menuBarVisible, setMenuBarVisible] = useState(() => resolveMenuBarVisibility(
+    navigator.platform,
+    window.localStorage.getItem(MENU_BAR_VISIBILITY_STORAGE_KEY),
+  ));
+  const [windowFullScreen, setWindowFullScreen] = useState(false);
   const [closeActionBusy, setCloseActionBusy] = useState(false);
+  const [canvasClipboardCount, setCanvasClipboardCount] = useState(0);
   const setDocument = useViewerStore((state) => state.setDocument);
   const updateDocument = useViewerStore((state) => state.updateDocument);
+  const replaceDocumentAfterSave = useViewerStore((state) => state.replaceDocumentAfterSave);
   const setZoom = useViewerStore((state) => state.setZoom);
   const setZoomPreset = useViewerStore((state) => state.setZoomPreset);
   const setActiveTool = useViewerStore((state) => state.setActiveTool);
@@ -336,10 +370,15 @@ export function App({ initialThemeMode }: AppProps) {
   const toggleLeftSidebar = useViewerStore((state) => state.toggleLeftSidebar);
   const toggleRightSidebar = useViewerStore((state) => state.toggleRightSidebar);
   const requestPageScroll = useViewerStore((state) => state.requestPageScroll);
+  const requestDocumentScroll = useViewerStore((state) => state.requestDocumentScroll);
   const setStatusMessage = useViewerStore((state) => state.setStatusMessage);
   const setErrorMessage = useViewerStore((state) => state.setErrorMessage);
   const setSelectedMarkupIds = useViewerStore((state) => state.setSelectedMarkupIds);
   const setCurrentPage = useViewerStore((state) => state.setCurrentPage);
+  const undoDocument = useViewerStore((state) => state.undoDocument);
+  const redoDocument = useViewerStore((state) => state.redoDocument);
+  const selectedMarkupIds = useViewerStore((state) => state.selectedMarkupIds);
+  const documentHistory = useViewerStore((state) => state.documentHistory);
   const activeTool = useViewerStore((state) => state.activeTool);
   const documentState = useViewerStore((state) => state.document);
   const documentMutationDisabled = false;
@@ -364,13 +403,26 @@ export function App({ initialThemeMode }: AppProps) {
   const isTestMode = window.butterPaper.environment.testMode;
   const cadViewEnabled = window.butterPaper.environment.cadViewEnabled;
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
+  const windowTitle = formatWindowTitle(
+    applicationMetadata.windowTitle,
+    activeTab?.document.fileName,
+    activeTab ? Math.max(0, tabs.length - 1) : 0,
+  );
   const session = activeTab?.session ?? null;
+  const windowChrome = resolveMacosFullScreenLayout({
+    platform: navigator.platform,
+    fullScreen: windowFullScreen,
+    menuBarVisible,
+  });
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const defaultSampleOpenedRef = useRef(false);
+  const userOpenRequestedRef = useRef(false);
   const heldPanRestoreToolRef = useRef<ToolMode | null>(null);
   const activeToolRef = useRef<ToolMode>(activeTool);
   const lastSpaceTapAtRef = useRef(0);
   const openDocumentPathsRef = useRef<(filePaths: string[]) => Promise<void>>(async () => {});
+  const canvasClipboardRef = useRef<Markup[]>([]);
+  const pasteSequenceRef = useRef(0);
 
   useEffect(() => subscribeToThemeMode(setThemeMode), []);
 
@@ -393,7 +445,6 @@ export function App({ initialThemeMode }: AppProps) {
       .then((metadata) => {
         if (!cancelled) {
           setApplicationMetadata(metadata);
-          document.title = metadata.windowTitle;
         }
       })
       .catch((error) => console.error('Unable to load application metadata.', error));
@@ -405,6 +456,10 @@ export function App({ initialThemeMode }: AppProps) {
   useEffect(() => {
     activeToolRef.current = activeTool;
   }, [activeTool]);
+
+  useEffect(() => {
+    document.title = windowTitle;
+  }, [windowTitle]);
 
   useEffect(() => {
     if (!cadViewEnabled && pageColumnsEnabled) {
@@ -420,12 +475,12 @@ export function App({ initialThemeMode }: AppProps) {
 
   useEffect(() => {
     const defaultSamplePdfPath = window.butterPaper.environment.defaultSamplePdfPath;
-    if (defaultSampleOpenedRef.current || isTestMode || tabs.length > 0 || !defaultSamplePdfPath) {
+    if (defaultSampleOpenedRef.current || userOpenRequestedRef.current || isTestMode || tabs.length > 0 || !defaultSamplePdfPath) {
       return;
     }
 
     defaultSampleOpenedRef.current = true;
-    void openDocumentPaths([defaultSamplePdfPath]);
+    void openDocumentPaths([defaultSamplePdfPath], { defaultSample: true });
   }, [isTestMode, tabs.length]);
 
   function activateTab(tabId: string | null, nextTabs: DocumentTab[] = tabs): void {
@@ -458,6 +513,7 @@ export function App({ initialThemeMode }: AppProps) {
       postPlacement: null,
       pendingImageAsset: null,
       pendingPageScroll: null,
+      pendingDocumentScroll: null,
     });
   }
 
@@ -468,7 +524,10 @@ export function App({ initialThemeMode }: AppProps) {
     }
   }, [activeTabId, documentState, tabs]);
 
-  async function openDocumentPaths(filePaths: string[]): Promise<void> {
+  async function openDocumentPaths(filePaths: string[], options: { forceNewTabs?: boolean; defaultSample?: boolean } = {}): Promise<void> {
+    if (!options.defaultSample) {
+      userOpenRequestedRef.current = true;
+    }
     const candidates = [...new Set(filePaths.map((path) => path.trim()).filter((path) => /\.pdf$/i.test(path)))];
     if (candidates.length === 0) return;
     setErrorMessage(null); setStatusMessage(candidates.length === 1 ? 'Loading document' : `Loading ${candidates.length} documents`);
@@ -478,11 +537,17 @@ export function App({ initialThemeMode }: AppProps) {
     let duplicateToFocus: string | null = null;
     for (const filePath of candidates) {
       const normalizedPath = normalizeDocumentPath(filePath);
-      const existing = [...currentTabs, ...created].find((tab) => tab.normalizedPath === normalizedPath);
+      const existing = options.forceNewTabs
+        ? undefined
+        : [...currentTabs, ...created].find((tab) => tab.normalizedPath === normalizedPath);
       if (existing) { duplicateToFocus ??= existing.id; continue; }
       const nextSession = new LocalPdfSession(filePath);
       try {
         const payload = await nextSession.open();
+        if (options.defaultSample && userOpenRequestedRef.current) {
+          nextSession.dispose();
+          continue;
+        }
         created.push({
           id: `tab-${nextTabId++}`,
           filePath: payload.filePath,
@@ -530,7 +595,7 @@ export function App({ initialThemeMode }: AppProps) {
         normalizedPath: normalizeDocumentPath(payload.filePath),
         session: nextSession,
         document: loadedDocumentState({ ...payload, fileName: temporaryDocument.fileName }, true),
-        viewSnapshot: initialViewSnapshot(),
+        viewSnapshot: initialViewSnapshot(true),
         temporarySourcePath: temporaryDocument.temporarySourcePath,
       };
       const nextTabs = [...tabs, nextTab];
@@ -733,7 +798,7 @@ export function App({ initialThemeMode }: AppProps) {
         }
       : candidate));
     if (tab.id === activeTabId) {
-      useViewerStore.setState({ document: nextDocument });
+      replaceDocumentAfterSave(nextDocument);
     }
     setStatusMessage(`Saved new PDF ${payload.fileName}; the original was preserved.`);
     setErrorMessage(null);
@@ -841,11 +906,19 @@ export function App({ initialThemeMode }: AppProps) {
     }
     heldPanRestoreToolRef.current = null;
     if (tool === 'image') {
+      setPendingImageAsset(null);
       setActiveTool(tool);
       imageInputRef.current?.click();
       return;
     }
     setActiveTool(tool);
+  }
+
+  function handleUseSignature(asset: SignatureAppearanceAsset): void {
+    setPendingImageAsset(signatureAppearanceToPendingImageAsset(asset));
+    setActiveTool('image');
+    setStatusMessage('Click the page to place the signature');
+    setErrorMessage(null);
   }
 
   function handlePageScaleApply(updater: (document: DocumentModel) => DocumentModel, message: string): void {
@@ -929,6 +1002,60 @@ export function App({ initialThemeMode }: AppProps) {
     return true;
   }
 
+  function copySelectedMarkups(): boolean {
+    const state = useViewerStore.getState();
+    const copied = selectedCanvasMarkups(state.document?.document.markups ?? [], state.selectedMarkupIds);
+    if (copied.length === 0) return false;
+    canvasClipboardRef.current = structuredClone(copied);
+    setCanvasClipboardCount(copied.length);
+    pasteSequenceRef.current = 0;
+    setStatusMessage(copied.length === 1 ? 'Copied markup' : `Copied ${copied.length} markups`);
+    return true;
+  }
+
+  function cutSelectedMarkups(): boolean {
+    if (!copySelectedMarkups()) return false;
+    return deleteSelectedMarkups();
+  }
+
+  function pasteMarkups(): boolean {
+    const clipboard = canvasClipboardRef.current;
+    if (clipboard.length === 0 || !useViewerStore.getState().document) return false;
+    pasteSequenceRef.current += 1;
+    const pasted = pasteCanvasMarkups(
+      clipboard,
+      useViewerStore.getState().currentPage,
+      pasteSequenceRef.current,
+      createCanvasMarkupId,
+    );
+    updateDocument((document) => ({ ...document, markups: [...document.markups, ...pasted] }));
+    setSelectedMarkupIds(pasted.map((markup) => markup.id));
+    setStatusMessage(pasted.length === 1 ? 'Pasted markup' : `Pasted ${pasted.length} markups`);
+    return true;
+  }
+
+  function selectAllMarkupsOnCurrentPage(): boolean {
+    const state = useViewerStore.getState();
+    const ids = markupIdsOnPage(state.document?.document.markups ?? [], state.currentPage);
+    setSelectedMarkupIds(ids);
+    if (ids.length > 0) {
+      setStatusMessage(ids.length === 1 ? 'Selected markup on page' : `Selected ${ids.length} markups on page`);
+    }
+    return ids.length > 0;
+  }
+
+  function handleUndo(): boolean {
+    const changed = undoDocument();
+    if (changed) setStatusMessage('Undid document change');
+    return changed;
+  }
+
+  function handleRedo(): boolean {
+    const changed = redoDocument();
+    if (changed) setStatusMessage('Redid document change');
+    return changed;
+  }
+
   async function handleImageFileChange(event: ChangeEvent<HTMLInputElement>): Promise<void> {
     const file = event.currentTarget.files?.[0] ?? null;
     event.currentTarget.value = '';
@@ -964,11 +1091,51 @@ export function App({ initialThemeMode }: AppProps) {
   function handleSelectPage(pageIndex: number, source: 'thumbnail' | 'generic' = 'generic', previewUrl: string | null = null) { session?.primePagePreview(pageIndex, previewUrl); session?.setNavigationIntent(pageIndex, 2500, source); setCurrentPage(pageIndex); requestPageScroll(pageIndex); }
   function handleDragOver(event: DragEvent<HTMLDivElement>) { if (Array.from(event.dataTransfer.items).some((item) => item.kind === 'file')) event.preventDefault(); }
   function handleDrop(event: DragEvent<HTMLDivElement>) {
-    const pdfPaths = extractPdfPathsFromDataTransfer(event.dataTransfer);
-    if (pdfPaths.length) {
-      event.preventDefault();
-      void openDocumentPaths(pdfPaths);
+    if (event.dataTransfer.files.length === 0) {
+      return;
     }
+    event.preventDefault();
+    const pdfFiles = selectDroppedPdfFiles(event.dataTransfer.files);
+    if (pdfFiles.length === 0) {
+      return;
+    }
+    userOpenRequestedRef.current = true;
+    void Promise.all(pdfFiles.map((file) => window.butterPaper.application.authorizeDroppedPdf(file)))
+      .then((pdfPaths) => openDocumentPaths(pdfPaths, { forceNewTabs: true }))
+      .catch((error) => {
+        setErrorMessage(error instanceof Error ? error.message : 'Unable to open the dropped PDF.');
+      });
+  }
+
+  function handleDocumentKeyboardNavigation(action: Parameters<typeof resolveDocumentKeyboardNavigation>[0]['action']): boolean {
+    const pageIndices = documentState?.document.pages.map((page) => page.index) ?? [];
+    const navigation = resolveDocumentKeyboardNavigation({
+      action,
+      pageIndices,
+      currentPage,
+      scrollMode,
+    });
+    if (!navigation) {
+      return false;
+    }
+
+    if (navigation.kind === 'document-edge') {
+      const pageIndex = navigation.edge === 'top' ? pageIndices[0] : pageIndices.at(-1);
+      if (pageIndex !== undefined && currentPage !== pageIndex) {
+        setCurrentPage(pageIndex);
+      }
+      requestDocumentScroll(navigation.edge);
+      return true;
+    }
+
+    session?.setNavigationIntent(navigation.pageIndex, 1200, 'generic');
+    if (navigation.resetZoom) {
+      setZoomPreset('manual');
+      setZoom(1);
+    }
+    setCurrentPage(navigation.pageIndex);
+    requestPageScroll(navigation.pageIndex);
+    return true;
   }
 
   useEffect(() => {
@@ -979,8 +1146,24 @@ export function App({ initialThemeMode }: AppProps) {
         return;
       }
 
-      const mod = navigator.platform.toLowerCase().includes('mac') ? event.metaKey : event.ctrlKey;
+      const isMacPlatform = navigator.platform.toLowerCase().includes('mac');
+      const mod = isMacPlatform ? event.metaKey : event.ctrlKey;
+      const pdfZoomAction = resolvePdfZoomShortcut(event, isMacPlatform);
+      if (pdfZoomAction && documentState && !isEditableShortcutTarget(event.target)) {
+        event.preventDefault();
+        updateZoom(pdfZoomAction === 'zoom-reset' ? 1 : pdfZoomAction === 'zoom-in' ? zoom * 1.1 : zoom / 1.1);
+        return;
+      }
       if (mod) {
+        // On macOS the native application menu owns these accelerators and
+        // forwards the typed command back through the preload bridge. Keeping
+        // the renderer shortcut path for other platforms avoids double actions.
+        if (isMacPlatform) {
+          return;
+        }
+        if (isEditableShortcutTarget(event.target)) {
+          return;
+        }
         if (key === 'n') {
           event.preventDefault();
           setNewBlankPdfDialogOpen(true);
@@ -993,6 +1176,24 @@ export function App({ initialThemeMode }: AppProps) {
         } else if (key === 's') {
           event.preventDefault();
           void handleSave();
+        } else if (key === 'z' && event.shiftKey) {
+          event.preventDefault();
+          handleRedo();
+        } else if (key === 'z') {
+          event.preventDefault();
+          handleUndo();
+        } else if (key === 'x') {
+          event.preventDefault();
+          cutSelectedMarkups();
+        } else if (key === 'c') {
+          event.preventDefault();
+          copySelectedMarkups();
+        } else if (key === 'v') {
+          event.preventDefault();
+          pasteMarkups();
+        } else if (key === 'a') {
+          event.preventDefault();
+          selectAllMarkupsOnCurrentPage();
         }
         return;
       }
@@ -1031,7 +1232,16 @@ export function App({ initialThemeMode }: AppProps) {
         return;
       }
 
-      if (key === 'escape' && !isToolShortcutBlockedTarget(event.target)) {
+      if ((key === 'home' || key === 'end' || key === 'pageup' || key === 'pagedown')
+        && !isInteractiveShortcutTarget(event.target)
+        && handleDocumentKeyboardNavigation(
+          key === 'home' ? 'home' : key === 'end' ? 'end' : key === 'pageup' ? 'page-up' : 'page-down',
+        )) {
+        event.preventDefault();
+        return;
+      }
+
+      if (key === 'escape' && shouldResetToolOnEscape(event.target)) {
         event.preventDefault();
         const finishCloudPolygon = new Event(FINISH_CLOUD_POLYGON_EVENT, { cancelable: true });
         window.dispatchEvent(finishCloudPolygon);
@@ -1046,6 +1256,7 @@ export function App({ initialThemeMode }: AppProps) {
       }
 
       event.preventDefault();
+      dismissToolShortcutPopup(event.target);
       handleToolChange(shortcutTool);
     };
     const onKeyUp = (event: KeyboardEvent) => {
@@ -1105,29 +1316,159 @@ export function App({ initialThemeMode }: AppProps) {
     void window.butterPaper.application.confirmClose();
   }), [activeTabId, documentState, tabs]);
 
+  useEffect(() => window.butterPaper.application.onCloseTabRequested(() => {
+    if (activeTabId) {
+      requestCloseTab(activeTabId);
+    }
+  }), [activeTabId, documentState, tabs]);
+
+  useEffect(() => window.butterPaper.application.onMenuBarVisibilityChanged((visible) => {
+    setMenuBarVisible(visible);
+  }), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const unsubscribe = window.butterPaper.application.onWindowFullScreenChanged(setWindowFullScreen);
+    void window.butterPaper.application.getWindowFullScreen().then((fullScreen) => {
+      if (!cancelled) setWindowFullScreen(fullScreen);
+    }).catch((error) => {
+      console.error('Unable to read window fullscreen state.', error);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(MENU_BAR_VISIBILITY_STORAGE_KEY, menuBarVisible ? '1' : '0');
+    void window.butterPaper.application.setMenuBarVisibility(menuBarVisible).catch((error) => {
+      console.error('Unable to update menu-bar visibility.', error);
+    });
+  }, [menuBarVisible]);
+
+  useEffect(() => {
+    const menuState: ApplicationMenuState = {
+      canSave,
+      canUndo: documentHistory.past.length > 0,
+      canRedo: documentHistory.future.length > 0,
+      canCut: selectedMarkupIds.length > 0,
+      canCopy: selectedMarkupIds.length > 0,
+      canPaste: canvasClipboardCount > 0 && Boolean(documentState),
+      canSelectAll: Boolean(documentState?.document.markups.some((markup) => markup.pageIndex === currentPage)),
+      updateStatus: updater.status,
+      menuBarVisible,
+    };
+    void window.butterPaper.application.setMenuState(menuState).catch((error) => {
+      console.error('Unable to update application menu state.', error);
+    });
+  }, [canSave, canvasClipboardCount, currentPage, documentHistory, documentState, menuBarVisible, selectedMarkupIds, updater.status]);
+
+  useEffect(() => window.butterPaper.application.onMenuCommand((command: ApplicationMenuCommand) => {
+    switch (command) {
+      case 'new-pdf':
+        setNewBlankPdfDialogOpen(true);
+        break;
+      case 'open-pdf':
+        void handleOpen();
+        break;
+      case 'save':
+        void handleSave();
+        break;
+      case 'save-as':
+        void handleSaveAs();
+        break;
+      case 'undo':
+        handleUndo();
+        break;
+      case 'redo':
+        handleRedo();
+        break;
+      case 'cut':
+        cutSelectedMarkups();
+        break;
+      case 'copy':
+        copySelectedMarkups();
+        break;
+      case 'paste':
+        pasteMarkups();
+        break;
+      case 'select-all':
+        selectAllMarkupsOnCurrentPage();
+        break;
+      case 'set-default-pdf-app':
+        void handleSetAsDefaultPdfApp();
+        break;
+      case 'check-for-updates':
+        void updater.actions.checkNow();
+        break;
+      case 'open-release-page':
+        void updater.actions.openReleasePage();
+        break;
+    }
+  }), [handleOpen, handleSave, handleSaveAs, handleSetAsDefaultPdfApp, updater.actions]);
+
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground" data-testid="app-root" onDragOver={handleDragOver} onDrop={handleDrop}>
-      <AppMenuBar
-        canSave={canSave}
-        productName={applicationMetadata.productName}
-        updateStatus={updater.status}
-        onNewPdf={() => setNewBlankPdfDialogOpen(true)}
-        onOpen={() => void handleOpen()}
-        onSave={() => void handleSave()}
-        onSaveAs={() => void handleSaveAs()}
-        onSetAsDefaultPdfApp={() => void handleSetAsDefaultPdfApp()}
-        onCheckForUpdates={() => void updater.actions.checkNow()}
-        onOpenReleasePage={() => void updater.actions.openReleasePage()}
-        onUpdateFrequencyChange={(frequency) => void updater.actions.setFrequency(frequency)}
-        onQuit={() => void window.butterPaper.application.requestQuit().catch((error) => {
-          console.error('Unable to quit Butter Paper.', error);
-        })}
-      />
+    <div
+      className="flex h-screen flex-col bg-background text-foreground"
+      data-testid="app-root"
+      data-window-fullscreen={windowFullScreen}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      {windowChrome.showWindowTitleBar ? <WindowTitleBar title={windowTitle} /> : null}
+      {windowChrome.showAppMenuBar ? (
+        <AppMenuBar
+          canSave={canSave}
+          productName={applicationMetadata.productName}
+          updateStatus={updater.status}
+          menuBarVisible={menuBarVisible}
+          canUndo={documentHistory.past.length > 0}
+          canRedo={documentHistory.future.length > 0}
+          canCut={selectedMarkupIds.length > 0}
+          canCopy={selectedMarkupIds.length > 0}
+          canPaste={canvasClipboardCount > 0 && Boolean(documentState)}
+          canSelectAll={Boolean(documentState?.document.markups.some((markup) => markup.pageIndex === currentPage))}
+          onNewPdf={() => setNewBlankPdfDialogOpen(true)}
+          onOpen={() => void handleOpen()}
+          onSave={() => void handleSave()}
+          onSaveAs={() => void handleSaveAs()}
+          onUndo={() => handleUndo()}
+          onRedo={() => handleRedo()}
+          onCut={() => cutSelectedMarkups()}
+          onCopy={() => copySelectedMarkups()}
+          onPaste={() => pasteMarkups()}
+          onSelectAll={() => selectAllMarkupsOnCurrentPage()}
+          onMenuBarVisibilityChange={setMenuBarVisible}
+          onReload={() => void window.butterPaper.application.reloadWindow(false)}
+          onForceReload={() => void window.butterPaper.application.reloadWindow(true)}
+          onToggleFullScreen={() => void window.butterPaper.application.toggleWindowFullScreen()}
+          onSetAsDefaultPdfApp={() => void handleSetAsDefaultPdfApp()}
+          onCheckForUpdates={() => void updater.actions.checkNow()}
+          onOpenReleasePage={() => void updater.actions.openReleasePage()}
+          onUpdateFrequencyChange={(frequency) => void updater.actions.setFrequency(frequency)}
+          onQuit={() => void window.butterPaper.application.requestQuit().catch((error) => {
+            console.error('Unable to quit Butter Paper.', error);
+          })}
+        />
+      ) : null}
       <DocumentTabBar
         tabs={tabs.map((tab) => ({ id: tab.id, documentName: tab.document.fileName, dirty: Boolean(tab.document.dirty) }))}
         activeTabId={activeTabId}
         onSelectTab={activateTab}
         onCloseTab={requestCloseTab}
+        closeConfirmation={{
+          tabId: pendingCloseTabId,
+          busy: closeActionBusy,
+          onSave: () => { void savePendingCloseTab(); },
+          onDiscard: () => {
+            const tabId = pendingCloseTabId;
+            if (!tabId) return;
+            setPendingCloseTabId(null);
+            void disposeAndRemoveTab(tabId);
+          },
+          onCancel: () => setPendingCloseTabId(null),
+        }}
         onReorderTabs={(orderedTabIds) => setTabs((currentTabs) => applyTabOrder(currentTabs, orderedTabIds))}
         onOpenTab={() => void handleOpen()}
         onNewPdf={() => void handleCreateDefaultBlankPdf()}
@@ -1199,7 +1540,10 @@ export function App({ initialThemeMode }: AppProps) {
             mutationDisabled={documentMutationDisabled}
             propertiesOpen={rightSidebarOpen}
             snapSettings={snapSettings}
+            signatureContextId={activeTabId}
             onSelectTool={handleToolChange}
+            onSetPageScale={() => openPageScaleDialogForPage(currentPage)}
+            onUseSignature={handleUseSignature}
             onSnapSettingsChange={setSnapSettings}
             onToggleProperties={() => toggleRightSidebar('tools')}
           />
@@ -1221,20 +1565,6 @@ export function App({ initialThemeMode }: AppProps) {
           onRequestCalibrationPick={startPageScaleCalibrationPick}
           onApply={handlePageScaleApply}
           onClose={() => setPageScaleDialogOpen(false)}
-        />
-      ) : null}
-      {pendingCloseTabId ? (
-        <UnsavedChangesDialog
-          mode="tab"
-          documentName={tabs.find((tab) => tab.id === pendingCloseTabId)?.document.fileName}
-          busy={closeActionBusy}
-          onSave={() => { void savePendingCloseTab(); }}
-          onDiscard={() => {
-            const tabId = pendingCloseTabId;
-            setPendingCloseTabId(null);
-            void disposeAndRemoveTab(tabId);
-          }}
-          onCancel={() => setPendingCloseTabId(null)}
         />
       ) : null}
       {applicationCloseRequested ? (

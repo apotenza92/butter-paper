@@ -2,6 +2,15 @@ import { useSortable } from '@dnd-kit/sortable';
 import { X } from 'lucide-react';
 import type { CSSProperties, KeyboardEvent } from 'react';
 import { TabsTrigger } from '@/components/ui/tabs';
+import { ConfirmationPopover } from '../ConfirmationPopover';
+
+export interface DocumentTabCloseConfirmation {
+  busy: boolean;
+  onDiscard: () => void;
+  onOpenChange: (open: boolean) => void;
+  onSave: () => void;
+  open: boolean;
+}
 
 interface ClosableDocumentTabProps {
   active: boolean;
@@ -9,6 +18,7 @@ interface ClosableDocumentTabProps {
   documentName: string;
   index: number;
   tabId: string;
+  closeConfirmation?: DocumentTabCloseConfirmation;
   onClose: () => void;
   onMove: (tabId: string, direction: -1 | 1) => void;
 }
@@ -26,6 +36,7 @@ export function ClosableDocumentTab({
   documentName,
   index,
   tabId,
+  closeConfirmation,
   onClose,
   onMove,
 }: ClosableDocumentTabProps) {
@@ -35,6 +46,25 @@ export function ClosableDocumentTab({
     transform: transform ? `translate3d(${transform.x}px, 0, 0)` : undefined,
     transition,
   };
+  const closeButton = (
+    <button
+      type="button"
+      className="group/tab-close pointer-events-none absolute right-1 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-md border-0 bg-transparent p-0 text-muted-foreground opacity-0 outline-none transition-[color,opacity] group-hover/document-tab:pointer-events-auto group-hover/document-tab:opacity-100 hover:text-foreground focus-visible:pointer-events-auto focus-visible:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+      aria-label={`Close ${documentName}`}
+      tabIndex={active ? 0 : -1}
+      data-domain-ui-control="tab-close"
+      data-testid={`document-tab-close-${index}`}
+      onClick={closeConfirmation ? undefined : onClose}
+    >
+      <span
+        className="inline-flex size-5 items-center justify-center rounded-md transition-colors group-hover/tab-close:bg-foreground/10 group-focus-visible/tab-close:bg-foreground/10"
+        data-tab-close-surface
+        aria-hidden="true"
+      >
+        <X className="size-3.5" strokeWidth={1.75} absoluteStrokeWidth />
+      </span>
+    </button>
+  );
 
   function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>): void {
     if (!event.altKey || !event.shiftKey) return;
@@ -76,23 +106,23 @@ export function ClosableDocumentTab({
         ) : null}
         <span className="bp-document-tab-label truncate">{documentLabel}</span>
       </TabsTrigger>
-      <button
-        type="button"
-        className="group/tab-close pointer-events-none absolute right-1 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-md border-0 bg-transparent p-0 text-muted-foreground opacity-0 outline-none transition-[color,opacity] group-hover/document-tab:pointer-events-auto group-hover/document-tab:opacity-100 hover:text-foreground focus-visible:pointer-events-auto focus-visible:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-        aria-label={`Close ${documentName}`}
-        tabIndex={active ? 0 : -1}
-        data-domain-ui-control="tab-close"
-        data-testid={`document-tab-close-${index}`}
-        onClick={onClose}
-      >
-        <span
-          className="inline-flex size-5 items-center justify-center rounded-md transition-colors group-hover/tab-close:bg-foreground/10 group-focus-visible/tab-close:bg-foreground/10"
-          data-tab-close-surface
-          aria-hidden="true"
-        >
-          <X className="size-3.5" strokeWidth={1.75} absoluteStrokeWidth />
-        </span>
-      </button>
+      {closeConfirmation ? (
+        <ConfirmationPopover
+          open={closeConfirmation.open}
+          onOpenChange={closeConfirmation.onOpenChange}
+          trigger={closeButton}
+          side="bottom"
+          align="end"
+          title={`Save changes to ${documentName}?`}
+          description="Your changes will be lost if you close this tab without saving."
+          busy={closeConfirmation.busy}
+          actionLabel={closeConfirmation.busy ? 'Saving…' : 'Save'}
+          onAction={closeConfirmation.onSave}
+          secondaryActionLabel="Discard"
+          secondaryActionVariant="destructive"
+          onSecondaryAction={closeConfirmation.onDiscard}
+        />
+      ) : closeButton}
     </div>
   );
 }

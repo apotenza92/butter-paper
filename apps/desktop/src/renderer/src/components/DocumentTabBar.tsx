@@ -18,10 +18,20 @@ import { BlankPdfSettingsPopover } from './BlankPdfSettingsPopover';
 import { ClosableDocumentTab } from './domain-ui/ClosableDocumentTab';
 import { SplitButtonSegment } from './domain-ui/SplitButtonSegment';
 
+export const DOCUMENT_TAB_TOOLTIP_SIDE = 'bottom' as const;
+
 export interface DocumentTabItem {
   id: string;
   documentName: string;
   dirty: boolean;
+}
+
+export interface DocumentTabCloseConfirmationState {
+  busy: boolean;
+  onCancel: () => void;
+  onDiscard: () => void;
+  onSave: () => void;
+  tabId: string | null;
 }
 
 interface DocumentTabBarProps {
@@ -35,6 +45,7 @@ interface DocumentTabBarProps {
   onBlankPdfSettingsChange: (settings: BlankPdfSettings) => void;
   blankPdfSettings: BlankPdfSettings;
   blankPdfDefaultLabel: string;
+  closeConfirmation: DocumentTabCloseConfirmationState;
 }
 
 export function DocumentTabBar({
@@ -48,6 +59,7 @@ export function DocumentTabBar({
   onBlankPdfSettingsChange,
   blankPdfSettings,
   blankPdfDefaultLabel,
+  closeConfirmation,
 }: DocumentTabBarProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const tabListRef = useRef<HTMLDivElement | null>(null);
@@ -151,6 +163,16 @@ export function DocumentTabBar({
                       documentName={tab.documentName}
                       index={index}
                       tabId={tab.id}
+                      closeConfirmation={tab.dirty ? {
+                        busy: closeConfirmation.busy,
+                        open: closeConfirmation.tabId === tab.id,
+                        onOpenChange: (nextOpen) => {
+                          if (nextOpen) onCloseTab(tab.id);
+                          else if (closeConfirmation.tabId === tab.id) closeConfirmation.onCancel();
+                        },
+                        onSave: closeConfirmation.onSave,
+                        onDiscard: closeConfirmation.onDiscard,
+                      } : undefined}
                       onClose={() => handleCloseTab(tab.id, index)}
                       onMove={handleKeyboardMove}
                     />
@@ -184,7 +206,9 @@ export function DocumentTabBar({
                     </SplitButtonSegment>
                   )}
                 />
-                <TooltipContent data-testid="document-tab-open-tooltip">Open PDF</TooltipContent>
+                <TooltipContent side={DOCUMENT_TAB_TOOLTIP_SIDE} data-testid="document-tab-open-tooltip">
+                  Open PDF
+                </TooltipContent>
               </Tooltip>
               <ButtonGroup aria-label="New blank PDF controls">
                 <Tooltip>
@@ -201,12 +225,13 @@ export function DocumentTabBar({
                       </SplitButtonSegment>
                     )}
                   />
-                  <TooltipContent data-testid="document-tab-new-pdf-tooltip">
+                  <TooltipContent side={DOCUMENT_TAB_TOOLTIP_SIDE} data-testid="document-tab-new-pdf-tooltip">
                     New blank PDF · {blankPdfDefaultLabel}
                   </TooltipContent>
                 </Tooltip>
                 <BlankPdfSettingsPopover
                   settings={blankPdfSettings}
+                  tooltipSide={DOCUMENT_TAB_TOOLTIP_SIDE}
                   onSettingsChange={onBlankPdfSettingsChange}
                 />
               </ButtonGroup>

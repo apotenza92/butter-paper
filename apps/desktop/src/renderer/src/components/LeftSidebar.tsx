@@ -41,10 +41,9 @@ export function LeftSidebar({ session, pages, width, mutationDisabled = false, o
     >
       <div
         className={[
-          'flex items-center justify-center border-b text-center text-[12px] font-semibold',
+          'flex items-center justify-center text-center text-[12px] font-semibold',
           PRIMARY_BAND_HEIGHT,
           SHELL_HEADER_INSET_X,
-          SHELL_BORDER_SUBTLE,
           SHELL_TEXT_PRIMARY,
         ].join(' ')}
         data-testid="left-sidebar-header"

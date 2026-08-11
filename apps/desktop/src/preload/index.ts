@@ -4,21 +4,33 @@ import { resolveCadViewEnabled } from '../shared/featureFlags';
 import type {
   BlankPdfCreateRequest,
   ButterPaperBridge,
+  ApplicationMenuCommand,
+  ApplicationMenuState,
   PageGeometryRequest,
   PdfDocumentAccessRequest,
+  PhoneSignatureMode,
   SaveDocumentRequest,
   ThemeSnapshot,
   UpdateFrequency,
   UpdateStatus,
 } from '../shared/protocol';
 
-const { contextBridge, ipcRenderer } = electron;
+const { contextBridge, ipcRenderer, webUtils } = electron;
 
 const isTestMode = process.env.BP_TEST_MODE === '1';
 const defaultSamplePdfPath = resolveDefaultSamplePdfPath();
 let openPdfPathsListener: ((filePaths: string[]) => void) | null = null;
 let closeRequestedListener: (() => void) | null = null;
+let closeTabRequestedListener: (() => void) | null = null;
+let menuCommandListener: ((command: ApplicationMenuCommand) => void) | null = null;
+let menuBarVisibilityListener: ((visible: boolean) => void) | null = null;
+let windowFullScreenListener: ((fullScreen: boolean) => void) | null = null;
 const pendingOpenPdfPaths: string[][] = [];
+const pendingCloseRequests: true[] = [];
+const pendingCloseTabRequests: true[] = [];
+const pendingMenuCommands: ApplicationMenuCommand[] = [];
+const pendingMenuBarVisibilityChanges: boolean[] = [];
+const pendingWindowFullScreenChanges: boolean[] = [];
 
 ipcRenderer.on(ipcChannels.applicationOpenPdfPaths, (_event, filePaths: string[]) => {
   if (openPdfPathsListener) {
@@ -29,7 +41,28 @@ ipcRenderer.on(ipcChannels.applicationOpenPdfPaths, (_event, filePaths: string[]
 });
 
 ipcRenderer.on(ipcChannels.applicationCloseRequested, () => {
-  closeRequestedListener?.();
+  if (closeRequestedListener) closeRequestedListener();
+  else pendingCloseRequests.push(true);
+});
+
+ipcRenderer.on(ipcChannels.applicationCloseTabRequested, () => {
+  if (closeTabRequestedListener) closeTabRequestedListener();
+  else pendingCloseTabRequests.push(true);
+});
+
+ipcRenderer.on(ipcChannels.applicationMenuCommand, (_event, command: ApplicationMenuCommand) => {
+  if (menuCommandListener) menuCommandListener(command);
+  else pendingMenuCommands.push(command);
+});
+
+ipcRenderer.on(ipcChannels.applicationMenuBarVisibilityChanged, (_event, visible: boolean) => {
+  if (menuBarVisibilityListener) menuBarVisibilityListener(visible);
+  else pendingMenuBarVisibilityChanges.push(visible);
+});
+
+ipcRenderer.on(ipcChannels.applicationWindowFullScreenChanged, (_event, fullScreen: boolean) => {
+  if (windowFullScreenListener) windowFullScreenListener(fullScreen);
+  else pendingWindowFullScreenChanges.push(fullScreen);
 });
 
 const bridge: ButterPaperBridge = {
@@ -44,6 +77,10 @@ const bridge: ButterPaperBridge = {
     getMetadata: async () => ipcRenderer.invoke(ipcChannels.applicationGetMetadata),
     setAsDefaultPdfApp: async () => ipcRenderer.invoke(ipcChannels.applicationSetDefaultPdfApp),
     takePendingPdfPaths: async () => ipcRenderer.invoke(ipcChannels.applicationTakePendingPdfPaths),
+    authorizeDroppedPdf: async (file: File) => {
+      const filePath = webUtils.getPathForFile(file);
+      return ipcRenderer.invoke(ipcChannels.applicationAuthorizeDroppedPdf, filePath);
+    },
     onOpenPdfPaths: (listener: (filePaths: string[]) => void) => {
       openPdfPathsListener = listener;
       for (const filePaths of pendingOpenPdfPaths.splice(0)) {
@@ -60,11 +97,61 @@ const bridge: ButterPaperBridge = {
     },
     onCloseRequested: (listener: () => void) => {
       closeRequestedListener = listener;
+      for (const _request of pendingCloseRequests.splice(0)) listener();
       return () => {
         if (closeRequestedListener === listener) {
           closeRequestedListener = null;
         }
       };
+    },
+    onCloseTabRequested: (listener: () => void) => {
+      closeTabRequestedListener = listener;
+      for (const _request of pendingCloseTabRequests.splice(0)) listener();
+      return () => {
+        if (closeTabRequestedListener === listener) {
+          closeTabRequestedListener = null;
+        }
+      };
+    },
+    onMenuCommand: (listener: (command: ApplicationMenuCommand) => void) => {
+      menuCommandListener = listener;
+      for (const command of pendingMenuCommands.splice(0)) listener(command);
+      return () => {
+        if (menuCommandListener === listener) {
+          menuCommandListener = null;
+        }
+      };
+    },
+    onMenuBarVisibilityChanged: (listener: (visible: boolean) => void) => {
+      menuBarVisibilityListener = listener;
+      for (const visible of pendingMenuBarVisibilityChanges.splice(0)) listener(visible);
+      return () => {
+        if (menuBarVisibilityListener === listener) {
+          menuBarVisibilityListener = null;
+        }
+      };
+    },
+    getWindowFullScreen: async () => ipcRenderer.invoke(ipcChannels.applicationGetWindowFullScreen),
+    onWindowFullScreenChanged: (listener: (fullScreen: boolean) => void) => {
+      windowFullScreenListener = listener;
+      for (const fullScreen of pendingWindowFullScreenChanges.splice(0)) listener(fullScreen);
+      return () => {
+        if (windowFullScreenListener === listener) {
+          windowFullScreenListener = null;
+        }
+      };
+    },
+    toggleWindowFullScreen: async () => {
+      await ipcRenderer.invoke(ipcChannels.applicationToggleWindowFullScreen);
+    },
+    reloadWindow: async (force: boolean) => {
+      await ipcRenderer.invoke(ipcChannels.applicationReloadWindow, force);
+    },
+    setMenuBarVisibility: async (visible: boolean) => {
+      await ipcRenderer.invoke(ipcChannels.applicationMenuBarVisibilityChanged, visible);
+    },
+    setMenuState: async (state: ApplicationMenuState) => {
+      await ipcRenderer.invoke(ipcChannels.applicationSetMenuState, state);
     },
     requestQuit: async () => {
       await ipcRenderer.invoke(ipcChannels.applicationRequestQuit);
@@ -116,6 +203,19 @@ const bridge: ButterPaperBridge = {
   dialogs: {
     openPdfDialog: async () => ipcRenderer.invoke(ipcChannels.dialogOpenPdf),
     savePdfAsDialog: async (defaultPath?: string) => ipcRenderer.invoke(ipcChannels.dialogSavePdfAs, defaultPath),
+  },
+  signaturePhone: {
+    start: async (mode: PhoneSignatureMode) => ipcRenderer.invoke(ipcChannels.signaturePhoneStart, mode),
+    poll: async (sessionId: string) => ipcRenderer.invoke(ipcChannels.signaturePhonePoll, sessionId),
+    stop: async (sessionId: string) => {
+      await ipcRenderer.invoke(ipcChannels.signaturePhoneStop, sessionId);
+    },
+  },
+  signatureRecent: {
+    list: async () => ipcRenderer.invoke(ipcChannels.signatureRecentList),
+    remember: async (asset) => ipcRenderer.invoke(ipcChannels.signatureRecentRemember, asset),
+    remove: async (id: string) => ipcRenderer.invoke(ipcChannels.signatureRecentRemove, id),
+    clear: async () => ipcRenderer.invoke(ipcChannels.signatureRecentClear),
   },
   pdf: {
     createBlankDocument: async (request: BlankPdfCreateRequest) => ipcRenderer.invoke(ipcChannels.pdfCreateBlankDocument, request),

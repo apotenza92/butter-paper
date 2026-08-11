@@ -5,13 +5,23 @@ import {
   MoveHorizontal,
   MoveVertical,
   RectangleVertical,
-  RotateCcw,
   Search,
   ZoomIn,
   ZoomOut,
   type LucideIcon,
 } from 'lucide-react';
-import { useEffect, useRef, useState, type ComponentType, type KeyboardEvent as ReactKeyboardEvent, type ReactElement } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ComponentType,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactElement,
+  type ReactNode,
+} from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
 import {
@@ -77,6 +87,118 @@ type ToolbarIconComponent = ComponentType<ToolbarIconProps>;
 
 export const TOOLBAR_ACTION_BUTTON_VARIANT = 'ghost' as const;
 const TOOLBAR_TOOLTIP_TRIGGER_ATTRIBUTE = 'data-toolbar-tooltip-trigger';
+const TOOLBAR_TOOLTIP_ID_ATTRIBUTE = 'data-toolbar-tooltip-id';
+
+interface ToolbarTooltipActions {
+  close: () => void;
+  unmount: () => void;
+}
+
+interface ToolbarTooltipActionsRef {
+  current: ToolbarTooltipActions | null;
+}
+
+interface ToolbarTooltipEntry {
+  actionsRef: ToolbarTooltipActionsRef;
+  open: boolean;
+  setEjected: (ejected: boolean) => void;
+}
+
+interface ToolbarTooltipRegistry {
+  closeOthers: (id: string) => void;
+  activate: (id: string) => void;
+  setOpen: (id: string, open: boolean) => void;
+  register: (id: string, entry: ToolbarTooltipEntry) => () => void;
+}
+
+const ToolbarTooltipRegistryContext = createContext<ToolbarTooltipRegistry | null>(null);
+
+function createToolbarTooltipRegistry(): ToolbarTooltipRegistry {
+  const entries = new Map<string, ToolbarTooltipEntry>();
+
+  return {
+    closeOthers(id) {
+      for (const [registeredId, entry] of entries) {
+        if (registeredId === id) {
+          entry.setEjected(false);
+          continue;
+        }
+        if (!entry.open) {
+          continue;
+        }
+        entry.open = false;
+        entry.setEjected(true);
+        entry.actionsRef.current?.close();
+        entry.actionsRef.current?.unmount();
+      }
+    },
+    activate(id) {
+      entries.get(id)?.setEjected(false);
+    },
+    setOpen(id, open) {
+      const entry = entries.get(id);
+      if (entry) {
+        entry.open = open;
+      }
+    },
+    register(id, entry) {
+      entries.set(id, entry);
+      return () => {
+        if (entries.get(id) === entry) {
+          entries.delete(id);
+        }
+      };
+    },
+  };
+}
+
+function ToolbarTooltip({
+  children,
+  id,
+  ...props
+}: {
+  children: ReactNode;
+  id: string;
+} & Omit<ComponentProps<typeof ShadcnTooltip>, 'actionsRef'>) {
+  const registry = useContext(ToolbarTooltipRegistryContext);
+  const actionsRef = useRef<ToolbarTooltipActions | null>(null);
+  const [ejected, setEjected] = useState(false);
+  const { disabled, onOpenChange, ...tooltipProps } = props;
+
+  useEffect(() => {
+    if (!registry) {
+      return undefined;
+    }
+    return registry.register(id, { actionsRef, open: false, setEjected });
+  }, [id, registry]);
+
+  useEffect(() => {
+    if (props.open !== undefined) {
+      registry?.setOpen(id, props.open);
+    }
+  }, [id, props.open, registry]);
+
+  const handleOpenChange: NonNullable<ComponentProps<typeof ShadcnTooltip>['onOpenChange']> = (open, eventDetails) => {
+    if (open) {
+      registry?.setOpen(id, true);
+      registry?.closeOthers(id);
+    } else {
+      registry?.setOpen(id, false);
+    }
+    onOpenChange?.(open, eventDetails);
+  };
+
+  return (
+    <ShadcnTooltip
+      {...tooltipProps}
+      actionsRef={actionsRef}
+      disabled={disabled || ejected}
+      onOpenChange={handleOpenChange}
+    >
+      {children}
+    </ShadcnTooltip>
+  );
+}
 
 interface GestureHintState {
   id: string;
@@ -164,15 +286,35 @@ function ToolbarTriggerTooltip({
   testId?: string;
   trigger: ReactElement;
 }) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (suppressTooltip) {
+      setOpen(false);
+    }
+  }, [suppressTooltip]);
+
   if (disabled) {
     return trigger;
   }
 
+  const tooltipId = testId ?? label;
+
   return (
-    <ShadcnTooltip disableHoverablePopup disabled={suppressTooltip} open={hint ? true : undefined}>
-      <TooltipTrigger data-toolbar-tooltip-trigger="" render={trigger} />
+    <ToolbarTooltip
+      disableHoverablePopup
+      disabled={suppressTooltip}
+      id={tooltipId}
+      open={Boolean(hint) || open}
+      onOpenChange={(nextOpen) => setOpen(nextOpen)}
+    >
+      <TooltipTrigger
+        data-toolbar-tooltip-id={tooltipId}
+        data-toolbar-tooltip-trigger=""
+        render={trigger}
+      />
       <TooltipContent data-testid={hint ? hintTestId : testId}>{hint ?? label}</TooltipContent>
-    </ShadcnTooltip>
+    </ToolbarTooltip>
   );
 }
 
@@ -208,10 +350,14 @@ function ToolbarIconButton({
   }
 
   return (
-    <ShadcnTooltip disableHoverablePopup>
-      <TooltipTrigger data-toolbar-tooltip-trigger="" render={button} />
+    <ToolbarTooltip disableHoverablePopup id={testId}>
+      <TooltipTrigger
+        data-toolbar-tooltip-id={testId}
+        data-toolbar-tooltip-trigger=""
+        render={button}
+      />
       <TooltipContent data-testid={`${testId}-tooltip`}>{label}</TooltipContent>
-    </ShadcnTooltip>
+    </ToolbarTooltip>
   );
 }
 
@@ -243,10 +389,12 @@ function ZoomDropdown({
   disabled,
   zoom,
   onZoomChange,
+  onZoomReset,
 }: {
   disabled?: boolean;
   zoom: number;
   onZoomChange: (zoom: number) => void;
+  onZoomReset: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const zoomLabel = formatZoomPercent(zoom);
@@ -260,25 +408,35 @@ function ZoomDropdown({
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen} disabled={disabled}>
-      <ShadcnTooltip disableHoverablePopup disabled={disabled || open}>
-        <TooltipTrigger data-toolbar-tooltip-trigger="" render={(
-          <DropdownMenuTrigger render={(
-            <Button
-              type="button"
-              variant={TOOLBAR_ACTION_BUTTON_VARIANT}
-              size="default"
-              className="min-w-[68px] tabular-nums"
-              disabled={disabled}
-              data-testid="viewer-zoom-menu"
-              aria-label={`Zoom ${zoomLabel}`}
-            >
-              <span>{zoomLabel}</span>
-              <ChevronDown data-icon="inline-end" aria-hidden="true" />
-            </Button>
-          )} />
-        )} />
-        <TooltipContent>{`Zoom ${zoomLabel}`}</TooltipContent>
-      </ShadcnTooltip>
+      <ToolbarTooltip disableHoverablePopup disabled={disabled || open} id="viewer-zoom-menu">
+        <TooltipTrigger
+          data-toolbar-tooltip-id="viewer-zoom-menu"
+          data-toolbar-tooltip-trigger=""
+          render={(
+            <DropdownMenuTrigger render={(
+              <Button
+                type="button"
+                variant={TOOLBAR_ACTION_BUTTON_VARIANT}
+                size="default"
+                className="min-w-[68px] tabular-nums"
+                disabled={disabled}
+                data-testid="viewer-zoom-menu"
+                aria-label={`Zoom ${zoomLabel}`}
+                onDoubleClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setOpen(false);
+                  onZoomReset();
+                }}
+              >
+                <span>{zoomLabel}</span>
+                <ChevronDown data-icon="inline-end" aria-hidden="true" />
+              </Button>
+            )} />
+          )}
+        />
+        <TooltipContent>{`Zoom ${zoomLabel}. Double-click to reset to 100%.`}</TooltipContent>
+      </ToolbarTooltip>
       <DropdownMenuContent align="start" className="min-w-[112px]">
         <DropdownMenuRadioGroup
           value={selectedZoom === undefined ? '' : String(selectedZoom)}
@@ -397,6 +555,7 @@ function ViewWheelControl({
   onModeChange: (mode: ScrollWheelMode) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const settingsTooltipId = `${testId}-settings`;
 
   useEffect(() => {
     if (disabled) {
@@ -445,10 +604,11 @@ function ViewWheelControl({
         )}
       />
       <DropdownMenu open={open} onOpenChange={setOpen} disabled={disabled}>
-        <ShadcnTooltip disableHoverablePopup disabled={disabled || open}>
+        <ToolbarTooltip disableHoverablePopup disabled={disabled || open} id={settingsTooltipId}>
           <DropdownMenuTrigger
             render={(
               <TooltipTrigger
+                data-toolbar-tooltip-id={settingsTooltipId}
                 data-toolbar-tooltip-trigger=""
                 render={(
                   <SplitButtonSegment
@@ -466,7 +626,7 @@ function ViewWheelControl({
             )}
           />
           <TooltipContent>{label} settings</TooltipContent>
-        </ShadcnTooltip>
+        </ToolbarTooltip>
         <DropdownMenuContent align="start" className="min-w-[190px]">
           <DropdownMenuGroup>
             <DropdownMenuLabel>Mousewheel Behaviour</DropdownMenuLabel>
@@ -506,6 +666,7 @@ function CadViewButton({
 }) {
   const [open, setOpen] = useState(false);
   const cadViewActive = scrollMode === 'continuous' && pageColumnsEnabled;
+  const settingsTooltipId = 'viewer-cad-view-settings';
   const countLabel = cadViewOrganisation === 'columns' ? 'Pages/column' : 'Pages/row';
 
   function handlePageCountChange(value: string): void {
@@ -547,10 +708,11 @@ function CadViewButton({
         )}
       />
       <Popover open={open} onOpenChange={setOpen}>
-        <ShadcnTooltip disableHoverablePopup disabled={disabled || open}>
+        <ToolbarTooltip disableHoverablePopup disabled={disabled || open} id={settingsTooltipId}>
           <PopoverTrigger
             render={(
               <TooltipTrigger
+                data-toolbar-tooltip-id={settingsTooltipId}
                 data-toolbar-tooltip-trigger=""
                 render={(
                   <SplitButtonSegment
@@ -568,7 +730,7 @@ function CadViewButton({
             )}
           />
           <TooltipContent>CAD View settings</TooltipContent>
-        </ShadcnTooltip>
+        </ToolbarTooltip>
         <PopoverContent
           align="start"
           className="w-[230px]"
@@ -660,6 +822,11 @@ export function ViewerToolbar({
 }: ViewerToolbarProps) {
   const [gestureHint, setGestureHint] = useState<GestureHintState | null>(null);
   const gestureHintTimerRef = useRef<number | null>(null);
+  const toolbarTooltipRegistryRef = useRef<ToolbarTooltipRegistry | null>(null);
+  if (toolbarTooltipRegistryRef.current === null) {
+    toolbarTooltipRegistryRef.current = createToolbarTooltipRegistry();
+  }
+  const toolbarTooltipRegistry = toolbarTooltipRegistryRef.current;
 
   function showGestureHint(id: string, text: string): void {
     if (gestureHintTimerRef.current !== null) {
@@ -692,32 +859,46 @@ export function ViewerToolbar({
   const singlePageGestureHint = resolveGestureHintPresentation(gestureHint, 'single-page');
 
   return (
-    <div
-      className={[
-        'bp-native-scroll-hidden flex min-w-0 items-center overflow-x-auto border-b border-border [justify-content:safe_center]',
-        PRIMARY_BAND_HEIGHT,
-        VIEWER_TOOLBAR_INSET_X,
-        'gap-2',
-        SHELL_SURFACE_PANEL,
-      ].join(' ')}
-      data-testid="viewer-toolbar"
-      onPointerOverCapture={(event) => {
-        const hoveredTrigger = event.target instanceof Element
-          ? event.target.closest<HTMLElement>(`[${TOOLBAR_TOOLTIP_TRIGGER_ATTRIBUTE}]`)
-          : null;
-        const focusedTrigger = event.currentTarget.ownerDocument.activeElement;
-        if (
-          hoveredTrigger &&
-          event.currentTarget.contains(hoveredTrigger) &&
-          focusedTrigger instanceof HTMLElement &&
-          focusedTrigger !== hoveredTrigger &&
-          event.currentTarget.contains(focusedTrigger) &&
-          focusedTrigger.hasAttribute(TOOLBAR_TOOLTIP_TRIGGER_ATTRIBUTE)
-        ) {
-          focusedTrigger.blur();
-        }
-      }}
-    >
+    <ToolbarTooltipRegistryContext.Provider value={toolbarTooltipRegistry}>
+      <div
+        className={[
+          'bp-native-scroll-hidden flex min-w-0 items-center overflow-x-auto border-b border-border [justify-content:safe_center]',
+          PRIMARY_BAND_HEIGHT,
+          VIEWER_TOOLBAR_INSET_X,
+          'gap-2',
+          SHELL_SURFACE_PANEL,
+        ].join(' ')}
+        data-testid="viewer-toolbar"
+        onPointerOverCapture={(event) => {
+          const hoveredTrigger = event.target instanceof Element
+            ? event.target.closest<HTMLElement>(`[${TOOLBAR_TOOLTIP_TRIGGER_ATTRIBUTE}]`)
+            : null;
+          const hoveredTooltipId = hoveredTrigger?.getAttribute(TOOLBAR_TOOLTIP_ID_ATTRIBUTE);
+          if (hoveredTooltipId) {
+            toolbarTooltipRegistry.closeOthers(hoveredTooltipId);
+          }
+          const focusedTrigger = event.currentTarget.ownerDocument.activeElement;
+          if (
+            hoveredTrigger &&
+            event.currentTarget.contains(hoveredTrigger) &&
+            focusedTrigger instanceof HTMLElement &&
+            focusedTrigger !== hoveredTrigger &&
+            event.currentTarget.contains(focusedTrigger) &&
+            focusedTrigger.hasAttribute(TOOLBAR_TOOLTIP_TRIGGER_ATTRIBUTE)
+          ) {
+            focusedTrigger.blur();
+          }
+        }}
+        onFocusCapture={(event) => {
+          const focusedTrigger = event.target instanceof Element
+            ? event.target.closest<HTMLElement>(`[${TOOLBAR_TOOLTIP_TRIGGER_ATTRIBUTE}]`)
+            : null;
+          const focusedTooltipId = focusedTrigger?.getAttribute(TOOLBAR_TOOLTIP_ID_ATTRIBUTE);
+          if (focusedTooltipId) {
+            toolbarTooltipRegistry.activate(focusedTooltipId);
+          }
+        }}
+      >
       <ButtonGroup aria-label="Zoom controls">
         <ToolbarIconButton
           disabled={disabled}
@@ -737,13 +918,7 @@ export function ViewerToolbar({
           disabled={disabled}
           zoom={zoom}
           onZoomChange={onZoomChange}
-        />
-        <ToolbarIconButton
-          disabled={disabled}
-          icon={RotateCcw}
-          label="Reset Zoom to 100%"
-          onClick={onZoomReset}
-          testId="viewer-zoom-reset"
+          onZoomReset={onZoomReset}
         />
       </ButtonGroup>
 
@@ -875,6 +1050,7 @@ export function ViewerToolbar({
           />
         ) : null}
       </ButtonGroup>
-    </div>
+      </div>
+    </ToolbarTooltipRegistryContext.Provider>
   );
 }

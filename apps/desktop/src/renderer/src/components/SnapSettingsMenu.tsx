@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import {
   CheckIcon,
   CircleIcon,
@@ -14,11 +14,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
-import { FieldLegend, FieldSet } from '@/components/ui/field';
+import { Field, FieldLabel, FieldLegend, FieldSet } from '@/components/ui/field';
 import { Separator } from '@/components/ui/separator';
+import { Switch } from '@/components/ui/switch';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { cn } from '@/lib/utils';
-import type { SnapSettings, SnapTarget } from '../state/viewerStore';
+import type { SnapGuideType, SnapSettings, SnapTarget } from '../state/viewerStore';
 import { RAIL_BUTTON_SIZE } from './shellSpacing';
 import { SNAP_MARKER_COLOR } from './snapMarkerVisuals';
 
@@ -35,6 +36,12 @@ type SnapSource = 'content' | 'markup';
 const SNAP_SOURCE_OPTIONS: ReadonlyArray<{ source: SnapSource; label: string }> = [
   { source: 'content', label: 'Content' },
   { source: 'markup', label: 'Markup' },
+];
+
+const SNAP_GUIDE_OPTIONS: ReadonlyArray<{ type: SnapGuideType; label: string }> = [
+  { type: 'alignment', label: 'Alignment' },
+  { type: 'equal-size', label: 'Equal size' },
+  { type: 'equal-spacing', label: 'Equal spacing' },
 ];
 
 function SnapTargetGlyph({ target }: { target: SnapTarget }) {
@@ -75,6 +82,7 @@ export function SnapSettingsMenu({
   onSnapSettingsChange,
 }: SnapSettingsMenuProps) {
   const [open, setOpen] = useState(false);
+  const guidesEnabledId = useId();
   const targets = snapSettings.snapTargets;
   const selectedTargets = new Set(targets);
   const selectedSources = enabledSnapSources(snapSettings);
@@ -110,7 +118,7 @@ export function SnapSettingsMenu({
           data-testid="viewer-snap-popover"
         >
           <FieldSet className="gap-2">
-            <FieldLegend variant="label" className="w-full text-center">Snap to</FieldLegend>
+            <FieldLegend variant="label" className="w-full">Snap to</FieldLegend>
             <ToggleGroup
               multiple
               variant="outline"
@@ -143,7 +151,7 @@ export function SnapSettingsMenu({
           </FieldSet>
           <Separator />
           <FieldSet className="gap-2">
-            <FieldLegend variant="label" className="w-full text-center">Snap points</FieldLegend>
+            <FieldLegend variant="label" className="w-full">Snap points</FieldLegend>
             <ToggleGroup
               multiple
               variant="outline"
@@ -172,6 +180,49 @@ export function SnapSettingsMenu({
                       className={cn(!selected && 'invisible')}
                       data-icon="inline-end"
                       data-testid={`viewer-snap-target-${option.target}-check`}
+                    />
+                  </ToggleGroupItem>
+                );
+              })}
+            </ToggleGroup>
+          </FieldSet>
+          <Separator />
+          <FieldSet className="gap-2">
+            <FieldLegend variant="label" className="w-full">Snap guides</FieldLegend>
+            <Field orientation="horizontal">
+              <FieldLabel htmlFor={guidesEnabledId}>Show snap guides</FieldLabel>
+              <Switch
+                id={guidesEnabledId}
+                checked={snapSettings.snapGuidesEnabled}
+                onCheckedChange={(checked) => onSnapSettingsChange({ snapGuidesEnabled: checked })}
+                data-testid="viewer-snap-guides-enabled"
+              />
+            </Field>
+            <ToggleGroup
+              multiple
+              variant="outline"
+              value={[...snapSettings.snapGuideTypes]}
+              disabled={!snapSettings.snapGuidesEnabled}
+              className="grid w-full grid-cols-2 gap-2"
+              aria-label="Snap guide types"
+              onValueChange={(values) => onSnapSettingsChange({ snapGuideTypes: values as SnapGuideType[] })}
+            >
+              {SNAP_GUIDE_OPTIONS.map((option) => {
+                const selected = snapSettings.snapGuideTypes.includes(option.type);
+                return (
+                  <ToggleGroupItem
+                    key={option.type}
+                    value={option.type}
+                    className="h-9 w-full justify-between px-2"
+                    data-testid={`viewer-snap-guide-${option.type}`}
+                    aria-label={`Show ${option.label.toLowerCase()} guides`}
+                  >
+                    <span>{option.label}</span>
+                    <CheckIcon
+                      aria-hidden="true"
+                      className={cn(!selected && 'invisible')}
+                      data-icon="inline-end"
+                      data-testid={`viewer-snap-guide-${option.type}-check`}
                     />
                   </ToggleGroupItem>
                 );

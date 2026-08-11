@@ -17,12 +17,12 @@ export const THUMBNAIL_MAX_HEIGHT = 220;
 
 const MIN_THUMBNAIL_WIDTH = 120;
 const CONTAINER_GAP = 0;
-const ITEM_GAP = 0;
-const ITEM_HEADER_HEIGHT = 48;
-const ITEM_BOTTOM_PADDING = 16;
-const ITEM_DIVIDER_HEIGHT = 1;
+const ITEM_GAP = 16;
+const ITEM_HEADER_HEIGHT = 32;
+const ITEM_CONTENT_GAP = 10;
+const ITEM_VERTICAL_PADDING = 20;
 const CARD_HORIZONTAL_INSET = 16;
-const CARD_HORIZONTAL_PADDING = 16;
+const CARD_HORIZONTAL_PADDING = 24;
 
 export function computeThumbnailPreviewWidth(viewportWidth: number): number {
   return Math.max(
@@ -66,7 +66,7 @@ export function computeThumbnailContentSize(
 }
 
 export function computeThumbnailItemHeight(previewHeight: number): number {
-  return ITEM_HEADER_HEIGHT + previewHeight + ITEM_BOTTOM_PADDING + ITEM_DIVIDER_HEIGHT;
+  return ITEM_HEADER_HEIGHT + ITEM_CONTENT_GAP + previewHeight + ITEM_VERTICAL_PADDING;
 }
 
 export function buildThumbnailLayouts(

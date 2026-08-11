@@ -186,7 +186,7 @@ function createLineToolDefinition<TMarkup extends StraightLineMarkup, TId extend
       },
     },
     interaction: {
-      placement: 'click',
+      placement: 'click-or-drag',
       createDraft(session) {
         return createLineDraft(session.startPoint);
       },

@@ -1,9 +1,9 @@
 import { createPolygonMarkup, pdfPoint, rect, type PdfPoint, type PolygonMarkup, type Rect } from '@butter-paper/core';
 import {
-  createLineDraft,
-  shouldCommitLine,
-  updateLineDraft,
-  type LineDraft,
+  createVertexPathDraft,
+  updateVertexPathDraft,
+  vertexPathPreviewPoints,
+  type VertexPathDraft,
 } from '../annotationLifecycle';
 import { getAnnotationContentStyle } from '../annotationStyles';
 import { isPointInPolygon, isPointNearPolygonEdge } from '../hitTesting';
@@ -19,7 +19,7 @@ const POLYGON_PROPERTIES = {
   ],
 } as const;
 
-export const POLYGON_TOOL_DEFINITION: PdfToolDefinition<PolygonMarkup, LineDraft> & { readonly id: 'polygon' } = {
+export const POLYGON_TOOL_DEFINITION: PdfToolDefinition<PolygonMarkup, VertexPathDraft> & { readonly id: 'polygon' } = {
   id: 'polygon',
   label: 'Polygon',
   shortcut: 'Shift+P',
@@ -99,12 +99,8 @@ export const POLYGON_TOOL_DEFINITION: PdfToolDefinition<PolygonMarkup, LineDraft
     getDraftPrimitives(draft) {
       return [
         {
-          kind: 'polygon',
-          points: [
-            draft.start,
-            pdfPoint(draft.current.x, draft.start.y),
-            draft.current,
-          ],
+          kind: 'polyline',
+          points: vertexPathPreviewPoints(draft),
           style: {
             stroke: '#ff0000',
             fill: 'none',
@@ -134,9 +130,10 @@ export const POLYGON_TOOL_DEFINITION: PdfToolDefinition<PolygonMarkup, LineDraft
       };
     },
     getDraftChrome(draft): SelectionChromeDescriptor {
+      const points = vertexPathPreviewPoints(draft);
       return {
         bounds: {
-          rect: pointsBounds([draft.start, draft.current]),
+          rect: pointsBounds(points),
           kind: 'child',
         },
         handles: [],
@@ -146,24 +143,20 @@ export const POLYGON_TOOL_DEFINITION: PdfToolDefinition<PolygonMarkup, LineDraft
   interaction: {
     placement: 'click',
     createDraft(session) {
-      return createLineDraft(session.startPoint);
+      return createVertexPathDraft('polygon', session.startPoint);
     },
     updateDraft(draft, point) {
-      return updateLineDraft(draft, point);
+      return updateVertexPathDraft(draft, point);
     },
     commitDraft(draft, context) {
-      if (!shouldCommitLine(draft.start, draft.current)) {
+      if (draft.points.length < 3) {
         return null;
       }
 
       return createPolygonMarkup({
         id: context.createMarkupId('polygon'),
         pageIndex: context.page.index,
-        points: [
-          draft.start,
-          pdfPoint(draft.current.x, draft.start.y),
-          draft.current,
-        ],
+        points: draft.points,
         source: { source: 'butter' },
       });
     },

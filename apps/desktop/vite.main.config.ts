@@ -7,6 +7,7 @@ const external = [
   'node:fs/promises',
   'node:http',
   'node:module',
+  'node:os',
   'node:path',
   'node:url',
   '@butter-paper/core',
@@ -20,6 +21,11 @@ const external = [
 ];
 
 export default defineConfig({
+  define: {
+    BP_SIGNATURE_RELAY_PRODUCTION_ORIGIN: JSON.stringify(
+      process.env.BP_SIGNATURE_RELAY_PRODUCTION_ORIGIN?.trim() ?? '',
+    ),
+  },
   build: {
     outDir: '.vite/build',
     emptyOutDir: false,

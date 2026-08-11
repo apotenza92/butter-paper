@@ -1,9 +1,9 @@
 import { createPolylineMarkup, pdfPoint, rect, type PdfPoint, type PolylineMarkup, type Rect } from '@butter-paper/core';
 import {
-  createLineDraft,
-  shouldCommitLine,
-  updateLineDraft,
-  type LineDraft,
+  createVertexPathDraft,
+  updateVertexPathDraft,
+  vertexPathPreviewPoints,
+  type VertexPathDraft,
 } from '../annotationLifecycle';
 import { getAnnotationContentStyle } from '../annotationStyles';
 import { isPointNearPolyline } from '../hitTesting';
@@ -18,7 +18,7 @@ const POLYLINE_PROPERTIES = {
   ],
 } as const;
 
-export const POLYLINE_TOOL_DEFINITION: PdfToolDefinition<PolylineMarkup, LineDraft> & { readonly id: 'polyline' } = {
+export const POLYLINE_TOOL_DEFINITION: PdfToolDefinition<PolylineMarkup, VertexPathDraft> & { readonly id: 'polyline' } = {
   id: 'polyline',
   label: 'Polyline',
   shortcut: 'Shift+N',
@@ -88,7 +88,7 @@ export const POLYLINE_TOOL_DEFINITION: PdfToolDefinition<PolylineMarkup, LineDra
       return [
         {
           kind: 'polyline',
-          points: [draft.start, draft.current],
+          points: vertexPathPreviewPoints(draft),
           style: {
             stroke: '#ff0000',
             fill: 'none',
@@ -118,9 +118,10 @@ export const POLYLINE_TOOL_DEFINITION: PdfToolDefinition<PolylineMarkup, LineDra
       };
     },
     getDraftChrome(draft): SelectionChromeDescriptor {
+      const points = vertexPathPreviewPoints(draft);
       return {
         bounds: {
-          rect: pointsBounds([draft.start, draft.current]),
+          rect: pointsBounds(points),
           kind: 'child',
         },
         handles: [],
@@ -130,20 +131,20 @@ export const POLYLINE_TOOL_DEFINITION: PdfToolDefinition<PolylineMarkup, LineDra
   interaction: {
     placement: 'click',
     createDraft(session) {
-      return createLineDraft(session.startPoint);
+      return createVertexPathDraft('polyline', session.startPoint);
     },
     updateDraft(draft, point) {
-      return updateLineDraft(draft, point);
+      return updateVertexPathDraft(draft, point);
     },
     commitDraft(draft, context) {
-      if (!shouldCommitLine(draft.start, draft.current)) {
+      if (draft.points.length < 2) {
         return null;
       }
 
       return createPolylineMarkup({
         id: context.createMarkupId('polyline'),
         pageIndex: context.page.index,
-        points: [draft.start, draft.current],
+        points: draft.points,
         source: { source: 'butter' },
       });
     },

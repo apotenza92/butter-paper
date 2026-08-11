@@ -43,6 +43,10 @@ describe('viewer toolbar control semantics', () => {
     expect(renderToolbar(false)).not.toContain('data-testid="viewer-cad-view"');
     expect(renderToolbar(true)).toContain('data-testid="viewer-cad-view"');
   });
+
+  it('does not render a separate zoom reset button', () => {
+    expect(renderToolbar(false)).not.toContain('data-testid="viewer-zoom-reset"');
+  });
 });
 
 describe('viewer toolbar gesture hints', () => {

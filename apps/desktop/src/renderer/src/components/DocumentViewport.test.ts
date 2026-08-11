@@ -486,12 +486,15 @@ describe('document viewport nearby page warming', () => {
 });
 
 describe('document viewport visible overscan', () => {
-  it('holds continuous overscan at the strict viewport while motion or critical render work is active', () => {
+  it('keeps a motion buffer mounted so scrolling does not expose page placeholders', () => {
     expect(resolveViewportVisibleOverscanPx({
       layoutMode: 'continuous',
       viewportInMotion: true,
       renderBacklogIdle: true,
-    })).toBe(0);
+    })).toBe(480);
+  });
+
+  it('holds continuous overscan at the strict viewport while critical render work is active', () => {
     expect(resolveViewportVisibleOverscanPx({
       layoutMode: 'continuous',
       viewportInMotion: false,

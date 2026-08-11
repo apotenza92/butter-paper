@@ -93,6 +93,9 @@ test.describe('Page scale foundation', () => {
     const { page } = await openFixturePdf(app, 'single-page');
     await openPageScaleDialog(page);
     await page.getByTestId('page-scale-method-calibrate').click();
+    await expect(page.getByTestId('page-scale-dialog')).toBeVisible();
+    await expect(page.getByTestId('page-scale-calibrate-real-length')).toBeVisible();
+    await page.getByTestId('page-scale-pick-calibration').click();
     await expect(page.getByTestId('page-scale-dialog')).toHaveCount(0);
     await expect(page.getByTestId('page-scale-calibration-instructions')).toContainText('Click the first point');
 

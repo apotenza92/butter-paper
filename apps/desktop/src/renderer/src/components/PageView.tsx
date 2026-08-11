@@ -97,11 +97,16 @@ export function PageView({
   const documentState = useViewerStore((state) => state.document);
   const activeTool = useViewerStore((state) => state.activeTool);
   const selectedMarkupIds = useViewerStore((state) => state.selectedMarkupIds);
+  const rightSidebarOpen = useViewerStore((state) => state.rightSidebarOpen);
   const postPlacement = useViewerStore((state) => state.postPlacement);
   const pendingImageAsset = useViewerStore((state) => state.pendingImageAsset);
   const snapSettings = useViewerStore((state) => state.snapSettings);
+  const toolPropertyValues = useViewerStore((state) => state.toolPropertyValues);
   const setSelectedMarkupIds = useViewerStore((state) => state.setSelectedMarkupIds);
   const setPostPlacement = useViewerStore((state) => state.setPostPlacement);
+  const setActiveTool = useViewerStore((state) => state.setActiveTool);
+  const openRightSidebar = useViewerStore((state) => state.openRightSidebar);
+  const collapseRightSidebar = useViewerStore((state) => state.collapseRightSidebar);
   const consumePendingImageAsset = useViewerStore((state) => state.consumePendingImageAsset);
   const updateDocument = useViewerStore((state) => state.updateDocument);
   const setStatusMessage = useViewerStore((state) => state.setStatusMessage);
@@ -563,6 +568,20 @@ export function PageView({
       requestQuality('preview');
     };
 
+    if (hasDisplayedImage) {
+      // Scrolling changes visibility and target-page priority, but it must not
+      // tear down the image already on screen. Wait until motion settles before
+      // scheduling a quality upgrade for the displayed raster.
+      if (!viewportInMotion) {
+        scheduleNextQuality(imageQuality);
+      }
+      return () => {
+        cancelled = true;
+        abortController.abort();
+        clearScheduledTimeouts();
+      };
+    }
+
     if (reusablePreviewQuality === 'full') {
       return () => {
         cancelled = true;
@@ -603,6 +622,7 @@ export function PageView({
     renderCoordinator,
     session,
     viewportInMotion,
+    imageQuality,
     cadRenderExperiment,
     detailCrop,
   ]);
@@ -1056,13 +1076,24 @@ export function PageView({
         snapToMarkup={snapSettings.snapToMarkup}
         snapTolerancePx={snapSettings.sensitivityPx}
         snapTargets={snapSettings.snapTargets}
+        snapGuidesEnabled={snapSettings.snapGuidesEnabled}
+        snapGuideTypes={snapSettings.snapGuideTypes}
         activeTool={activeTool}
+        toolPropertyValues={toolPropertyValues}
         selectedMarkupIds={selectedMarkupIds}
         postPlacement={postPlacement}
         pendingImageAsset={pendingImageAsset}
         setSelectedMarkupIds={setSelectedMarkupIds}
         setPostPlacement={setPostPlacement}
         consumePendingImageAsset={consumePendingImageAsset}
+        onImagePlaced={() => setActiveTool('select')}
+        onToggleProperties={(wasSelectedBeforeDoubleClick) => {
+          if (propertiesDoubleClickSidebarAction(wasSelectedBeforeDoubleClick, rightSidebarOpen) === 'collapse') {
+            collapseRightSidebar();
+            return;
+          }
+          openRightSidebar('tools');
+        }}
         createSnapshotDataUrl={createSnapshotDataUrl}
         updateDocument={updateDocument}
         onToolError={setStatusMessage}
@@ -1071,6 +1102,13 @@ export function PageView({
       />
     </div>
   );
+}
+
+export function propertiesDoubleClickSidebarAction(
+  wasSelectedBeforeDoubleClick: boolean,
+  rightSidebarOpen: boolean,
+): 'open' | 'collapse' {
+  return wasSelectedBeforeDoubleClick && rightSidebarOpen ? 'collapse' : 'open';
 }
 
 export function computePagePlaceholderSpinner(pageWidth: number, pageHeight: number): {

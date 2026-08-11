@@ -17,6 +17,7 @@ const PEN_PROPERTIES = {
     { kind: 'color', key: 'strokeColor', label: 'Stroke', default: '#ff0000' },
     { kind: 'number', key: 'strokeWidthPt', label: 'Stroke width', default: 1, min: 0.25, max: 24, step: 0.25 },
     { kind: 'number', key: 'opacity', label: 'Opacity', default: 1, min: 0, max: 1, step: 0.05 },
+    { kind: 'boolean', key: 'smoothCurves', label: 'Smooth curves', default: true },
   ],
 } as const;
 
@@ -86,6 +87,7 @@ function createInkToolDefinition<TMarkup extends InkMarkup, TId extends 'pen' | 
       strokeColor: defaultStroke,
       strokeWidthPt: defaultStrokeWidth,
       opacity: 1,
+      ...(id === 'pen' ? { smoothCurves: true } : {}),
       ...(id === 'highlight' ? { blendMode: 'multiply' } : {}),
     },
     geometry: {
@@ -122,8 +124,9 @@ function createInkToolDefinition<TMarkup extends InkMarkup, TId extends 'pen' | 
       getContentPrimitives(markup) {
         const style = getAnnotationContentStyle(markup);
         return markup.paths.map((path) => ({
-          kind: 'polyline' as const,
-          points: path,
+          ...(markup.kind === 'pen' && markup.smoothCurves
+            ? { kind: 'path' as const, d: interpolatingInkPath(path) }
+            : { kind: 'polyline' as const, points: path }),
           style: {
             stroke: style.stroke,
             fill: 'none',
@@ -209,11 +212,32 @@ function createInkToolDefinition<TMarkup extends InkMarkup, TId extends 'pen' | 
           id: context.fallbackId,
           pageIndex: context.pageIndex,
           paths: readInkList(annotation.fields?.InkList, annotation.rect),
+          ...(id === 'pen' && typeof annotation.fields?.BPSmoothCurves === 'boolean'
+            ? { smoothCurves: annotation.fields.BPSmoothCurves }
+            : {}),
           source: { source: 'imported' },
         } as Omit<TMarkup, 'kind'>);
       },
     },
   };
+}
+
+export function interpolatingInkPath(points: readonly PdfPoint[]): string {
+  if (points.length === 0) return '';
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  if (points.length === 2) return `M ${points[0].x} ${points[0].y} L ${points[1].x} ${points[1].y}`;
+
+  const segments = [`M ${points[0].x} ${points[0].y}`];
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const p0 = points[Math.max(0, index - 1)];
+    const p1 = points[index];
+    const p2 = points[index + 1];
+    const p3 = points[Math.min(points.length - 1, index + 2)];
+    const c1 = pdfPoint(p1.x + (p2.x - p0.x) / 6, p1.y + (p2.y - p0.y) / 6);
+    const c2 = pdfPoint(p2.x - (p3.x - p1.x) / 6, p2.y - (p3.y - p1.y) / 6);
+    segments.push(`C ${c1.x} ${c1.y} ${c2.x} ${c2.y} ${p2.x} ${p2.y}`);
+  }
+  return segments.join(' ');
 }
 
 function inkBounds(paths: readonly (readonly PdfPoint[])[], strokeWidth: number): Rect {

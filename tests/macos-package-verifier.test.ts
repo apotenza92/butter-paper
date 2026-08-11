@@ -55,6 +55,9 @@ describe('macOS release contract', () => {
     expect(verifier).toContain('Icon_Assets/system-dark');
     expect(verifier).toContain('Icon_Assets/01-artwork-dark');
     expect(verifier).toContain('validateIconGroupCanvas');
+    expect(verifier).toContain('NSCameraUsageDescription: CAMERA_USAGE_DESCRIPTION');
+    expect(verifier).toContain('NSLocalNetworkUsageDescription: LOCAL_NETWORK_USAGE_DESCRIPTION');
+    expect(verifier).toContain("requiredEntitlements: bundlePath === resolvedAppPath");
   });
 
   it('allowlists smoke variables without passing release credentials to the app', () => {
@@ -130,41 +133,17 @@ describe('macOS release contract', () => {
           { appearance: 'dark', value: 'none' },
         ]);
         expect(layer['image-name-specializations']).toEqual([
-          { value: '01-artwork.svg' },
-          { appearance: 'dark', value: '01-artwork-dark.svg' },
+          { value: '01-artwork.png' },
+          { appearance: 'dark', value: '01-artwork-dark.png' },
         ]);
         for (const image of layer['image-name-specializations']) {
           const layerPath = join(contract.iconSourcePath, 'Assets', image.value);
           expect(existsSync(layerPath)).toBe(true);
-          const layerSource = readFileSync(layerPath, 'utf8');
-          expect(layerSource).toContain(
-            'width="1024" height="1024" viewBox="0 0 1024 1024"',
-          );
-          expect(layerSource).toContain('data-layout="corner-equal-padding"');
-          expect(layerSource).toContain('data-artwork-scale="0.87"');
-          expect(layerSource).toContain('data-cube-padding="58"');
-          expect(layerSource).toContain('data-feather-padding="46"');
-          expect(layerSource).toContain('data-feather-to-pot="58/42"');
-          expect(layerSource).toContain('data-source-artwork="approved-raster-direct-trace"');
-          expect(layerSource).toContain('data-efficiency-pass="none"');
-          expect(layerSource).not.toContain('<rect');
-          expect(layerSource).not.toContain('angled-pen-shadow');
-          expect(layerSource).toContain('<g id="quill-ink-mark"');
-          expect(layerSource.match(/<path\b/g)?.length).toBeGreaterThan(1000);
-          expect(layerSource).not.toContain('<circle');
-          expect(layerSource).not.toMatch(/<filter\b|filter=|<image\b|pencil|sketch/i);
-          if (channel === 'stable') {
-            expect(layerSource).toContain('data-source-artwork="approved-raster-direct-trace"');
-          } else {
-            expect(layerSource).toContain('data-source-artwork="approved-raster-direct-trace"');
-          }
-          if (image.appearance === 'dark') {
-            expect(layerSource).toContain('data-dark-outline="white-pure-black-swap"');
-            expect(layerSource).toContain('fill="#ffffff"');
-          } else {
-            expect(layerSource).toContain('data-dark-outline="black"');
-            expect(layerSource).not.toContain('fill="#ffffff"');
-          }
+          const layerSource = readFileSync(layerPath);
+          expect(layerSource.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+          expect(layerSource.readUInt32BE(16)).toBe(1024);
+          expect(layerSource.readUInt32BE(20)).toBe(1024);
+          expect(layerSource.readUInt8(25)).toBe(6);
         }
       }
     }
@@ -264,7 +243,12 @@ describe('certificate and signature validation', () => {
     expect(() => validateEntitlements({
       'com.apple.security.cs.allow-jit': true,
       'com.apple.security.cs.allow-unsigned-executable-memory': true,
-    }, 'fixture')).not.toThrow();
+      'com.apple.security.device.camera': true,
+    }, 'fixture', ['com.apple.security.device.camera'])).not.toThrow();
+    expect(() => validateEntitlements({
+      'com.apple.security.cs.allow-jit': true,
+      'com.apple.security.cs.allow-unsigned-executable-memory': true,
+    }, 'fixture', ['com.apple.security.device.camera'])).toThrow(/missing required entitlement/);
     expect(() => validateEntitlements({
       'com.apple.security.get-task-allow': true,
     }, 'fixture')).toThrow(/get-task-allow/);
