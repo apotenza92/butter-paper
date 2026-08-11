@@ -2,6 +2,7 @@ import { createImageMarkup, pdfPoint, rect as createRect, type ImageMarkup } fro
 import {
   createRectangleDraft,
   resizeRotatedRectFromHandle,
+  resizeRotatedRectFromHandlePreservingAspectRatio,
   shouldCommitRectangle,
   rectangleDraftToRect,
   updateRectangleDraft,
@@ -44,13 +45,15 @@ export const IMAGE_TOOL_DEFINITION: PdfToolDefinition<ImageMarkup, RectangleDraf
           },
         ],
         handles: [
-          ...getResizeHandles(markup.rect).map((handle) => ({
-            id: `image.resize.${handle.kind}`,
-            componentId: 'image.body',
-            point: pdfPoint(handle.x, handle.y),
-            behavior: 'resizeSelf' as const,
-            cursor: handle.cursor,
-          })),
+          ...getResizeHandles(markup.rect)
+            .filter((handle) => !markup.aspectRatioLocked || handle.kind.length === 2)
+            .map((handle) => ({
+              id: `image.resize.${handle.kind}`,
+              componentId: 'image.body',
+              point: pdfPoint(handle.x, handle.y),
+              behavior: 'resizeSelf' as const,
+              cursor: handle.cursor,
+            })),
           createRotationHandle(markup),
         ],
       };
@@ -153,9 +156,13 @@ export const IMAGE_TOOL_DEFINITION: PdfToolDefinition<ImageMarkup, RectangleDraf
         return markup;
       }
       const handle = resizeHandleFromId(input.handleId);
-      return handle
-        ? createImageMarkup({ ...markup, rect: resizeRotatedRectFromHandle(markup.rect, markup.rotation, handle, input.currentPoint) })
-        : markup;
+      if (!handle) {
+        return markup;
+      }
+      const resizedRect = markup.aspectRatioLocked
+        ? resizeRotatedRectFromHandlePreservingAspectRatio(markup.rect, markup.rotation, handle, input.currentPoint)
+        : resizeRotatedRectFromHandle(markup.rect, markup.rotation, handle, input.currentPoint);
+      return createImageMarkup({ ...markup, rect: resizedRect });
     },
   },
   pdf: {
@@ -173,6 +180,7 @@ export const IMAGE_TOOL_DEFINITION: PdfToolDefinition<ImageMarkup, RectangleDraf
         rect: createRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1)),
         dataUrl: String(annotation.fields?.BPImageData ?? DEFAULT_IMAGE_DATA_URL),
         mimeType: String(annotation.fields?.BPImageMimeType ?? 'image/png') === 'image/jpeg' ? 'image/jpeg' : 'image/png',
+        aspectRatioLocked: annotation.fields?.BPAspectRatioLocked === true,
         source: { source: 'imported' },
       });
     },

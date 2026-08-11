@@ -46,6 +46,7 @@ const TOOLBAR_PROPS = {
 describe('ViewerToolbar tooltip interactions', () => {
   let host: HTMLDivElement;
   let root: Root;
+  let onZoomReset: () => void;
 
   beforeEach(() => {
     vi.stubGlobal('ResizeObserver', TestResizeObserver);
@@ -53,12 +54,13 @@ describe('ViewerToolbar tooltip interactions', () => {
     host = document.createElement('div');
     document.body.append(host);
     root = createRoot(host);
+    onZoomReset = vi.fn();
     act(() => {
       root.render(
         createElement(
           TooltipProvider,
           { delay: 0 },
-          createElement(ViewerToolbar, TOOLBAR_PROPS),
+          createElement(ViewerToolbar, { ...TOOLBAR_PROPS, onZoomReset }),
         ),
       );
     });
@@ -91,5 +93,41 @@ describe('ViewerToolbar tooltip interactions', () => {
       document.body.querySelectorAll<HTMLElement>('[data-slot="tooltip-content"]'),
     ).filter((tooltip) => tooltip.getAttribute('data-closed') === null);
     expect(visibleTooltips.map((tooltip) => tooltip.textContent)).toEqual(['Continuous View']);
+    expect(
+      Array.from(document.body.querySelectorAll<HTMLElement>('[data-slot="tooltip-content"]'))
+        .map((tooltip) => tooltip.textContent),
+    ).toEqual(['Continuous View']);
+  });
+
+  it('ejects a controlled gesture hint before the next toolbar tooltip opens', () => {
+    const fitWidth = host.querySelector<HTMLButtonElement>('[data-testid="viewer-fit-width"]');
+    const continuous = host.querySelector<HTMLButtonElement>('[data-testid="viewer-scroll-continuous"]');
+    expect(fitWidth).toBeTruthy();
+    expect(continuous).toBeTruthy();
+
+    act(() => fitWidth?.click());
+    act(() => continuous && hover(continuous));
+
+    expect(
+      Array.from(document.body.querySelectorAll<HTMLElement>('[data-slot="tooltip-content"]'))
+        .map((tooltip) => tooltip.textContent),
+    ).toEqual(['Continuous View']);
+  });
+
+  it('resets PDF zoom when the percentage dropdown is double-clicked', () => {
+    const zoomMenu = host.querySelector<HTMLButtonElement>('[data-testid="viewer-zoom-menu"]');
+    expect(zoomMenu).toBeTruthy();
+
+    act(() => zoomMenu?.click());
+    expect(document.body.querySelector('[data-slot="dropdown-menu-content"][data-open]')).toBeTruthy();
+
+    act(() => {
+      zoomMenu?.click();
+      zoomMenu?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+    });
+
+    expect(onZoomReset).toHaveBeenCalledOnce();
+    expect(document.body.querySelector('[data-slot="dropdown-menu-content"][data-open]')).toBeNull();
+    expect(host.querySelector('[data-testid="viewer-zoom-reset"]')).toBeNull();
   });
 });

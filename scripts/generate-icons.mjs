@@ -40,12 +40,16 @@ const icnsEntries = [
 const variants = [
   {
     name: 'stable',
-    source: join(repositoryRoot, 'assets/butter-paper-icon.svg'),
+    source: join(repositoryRoot, 'assets/butter-paper-icon.png'),
+    darkSource: join(repositoryRoot, 'assets/butter-paper-icon-dark.png'),
+    adaptiveArtwork: 'macos/Butter Paper.icon/Assets',
     output: join(repositoryRoot, 'apps/desktop/assets'),
   },
   {
     name: 'beta',
-    source: join(repositoryRoot, 'assets/butter-paper-icon-beta.svg'),
+    source: join(repositoryRoot, 'assets/butter-paper-icon-beta.png'),
+    darkSource: join(repositoryRoot, 'assets/butter-paper-icon-beta-dark.png'),
+    adaptiveArtwork: 'macos/Butter Paper Beta.icon/Assets',
     output: join(repositoryRoot, 'apps/desktop/assets/beta'),
   },
 ];
@@ -55,7 +59,7 @@ let generatedFileCount = 0;
 for (const variant of variants) {
   if (checkOnly) {
     await verifyGeneratedVariant(variant, mismatches);
-    generatedFileCount += expectedOutputPaths().length;
+    generatedFileCount += expectedOutputPaths(variant).length;
     continue;
   }
 
@@ -89,6 +93,8 @@ async function generateVariant(variant) {
     ['icon.png', pngBySize.get(512)],
     ['icon.ico', buildIco(icoSizes, pngBySize)],
     ['icon.icns', buildIcns(icnsEntries, pngBySize)],
+    [`${variant.adaptiveArtwork}/01-artwork.png`, await readFile(variant.source)],
+    [`${variant.adaptiveArtwork}/01-artwork-dark.png`, await readFile(variant.darkSource)],
   ]);
   for (const size of linuxSizes) {
     generatedFiles.set(`linux/${size}x${size}.png`, pngBySize.get(size));
@@ -136,7 +142,7 @@ async function verifyGeneratedVariant(variant, variantMismatches) {
   }
 
   const sourceContents = await readFile(variant.source);
-  const expectedPaths = expectedOutputPaths();
+  const expectedPaths = expectedOutputPaths(variant);
   if (manifest.schemaVersion !== 1) {
     variantMismatches.push(`${manifestPath}: unsupported schema version`);
   }
@@ -173,11 +179,13 @@ async function verifyGeneratedVariant(variant, variantMismatches) {
   }
 }
 
-function expectedOutputPaths() {
+function expectedOutputPaths(variant) {
   return [
     'icon.icns',
     'icon.ico',
     'icon.png',
+    `${variant.adaptiveArtwork}/01-artwork.png`,
+    `${variant.adaptiveArtwork}/01-artwork-dark.png`,
     ...linuxSizes.map(size => `linux/${size}x${size}.png`),
   ].sort();
 }
@@ -190,6 +198,8 @@ function validateNativeIcon(relativePath, contents) {
     }
     const expectedSize = relativePath === 'icon.png'
       ? 512
+      : relativePath.includes('/Assets/01-artwork')
+        ? 1024
       : Number.parseInt(relativePath.match(/\/(\d+)x\d+\.png$/)?.[1] ?? '', 10);
     if (
       contents.readUInt32BE(16) !== expectedSize

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { createLineMarkup, createPageTransform, createRectangleMarkup, pdfPoint, rect, type PageModel } from '@butter-paper/core';
 import {
   constrainPointOrthogonally,
+  findEqualSizeSnap,
+  findEqualSpacingSnap,
   findNearestSnapPoint,
   findObjectSnapTrackingPoint,
   getAnnotationSnapCandidates,
@@ -305,7 +307,13 @@ describe('snapping helpers', () => {
 
     expect(findObjectSnapTrackingPoint(pdfPoint(80, 32), acquired, transform, { tolerancePx: 5 })).toEqual({
       point: pdfPoint(80, 30),
-      guides: [{ origin: pdfPoint(20, 30), axis: 'horizontal' }],
+      guides: [{
+        origin: pdfPoint(20, 30),
+        axis: 'horizontal',
+        source: 'annotation',
+        role: 'endpoint',
+        ownerId: 'owner-20-30',
+      }],
       distancePx: 4,
     });
     expect(findObjectSnapTrackingPoint(pdfPoint(80, 34), acquired, transform, { tolerancePx: 5 })).toBeNull();
@@ -321,8 +329,8 @@ describe('snapping helpers', () => {
     expect(findObjectSnapTrackingPoint(pdfPoint(78, 33), acquired, transform, { tolerancePx: 5 })).toEqual({
       point: pdfPoint(80, 30),
       guides: [
-        { origin: pdfPoint(20, 30), axis: 'horizontal' },
-        { origin: pdfPoint(80, 90), axis: 'vertical' },
+        { origin: pdfPoint(20, 30), axis: 'horizontal', source: 'annotation', role: 'endpoint', ownerId: 'owner-20-30' },
+        { origin: pdfPoint(80, 90), axis: 'vertical', source: 'annotation', role: 'midpoint', ownerId: 'owner-80-90' },
       ],
       distancePx: Math.sqrt(13),
     });
@@ -337,9 +345,85 @@ describe('snapping helpers', () => {
       allowedGuideAxes: ['vertical'],
     })).toEqual({
       point: pdfPoint(80, 30),
-      guides: [{ origin: pdfPoint(80, 90), axis: 'vertical' }],
+      guides: [{
+        origin: pdfPoint(80, 90),
+        axis: 'vertical',
+        source: 'annotation',
+        role: 'endpoint',
+        ownerId: 'owner-80-90',
+      }],
       distancePx: 2,
     });
+  });
+
+  it('snaps width and height to nearby annotation sizes in viewport pixels', () => {
+    const references = [
+      { ownerId: 'wide', rect: rect(100, 20, 80, 30) },
+      { ownerId: 'tall', rect: rect(20, 100, 40, 60) },
+    ];
+
+    const result = findEqualSizeSnap(rect(10, 10, 77, 58), references, { zoom: 2 }, 6);
+
+    expect(result).toMatchObject({ width: 80, height: 60 });
+    expect(result?.guides.map((guide) => [guide.axis, guide.reference.ownerId])).toEqual([
+      ['horizontal', 'wide'],
+      ['vertical', 'tall'],
+    ]);
+  });
+
+  it('snaps a moved object between two annotations with equal horizontal gaps', () => {
+    const result = findEqualSpacingSnap(rect(56, 20, 20, 20), [
+      { ownerId: 'before', rect: rect(10, 20, 20, 20) },
+      { ownerId: 'after', rect: rect(100, 20, 20, 20) },
+    ], { zoom: 1 }, 8);
+
+    expect(result?.adjustment).toEqual(pdfPoint(-1, 0));
+    expect(result?.guides).toEqual([{
+      kind: 'equal-spacing',
+      axis: 'horizontal',
+      placement: 'between',
+      before: { ownerId: 'before', rect: rect(10, 20, 20, 20) },
+      moving: rect(55, 20, 20, 20),
+      after: { ownerId: 'after', rect: rect(100, 20, 20, 20) },
+    }]);
+  });
+
+  it('does not infer equal spacing from objects that do not overlap on the cross axis', () => {
+    expect(findEqualSpacingSnap(rect(56, 80, 20, 20), [
+      { ownerId: 'before', rect: rect(10, 20, 20, 20) },
+      { ownerId: 'after', rect: rect(100, 20, 20, 20) },
+    ], { zoom: 1 }, 8)).toBeNull();
+  });
+
+  it('snaps equal vertical gaps independently of horizontal spacing', () => {
+    const result = findEqualSpacingSnap(rect(20, 56, 20, 20), [
+      { ownerId: 'below', rect: rect(20, 10, 20, 20) },
+      { ownerId: 'above', rect: rect(20, 100, 20, 20) },
+    ], { zoom: 1 }, 8);
+
+    expect(result?.adjustment).toEqual(pdfPoint(0, -1));
+    expect(result?.guides[0]).toMatchObject({
+      kind: 'equal-spacing',
+      axis: 'vertical',
+      placement: 'between',
+      before: { ownerId: 'below' },
+      after: { ownerId: 'above' },
+    });
+  });
+
+  it('extends an existing horizontal gap before or after an annotation pair', () => {
+    const references = [
+      { ownerId: 'first', rect: rect(20, 20, 20, 20) },
+      { ownerId: 'second', rect: rect(60, 20, 20, 20) },
+    ];
+
+    const before = findEqualSpacingSnap(rect(-17, 20, 20, 20), references, { zoom: 1 }, 5);
+    const after = findEqualSpacingSnap(rect(97, 20, 20, 20), references, { zoom: 1 }, 5);
+
+    expect(before?.adjustment).toEqual(pdfPoint(-3, 0));
+    expect(before?.guides[0]).toMatchObject({ placement: 'before', before: { ownerId: 'first' }, after: { ownerId: 'second' } });
+    expect(after?.adjustment).toEqual(pdfPoint(3, 0));
+    expect(after?.guides[0]).toMatchObject({ placement: 'after', before: { ownerId: 'first' }, after: { ownerId: 'second' } });
   });
 });
 

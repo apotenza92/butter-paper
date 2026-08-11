@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { applyTabOrder, reorderTabIds, resolveActiveTabId, resolveHorizontalWheelDelta } from './DocumentTabBar';
+import {
+  applyTabOrder,
+  DOCUMENT_TAB_TOOLTIP_SIDE,
+  reorderTabIds,
+  resolveActiveTabId,
+  resolveHorizontalWheelDelta,
+} from './DocumentTabBar';
 import { formatDocumentTabLabel } from './domain-ui/ClosableDocumentTab';
 
 describe('formatDocumentTabLabel', () => {
@@ -9,6 +15,12 @@ describe('formatDocumentTabLabel', () => {
     expect(formatDocumentTabLabel('archive.plan.pdf')).toBe('archive.plan');
     expect(formatDocumentTabLabel('notes.txt')).toBe('notes.txt');
     expect(formatDocumentTabLabel('.pdf')).toBe('.pdf');
+  });
+});
+
+describe('document tab tooltips', () => {
+  it('opens below the tab bar', () => {
+    expect(DOCUMENT_TAB_TOOLTIP_SIDE).toBe('bottom');
   });
 });
 

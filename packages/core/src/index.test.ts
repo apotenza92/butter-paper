@@ -328,6 +328,8 @@ describe('page scale foundation', () => {
   it('matches Bluebeam metric built-in scale presets', () => {
     expect(BUILT_IN_SCALE_PRESETS.map((preset) => preset.name)).toEqual([
       '1:1',
+      '1:2',
+      '1:5',
       '1:10',
       '1:20',
       '1:50',

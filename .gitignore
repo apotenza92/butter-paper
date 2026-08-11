@@ -14,5 +14,6 @@ apps/desktop/out
 apps/desktop/.vite
 apps/desktop/.webpack
 apps/desktop/release
+apps/signature-relay/.wrangler
 tests/fixtures/generated
 native/*/target

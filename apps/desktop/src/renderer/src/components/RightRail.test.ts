@@ -15,6 +15,10 @@ describe('resizable right rail sizing', () => {
     expect(RIGHT_RAIL_DEFAULT_COLUMNS).toBe(2);
   });
 
+  it('allows at most eight tool columns', () => {
+    expect(RIGHT_RAIL_MAX_COLUMNS).toBe(8);
+  });
+
   it('leaves even focus-safe widths around stock Nova toggles', () => {
     expect(getRightRailWidth(1)).toBe(48);
     expect(getRightRailWidth(2)).toBe(88);
@@ -41,10 +45,12 @@ describe('resizable right rail sizing', () => {
     expect(shouldShowRightRailHeadings(RIGHT_RAIL_MAX_COLUMNS)).toBe(true);
   });
 
-  it('lays the four General controls out as pairs at multiple columns', () => {
+  it('wraps the four General controls across the available tool columns', () => {
     expect(getTopControlColumnCount(1)).toBe(1);
     expect(getTopControlColumnCount(2)).toBe(2);
-    expect(getTopControlColumnCount(RIGHT_RAIL_MAX_COLUMNS)).toBe(2);
+    expect(getTopControlColumnCount(3)).toBe(3);
+    expect(getTopControlColumnCount(4)).toBe(4);
+    expect(getTopControlColumnCount(RIGHT_RAIL_MAX_COLUMNS)).toBe(4);
   });
 
   it('dispatches one selection side effect for pointer and keyboard activation', () => {

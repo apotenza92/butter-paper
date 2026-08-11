@@ -5,6 +5,10 @@ const installerSource = readFileSync(
   resolve(import.meta.dirname, '../apps/desktop/build/installer.nsh'),
   'utf8',
 );
+const macRegistrationSource = readFileSync(
+  resolve(import.meta.dirname, '../apps/desktop/src/main/applicationRegistration.ts'),
+  'utf8',
+);
 
 describe('Windows PDF handler registration', () => {
   it('advertises PDF capability without replacing the current default during install', () => {
@@ -25,5 +29,17 @@ describe('Windows PDF handler registration', () => {
     const uninstall = installerSource.split('!macro customUnInstall', 2)[1];
     expect(uninstall).toContain('${ifNot} ${isUpdated}');
     expect(uninstall).toContain('SHChangeNotify');
+  });
+});
+
+describe('macOS PDF handler registration', () => {
+  it('keeps stable and beta identities isolated while removing stale registrations', () => {
+    expect(macRegistrationSource).toContain('com.butterpaper.desktop');
+    expect(macRegistrationSource).toContain('com.butterpaper.desktop.beta');
+    expect(macRegistrationSource).toContain('lsregister');
+    expect(macRegistrationSource).toContain("['-u', registration.path]");
+    expect(macRegistrationSource).toContain("['-f', currentApplicationPath]");
+    expect(macRegistrationSource).toContain('isInstalledApplicationPath');
+    expect(macRegistrationSource).toContain("['/Applications', resolve(homedir(), 'Applications')]");
   });
 });

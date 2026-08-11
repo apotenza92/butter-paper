@@ -1,17 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  PAGE_INLINE_ROTATION_ACTIONS_MIN_WIDTH,
   resolveNearbyThumbnailWarmCandidates,
-  shouldShowInlinePageRotationActions,
   shouldWarmNearbyThumbnails,
 } from './PageThumbnailList';
-
-describe('page thumbnail actions', () => {
-  it('shows both rotation buttons at normal sidebar widths and collapses them when narrow', () => {
-    expect(shouldShowInlinePageRotationActions(PAGE_INLINE_ROTATION_ACTIONS_MIN_WIDTH)).toBe(true);
-    expect(shouldShowInlinePageRotationActions(PAGE_INLINE_ROTATION_ACTIONS_MIN_WIDTH - 1)).toBe(false);
-  });
-});
 
 describe('page thumbnail nearby warming', () => {
   const idleDiagnostics = {

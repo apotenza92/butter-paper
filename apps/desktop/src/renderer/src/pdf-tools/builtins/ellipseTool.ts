@@ -1,4 +1,4 @@
-import { createEllipseMarkup, pdfPoint, rect as createRect, type EllipseMarkup } from '@butter-paper/core';
+import { createEllipseMarkup, pdfPoint, rect as createRect, type EllipseMarkup, type PdfPoint, type Rect } from '@butter-paper/core';
 import {
   createRectangleDraft,
   rectangleDraftToRect,
@@ -11,7 +11,6 @@ import {
 import { getAnnotationContentStyle } from '../annotationStyles';
 import { isPointInRotatedEllipse, isPointNearRotatedEllipseEdge } from '../hitTesting';
 import { getMoveCursor, getResizeHandles, getRotationHandle } from '../interactionChrome';
-import { isPointNearSelectionChromeEdge } from '../selectionHitZones';
 import type { PdfToolDefinition, SelectionChromeDescriptor, ToolGeometryDescriptor, ToolHit } from '../types';
 
 const ELLIPSE_PROPERTIES = {
@@ -51,7 +50,7 @@ export const ELLIPSE_TOOL_DEFINITION: PdfToolDefinition<EllipseMarkup, Rectangle
           },
         ],
         handles: [
-          ...getResizeHandles(markup.rect).map((handle) => ({
+          ...getEllipseResizeHandles(markup.rect).map((handle) => ({
             id: `ellipse.resize.${handle.kind}`,
             componentId: 'ellipse.body',
             point: pdfPoint(handle.x, handle.y),
@@ -73,15 +72,7 @@ export const ELLIPSE_TOOL_DEFINITION: PdfToolDefinition<EllipseMarkup, Rectangle
           cursor: getMoveCursor(),
         };
       }
-      if (context.transform) {
-        if (!isPointNearSelectionChromeEdge(point, markup.rect, {
-          transform: context.transform,
-          rotation: markup.rotation,
-          state: 'hovered',
-        })) {
-          return null;
-        }
-      } else if (!isPointNearRotatedEllipseEdge(point, markup.rect, markup.rotation, context.tolerance)) {
+      if (!isPointNearRotatedEllipseEdge(point, markup.rect, markup.rotation, context.tolerance)) {
         return null;
       }
 
@@ -150,7 +141,7 @@ export const ELLIPSE_TOOL_DEFINITION: PdfToolDefinition<EllipseMarkup, Rectangle
     },
   },
   interaction: {
-    placement: 'click',
+    placement: 'click-or-drag',
     createDraft(session) {
       return createRectangleDraft(session.startPoint);
     },
@@ -189,7 +180,12 @@ export const ELLIPSE_TOOL_DEFINITION: PdfToolDefinition<EllipseMarkup, Rectangle
 
       return createEllipseMarkup({
         ...markup,
-        rect: resizeRotatedRectFromHandle(markup.rect, markup.rotation, handle, input.currentPoint),
+        rect: resizeRotatedRectFromHandle(
+          markup.rect,
+          markup.rotation,
+          handle,
+          ellipseResizePointFromHandle(markup.rect, markup.rotation ?? 0, handle, input.currentPoint),
+        ),
       });
     },
   },
@@ -210,6 +206,77 @@ export const ELLIPSE_TOOL_DEFINITION: PdfToolDefinition<EllipseMarkup, Rectangle
     },
   },
 };
+
+export function constrainEllipseDraftPoint(start: PdfPoint, point: PdfPoint): PdfPoint {
+  const deltaX = point.x - start.x;
+  const deltaY = point.y - start.y;
+  const diameter = Math.max(Math.abs(deltaX), Math.abs(deltaY));
+
+  return pdfPoint(
+    start.x + diameter * (Math.sign(deltaX) || 1),
+    start.y + diameter * (Math.sign(deltaY) || 1),
+  );
+}
+
+const ELLIPSE_DIAGONAL_RADIUS_FACTOR = Math.SQRT1_2;
+const ELLIPSE_DIAGONAL_OPPOSITE_FACTOR = (1 + ELLIPSE_DIAGONAL_RADIUS_FACTOR) * 0.5;
+
+function getEllipseResizeHandles(rect: Rect) {
+  const centerX = rect.x + rect.width * 0.5;
+  const centerY = rect.y + rect.height * 0.5;
+  const diagonalX = rect.width * 0.5 * ELLIPSE_DIAGONAL_RADIUS_FACTOR;
+  const diagonalY = rect.height * 0.5 * ELLIPSE_DIAGONAL_RADIUS_FACTOR;
+
+  return getResizeHandles(rect).map((handle) => {
+    if (handle.kind === 'nw') {
+      return { ...handle, x: centerX - diagonalX, y: centerY + diagonalY };
+    }
+    if (handle.kind === 'ne') {
+      return { ...handle, x: centerX + diagonalX, y: centerY + diagonalY };
+    }
+    if (handle.kind === 'se') {
+      return { ...handle, x: centerX + diagonalX, y: centerY - diagonalY };
+    }
+    if (handle.kind === 'sw') {
+      return { ...handle, x: centerX - diagonalX, y: centerY - diagonalY };
+    }
+    return handle;
+  });
+}
+
+export function ellipseResizePointFromHandle(
+  original: Rect,
+  rotation: number,
+  handle: RectResizeHandle,
+  point: PdfPoint,
+): PdfPoint {
+  if (handle === 'n' || handle === 'e' || handle === 's' || handle === 'w') {
+    return point;
+  }
+
+  const localPoint = rotatePointAroundRectCenter(point, original, rotation);
+  const opposite = pdfPoint(
+    handle.includes('w') ? original.x + original.width : original.x,
+    handle.includes('n') ? original.y : original.y + original.height,
+  );
+  const boundsPoint = pdfPoint(
+    opposite.x + (localPoint.x - opposite.x) / ELLIPSE_DIAGONAL_OPPOSITE_FACTOR,
+    opposite.y + (localPoint.y - opposite.y) / ELLIPSE_DIAGONAL_OPPOSITE_FACTOR,
+  );
+  return rotatePointAroundRectCenter(boundsPoint, original, -rotation);
+}
+
+function rotatePointAroundRectCenter(point: PdfPoint, box: Rect, degrees: number): PdfPoint {
+  const centerX = box.x + box.width * 0.5;
+  const centerY = box.y + box.height * 0.5;
+  const radians = (degrees * Math.PI) / 180;
+  const dx = point.x - centerX;
+  const dy = point.y - centerY;
+  return pdfPoint(
+    centerX + dx * Math.cos(radians) - dy * Math.sin(radians),
+    centerY + dx * Math.sin(radians) + dy * Math.cos(radians),
+  );
+}
 
 function createRotationHandle(markup: EllipseMarkup) {
   const handle = getRotationHandle(markup.rect);

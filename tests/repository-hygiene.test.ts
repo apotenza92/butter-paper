@@ -110,7 +110,7 @@ describe('repository hygiene release guardrails', () => {
 
     expect(leftRail).not.toContain('variant="outline"');
     expect(rightRail).not.toContain('variant="outline"');
-    expect(snapSettings.match(/variant="outline"/g)).toHaveLength(2);
+    expect(snapSettings.match(/variant="outline"/g)).toHaveLength(3);
     expect(leftRail).not.toContain('RailSettingsPopover');
     expect(rightRail).not.toContain('RailSettingsPopover');
     expect(leftRail).not.toContain('data-expanded');

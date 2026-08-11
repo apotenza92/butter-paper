@@ -1,7 +1,7 @@
 # Butter Paper
 
 <p align="center">
-  <img src="assets/butter-paper-icon.svg" alt="Butter Paper icon" width="144" />
+  <img src="assets/butter-paper-icon.png" alt="Butter Paper icon" width="144" />
 </p>
 
 Butter Paper is a free, open-source, cross-platform alternative to Bluebeam Revu

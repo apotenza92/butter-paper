@@ -4,6 +4,7 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SnapSettings } from '../state/viewerStore';
+import { dismissToolShortcutPopup } from '../utils/toolShortcuts';
 import { RightRail } from './RightRail';
 import {
   enabledSnapSources,
@@ -22,6 +23,8 @@ const SNAP_SETTINGS: SnapSettings = {
   snapToMarkup: true,
   sensitivityPx: 8,
   snapTargets: ['endpoint', 'midpoint', 'center', 'intersection'],
+  snapGuidesEnabled: true,
+  snapGuideTypes: ['alignment', 'equal-size', 'equal-spacing'],
 };
 
 const SNAP_PROPS = {
@@ -93,6 +96,16 @@ describe('RightRail properties interactions', () => {
     expect(heading?.className).toContain('text-center');
     expect(heading?.className).toContain('text-sm');
     expect(controlGrid?.style.gridTemplateColumns).toBe('repeat(2, 32px)');
+    expect(
+      Array.from(controlGrid?.children ?? []).map((child) =>
+        child.getAttribute('data-testid'),
+      ),
+    ).toEqual([
+      'tool-select',
+      'tool-pan',
+      'properties-sidebar-trigger',
+      'viewer-snap-controls',
+    ]);
 
     const snapTrigger = host.querySelector<HTMLButtonElement>(
       '[data-testid="viewer-snap-target-menu"]',
@@ -111,6 +124,9 @@ describe('RightRail properties interactions', () => {
     );
     const imageTrigger = host.querySelector<HTMLButtonElement>(
       '[data-testid="tool-image"]',
+    );
+    const signatureTrigger = host.querySelector<HTMLButtonElement>(
+      '[data-testid="tool-signature"]',
     );
     expect(snapTrigger?.textContent).toBe('');
     expect(snapTrigger?.className).toContain('size-8');
@@ -132,6 +148,9 @@ describe('RightRail properties interactions', () => {
     expect(panTrigger?.className).not.toContain('w-full');
     expect(selectTrigger?.className).not.toContain('border-input');
     expect(panTrigger?.className).not.toContain('border-input');
+    expect(markupGroup?.contains(signatureTrigger ?? null)).toBe(true);
+    expect(signatureTrigger?.getAttribute('data-rail-tooltip')).toBe('Signature');
+    expect(signatureTrigger?.closest('[data-testid="signature-controls"]')?.nextElementSibling).toBe(imageTrigger);
     for (const control of [trigger, snapTrigger, selectTrigger, panTrigger]) {
       expect(control?.className).toContain('bg-transparent');
       expect(control?.className).toContain('hover:bg-muted');
@@ -183,13 +202,17 @@ describe('RightRail properties interactions', () => {
     const select = host.querySelector<HTMLButtonElement>('[data-testid="tool-select"]');
     const pan = host.querySelector<HTMLButtonElement>('[data-testid="tool-pan"]');
     const image = host.querySelector<HTMLButtonElement>('[data-testid="tool-image"]');
+    const signature = host.querySelector<HTMLButtonElement>('[data-testid="tool-signature"]');
     const rectangle = host.querySelector<HTMLButtonElement>('[data-testid="tool-rectangle"]');
+    const setPageScale = host.querySelector<HTMLButtonElement>('[data-testid="measure-set-page-scale"]');
     const properties = host.querySelector<HTMLButtonElement>('[data-testid="properties-sidebar-trigger"]');
     const snap = host.querySelector<HTMLButtonElement>('[data-testid="viewer-snap-target-menu"]');
     expect(select?.disabled).toBe(false);
     expect(pan?.disabled).toBe(false);
     expect(image?.disabled).toBe(true);
+    expect(signature?.disabled).toBe(true);
     expect(rectangle?.disabled).toBe(true);
+    expect(setPageScale?.disabled).toBe(true);
     expect(properties?.disabled).toBe(true);
     expect(snap?.disabled).toBe(true);
 
@@ -204,6 +227,42 @@ describe('RightRail properties interactions', () => {
     expect(onSelectTool).toHaveBeenNthCalledWith(1, 'select', 0);
     expect(onSelectTool).toHaveBeenNthCalledWith(2, 'pan', 0);
     expect(onToggleProperties).not.toHaveBeenCalled();
+  });
+
+  it('puts Set page scale first in Measure and dispatches it as an action', () => {
+    const onSetPageScale = vi.fn();
+    const onSelectTool = vi.fn();
+    act(() =>
+      root.render(
+        createElement(RightRail, {
+          activeTool: 'select',
+          propertiesOpen: false,
+          ...SNAP_PROPS,
+          onSelectTool,
+          onSetPageScale,
+          onToggleProperties: () => undefined,
+        }),
+      ),
+    );
+
+    const measureGroup = host.querySelector<HTMLElement>('[data-testid="right-rail-measure"]');
+    const setPageScale = host.querySelector<HTMLButtonElement>('[data-testid="measure-set-page-scale"]');
+    const length = host.querySelector<HTMLButtonElement>('[data-testid="tool-length"]');
+
+    expect(measureGroup?.contains(setPageScale)).toBe(true);
+    expect(setPageScale?.nextElementSibling).toBe(length);
+    expect(setPageScale?.getAttribute('aria-label')).toBe('Set page scale');
+    expect(setPageScale?.getAttribute('data-rail-tooltip')).toBe('Set page scale');
+    expect(setPageScale?.className).toContain('size-8');
+    expect(setPageScale?.className).toContain('border-0');
+    expect(setPageScale?.className).toContain('bg-transparent');
+    expect(setPageScale?.className).toContain('p-0');
+    expect(setPageScale?.className).not.toContain('border-input');
+
+    act(() => setPageScale?.click());
+
+    expect(onSetPageScale).toHaveBeenCalledOnce();
+    expect(onSelectTool).not.toHaveBeenCalled();
   });
 
   it('stacks all four icon-only controls at one column', () => {
@@ -304,6 +363,8 @@ describe('RightRail properties interactions', () => {
     expect(popover?.className).toContain('w-80');
     expect(popover?.textContent).toContain('Snap to');
     expect(popover?.textContent).toContain('Intersections');
+    expect(popover?.textContent).toContain('Show snap guides');
+    expect(popover?.textContent).toContain('Equal spacing');
     expect(popover?.textContent).not.toContain('Snap settings');
     expect(popover?.textContent).not.toContain(
       'Choose snap sources and points.',
@@ -311,13 +372,76 @@ describe('RightRail properties interactions', () => {
     expect(legends.map((legend) => legend.textContent)).toEqual([
       'Snap to',
       'Snap points',
+      'Snap guides',
     ]);
     expect(legends.every((legend) => legend.className.includes('w-full'))).toBe(
       true,
     );
     expect(
-      legends.every((legend) => legend.className.includes('text-center')),
+      legends.every((legend) => !legend.className.includes('text-center')),
     ).toBe(true);
+  });
+
+  it('changes the global snap-guide toggle and individual guide types independently', () => {
+    const onSnapSettingsChange = vi.fn();
+    act(() =>
+      root.render(
+        createElement(RightRail, {
+          activeTool: 'select',
+          propertiesOpen: false,
+          snapSettings: SNAP_SETTINGS,
+          onSnapSettingsChange,
+          onSelectTool: () => undefined,
+          onToggleProperties: () => undefined,
+        }),
+      ),
+    );
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="viewer-snap-target-menu"]')?.click());
+
+    const globalToggle = document.body.querySelector<HTMLElement>('[data-testid="viewer-snap-guides-enabled"]');
+    const equalSizeToggle = document.body.querySelector<HTMLButtonElement>('[data-testid="viewer-snap-guide-equal-size"]');
+    expect(globalToggle?.getAttribute('data-checked')).not.toBeNull();
+    expect(equalSizeToggle?.getAttribute('data-pressed')).not.toBeNull();
+
+    act(() => globalToggle?.click());
+    expect(onSnapSettingsChange).toHaveBeenCalledWith({ snapGuidesEnabled: false });
+
+    act(() => equalSizeToggle?.click());
+    expect(onSnapSettingsChange).toHaveBeenCalledWith({
+      snapGuideTypes: ['alignment', 'equal-spacing'],
+    });
+  });
+
+  it('closes snap settings for a tool shortcut and keeps the active tool on Escape', () => {
+    const onSelectTool = vi.fn();
+    act(() =>
+      root.render(
+        createElement(RightRail, {
+          activeTool: 'rectangle',
+          propertiesOpen: false,
+          ...SNAP_PROPS,
+          onSelectTool,
+          onToggleProperties: () => undefined,
+        }),
+      ),
+    );
+    const snapTrigger = host.querySelector<HTMLButtonElement>('[data-testid="viewer-snap-target-menu"]');
+
+    act(() => snapTrigger?.click());
+    const popupControl = document.body.querySelector<HTMLButtonElement>('[data-testid="viewer-snap-content"]');
+    act(() => {
+      popupControl?.focus();
+      popupControl?.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }));
+    });
+    expect(document.body.querySelector('[data-testid="viewer-snap-popover"][data-open]')).toBeNull();
+    expect(onSelectTool).not.toHaveBeenCalled();
+
+    act(() => snapTrigger?.click());
+    expect(document.body.querySelector('[data-testid="viewer-snap-popover"][data-open]')).toBeTruthy();
+    act(() => dismissToolShortcutPopup(
+      document.body.querySelector<HTMLButtonElement>('[data-testid="viewer-snap-content"]'),
+    ));
+    expect(document.body.querySelector('[data-testid="viewer-snap-popover"][data-open]')).toBeNull();
   });
 
   it('selects once and toggles exactly once for a double-click sequence', () => {

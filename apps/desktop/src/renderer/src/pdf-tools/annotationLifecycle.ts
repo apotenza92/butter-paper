@@ -52,11 +52,20 @@ export type MeasurementPathDraft = {
   readonly points: readonly PdfPoint[];
 };
 
+export type VertexPathDraft = {
+  readonly kind: 'vertex-path';
+  readonly tool: 'polyline' | 'polygon';
+  readonly start: PdfPoint;
+  readonly current: PdfPoint;
+  readonly points: readonly PdfPoint[];
+};
+
 export type MoveDraft = {
   readonly kind: 'move';
   readonly pointerId: number;
   readonly markupIds: readonly string[];
   readonly lastPoint: PdfPoint;
+  readonly snapAnchorPoints?: readonly PdfPoint[];
   readonly componentId?: string;
   readonly bodyDrag?: BodyDragBehavior;
 };
@@ -73,7 +82,7 @@ export type TransformDraft = {
   readonly dragStarted: boolean;
 };
 
-export type AnnotationDraft = RectangleDraft | TextBoxDraft | LineDraft | ArcDraft | CloudNodeDraft | InkDraft | MeasurementPathDraft | MoveDraft | TransformDraft;
+export type AnnotationDraft = RectangleDraft | TextBoxDraft | LineDraft | ArcDraft | CloudNodeDraft | InkDraft | MeasurementPathDraft | VertexPathDraft | MoveDraft | TransformDraft;
 
 export function createRectangleDraft(start: PdfPoint): RectangleDraft {
   return { kind: 'rectangle', start, current: start };
@@ -170,6 +179,30 @@ export function measurementPathPreviewPoints(draft: MeasurementPathDraft): reado
   return [...draft.points, draft.current];
 }
 
+export function createVertexPathDraft(tool: VertexPathDraft['tool'], start: PdfPoint): VertexPathDraft {
+  return { kind: 'vertex-path', tool, start, current: start, points: [start] };
+}
+
+export function updateVertexPathDraft(draft: VertexPathDraft, current: PdfPoint): VertexPathDraft {
+  return { ...draft, current };
+}
+
+export function addVertexPathDraftPoint(draft: VertexPathDraft, point: PdfPoint): VertexPathDraft {
+  const lastPoint = draft.points[draft.points.length - 1] ?? draft.start;
+  const points = Math.hypot(point.x - lastPoint.x, point.y - lastPoint.y) < 0.5
+    ? draft.points
+    : [...draft.points, point];
+  return { ...draft, start: point, current: point, points };
+}
+
+export function vertexPathPreviewPoints(draft: VertexPathDraft): readonly PdfPoint[] {
+  const lastPoint = draft.points[draft.points.length - 1] ?? draft.start;
+  if (Math.hypot(draft.current.x - lastPoint.x, draft.current.y - lastPoint.y) < 0.5) {
+    return draft.points;
+  }
+  return [...draft.points, draft.current];
+}
+
 export function textBoxDraftToRect(draft: TextBoxDraft): Rect {
   return rectFromPoints(draft.start, draft.current);
 }
@@ -194,7 +227,7 @@ export function createMoveDraft(
   pointerId: number,
   markupIds: readonly string[],
   point: PdfPoint,
-  options: Pick<MoveDraft, 'componentId' | 'bodyDrag'> = {},
+  options: Pick<MoveDraft, 'componentId' | 'bodyDrag' | 'snapAnchorPoints'> = {},
 ): MoveDraft {
   return { kind: 'move', pointerId, markupIds, lastPoint: point, ...options };
 }
@@ -279,6 +312,76 @@ export function resizeRotatedRectFromHandle(
   const delta = pdfPoint(anchorBeforeWorld.x - anchorAfterWorld.x, anchorBeforeWorld.y - anchorAfterWorld.y);
 
   return rect(resized.x + delta.x, resized.y + delta.y, resized.width, resized.height);
+}
+
+export function resizeRotatedRectFromHandlePreservingAspectRatio(
+  original: Rect,
+  rotation: number | undefined,
+  handle: RectResizeHandle,
+  point: PdfPoint,
+  minimumSize = MIN_RECTANGLE_SIZE_PDF,
+): Rect {
+  if (!rotation) {
+    return resizeRectFromHandlePreservingAspectRatio(original, handle, point, minimumSize);
+  }
+
+  const anchorBefore = getOppositeResizeAnchor(original, handle);
+  const anchorBeforeWorld = rotatePointAroundRectCenter(anchorBefore, original, -rotation);
+  const localPoint = rotatePointAroundRectCenter(point, original, rotation);
+  const resized = resizeRectFromHandlePreservingAspectRatio(original, handle, localPoint, minimumSize);
+  const anchorAfter = getOppositeResizeAnchor(resized, handle);
+  const anchorAfterWorld = rotatePointAroundRectCenter(anchorAfter, resized, -rotation);
+  const delta = pdfPoint(anchorBeforeWorld.x - anchorAfterWorld.x, anchorBeforeWorld.y - anchorAfterWorld.y);
+
+  return rect(resized.x + delta.x, resized.y + delta.y, resized.width, resized.height);
+}
+
+function resizeRectFromHandlePreservingAspectRatio(
+  original: Rect,
+  handle: RectResizeHandle,
+  point: PdfPoint,
+  minimumSize: number,
+): Rect {
+  const aspectRatio = original.width / original.height;
+  if (!Number.isFinite(aspectRatio) || aspectRatio <= 0) {
+    return resizeRectFromHandle(original, handle, point, minimumSize);
+  }
+
+  const anchor = getOppositeResizeAnchor(original, handle);
+  const minimumWidth = Math.max(minimumSize, minimumSize * aspectRatio);
+  const minimumHeight = minimumWidth / aspectRatio;
+  const requestedWidth = handle.includes('w') ? anchor.x - point.x : point.x - anchor.x;
+  const requestedHeight = handle.includes('s') ? anchor.y - point.y : point.y - anchor.y;
+  let width: number;
+  let height: number;
+
+  if (handle === 'e' || handle === 'w') {
+    width = Math.max(minimumWidth, requestedWidth);
+    height = width / aspectRatio;
+  } else if (handle === 'n' || handle === 's') {
+    height = Math.max(minimumHeight, requestedHeight);
+    width = height * aspectRatio;
+  } else {
+    const horizontalScale = requestedWidth / original.width;
+    const verticalScale = requestedHeight / original.height;
+    const minimumScale = Math.max(minimumWidth / original.width, minimumHeight / original.height);
+    const scale = Math.max(minimumScale, horizontalScale, verticalScale);
+    width = original.width * scale;
+    height = original.height * scale;
+  }
+
+  const x = handle.includes('w')
+    ? anchor.x - width
+    : handle.includes('e')
+      ? anchor.x
+      : anchor.x - width * 0.5;
+  const y = handle.includes('s')
+    ? anchor.y - height
+    : handle.includes('n')
+      ? anchor.y
+      : anchor.y - height * 0.5;
+
+  return rect(x, y, width, height);
 }
 
 function getOppositeResizeAnchor(original: Rect, handle: RectResizeHandle): PdfPoint {

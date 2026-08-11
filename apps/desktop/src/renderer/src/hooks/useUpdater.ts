@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { UpdateFrequency, UpdateStatus } from '../../../shared/protocol';
 import type { ManualUpdateCheckState } from '../components/updateDialogState';
 
@@ -95,15 +95,17 @@ export function useUpdater(): {
     }
   }, []);
 
+  const actions = useMemo(() => ({
+    checkNow,
+    dismissManualCheck,
+    installDownloaded,
+    openReleasePage,
+    setFrequency,
+  }), [checkNow, dismissManualCheck, installDownloaded, openReleasePage, setFrequency]);
+
   return {
     status,
     manualCheck,
-    actions: {
-      checkNow,
-      dismissManualCheck,
-      installDownloaded,
-      openReleasePage,
-      setFrequency,
-    },
+    actions,
   };
 }

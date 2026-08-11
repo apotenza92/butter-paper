@@ -3,7 +3,6 @@ import { JSDOM } from 'jsdom';
 
 const html = readFileSync('docs/index.html', 'utf8');
 const readme = readFileSync('README.md', 'utf8');
-const betaIcon = readFileSync('assets/butter-paper-icon-beta.svg', 'utf8');
 const productDescription = 'Butter Paper is a free, open-source, cross-platform alternative to Bluebeam Revu for PDF review and markup in architecture, engineering, and construction—available on macOS, Windows, and Linux.';
 const readmeProductDescription = readme.match(/<\/p>\n\n([\s\S]*?)\n\n/)?.[1].replaceAll('\n', ' ');
 
@@ -106,7 +105,8 @@ describe('Butter Paper download page', () => {
     expect(document.getElementById('app-icon')!.getAttribute('src')).toBe('./assets/icons/beta/icon.png');
     expect(document.getElementById('favicon')!.getAttribute('href')).toBe('./assets/icons/beta/icon.png');
     expect(dom.window.getComputedStyle(document.body).getPropertyValue('--accent').trim()).toBe('#0a5e9d');
-    expect(betaIcon).toContain('#1b57f3');
+    expect(readFileSync('assets/butter-paper-icon-beta.png').subarray(0, 8).toString('hex'))
+      .toBe('89504e470d0a1a0a');
     expect(html).not.toContain('#cc4f47');
     expect(hero(dom).label).toBe('Download Butter Paper Beta DMG for Apple Silicon Mac');
     expect(hero(dom).href).toContain('Butter-Paper-Beta-macOS-arm64.dmg');

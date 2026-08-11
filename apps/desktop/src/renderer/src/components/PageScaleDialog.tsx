@@ -204,14 +204,7 @@ export function PageScaleDialog({
                 { value: 'custom', label: 'Custom' },
                 { value: 'calibrate', label: 'Calibrate' },
               ]}
-              onChange={(value) => {
-                const nextMode = value as ScaleMode;
-                if (nextMode === 'calibrate') {
-                  onRequestCalibrationPick();
-                  return;
-                }
-                setMode(nextMode);
-              }}
+              onChange={(value) => setMode(value as ScaleMode)}
             />
 
             {mode === 'preset' ? (
@@ -372,6 +365,7 @@ function readPositiveOrZero(value: string, label: string): number {
 
 function getPageScaleReturnFocus(pageIndex: number): HTMLElement | null {
   return globalThis.document.querySelector<HTMLElement>(`[data-testid="page-thumbnail-set-scale-${pageIndex + 1}"]`)
+    ?? globalThis.document.querySelector<HTMLElement>('[data-testid="measure-set-page-scale"]')
     ?? globalThis.document.querySelector<HTMLElement>('[data-testid="canvas-context-menu-trigger"]');
 }
 

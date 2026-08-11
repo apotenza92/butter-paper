@@ -1,37 +1,18 @@
 import { Fragment, useState, type MouseEvent, type ReactNode } from 'react';
+import type { SignatureAppearanceAsset } from '@butter-paper/core';
 import type { ToolMode } from '../../../shared/protocol';
+import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
 import { Separator } from '@/components/ui/separator';
-import { SlidersHorizontal } from 'lucide-react';
+import { ScanLine, SlidersHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getToolDefinition, PDF_TOOL_RAIL_GROUPS } from '../pdf-tools/toolRegistry';
 import type { SnapSettings } from '../state/viewerStore';
-import {
-  PanRailIcon,
-  ArcRailIcon,
-  RectangleRailIcon,
-  EllipseRailIcon,
-  LineRailIcon,
-  LengthRailIcon,
-  PolylengthRailIcon,
-  AreaRailIcon,
-  ArrowRailIcon,
-  CalloutRailIcon,
-  CloudPlusRailIcon,
-  CloudRailIcon,
-  DimensionRailIcon,
-  HighlightRailIcon,
-  ImageRailIcon,
-  PolylineRailIcon,
-  PolygonRailIcon,
-  PenRailIcon,
-  SelectRailIcon,
-  SnapshotRailIcon,
-  TextBoxRailIcon,
-} from './RailIcons';
+import { ToolRailIcon } from './RailIcons';
 import { RailScrollArea } from './RailScrollArea';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { SnapSettingsMenu } from './SnapSettingsMenu';
+import { SignatureMenu } from './SignatureMenu';
 import {
   RAIL_BUTTON_SIZE,
   RAIL_COLUMN_PITCH_PX,
@@ -46,45 +27,22 @@ interface RightRailProps {
   mutationDisabled?: boolean;
   propertiesOpen: boolean;
   snapSettings: SnapSettings;
+  signatureContextId?: string | null;
   onSelectTool: (tool: ToolMode, clickCount: number) => void;
+  onSetPageScale?: () => void;
+  onUseSignature?: (asset: SignatureAppearanceAsset) => void;
   onSnapSettingsChange: (settings: Partial<SnapSettings>) => void;
   onToggleProperties: () => void;
 }
 
-const TOOL_ICONS: Record<ToolMode, ReactNode> = {
-  select: <SelectRailIcon />,
-  pan: <PanRailIcon />,
-  'text-box': <TextBoxRailIcon />,
-  rectangle: <RectangleRailIcon />,
-  ellipse: <EllipseRailIcon />,
-  arc: <ArcRailIcon />,
-  line: <LineRailIcon />,
-  arrow: <ArrowRailIcon />,
-  dimension: <DimensionRailIcon />,
-  length: <LengthRailIcon />,
-  polylength: <PolylengthRailIcon />,
-  area: <AreaRailIcon />,
-  polyline: <PolylineRailIcon />,
-  polygon: <PolygonRailIcon />,
-  pen: <PenRailIcon />,
-  highlight: <HighlightRailIcon />,
-  cloud: <CloudRailIcon />,
-  'cloud-plus': <CloudPlusRailIcon />,
-  callout: <CalloutRailIcon />,
-  image: <ImageRailIcon />,
-  snapshot: <SnapshotRailIcon />,
-};
-
 export const RIGHT_RAIL_MIN_COLUMNS = 1;
 export const RIGHT_RAIL_DEFAULT_COLUMNS = 2;
-export const RIGHT_RAIL_MAX_COLUMNS = Math.max(
-  ...Object.values(PDF_TOOL_RAIL_GROUPS).map((group) => group.length),
-);
+export const RIGHT_RAIL_MAX_COLUMNS = 8;
 export const RIGHT_RAIL_COLUMN_PITCH = RAIL_COLUMN_PITCH_PX;
 const RIGHT_RAIL_WIDTH_OFFSET = RAIL_SINGLE_COLUMN_WIDTH_PX - RIGHT_RAIL_COLUMN_PITCH;
 
 export function getTopControlColumnCount(columnCount: number): number {
-  return columnCount > RIGHT_RAIL_MIN_COLUMNS ? 2 : 1;
+  return Math.min(TOP_RAIL_TOOL_IDS.length + 2, clampRightRailColumnCount(columnCount));
 }
 
 export function shouldDispatchToolSelection(clickCount: number): boolean {
@@ -164,7 +122,7 @@ function RailToolButton({
 
 const TOP_RAIL_TOOL_IDS = ['select', 'pan'] as const;
 
-export function RightRail({ activeTool, disabled = false, mutationDisabled = false, propertiesOpen, snapSettings, onSelectTool, onSnapSettingsChange, onToggleProperties }: RightRailProps) {
+export function RightRail({ activeTool, disabled = false, mutationDisabled = false, propertiesOpen, snapSettings, signatureContextId, onSelectTool, onSetPageScale, onUseSignature, onSnapSettingsChange, onToggleProperties }: RightRailProps) {
   const [columnCount, setColumnCount] = useState(RIGHT_RAIL_DEFAULT_COLUMNS);
   const width = getRightRailWidth(columnCount);
 
@@ -216,7 +174,10 @@ export function RightRail({ activeTool, disabled = false, mutationDisabled = fal
               disabled={disabled}
               mutationDisabled={mutationDisabled}
               propertiesOpen={propertiesOpen}
+              signatureContextId={signatureContextId}
               onSelectTool={onSelectTool}
+              onSetPageScale={onSetPageScale}
+              onUseSignature={onUseSignature}
               onToggleProperties={onToggleProperties}
             />
           </Fragment>
@@ -268,6 +229,24 @@ function GeneralRailGroup({
         data-testid="top-rail-control-grid"
         style={{ gridTemplateColumns: `repeat(${getTopControlColumnCount(columnCount)}, 32px)` }}
       >
+        {TOP_RAIL_TOOL_IDS.map((toolId) => {
+          const tool = getToolDefinition(toolId);
+          return (
+            <RailToolButton
+              key={tool.id}
+              active={activeTool === tool.id}
+              disabled={disabled}
+              doubleClickTooltip={getToolPropertiesDoubleClickTooltip(propertiesOpen)}
+              label={tool.label}
+              shortcut={tool.shortcut}
+              shortcutLabel={tool.shortcutLabel}
+              icon={<ToolRailIcon tool={tool.id} />}
+              testId={tool.testId}
+              onClick={(clickCount) => onSelectTool(tool.id, clickCount)}
+              onDoubleClick={mutationDisabled ? () => undefined : onToggleProperties}
+            />
+          );
+        })}
         <Toggle
           type="button"
           pressed={propertiesOpen}
@@ -286,24 +265,6 @@ function GeneralRailGroup({
           snapSettings={snapSettings}
           onSnapSettingsChange={onSnapSettingsChange}
         />
-        {TOP_RAIL_TOOL_IDS.map((toolId) => {
-          const tool = getToolDefinition(toolId);
-          return (
-            <RailToolButton
-              key={tool.id}
-              active={activeTool === tool.id}
-              disabled={disabled}
-              doubleClickTooltip={getToolPropertiesDoubleClickTooltip(propertiesOpen)}
-              label={tool.label}
-              shortcut={tool.shortcut}
-              shortcutLabel={tool.shortcutLabel}
-              icon={TOOL_ICONS[tool.id]}
-              testId={tool.testId}
-              onClick={(clickCount) => onSelectTool(tool.id, clickCount)}
-              onDoubleClick={mutationDisabled ? () => undefined : onToggleProperties}
-            />
-          );
-        })}
       </div>
     </section>
   );
@@ -327,8 +288,11 @@ function RightRailGroup({
   mutationDisabled = false,
   propertiesOpen,
   onSelectTool,
+  onSetPageScale,
+  onUseSignature,
   onToggleProperties,
-}: Pick<RightRailProps, 'activeTool' | 'disabled' | 'mutationDisabled' | 'propertiesOpen' | 'onSelectTool' | 'onToggleProperties'> & {
+  signatureContextId,
+}: Pick<RightRailProps, 'activeTool' | 'disabled' | 'mutationDisabled' | 'propertiesOpen' | 'signatureContextId' | 'onSelectTool' | 'onSetPageScale' | 'onUseSignature' | 'onToggleProperties'> & {
   group: keyof typeof PDF_TOOL_RAIL_GROUPS;
   heading: string;
   columnCount: number;
@@ -348,22 +312,45 @@ function RightRailGroup({
         className="grid justify-center gap-2"
         style={{ gridTemplateColumns: `repeat(${columnCount}, 32px)` }}
       >
+        {group === 'measure' ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={cn('relative shrink-0 border-0 bg-transparent p-0', RAIL_BUTTON_SIZE)}
+            aria-label="Set page scale"
+            data-rail-tooltip="Set page scale"
+            data-testid="measure-set-page-scale"
+            disabled={disabled || mutationDisabled || !onSetPageScale}
+            onClick={onSetPageScale}
+          >
+            <ScanLine data-icon="inline-start" aria-hidden="true" />
+          </Button>
+        ) : null}
         {PDF_TOOL_RAIL_GROUPS[group].map((toolId) => {
           const tool = getToolDefinition(toolId);
           return (
-            <RailToolButton
-              key={tool.id}
-              active={activeTool === tool.id}
-              doubleClickTooltip={getToolPropertiesDoubleClickTooltip(propertiesOpen)}
-              label={tool.label}
-              shortcut={tool.shortcut}
-              shortcutLabel={tool.shortcutLabel}
-              disabled={disabled || mutationDisabled}
-              icon={TOOL_ICONS[tool.id]}
-              testId={tool.testId}
-              onClick={(clickCount) => onSelectTool(tool.id, clickCount)}
-              onDoubleClick={onToggleProperties}
-            />
+            <Fragment key={tool.id}>
+              {group === 'markup' && toolId === 'image' ? (
+                <SignatureMenu
+                  contextId={signatureContextId}
+                  disabled={disabled || mutationDisabled}
+                  onUseSignature={onUseSignature ?? (() => undefined)}
+                />
+              ) : null}
+              <RailToolButton
+                active={activeTool === tool.id}
+                doubleClickTooltip={getToolPropertiesDoubleClickTooltip(propertiesOpen)}
+                label={tool.label}
+                shortcut={tool.shortcut}
+                shortcutLabel={tool.shortcutLabel}
+                disabled={disabled || mutationDisabled}
+                icon={<ToolRailIcon tool={tool.id} />}
+                testId={tool.testId}
+                onClick={(clickCount) => onSelectTool(tool.id, clickCount)}
+                onDoubleClick={onToggleProperties}
+              />
+            </Fragment>
           );
         })}
       </div>

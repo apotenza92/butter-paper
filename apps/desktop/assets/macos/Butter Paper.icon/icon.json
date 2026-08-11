@@ -23,11 +23,11 @@
           ],
           "image-name-specializations": [
             {
-              "value": "01-artwork.svg"
+              "value": "01-artwork.png"
             },
             {
               "appearance": "dark",
-              "value": "01-artwork-dark.svg"
+              "value": "01-artwork-dark.png"
             }
           ],
           "name": "Butter Paper artwork"

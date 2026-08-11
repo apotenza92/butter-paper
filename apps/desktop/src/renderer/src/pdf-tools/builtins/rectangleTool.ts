@@ -151,7 +151,7 @@ export const RECTANGLE_TOOL_DEFINITION: PdfToolDefinition<RectangleMarkup, Recta
     },
   },
   interaction: {
-    placement: 'click',
+    placement: 'click-or-drag',
     createDraft(session) {
       return createRectangleDraft(session.startPoint);
     },

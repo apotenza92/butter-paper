@@ -6,6 +6,12 @@ import type {
   ToolMode,
   ZoomPreset,
 } from '../../../shared/protocol';
+import {
+  builtInToolPropertyValues,
+  createInitialToolPropertyValues,
+  type ToolPropertyValue,
+  type ToolPropertyValuesByTool,
+} from '../pdf-tools/toolPropertyDefaults';
 
 export interface PendingImageAsset {
   readonly dataUrl: string;
@@ -13,6 +19,8 @@ export interface PendingImageAsset {
   readonly width: number;
   readonly height: number;
   readonly fileName: string;
+  readonly aspectRatioLocked?: boolean;
+  readonly selectAfterPlacement?: boolean;
 }
 
 export interface PostPlacementState {
@@ -24,19 +32,36 @@ export interface LoadedDocumentState extends LoadedDocumentPayload {
   dirty: boolean;
 }
 
+export interface DocumentHistoryEntry {
+  readonly document: DocumentModel;
+  readonly revision: number;
+}
+
+export interface DocumentHistorySnapshot {
+  readonly past: readonly DocumentHistoryEntry[];
+  readonly future: readonly DocumentHistoryEntry[];
+  readonly currentRevision: number;
+  readonly savedRevision: number;
+  readonly nextRevision: number;
+}
+
 export type LeftSidebarPanel = 'pages';
 
 export type SnapTarget = 'endpoint' | 'midpoint' | 'center' | 'intersection' | 'nearest';
+export type SnapGuideType = 'alignment' | 'equal-size' | 'equal-spacing';
 export type ScrollWheelMode = 'zoom' | 'scroll';
 export type CadViewOrganisation = 'columns' | 'rows';
 
 export const DEFAULT_SNAP_TARGETS: readonly SnapTarget[] = ['endpoint', 'midpoint', 'center', 'intersection'];
+export const DEFAULT_SNAP_GUIDE_TYPES: readonly SnapGuideType[] = ['alignment', 'equal-size', 'equal-spacing'];
 
 export interface SnapSettings {
   readonly snapToContent: boolean;
   readonly snapToMarkup: boolean;
   readonly sensitivityPx: number;
   readonly snapTargets: readonly SnapTarget[];
+  readonly snapGuidesEnabled: boolean;
+  readonly snapGuideTypes: readonly SnapGuideType[];
 }
 
 interface ViewerState {
@@ -59,15 +84,21 @@ interface ViewerState {
   currentPage: number;
   visiblePageIndices: number[];
   selectedMarkupIds: string[];
+  documentHistory: DocumentHistorySnapshot;
   postPlacement: PostPlacementState | null;
   snapSettings: SnapSettings;
+  toolPropertyValues: ToolPropertyValuesByTool;
   pendingImageAsset: PendingImageAsset | null;
   pendingPageScroll: { pageIndex: number; requestId: number } | null;
+  pendingDocumentScroll: { edge: 'top' | 'bottom'; requestId: number } | null;
   pendingThumbnailScroll: { pageIndex: number; requestId: number } | null;
   statusMessage: string;
   errorMessage: string | null;
-  setDocument: (document: LoadedDocumentPayload | null) => void;
+  setDocument: (document: LoadedDocumentPayload | null, history?: DocumentHistorySnapshot) => void;
   updateDocument: (updater: (document: DocumentModel) => DocumentModel, markDirty?: boolean) => void;
+  replaceDocumentAfterSave: (document: LoadedDocumentPayload) => void;
+  undoDocument: () => boolean;
+  redoDocument: () => boolean;
   setZoom: (zoom: number) => void;
   setActiveTool: (tool: ToolMode) => void;
   resetToSelectionTool: () => void;
@@ -91,10 +122,14 @@ interface ViewerState {
   setSelectedMarkupIds: (markupIds: string[]) => void;
   setPostPlacement: (postPlacement: PostPlacementState | null) => void;
   setSnapSettings: (settings: Partial<SnapSettings>) => void;
+  setToolPropertyValue: (tool: ToolMode, key: string, value: ToolPropertyValue) => void;
+  resetToolPropertyValues: (tool: ToolMode) => void;
   setPendingImageAsset: (asset: PendingImageAsset | null) => void;
   consumePendingImageAsset: () => PendingImageAsset | null;
   requestPageScroll: (pageIndex: number) => number;
   consumePageScroll: (requestId: number) => void;
+  requestDocumentScroll: (edge: 'top' | 'bottom') => number;
+  consumeDocumentScroll: (requestId: number) => void;
   requestThumbnailScroll: (pageIndex: number) => number;
   consumeThumbnailScroll: (requestId: number) => void;
   setStatusMessage: (message: string) => void;
@@ -110,6 +145,28 @@ export const MAX_RIGHT_SIDEBAR_WIDTH = 420;
 export const DEFAULT_PAGES_PER_COLUMN = 10;
 export const MIN_PAGES_PER_COLUMN = 1;
 export const MAX_PAGES_PER_COLUMN = 100;
+export const DOCUMENT_HISTORY_LIMIT = 100;
+
+export function createDocumentHistory(initiallyDirty = false): DocumentHistorySnapshot {
+  return {
+    past: [],
+    future: [],
+    currentRevision: 0,
+    savedRevision: initiallyDirty ? -1 : 0,
+    nextRevision: 1,
+  };
+}
+
+function restoreEditableDocument(current: DocumentModel, snapshot: DocumentModel): DocumentModel {
+  return {
+    ...current,
+    metadata: snapshot.metadata,
+    pages: snapshot.pages,
+    markups: snapshot.markups,
+    pageScales: snapshot.pageScales,
+    scalePresets: snapshot.scalePresets,
+  };
+}
 
 export function clampLeftSidebarWidth(width: number): number {
   return Math.min(MAX_LEFT_SIDEBAR_WIDTH, Math.max(MIN_LEFT_SIDEBAR_WIDTH, Math.round(width)));
@@ -127,6 +184,7 @@ export function clampPagesPerColumn(count: number): number {
 }
 
 let nextPageScrollRequestId = 1;
+let nextDocumentScrollRequestId = 1;
 let nextThumbnailScrollRequestId = 1;
 
 const initialState = {
@@ -149,15 +207,20 @@ const initialState = {
   currentPage: 0,
   visiblePageIndices: [] as number[],
   selectedMarkupIds: [] as string[],
+  documentHistory: createDocumentHistory(),
   postPlacement: null as PostPlacementState | null,
   snapSettings: {
     snapToContent: true,
     snapToMarkup: true,
     sensitivityPx: 8,
     snapTargets: DEFAULT_SNAP_TARGETS,
+    snapGuidesEnabled: true,
+    snapGuideTypes: DEFAULT_SNAP_GUIDE_TYPES,
   } satisfies SnapSettings,
+  toolPropertyValues: createInitialToolPropertyValues(),
   pendingImageAsset: null as PendingImageAsset | null,
   pendingPageScroll: null as { pageIndex: number; requestId: number } | null,
+  pendingDocumentScroll: null as { edge: 'top' | 'bottom'; requestId: number } | null,
   pendingThumbnailScroll: null as { pageIndex: number; requestId: number } | null,
   statusMessage: 'Open a PDF to begin.',
   errorMessage: null as string | null,
@@ -165,9 +228,10 @@ const initialState = {
 
 export const useViewerStore = create<ViewerState>((set, get) => ({
   ...initialState,
-  setDocument: (document) =>
+  setDocument: (document, history = createDocumentHistory()) =>
     set((state) => ({
       document: document ? { ...document, dirty: false } : null,
+      documentHistory: history,
       activeTool: state.activeTool,
       leftSidebarOpen: false,
       rightSidebarOpen: false,
@@ -177,6 +241,7 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
       postPlacement: null,
       pendingImageAsset: null,
       pendingPageScroll: null,
+      pendingDocumentScroll: null,
       pendingThumbnailScroll: null,
       zoomPreset: 'manual',
       scrollMode: 'continuous',
@@ -191,20 +256,113 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
       if (!state.document) {
         return state;
       }
+      const nextDocument = updater(state.document.document);
+      if (nextDocument === state.document.document) {
+        return state;
+      }
+      if (!markDirty) {
+        return {
+          document: { ...state.document, document: nextDocument },
+        };
+      }
+      const nextRevision = state.documentHistory.nextRevision;
       return {
         document: {
           ...state.document,
-          document: updater(state.document.document),
-          dirty: state.document.dirty || markDirty,
+          document: nextDocument,
+          dirty: nextRevision !== state.documentHistory.savedRevision,
+        },
+        documentHistory: {
+          past: [...state.documentHistory.past, {
+            document: state.document.document,
+            revision: state.documentHistory.currentRevision,
+          }].slice(-DOCUMENT_HISTORY_LIMIT),
+          future: [],
+          currentRevision: nextRevision,
+          savedRevision: state.documentHistory.savedRevision,
+          nextRevision: nextRevision + 1,
         },
       };
     }),
+  replaceDocumentAfterSave: (document) => set((state) => ({
+    document: { ...document, dirty: false },
+    documentHistory: {
+      ...state.documentHistory,
+      savedRevision: state.documentHistory.currentRevision,
+    },
+  })),
+  undoDocument: () => {
+    let changed = false;
+    set((state) => {
+      if (!state.document || state.documentHistory.past.length === 0) {
+        return state;
+      }
+      const entry = state.documentHistory.past.at(-1);
+      if (!entry) return state;
+      changed = true;
+      const restored = restoreEditableDocument(state.document.document, entry.document);
+      return {
+        document: {
+          ...state.document,
+          document: restored,
+          dirty: entry.revision !== state.documentHistory.savedRevision,
+        },
+        documentHistory: {
+          ...state.documentHistory,
+          past: state.documentHistory.past.slice(0, -1),
+          future: [{
+            document: state.document.document,
+            revision: state.documentHistory.currentRevision,
+          }, ...state.documentHistory.future],
+          currentRevision: entry.revision,
+        },
+        selectedMarkupIds: state.selectedMarkupIds.filter((id) => restored.markups.some((markup) => markup.id === id)),
+        postPlacement: null,
+      };
+    });
+    return changed;
+  },
+  redoDocument: () => {
+    let changed = false;
+    set((state) => {
+      if (!state.document || state.documentHistory.future.length === 0) {
+        return state;
+      }
+      const [entry, ...future] = state.documentHistory.future;
+      changed = true;
+      const restored = restoreEditableDocument(state.document.document, entry.document);
+      return {
+        document: {
+          ...state.document,
+          document: restored,
+          dirty: entry.revision !== state.documentHistory.savedRevision,
+        },
+        documentHistory: {
+          ...state.documentHistory,
+          past: [...state.documentHistory.past, {
+            document: state.document.document,
+            revision: state.documentHistory.currentRevision,
+          }].slice(-DOCUMENT_HISTORY_LIMIT),
+          future,
+          currentRevision: entry.revision,
+        },
+        selectedMarkupIds: state.selectedMarkupIds.filter((id) => restored.markups.some((markup) => markup.id === id)),
+        postPlacement: null,
+      };
+    });
+    return changed;
+  },
   setZoom: (zoom) => set({ zoom }),
-  setActiveTool: (activeTool) => set({ activeTool, postPlacement: null }),
+  setActiveTool: (activeTool) => set((state) => ({
+    activeTool,
+    postPlacement: null,
+    pendingImageAsset: activeTool === 'image' ? state.pendingImageAsset : null,
+  })),
   resetToSelectionTool: () => set({
     activeTool: 'select',
     selectedMarkupIds: [],
     postPlacement: null,
+    pendingImageAsset: null,
   }),
   setLeftSidebarWidth: (leftSidebarWidth) => set({ leftSidebarWidth: clampLeftSidebarWidth(leftSidebarWidth) }),
   setRightSidebarWidth: (rightSidebarWidth) => set({ rightSidebarWidth: clampRightSidebarWidth(rightSidebarWidth) }),
@@ -249,6 +407,25 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
         ...settings,
         sensitivityPx: clampSnapSensitivity(settings.sensitivityPx ?? state.snapSettings.sensitivityPx),
         snapTargets: normalizeSnapTargets(settings.snapTargets ?? state.snapSettings.snapTargets),
+        snapGuideTypes: normalizeSnapGuideTypes(settings.snapGuideTypes ?? state.snapSettings.snapGuideTypes),
+      },
+    })),
+  setToolPropertyValue: (tool, key, value) =>
+    set((state) => ({
+      toolPropertyValues: {
+        ...state.toolPropertyValues,
+        [tool]: {
+          ...builtInToolPropertyValues(tool),
+          ...state.toolPropertyValues[tool],
+          [key]: value,
+        },
+      },
+    })),
+  resetToolPropertyValues: (tool) =>
+    set((state) => ({
+      toolPropertyValues: {
+        ...state.toolPropertyValues,
+        [tool]: builtInToolPropertyValues(tool),
       },
     })),
   setPendingImageAsset: (pendingImageAsset) => set({ pendingImageAsset }),
@@ -260,7 +437,7 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
   requestPageScroll: (pageIndex) => {
     const requestId = nextPageScrollRequestId;
     nextPageScrollRequestId += 1;
-    set({ pendingPageScroll: { pageIndex, requestId } });
+    set({ pendingPageScroll: { pageIndex, requestId }, pendingDocumentScroll: null });
     return requestId;
   },
   consumePageScroll: (requestId) =>
@@ -270,6 +447,20 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
       }
 
       return { pendingPageScroll: null };
+    }),
+  requestDocumentScroll: (edge) => {
+    const requestId = nextDocumentScrollRequestId;
+    nextDocumentScrollRequestId += 1;
+    set({ pendingDocumentScroll: { edge, requestId }, pendingPageScroll: null });
+    return requestId;
+  },
+  consumeDocumentScroll: (requestId) =>
+    set((state) => {
+      if (state.pendingDocumentScroll?.requestId !== requestId) {
+        return state;
+      }
+
+      return { pendingDocumentScroll: null };
     }),
   requestThumbnailScroll: (pageIndex) => {
     const requestId = nextThumbnailScrollRequestId;
@@ -299,8 +490,14 @@ function normalizeSnapTargets(targets: readonly SnapTarget[]): readonly SnapTarg
   return unique.length > 0 ? unique : DEFAULT_SNAP_TARGETS;
 }
 
+function normalizeSnapGuideTypes(types: readonly SnapGuideType[]): readonly SnapGuideType[] {
+  const allowed = new Set<SnapGuideType>(DEFAULT_SNAP_GUIDE_TYPES);
+  return types.filter((type, index) => allowed.has(type) && types.indexOf(type) === index);
+}
+
 export function resetViewerStore(): void {
   nextPageScrollRequestId = 1;
+  nextDocumentScrollRequestId = 1;
   nextThumbnailScrollRequestId = 1;
   useViewerStore.setState(initialState);
 }

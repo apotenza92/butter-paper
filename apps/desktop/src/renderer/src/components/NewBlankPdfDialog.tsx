@@ -69,7 +69,7 @@ export function NewBlankPdfDialog({
       >
         <DialogHeader>
           <DialogTitle>New Blank PDF</DialogTitle>
-          <DialogDescription>Choose a paper size and orientation for the new PDF.</DialogDescription>
+          <DialogDescription>Choose a paper size, orientation, and background for the new PDF.</DialogDescription>
         </DialogHeader>
         <form
           className="flex flex-col gap-4"

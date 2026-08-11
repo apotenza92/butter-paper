@@ -43,12 +43,49 @@ export type AcquiredTrackingPoint = Extract<SnapCandidate, { readonly kind: 'poi
 export interface ObjectSnapTrackingGuide {
   readonly origin: PdfPoint;
   readonly axis: OrthogonalAxis;
+  readonly source: SnapSource;
+  readonly role: SnapRole;
+  readonly ownerId?: string;
 }
 
 export interface ObjectSnapTrackingResult {
   readonly point: PdfPoint;
   readonly guides: readonly ObjectSnapTrackingGuide[];
   readonly distancePx: number;
+}
+
+export interface SnapGuideRect {
+  readonly ownerId: string;
+  readonly rect: Rect;
+}
+
+export interface EqualSizeGuide {
+  readonly kind: 'equal-size';
+  readonly axis: OrthogonalAxis;
+  readonly moving: Rect;
+  readonly reference: SnapGuideRect;
+}
+
+export interface EqualSpacingGuide {
+  readonly kind: 'equal-spacing';
+  readonly axis: OrthogonalAxis;
+  readonly placement: 'before' | 'between' | 'after';
+  readonly before: SnapGuideRect;
+  readonly moving: Rect;
+  readonly after: SnapGuideRect;
+}
+
+export type RelationshipSnapGuide = EqualSizeGuide | EqualSpacingGuide;
+
+export interface EqualSizeSnapResult {
+  readonly width?: number;
+  readonly height?: number;
+  readonly guides: readonly EqualSizeGuide[];
+}
+
+export interface EqualSpacingSnapResult {
+  readonly adjustment: PdfPoint;
+  readonly guides: readonly EqualSpacingGuide[];
 }
 
 export interface AnnotationSnapOptions {
@@ -66,6 +103,77 @@ const DEFAULT_TRACKING_TOLERANCE_PX = 6;
 const MAX_ACQUIRED_TRACKING_POINTS = 4;
 const MAX_INTERSECTION_EDGE_PAIRS = 50000;
 const pdfContentSnapCandidateCache = new WeakMap<PdfPageGeometryIndex, readonly SnapCandidate[]>();
+
+export function getAnnotationGuideRects(
+  markups: readonly Markup[],
+  page: PageModel,
+  options: AnnotationSnapOptions = {},
+): readonly SnapGuideRect[] {
+  const excludedIds = options.excludeMarkupIds instanceof Set
+    ? options.excludeMarkupIds
+    : new Set(options.excludeMarkupIds ?? []);
+
+  return markups.flatMap((markup) => {
+    if (markup.pageIndex !== page.index || excludedIds.has(markup.id)) {
+      return [];
+    }
+    const bounds = getMarkupToolDefinition(markup)?.geometry?.getGeometry(markup as never, { page }).bounds;
+    return bounds ? [{ ownerId: markup.id, rect: normalizeRect(bounds) }] : [];
+  });
+}
+
+export function findEqualSizeSnap(
+  moving: Rect,
+  references: readonly SnapGuideRect[],
+  transform: Pick<PageTransform, 'zoom'>,
+  tolerancePx = DEFAULT_TRACKING_TOLERANCE_PX,
+): EqualSizeSnapResult | null {
+  const normalizedMoving = normalizeRect(moving);
+  const zoom = Math.max(transform.zoom, Number.EPSILON);
+  const widthMatch = nearestSizeMatch(normalizedMoving.width, references, 'horizontal', zoom, tolerancePx);
+  const heightMatch = nearestSizeMatch(normalizedMoving.height, references, 'vertical', zoom, tolerancePx);
+  if (!widthMatch && !heightMatch) {
+    return null;
+  }
+
+  return {
+    ...(widthMatch ? { width: widthMatch.reference.rect.width } : {}),
+    ...(heightMatch ? { height: heightMatch.reference.rect.height } : {}),
+    guides: [
+      ...(widthMatch ? [{ kind: 'equal-size' as const, axis: 'horizontal' as const, moving: normalizedMoving, reference: widthMatch.reference }] : []),
+      ...(heightMatch ? [{ kind: 'equal-size' as const, axis: 'vertical' as const, moving: normalizedMoving, reference: heightMatch.reference }] : []),
+    ],
+  };
+}
+
+export function findEqualSpacingSnap(
+  moving: Rect,
+  references: readonly SnapGuideRect[],
+  transform: Pick<PageTransform, 'zoom'>,
+  tolerancePx = DEFAULT_TRACKING_TOLERANCE_PX,
+): EqualSpacingSnapResult | null {
+  const normalizedMoving = normalizeRect(moving);
+  const zoom = Math.max(transform.zoom, Number.EPSILON);
+  const horizontal = nearestSpacingMatch(normalizedMoving, references, 'horizontal', zoom, tolerancePx);
+  const vertical = nearestSpacingMatch(normalizedMoving, references, 'vertical', zoom, tolerancePx);
+  if (!horizontal && !vertical) {
+    return null;
+  }
+
+  const adjustment = pdfPoint(horizontal?.adjustment ?? 0, vertical?.adjustment ?? 0);
+  const adjustedMoving = normalizeRect({
+    ...normalizedMoving,
+    x: normalizedMoving.x + adjustment.x,
+    y: normalizedMoving.y + adjustment.y,
+  });
+  return {
+    adjustment,
+    guides: [
+      ...(horizontal ? [{ ...horizontal.guide, moving: adjustedMoving }] : []),
+      ...(vertical ? [{ ...vertical.guide, moving: adjustedMoving }] : []),
+    ],
+  };
+}
 
 export function getAnnotationSnapCandidates(
   markups: readonly Markup[],
@@ -235,7 +343,13 @@ export function findObjectSnapTrackingPoint(
       const distancePx = Math.abs(point.y - acquiredPoint.point.y) * zoom;
       if (distancePx <= tolerancePx && (!nearestHorizontal || distancePx < nearestHorizontal.distancePx)) {
         nearestHorizontal = {
-          guide: { origin: acquiredPoint.point, axis: 'horizontal' },
+          guide: {
+            origin: acquiredPoint.point,
+            axis: 'horizontal',
+            source: acquiredPoint.source,
+            role: acquiredPoint.role,
+            ownerId: acquiredPoint.ownerId,
+          },
           distancePx,
         };
       }
@@ -245,7 +359,13 @@ export function findObjectSnapTrackingPoint(
       const distancePx = Math.abs(point.x - acquiredPoint.point.x) * zoom;
       if (distancePx <= tolerancePx && (!nearestVertical || distancePx < nearestVertical.distancePx)) {
         nearestVertical = {
-          guide: { origin: acquiredPoint.point, axis: 'vertical' },
+          guide: {
+            origin: acquiredPoint.point,
+            axis: 'vertical',
+            source: acquiredPoint.source,
+            role: acquiredPoint.role,
+            ownerId: acquiredPoint.ownerId,
+          },
           distancePx,
         };
       }
@@ -290,6 +410,92 @@ export function findObjectSnapTrackingPoint(
   }
 
   return null;
+}
+
+function nearestSizeMatch(
+  size: number,
+  references: readonly SnapGuideRect[],
+  axis: OrthogonalAxis,
+  zoom: number,
+  tolerancePx: number,
+): { readonly reference: SnapGuideRect; readonly distancePx: number } | null {
+  let best: { readonly reference: SnapGuideRect; readonly distancePx: number } | null = null;
+  for (const reference of references) {
+    const referenceSize = axis === 'horizontal' ? reference.rect.width : reference.rect.height;
+    const distancePx = Math.abs(size - referenceSize) * zoom;
+    if (distancePx <= tolerancePx && (!best || distancePx < best.distancePx)) {
+      best = { reference, distancePx };
+    }
+  }
+  return best;
+}
+
+function nearestSpacingMatch(
+  moving: Rect,
+  references: readonly SnapGuideRect[],
+  axis: OrthogonalAxis,
+  zoom: number,
+  tolerancePx: number,
+): {
+  readonly adjustment: number;
+  readonly guide: Omit<EqualSpacingGuide, 'moving'>;
+  readonly distancePx: number;
+} | null {
+  const movingStart = axis === 'horizontal' ? moving.x : moving.y;
+  const movingEnd = movingStart + (axis === 'horizontal' ? moving.width : moving.height);
+  const crossStart = axis === 'horizontal' ? moving.y : moving.x;
+  const crossEnd = crossStart + (axis === 'horizontal' ? moving.height : moving.width);
+  const eligible = references.filter((reference) => {
+    const referenceCrossStart = axis === 'horizontal' ? reference.rect.y : reference.rect.x;
+    const referenceCrossEnd = referenceCrossStart + (axis === 'horizontal' ? reference.rect.height : reference.rect.width);
+    return Math.min(crossEnd, referenceCrossEnd) >= Math.max(crossStart, referenceCrossStart);
+  });
+  let best: {
+    readonly adjustment: number;
+    readonly guide: Omit<EqualSpacingGuide, 'moving'>;
+    readonly distancePx: number;
+  } | null = null;
+
+  for (const before of eligible) {
+    const beforeEnd = axis === 'horizontal'
+      ? before.rect.x + before.rect.width
+      : before.rect.y + before.rect.height;
+    for (const after of eligible) {
+      const afterStart = axis === 'horizontal' ? after.rect.x : after.rect.y;
+      const afterEnd = afterStart + (axis === 'horizontal' ? after.rect.width : after.rect.height);
+      if (afterStart < beforeEnd) continue;
+      const existingGap = afterStart - beforeEnd;
+      const candidates = [
+        ...(beforeEnd <= movingStart && afterStart >= movingEnd
+          ? [{ placement: 'between' as const, adjustment: ((afterStart - movingEnd) - (movingStart - beforeEnd)) / 2 }]
+          : []),
+        ...(afterEnd <= movingStart
+          ? [{ placement: 'after' as const, adjustment: existingGap - (movingStart - afterEnd) }]
+          : []),
+        ...(movingEnd <= before.rect[axis === 'horizontal' ? 'x' : 'y']
+          ? [{ placement: 'before' as const, adjustment: (before.rect[axis === 'horizontal' ? 'x' : 'y'] - movingEnd) - existingGap }]
+          : []),
+      ];
+      for (const candidate of candidates) {
+        const distancePx = Math.abs(candidate.adjustment) * zoom;
+        if (distancePx <= tolerancePx && (!best || distancePx < best.distancePx)) {
+          best = {
+            adjustment: candidate.adjustment,
+            distancePx,
+            guide: {
+              kind: 'equal-spacing',
+              axis,
+              placement: candidate.placement,
+              before,
+              after,
+            },
+          };
+        }
+      }
+    }
+  }
+
+  return best;
 }
 
 function snapCandidatesForPdfContentPrimitive(primitive: PdfContentPrimitive): readonly SnapCandidate[] {

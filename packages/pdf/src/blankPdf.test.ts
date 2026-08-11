@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PDFDocument } from 'pdf-lib';
+import { decodePDFRawStream, PDFArray, PDFDocument, PDFRawStream } from 'pdf-lib';
 import {
   createBlankPdf,
   millimetresToPdfPoints,
@@ -7,11 +7,13 @@ import {
 
 describe('blank PDF creation', () => {
   it.each([
+    ['A5 portrait', 148, 210],
     ['A0 portrait', 841, 1189],
     ['A1 portrait', 594, 841],
     ['A2 portrait', 420, 594],
     ['A3 portrait', 297, 420],
     ['A4 portrait', 210, 297],
+    ['A5 landscape', 210, 148],
     ['A0 landscape', 1189, 841],
     ['A1 landscape', 841, 594],
     ['A2 landscape', 594, 420],
@@ -30,6 +32,40 @@ describe('blank PDF creation', () => {
     expect(document.getProducer()).toBe('Butter Paper');
   });
 
+  it.each(['grid', 'dots', 'lined', 'isometric', 'triangle'] as const)(
+    'draws a vector %s pattern into the page content',
+    async (type) => {
+      const bytes = await createBlankPdf({
+        widthMm: 40,
+        heightMm: 30,
+        pattern: { type, spacingMm: 10, color: '#4e95cc' },
+      });
+      const document = await PDFDocument.load(bytes, { updateMetadata: false });
+      const content = readPageContent(document);
+
+      expect(content.length).toBeGreaterThan(0);
+      if (type === 'dots') {
+        expect(content).toMatch(/\bc\b/);
+      } else {
+        expect(content).toMatch(/\bm\b/);
+        expect(content).toMatch(/\bl\b/);
+      }
+    },
+  );
+
+  it('uses distinct line orientations for isometric and triangle paper', async () => {
+    const content = async (type: 'isometric' | 'triangle') => {
+      const document = await PDFDocument.load(await createBlankPdf({
+        widthMm: 40,
+        heightMm: 30,
+        pattern: { type, spacingMm: 10, color: '#d1d5db' },
+      }), { updateMetadata: false });
+      return readPageContent(document);
+    };
+
+    expect(await content('isometric')).not.toBe(await content('triangle'));
+  });
+
   it.each([
     { widthMm: 9.99, heightMm: 297 },
     { widthMm: 210, heightMm: 5_001 },
@@ -38,4 +74,35 @@ describe('blank PDF creation', () => {
   ])('rejects invalid dimensions %#', async (params) => {
     await expect(createBlankPdf(params)).rejects.toThrow(/must be between 10 and 5000 millimetres/);
   });
+
+  it.each([
+    { type: 'grid' as const, spacingMm: 0.5, color: '#d1d5db' },
+    { type: 'dots' as const, spacingMm: 10, color: 'grey' },
+  ])('rejects an invalid pattern %#', async (pattern) => {
+    await expect(createBlankPdf({ widthMm: 210, heightMm: 297, pattern })).rejects.toThrow(/pattern\.(spacingMm|color)/);
+  });
+
+  it('rejects patterns that would create excessive PDF content', async () => {
+    await expect(createBlankPdf({
+      widthMm: 5_000,
+      heightMm: 5_000,
+      pattern: { type: 'dots', spacingMm: 10, color: '#d1d5db' },
+    })).rejects.toThrow(/exceed 50000 elements/);
+  });
 });
+
+function readPageContent(document: PDFDocument): string {
+  const page = document.getPage(0);
+  const rawContents = page.node.Contents();
+  const resolved = document.context.lookup(rawContents);
+  const streams = resolved instanceof PDFRawStream
+    ? [resolved]
+    : resolved instanceof PDFArray
+      ? resolved.asArray()
+        .map((entry) => document.context.lookup(entry))
+        .filter((entry): entry is PDFRawStream => entry instanceof PDFRawStream)
+      : [];
+  return streams
+    .map((stream) => Buffer.from(decodePDFRawStream(stream).decode()).toString('latin1'))
+    .join('\n');
+}

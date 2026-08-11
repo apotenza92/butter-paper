@@ -214,6 +214,8 @@ export interface PenMarkup extends MarkupBase {
   readonly kind: 'pen';
   readonly paths: readonly (readonly PdfPoint[])[];
   readonly strokeWidth?: number;
+  /** Butter Paper renders this ink as interpolating curves while preserving the PDF InkList points. */
+  readonly smoothCurves?: boolean;
 }
 
 export interface HighlightMarkup extends MarkupBase {
@@ -286,6 +288,7 @@ export interface ImageMarkup extends MarkupBase {
   readonly dataUrl: string;
   readonly mimeType: 'image/png' | 'image/jpeg';
   readonly rotation?: number;
+  readonly aspectRatioLocked?: boolean;
 }
 
 export interface SnapshotMarkup extends MarkupBase {

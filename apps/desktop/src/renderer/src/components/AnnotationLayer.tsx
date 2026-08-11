@@ -20,16 +20,18 @@ import {
   type TextBoxRichTextRun,
 } from '@butter-paper/core';
 import type { ToolMode } from '../../../shared/protocol';
-import type { PendingImageAsset, PostPlacementState, SnapTarget } from '../state/viewerStore';
+import type { PendingImageAsset, PostPlacementState, SnapGuideType, SnapTarget } from '../state/viewerStore';
 import {
   addCloudNodeDraftPoint,
   addMeasurementPathDraftPoint,
+  addVertexPathDraftPoint,
   beginCloudNodeDraftPoint,
   createArcDraft,
   createCloudNodeDraft,
   createMeasurementPathDraft,
   createMoveDraft,
   createTransformDraft,
+  createVertexPathDraft,
   hasExceededDragThreshold,
   measurementPathPreviewPoints,
   moveDelta,
@@ -40,12 +42,15 @@ import {
   updateMeasurementPathDraft,
   updateArcDraft,
   updateTransformDraft,
+  updateVertexPathDraft,
   type AnnotationDraft,
   type MeasurementPathDraft,
   type TransformDraft,
+  type VertexPathDraft,
 } from '../pdf-tools/annotationLifecycle';
-import { createArcMarkupFromThreePoints } from '../pdf-tools/builtins/arcTool';
+import { constrainArcBulgePoint, createArcMarkupFromThreePoints, snapArcBulgePoint } from '../pdf-tools/builtins/arcTool';
 import { updateCloudPlusTextBox } from '../pdf-tools/builtins/cloudPlusTool';
+import { constrainEllipseDraftPoint } from '../pdf-tools/builtins/ellipseTool';
 import { createAreaMeasurementMarkup, createLengthMeasurementMarkup, createPolylengthMeasurementMarkup } from '../pdf-tools/builtins/measurementTool';
 import { dimensionCaptionRect } from '../pdf-tools/builtins/dimensionTool';
 import { annotationFontCssFamily, getAnnotationContentStyle, getAnnotationTextContentStyle, getVerticallyCenteredAnnotationTextContentStyle } from '../pdf-tools/annotationStyles';
@@ -56,8 +61,11 @@ import { layoutTextBoxLines, measureAnnotationText, splitAnnotationTextLines, ty
 import { getMarkupToolDefinition, getToolDefinition } from '../pdf-tools/toolRegistry';
 import {
   constrainPointOrthogonally,
+  findEqualSizeSnap,
+  findEqualSpacingSnap,
   findNearestSnapPoint,
   findObjectSnapTrackingPoint,
+  getAnnotationGuideRects,
   getAnnotationSnapCandidates,
   isPointOnOrthogonalConstraint,
   toggleAcquiredTrackingPoint,
@@ -65,10 +73,12 @@ import {
   type AcquiredTrackingPoint,
   type ObjectSnapTrackingResult,
   type OrthogonalConstraint,
+  type RelationshipSnapGuide,
   type SnapCandidate,
   type SnapResult,
 } from '../pdf-tools/snapping';
-import { SNAP_MARKER_COLOR } from './snapMarkerVisuals';
+import { SNAP_MARKER_COLOR, SNAP_MARKER_RADIUS_PX, SNAP_MARKER_STROKE_WIDTH_PX } from './snapMarkerVisuals';
+import { ToolRailIcon } from './RailIcons';
 import {
   createArmedBoxSelectionMarquee,
   createSelectionMarquee,
@@ -82,11 +92,19 @@ import {
   type ViewportPoint,
 } from '../pdf-tools/selectionMarquee';
 import type { RenderPrimitive, SelectionChromeDescriptor, ToolHandleDescriptor, ToolHit, ToolInteractionContext } from '../pdf-tools/types';
+import { applyToolPropertyValues, type ToolPropertyValuesByTool } from '../pdf-tools/toolPropertyDefaults';
 
 type PageTransform = ReturnType<typeof createPageTransform>;
 const IMPORTED_MARKUP_MIN_RENDER_ZOOM = 0.35;
 const TEXT_BOX_GHOST_CURSOR = createTextBoxGhostCursor();
+const TOOL_CURSOR_ICON_HALF_SIZE_PX = 8;
+const TOOL_CURSOR_ICON_BELOW_OFFSET_PX = 20;
+const ARC_MIN_BULGE_PX = 8;
 export const FINISH_CLOUD_POLYGON_EVENT = 'butter-paper:finish-cloud-polygon';
+
+function toolCursorIconTransform(point: ViewportPoint): string {
+  return `translate3d(${point.x - TOOL_CURSOR_ICON_HALF_SIZE_PX}px, ${point.y + TOOL_CURSOR_ICON_BELOW_OFFSET_PX}px, 0)`;
+}
 
 interface TextEditState {
   readonly markupId: string;
@@ -114,6 +132,7 @@ interface SnapPointOptions {
   readonly excludeMarkupIds?: readonly string[];
   readonly orthogonalAnchor?: PdfPoint | null;
   readonly acquireTracking?: boolean;
+  readonly anchorPoints?: readonly PdfPoint[];
 }
 
 type EditableTextMarkup = Extract<Markup, { kind: 'text-box' | 'callout' | 'cloud-plus' | 'dimension' }>;
@@ -183,6 +202,9 @@ export function resolveAnnotationCursor({
   pendingTextBoxActive = false,
   textEditActive = false,
   postPlacementSelectionActive = false,
+  pendingImagePreviewActive = false,
+  transformDragActive = false,
+  transformSnapActive = false,
   hoverCursor = null,
 }: {
   readonly activeTool: ToolMode;
@@ -191,6 +213,9 @@ export function resolveAnnotationCursor({
   readonly pendingTextBoxActive?: boolean;
   readonly textEditActive?: boolean;
   readonly postPlacementSelectionActive?: boolean;
+  readonly pendingImagePreviewActive?: boolean;
+  readonly transformDragActive?: boolean;
+  readonly transformSnapActive?: boolean;
   readonly hoverCursor?: string | null;
 }): string {
   if (calibrationPickActive || selectionMarqueeActive) {
@@ -201,6 +226,12 @@ export function resolveAnnotationCursor({
   }
   if (activeTool === 'text-box' && !textEditActive) {
     return TEXT_BOX_GHOST_CURSOR;
+  }
+  if (activeTool === 'image' && pendingImagePreviewActive) {
+    return 'none';
+  }
+  if (transformDragActive) {
+    return transformSnapActive ? 'none' : 'crosshair';
   }
   if (postPlacementSelectionActive) {
     return 'default';
@@ -221,13 +252,18 @@ interface AnnotationLayerProps {
   snapToMarkup?: boolean;
   snapTolerancePx?: number;
   snapTargets?: readonly SnapTarget[];
+  snapGuidesEnabled?: boolean;
+  snapGuideTypes?: readonly SnapGuideType[];
   activeTool: ToolMode;
+  toolPropertyValues?: ToolPropertyValuesByTool;
   selectedMarkupIds: readonly string[];
   postPlacement: PostPlacementState | null;
   pendingImageAsset: PendingImageAsset | null;
   setSelectedMarkupIds: (markupIds: string[]) => void;
   setPostPlacement: (postPlacement: PostPlacementState | null) => void;
   consumePendingImageAsset: () => PendingImageAsset | null;
+  onImagePlaced?: () => void;
+  onToggleProperties?: (wasSelectedBeforeDoubleClick: boolean) => void;
   createSnapshotDataUrl?: (rect: Rect) => string | null;
   updateDocument: (updater: (document: DocumentModel) => DocumentModel) => void;
   onToolError?: (message: string) => void;
@@ -273,13 +309,18 @@ export function AnnotationLayer({
   snapToMarkup = true,
   snapTolerancePx = 8,
   snapTargets,
+  snapGuidesEnabled = true,
+  snapGuideTypes = ['alignment', 'equal-size', 'equal-spacing'],
   activeTool,
+  toolPropertyValues = {},
   selectedMarkupIds,
   postPlacement,
   pendingImageAsset,
   setSelectedMarkupIds,
   setPostPlacement,
   consumePendingImageAsset,
+  onImagePlaced,
+  onToggleProperties,
   createSnapshotDataUrl,
   updateDocument,
   onToolError,
@@ -287,10 +328,16 @@ export function AnnotationLayer({
   onCalibrationPoint,
 }: AnnotationLayerProps) {
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const toolCursorIconRef = useRef<HTMLDivElement | null>(null);
+  const toolCursorPointRef = useRef<ViewportPoint | null>(null);
+  const toolCursorInsideRef = useRef(false);
   const trackingHoverKeyRef = useRef<string | null>(null);
   const [draft, setDraft] = useState<AnnotationDraft | null>(null);
+  const interactionPreviewRef = useRef<readonly Markup[] | null>(null);
+  const [interactionPreview, setInteractionPreviewState] = useState<readonly Markup[] | null>(null);
   const activeToolRef = useRef(activeTool);
   const clickPlacementToolRef = useRef<ToolMode | null>(null);
+  const propertiesClickCandidateRef = useRef<{ markupId: string; wasSelected: boolean } | null>(null);
   const [hoveredMarkupId, setHoveredMarkupId] = useState<string | null>(null);
   const [hotHandle, setHotHandle] = useState<HotHandleState | null>(null);
   const [hoverCursor, setHoverCursor] = useState<string | null>(null);
@@ -300,15 +347,21 @@ export function AnnotationLayer({
   const [acquiredTrackingPoints, setAcquiredTrackingPoints] = useState<readonly AcquiredTrackingPoint[]>([]);
   const [objectSnapTrackingResult, setObjectSnapTrackingResult] = useState<ObjectSnapTrackingResult | null>(null);
   const [orthogonalConstraint, setOrthogonalConstraint] = useState<OrthogonalConstraint | null>(null);
+  const [relationshipSnapGuides, setRelationshipSnapGuides] = useState<readonly RelationshipSnapGuide[]>([]);
   const [selectionMarquee, setSelectionMarquee] = useState<SelectionMarqueeState | null>(null);
+  const [pendingImagePoint, setPendingImagePoint] = useState<PdfPoint | null>(null);
 
+  const renderedMarkups = useMemo(
+    () => applyMarkupPreview(markups, interactionPreview),
+    [interactionPreview, markups],
+  );
   const selectedMarkupIdSet = useMemo(() => new Set(selectedMarkupIds), [selectedMarkupIds]);
   const visibleMarkups = useMemo(() => (
-    markups.filter((markup) => shouldRenderMarkupAtZoom(markup, transform))
-  ), [markups, transform.zoom]);
+    renderedMarkups.filter((markup) => shouldRenderMarkupAtZoom(markup, transform))
+  ), [renderedMarkups, transform.zoom]);
   const toolInteractionContext = useMemo(
-    () => interactionContextForPage(page, markups),
-    [markups, page],
+    () => interactionContextForPage(page, renderedMarkups),
+    [page, renderedMarkups],
   );
   const annotationSnapCandidates = useMemo(() => (
     getAnnotationSnapCandidates(visibleMarkups, page)
@@ -327,6 +380,12 @@ export function AnnotationLayer({
     }
 
     activeToolRef.current = activeTool;
+    const cursorIcon = toolCursorIconRef.current;
+    const cursorPoint = toolCursorPointRef.current;
+    if (cursorIcon && cursorPoint && toolCursorInsideRef.current) {
+      cursorIcon.style.transform = toolCursorIconTransform(cursorPoint);
+      cursorIcon.style.opacity = '1';
+    }
     setPostPlacement(null);
     setHoveredMarkupId(null);
     setHotHandle(null);
@@ -335,12 +394,15 @@ export function AnnotationLayer({
     setAcquiredTrackingPoints([]);
     setObjectSnapTrackingResult(null);
     setOrthogonalConstraint(null);
+    setRelationshipSnapGuides([]);
     trackingHoverKeyRef.current = null;
     setSelectionMarquee(null);
+    setPendingImagePoint(null);
     if (!shouldCancelDraftForToolChange(previousTool, activeTool, draft)) {
       return;
     }
 
+    clearInteractionPreview();
     setDraft(null);
     clickPlacementToolRef.current = null;
   }, [activeTool, draft]);
@@ -351,6 +413,7 @@ export function AnnotationLayer({
       setAcquiredTrackingPoints([]);
       setObjectSnapTrackingResult(null);
       setOrthogonalConstraint(null);
+      setRelationshipSnapGuides([]);
       trackingHoverKeyRef.current = null;
     }
     previousDraftRef.current = draft;
@@ -368,6 +431,12 @@ export function AnnotationLayer({
         return;
       }
       if (event.defaultPrevented) {
+        return;
+      }
+      if ((event.key === 'Enter' || event.key === 'Escape') && draft?.kind === 'vertex-path' && isVertexPathTool(activeTool)) {
+        event.preventDefault();
+        event.stopPropagation();
+        commitVertexPathDraft(draft);
         return;
       }
       if (event.key === 'Escape' && draft?.kind === 'measurement-path') {
@@ -403,7 +472,7 @@ export function AnnotationLayer({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [acquiredTrackingPoints.length, draft, page.index, pageScale, selectionMarquee]);
+  }, [acquiredTrackingPoints.length, activeTool, draft, page.index, pageScale, selectionMarquee]);
 
   useEffect(() => {
     const finishCloudPolygon = (event: Event) => {
@@ -451,23 +520,32 @@ export function AnnotationLayer({
       : null;
     const constrainedPoint = constraint?.point ?? point;
     const excludedIds = options.excludeMarkupIds ? new Set(options.excludeMarkupIds) : undefined;
-    const markupResult = snapToMarkup
-      ? findNearestSnapPoint(constrainedPoint, annotationSnapCandidates, transform, {
-        tolerancePx: snapTolerancePx,
-        excludeOwnerIds: excludedIds,
-        snapTargets,
-      })
-      : null;
-    const contentResult = snapToContent
-      ? findNearestSnapPoint(constrainedPoint, pdfContentSnapCandidates, transform, {
-        tolerancePx: snapTolerancePx,
-        snapTargets,
-      })
-      : null;
-    const nearestResult = nearestSnapResult(markupResult, contentResult);
-    const result = nearestResult && (!constraint || isPointOnOrthogonalConstraint(nearestResult.point, constraint))
-      ? nearestResult
-      : null;
+    const anchorPoints = options.anchorPoints?.length ? options.anchorPoints : [constrainedPoint];
+    let result: SnapResult | null = null;
+    let resultAnchor = constrainedPoint;
+    for (const anchorPoint of anchorPoints) {
+      const markupResult = snapToMarkup
+        ? findNearestSnapPoint(anchorPoint, annotationSnapCandidates, transform, {
+          tolerancePx: snapTolerancePx,
+          excludeOwnerIds: excludedIds,
+          snapTargets,
+        })
+        : null;
+      const contentResult = snapToContent
+        ? findNearestSnapPoint(anchorPoint, pdfContentSnapCandidates, transform, {
+          tolerancePx: snapTolerancePx,
+          snapTargets,
+        })
+        : null;
+      const nearestResult = nearestSnapResult(markupResult, contentResult);
+      const eligibleResult = nearestResult && (!constraint || isPointOnOrthogonalConstraint(nearestResult.point, constraint))
+        ? nearestResult
+        : null;
+      if (eligibleResult && (!result || eligibleResult.distancePx < result.distancePx)) {
+        result = eligibleResult;
+        resultAnchor = anchorPoint;
+      }
+    }
 
     if (options.acquireTracking) {
       updateTrackingAcquisition(result);
@@ -475,9 +553,13 @@ export function AnnotationLayer({
 
     setSnapResult(result);
     if (result) {
+      const resolvedPoint = translatePoint(constrainedPoint, pdfPoint(
+        result.point.x - resultAnchor.x,
+        result.point.y - resultAnchor.y,
+      ));
       setObjectSnapTrackingResult(null);
-      setOrthogonalConstraint(constraint ? { ...constraint, point: result.point } : null);
-      return result.point;
+      setOrthogonalConstraint(constraint ? { ...constraint, point: resolvedPoint } : null);
+      return resolvedPoint;
     }
 
     const eligibleTrackingPoints = acquiredTrackingPoints.filter((trackingPoint) => (
@@ -486,11 +568,24 @@ export function AnnotationLayer({
     const allowedGuideAxes = constraint
       ? [constraint.axis === 'horizontal' ? 'vertical' as const : 'horizontal' as const]
       : undefined;
-    const trackingResult = findObjectSnapTrackingPoint(constrainedPoint, eligibleTrackingPoints, transform, {
-      tolerancePx: snapTolerancePx,
-      allowedGuideAxes,
-    });
-    const resolvedPoint = trackingResult?.point ?? constrainedPoint;
+    let trackingResult: ObjectSnapTrackingResult | null = null;
+    let trackingAnchor = constrainedPoint;
+    for (const anchorPoint of anchorPoints) {
+      const candidate = findObjectSnapTrackingPoint(anchorPoint, eligibleTrackingPoints, transform, {
+        tolerancePx: snapTolerancePx,
+        allowedGuideAxes,
+      });
+      if (candidate && (!trackingResult || candidate.distancePx < trackingResult.distancePx)) {
+        trackingResult = candidate;
+        trackingAnchor = anchorPoint;
+      }
+    }
+    const resolvedPoint = trackingResult
+      ? translatePoint(constrainedPoint, pdfPoint(
+        trackingResult.point.x - trackingAnchor.x,
+        trackingResult.point.y - trackingAnchor.y,
+      ))
+      : constrainedPoint;
     setObjectSnapTrackingResult(trackingResult);
     setOrthogonalConstraint(constraint ? { ...constraint, point: resolvedPoint } : null);
     return resolvedPoint;
@@ -510,6 +605,200 @@ export function AnnotationLayer({
 
     trackingHoverKeyRef.current = key;
     setAcquiredTrackingPoints((current) => toggleAcquiredTrackingPoint(current, candidate));
+  }
+
+  function setInteractionPreview(nextPreview: readonly Markup[] | null): void {
+    interactionPreviewRef.current = nextPreview;
+    setInteractionPreviewState(nextPreview);
+  }
+
+  function clearInteractionPreview(): void {
+    setInteractionPreview(null);
+  }
+
+  function commitInteractionPreview(preview = interactionPreviewRef.current): void {
+    if (!preview || preview.length === 0) {
+      clearInteractionPreview();
+      return;
+    }
+
+    const replacements = new Map(preview.map((markup) => [markup.id, markup]));
+    updateDocument((document) => ({
+      ...document,
+      markups: document.markups.map((markup) => replacements.get(markup.id) ?? markup),
+    }));
+    clearInteractionPreview();
+  }
+
+  function previewMoveAtPoint(
+    moveDraft: Extract<AnnotationDraft, { kind: 'move' }>,
+    rawPoint: PdfPoint,
+  ): Extract<AnnotationDraft, { kind: 'move' }> {
+    const desiredDelta = moveDelta(moveDraft, rawPoint);
+    const prospectiveAnchorPoints = moveDraft.snapAnchorPoints?.map((anchorPoint) => (
+      translatePoint(anchorPoint, desiredDelta)
+    )) ?? [];
+    const snappedPoint = snapPdfPoint(rawPoint, {
+      enabled: prospectiveAnchorPoints.length > 0,
+      excludeMarkupIds: moveDraft.markupIds,
+      acquireTracking: true,
+      anchorPoints: prospectiveAnchorPoints,
+    });
+    let delta = moveDelta(moveDraft, snappedPoint);
+    if (delta.x === 0 && delta.y === 0) {
+      return moveDraft;
+    }
+
+    const previewBase = applyMarkupPreview(markups, interactionPreviewRef.current);
+    let preview = moveDraftMarkups(previewBase, moveDraft, delta, page);
+    let movingBounds = combinedGuideBounds(getAnnotationGuideRects(preview, page));
+    const referenceGuideRects = getAnnotationGuideRects(visibleMarkups, page, { excludeMarkupIds: moveDraft.markupIds });
+    const spacingSnap = movingBounds
+      ? findEqualSpacingSnap(
+        movingBounds,
+        referenceGuideRects,
+        transform,
+        snapTolerancePx,
+      )
+      : null;
+    if (spacingSnap) {
+      delta = pdfPoint(delta.x + spacingSnap.adjustment.x, delta.y + spacingSnap.adjustment.y);
+      preview = moveDraftMarkups(previewBase, moveDraft, delta, page);
+      movingBounds = combinedGuideBounds(getAnnotationGuideRects(preview, page));
+      setSnapResult(null);
+      setObjectSnapTrackingResult(null);
+    }
+    const sizeMatch = movingBounds
+      ? findEqualSizeSnap(movingBounds, referenceGuideRects, transform, 0.5)
+      : null;
+    setRelationshipSnapGuides([
+      ...(spacingSnap?.guides ?? []),
+      ...(sizeMatch?.guides ?? []),
+    ]);
+    setInteractionPreview(preview);
+    const resolvedPoint = pdfPoint(moveDraft.lastPoint.x + delta.x, moveDraft.lastPoint.y + delta.y);
+    return {
+      ...moveDraft,
+      lastPoint: resolvedPoint,
+      snapAnchorPoints: moveDraft.snapAnchorPoints?.map((anchorPoint) => translatePoint(anchorPoint, delta)),
+    };
+  }
+
+  function transformedMarkupAtPoint(
+    transformDraft: TransformDraft,
+    point: PdfPoint,
+    shiftKey = false,
+  ): Markup | null {
+    const definition = getMarkupToolDefinition(transformDraft.originalMarkup);
+    return definition?.interaction?.transformMarkup?.(transformDraft.originalMarkup as never, {
+      handleId: transformDraft.handleId,
+      handleBehavior: transformDraft.handleBehavior,
+      startPoint: transformDraft.startPoint,
+      currentPoint: point,
+      shiftKey,
+    }, toolInteractionContext) ?? null;
+  }
+
+  function equalSizeSnapForTransform(
+    transformDraft: TransformDraft,
+    point: PdfPoint,
+    shiftKey: boolean,
+  ): { readonly point: PdfPoint; readonly markup: Markup; readonly guides: readonly RelationshipSnapGuide[] } | null {
+    if (transformDraft.handleBehavior !== 'resizeSelf') {
+      return null;
+    }
+    const rotation = 'rotation' in transformDraft.originalMarkup
+      ? transformDraft.originalMarkup.rotation
+      : 0;
+    if (typeof rotation === 'number' && rotation !== 0) {
+      return null;
+    }
+
+    const transformed = transformedMarkupAtPoint(transformDraft, point, shiftKey);
+    const movingBounds = transformed
+      ? getAnnotationGuideRects([transformed], page)[0]?.rect
+      : null;
+    if (!transformed || !movingBounds) {
+      return null;
+    }
+    const sizeSnap = findEqualSizeSnap(
+      movingBounds,
+      getAnnotationGuideRects(visibleMarkups, page, { excludeMarkupIds: [transformDraft.markupId] }),
+      transform,
+      snapTolerancePx,
+    );
+    if (!sizeSnap) {
+      return null;
+    }
+
+    const handle = transformDraft.handleId.split('.').at(-1) ?? '';
+    const width = (handle.includes('e') || handle.includes('w')) ? sizeSnap.width : undefined;
+    const height = (handle.includes('n') || handle.includes('s')) ? sizeSnap.height : undefined;
+    if (width === undefined && height === undefined) {
+      return null;
+    }
+    const resolvedPoint = pdfPoint(
+      point.x + (width === undefined ? 0 : (width - movingBounds.width) * (handle.includes('w') ? -1 : 1)),
+      point.y + (height === undefined ? 0 : (height - movingBounds.height) * (handle.includes('s') ? -1 : 1)),
+    );
+    const resolvedMarkup = transformedMarkupAtPoint(transformDraft, resolvedPoint, shiftKey);
+    const resolvedBounds = resolvedMarkup
+      ? getAnnotationGuideRects([resolvedMarkup], page)[0]?.rect
+      : null;
+    if (!resolvedMarkup || !resolvedBounds) {
+      return null;
+    }
+
+    return {
+      point: resolvedPoint,
+      markup: resolvedMarkup,
+      guides: sizeSnap.guides
+        .filter((guide) => guide.axis === 'horizontal' ? width !== undefined : height !== undefined)
+        .map((guide) => ({ ...guide, moving: resolvedBounds })),
+    };
+  }
+
+  function equalSizeSnapForPlacementDraft(
+    placementDraft: Extract<AnnotationDraft, { kind: 'line' | 'rectangle' | 'text-box' }>,
+    point: PdfPoint,
+    shiftKey: boolean,
+  ): { readonly point: PdfPoint; readonly guides: readonly RelationshipSnapGuide[] } | null {
+    if (placementDraft.kind === 'line') {
+      return null;
+    }
+    const candidate = updateClickPlacementDraft(placementDraft, point, shiftKey);
+    const movingBounds = draftRect(candidate);
+    const sizeSnap = findEqualSizeSnap(
+      movingBounds,
+      getAnnotationGuideRects(visibleMarkups, page),
+      transform,
+      snapTolerancePx,
+    );
+    if (!sizeSnap) {
+      return null;
+    }
+
+    const tool = clickPlacementToolRef.current ?? activeTool;
+    let width = sizeSnap.width;
+    let height = sizeSnap.height;
+    if (tool === 'ellipse' && shiftKey && (width !== undefined || height !== undefined)) {
+      const diameter = width !== undefined && height !== undefined
+        ? Math.abs(width - movingBounds.width) <= Math.abs(height - movingBounds.height) ? width : height
+        : width ?? height;
+      width = diameter;
+      height = diameter;
+    }
+    const resolvedPoint = pdfPoint(
+      width === undefined ? candidate.current.x : candidate.start.x + width * (Math.sign(candidate.current.x - candidate.start.x) || 1),
+      height === undefined ? candidate.current.y : candidate.start.y + height * (Math.sign(candidate.current.y - candidate.start.y) || 1),
+    );
+    const resolvedBounds = draftRect({ ...candidate, current: resolvedPoint });
+    return {
+      point: resolvedPoint,
+      guides: sizeSnap.guides
+        .filter((guide) => guide.axis === 'horizontal' ? width !== undefined : height !== undefined)
+        .map((guide) => ({ ...guide, moving: resolvedBounds })),
+    };
   }
 
   function handlePointerDown(event: React.PointerEvent<SVGSVGElement>): void {
@@ -552,10 +841,19 @@ export function AnnotationLayer({
       return;
     }
 
-    const point = snapPdfPoint(rawPoint, {
+    let point = snapPdfPoint(rawPoint, {
       enabled: shouldSnapCreationTool(activeTool),
       orthogonalAnchor: event.shiftKey ? orthogonalAnchorForDraft(draft, activeTool) : null,
     });
+    if (draft && isClickPlacementDraft(draft)) {
+      const sizeSnap = equalSizeSnapForPlacementDraft(draft, point, event.shiftKey);
+      point = sizeSnap?.point ?? point;
+      setRelationshipSnapGuides(sizeSnap?.guides ?? []);
+      if (sizeSnap) {
+        setSnapResult(null);
+        setObjectSnapTrackingResult(null);
+      }
+    }
     if (activeTool === 'text-box') {
       beginTextBoxPlacement(point);
       event.stopPropagation();
@@ -564,7 +862,7 @@ export function AnnotationLayer({
     }
 
     if (activeTool === 'arc') {
-      handleArcPointerDown(point);
+      handleArcPointerDown(point, event.shiftKey);
       setSelectedMarkupIds([]);
       return;
     }
@@ -597,15 +895,20 @@ export function AnnotationLayer({
       return;
     }
 
+    if (isVertexPathTool(activeTool)) {
+      handleVertexPathPointerDown(event, point, activeTool);
+      return;
+    }
+
     if (draft && isClickPlacementDraft(draft)) {
-      if (commitClickPlacementDraft(point)) {
+      if (commitClickPlacementDraft(point, event.shiftKey)) {
         event.stopPropagation();
         event.preventDefault();
       }
       return;
     }
 
-    if (activeTool === 'select' && event.detail >= 2 && beginTextEditFromHit(event, point)) {
+    if (activeTool === 'select' && event.detail >= 2 && beginPropertiesFromHit(event, point, false)) {
       return;
     }
 
@@ -647,10 +950,13 @@ export function AnnotationLayer({
         startPoint: point,
         currentPoint: point,
       }) as AnnotationDraft);
-      if (activeDefinition.interaction.placement === 'click') {
+      const placement = activeDefinition.interaction.placement;
+      if (placement === 'click' || placement === 'click-or-drag') {
         clickPlacementToolRef.current = activeTool;
       } else {
         clickPlacementToolRef.current = null;
+      }
+      if (placement !== 'click') {
         event.currentTarget.setPointerCapture(event.pointerId);
       }
       setSelectedMarkupIds([]);
@@ -681,18 +987,19 @@ export function AnnotationLayer({
   ): void {
     const select = options.select ?? true;
     const tool = options.tool ?? activeTool;
-    updateDocument((document) => createMarkup(document, markup));
-    setSelectedMarkupIds(select ? [markup.id] : []);
-    setPostPlacement(select && (options.armClickAway ?? true) ? { markupId: markup.id, tool } : null);
+    const placedMarkup = applyToolPropertyValues(markup, toolPropertyValues[tool]);
+    updateDocument((document) => createMarkup(document, placedMarkup));
+    setSelectedMarkupIds(select ? [placedMarkup.id] : []);
+    setPostPlacement(select && (options.armClickAway ?? true) ? { markupId: placedMarkup.id, tool } : null);
     if (
       options.beginTextEdit
-      && (markup.kind === 'text-box' || markup.kind === 'callout' || markup.kind === 'cloud-plus' || markup.kind === 'dimension')
+      && (placedMarkup.kind === 'text-box' || placedMarkup.kind === 'callout' || placedMarkup.kind === 'cloud-plus' || placedMarkup.kind === 'dimension')
     ) {
-      setTextEdit({ markupId: markup.id, text: markup.text });
+      setTextEdit({ markupId: placedMarkup.id, text: placedMarkup.text });
     }
   }
 
-  function handleArcPointerDown(point: PdfPoint): void {
+  function handleArcPointerDown(point: PdfPoint, snapAngle: boolean): void {
     if (draft?.kind === 'arc' && draft.phase === 'end') {
       if (shouldCommitLine(draft.start, point)) {
         setDraft(setArcDraftEnd(draft, point));
@@ -701,8 +1008,13 @@ export function AnnotationLayer({
     }
 
     if (draft?.kind === 'arc' && draft.phase === 'mid') {
+      const bulgePoint = draft.end
+        ? snapAngle
+          ? snapArcBulgePoint(draft.start, draft.end, point).point
+          : constrainArcBulgePoint(draft.start, draft.end, point, ARC_MIN_BULGE_PX / transform.zoom)
+        : point;
       const markup = draft.end
-        ? createArcMarkupFromThreePoints(createMarkupId('arc'), page.index, draft.start, draft.end, point)
+        ? createArcMarkupFromThreePoints(createMarkupId('arc'), page.index, draft.start, draft.end, bulgePoint)
         : null;
       if (markup) {
         completePlacedMarkup(markup, { tool: 'arc' });
@@ -823,6 +1135,56 @@ export function AnnotationLayer({
     return true;
   }
 
+  function handleVertexPathPointerDown(
+    event: React.PointerEvent<SVGSVGElement>,
+    point: PdfPoint,
+    tool: VertexPathDraft['tool'],
+  ): void {
+    if (draft?.kind === 'vertex-path' && draft.tool === tool) {
+      const firstPoint = draft.points[0];
+      if (
+        tool === 'polygon'
+        && draft.points.length >= 3
+        && firstPoint
+        && isCloudPolygonClosePoint(firstPoint, point, transform)
+      ) {
+        commitVertexPathDraft(draft);
+      } else {
+        setDraft(addVertexPathDraftPoint(draft, point));
+      }
+    } else {
+      setDraft(createVertexPathDraft(tool, point));
+      setSelectedMarkupIds([]);
+    }
+    clickPlacementToolRef.current = null;
+    event.stopPropagation();
+    event.preventDefault();
+  }
+
+  function commitVertexPathDraft(vertexPathDraft: VertexPathDraft): boolean {
+    const minimumPointCount = vertexPathDraft.tool === 'polygon' ? 3 : 2;
+    if (vertexPathDraft.points.length < minimumPointCount) {
+      setDraft(null);
+      setSnapResult(null);
+      return false;
+    }
+
+    const definition = getToolDefinition(vertexPathDraft.tool);
+    const markup = definition.interaction?.commitDraft?.(vertexPathDraft as never, {
+      ...toolInteractionContext,
+      hasExceededDragThreshold: true,
+      createMarkupId,
+    });
+    setDraft(null);
+    setSnapResult(null);
+    if (!markup) {
+      return false;
+    }
+
+    completePlacedMarkup(markup, { tool: vertexPathDraft.tool });
+    return true;
+  }
+
   function commitCloudNodeDraft(cloudDraft: Extract<AnnotationDraft, { kind: 'cloud-node' }>): boolean {
     const definition = getToolDefinition(activeTool);
     const markup = definition.interaction?.commitDraft?.(cloudDraft as never, {
@@ -857,9 +1219,14 @@ export function AnnotationLayer({
       rect: placement,
       dataUrl: asset.dataUrl,
       mimeType: asset.mimeType,
+      aspectRatioLocked: asset.aspectRatioLocked,
       source: { source: 'butter' },
     });
     completePlacedMarkup(markup, { tool: 'image' });
+    setPendingImagePoint(null);
+    if (asset.selectAfterPlacement) {
+      onImagePlaced?.();
+    }
     return true;
   }
 
@@ -880,6 +1247,7 @@ export function AnnotationLayer({
     setDraft(null);
     clickPlacementToolRef.current = null;
     setSnapResult(null);
+    setRelationshipSnapGuides([]);
     setSelectedMarkupIds([]);
     setPendingTextBox(pending);
   }
@@ -926,24 +1294,34 @@ export function AnnotationLayer({
       && (candidate.kind === 'line' || candidate.kind === 'rectangle' || candidate.kind === 'text-box');
   }
 
-  function updateClickPlacementDraft(candidate: Extract<AnnotationDraft, { kind: 'line' | 'rectangle' | 'text-box' }>, point: PdfPoint): AnnotationDraft {
+  function updateClickPlacementDraft(
+    candidate: Extract<AnnotationDraft, { kind: 'line' | 'rectangle' | 'text-box' }>,
+    point: PdfPoint,
+    shiftKey = false,
+  ): Extract<AnnotationDraft, { kind: 'line' | 'rectangle' | 'text-box' }> {
     if (candidate.kind === 'line') {
       return updateLineDraft(candidate, point);
     }
     if (candidate.kind === 'text-box') {
       return { ...candidate, current: point };
     }
-    return { ...candidate, current: point };
+    const tool = clickPlacementToolRef.current ?? activeTool;
+    return {
+      ...candidate,
+      current: tool === 'ellipse' && shiftKey
+        ? constrainEllipseDraftPoint(candidate.start, point)
+        : point,
+    };
   }
 
-  function commitClickPlacementDraft(point: PdfPoint): boolean {
+  function commitClickPlacementDraft(point: PdfPoint, shiftKey = false): boolean {
     if (!draft || !isClickPlacementDraft(draft)) {
       return false;
     }
 
     const tool = clickPlacementToolRef.current ?? activeTool;
     const definition = getToolDefinition(tool);
-    const finalDraft = updateClickPlacementDraft(draft, point);
+    const finalDraft = updateClickPlacementDraft(draft, point, shiftKey);
     const markup = definition.interaction?.commitDraft?.(finalDraft as never, {
       ...toolInteractionContext,
       hasExceededDragThreshold: true,
@@ -952,6 +1330,7 @@ export function AnnotationLayer({
     setDraft(null);
     clickPlacementToolRef.current = null;
     setSnapResult(null);
+    setRelationshipSnapGuides([]);
     if (!markup) {
       return true;
     }
@@ -979,6 +1358,12 @@ export function AnnotationLayer({
 
   function handlePointerMove(event: React.PointerEvent<SVGSVGElement>): void {
     const viewportPoint = toViewportPoint(event);
+    toolCursorPointRef.current = viewportPoint;
+    toolCursorInsideRef.current = true;
+    if (toolCursorIconRef.current) {
+      toolCursorIconRef.current.style.transform = toolCursorIconTransform(viewportPoint);
+      toolCursorIconRef.current.style.opacity = '1';
+    }
     if (selectionMarquee) {
       if (selectionMarquee.pointerId !== null && selectionMarquee.pointerId !== event.pointerId) {
         return;
@@ -992,6 +1377,11 @@ export function AnnotationLayer({
     }
 
     const rawPoint = toPdfPoint(event);
+    if (activeTool === 'image' && pendingImageAsset && !draft) {
+      setPendingImagePoint(rawPoint);
+    } else if (pendingImagePoint) {
+      setPendingImagePoint(null);
+    }
     if (!draft) {
       const hit = isDirectManipulationTool(activeTool) ? hitTestSelectMode(rawPoint) : null;
       setHoveredMarkupId(hit?.markupId ?? null);
@@ -1015,24 +1405,55 @@ export function AnnotationLayer({
         return;
       }
 
-      const point = snapPdfPoint(rawPoint, { enabled: true, excludeMarkupIds: [draft.markupId] });
-      applyHandleTransform(draft, point);
-      setDraft(updateTransformDraft(draft, point, true));
+      const point = snapPdfPoint(rawPoint, {
+        enabled: draft.handleBehavior !== 'rotateSelf',
+        excludeMarkupIds: [draft.markupId],
+        acquireTracking: true,
+      });
+      const sizeSnap = equalSizeSnapForTransform(draft, point, event.shiftKey);
+      const resolvedPoint = sizeSnap?.point ?? point;
+      const transformed = sizeSnap?.markup ?? transformedMarkupAtPoint(draft, resolvedPoint, event.shiftKey);
+      setRelationshipSnapGuides(sizeSnap?.guides ?? []);
+      if (sizeSnap) {
+        setSnapResult(null);
+        setObjectSnapTrackingResult(null);
+      }
+      setInteractionPreview(transformed ? [transformed] : null);
+      setDraft(updateTransformDraft(draft, resolvedPoint, true));
       return;
     }
 
-    const point = snapPdfPoint(rawPoint, {
+    if (draft?.kind === 'move') {
+      if (draft.pointerId !== event.pointerId) {
+        return;
+      }
+
+      setDraft(previewMoveAtPoint(draft, rawPoint));
+      return;
+    }
+
+    let point = snapPdfPoint(rawPoint, {
       enabled: shouldSnapCreationTool(activeTool),
       orthogonalAnchor: event.shiftKey ? orthogonalAnchorForDraft(draft, activeTool) : null,
       acquireTracking: shouldSnapCreationTool(activeTool),
     });
+
+    if (draft && isClickPlacementDraft(draft)) {
+      const sizeSnap = equalSizeSnapForPlacementDraft(draft, point, event.shiftKey);
+      point = sizeSnap?.point ?? point;
+      setRelationshipSnapGuides(sizeSnap?.guides ?? []);
+      if (sizeSnap) {
+        setSnapResult(null);
+        setObjectSnapTrackingResult(null);
+      }
+    }
 
     if (!draft) {
       return;
     }
 
     if (isClickPlacementDraft(draft)) {
-      setDraft(updateClickPlacementDraft(draft, point));
+      setDraft(updateClickPlacementDraft(draft, point, event.shiftKey));
       return;
     }
 
@@ -1041,8 +1462,18 @@ export function AnnotationLayer({
       return;
     }
 
+    if (draft.kind === 'vertex-path') {
+      setDraft(updateVertexPathDraft(draft, point));
+      return;
+    }
+
     if (draft.kind === 'arc') {
-      setDraft(updateArcDraft(draft, point));
+      const current = draft.phase === 'mid' && draft.end
+        ? event.shiftKey
+          ? snapArcBulgePoint(draft.start, draft.end, point).point
+          : constrainArcBulgePoint(draft.start, draft.end, point, ARC_MIN_BULGE_PX / transform.zoom)
+        : point;
+      setDraft(updateArcDraft(draft, current));
       return;
     }
 
@@ -1050,18 +1481,6 @@ export function AnnotationLayer({
     if (activeDefinition.interaction?.updateDraft) {
       setDraft(activeDefinition.interaction.updateDraft(draft as never, point) as AnnotationDraft);
       return;
-    }
-
-    if (draft.kind === 'move') {
-      if (draft.pointerId !== event.pointerId) {
-        return;
-      }
-
-      const delta = moveDelta(draft, point);
-      if (delta.x !== 0 || delta.y !== 0) {
-        updateDocument((document) => moveDraftMarkups(document, draft, delta, page));
-        setDraft({ ...draft, lastPoint: point });
-      }
     }
 
   }
@@ -1112,20 +1531,49 @@ export function AnnotationLayer({
           activeTool === 'select' && event.shiftKey,
         ));
         setSnapResult(null);
+        clearInteractionPreview();
       } else {
         const point = snapPdfPoint(rawPoint, { enabled: true, excludeMarkupIds: [draft.markupId] });
-        applyHandleTransform(draft, point);
+        const sizeSnap = equalSizeSnapForTransform(draft, point, event.shiftKey);
+        const transformed = sizeSnap?.markup ?? transformedMarkupAtPoint(draft, point, event.shiftKey);
+        commitInteractionPreview(transformed ? [transformed] : null);
       }
       setDraft(null);
+      setRelationshipSnapGuides([]);
       clickPlacementToolRef.current = null;
       return;
     }
 
-    const point = snapPdfPoint(rawPoint, {
+    if (draft.kind === 'move') {
+      previewMoveAtPoint(draft, rawPoint);
+      commitInteractionPreview();
+      setDraft(null);
+      setRelationshipSnapGuides([]);
+      clickPlacementToolRef.current = null;
+      setSnapResult(null);
+      return;
+    }
+
+    let point = snapPdfPoint(rawPoint, {
       enabled: shouldSnapCreationTool(activeTool),
       orthogonalAnchor: event.shiftKey ? orthogonalAnchorForDraft(draft, activeTool) : null,
     });
     if (isClickPlacementDraft(draft)) {
+      const sizeSnap = equalSizeSnapForPlacementDraft(draft, point, event.shiftKey);
+      point = sizeSnap?.point ?? point;
+      const placementTool = clickPlacementToolRef.current ?? activeTool;
+      if (getToolDefinition(placementTool).interaction?.placement === 'click-or-drag') {
+        const finalDraft = updateClickPlacementDraft(draft, point, event.shiftKey);
+        const startPoint = transform.pdfToViewport(finalDraft.start);
+        const currentPoint = transform.pdfToViewport(finalDraft.current);
+        if (hasExceededDragThreshold(startPoint, currentPoint)) {
+          commitClickPlacementDraft(point, event.shiftKey);
+        }
+      }
+      return;
+    }
+
+    if (draft.kind === 'vertex-path') {
       return;
     }
 
@@ -1175,6 +1623,7 @@ export function AnnotationLayer({
     setDraft(null);
     clickPlacementToolRef.current = null;
     setSnapResult(null);
+    setRelationshipSnapGuides([]);
   }
 
   function handlePointerCancel(event: React.PointerEvent<SVGSVGElement>): void {
@@ -1185,6 +1634,7 @@ export function AnnotationLayer({
     setSelectionMarquee(null);
     clickPlacementToolRef.current = null;
     setSnapResult(null);
+    clearInteractionPreview();
   }
 
   function handleDoubleClick(event: React.MouseEvent<SVGSVGElement>): void {
@@ -1221,67 +1671,44 @@ export function AnnotationLayer({
       return;
     }
 
-    if (beginTextEditFromHit(event, point)) {
+    if (beginPropertiesFromHit(event, point, true)) {
       event.stopPropagation();
       event.preventDefault();
     }
   }
 
-  function beginTextEditFromHit(event: React.PointerEvent<SVGElement> | React.MouseEvent<SVGSVGElement>, point: PdfPoint): boolean {
+  function beginPropertiesFromHit(
+    event: React.PointerEvent<SVGElement> | React.MouseEvent<SVGSVGElement>,
+    point: PdfPoint,
+    toggleProperties: boolean,
+  ): boolean {
     const hit = hitTestToolMarkups(visibleMarkups, point, { page, tolerance: pdfToleranceForScale(transform.zoom), transform });
     const markup = hit ? visibleMarkups.find((candidate) => candidate.id === hit.markupId) : null;
-    if (markup?.kind !== 'text-box' && markup?.kind !== 'callout' && markup?.kind !== 'cloud-plus' && markup?.kind !== 'dimension') {
+    if (!markup) {
       return false;
     }
 
     event.stopPropagation();
+    event.preventDefault();
     setDraft(null);
     setSelectedMarkupIds([markup.id]);
     setHoveredMarkupId(markup.id);
-    setTextEdit({ markupId: markup.id, text: markup.text });
+    const existingCandidate = propertiesClickCandidateRef.current;
+    const candidate = existingCandidate?.markupId === markup.id
+      ? existingCandidate
+      : {
+        markupId: markup.id,
+        wasSelected: selectedMarkupIds.length === 1 && selectedMarkupIds[0] === markup.id,
+      };
+    propertiesClickCandidateRef.current = candidate;
+    if (toggleProperties) {
+      onToggleProperties?.(candidate.wasSelected);
+      propertiesClickCandidateRef.current = null;
+    }
+    if (markup.kind === 'text-box' || markup.kind === 'callout' || markup.kind === 'cloud-plus' || markup.kind === 'dimension') {
+      setTextEdit({ markupId: markup.id, text: markup.text });
+    }
     return true;
-  }
-
-  function beginMarkupMove(event: React.PointerEvent<SVGElement>, markup: Markup): void {
-    if (event.button !== 0 || !isDirectManipulationTool(activeTool)) {
-      return;
-    }
-
-    const point = toPdfPoint(event);
-    if (beginHandleTransform(event, point)) {
-      return;
-    }
-
-    const definition = getMarkupToolDefinition(markup);
-    if (!shouldRenderMarkupAtZoom(markup, transform)) {
-      return;
-    }
-
-    const hit = definition?.geometry?.hitTest(markup as never, point, {
-      page,
-      tolerance: pdfToleranceForScale(transform.zoom),
-      transform,
-    });
-    if (!hit) {
-      return;
-    }
-
-    event.stopPropagation();
-    if (activeTool === 'select' && event.shiftKey) {
-      setSelectedMarkupIds(selectionAfterMarkupClick(selectedMarkupIds, markup.id, true));
-      setHoveredMarkupId(markup.id);
-      setHotHandle(null);
-      return;
-    }
-
-    const nextSelection = selectionAfterMarkupClick(selectedMarkupIds, markup.id, false);
-    setSelectedMarkupIds(nextSelection);
-    setHoveredMarkupId(markup.id);
-    setDraft(createMoveDraft(event.pointerId, nextSelection, point, {
-      componentId: hit.componentId,
-      bodyDrag: hit.bodyDrag,
-    }));
-    svgRef.current?.setPointerCapture(event.pointerId);
   }
 
   function beginMarkupMoveFromHit(event: React.PointerEvent<SVGElement>, point: PdfPoint): boolean {
@@ -1296,6 +1723,10 @@ export function AnnotationLayer({
     }
 
     event.stopPropagation();
+    propertiesClickCandidateRef.current = {
+      markupId: markup.id,
+      wasSelected: selectedMarkupIds.length === 1 && selectedMarkupIds[0] === markup.id,
+    };
     if (event.shiftKey) {
       setSelectedMarkupIds(selectionAfterMarkupClick(selectedMarkupIds, markup.id, true));
       setHoveredMarkupId(markup.id);
@@ -1309,6 +1740,9 @@ export function AnnotationLayer({
     setDraft(createMoveDraft(event.pointerId, nextSelection, point, {
       componentId: hit.componentId,
       bodyDrag: hit.bodyDrag,
+      snapAnchorPoints: hit.bodyDrag === 'adjustOnly'
+        ? undefined
+        : movingSnapAnchorPoints(visibleMarkups, nextSelection, page),
     }));
     event.currentTarget.setPointerCapture(event.pointerId);
     return true;
@@ -1320,7 +1754,7 @@ export function AnnotationLayer({
       return false;
     }
 
-    const markup = markups.find((candidate) => candidate.id === hit.markupId);
+    const markup = visibleMarkups.find((candidate) => candidate.id === hit.markupId);
     if (!markup) {
       return false;
     }
@@ -1344,23 +1778,6 @@ export function AnnotationLayer({
       const geometry = definition?.geometry?.getGeometry(markup as never, { page });
       return geometry && isGeometrySelectedByMarquee(geometry, marquee, transform) ? [markup.id] : [];
     });
-  }
-
-  function applyHandleTransform(transformDraft: TransformDraft, point: PdfPoint): void {
-    const definition = getMarkupToolDefinition(transformDraft.originalMarkup);
-    const transformed = definition?.interaction?.transformMarkup?.(transformDraft.originalMarkup as never, {
-      handleId: transformDraft.handleId,
-      handleBehavior: transformDraft.handleBehavior,
-      startPoint: transformDraft.startPoint,
-      currentPoint: point,
-    }, toolInteractionContext);
-
-    if (transformed && transformed !== transformDraft.originalMarkup) {
-      updateDocument((document) => ({
-        ...document,
-        markups: document.markups.map((markup) => markup.id === transformDraft.markupId ? transformed : markup),
-      }));
-    }
   }
 
   function hitTestSelectMode(point: PdfPoint): ToolHit | null {
@@ -1465,12 +1882,20 @@ export function AnnotationLayer({
     pendingTextBoxActive: pendingTextBox !== null,
     textEditActive: textEdit !== null,
     postPlacementSelectionActive,
+    pendingImagePreviewActive: activeTool === 'image' && pendingImageAsset !== null && pendingImagePoint !== null,
+    transformDragActive: draft?.kind === 'transform' && draft.dragStarted,
+    transformSnapActive: snapResult !== null || objectSnapTrackingResult !== null || relationshipSnapGuides.length > 0,
     hoverCursor,
   });
+  const snapEnabled = snapToContent || snapToMarkup;
+  const hideChromeDuringManipulation = snapEnabled && (
+    (draft?.kind === 'transform' && draft.dragStarted)
+    || (draft?.kind === 'move' && interactionPreview !== null)
+  );
   const activeDefinition = getToolDefinition(activeTool);
-  const draftPrimitives = draft && activeDefinition.render?.getDraftPrimitives
+  const draftPrimitives = applyToolValuesToDraftPrimitives(draft && activeDefinition.render?.getDraftPrimitives
     ? activeDefinition.render.getDraftPrimitives(draft as never, { ...toolInteractionContext, pageScale, phase: 'draft' })
-    : [];
+    : [], toolPropertyValues[activeTool]);
   const editingMarkup = textEdit
       ? visibleMarkups.find((markup): markup is EditableTextMarkup => (
       markup.id === textEdit.markupId
@@ -1480,9 +1905,31 @@ export function AnnotationLayer({
   const marqueeHoveredMarkupIdSet = new Set(
     selectionMarquee?.active ? markupIdsSelectedByMarquee(selectionMarquee) : [],
   );
+  const snapGuideTypeSet = new Set(snapGuideTypes);
+  const alignmentGuidesVisible = snapGuidesEnabled && snapGuideTypeSet.has('alignment');
+  const visibleRelationshipSnapGuides = snapGuidesEnabled
+    ? relationshipSnapGuides.filter((guide) => snapGuideTypeSet.has(guide.kind))
+    : [];
+  const snapSourceMarkupIdSet = new Set([
+    ...(alignmentGuidesVisible && snapResult?.candidate.source === 'annotation' && snapResult.candidate.ownerId
+      ? [snapResult.candidate.ownerId]
+      : []),
+    ...(alignmentGuidesVisible ? objectSnapTrackingResult?.guides.flatMap((guide) => (
+      guide.source === 'annotation' && guide.ownerId ? [guide.ownerId] : []
+    )) ?? [] : []),
+    ...visibleRelationshipSnapGuides.flatMap((guide) => (
+      guide.kind === 'equal-size'
+        ? [guide.reference.ownerId]
+        : [guide.before.ownerId, guide.after.ownerId]
+    )),
+  ]);
+  const pendingImagePreviewBox = pendingImageAsset && pendingImagePoint
+    ? transform.pdfRectToViewport(imagePlacementRect(pendingImagePoint, page, pendingImageAsset))
+    : null;
 
   return (
-    <svg
+    <>
+      <svg
       ref={svgRef}
       className="absolute inset-0 z-20 h-full w-full overflow-visible"
       data-testid={`annotation-layer-${page.index + 1}`}
@@ -1494,10 +1941,15 @@ export function AnnotationLayer({
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
       onPointerLeave={() => {
+        toolCursorInsideRef.current = false;
+        if (toolCursorIconRef.current) {
+          toolCursorIconRef.current.style.opacity = '0';
+        }
         setObjectSnapTrackingResult(null);
         setOrthogonalConstraint(null);
         trackingHoverKeyRef.current = null;
         if (!draft) {
+          setPendingImagePoint(null);
           setHoveredMarkupId(null);
           setHotHandle(null);
           setHoverCursor(null);
@@ -1516,6 +1968,7 @@ export function AnnotationLayer({
             selectedMarkupIds[0],
             hoveredMarkupId,
             marqueeHoveredMarkupIdSet,
+            snapSourceMarkupIdSet,
           );
           return (
             <PrimitiveAnnotation
@@ -1528,8 +1981,13 @@ export function AnnotationLayer({
               interactionContext={toolInteractionContext}
               interactionState={interactionState}
               hotHandleId={hotHandle?.markupId === markup.id ? hotHandle.handleId : null}
+              activeHandleId={draft?.kind === 'transform' && draft.markupId === markup.id && draft.dragStarted
+                ? draft.handleId
+                : null}
+              hideHandles={(draft?.kind === 'transform' && draft.dragStarted && draft.markupId !== markup.id)
+                || draft?.kind === 'move'}
+              hideChrome={hideChromeDuringManipulation}
               editingText={textEdit?.markupId === markup.id ? textEdit.text : null}
-              onPointerDown={(event) => beginMarkupMove(event, markup)}
             />
           );
         }
@@ -1541,6 +1999,21 @@ export function AnnotationLayer({
         return null;
       })}
 
+      {pendingImagePreviewBox && pendingImageAsset ? (
+        <image
+          href={pendingImageAsset.dataUrl}
+          x={pendingImagePreviewBox.x}
+          y={pendingImagePreviewBox.y}
+          width={pendingImagePreviewBox.width}
+          height={pendingImagePreviewBox.height}
+          preserveAspectRatio="none"
+          opacity={0.45}
+          pointerEvents="none"
+          aria-hidden="true"
+          data-testid="pending-image-preview"
+        />
+      ) : null}
+
       {pendingTextBox ? (
         <PrimitiveAnnotation
           markup={pendingTextBox}
@@ -1551,24 +2024,31 @@ export function AnnotationLayer({
           interactionContext={toolInteractionContext}
           interactionState="focused"
           hotHandleId={null}
+          activeHandleId={null}
+          hideHandles={false}
+          hideChrome={false}
           editingText={pendingTextBox.text}
-          onPointerDown={() => undefined}
         />
       ) : null}
 
       {draftPrimitives.map((primitive, index) => (
         <RenderPrimitiveElement key={`draft-${index}`} primitive={primitive} transform={transform} />
       ))}
-      {acquiredTrackingPoints.length > 0 || objectSnapTrackingResult || orthogonalConstraint ? (
+      {alignmentGuidesVisible && (objectSnapTrackingResult || orthogonalConstraint) ? (
         <DraftingGuides
-          acquiredPoints={acquiredTrackingPoints}
           trackingResult={objectSnapTrackingResult}
           orthogonalConstraint={orthogonalConstraint}
           transform={transform}
         />
       ) : null}
       {selectionMarquee?.active ? <SelectionMarquee marquee={selectionMarquee} /> : null}
-      {snapResult ? <SnapIndicator result={snapResult} transform={transform} /> : null}
+      {alignmentGuidesVisible && snapResult ? <SnapIndicator result={snapResult} transform={transform} /> : null}
+      {visibleRelationshipSnapGuides.length > 0 ? (
+        <RelationshipGuides guides={visibleRelationshipSnapGuides} transform={transform} />
+      ) : null}
+      {draft?.kind === 'vertex-path' && draft.tool === 'polygon' && draft.points[0] ? (
+        <PolygonStartMarker draft={draft} transform={transform} />
+      ) : null}
       {pendingTextBox ? (
         <TextBoxEditor
           markup={pendingTextBox}
@@ -1597,8 +2077,52 @@ export function AnnotationLayer({
           }}
         />
       ) : null}
-    </svg>
+      </svg>
+      {activeDefinition.category !== 'navigation'
+        && toolCursor === 'crosshair'
+        && !(draft?.kind === 'transform' && draft.dragStarted) ? (
+        <div
+          ref={toolCursorIconRef}
+          className="pointer-events-none absolute left-0 top-0 z-30 size-4 text-white mix-blend-difference will-change-transform"
+          style={{ opacity: 0, transform: 'translate3d(0, 0, 0)' }}
+          aria-hidden="true"
+          data-testid="tool-cursor-icon"
+        >
+          <ToolRailIcon tool={activeTool} />
+        </div>
+      ) : null}
+    </>
   );
+}
+
+function applyToolValuesToDraftPrimitives(
+  primitives: readonly RenderPrimitive[],
+  values: ToolPropertyValuesByTool[ToolMode] | undefined,
+): readonly RenderPrimitive[] {
+  if (!values) return primitives;
+  return primitives.map((primitive): RenderPrimitive => {
+    if (primitive.kind === 'image') {
+      return {
+        ...primitive,
+        ...(typeof values.opacity === 'number' ? { opacity: values.opacity } : {}),
+      };
+    }
+    return {
+      ...primitive,
+      style: {
+        ...primitive.style,
+        ...(typeof values.strokeColor === 'string' ? { stroke: values.strokeColor } : {}),
+        ...(typeof values.fillColor === 'string' || values.fillColor === null
+          ? { fill: values.fillColor ?? 'none' }
+          : {}),
+        ...(typeof values.strokeWidthPt === 'number' ? { strokeWidth: values.strokeWidthPt } : {}),
+        ...(typeof values.opacity === 'number' ? { opacity: values.opacity } : {}),
+        ...(typeof values.textColor === 'string' ? { textColor: values.textColor } : {}),
+        ...(typeof values.fontFamily === 'string' ? { fontFamily: annotationFontCssFamily(values.fontFamily) } : {}),
+        ...(typeof values.fontSizePt === 'number' ? { fontSizePt: values.fontSizePt } : {}),
+      },
+    };
+  });
 }
 
 export function isCloudPolygonClosePoint(
@@ -1610,6 +2134,26 @@ export function isCloudPolygonClosePoint(
   const first = transform.pdfToViewport(firstPoint);
   const current = transform.pdfToViewport(currentPoint);
   return Math.hypot(current.x - first.x, current.y - first.y) <= thresholdPx;
+}
+
+function PolygonStartMarker({ draft, transform }: { draft: VertexPathDraft; transform: PageTransform }) {
+  const firstPoint = transform.pdfToViewport(draft.points[0] ?? draft.start);
+  const closeActive = draft.points.length >= 3
+    && isCloudPolygonClosePoint(draft.points[0] ?? draft.start, draft.current, transform);
+  return (
+    <circle
+      cx={firstPoint.x}
+      cy={firstPoint.y}
+      r={5}
+      fill={closeActive ? '#ff0000' : '#ffffff'}
+      stroke="#ff0000"
+      strokeWidth={2}
+      pointerEvents="none"
+      aria-hidden="true"
+      data-testid="polygon-start-marker"
+      data-close-active={closeActive ? 'true' : 'false'}
+    />
+  );
 }
 
 function SelectionMarquee({ marquee }: { marquee: SelectionMarqueeState }) {
@@ -1686,8 +2230,10 @@ function PrimitiveAnnotation({
   interactionContext,
   interactionState,
   hotHandleId,
+  activeHandleId,
+  hideHandles,
+  hideChrome,
   editingText,
-  onPointerDown,
 }: {
   markup: Markup;
   definition: NonNullable<ReturnType<typeof getMarkupToolDefinition>>;
@@ -1697,8 +2243,10 @@ function PrimitiveAnnotation({
   interactionContext?: ToolInteractionContext;
   interactionState: InteractionState;
   hotHandleId: string | null;
+  activeHandleId: string | null;
+  hideHandles: boolean;
+  hideChrome: boolean;
   editingText: string | null;
-  onPointerDown: (event: React.PointerEvent<SVGElement>) => void;
 }) {
   if (!shouldRenderMarkupAtZoom(markup, transform)) {
     return null;
@@ -1731,12 +2279,21 @@ function PrimitiveAnnotation({
 
   return (
     <g data-testid={`markup-${markup.id}`}>
-      <g onPointerDown={onPointerDown}>
+      <g>
         {primitives.map((primitive, index) => (
           <RenderPrimitiveElement key={index} primitive={primitive} transform={transform} />
         ))}
       </g>
-      {chrome ? <SelectionChrome chrome={chrome} transform={transform} state={interactionState} hotHandleId={hotHandleId} /> : null}
+      {chrome && !hideChrome ? (
+        <SelectionChrome
+          chrome={chrome}
+          transform={transform}
+          state={interactionState}
+          hotHandleId={hotHandleId}
+          activeHandleId={activeHandleId}
+          hideHandles={hideHandles}
+        />
+      ) : null}
     </g>
   );
 }
@@ -2383,11 +2940,15 @@ function SelectionChrome({
   transform,
   state,
   hotHandleId,
+  activeHandleId,
+  hideHandles,
 }: {
   chrome: SelectionChromeDescriptor;
   transform: PageTransform;
   state: InteractionState;
   hotHandleId: string | null;
+  activeHandleId: string | null;
+  hideHandles: boolean;
 }) {
   if (!chrome.bounds) {
     return null;
@@ -2403,7 +2964,10 @@ function SelectionChrome({
   const chromeTransform = chrome.bounds.rotation
     ? `rotate(${chrome.bounds.rotation} ${center.x} ${center.y})`
     : undefined;
-  const handles = chrome.handles ?? [];
+  const handles = (hideHandles ? [] : chrome.handles ?? []).filter((handle) => (
+    (state !== 'hovered' || handle.behavior !== 'rotateSelf')
+    && (activeHandleId === null || handle.id === activeHandleId)
+  ));
   const controlPaths = chrome.controlPaths?.filter((path) => path.points.length > 1) ?? [];
   const lineBoundsPaths = controlPaths.filter((path) => !path.closed && path.points.length === 2);
   const shouldRenderBoundsBox = lineBoundsPaths.length === 0;
@@ -2535,7 +3099,7 @@ function SnapIndicator({
   transform: PageTransform;
 }) {
   const point = transform.pdfToViewport(result.point);
-  const radius = 5;
+  const radius = SNAP_MARKER_RADIUS_PX;
   const role = result.candidate.role;
 
   return (
@@ -2545,14 +3109,14 @@ function SnapIndicator({
           d={`M ${point.x} ${point.y - radius - 1} L ${point.x + radius + 1} ${point.y + radius} L ${point.x - radius - 1} ${point.y + radius} Z`}
           fill="none"
           stroke={SNAP_MARKER_COLOR}
-          strokeWidth={1.5}
+          strokeWidth={SNAP_MARKER_STROKE_WIDTH_PX}
         />
       ) : role === 'center' ? (
-        <circle cx={point.x} cy={point.y} r={radius} fill="none" stroke={SNAP_MARKER_COLOR} strokeWidth={1.5} />
+        <circle cx={point.x} cy={point.y} r={radius} fill="none" stroke={SNAP_MARKER_COLOR} strokeWidth={SNAP_MARKER_STROKE_WIDTH_PX} />
       ) : role === 'intersection' ? (
         <>
-          <line x1={point.x - radius} y1={point.y - radius} x2={point.x + radius} y2={point.y + radius} stroke={SNAP_MARKER_COLOR} strokeWidth={1.5} />
-          <line x1={point.x + radius} y1={point.y - radius} x2={point.x - radius} y2={point.y + radius} stroke={SNAP_MARKER_COLOR} strokeWidth={1.5} />
+          <line x1={point.x - radius} y1={point.y - radius} x2={point.x + radius} y2={point.y + radius} stroke={SNAP_MARKER_COLOR} strokeWidth={SNAP_MARKER_STROKE_WIDTH_PX} />
+          <line x1={point.x + radius} y1={point.y - radius} x2={point.x - radius} y2={point.y + radius} stroke={SNAP_MARKER_COLOR} strokeWidth={SNAP_MARKER_STROKE_WIDTH_PX} />
         </>
       ) : role === 'edge' || role === 'bounds' ? (
         <rect
@@ -2563,7 +3127,7 @@ function SnapIndicator({
           transform={`rotate(45 ${point.x} ${point.y})`}
           fill="none"
           stroke={SNAP_MARKER_COLOR}
-          strokeWidth={1.5}
+          strokeWidth={SNAP_MARKER_STROKE_WIDTH_PX}
         />
       ) : (
         <rect
@@ -2573,7 +3137,7 @@ function SnapIndicator({
           height={radius * 2}
           fill="none"
           stroke={SNAP_MARKER_COLOR}
-          strokeWidth={1.5}
+          strokeWidth={SNAP_MARKER_STROKE_WIDTH_PX}
         />
       )}
     </g>
@@ -2581,12 +3145,10 @@ function SnapIndicator({
 }
 
 function DraftingGuides({
-  acquiredPoints,
   trackingResult,
   orthogonalConstraint,
   transform,
 }: {
-  acquiredPoints: readonly AcquiredTrackingPoint[];
   trackingResult: ObjectSnapTrackingResult | null;
   orthogonalConstraint: OrthogonalConstraint | null;
   transform: PageTransform;
@@ -2625,50 +3187,181 @@ function DraftingGuides({
           return null;
         }
         return (
-          <line
+          <g
             key={`${trackingPointKey({ point: guide.origin })}-${guide.axis}-${index}`}
-            data-testid="object-snap-tracking-guide"
+            data-testid="object-snap-tracking-source"
             data-tracking-axis={guide.axis}
-            x1={origin.x}
-            y1={origin.y}
-            x2={viewportResolvedPoint.x}
-            y2={viewportResolvedPoint.y}
-            stroke="#16a34a"
-            strokeWidth={1.25}
-            strokeDasharray="4 4"
-            opacity={0.9}
-          />
-        );
-      })}
-      {acquiredPoints.map((acquiredPoint) => {
-        const point = transform.pdfToViewport(acquiredPoint.point);
-        return (
-          <g key={trackingPointKey(acquiredPoint)} data-testid="acquired-tracking-point">
-            <line x1={point.x - 4} y1={point.y} x2={point.x + 4} y2={point.y} stroke="#16a34a" strokeWidth={1.5} />
-            <line x1={point.x} y1={point.y - 4} x2={point.x} y2={point.y + 4} stroke="#16a34a" strokeWidth={1.5} />
+            data-snap-source={guide.source}
+            data-snap-owner-id={guide.ownerId}
+          >
+            <line
+              data-testid="object-snap-tracking-guide"
+              x1={origin.x}
+              y1={origin.y}
+              x2={viewportResolvedPoint.x}
+              y2={viewportResolvedPoint.y}
+              stroke={SNAP_MARKER_COLOR}
+              strokeWidth={1.25}
+              strokeDasharray="4 4"
+              opacity={0.9}
+            />
+            <line x1={origin.x - 5} y1={origin.y} x2={origin.x + 5} y2={origin.y} stroke={SNAP_MARKER_COLOR} strokeWidth={2} />
+            <line x1={origin.x} y1={origin.y - 5} x2={origin.x} y2={origin.y + 5} stroke={SNAP_MARKER_COLOR} strokeWidth={2} />
           </g>
         );
       })}
       {trackingResult && viewportResolvedPoint ? (
         <g data-testid="object-snap-tracking-point">
           <line
-            x1={viewportResolvedPoint.x - 5}
-            y1={viewportResolvedPoint.y - 5}
-            x2={viewportResolvedPoint.x + 5}
-            y2={viewportResolvedPoint.y + 5}
-            stroke="#16a34a"
-            strokeWidth={1.5}
+            x1={viewportResolvedPoint.x - SNAP_MARKER_RADIUS_PX}
+            y1={viewportResolvedPoint.y - SNAP_MARKER_RADIUS_PX}
+            x2={viewportResolvedPoint.x + SNAP_MARKER_RADIUS_PX}
+            y2={viewportResolvedPoint.y + SNAP_MARKER_RADIUS_PX}
+            stroke={SNAP_MARKER_COLOR}
+            strokeWidth={SNAP_MARKER_STROKE_WIDTH_PX}
           />
           <line
-            x1={viewportResolvedPoint.x + 5}
-            y1={viewportResolvedPoint.y - 5}
-            x2={viewportResolvedPoint.x - 5}
-            y2={viewportResolvedPoint.y + 5}
-            stroke="#16a34a"
-            strokeWidth={1.5}
+            x1={viewportResolvedPoint.x + SNAP_MARKER_RADIUS_PX}
+            y1={viewportResolvedPoint.y - SNAP_MARKER_RADIUS_PX}
+            x2={viewportResolvedPoint.x - SNAP_MARKER_RADIUS_PX}
+            y2={viewportResolvedPoint.y + SNAP_MARKER_RADIUS_PX}
+            stroke={SNAP_MARKER_COLOR}
+            strokeWidth={SNAP_MARKER_STROKE_WIDTH_PX}
           />
         </g>
       ) : null}
+    </g>
+  );
+}
+
+function RelationshipGuides({
+  guides,
+  transform,
+}: {
+  guides: readonly RelationshipSnapGuide[];
+  transform: PageTransform;
+}) {
+  return (
+    <g className="pointer-events-none" data-testid="relationship-snap-guides" aria-hidden="true">
+      {guides.map((guide, index) => {
+        if (guide.kind === 'equal-size') {
+          const moving = guide.moving;
+          const reference = guide.reference.rect;
+          const movingPoints = guide.axis === 'horizontal'
+            ? [pdfPoint(moving.x, moving.y), pdfPoint(moving.x + moving.width, moving.y)] as const
+            : [pdfPoint(moving.x + moving.width, moving.y), pdfPoint(moving.x + moving.width, moving.y + moving.height)] as const;
+          const referencePoints = guide.axis === 'horizontal'
+            ? [pdfPoint(reference.x, reference.y), pdfPoint(reference.x + reference.width, reference.y)] as const
+            : [pdfPoint(reference.x + reference.width, reference.y), pdfPoint(reference.x + reference.width, reference.y + reference.height)] as const;
+          return (
+            <g
+              key={`equal-size-${guide.axis}-${guide.reference.ownerId}-${index}`}
+              data-testid="equal-size-guide"
+              data-guide-axis={guide.axis}
+              data-reference-owner-id={guide.reference.ownerId}
+            >
+              <RelationshipMeasurement start={movingPoints[0]} end={movingPoints[1]} axis={guide.axis} transform={transform} offsetPx={8} />
+              <RelationshipMeasurement start={referencePoints[0]} end={referencePoints[1]} axis={guide.axis} transform={transform} offsetPx={8} />
+            </g>
+          );
+        }
+
+        const moving = guide.moving;
+        const before = guide.before.rect;
+        const after = guide.after.rect;
+        const cross = guide.axis === 'horizontal'
+          ? moving.y + moving.height / 2
+          : moving.x + moving.width / 2;
+        const firstPoints = guide.axis === 'horizontal'
+          ? guide.placement === 'before'
+            ? [pdfPoint(moving.x + moving.width, cross), pdfPoint(before.x, cross)] as const
+            : [pdfPoint(before.x + before.width, cross), pdfPoint(guide.placement === 'between' ? moving.x : after.x, cross)] as const
+          : guide.placement === 'before'
+            ? [pdfPoint(cross, moving.y + moving.height), pdfPoint(cross, before.y)] as const
+            : [pdfPoint(cross, before.y + before.height), pdfPoint(cross, guide.placement === 'between' ? moving.y : after.y)] as const;
+        const secondPoints = guide.axis === 'horizontal'
+          ? guide.placement === 'after'
+            ? [pdfPoint(after.x + after.width, cross), pdfPoint(moving.x, cross)] as const
+            : [pdfPoint(guide.placement === 'between' ? moving.x + moving.width : before.x + before.width, cross), pdfPoint(after.x, cross)] as const
+          : guide.placement === 'after'
+            ? [pdfPoint(cross, after.y + after.height), pdfPoint(cross, moving.y)] as const
+            : [pdfPoint(cross, guide.placement === 'between' ? moving.y + moving.height : before.y + before.height), pdfPoint(cross, after.y)] as const;
+        return (
+          <g
+            key={`equal-spacing-${guide.axis}-${guide.before.ownerId}-${guide.after.ownerId}-${index}`}
+            data-testid="equal-spacing-guide"
+            data-guide-axis={guide.axis}
+            data-guide-placement={guide.placement}
+            data-before-owner-id={guide.before.ownerId}
+            data-after-owner-id={guide.after.ownerId}
+          >
+            <RelationshipMeasurement start={firstPoints[0]} end={firstPoints[1]} axis={guide.axis} transform={transform} />
+            <RelationshipMeasurement start={secondPoints[0]} end={secondPoints[1]} axis={guide.axis} transform={transform} />
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
+function RelationshipMeasurement({
+  start,
+  end,
+  axis,
+  transform,
+  offsetPx = 0,
+}: {
+  start: PdfPoint;
+  end: PdfPoint;
+  axis: 'horizontal' | 'vertical';
+  transform: PageTransform;
+  offsetPx?: number;
+}) {
+  const rawViewportStart = transform.pdfToViewport(start);
+  const rawViewportEnd = transform.pdfToViewport(end);
+  const viewportStart = {
+    x: rawViewportStart.x + (axis === 'vertical' ? offsetPx : 0),
+    y: rawViewportStart.y + (axis === 'horizontal' ? offsetPx : 0),
+  };
+  const viewportEnd = {
+    x: rawViewportEnd.x + (axis === 'vertical' ? offsetPx : 0),
+    y: rawViewportEnd.y + (axis === 'horizontal' ? offsetPx : 0),
+  };
+  const tick = 4;
+  const middleX = (viewportStart.x + viewportEnd.x) / 2;
+  const middleY = (viewportStart.y + viewportEnd.y) / 2;
+  return (
+    <g data-testid="relationship-measurement">
+      <line x1={viewportStart.x} y1={viewportStart.y} x2={viewportEnd.x} y2={viewportEnd.y} stroke="#16a34a" strokeWidth={1.25} />
+      <line
+        x1={viewportStart.x + (axis === 'vertical' ? -tick : 0)}
+        y1={viewportStart.y + (axis === 'horizontal' ? -tick : 0)}
+        x2={viewportStart.x + (axis === 'vertical' ? tick : 0)}
+        y2={viewportStart.y + (axis === 'horizontal' ? tick : 0)}
+        stroke="#16a34a"
+        strokeWidth={1.25}
+      />
+      <line
+        x1={viewportEnd.x + (axis === 'vertical' ? -tick : 0)}
+        y1={viewportEnd.y + (axis === 'horizontal' ? -tick : 0)}
+        x2={viewportEnd.x + (axis === 'vertical' ? tick : 0)}
+        y2={viewportEnd.y + (axis === 'horizontal' ? tick : 0)}
+        stroke="#16a34a"
+        strokeWidth={1.25}
+      />
+      <text
+        x={middleX}
+        y={middleY + 4}
+        textAnchor="middle"
+        fontSize={11}
+        fontWeight={700}
+        fill="#16a34a"
+        stroke="white"
+        strokeWidth={3}
+        paintOrder="stroke"
+      >
+        =
+      </text>
     </g>
   );
 }
@@ -2748,6 +3441,7 @@ export function getInteractionState(
   primaryMarkupId: string | undefined,
   hoveredMarkupId: string | null,
   marqueeHoveredMarkupIds?: ReadonlySet<string>,
+  snapSourceMarkupIds?: ReadonlySet<string>,
 ): InteractionState {
   if (marqueeHoveredMarkupIds?.has(markupId)) {
     return 'hovered';
@@ -2755,6 +3449,10 @@ export function getInteractionState(
 
   if (selectedMarkupIds.has(markupId)) {
     return primaryMarkupId === markupId ? 'focused' : 'selected';
+  }
+
+  if (snapSourceMarkupIds?.has(markupId)) {
+    return 'hovered';
   }
 
   if (hoveredMarkupId === markupId) {
@@ -2795,7 +3493,7 @@ export function orthogonalAnchorForDraft(draft: AnnotationDraft | null, activeTo
     return isCloudTool(activeTool) ? null : draft.start;
   }
 
-  if (draft.kind === 'measurement-path' || draft.kind === 'cloud-node') {
+  if (draft.kind === 'measurement-path' || draft.kind === 'cloud-node' || draft.kind === 'vertex-path') {
     return draft.points.at(-1) ?? draft.start;
   }
 
@@ -2808,6 +3506,10 @@ export function orthogonalAnchorForDraft(draft: AnnotationDraft | null, activeTo
 
 function isMeasurementTool(tool: ToolMode): tool is Extract<ToolMode, 'length' | 'polylength' | 'area'> {
   return tool === 'length' || tool === 'polylength' || tool === 'area';
+}
+
+function isVertexPathTool(tool: ToolMode): tool is Extract<ToolMode, 'polyline' | 'polygon'> {
+  return tool === 'polyline' || tool === 'polygon';
 }
 
 function isEditableKeyboardTarget(target: EventTarget | null): boolean {
@@ -2873,6 +3575,9 @@ function hitTestChromeHandles(
 
   for (let index = handles.length - 1; index >= 0; index -= 1) {
     const handle = handles[index];
+    if (state === 'hovered' && handle.behavior === 'rotateSelf') {
+      continue;
+    }
     const handlePoint = shouldProjectHandleToChromeBounds(handle, chrome)
       ? projectChromeHandlePoint(transform.pdfToViewport(handle.point), box, chromeBox)
       : transform.pdfToViewport(handle.point);
@@ -2932,7 +3637,7 @@ function resizeHandleKindFromId(handleId: string) {
 }
 
 function shouldProjectHandleToChromeBounds(handle: ToolHandleDescriptor, chrome: SelectionChromeDescriptor): boolean {
-  return chrome.bounds?.kind !== 'group' && (handle.behavior === 'resizeSelf' || handle.behavior === 'rotateSelf');
+  return chrome.bounds?.kind !== 'group' && handle.behavior === 'rotateSelf';
 }
 
 function hitTestToolMarkups(
@@ -2953,28 +3658,95 @@ function hitTestToolMarkups(
 }
 
 function moveDraftMarkups(
-  document: DocumentModel,
+  markups: readonly Markup[],
   draft: Extract<AnnotationDraft, { kind: 'move' }>,
   delta: PdfPoint,
   page: PageModel,
-): DocumentModel {
-  const interactionContext = interactionContextForPage(page, document.markups);
-  return {
-    ...document,
-    markups: document.markups.map((markup) => {
-      if (!draft.markupIds.includes(markup.id)) {
-        return markup;
-      }
+): readonly Markup[] {
+  const interactionContext = interactionContextForPage(page, markups);
+  return markups.flatMap((markup) => {
+    if (!draft.markupIds.includes(markup.id)) {
+      return [];
+    }
 
-      const definition = draft.componentId && draft.bodyDrag ? getMarkupToolDefinition(markup) : null;
-      const dragged = definition?.interaction?.dragMarkup?.(markup as never, {
-        componentId: draft.componentId ?? '',
-        bodyDrag: draft.bodyDrag ?? 'moveSelf',
-        delta,
-      }, interactionContext);
-      return dragged ?? translateMarkup(markup, delta);
-    }),
-  };
+    const definition = draft.componentId && draft.bodyDrag ? getMarkupToolDefinition(markup) : null;
+    const dragged = definition?.interaction?.dragMarkup?.(markup as never, {
+      componentId: draft.componentId ?? '',
+      bodyDrag: draft.bodyDrag ?? 'moveSelf',
+      delta,
+    }, interactionContext);
+    return [dragged ?? translateMarkup(markup, delta)];
+  });
+}
+
+function applyMarkupPreview(
+  markups: readonly Markup[],
+  preview: readonly Markup[] | null,
+): readonly Markup[] {
+  if (!preview || preview.length === 0) {
+    return markups;
+  }
+
+  const replacements = new Map(preview.map((markup) => [markup.id, markup]));
+  return markups.map((markup) => replacements.get(markup.id) ?? markup);
+}
+
+function movingSnapAnchorPoints(
+  markups: readonly Markup[],
+  markupIds: readonly string[],
+  page: PageModel,
+  maximum = 128,
+): readonly PdfPoint[] {
+  const movingMarkupIds = new Set(markupIds);
+  const seen = new Set<string>();
+  const points = getAnnotationSnapCandidates(
+    markups.filter((markup) => movingMarkupIds.has(markup.id)),
+    page,
+  ).flatMap((candidate) => {
+    if (candidate.kind !== 'point' || candidate.role === 'intersection') {
+      return [];
+    }
+    const key = trackingPointKey(candidate);
+    if (seen.has(key)) {
+      return [];
+    }
+    seen.add(key);
+    return [candidate.point];
+  });
+
+  if (points.length <= maximum) {
+    return points;
+  }
+
+  const sampled: PdfPoint[] = [];
+  for (let index = 0; index < maximum; index += 1) {
+    sampled.push(points[Math.round(index * (points.length - 1) / (maximum - 1))]);
+  }
+  return sampled;
+}
+
+function translatePoint(point: PdfPoint, delta: PdfPoint): PdfPoint {
+  return pdfPoint(point.x + delta.x, point.y + delta.y);
+}
+
+function combinedGuideBounds(guides: readonly { readonly rect: Rect }[]): Rect | null {
+  if (guides.length === 0) {
+    return null;
+  }
+  const left = Math.min(...guides.map((guide) => guide.rect.x));
+  const bottom = Math.min(...guides.map((guide) => guide.rect.y));
+  const right = Math.max(...guides.map((guide) => guide.rect.x + guide.rect.width));
+  const top = Math.max(...guides.map((guide) => guide.rect.y + guide.rect.height));
+  return rect(left, bottom, right - left, top - bottom);
+}
+
+function draftRect(draft: { readonly start: PdfPoint; readonly current: PdfPoint }): Rect {
+  return rect(
+    Math.min(draft.start.x, draft.current.x),
+    Math.min(draft.start.y, draft.current.y),
+    Math.abs(draft.current.x - draft.start.x),
+    Math.abs(draft.current.y - draft.start.y),
+  );
 }
 
 export function interactionContextForPage(page: PageModel, markups: readonly Markup[]) {
@@ -2989,7 +3761,7 @@ function distance(a: { readonly x: number; readonly y: number }, b: { readonly x
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-function imagePlacementRect(point: PdfPoint, page: PageModel, asset: PendingImageAsset) {
+export function imagePlacementRect(point: PdfPoint, page: PageModel, asset: PendingImageAsset) {
   const aspectRatio = Math.max(0.01, asset.width / Math.max(1, asset.height));
   const maxWidth = page.size.width * 0.45;
   const maxHeight = page.size.height * 0.45;

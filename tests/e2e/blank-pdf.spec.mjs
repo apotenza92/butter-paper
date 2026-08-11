@@ -8,11 +8,12 @@ import { firstWindow, getDiagnostics, launchButterPaper, resolveDesktopEntryPoin
 
 const MILLIMETRES_TO_POINTS = 72 / 25.4;
 const PAPER_SIZES = [
-  ['A0', 841, 1189],
-  ['A1', 594, 841],
-  ['A2', 420, 594],
-  ['A3', 297, 420],
+  ['A5', 148, 210],
   ['A4', 210, 297],
+  ['A3', 297, 420],
+  ['A2', 420, 594],
+  ['A1', 594, 841],
+  ['A0', 841, 1189],
 ];
 
 test.describe('New blank PDF', () => {
@@ -152,7 +153,7 @@ test.describe('New blank PDF', () => {
     await app.close();
   });
 
-  test('creates exact A0-A4 portrait and landscape PDFs through the normal session', async () => {
+  test('creates exact A0-A5 portrait and landscape PDFs through the normal session', async () => {
     test.skip(!resolveDesktopEntryPoint(), 'Desktop app entrypoint not available yet');
     const app = await launchButterPaper({ theme: 'light' });
     if (!app) test.skip(true, 'Desktop app could not be launched');

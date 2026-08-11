@@ -21,6 +21,8 @@ import {
   Square,
   Type,
 } from 'lucide-react';
+import type { ComponentType } from 'react';
+import type { ToolMode } from '../../../shared/protocol';
 import {
   CONTROL_ICON_SIZE,
   CONTROL_ICON_SIZE_CLASS,
@@ -133,7 +135,7 @@ export function ArrowRailIcon({ className }: RailIconProps) {
 
 export function DimensionRailIcon({ className }: RailIconProps) {
   return (
-    <RulerDimensionLine
+    <Ruler
       aria-hidden="true"
       size={CONTROL_ICON_SIZE}
       strokeWidth={CONTROL_ICON_STROKE_WIDTH}
@@ -145,7 +147,7 @@ export function DimensionRailIcon({ className }: RailIconProps) {
 
 export function LengthRailIcon({ className }: RailIconProps) {
   return (
-    <Ruler
+    <RulerDimensionLine
       aria-hidden="true"
       size={CONTROL_ICON_SIZE}
       strokeWidth={CONTROL_ICON_STROKE_WIDTH}
@@ -311,4 +313,33 @@ export function SnapshotRailIcon({ className }: RailIconProps) {
       className={railIconClassName(className)}
     />
   );
+}
+
+const TOOL_RAIL_ICON_COMPONENTS = {
+  select: SelectRailIcon,
+  pan: PanRailIcon,
+  'text-box': TextBoxRailIcon,
+  rectangle: RectangleRailIcon,
+  ellipse: EllipseRailIcon,
+  arc: ArcRailIcon,
+  line: LineRailIcon,
+  arrow: ArrowRailIcon,
+  dimension: DimensionRailIcon,
+  length: LengthRailIcon,
+  polylength: PolylengthRailIcon,
+  area: AreaRailIcon,
+  polyline: PolylineRailIcon,
+  polygon: PolygonRailIcon,
+  pen: PenRailIcon,
+  highlight: HighlightRailIcon,
+  cloud: CloudRailIcon,
+  'cloud-plus': CloudPlusRailIcon,
+  callout: CalloutRailIcon,
+  image: ImageRailIcon,
+  snapshot: SnapshotRailIcon,
+} satisfies Record<ToolMode, ComponentType<RailIconProps>>;
+
+export function ToolRailIcon({ tool, className }: RailIconProps & { readonly tool: ToolMode }) {
+  const Icon = TOOL_RAIL_ICON_COMPONENTS[tool];
+  return <Icon className={className} />;
 }

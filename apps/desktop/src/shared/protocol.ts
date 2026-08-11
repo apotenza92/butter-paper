@@ -1,4 +1,4 @@
-import type { DocumentModel, Markup } from '@butter-paper/core';
+import type { DocumentModel, Markup, SignatureAppearanceAsset } from '@butter-paper/core';
 import type { PdfPageGeometryIndex, PdfSaveMode, PdfSaveResult } from '@butter-paper/pdf';
 
 export type ToolMode = 'select' | 'pan' | 'text-box' | 'rectangle' | 'ellipse' | 'arc' | 'line' | 'arrow' | 'dimension' | 'length' | 'polylength' | 'area' | 'polyline' | 'polygon' | 'pen' | 'highlight' | 'cloud' | 'cloud-plus' | 'callout' | 'image' | 'snapshot';
@@ -25,6 +25,21 @@ export interface ApplicationMetadata {
   statusFingerprint: string | null;
   windowTitle: string;
 }
+
+export type ApplicationMenuCommand =
+  | 'new-pdf'
+  | 'open-pdf'
+  | 'save'
+  | 'save-as'
+  | 'undo'
+  | 'redo'
+  | 'cut'
+  | 'copy'
+  | 'paste'
+  | 'select-all'
+  | 'set-default-pdf-app'
+  | 'check-for-updates'
+  | 'open-release-page';
 export interface DefaultPdfAppResult {
   outcome: 'changed' | 'requires-confirmation';
   message: string;
@@ -61,6 +76,18 @@ export interface UpdateStatus {
   lastSuccessfulCheckAt: string | null;
   disabledReason: UpdateDisabledReason | null;
   errorMessage: string | null;
+}
+
+export interface ApplicationMenuState {
+  canSave: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  canCut: boolean;
+  canCopy: boolean;
+  canPaste: boolean;
+  canSelectAll: boolean;
+  updateStatus: UpdateStatus | null;
+  menuBarVisible: boolean;
 }
 
 export interface WindowBounds {
@@ -262,6 +289,11 @@ export interface LoadedDocumentPayload {
 export interface BlankPdfCreateRequest {
   readonly widthMm: number;
   readonly heightMm: number;
+  readonly pattern?: {
+    readonly type: 'grid' | 'dots' | 'lined' | 'isometric' | 'triangle';
+    readonly spacingMm: number;
+    readonly color: string;
+  };
 }
 
 export interface BlankPdfCreateResult {
@@ -320,6 +352,37 @@ export interface PdfRect {
   height: number;
 }
 
+export type PhoneSignatureMode = 'draw' | 'image';
+
+export interface PhoneSignatureSession {
+  id: string;
+  qrDataUrl: string;
+  expiresAt: number;
+  mode: PhoneSignatureMode;
+}
+
+export interface PhoneSignatureImage {
+  dataUrl: string;
+  mimeType: 'image/png' | 'image/jpeg';
+  mode: PhoneSignatureMode;
+}
+
+export type PhoneSignaturePollResult =
+  | { status: 'waiting' }
+  | { status: 'received'; image: PhoneSignatureImage }
+  | { status: 'expired' };
+
+export interface RecentSignature {
+  id: string;
+  lastUsedAt: number;
+  asset: SignatureAppearanceAsset;
+}
+
+export interface RecentSignaturesSnapshot {
+  available: boolean;
+  signatures: RecentSignature[];
+}
+
 export interface ButterPaperBridge {
   readonly environment: {
     readonly testMode: boolean;
@@ -332,9 +395,19 @@ export interface ButterPaperBridge {
     getMetadata(): Promise<ApplicationMetadata>;
     setAsDefaultPdfApp(): Promise<DefaultPdfAppResult>;
     takePendingPdfPaths(): Promise<string[]>;
+    authorizeDroppedPdf(file: File): Promise<string>;
     onOpenPdfPaths(listener: (filePaths: string[]) => void): () => void;
     setCloseBlocked(blocked: boolean): Promise<void>;
     onCloseRequested(listener: () => void): () => void;
+    onCloseTabRequested(listener: () => void): () => void;
+    onMenuCommand(listener: (command: ApplicationMenuCommand) => void): () => void;
+    onMenuBarVisibilityChanged(listener: (visible: boolean) => void): () => void;
+    getWindowFullScreen(): Promise<boolean>;
+    onWindowFullScreenChanged(listener: (fullScreen: boolean) => void): () => void;
+    toggleWindowFullScreen(): Promise<void>;
+    reloadWindow(force: boolean): Promise<void>;
+    setMenuBarVisibility(visible: boolean): Promise<void>;
+    setMenuState(state: ApplicationMenuState): Promise<void>;
     requestQuit(): Promise<void>;
     confirmClose(): Promise<void>;
     cancelClose(): Promise<void>;
@@ -355,6 +428,17 @@ export interface ButterPaperBridge {
   readonly dialogs: {
     openPdfDialog(): Promise<string[] | null>;
     savePdfAsDialog(defaultPath?: string): Promise<PdfSaveTargetDescriptor | null>;
+  };
+  readonly signaturePhone: {
+    start(mode: PhoneSignatureMode): Promise<PhoneSignatureSession>;
+    poll(sessionId: string): Promise<PhoneSignaturePollResult>;
+    stop(sessionId: string): Promise<void>;
+  };
+  readonly signatureRecent: {
+    list(): Promise<RecentSignaturesSnapshot>;
+    remember(asset: SignatureAppearanceAsset): Promise<RecentSignaturesSnapshot>;
+    remove(id: string): Promise<RecentSignaturesSnapshot>;
+    clear(): Promise<RecentSignaturesSnapshot>;
   };
   readonly pdf: {
     createBlankDocument(request: BlankPdfCreateRequest): Promise<BlankPdfCreateResult>;

@@ -4,5 +4,7 @@ export * from './transforms.js';
 export * from './markup.js';
 export * from './appearance.js';
 export * from './scale.js';
+export * from './signatureAppearance.js';
+export * from './signatureImageProcessing.js';
 export { createSelection, replaceSelection, addToSelection, clearSelection } from './selection.js';
 export * from './commands.js';

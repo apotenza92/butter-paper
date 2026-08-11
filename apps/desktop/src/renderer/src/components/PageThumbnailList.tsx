@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { ItemGroup } from '@/components/ui/item';
 import { getPageScale, type Markup, type PageModel, type PageRotationDirection } from '@butter-paper/core';
 import { isRenderBacklogIdle, type DiagnosticsSnapshot, type LocalPdfSession } from '../services/documentSession';
 import { useRenderCoordinator } from '../services/renderCoordinator';
@@ -19,11 +20,6 @@ const THUMBNAIL_MOTION_SETTLE_MS = 180;
 const THUMBNAIL_ACTIVE_SCROLL_MARGIN_PX = 24;
 const QUICK_VISIBLE_THUMBNAIL_WIDTH = 64;
 const EMPTY_MARKUPS: readonly Markup[] = [];
-export const PAGE_INLINE_ROTATION_ACTIONS_MIN_WIDTH = 280;
-
-export function shouldShowInlinePageRotationActions(viewportWidth: number): boolean {
-  return viewportWidth >= PAGE_INLINE_ROTATION_ACTIONS_MIN_WIDTH;
-}
 
 interface PageThumbnailListProps {
   session: LocalPdfSession;
@@ -156,7 +152,6 @@ export function PageThumbnailList({ session, pages, mutationDisabled = false, on
   }, []);
 
   const previewWidth = useMemo(() => computeThumbnailPreviewWidth(viewportWidth), [viewportWidth]);
-  const showInlineRotationActions = shouldShowInlinePageRotationActions(viewportWidth);
   const { layouts, totalHeight } = useMemo(() => buildThumbnailLayouts(pages, previewWidth), [pages, previewWidth]);
   const visibleRange = useMemo(
     () => computeVisibleThumbnailRange(layouts, scrollTop, viewportHeight, THUMBNAIL_VISIBLE_OVERSCAN, 0),
@@ -349,7 +344,7 @@ export function PageThumbnailList({ session, pages, mutationDisabled = false, on
       verticalTrackTestId="page-thumbnail-scrollbar-track"
       verticalThumbTestId="page-thumbnail-scrollbar-thumb"
     >
-      <div className="relative" style={{ height: `${totalHeight}px` }}>
+      <ItemGroup className="relative" style={{ height: `${totalHeight}px` }}>
         {pages.slice(visibleRange.startIndex, visibleRange.endIndex + 1).map((page, offset) => {
           const layoutPosition = visibleRange.startIndex + offset;
           const layout = layouts[layoutPosition];
@@ -373,7 +368,6 @@ export function PageThumbnailList({ session, pages, mutationDisabled = false, on
               pageScale={getPageScale({ pageScales: documentPageScales }, page.index)}
               mutationDisabled={mutationDisabled}
               isActive={page.index === currentPage}
-              showInlineRotationActions={showInlineRotationActions}
               renderPriority={(isStrictlyVisible ? 2000 : 1000) - Math.abs(page.index - visiblePriorityAnchor)}
               renderUrgency={isStrictlyVisible ? 'visible' : 'prefetch'}
               sessionVersion={sessionVersion}
@@ -383,7 +377,7 @@ export function PageThumbnailList({ session, pages, mutationDisabled = false, on
             />
           );
         })}
-      </div>
+      </ItemGroup>
     </CustomScrollArea>
   );
 }

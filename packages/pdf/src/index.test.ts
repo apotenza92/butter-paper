@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { describe, expect, it } from 'vitest';
-import { decodePDFRawStream, PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, PDFRawStream, PDFString, StandardFonts, rgb, type PDFRef } from 'pdf-lib';
+import { decodePDFRawStream, PDFArray, PDFBool, PDFDict, PDFDocument, PDFName, PDFNumber, PDFRawStream, PDFString, StandardFonts, rgb, type PDFRef } from 'pdf-lib';
 import { extractPdfPageGeometryIndex, openPdfDocument, PdfAnnotationWriter, PdfRenderCache } from './index.js';
 import { createArcMarkup, createAreaMarkup, createArrowMarkup, createCalloutMarkup, createCloudMarkup, createCloudPlusMarkup, createCustomPageScale, createDimensionMarkup, createEllipseMarkup, createHighlightMarkup, createImageMarkup, createLengthMarkup, createLineMarkup, createPenMarkup, createPolygonMarkup, createPolylengthMarkup, createPolylineMarkup, createRectangleMarkup, createSnapshotMarkup, createTextBoxMarkup, pdfPoint } from '@butter-paper/core';
 
@@ -347,6 +347,9 @@ async function readRawImageAnnotation(file: string) {
       subject: readPdfText(image.get(PDFName.of('Subj'))),
     rect: readPdfNumberArray(image.get(PDFName.of('Rect'))),
     imageMimeType: readPdfText(image.get(PDFName.of('BPImageMimeType'))),
+    aspectRatioLocked: image.get(PDFName.of('BPAspectRatioLocked')) instanceof PDFBool
+      ? (image.get(PDFName.of('BPAspectRatioLocked')) as PDFBool).asBoolean()
+      : undefined,
     hasAppearance: Boolean(image.get(PDFName.of('AP'))),
   };
 }
@@ -741,6 +744,7 @@ describe('pdf package', () => {
       id: 'pen-1',
       pageIndex: 0,
       paths: [[pdfPoint(20, 150), pdfPoint(60, 170), pdfPoint(100, 150)]],
+      smoothCurves: true,
     });
     const highlight = createHighlightMarkup({
       id: 'highlight-1',
@@ -771,6 +775,7 @@ describe('pdf package', () => {
       rect: { x: 20, y: 75, width: 64, height: 40 },
       dataUrl: testImageDataUrl,
       mimeType: 'image/png',
+      aspectRatioLocked: true,
     });
     const snapshot = createSnapshotMarkup({
       id: 'snapshot-1',
@@ -867,6 +872,7 @@ describe('pdf package', () => {
       subject: 'Image',
       rect: [20, 75, 84, 115],
       imageMimeType: 'image/png',
+      aspectRatioLocked: true,
       hasAppearance: true,
     });
     expect(rawArc).toMatchObject({
@@ -965,10 +971,11 @@ describe('pdf package', () => {
     expect(annotations.some((markup) => markup.kind === 'polyline')).toBe(true);
     expect(annotations.some((markup) => markup.kind === 'polygon')).toBe(true);
     expect(annotations.some((markup) => markup.kind === 'pen')).toBe(true);
+    expect(annotations.some((markup) => markup.kind === 'pen' && markup.smoothCurves === true)).toBe(true);
     expect(annotations.some((markup) => markup.kind === 'highlight')).toBe(true);
     expect(annotations.some((markup) => markup.kind === 'cloud')).toBe(true);
     expect(annotations.some((markup) => markup.kind === 'cloud-plus' && markup.text === 'Cloud plus')).toBe(true);
-    expect(annotations.some((markup) => markup.kind === 'image')).toBe(true);
+    expect(annotations.some((markup) => markup.kind === 'image' && markup.aspectRatioLocked === true)).toBe(true);
     expect(annotations.some((markup) => markup.kind === 'snapshot')).toBe(true);
     expect(annotations.some((markup) => markup.kind === 'text-box' && markup.text === 'Default text')).toBe(true);
     expect(annotations.some((markup) => markup.kind === 'callout' && markup.text === 'Need to check')).toBe(true);

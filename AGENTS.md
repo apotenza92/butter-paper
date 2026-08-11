@@ -16,6 +16,7 @@
 - Preserve Butter Paper's custom AEC tool icons and Fit Width/Fit Page/Continuous icons. Their explicit `size-*` classes prevent shadcn descendant SVG defaults from replacing their geometry.
 - The PDF/canvas renderers, annotation layers, resize handles, virtualized thumbnails, and two-axis `CustomScrollArea` are domain UI rather than generic controls. Preserve their behavior and regression coverage unless a task explicitly redesigns them.
 - Portaled menus, popovers, tooltips, selects, and dialogs must remain keyboard accessible, contained at constrained window sizes, and compatible with the application shortcut handler.
+- Use a top-right icon-only X to dismiss a transient panel or expanded subflow. Reserve the word `Cancel` for a modal decision beside a commit or destructive action. Keep destructive item controls hidden until hover or keyboard focus, but always keyboard accessible and separate from the item's primary click target.
 
 ## Sources of truth
 

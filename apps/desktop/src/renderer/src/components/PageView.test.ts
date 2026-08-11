@@ -3,6 +3,7 @@ import { createPageTransform, viewportPoint, type PageModel } from '@butter-pape
 import {
   computePagePlaceholderSpinner,
   isDetailCropSurfaceGeometryCompatible,
+  propertiesDoubleClickSidebarAction,
   resolveCachePromotionMinimumWidth,
   resolveDetailCrop,
   resolveNextPageImageQualityRequest,
@@ -13,6 +14,14 @@ import {
   shouldRetryBrokenPageImageSource,
   shouldRetryTargetQualityAfterAbort,
 } from './PageView';
+
+describe('page view properties interaction', () => {
+  it('collapses only when the same selected markup is double-clicked while properties are open', () => {
+    expect(propertiesDoubleClickSidebarAction(true, true)).toBe('collapse');
+    expect(propertiesDoubleClickSidebarAction(true, false)).toBe('open');
+    expect(propertiesDoubleClickSidebarAction(false, true)).toBe('open');
+  });
+});
 
 describe('page view placeholder', () => {
   it('caps loading spinner size on normal pages', () => {

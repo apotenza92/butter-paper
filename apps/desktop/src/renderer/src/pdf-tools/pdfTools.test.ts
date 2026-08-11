@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { createArcMarkup, createAreaMarkup, createCalloutMarkup, createCloudPlusMarkup, createCustomPageScale, createDimensionMarkup, createImageMarkup, createImportedAnnotationMarkup, createLengthMarkup, createPageTransform, createPolylengthMarkup, createSnapshotMarkup, pdfPoint, rect } from '@butter-paper/core';
 import type { PdfPoint, Rect } from '@butter-paper/core';
 import type { ToolMode } from '../../../shared/protocol';
+import { snapArcBulgePoint } from './builtins/arcTool';
+import { interpolatingInkPath } from './builtins/inkTool';
 import { cloudPlusRoutingObstacles } from './builtins/cloudPlusTool';
 import { DEFAULT_IMAGE_DATA_URL } from './builtins/imageTool';
-import { addCloudNodeDraftPoint, createCloudNodeDraft, createRectangleDraft, createTextBoxDraft, hasExceededDragThreshold, rectangleDraftToRect, resizeRectFromHandle, resizeRotatedRectFromHandle, shouldCommitRectangle, textBoxDraftToRect, updateCloudNodeDraft } from './annotationLifecycle';
+import { addCloudNodeDraftPoint, createCloudNodeDraft, createRectangleDraft, createTextBoxDraft, hasExceededDragThreshold, rectangleDraftToRect, resizeRectFromHandle, resizeRotatedRectFromHandle, resizeRotatedRectFromHandlePreservingAspectRatio, shouldCommitRectangle, textBoxDraftToRect, updateCloudNodeDraft } from './annotationLifecycle';
+import { constrainEllipseDraftPoint, ellipseResizePointFromHandle } from './builtins/ellipseTool';
 import { getAnnotationContentStyle } from './annotationStyles';
 import { hitTestHandles, hitTestMarkup, hitTestMarkups } from './hitTesting';
 import { getChromeHandleStyle, getChromeStyle, getMoveCursor, getResizeCursor, getRotateCursor, getResizeHandles, getRotationHandle } from './interactionChrome';
@@ -51,13 +54,9 @@ describe('PDF tool registry', () => {
     expect(new Set(groupedToolIds)).toEqual(new Set(PDF_TOOL_REGISTRY.map((tool) => tool.id)));
   });
 
-  it('starts sized drawing tools with click placement instead of pointer capture drag', () => {
+  it('routes drawing tools through their intended placement gesture', () => {
     const clickPlacementTools: readonly ToolMode[] = [
       'text-box',
-      'rectangle',
-      'ellipse',
-      'line',
-      'arrow',
       'dimension',
       'polyline',
       'polygon',
@@ -69,12 +68,25 @@ describe('PDF tool registry', () => {
     expect(clickPlacementTools.map((tool) => [tool, getToolDefinition(tool).interaction?.placement])).toEqual(
       clickPlacementTools.map((tool) => [tool, 'click']),
     );
+    const clickOrDragPlacementTools: readonly ToolMode[] = ['rectangle', 'ellipse', 'line', 'arrow'];
+    expect(clickOrDragPlacementTools.map((tool) => [tool, getToolDefinition(tool).interaction?.placement])).toEqual(
+      clickOrDragPlacementTools.map((tool) => [tool, 'click-or-drag']),
+    );
     expect(getToolDefinition('pen').interaction?.placement).toBeUndefined();
     expect(getToolDefinition('cloud').interaction?.placement).toBeUndefined();
     expect(getToolDefinition('cloud-plus').interaction?.placement).toBeUndefined();
   });
 
-  it('commits click-placement line and rectangle drafts without a drag gesture', () => {
+  it('declares smooth curves as an enabled Pen default and builds an interpolating path', () => {
+    expect(getToolDefinition('pen').defaults).toMatchObject({ smoothCurves: true });
+    expect(interpolatingInkPath([
+      pdfPoint(0, 0),
+      pdfPoint(6, 6),
+      pdfPoint(12, 0),
+    ])).toBe('M 0 0 C 1 1 4 6 6 6 C 8 6 11 1 12 0');
+  });
+
+  it('commits click-or-drag line and rectangle drafts', () => {
     const lineInteraction = getToolDefinition('line').interaction;
     const lineDraft = lineInteraction?.updateDraft?.(
       lineInteraction.createDraft?.({
@@ -86,7 +98,7 @@ describe('PDF tool registry', () => {
     );
     const lineMarkup = lineInteraction?.commitDraft?.(lineDraft as never, {
       page: pageStub(),
-      hasExceededDragThreshold: false,
+      hasExceededDragThreshold: true,
       createMarkupId: (prefix) => `${prefix}-1`,
     });
 
@@ -101,7 +113,7 @@ describe('PDF tool registry', () => {
     );
     const rectangleMarkup = rectangleInteraction?.commitDraft?.(rectangleDraft as never, {
       page: pageStub(),
-      hasExceededDragThreshold: false,
+      hasExceededDragThreshold: true,
       createMarkupId: (prefix) => `${prefix}-1`,
     });
 
@@ -169,6 +181,46 @@ describe('PDF tool registry', () => {
     expect(definition?.selection?.getSelectionChrome(markup, { page: pageStub(), phase: 'focused' }).bounds).toMatchObject({
       kind: 'child',
     });
+  });
+
+  it('locks signature image resizing to its aspect ratio while regular images remain free-resize', () => {
+    const regularImage = createImageMarkup({
+      id: 'image-regular',
+      pageIndex: 0,
+      rect: rect(10, 10, 100, 50),
+      dataUrl: DEFAULT_IMAGE_DATA_URL,
+      mimeType: 'image/png',
+    });
+    const signatureImage = createImageMarkup({
+      ...regularImage,
+      id: 'image-signature',
+      aspectRatioLocked: true,
+    });
+    const definition = getMarkupToolDefinition(regularImage);
+    const input = {
+      handleId: 'image.resize.e',
+      handleBehavior: 'resizeSelf' as const,
+      startPoint: pdfPoint(110, 35),
+      currentPoint: pdfPoint(150, 35),
+    };
+
+    const resizedRegularImage = definition?.interaction?.transformMarkup?.(regularImage, input);
+    const resizedSignatureImage = definition?.interaction?.transformMarkup?.(signatureImage, input);
+    const signatureHandles = definition?.geometry?.getGeometry(signatureImage, { page: pageStub() }).handles ?? [];
+
+    expect(resizedRegularImage?.kind).toBe('image');
+    expect(resizedSignatureImage?.kind).toBe('image');
+    if (resizedRegularImage?.kind === 'image' && resizedSignatureImage?.kind === 'image') {
+      expect(resizedRegularImage.rect).toEqual(rect(10, 10, 140, 50));
+      expect(resizedSignatureImage.rect).toEqual(rect(10, 0, 140, 70));
+      expect(resizedSignatureImage.rect.width / resizedSignatureImage.rect.height).toBe(2);
+    }
+    expect(signatureHandles.filter((handle) => handle.behavior === 'resizeSelf').map((handle) => handle.id)).toEqual([
+      'image.resize.nw',
+      'image.resize.ne',
+      'image.resize.se',
+      'image.resize.sw',
+    ]);
   });
 
   it('backs Snapshot with stamp snapshot primitives', () => {
@@ -722,6 +774,15 @@ describe('PDF tool registry', () => {
     });
   });
 
+  it('constrains an ellipse draft to a circle in every drag direction', () => {
+    const start = pdfPoint(100, 100);
+
+    expect(constrainEllipseDraftPoint(start, pdfPoint(140, 120))).toEqual(pdfPoint(140, 140));
+    expect(constrainEllipseDraftPoint(start, pdfPoint(80, 150))).toEqual(pdfPoint(50, 150));
+    expect(constrainEllipseDraftPoint(start, pdfPoint(70, 80))).toEqual(pdfPoint(70, 70));
+    expect(constrainEllipseDraftPoint(start, pdfPoint(120, 60))).toEqual(pdfPoint(140, 60));
+  });
+
   it('backs arc with CircleArc primitive contracts', () => {
     const markup = createArcMarkup({
       id: 'arc-1',
@@ -731,6 +792,7 @@ describe('PDF tool registry', () => {
       angle2: 180,
     });
     const definition = getMarkupToolDefinition(markup);
+    const selectionChrome = definition?.selection?.getSelectionChrome?.(markup, { page: pageStub(), phase: 'focused' });
 
     expect(definition?.id).toBe('arc');
     expect(definition?.geometry?.getGeometry(markup, { page: pageStub() }).components[0]).toMatchObject({
@@ -744,17 +806,20 @@ describe('PDF tool registry', () => {
       region: 'edge',
     });
     expect(definition?.render?.getContentPrimitives(markup, { page: pageStub(), phase: 'idle' })[0]).toMatchObject({
-      kind: 'path',
+      kind: 'polyline',
       pointerEvents: 'visibleStroke',
     });
-    expect(definition?.selection?.getSelectionChrome(markup, { page: pageStub(), phase: 'focused' }).controlPaths?.[0]).toMatchObject({
+    expect(selectionChrome?.controlPaths?.[0]).toMatchObject({
       id: 'arc.path',
       closed: false,
     });
-    expect(definition?.selection?.getSelectionChrome(markup, { page: pageStub(), phase: 'focused' }).controlPaths?.[0]?.points.length).toBeGreaterThan(2);
+    expect(selectionChrome?.controlPaths?.[0]?.points.length).toBeGreaterThan(2);
+    expect(selectionChrome?.handles?.find((handle) => handle.id === 'arc.point.start')?.cursor).toBe(getMoveCursor());
+    expect(selectionChrome?.handles?.find((handle) => handle.id === 'arc.point.mid')?.cursor).toBe(getResizeCursor('e', 45));
+    expect(selectionChrome?.handles?.find((handle) => handle.id === 'arc.point.end')?.cursor).toBe(getMoveCursor());
   });
 
-  it('creates arc geometry from endpoints and a midpoint handle', () => {
+  it('constrains the arc midpoint handle to the chord normal', () => {
     const definition = getToolDefinition('arc');
     const markup = definition.interaction?.transformMarkup?.(
       createArcMarkup({
@@ -783,6 +848,58 @@ describe('PDF tool registry', () => {
       expect(markup.mid?.y).toBeCloseTo(120);
       expect(markup.rect.width).toBeCloseTo(markup.rect.height);
     }
+  });
+
+  it('snaps the moved arc midpoint to exact quarter-turn arcs while Shift is held', () => {
+    const definition = getToolDefinition('arc');
+    const markup = definition.interaction?.transformMarkup?.(
+      createArcMarkup({
+        id: 'arc-1',
+        pageIndex: 0,
+        rect: rect(10, 10, 100, 100),
+        angle1: 180,
+        angle2: 0,
+        start: pdfPoint(10, 60),
+        end: pdfPoint(110, 60),
+        mid: pdfPoint(60, 110),
+      }),
+      {
+        handleId: 'arc.point.mid',
+        handleBehavior: 'reshapeArc',
+        startPoint: pdfPoint(60, 110),
+        currentPoint: pdfPoint(72, 90),
+        shiftKey: true,
+      },
+    );
+
+    expect(markup?.kind).toBe('arc');
+    if (markup?.kind === 'arc') {
+      expect(markup.mid?.x).toBeCloseTo(60);
+      expect(markup.mid?.y).toBeCloseTo(80.710678);
+      expect(Math.abs(markup.angle2 - markup.angle1)).toBeCloseTo(90);
+    }
+  });
+
+  it('snaps arc bulges to quarter, half, and three-quarter circles', () => {
+    const start = pdfPoint(0, 0);
+    const end = pdfPoint(100, 0);
+
+    const quarter = snapArcBulgePoint(start, end, pdfPoint(50, 10));
+    expect(quarter.angle).toBe(90);
+    expect(quarter.point.x).toBeCloseTo(50);
+    expect(quarter.point.y).toBeCloseTo(20.710678);
+
+    const half = snapArcBulgePoint(start, end, pdfPoint(50, 50));
+    expect(half.angle).toBe(180);
+    expect(half.point.y).toBeCloseTo(50);
+
+    const threeQuarter = snapArcBulgePoint(start, end, pdfPoint(50, 150));
+    expect(threeQuarter.angle).toBe(270);
+    expect(threeQuarter.point.y).toBeCloseTo(120.710678);
+
+    const oppositeSide = snapArcBulgePoint(start, end, pdfPoint(50, -10));
+    expect(oppositeSide.angle).toBe(90);
+    expect(oppositeSide.point.y).toBeCloseTo(-20.710678);
   });
 
   it('lets ellipse handles resize and rotate through the tool interaction primitive', () => {
@@ -815,6 +932,33 @@ describe('PDF tool registry', () => {
       expect(rotated.rotation).toBeCloseTo(90);
       expect(rotated.rect).toEqual(markup.rect);
     }
+  });
+
+  it('places diagonal ellipse handles on the curve without changing the ellipse at drag start', () => {
+    const markup = {
+      id: 'ellipse-curve-handles',
+      kind: 'ellipse',
+      pageIndex: 0,
+      rect: rect(10, 10, 100, 50),
+      rotation: 0,
+    } as const;
+    const definition = getMarkupToolDefinition(markup);
+    const chrome = definition?.selection?.getSelectionChrome(markup, { page: pageStub(), phase: 'focused' });
+    const northWest = chrome?.handles?.find((handle) => handle.id === 'ellipse.resize.nw');
+
+    expect(northWest?.point.x).toBeCloseTo(24.644661);
+    expect(northWest?.point.y).toBeCloseTo(52.67767);
+
+    const boundsPoint = ellipseResizePointFromHandle(markup.rect, 0, 'nw', northWest!.point);
+    expect(boundsPoint.x).toBeCloseTo(10);
+    expect(boundsPoint.y).toBeCloseTo(60);
+    const unchanged = definition?.interaction?.transformMarkup?.(markup, {
+      handleId: 'ellipse.resize.nw',
+      handleBehavior: 'resizeSelf',
+      startPoint: northWest!.point,
+      currentPoint: northWest!.point,
+    });
+    expect(unchanged?.kind === 'ellipse' ? unchanged.rect : null).toEqual(markup.rect);
   });
 
   it('backs line and arrow with shared endpoint line primitives', () => {
@@ -1154,6 +1298,43 @@ describe('annotation lifecycle primitives', () => {
     const original = rect(10, 10, 100, 50);
 
     expect(resizeRotatedRectFromHandle(original, 90, 'e', pdfPoint(60, -35))).toEqual(rect(0, 0, 120, 50));
+    expect(resizeRotatedRectFromHandlePreservingAspectRatio(original, 90, 'e', pdfPoint(60, -35))).toEqual(rect(0, -5, 120, 60));
+  });
+
+  it('preserves aspect ratio across every resize handle and representative rotations', () => {
+    const original = rect(10, 20, 100, 50);
+    const handlePoints = {
+      nw: pdfPoint(-20, 100),
+      n: pdfPoint(60, 100),
+      ne: pdfPoint(140, 100),
+      e: pdfPoint(140, 45),
+      se: pdfPoint(140, 0),
+      s: pdfPoint(60, 0),
+      sw: pdfPoint(-20, 0),
+      w: pdfPoint(-20, 45),
+    } as const;
+
+    for (const [handle, point] of Object.entries(handlePoints)) {
+      const resized = resizeRotatedRectFromHandlePreservingAspectRatio(
+        original,
+        undefined,
+        handle as keyof typeof handlePoints,
+        point,
+      );
+      expect(resized.width / resized.height, handle).toBeCloseTo(2, 10);
+      expect(resized.width, handle).toBeGreaterThanOrEqual(2);
+      expect(resized.height, handle).toBeGreaterThanOrEqual(2);
+    }
+
+    for (const rotation of [30, 90, 180]) {
+      const resized = resizeRotatedRectFromHandlePreservingAspectRatio(
+        original,
+        rotation,
+        'se',
+        pdfPoint(150, -20),
+      );
+      expect(resized.width / resized.height, `${rotation} degrees`).toBeCloseTo(2, 10);
+    }
   });
 });
 
@@ -1636,6 +1817,8 @@ describe('interaction chrome', () => {
     expect(selectedStyle.handleFill).toBe('#facc15');
     expect(selectedStyle.strokeDasharray).toBe('5 4');
     expect(groupStyle.boundsStroke).toBe('#1d4ed8');
+    expect(groupStyle.boundsOutsetPx).toBe(8);
+    expect(groupStyle.strokeDasharray).toBe('5 4');
     expect(groupStyle.handleSize).toBeGreaterThan(0);
     expect(passiveHoverHandle).toMatchObject({ fill: '#fef08a', stroke: '#facc15', strokeWidth: 1 });
     expect(hotHoverHandle).toMatchObject({ fill: '#facc15', stroke: '#111827', strokeWidth: 2 });

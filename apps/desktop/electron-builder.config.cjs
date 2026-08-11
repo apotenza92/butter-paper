@@ -116,6 +116,10 @@ module.exports = {
     '**/*.node',
   ],
   extraResources: [
+    {
+      from: 'THIRD_PARTY_NOTICES.md',
+      to: 'THIRD_PARTY_NOTICES.md',
+    },
     ...(existsSync(tufRootPath) ? [{
       from: tufRootPath,
       to: 'update-trust/root.json',
@@ -124,6 +128,10 @@ module.exports = {
   mac: {
     category: 'public.app-category.productivity',
     icon: macIcon,
+    extendInfo: {
+      NSCameraUsageDescription: 'Butter Paper uses the camera only when you choose to take a signature photo.',
+      NSLocalNetworkUsageDescription: 'Butter Paper uses your local network only when you choose to transfer a signature from your phone.',
+    },
     fileAssociations: [{
       ext: 'pdf',
       name: 'PDF document',

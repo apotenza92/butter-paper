@@ -18,6 +18,16 @@ export interface ToolShortcutEvent {
   readonly blockedByFocus: boolean;
 }
 
+export type PdfZoomShortcutAction = 'zoom-in' | 'zoom-out' | 'zoom-reset';
+
+export interface PdfZoomShortcutEvent {
+  readonly key: string;
+  readonly shiftKey: boolean;
+  readonly altKey: boolean;
+  readonly metaKey: boolean;
+  readonly ctrlKey: boolean;
+}
+
 export function isEditableShortcutTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
     return false;
@@ -29,11 +39,36 @@ export function isEditableShortcutTarget(target: EventTarget | null): boolean {
   return tagName === 'input' || tagName === 'textarea' || tagName === 'select';
 }
 
+export function isToolShortcutPopupTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && Boolean(target.closest([
+    '[data-slot="dropdown-menu-content"]',
+    '[data-slot="popover-content"]',
+  ].join(',')));
+}
+
+export function dismissToolShortcutPopup(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement) || !isToolShortcutPopupTarget(target)) {
+    return false;
+  }
+
+  target.dispatchEvent(new KeyboardEvent('keydown', {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    key: 'Escape',
+  }));
+  return true;
+}
+
 export function isToolShortcutBlockedTarget(target: EventTarget | null): boolean {
   if (isEditableShortcutTarget(target)) {
     return true;
   }
   if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  if (isToolShortcutPopupTarget(target)) {
     return false;
   }
 
@@ -45,6 +80,10 @@ export function isToolShortcutBlockedTarget(target: EventTarget | null): boolean
     '[role="menu"]',
     '[role="tree"]',
   ].join(',')));
+}
+
+export function shouldResetToolOnEscape(target: EventTarget | null): boolean {
+  return !isToolShortcutPopupTarget(target) && !isToolShortcutBlockedTarget(target);
 }
 
 export function parseToolShortcut(shortcut: string): ToolShortcut {
@@ -63,6 +102,29 @@ export function normalizeShortcutKey(key: string): string {
     return 'space';
   }
   return key.toLowerCase();
+}
+
+export function resolvePdfZoomShortcut(
+  event: PdfZoomShortcutEvent,
+  isMacPlatform: boolean,
+): PdfZoomShortcutAction | null {
+  const primaryModifierPressed = isMacPlatform ? event.metaKey : event.ctrlKey;
+  const secondaryModifierPressed = isMacPlatform ? event.ctrlKey : event.metaKey;
+  if (!primaryModifierPressed || secondaryModifierPressed || event.shiftKey || event.altKey) {
+    return null;
+  }
+
+  const key = normalizeShortcutKey(event.key);
+  if (key === '=') {
+    return 'zoom-in';
+  }
+  if (key === '-') {
+    return 'zoom-out';
+  }
+  if (key === '0') {
+    return 'zoom-reset';
+  }
+  return null;
 }
 
 export function resolveToolShortcut<TTool>(
