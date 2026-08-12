@@ -1,123 +1,19 @@
-version: 0.0.20
+version: 0.0.21
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.20/Butter-Paper-macOS-x64.zip
-    sha512: huico/mPEs1L/KwGc0j/gDCjVtuE0NrQyK5daQPxW05hQiNZ4tYyrM0t/DNXcpP8RMM9cLTGWaZM0F81cKilEA==
-    size: 134912071
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.20/Butter-Paper-macOS-x64.dmg
-    sha512: LQ8kA0Rh3fL3AeWsT+wrRIZbnjHQ/1lks5l0b+eRG8bAob2I4yuvCqhV0ygoSYZ7fF3ngU8Wt/GcAKI5ypdTsA==
-    size: 129094267
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.20/Butter-Paper-macOS-x64.zip
-sha512: huico/mPEs1L/KwGc0j/gDCjVtuE0NrQyK5daQPxW05hQiNZ4tYyrM0t/DNXcpP8RMM9cLTGWaZM0F81cKilEA==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.21/Butter-Paper-macOS-x64.zip
+    sha512: 278Jl/fS8vpnlJUciih7EUlMgF5Bctgfm1L+Ln5rH9dklvmxzTHmU1P+jACRtgnaUG0pkcdutByoOMsMpB0ZDQ==
+    size: 133329504
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.21/Butter-Paper-macOS-x64.dmg
+    sha512: LSIIc/yJVvk6GMIBnHOmEJ53nJyCSCPiy7a/cgC4Enus5/1wqlA6gtmrYDdnhl3ruEXm6fRDTt3vQM0S6lk47Q==
+    size: 125786990
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.21/Butter-Paper-macOS-x64.zip
+sha512: 278Jl/fS8vpnlJUciih7EUlMgF5Bctgfm1L+Ln5rH9dklvmxzTHmU1P+jACRtgnaUG0pkcdutByoOMsMpB0ZDQ==
 releaseNotes: |-
-  ### Signatures and image appearances
-
-  - Added a complete visual-signature workflow for drawing a signature, typing a
-    signature with the bundled Allura face, importing a PNG or JPEG, or capturing
-    a signature with a camera. Signatures remain ordinary image appearances and
-    do not add certificate signing or claim cryptographic document approval.
-  - Added automatic paper removal, ink normalization, edge smoothing, transparent
-    cropping, image-dimension limits, and isolated image decoding before a
-    signature can enter the document or recent-signature store.
-  - Added up to five encrypted recent signatures with move-to-front reuse,
-    explicit per-item deletion, clear-all handling, corruption checks, bounded
-    operations, safe temporary files, and fail-closed behavior when secure system
-    storage is unavailable.
-  - Added the end-to-end encrypted phone-transfer client and a disabled-by-default
-    Cloudflare relay package with short-lived capability URLs, authenticated
-    encryption, one-time payload acknowledgement, strict size and attempt limits,
-    restrictive browser headers, and rate limiting. Public builds keep phone
-    transfer unavailable until a reviewed HTTPS relay origin is configured.
-  - Added narrowly scoped macOS camera entitlement and usage descriptions. The
-    runtime permission policy accepts only main-frame video from the application
-    renderer and rejects microphone and unrelated permission requests.
-
-  ### Markup creation and direct manipulation
-
-  - Reworked rectangle, ellipse, arc, line, polygon, polyline, pen, highlight,
-    image, cloud, Cloud+, and callout placement around consistent click, drag,
-    completion, cancellation, and post-placement selection behavior.
-  - Added stable three-point circular arc creation and direct arc hit testing,
-    movement, and resizing. Added Shift-constrained circles and orthogonal segment
-    placement without incorrectly constraining arc bulge points.
-  - Improved polygon and polyline node placement, Enter and Escape completion,
-    start-node closure, screen-space cloud closure, multiline compound-markup
-    growth, and native Cloud+ leader restoration.
-  - Added transient move and resize previews so pointer cancellation discards an
-    edit and a completed drag creates only one document revision.
-  - Improved overlapping-markup targeting with topmost hit testing, direct handle
-    interaction, double-click property opening, and selection behavior that stays
-    consistent between the visible preview and committed edit.
-  - Added a tool cursor that combines a crosshair with the active markup glyph,
-    and kept navigation cursors separate from drawing and direct manipulation.
-
-  ### Snapping and tool properties
-
-  - Added acquired tracking points, horizontal and vertical tracking paths,
-    virtual intersections, edge projections, PDF-content intersections, and
-    precise-role priority within a viewport-pixel snap tolerance.
-  - Added equal-width, equal-height, equal-gap, and repeated-spacing snapping for
-    new, moved, and resized annotations, with dedicated guide bars and source
-    highlighting.
-  - Separated snapping behavior from guide visibility. Users can keep snapping
-    active while hiding all guides or selected guide types, and real resize nodes
-    remain visible when snapping is disabled.
-  - Added per-tool default property storage and reset controls. New annotations
-    receive the active tool defaults without changing existing markups.
-  - Refined tool property panels, snap settings, confirmation controls, keyboard
-    focus, and constrained-window scrolling with standard shadcn/Base UI controls.
-
-  ### Blank PDFs and page controls
-
-  - Expanded blank PDF creation with A5 through A0 ordering, portrait and
-    landscape controls, custom dimensions, page count, background color, and an
-    exact aspect-ratio preview.
-  - Added grid, dot, lined, isometric, and triangle paper with configurable
-    spacing and alphabetized pattern colors. Generated patterns use bounded PDF
-    content and reject settings that would create excessive output.
-  - Improved page-scale presets, calibration interactions, thumbnail actions,
-    pattern round trips, page rotations, and native image/snapshot appearance
-    reuse.
-  - Improved thumbnail sizing for landscape and portrait pages and aligned the
-    annotation overlay with capped preview geometry.
-
-  ### Desktop shell and document workflow
-
-  - Added a native-height custom title bar with integrated window state,
-    macOS full-screen behavior, menu-bar visibility control, and accessible
-    stable and beta window identities.
-  - Added application zoom shortcuts, protected tab and window close shortcuts,
-    macOS quit handling, document Home and End navigation, neighboring-page
-    navigation, and canvas copy, paste, and select-all commands.
-  - Replaced blocking dirty-document prompts with anchored save and discard
-    confirmations for tab closing and other local destructive actions.
-  - Improved toolbar, rail, tab, menu, popover, sidebar, and page-scale behavior
-    at constrained sizes. Tool shortcuts remain available from non-editing
-    controls without stealing keys from text fields, overlays, or system chords.
-  - Opened dropped PDFs in new tabs through an operating-system-backed path grant
-    instead of relying on the removed renderer file-path property.
-  - Added macOS application registration repair that removes stale stable and beta
-    registrations before registering the current installed application.
-
-  ### Brand, packaging, and verification
-
-  - Replaced the quill artwork with the reviewed glass-document icon: a warm
-    trace-paper slab, monochrome document content, a revision cloud, and a callout.
-    Stable uses ruby-red annotation glass and beta uses violet annotation glass.
-  - Added canonical 1024 px light and dark artwork, reproducible Blender scene
-    sources, adaptive macOS layers, and regenerated Windows ICO, macOS ICNS,
-    Linux PNG, README, and download-page assets from one checked pipeline.
-  - Added third-party license notices for Signature Pad, Allura, QRCode, and its
-    transitive QR dependency, and included the notice file in desktop packages.
-  - Expanded release verification for camera entitlements and usage strings,
-    adaptive raster icon sources, dropped-file authorization, app registration,
-    signature isolation, encrypted storage, and the disabled production relay
-    boundary.
-  - Added broad deterministic coverage for markup placement, overlap handling,
-    snapping, tool defaults, signatures, blank-paper patterns, window controls,
-    menus, keyboard navigation, and packaging. The complete release gate now
-    passes 995 deterministic application and relay tests.
-  - Windows and Linux users upgrading directly from 0.0.11 still need one manual
-    installation to bootstrap authenticated updates. Later TUF-enabled releases
-    continue to update automatically.
-releaseDate: 2026-08-11T18:43:21.903Z
+  - Introduced the Butter Paper brand identity with Trace Teal, Markup Coral,
+    Studio Violet, Vellum, and Carbon across the repository and download page.
+  - Replaced the stable and beta application icons with the exact faceted origami
+    butterfly geometry and channel colours derived from the master palette.
+  - Optically sized the transparent icon artwork to fill 80% of the canvas for
+    clear native presentation on macOS, Windows, and Linux.
+releaseDate: 2026-08-12T09:35:26.371Z
 butterPaperChannel: stable
