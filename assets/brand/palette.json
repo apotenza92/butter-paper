@@ -1,0 +1,26 @@
+{
+  "brand": {
+    "traceTeal": "#08756C",
+    "markupCoral": "#E7654C",
+    "studioViolet": "#6756B3",
+    "carbon": "#182321",
+    "vellum": "#F7F3EA",
+    "seaGlass": "#98BEB6",
+    "trace": "#DCE7E3",
+    "pencil": "#67716D"
+  },
+  "channels": {
+    "stable": {
+      "primary": "#08756C",
+      "dark": "#03443F",
+      "light": "#98BEB6",
+      "fold": "#E7654C"
+    },
+    "beta": {
+      "primary": "#6756B3",
+      "dark": "#2C235F",
+      "light": "#C8C0EC",
+      "fold": "#08756C"
+    }
+  }
+}

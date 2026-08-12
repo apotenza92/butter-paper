@@ -103,7 +103,7 @@ describe('Electron Builder release identity', () => {
       afterPack: 'build/after-pack.cjs',
       compression: 'maximum',
       electronLanguages: ['en-US'],
-      releaseNotes: expect.stringContaining('Replaced the quill artwork with the reviewed glass-document icon'),
+      releaseNotes: expect.stringContaining('Replaced the stable and beta application icons with the exact faceted origami'),
       nsisInclude: 'build/installer.nsh',
       nsisOneClick: false,
       macMinimumSystemVersion: '12.0',

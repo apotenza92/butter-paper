@@ -54,8 +54,10 @@ describe('Butter Paper download page', () => {
     expect(readmeProductDescription).toBe(productDescription);
     expect(dom.window.document.querySelector('.subtitle')!.textContent).toBe(readmeProductDescription);
     expect(dom.window.document.querySelector('meta[name="description"]')!.getAttribute('content')).toBe(readmeProductDescription);
-    expect(dom.window.document.getElementById('app-icon')!.getAttribute('src')).toBe('./assets/icons/icon.png');
-    expect(dom.window.document.getElementById('favicon')!.getAttribute('href')).toBe('./assets/icons/icon.png');
+    expect(dom.window.document.getElementById('app-icon')!.getAttribute('src')).toBe('./assets/brand/icon.svg');
+    expect(dom.window.document.getElementById('favicon')!.getAttribute('href')).toBe('./assets/brand/icon.svg');
+    expect(dom.window.document.querySelector('.promise')!.textContent).toBe('Clarity you can work on.');
+    expect(readme).toContain('assets/icon-source/butter-paper-origami.svg');
     expect(readme).toContain('https://apotenza92.github.io/butter-paper/');
   });
 
@@ -102,12 +104,13 @@ describe('Butter Paper download page', () => {
     expect(document.title).toBe('Download Butter Paper Beta');
     expect(document.getElementById('page-title')!.textContent).toBe('Butter Paper Beta');
     expect(document.getElementById('channel-beta')!.getAttribute('aria-pressed')).toBe('true');
-    expect(document.getElementById('app-icon')!.getAttribute('src')).toBe('./assets/icons/beta/icon.png');
-    expect(document.getElementById('favicon')!.getAttribute('href')).toBe('./assets/icons/beta/icon.png');
-    expect(dom.window.getComputedStyle(document.body).getPropertyValue('--accent').trim()).toBe('#0a5e9d');
+    expect(document.getElementById('app-icon')!.getAttribute('src')).toBe('./assets/brand/icon-beta.svg');
+    expect(document.getElementById('favicon')!.getAttribute('href')).toBe('./assets/brand/icon-beta.svg');
+    expect(dom.window.getComputedStyle(document.body).getPropertyValue('--accent').trim()).toBe('#6756b3');
     expect(readFileSync('assets/butter-paper-icon-beta.png').subarray(0, 8).toString('hex'))
       .toBe('89504e470d0a1a0a');
-    expect(html).not.toContain('#cc4f47');
+    expect(html).toContain('#08756c');
+    expect(html).toContain('#6756b3');
     expect(hero(dom).label).toBe('Download Butter Paper Beta DMG for Apple Silicon Mac');
     expect(hero(dom).href).toContain('Butter-Paper-Beta-macOS-arm64.dmg');
     expect(document.getElementById('homebrew-code')!.textContent).toContain('butter-paper@beta');
@@ -190,6 +193,8 @@ describe('download page publication workflow', () => {
     expect(workflow).toContain('butter-paper-pages-publication-');
     expect(workflow).toContain('SHA256SUMS');
     expect(workflow).toContain('Apply these exact reviewed bytes manually.');
+    expect(workflow).toContain('assets/icon-source/butter-paper-origami.svg');
+    expect(workflow).toContain('assets/icon-source/butter-paper-origami-beta.svg');
     expect(workflow).not.toMatch(/PAGES_DEPLOY_KEY|git commit|git push/);
   });
 });

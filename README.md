@@ -1,12 +1,14 @@
 # Butter Paper
 
 <p align="center">
-  <img src="assets/butter-paper-icon.png" alt="Butter Paper icon" width="144" />
+  <img src="assets/icon-source/butter-paper-origami.svg" alt="Butter Paper origami butterfly" width="168" />
 </p>
 
 Butter Paper is a free, open-source, cross-platform alternative to Bluebeam Revu
 for PDF review and markup in architecture, engineering, and
 construction—available on macOS, Windows, and Linux.
+
+**Clarity you can work on.**
 
 Open drawings and documents, add familiar construction markups, and keep review
 work clear without the weight of a complicated document suite.
@@ -27,3 +29,5 @@ open-source app that can grow with the people who use it.
 
 [Download Butter Paper](https://apotenza92.github.io/butter-paper/) ·
 [Share feedback or report an issue](https://github.com/apotenza92/butter-paper/issues)
+
+The visual identity is documented in the [brand guide](docs/brand-identity.md).

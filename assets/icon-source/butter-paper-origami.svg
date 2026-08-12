@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 200" role="img" aria-labelledby="title description">
+  <title id="title">Butter Paper origami butterfly</title>
+  <desc id="description">A faceted teal origami butterfly with a coral central fold.</desc>
+  <defs>
+    <clipPath id="silhouette">
+      <path d="M10 10 L71 24 L117 46 L128 35 L139 46 L185 24 L246 10 L185 96 L185 142 L139 189 L128 127 L117 189 L71 142 L71 96 Z"/>
+    </clipPath>
+    <linearGradient id="silhouette-base" x1="18" y1="8" x2="238" y2="190" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#98beb6"/><stop offset=".48" stop-color="#08756c"/><stop offset="1" stop-color="#03443f"/>
+    </linearGradient>
+    <linearGradient id="upper-left" x1="14" y1="10" x2="128" y2="127" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7fb8af"/><stop offset="1" stop-color="#27988b"/>
+    </linearGradient>
+    <linearGradient id="upper-left-outer" x1="10" y1="10" x2="71" y2="96" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#dce7e3"/><stop offset="1" stop-color="#98beb6"/>
+    </linearGradient>
+    <linearGradient id="upper-right" x1="242" y1="10" x2="128" y2="127" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#16877c"/><stop offset="1" stop-color="#03443f"/>
+    </linearGradient>
+    <linearGradient id="upper-right-outer" x1="246" y1="10" x2="185" y2="96" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4eaaa0"/><stop offset="1" stop-color="#08756c"/>
+    </linearGradient>
+    <linearGradient id="shoulder-left" x1="82" y1="91" x2="128" y2="127" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#16877c"/><stop offset="1" stop-color="#07675f"/>
+    </linearGradient>
+    <linearGradient id="shoulder-right" x1="174" y1="91" x2="128" y2="127" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#07675f"/><stop offset="1" stop-color="#033b37"/>
+    </linearGradient>
+    <linearGradient id="center-left" x1="120" y1="38" x2="128" y2="127" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f38a72"/><stop offset="1" stop-color="#e7654c"/>
+    </linearGradient>
+    <linearGradient id="center-right" x1="136" y1="38" x2="128" y2="127" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e7654c"/><stop offset="1" stop-color="#a93428"/>
+    </linearGradient>
+    <linearGradient id="lower-left" x1="71" y1="96" x2="117" y2="189" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#03443f"/><stop offset=".18" stop-color="#075d56"/><stop offset=".52" stop-color="#08756c"/><stop offset="1" stop-color="#16877c"/>
+    </linearGradient>
+    <linearGradient id="lower-right" x1="185" y1="96" x2="139" y2="189" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#022e2b"/><stop offset=".18" stop-color="#033b37"/><stop offset=".52" stop-color="#034c47"/><stop offset="1" stop-color="#07675f"/>
+    </linearGradient>
+  </defs>
+
+  <!-- One base silhouette prevents seams at shared facet edges. -->
+  <path d="M10 10 L71 24 L117 46 L128 35 L139 46 L185 24 L246 10 L185 96 L185 142 L139 189 L128 127 L117 189 L71 142 L71 96 Z" fill="url(#silhouette-base)"/>
+
+  <!-- Ten clean paper planes use exact mirrored nodes. No linework or decorative strips. -->
+  <g clip-path="url(#silhouette)">
+    <path d="M10 10 L71 24 L71 96 Z" fill="url(#upper-left-outer)"/>
+    <path d="M71 24 L117 46 L121 76 L71 96 Z" fill="url(#upper-left)"/>
+    <path d="M246 10 L185 24 L185 96 Z" fill="url(#upper-right-outer)"/>
+    <path d="M185 24 L139 46 L135 76 L185 96 Z" fill="url(#upper-right)"/>
+    <path d="M71 96 L121 76 L128 127 Z" fill="url(#shoulder-left)"/>
+    <path d="M185 96 L135 76 L128 127 Z" fill="url(#shoulder-right)"/>
+    <path d="M117 46 L128 31 L128 127 L121 76 Z" fill="url(#center-left)"/>
+    <path d="M139 46 L128 31 L128 127 L135 76 Z" fill="url(#center-right)"/>
+    <path d="M71 96 L128 127 L117 189 L71 142 Z" fill="url(#lower-left)"/>
+    <path d="M185 96 L128 127 L139 189 L185 142 Z" fill="url(#lower-right)"/>
+  </g>
+</svg>

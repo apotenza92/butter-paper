@@ -21,10 +21,10 @@ jobs:
 
       - name: Prepare public site artefact
         run: |
-          mkdir -p _site/assets/icons/beta
+          mkdir -p _site/assets/brand
           cp docs/index.html _site/index.html
-          cp apps/desktop/assets/icon.png _site/assets/icons/icon.png
-          cp apps/desktop/assets/beta/icon.png _site/assets/icons/beta/icon.png
+          cp assets/icon-source/butter-paper-origami.svg _site/assets/brand/icon.svg
+          cp assets/icon-source/butter-paper-origami-beta.svg _site/assets/brand/icon-beta.svg
           touch _site/.nojekyll
 
       - name: Seal Pages publication bundle
