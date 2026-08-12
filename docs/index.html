@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="light dark" />
     <meta name="description" content="Butter Paper is a free, open-source, cross-platform alternative to Bluebeam Revu for PDF review and markup in architecture, engineering, and construction—available on macOS, Windows, and Linux." />
     <title>Download Butter Paper</title>
-    <link id="favicon" rel="icon" href="./assets/icons/icon.png" />
+    <link id="favicon" rel="icon" type="image/svg+xml" />
     <style>
       * {
         box-sizing: border-box;
@@ -20,28 +20,28 @@
 
       :root {
         color-scheme: light dark;
-        --accent: #b7791f;
-        --accent-hover: #925f17;
-        --action-text: #8b5a16;
-        --background: linear-gradient(135deg, #fffdf7 0%, #f7efd9 50%, #fffaf0 100%);
-        --border: #ded2b9;
-        --button-shadow: rgba(183, 121, 31, 0.24);
-        --code-background: #f7f1e4;
-        --text: #241f17;
-        --text-muted: #6e6251;
+        --accent: #08756c;
+        --accent-hover: #07675f;
+        --action-text: #07675f;
+        --background: radial-gradient(circle at 50% -15%, #ffffff 0%, #f7f3ea 52%, #edf3f0 100%);
+        --border: #c9d6d1;
+        --button-shadow: rgba(8, 117, 108, 0.23);
+        --code-background: #e8efec;
+        --text: #182321;
+        --text-muted: #67716d;
       }
 
       @media (prefers-color-scheme: dark) {
         :root {
-          --accent: #dcae51;
-          --accent-hover: #e9c773;
-          --action-text: #e9c773;
-          --background: linear-gradient(135deg, #0d0b08 0%, #19140c 50%, #100d09 100%);
-          --border: #443923;
-          --button-shadow: rgba(220, 174, 81, 0.22);
-          --code-background: #1d180f;
-          --text: #fffaf0;
-          --text-muted: #c1b49c;
+          --accent: #08756c;
+          --accent-hover: #07675f;
+          --action-text: #71c6bc;
+          --background: radial-gradient(circle at 50% -15%, #263532 0%, #182321 52%, #101816 100%);
+          --border: #39504b;
+          --button-shadow: rgba(39, 152, 139, 0.24);
+          --code-background: #22312e;
+          --text: #f7f3ea;
+          --text-muted: #a9b7b2;
         }
       }
 
@@ -57,28 +57,28 @@
       }
 
       body.beta-mode {
-        --accent: #0a5e9d;
-        --accent-hover: #043f6f;
-        --action-text: #07558d;
-        --background: linear-gradient(135deg, #f7fcff 0%, #e7f5fc 50%, #f4fbff 100%);
-        --border: #bdd9e8;
-        --button-shadow: rgba(10, 94, 157, 0.24);
-        --code-background: #eef7fb;
-        --text: #102632;
-        --text-muted: #4f6b79;
+        --accent: #6756b3;
+        --accent-hover: #59469c;
+        --action-text: #59469c;
+        --background: radial-gradient(circle at 50% -15%, #ffffff 0%, #f7f3ea 52%, #f0edf8 100%);
+        --border: #d1cbe8;
+        --button-shadow: rgba(103, 86, 179, 0.24);
+        --code-background: #efecf8;
+        --text: #182321;
+        --text-muted: #67716d;
       }
 
       @media (prefers-color-scheme: dark) {
         body.beta-mode {
-          --accent: #1478b5;
-          --accent-hover: #168bcb;
-          --action-text: #68d0f2;
-          --background: linear-gradient(135deg, #06121a 0%, #0a2231 50%, #071721 100%);
-          --border: #244b60;
-          --button-shadow: rgba(53, 177, 222, 0.23);
-          --code-background: #0d2532;
-          --text: #eefbff;
-          --text-muted: #a6c4d2;
+          --accent: #6756b3;
+          --accent-hover: #59469c;
+          --action-text: #b7ace6;
+          --background: radial-gradient(circle at 50% -15%, #302a4a 0%, #1e1b2d 52%, #14121e 100%);
+          --border: #4e466e;
+          --button-shadow: rgba(137, 121, 208, 0.25);
+          --code-background: #29243e;
+          --text: #f7f3ea;
+          --text-muted: #bab4ca;
         }
       }
 
@@ -94,15 +94,31 @@
       }
 
       .icon {
-        border-radius: 21px;
-        height: 96px;
-        width: 96px;
+        height: 116px;
+        object-fit: contain;
+        width: 148px;
+      }
+
+      .brand-kicker {
+        color: var(--action-text);
+        font-size: 0.72rem;
+        font-weight: 750;
+        letter-spacing: 0.15em;
+        margin-bottom: -0.9rem;
+        text-transform: uppercase;
       }
 
       h1 {
-        font-size: 1.8rem;
-        font-weight: 650;
+        font-size: 2rem;
+        font-weight: 700;
         letter-spacing: -0.02em;
+      }
+
+      .promise {
+        font-size: 1.15rem;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+        margin-top: -1rem;
       }
 
       .subtitle,
@@ -464,8 +480,10 @@
   </head>
   <body>
     <main class="container">
-      <img id="app-icon" class="icon" src="./assets/icons/icon.png" alt="Butter Paper icon" />
+      <img id="app-icon" class="icon" src="./assets/brand/icon.svg" alt="Butter Paper origami butterfly" />
+      <p class="brand-kicker">PDF review and markup</p>
       <h1 id="page-title">Butter Paper</h1>
+      <p class="promise">Clarity you can work on.</p>
       <p class="subtitle">Butter Paper is a free, open-source, cross-platform alternative to Bluebeam Revu for PDF review and markup in architecture, engineering, and construction—available on macOS, Windows, and Linux.</p>
       <p class="early-stage-note">Butter Paper is early-stage software. Expect rough edges, and please report bugs or workflow issues through <a href="https://github.com/apotenza92/butter-paper/issues">GitHub Issues</a>.</p>
 
@@ -565,9 +583,15 @@
 
     <script>
       const repo = "apotenza92/butter-paper";
-      const iconRoot = location.pathname.includes("/docs/")
-        ? "../apps/desktop/assets"
-        : "./assets/icons";
+      const iconSources = location.pathname.includes("/docs/")
+        ? {
+            beta: "../assets/icon-source/butter-paper-origami-beta.svg",
+            stable: "../assets/icon-source/butter-paper-origami.svg"
+          }
+        : {
+            beta: "./assets/brand/icon-beta.svg",
+            stable: "./assets/brand/icon.svg"
+          };
       const assetSizes = {};
       const releaseVersions = { stable: "", beta: "" };
       const releaseTags = { stable: "latest", beta: "latest" };
@@ -721,9 +745,7 @@
             : "";
 
         document.body.classList.toggle("beta-mode", state.channel === "beta");
-        const iconSource = state.channel === "beta"
-          ? `${iconRoot}/beta/icon.png`
-          : `${iconRoot}/icon.png`;
+        const iconSource = iconSources[state.channel];
         document.getElementById("app-icon").src = iconSource;
         document.getElementById("favicon").href = iconSource;
         document.getElementById("page-title").textContent = productName(state.channel);

@@ -1,6 +1,6 @@
 {
   "name": "butter-paper",
-  "version": "0.0.20",
+  "version": "0.0.21",
   "private": true,
   "license": "MIT",
   "engines": {
@@ -49,7 +49,7 @@
     "make:desktop:windows": "pnpm build:desktop && pnpm --dir apps/desktop make:windows",
     "make:desktop:linux": "pnpm build:desktop && pnpm --dir apps/desktop make:linux",
     "generate:fixtures": "node scripts/generate-fixtures.mjs",
-    "generate:icons": "node scripts/generate-icons.mjs"
+    "generate:icons": "node scripts/render-brand-icons.mjs && node scripts/generate-icons.mjs"
   },
   "devDependencies": {
     "@electron/asar": "4.2.1",

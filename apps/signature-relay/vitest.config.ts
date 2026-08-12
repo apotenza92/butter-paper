@@ -6,6 +6,7 @@ export default defineConfig({
     cloudflareTest({
       main: './src/index.ts',
       miniflare: {
+        compatibilityDate: '2026-08-11',
         bindings: {
           RELAY_ENABLED: 'true',
           RATE_LIMIT_TEST_BYPASS: 'true',

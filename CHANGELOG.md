@@ -2,6 +2,15 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.21]
+
+- Introduced the Butter Paper brand identity with Trace Teal, Markup Coral,
+  Studio Violet, Vellum, and Carbon across the repository and download page.
+- Replaced the stable and beta application icons with the exact faceted origami
+  butterfly geometry and channel colours derived from the master palette.
+- Optically sized the transparent icon artwork to fill 80% of the canvas for
+  clear native presentation on macOS, Windows, and Linux.
+
 ## [0.0.20]
 
 ### Signatures and image appearances

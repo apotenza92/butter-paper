@@ -1,75 +1,75 @@
 {
   "schemaVersion": 1,
   "source": "assets/butter-paper-icon-beta.png",
-  "sourceSha256": "4ac9f6be8ecf4944a539a45680ced6c41ad7ea810f0228d96850c951647e444c",
+  "sourceSha256": "9f2b20bdceebde79737719d8fce007cd78c64af16ab1e8f7eeef38ac8862272f",
   "outputs": {
     "icon.icns": {
-      "sha256": "79e6d2a0d0a329e3effa6e9552cf168299178c2e497170f25660ab55230ee946",
-      "size": 1599726
+      "sha256": "8af337fc38523beb3cdcaf3bd70f9b9f93322f36333b8af52f4f54ccc6c2f0bd",
+      "size": 289648
     },
     "icon.ico": {
-      "sha256": "a0fcb53c6c07693b276a6fc07bfb18f32f1d66262a22f2540086529795fe5853",
-      "size": 108430
+      "sha256": "6f0d69272faeb9a3b2a005d1b6620ea8f2df1bec1e272031a4a974a44ce58351",
+      "size": 29564
     },
     "icon.png": {
-      "sha256": "595952521ad20d717535b31c74898299077720227a7bcf10ae017d390c5cbfb4",
-      "size": 253534
+      "sha256": "b8fabab311509bbe7f01e9b1409549ca7f0b835f9fdb2e6d4d0600ab4f4743a7",
+      "size": 52806
     },
     "linux/1024x1024.png": {
-      "sha256": "68dd057fe6e3ae21514c29f33aa446edd5d7e117ff347d8e46f44a2976f30ee1",
-      "size": 908243
+      "sha256": "5daa7570f74b971f947d528331668e66bb0bf44b5d0d643961fb46d8c78a1233",
+      "size": 135517
     },
     "linux/128x128.png": {
-      "sha256": "9565ceef32de1314c461e1c2e155321ce6a3b350259c9ace08cff29f887ae78d",
-      "size": 21230
+      "sha256": "3e5c11ed1b448199f538bcf433446d7b8f6c32b4d0e9336e6c93e452d5d95f69",
+      "size": 6000
     },
     "linux/16x16.png": {
-      "sha256": "a24f6f5e508624633aaa3f7c66709518d044af9af13334f8ab03feb9251b385e",
-      "size": 719
+      "sha256": "8422bc8de328a3836ba49046318921458f4e48ef778128b3308ef0feb7ec0ee2",
+      "size": 399
     },
     "linux/22x22.png": {
-      "sha256": "593ec05ed2c26d4918c21a3d38a5fcf16bf131ac6a2eecc1248ba568beeb788f",
-      "size": 1148
+      "sha256": "d9d0cceebbab0e8488ec8651347fe99daa6cc8e89d15e050c3a576e3a0c9fbe5",
+      "size": 553
     },
     "linux/24x24.png": {
-      "sha256": "652827e1a5fa10de5f9243e770fbd38a4c54db9271d3c7a72b22e75e6c5a6617",
-      "size": 1227
+      "sha256": "6b54c12c8817cc2e5c65bf7c6ec76a0a59030c484506e5e2931b926944c2e489",
+      "size": 606
     },
     "linux/256x256.png": {
-      "sha256": "0de70f5a923c7595e35b58a843ff2815dd8ea1b042877a91733c9ec4586b0b6d",
-      "size": 72690
+      "sha256": "368a3e54fc17d743000584cda8b6ea580008a9d4d7a954ddf1e272e8c7d2d595",
+      "size": 17975
     },
     "linux/32x32.png": {
-      "sha256": "7b91e15ad2652eb0fde60a660d999a0dacfc9e2e4d005b393e56652928356bc5",
-      "size": 2102
+      "sha256": "71b28092e6440d7ebfaf04ea326965c4ccc96b87ab8a41cfe73deffe438a2bfe",
+      "size": 893
     },
     "linux/48x48.png": {
-      "sha256": "e8442f4cf7041fb54124d42363374cd22de9aa5d79e7cc6b6c7b85d8412a91a8",
-      "size": 3951
+      "sha256": "f3cef95077968485a3a486dd9d9744cf476b257349aa15271e934d28058ded16",
+      "size": 1429
     },
     "linux/512x512.png": {
-      "sha256": "595952521ad20d717535b31c74898299077720227a7bcf10ae017d390c5cbfb4",
-      "size": 253534
+      "sha256": "b8fabab311509bbe7f01e9b1409549ca7f0b835f9fdb2e6d4d0600ab4f4743a7",
+      "size": 52806
     },
     "linux/64x64.png": {
-      "sha256": "609283d5cdbcf40e5acf7b048d104f99a1d40f69b4a189dbd8f189be9597eb7f",
-      "size": 6393
+      "sha256": "1d4b86e75ede0e9443633ea1bd39272a0d8664f5a8b425c798782bd96c3fd8f6",
+      "size": 2144
     },
     "linux/72x72.png": {
-      "sha256": "0713c7f75f2037933585daf687aa37d5c76f010bd78703fb47e722fc2f7f61e4",
-      "size": 7798
+      "sha256": "175f53138f7a72b7381d24f121eda34adcbde6252dbe1fb9e7ce8fca29d421ee",
+      "size": 2529
     },
     "linux/96x96.png": {
-      "sha256": "890d3a633d5c4cc099d01d8e44e13451d3ed684d1e53604fc40608d2589dc8ba",
-      "size": 13005
+      "sha256": "20c30a20feeb4e0fb89d7891fc270c72f06a2e76289450d769ddd51db9bf9750",
+      "size": 3816
     },
     "macos/Butter Paper Beta.icon/Assets/01-artwork-dark.png": {
-      "sha256": "37912d8930e918947497dc1d5590bf70e1f3c75e15af69be85874ef8ad653586",
-      "size": 1129813
+      "sha256": "9f2b20bdceebde79737719d8fce007cd78c64af16ab1e8f7eeef38ac8862272f",
+      "size": 133863
     },
     "macos/Butter Paper Beta.icon/Assets/01-artwork.png": {
-      "sha256": "4ac9f6be8ecf4944a539a45680ced6c41ad7ea810f0228d96850c951647e444c",
-      "size": 1206718
+      "sha256": "9f2b20bdceebde79737719d8fce007cd78c64af16ab1e8f7eeef38ac8862272f",
+      "size": 133863
     }
   }
 }
