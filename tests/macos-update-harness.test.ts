@@ -74,8 +74,11 @@ describe('macOS updater integration harness', () => {
       const jobStart = releaseWorkflow.indexOf(`  ${job}:`);
       expect(jobStart).toBeGreaterThan(-1);
       expect(releaseWorkflow.slice(jobStart, jobStart + 300))
-        .toContain('needs: [prepare, validate]');
+        .toContain('needs: prepare');
     }
+    expect(releaseWorkflow).toContain(
+      'needs: [prepare, validate, package-macos, package-windows, package-linux, test-macos-updater, test-nonmac-updater]',
+    );
   });
 
   it('parses an explicit scenario without accepting unknown options', () => {
@@ -188,11 +191,21 @@ describe('macOS updater integration harness', () => {
     const workflow = readFileSync(resolve('.github/workflows/release.yml'), 'utf8');
     expect(workflow).toContain('test-macos-updater:');
     expect(workflow).toContain('runs-on: ${{ matrix.arch == \'arm64\' && \'macos-15\' || \'macos-15-intel\' }}');
-    expect(workflow).toContain('scenario: [channel, corrupt, signature, valid]');
+    expect(workflow).toContain('scenario: [valid]');
+    for (const scenario of ['channel', 'corrupt', 'signature']) {
+      expect(workflow).toContain(`scenario: ${scenario}`);
+    }
     expect(workflow).toContain('--scenario "$RELEASE_SCENARIO"');
     expect(workflow).toContain(
-      'needs: [prepare, package-macos, package-windows, package-linux, test-macos-updater, test-nonmac-updater]',
+      'needs: [prepare, validate, package-macos, package-windows, package-linux, test-macos-updater, test-nonmac-updater]',
     );
+
+    expect(workflow).toContain('name: release-assets');
+    expect(workflow).toContain('name: release-feed-unsealed');
+    expect(workflow).toContain('name: release-feed-sealed');
+    expect(workflow).toContain('name: release-manifest');
+    expect(workflow).toContain('subject-checksums: release-manifest/assets/SHA256SUMS');
+    expect(workflow).not.toContain('name: release-bundle-sealed');
 
     const updaterJob = workflow.slice(
       workflow.indexOf('  test-macos-updater:'),

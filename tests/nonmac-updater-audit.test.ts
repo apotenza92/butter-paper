@@ -111,7 +111,7 @@ describe('native Windows and Linux updater audit', () => {
     expect(script).not.toContain('copyFileSync(privateKeyPath');
     expect(release).toContain('uses: ./.github/workflows/nonmac-updater-audit.yml');
     expect(release).toContain(
-      'needs: [prepare, package-macos, package-windows, package-linux, test-macos-updater, test-nonmac-updater]',
+      'needs: [prepare, validate, package-macos, package-windows, package-linux, test-macos-updater, test-nonmac-updater]',
     );
   });
 });

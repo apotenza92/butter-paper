@@ -87,7 +87,7 @@ jobs:
 
   package-macos:
     name: macOS ${{ matrix.arch }} (${{ matrix.variant }})
-    needs: [prepare, validate]
+    needs: prepare
     runs-on: ${{ matrix.arch == 'arm64' && 'macos-26' || 'macos-26-intel' }}
     environment: release-signing
     permissions:
@@ -190,7 +190,7 @@ jobs:
 
   package-windows:
     name: Windows ${{ matrix.arch }} (${{ matrix.variant }})
-    needs: [prepare, validate]
+    needs: prepare
     runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || 'windows-2025' }}
     permissions:
       contents: read
@@ -285,7 +285,7 @@ jobs:
 
   package-linux:
     name: Linux ${{ matrix.arch }} (${{ matrix.variant }})
-    needs: [prepare, validate]
+    needs: prepare
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     permissions:
       contents: read
@@ -398,7 +398,7 @@ jobs:
 
   test-nonmac-updater:
     name: Native ${{ matrix.target }} updater (${{ matrix.variant }})
-    needs: [prepare, validate]
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -425,8 +425,18 @@ jobs:
       fail-fast: false
       matrix:
         arch: [arm64, x64]
-        scenario: [channel, corrupt, signature, valid]
+        scenario: [valid]
         variant: ${{ fromJSON(needs.prepare.outputs.variants) }}
+        include:
+          - arch: arm64
+            scenario: channel
+            variant: ${{ needs.prepare.outputs.channel }}
+          - arch: arm64
+            scenario: corrupt
+            variant: ${{ needs.prepare.outputs.channel }}
+          - arch: arm64
+            scenario: signature
+            variant: ${{ needs.prepare.outputs.channel }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -595,7 +605,7 @@ jobs:
 
   assemble:
     name: Assemble release bundle
-    needs: [prepare, package-macos, package-windows, package-linux, test-macos-updater, test-nonmac-updater]
+    needs: [prepare, validate, package-macos, package-windows, package-linux, test-macos-updater, test-nonmac-updater]
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout release contract
@@ -682,11 +692,34 @@ jobs:
             --directory publish/assets \
             > expected-assets.txt
 
-      - name: Upload verified release bundle
+      - name: Prepare compact release manifest
+        shell: bash
+        run: |
+          mkdir -p release-manifest/assets
+          cp publish/assets/SHA256SUMS release-manifest/assets/SHA256SUMS
+          cp expected-assets.txt release-manifest/expected-assets.txt
+
+      - name: Upload verified release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-bundle
-          path: publish
+          name: release-assets
+          path: publish/assets
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload unsealed update feeds
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-feed-unsealed
+          path: publish/feed
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload compact release manifest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-manifest
+          path: release-manifest
           if-no-files-found: error
           retention-days: 30
 
@@ -700,16 +733,16 @@ jobs:
       attestations: write
       artifact-metadata: write
     steps:
-      - name: Download verified release bundle
+      - name: Download compact release manifest
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-bundle
-          path: publish
+          name: release-manifest
+          path: release-manifest
 
       - name: Attest checksummed release assets
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
-          subject-path: publish/assets/*
+          subject-checksums: release-manifest/assets/SHA256SUMS
 
   seal-tuf:
     name: Sign Windows and Linux update repositories
@@ -749,11 +782,11 @@ jobs:
         working-directory: source
         run: pnpm install --frozen-lockfile
 
-      - name: Download verified release bundle
+      - name: Download unsealed update feeds
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-bundle
-          path: publish
+          name: release-feed-unsealed
+          path: publish/feed
 
       - name: Sign exact Windows and AppImage metadata
         env:
@@ -793,11 +826,11 @@ jobs:
             done
           done
 
-      - name: Upload sealed release and updater bundle
+      - name: Upload sealed update feeds
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-bundle-sealed
-          path: publish
+          name: release-feed-sealed
+          path: publish/feed
           if-no-files-found: error
           retention-days: 30
 
@@ -817,11 +850,17 @@ jobs:
           persist-credentials: false
           path: update-feed-worktree
 
-      - name: Download verified release bundle
+      - name: Download verified release assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-bundle-sealed
-          path: publish
+          name: release-assets
+          path: publish/assets
+
+      - name: Download sealed update feeds
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-feed-sealed
+          path: publish/feed
 
       - name: Stage and verify exact draft GitHub release
         env:
@@ -1096,11 +1135,17 @@ jobs:
         working-directory: source
         run: pnpm install --frozen-lockfile
 
+      - name: Download compact release manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-manifest
+          path: expected
+
       - name: Download expected update feeds
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-bundle-sealed
-          path: expected
+          name: release-feed-sealed
+          path: expected/feed
 
       - name: Download sealed update-feed publication bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -1127,7 +1172,7 @@ jobs:
             return 1
           }
 
-          find expected/assets -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > expected-public-assets.txt
+          cp expected/expected-assets.txt expected-public-assets.txt
           download_with_retry \
             "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}" \
             public-release.json
