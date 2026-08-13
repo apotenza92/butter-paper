@@ -219,6 +219,15 @@ const approvedDomainUiExceptions = new Map([
       rawElements: new Set(['svg']),
     },
   ],
+  [
+    `${domainUiDirectory}/ConstructionGridOverlay.tsx`,
+    {
+      reason: 'the optional construction grid is page-coordinate vector canvas chrome rather than a standard interactive control',
+      allowVisualStyling: true,
+      allowDynamicDragStyle: false,
+      rawElements: new Set(['svg']),
+    },
+  ],
 ]);
 const domainUiFiles = collectFiles(domainUiDirectory).filter((filePath) => filePath.endsWith('.tsx'));
 
@@ -339,10 +348,10 @@ if (existsSync(documentTabBarPath)) {
     || !documentTabBar.includes('data-testid="document-tab-actions-separator"')) {
     violations.push(`${documentTabBarPath}: a standard vertical separator must divide the newest tab from document actions`);
   }
-  if (!documentTabBar.includes('<ButtonGroup aria-label="New blank PDF controls">')
+  if (!documentTabBar.includes('<ButtonGroup aria-label="New from template controls">')
     || documentTabBar.includes('<ButtonGroupSeparator />')
-    || !documentTabBar.includes('<BlankPdfSettingsPopover')) {
-    violations.push(`${documentTabBarPath}: blank PDF creation must match the stock Nova split controls used by the viewer toolbar`);
+    || !documentTabBar.includes('<TemplatePickerPopover')) {
+    violations.push(`${documentTabBarPath}: template creation must match the stock Nova split controls used by the viewer toolbar`);
   }
 }
 if (existsSync(blankPdfSettingsPopoverPath)) {

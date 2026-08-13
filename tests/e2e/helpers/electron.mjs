@@ -6,7 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertIsolatedGuiTestEnvironment } from '../../../scripts/gui-test-environment.mjs';
 
-assertIsolatedGuiTestEnvironment('Electron E2E');
+assertIsolatedGuiTestEnvironment('Electron E2E', { allowLocalMacOS: true });
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(moduleDir, '../../..');

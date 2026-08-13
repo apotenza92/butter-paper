@@ -33,10 +33,11 @@
 4. Run the narrowest relevant checks while iterating, then `pnpm check` before handoff.
 5. Review the final diff for generated files, stale references, secrets, and unrelated changes.
 
-Do not run Playwright Electron E2E, the packaged desktop GUI smoke test, or the
-macOS updater harness on a local macOS desktop. Their launch boundaries reject
-local macOS execution. Run GUI coverage only on disposable GitHub Actions
-runners through manual CI and focused release verification.
+Playwright Electron E2E and the packaged desktop GUI smoke test can run on a
+local macOS desktop when they use isolated, disposable user data and do not
+modify an installed application. Keep the macOS updater harness restricted to
+disposable GitHub Actions runners because it replaces application bundles and
+tests system registration and update state.
 
 ## Commands
 

@@ -19,7 +19,7 @@ describe('renderer filesystem boundary', () => {
     expect(main).not.toMatch(/ipcChannels\.fileRead,[\s\S]{0,160}readBinaryFile\(filePath\)/);
 
     const saveRequest = protocol.slice(
-      protocol.indexOf('export interface SaveDocumentRequest'),
+      protocol.indexOf('interface SaveDocumentRequestBase'),
       protocol.indexOf('export interface PageGeometryRequest'),
     );
     expect(saveRequest).toContain('readonly documentHandle: string');

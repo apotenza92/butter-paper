@@ -1,11 +1,11 @@
 import { _electron as electron } from '@playwright/test';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { assertIsolatedGuiTestEnvironment } from './gui-test-environment.mjs';
 
-assertIsolatedGuiTestEnvironment('Packaged desktop smoke test');
+assertIsolatedGuiTestEnvironment('Packaged desktop smoke test', { allowLocalMacOS: true });
 
 const repoRoot = resolve(import.meta.dirname, '..');
 const configuredReleaseDir = process.env.BP_RELEASE_OUTPUT_DIR?.trim();
@@ -96,6 +96,37 @@ async function verifyCustomIcons(page) {
   }
 }
 
+async function verifyDroppedPdfOpensInNewTab(page, outputDirectory) {
+  const droppedPdfPath = join(outputDirectory, 'packaged-dropped.pdf');
+  await copyFile(fixturePath, droppedPdfPath);
+  const diagnosticsBefore = await getDiagnostics(page);
+  const tabCountBefore = diagnosticsBefore?.tabs?.length ?? 0;
+  const viewport = await page.getByTestId('document-viewport').boundingBox();
+  assert(viewport, 'Packaged PDF drop target did not render');
+
+  const client = await page.context().newCDPSession(page);
+  const dragData = {
+    items: [],
+    files: [droppedPdfPath],
+    dragOperationsMask: 1,
+  };
+  const x = viewport.x + viewport.width / 2;
+  const y = viewport.y + Math.min(120, viewport.height / 2);
+  await client.send('Input.dispatchDragEvent', { type: 'dragEnter', x, y, data: dragData });
+  await client.send('Input.dispatchDragEvent', { type: 'dragOver', x, y, data: dragData });
+  await client.send('Input.dispatchDragEvent', { type: 'drop', x, y, data: dragData });
+
+  await page.waitForFunction(({ expectedTabCount, expectedName }) => {
+    const diagnostics = window.__butterPaperTestHooks?.getDiagnostics();
+    return diagnostics?.tabs?.length === expectedTabCount
+      && diagnostics.documentName === expectedName
+      && diagnostics.pageCount === 6;
+  }, {
+    expectedTabCount: tabCountBefore + 1,
+    expectedName: 'packaged-dropped.pdf',
+  }, { timeout: 30_000 });
+}
+
 async function verifyPdfWorkflow(page, outputDirectory) {
   await verifyCustomIcons(page);
   await page.getByTestId('viewer-fit-page').click();
@@ -124,6 +155,7 @@ async function verifyPdfWorkflow(page, outputDirectory) {
   }, { filePath: savedPdfPath });
   await waitForDiagnostics(page, { pageCount: 6, markupCount: initialMarkupCount + 1 });
   await page.locator('[data-testid^="markup-rect-"]').first().waitFor({ state: 'visible' });
+  await verifyDroppedPdfOpensInNewTab(page, outputDirectory);
 }
 
 async function verifyBlankPdfWorkflow(page, outputDirectory) {
@@ -194,12 +226,17 @@ try {
     { timeout: 30_000 },
   );
 
-  await verifyPdfWorkflow(page, temporaryDirectory);
-  await verifyBlankPdfWorkflow(page, temporaryDirectory);
-  const diagnostics = await getDiagnostics(page);
-  console.log(
-    `Packaged ${expectedProductName} smoke test passed: channel identity, PDF annotation round-trip, blank PDF creation, custom icons, and fit controls (${diagnostics.sessionBackendKind} backend).`,
-  );
+  if (process.env.BP_TEST_DRAG_DROP_ONLY === '1') {
+    await verifyDroppedPdfOpensInNewTab(page, temporaryDirectory);
+    console.log(`Packaged ${expectedProductName} drag-and-drop test passed: dropped PDF opened in a new tab.`);
+  } else {
+    await verifyPdfWorkflow(page, temporaryDirectory);
+    await verifyBlankPdfWorkflow(page, temporaryDirectory);
+    const diagnostics = await getDiagnostics(page);
+    console.log(
+      `Packaged ${expectedProductName} smoke test passed: channel identity, PDF annotation round-trip, blank PDF creation, custom icons, and fit controls (${diagnostics.sessionBackendKind} backend).`,
+    );
+  }
 } catch (error) {
   if (page) {
     console.error(`Packaged app page at failure: title=${JSON.stringify(await page.title())} url=${page.url()}`);

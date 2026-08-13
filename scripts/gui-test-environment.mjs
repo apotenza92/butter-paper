@@ -3,9 +3,10 @@ export function assertIsolatedGuiTestEnvironment(
   {
     platform = process.platform,
     githubActions = process.env.GITHUB_ACTIONS,
+    allowLocalMacOS = false,
   } = {},
 ) {
-  if (platform !== 'darwin' || githubActions === 'true') {
+  if (platform !== 'darwin' || githubActions === 'true' || allowLocalMacOS) {
     return;
   }
 
