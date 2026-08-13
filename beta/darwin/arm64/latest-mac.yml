@@ -1,19 +1,40 @@
-version: 0.0.21
+version: 0.0.22
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.21/Butter-Paper-Beta-macOS-arm64.zip
-    sha512: gcTORaO/be4cQnlkt17UxQI7B+sWAI9YMBHDpzKSKkdzQveRBtDLKMyKi/2taroZVkeX3L2ilMAdzVY4ZfI/Xg==
-    size: 126973073
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.21/Butter-Paper-Beta-macOS-arm64.dmg
-    sha512: v4BGzGQOpJj6gWbF2FGPdikB/OjyGWz7fLpt/mfVZWar87Hv27JfhCXReCqDeg6Y4a1nKsb0MmF11hiTBZXxOg==
-    size: 120477387
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.21/Butter-Paper-Beta-macOS-arm64.zip
-sha512: gcTORaO/be4cQnlkt17UxQI7B+sWAI9YMBHDpzKSKkdzQveRBtDLKMyKi/2taroZVkeX3L2ilMAdzVY4ZfI/Xg==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Beta-macOS-arm64.zip
+    sha512: nT88zOlshjYk7Jr3mNsXuLIEhCdnkleFO8NUsNVTmcP+vkUKLdSEUkW8xqMcCkLJCDrzMO3TWdX4xm+sCfYjnQ==
+    size: 144633555
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Beta-macOS-arm64.dmg
+    sha512: /O/ENsTFX6aerF8OOrFdnHiwnH5znZRKXxvsbacg9j2I/vBZHsCLfeipkbDSUjAnGXtnECP7mswAu0H2ceBArA==
+    size: 138848459
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Beta-macOS-arm64.zip
+sha512: nT88zOlshjYk7Jr3mNsXuLIEhCdnkleFO8NUsNVTmcP+vkUKLdSEUkW8xqMcCkLJCDrzMO3TWdX4xm+sCfYjnQ==
 releaseNotes: |-
-  - Introduced the Butter Paper brand identity with Trace Teal, Markup Coral,
-    Studio Violet, Vellum, and Carbon across the repository and download page.
-  - Replaced the stable and beta application icons with the exact faceted origami
-    butterfly geometry and channel colours derived from the master palette.
-  - Optically sized the transparent icon artwork to fill 80% of the canvas for
-    clear native presentation on macOS, Windows, and Linux.
-releaseDate: 2026-08-12T09:45:57.802Z
+  ### Templates and document workflow
+
+  - Added a reusable blank PDF template library with built-in and custom
+    templates, PDF import, live previews, last-template reuse, and direct access
+    from the document tab bar.
+  - Added cloud-storage source detection and opening progress for large PDFs.
+    Improved safe save and Save As handling around opaque file access grants.
+  - Improved page thumbnails, blank-page previews, document opening feedback,
+    constrained-window layout, and menu and rail controls.
+
+  ### Markup tools and properties
+
+  - Added redaction placement, locked-markup handling, calibration-line feedback,
+    dimension-increment snapping, and more consistent selection hit zones.
+  - Expanded tool properties with bundled standard annotation fonts, live text
+    appearance updates, compact colour controls, persistent sortable colour
+    presets, and construction-grid feedback.
+  - Improved annotation import and export fidelity for appearance, geometry,
+    rotation, text, line endings, images, snapshots, and page content.
+
+  ### Verification
+
+  - Added deterministic coverage for templates, saving, storage progress,
+    calibration, colour presets, PDF round trips, phone-transfer limits, and
+    packaged drag-and-drop behavior.
+  - Allowed explicitly isolated local macOS GUI checks while keeping updater
+    replacement tests restricted to disposable GitHub Actions runners.
+releaseDate: 2026-08-13T10:30:53.171Z
 butterPaperChannel: beta

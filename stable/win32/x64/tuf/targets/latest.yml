@@ -1,20 +1,62 @@
-version: 0.0.21
+version: 0.0.22
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.21/Butter-Paper-Windows-x64-Setup.exe
-    sha512: +D+5zf1Zb4/7WWG6VO5JsjEeXyvuhdjlJOxZf6NTrkpUvbjVJLrYCyKQee8DjuOfq0DKBkjTTcETFGngQSqAGg==
-    size: 117252331
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.21/Butter-Paper-Windows-x64-Setup.exe
-sha512: +D+5zf1Zb4/7WWG6VO5JsjEeXyvuhdjlJOxZf6NTrkpUvbjVJLrYCyKQee8DjuOfq0DKBkjTTcETFGngQSqAGg==
-releaseNotes: "- Introduced the Butter Paper brand identity with Trace Teal, Markup Coral,\r
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Windows-x64-Setup.exe
+    sha512: cEPfqsZRj3V/dJRHW4N/x8H13M7ugL1zG0DIxO5C5BUe1gXVanCWRdCAbb2BSn5WMqS12Tvqn1pyR0aaOZ6mwQ==
+    size: 132021576
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Windows-x64-Setup.exe
+sha512: cEPfqsZRj3V/dJRHW4N/x8H13M7ugL1zG0DIxO5C5BUe1gXVanCWRdCAbb2BSn5WMqS12Tvqn1pyR0aaOZ6mwQ==
+releaseNotes: "### Templates and document workflow\r
 
-  \  Studio Violet, Vellum, and Carbon across the repository and download page.\r
+  \r
 
-  - Replaced the stable and beta application icons with the exact faceted origami\r
+  - Added a reusable blank PDF template library with built-in and custom\r
 
-  \  butterfly geometry and channel colours derived from the master palette.\r
+  \  templates, PDF import, live previews, last-template reuse, and direct access\r
 
-  - Optically sized the transparent icon artwork to fill 80% of the canvas for\r
+  \  from the document tab bar.\r
 
-  \  clear native presentation on macOS, Windows, and Linux."
-releaseDate: 2026-08-12T09:26:33.381Z
+  - Added cloud-storage source detection and opening progress for large PDFs.\r
+
+  \  Improved safe save and Save As handling around opaque file access grants.\r
+
+  - Improved page thumbnails, blank-page previews, document opening feedback,\r
+
+  \  constrained-window layout, and menu and rail controls.\r
+
+  \r
+
+  ### Markup tools and properties\r
+
+  \r
+
+  - Added redaction placement, locked-markup handling, calibration-line feedback,\r
+
+  \  dimension-increment snapping, and more consistent selection hit zones.\r
+
+  - Expanded tool properties with bundled standard annotation fonts, live text\r
+
+  \  appearance updates, compact colour controls, persistent sortable colour\r
+
+  \  presets, and construction-grid feedback.\r
+
+  - Improved annotation import and export fidelity for appearance, geometry,\r
+
+  \  rotation, text, line endings, images, snapshots, and page content.\r
+
+  \r
+
+  ### Verification\r
+
+  \r
+
+  - Added deterministic coverage for templates, saving, storage progress,\r
+
+  \  calibration, colour presets, PDF round trips, phone-transfer limits, and\r
+
+  \  packaged drag-and-drop behavior.\r
+
+  - Allowed explicitly isolated local macOS GUI checks while keeping updater\r
+
+  \  replacement tests restricted to disposable GitHub Actions runners."
+releaseDate: 2026-08-13T10:23:56.152Z
 butterPaperChannel: stable

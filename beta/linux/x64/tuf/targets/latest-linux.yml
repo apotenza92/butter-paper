@@ -1,23 +1,44 @@
-version: 0.0.21
+version: 0.0.22
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.21/Butter-Paper-Beta-Linux-x64.AppImage
-    sha512: gWBeIeEFyuU3LUAv9YZyOBKWe/RfL2j5Yddt3I0767onquCePrbYqtFNtsGBQNH8TnEajDAcrmgM0K8Eqf8ixA==
-    size: 109384260
-    blockMapSize: 115288
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.21/Butter-Paper-Beta-Linux-x64.deb
-    sha512: ZL21a/fL79n7p54i71PUbm5CboXlNL9a7pIrWAeKbe/s0PEuIM0Y8S93l+Cjhqq3i2LlHS6/TKFoFCeEurLAUg==
-    size: 107988240
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.21/Butter-Paper-Beta-Linux-x64.rpm
-    sha512: 3X3eWHbZ+f1+SIZP9SY8OQf/wetxv/DlxzRAgS8orqHX3zOTKu4duPifzE2T9ERi5KLwikKgn1pkQTbwPODAZw==
-    size: 94543917
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.21/Butter-Paper-Beta-Linux-x64.AppImage
-sha512: gWBeIeEFyuU3LUAv9YZyOBKWe/RfL2j5Yddt3I0767onquCePrbYqtFNtsGBQNH8TnEajDAcrmgM0K8Eqf8ixA==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Beta-Linux-x64.AppImage
+    sha512: FrSBPzXTkyK5LEuvHd/rypiZbcMxrTGOAdSLNyV2HSZpnEMvvBvFHTpjfG532WBobpewUvRH4Wxmjc3U+GtoaA==
+    size: 124985460
+    blockMapSize: 131208
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Beta-Linux-x64.deb
+    sha512: GdHh0jt3wJh3Mcxf4FtEHKkp15INcZ2xv3csXjLMy2yiSsXottt596yC13rah/tN6ZfBRIodp54y0euHkc29kw==
+    size: 122023996
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Beta-Linux-x64.rpm
+    sha512: RwhaQUwxuY3cwwEaJkgUX4zE5dYH0+TBqgwTP1bOMP2NtR+/aq1aJ2Z1IVYP/buOTpETV72qN5YHk2yRQgOBjQ==
+    size: 108064629
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Beta-Linux-x64.AppImage
+sha512: FrSBPzXTkyK5LEuvHd/rypiZbcMxrTGOAdSLNyV2HSZpnEMvvBvFHTpjfG532WBobpewUvRH4Wxmjc3U+GtoaA==
 releaseNotes: |-
-  - Introduced the Butter Paper brand identity with Trace Teal, Markup Coral,
-    Studio Violet, Vellum, and Carbon across the repository and download page.
-  - Replaced the stable and beta application icons with the exact faceted origami
-    butterfly geometry and channel colours derived from the master palette.
-  - Optically sized the transparent icon artwork to fill 80% of the canvas for
-    clear native presentation on macOS, Windows, and Linux.
-releaseDate: 2026-08-12T09:27:51.500Z
+  ### Templates and document workflow
+
+  - Added a reusable blank PDF template library with built-in and custom
+    templates, PDF import, live previews, last-template reuse, and direct access
+    from the document tab bar.
+  - Added cloud-storage source detection and opening progress for large PDFs.
+    Improved safe save and Save As handling around opaque file access grants.
+  - Improved page thumbnails, blank-page previews, document opening feedback,
+    constrained-window layout, and menu and rail controls.
+
+  ### Markup tools and properties
+
+  - Added redaction placement, locked-markup handling, calibration-line feedback,
+    dimension-increment snapping, and more consistent selection hit zones.
+  - Expanded tool properties with bundled standard annotation fonts, live text
+    appearance updates, compact colour controls, persistent sortable colour
+    presets, and construction-grid feedback.
+  - Improved annotation import and export fidelity for appearance, geometry,
+    rotation, text, line endings, images, snapshots, and page content.
+
+  ### Verification
+
+  - Added deterministic coverage for templates, saving, storage progress,
+    calibration, colour presets, PDF round trips, phone-transfer limits, and
+    packaged drag-and-drop behavior.
+  - Allowed explicitly isolated local macOS GUI checks while keeping updater
+    replacement tests restricted to disposable GitHub Actions runners.
+releaseDate: 2026-08-13T10:26:21.514Z
 butterPaperChannel: beta

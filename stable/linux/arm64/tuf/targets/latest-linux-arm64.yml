@@ -1,23 +1,44 @@
-version: 0.0.21
+version: 0.0.22
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.21/Butter-Paper-Linux-arm64.AppImage
-    sha512: MfEp+0FZ5hx4j/d2PfblscuwbYAI2bhlwCleYGyJXIwnthXIIZE0HZv4oBlLTzWXJL5lRy8adKPb7L0L9wdKGA==
-    size: 101274202
-    blockMapSize: 105894
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.21/Butter-Paper-Linux-arm64.deb
-    sha512: kW8HOMgIYr3Z180x9oUdfcp/Cu5zW5YejLF7EJ5EPJrfVUGDBPC82ZR8vskOVGjVbndyolI5A7yCn/hB3UonmA==
-    size: 100559128
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.21/Butter-Paper-Linux-arm64.rpm
-    sha512: 61cZJ098xnqJILheFMoa+3luLdeJVhWSSTOtcLWrsFuB70YkqwvMIPexD+lTcj2yuLwk3wkC0G5+OtL0edodVw==
-    size: 87497161
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.21/Butter-Paper-Linux-arm64.AppImage
-sha512: MfEp+0FZ5hx4j/d2PfblscuwbYAI2bhlwCleYGyJXIwnthXIIZE0HZv4oBlLTzWXJL5lRy8adKPb7L0L9wdKGA==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Linux-arm64.AppImage
+    sha512: 9iSFiA0nD3TDJfajmnT63bsVaIeZyl/rEK9vSMVJb49ifyVNY4D7+gTWTlBC6OO5YA1hZ9YX0KzNv4endUE+3A==
+    size: 116875867
+    blockMapSize: 122279
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Linux-arm64.deb
+    sha512: APOs8jsOG/KxCaRP9cA2ybShN+w1MzPESg65ESyqHgVokGEdOsJYaBb9Z53UwjBv41aAEkNjXMqZ38ZwMSgAgQ==
+    size: 114620212
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Linux-arm64.rpm
+    sha512: skUUPBGbQRCDTZ8QJmDlmhWW4wDMe3s7q3kXojRqve+zIs0nW6rUNYI9inmoi44ONG/NhZBitjZ5xK02H93gLg==
+    size: 101009109
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Linux-arm64.AppImage
+sha512: 9iSFiA0nD3TDJfajmnT63bsVaIeZyl/rEK9vSMVJb49ifyVNY4D7+gTWTlBC6OO5YA1hZ9YX0KzNv4endUE+3A==
 releaseNotes: |-
-  - Introduced the Butter Paper brand identity with Trace Teal, Markup Coral,
-    Studio Violet, Vellum, and Carbon across the repository and download page.
-  - Replaced the stable and beta application icons with the exact faceted origami
-    butterfly geometry and channel colours derived from the master palette.
-  - Optically sized the transparent icon artwork to fill 80% of the canvas for
-    clear native presentation on macOS, Windows, and Linux.
-releaseDate: 2026-08-12T09:31:47.578Z
+  ### Templates and document workflow
+
+  - Added a reusable blank PDF template library with built-in and custom
+    templates, PDF import, live previews, last-template reuse, and direct access
+    from the document tab bar.
+  - Added cloud-storage source detection and opening progress for large PDFs.
+    Improved safe save and Save As handling around opaque file access grants.
+  - Improved page thumbnails, blank-page previews, document opening feedback,
+    constrained-window layout, and menu and rail controls.
+
+  ### Markup tools and properties
+
+  - Added redaction placement, locked-markup handling, calibration-line feedback,
+    dimension-increment snapping, and more consistent selection hit zones.
+  - Expanded tool properties with bundled standard annotation fonts, live text
+    appearance updates, compact colour controls, persistent sortable colour
+    presets, and construction-grid feedback.
+  - Improved annotation import and export fidelity for appearance, geometry,
+    rotation, text, line endings, images, snapshots, and page content.
+
+  ### Verification
+
+  - Added deterministic coverage for templates, saving, storage progress,
+    calibration, colour presets, PDF round trips, phone-transfer limits, and
+    packaged drag-and-drop behavior.
+  - Allowed explicitly isolated local macOS GUI checks while keeping updater
+    replacement tests restricted to disposable GitHub Actions runners.
+releaseDate: 2026-08-13T10:28:24.219Z
 butterPaperChannel: stable
