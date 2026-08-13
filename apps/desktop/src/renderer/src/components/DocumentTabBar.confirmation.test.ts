@@ -3,7 +3,6 @@
 import { act, createElement, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_BLANK_PDF_SETTINGS } from './blankPdfSettings';
 import { DocumentTabBar } from './DocumentTabBar';
 
 class TestResizeObserver {
@@ -52,9 +51,6 @@ describe('DocumentTabBar close confirmation', () => {
         onReorderTabs: () => undefined,
         onOpenTab: () => undefined,
         onNewPdf: () => undefined,
-        onBlankPdfSettingsChange: () => undefined,
-        blankPdfSettings: DEFAULT_BLANK_PDF_SETTINGS,
-        blankPdfDefaultLabel: 'A3 · Landscape',
         closeConfirmation: {
             tabId: pendingTabId,
             busy: false,

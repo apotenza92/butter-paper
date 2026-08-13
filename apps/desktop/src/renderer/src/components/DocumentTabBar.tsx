@@ -17,7 +17,6 @@ import { LastTemplateTooltip } from './LastTemplateTooltip';
 import { TemplatePickerPopover } from './TemplatePickerPopover';
 import { lastTemplate, type PdfTemplate } from './templateLibrary';
 import type { ReturnTypeOfLoadTemplateLibrary } from './templateLibraryTypes';
-import type { BlankPdfSettings } from './blankPdfSettings';
 import { ClosableDocumentTab } from './domain-ui/ClosableDocumentTab';
 import { SplitButtonSegment } from './domain-ui/SplitButtonSegment';
 
@@ -48,12 +47,6 @@ interface DocumentTabBarProps {
   onManageTemplates?: () => void;
   onUseTemplate?: (templateId: string) => void;
   templateLibrary?: ReturnTypeOfLoadTemplateLibrary;
-  /** @deprecated Compatibility for tests while the blank-PDF picker migrates to templates. */
-  onBlankPdfSettingsChange?: (settings: BlankPdfSettings) => void;
-  /** @deprecated Compatibility for tests while the blank-PDF picker migrates to templates. */
-  blankPdfSettings?: BlankPdfSettings;
-  /** @deprecated Compatibility for tests while the blank-PDF picker migrates to templates. */
-  blankPdfDefaultLabel?: string;
   closeConfirmation: DocumentTabCloseConfirmationState;
 }
 

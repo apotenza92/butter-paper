@@ -317,7 +317,6 @@ if (existsSync(viewerToolbarPath)) {
 
 const documentTabBarPath = 'apps/desktop/src/renderer/src/components/DocumentTabBar.tsx';
 const closableDocumentTabPath = 'apps/desktop/src/renderer/src/components/domain-ui/ClosableDocumentTab.tsx';
-const blankPdfSettingsPopoverPath = 'apps/desktop/src/renderer/src/components/BlankPdfSettingsPopover.tsx';
 if (existsSync(documentTabBarPath)) {
   const documentTabBar = readFileSync(documentTabBarPath, 'utf8');
   if (documentTabBar.includes('variant="line"')) {
@@ -352,17 +351,6 @@ if (existsSync(documentTabBarPath)) {
     || documentTabBar.includes('<ButtonGroupSeparator />')
     || !documentTabBar.includes('<TemplatePickerPopover')) {
     violations.push(`${documentTabBarPath}: template creation must match the stock Nova split controls used by the viewer toolbar`);
-  }
-}
-if (existsSync(blankPdfSettingsPopoverPath)) {
-  const blankPdfSettingsPopover = readFileSync(blankPdfSettingsPopoverPath, 'utf8');
-  if (!blankPdfSettingsPopover.includes('<Popover open={open} onOpenChange={handleOpenChange}>')
-    || !blankPdfSettingsPopover.includes('data-testid="new-blank-pdf-settings"')
-    || !blankPdfSettingsPopover.includes('<SplitButtonSegment')
-    || !blankPdfSettingsPopover.includes('<BlankPdfPagePreview')
-    || blankPdfSettingsPopover.includes('Choose the settings used for new PDFs')
-    || blankPdfSettingsPopover.includes('Change default')) {
-    violations.push(`${blankPdfSettingsPopoverPath}: blank PDF settings must appear directly in the split-button popover and save in place`);
   }
 }
 if (existsSync(closableDocumentTabPath)) {
