@@ -1240,7 +1240,7 @@ jobs:
 
   test-homebrew:
     name: Test Homebrew casks (${{ matrix.arch }})
-    needs: [prepare, verify-publication]
+    needs: [prepare, publish]
     runs-on: ${{ matrix.arch == 'arm64' && 'macos-15' || 'macos-15-intel' }}
     permissions:
       contents: read
@@ -1356,7 +1356,7 @@ jobs:
 
   dispatch-homebrew-publication:
     name: Dispatch and await tap-owned Homebrew publication
-    needs: [prepare, test-homebrew]
+    needs: [prepare, verify-publication, test-homebrew]
     runs-on: ubuntu-24.04
     environment: homebrew-dispatch
     permissions:

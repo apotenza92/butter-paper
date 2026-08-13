@@ -42,7 +42,8 @@ describe('Homebrew cask renderer', () => {
     expect(workflow).toContain("runs-on: ${{ matrix.arch == 'arm64' && 'macos-15' || 'macos-15-intel' }}");
     expect(workflow).toContain('arch: [arm64, x64]');
     expect(workflow).toContain('beta\\.[1-9]\\d*');
-    expect(workflow).toContain('needs: [prepare, test-homebrew]');
+    expect(workflow).toContain('needs: [prepare, publish]');
+    expect(workflow).toContain('needs: [prepare, verify-publication, test-homebrew]');
     expect(workflow).toContain('homebrew-publication.tar.gz');
     expect(workflow).toContain('build-homebrew-publication.mjs');
     expect(workflow).toContain('include-hidden-files: true');
