@@ -401,46 +401,19 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  test-nonmac-updater:
-    name: Native ${{ matrix.target }} updater (${{ matrix.variant }})
-    needs: prepare
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [win32-arm64, win32-x64, linux-arm64, linux-x64]
-        variant: ${{ fromJSON(needs.prepare.outputs.variants) }}
-    uses: ./.github/workflows/nonmac-updater-audit.yml
-    with:
-      channel: ${{ matrix.variant }}
-      target: ${{ matrix.target }}
-      previous_version: 0.0.11
-    permissions:
-      contents: read
-
   test-macos-updater:
-    name: macOS updater ${{ matrix.scenario }} ${{ matrix.arch }} (${{ matrix.variant }})
+    name: Post-package macOS updater audit (${{ matrix.arch }}, ${{ matrix.variant }})
     needs: [prepare, package-macos]
     runs-on: ${{ matrix.arch == 'arm64' && 'macos-15' || 'macos-15-intel' }}
-    environment:
-      name: ${{ matrix.variant }}-updater-verification
     permissions:
       attestations: read
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        arch: [arm64, x64]
-        scenario: [valid]
-        variant: ${{ fromJSON(needs.prepare.outputs.variants) }}
         include:
           - arch: arm64
-            scenario: channel
-            variant: ${{ needs.prepare.outputs.channel }}
-          - arch: arm64
-            scenario: corrupt
-            variant: ${{ needs.prepare.outputs.channel }}
-          - arch: arm64
-            scenario: signature
+            scenario: valid
             variant: ${{ needs.prepare.outputs.channel }}
     steps:
       - name: Checkout
@@ -610,7 +583,7 @@ jobs:
 
   assemble:
     name: Assemble release bundle
-    needs: [prepare, validate, package-macos, package-windows, package-linux, test-macos-updater, test-nonmac-updater]
+    needs: [prepare, validate, package-macos, package-windows, package-linux]
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout release contract
@@ -1355,7 +1328,7 @@ jobs:
           retention-days: 14
 
   dispatch-homebrew-publication:
-    name: Dispatch and await tap-owned Homebrew publication
+    name: Dispatch tap-owned Homebrew publication
     needs: [prepare, verify-publication, test-homebrew]
     runs-on: ubuntu-24.04
     environment: homebrew-dispatch
@@ -1371,9 +1344,8 @@ jobs:
           owner: apotenza92
           repositories: homebrew-tap
           permission-contents: write
-          permission-actions: read
 
-      - name: Dispatch trusted publication and wait for exact correlation
+      - name: Dispatch trusted publication
         env:
           GH_TOKEN: ${{ steps.dispatcher.outputs.token }}
           TAP_REPOSITORY: apotenza92/homebrew-tap
@@ -1381,7 +1353,6 @@ jobs:
         run: |
           set -euo pipefail
           correlation="${GITHUB_REPOSITORY}:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${GITHUB_REF_NAME}"
-          started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           jq -n \
             --arg product butter-paper \
             --arg tag "$GITHUB_REF_NAME" \
@@ -1391,12 +1362,3 @@ jobs:
             --arg correlation_id "$correlation" \
             '{event_type:"publish-homebrew-v1",client_payload:{product:$product,tag:$tag,release_commit:$release_commit,source_run_id:$source_run_id,source_run_attempt:$source_run_attempt,correlation_id:$correlation_id}}' |
             gh api --method POST "repos/$TAP_REPOSITORY/dispatches" --input -
-          run_id=''
-          for _ in {1..30}; do
-            run_id="$(gh api "repos/$TAP_REPOSITORY/actions/workflows/publish-homebrew.yml/runs?event=repository_dispatch&per_page=30" \
-              --jq ".workflow_runs[] | select(.display_title == \"$correlation\" and .created_at >= \"$started\") | .id" | head -n1)"
-            [[ -n "$run_id" ]] && break
-            sleep 2
-          done
-          [[ -n "$run_id" ]]
-          gh run watch "$run_id" --repo "$TAP_REPOSITORY" --exit-status

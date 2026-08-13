@@ -84,7 +84,10 @@ module.exports = {
   appId: isBeta ? 'com.butterpaper.desktop.beta' : 'com.butterpaper.desktop',
   productName,
   asar: true,
-  compression: 'maximum',
+  // macOS ZIP creation is on the release critical path. Normal compression
+  // preserves the updater artifact contract without spending several minutes
+  // recompressing Electron's already-compressed application payload.
+  compression: releasePlatform === 'darwin' ? 'normal' : 'maximum',
   electronLanguages: ['en-US'],
   releaseInfo: {
     releaseNotes,

@@ -101,7 +101,7 @@ describe('Electron Builder release identity', () => {
       }],
       linuxSyncDesktopName: true,
       afterPack: 'build/after-pack.cjs',
-      compression: 'maximum',
+      compression: 'normal',
       electronLanguages: ['en-US'],
       releaseNotes: expect.stringContaining('Added a reusable blank PDF template library'),
       nsisInclude: 'build/installer.nsh',

@@ -37,7 +37,8 @@ describe('standard Homebrew publication contract', () => {
     expect(dispatch).toContain('environment: homebrew-dispatch');
     expect(dispatch).toContain('HOMEBREW_DISPATCHER_PRIVATE_KEY');
     expect(dispatch).toContain('repos/$TAP_REPOSITORY/dispatches');
-    expect(dispatch).toContain('gh run watch');
+    expect(dispatch).not.toContain('gh run watch');
+    expect(dispatch).not.toContain('permission-actions: read');
     expect(workflow).not.toContain('HOMEBREW_TAP_DEPLOY_KEY');
   });
 });
