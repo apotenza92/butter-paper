@@ -1,11 +1,11 @@
 import { normalizeRect, pdfPoint, type Markup, type PageModel, type PageTransform, type PdfPoint, type Rect } from '@butter-paper/core';
-import type { PdfContentPrimitive, PdfPageGeometryIndex } from '@butter-paper/pdf';
+import type { PdfContentPrimitive, PdfPageGeometryIndex, PdfPageGridDefinition } from '@butter-paper/pdf';
 import type { SnapTarget } from '../state/viewerStore';
 import { getMarkupToolDefinition } from './toolRegistry';
 import type { GeometryPrimitive } from './types';
 
-export type SnapSource = 'annotation' | 'pdf-content';
-export type SnapRole = 'vertex' | 'endpoint' | 'midpoint' | 'center' | 'intersection' | 'edge' | 'bounds';
+export type SnapSource = 'annotation' | 'pdf-content' | 'page-grid' | 'construction-grid' | 'dimension-increment';
+export type SnapRole = 'vertex' | 'endpoint' | 'midpoint' | 'center' | 'intersection' | 'edge' | 'bounds' | 'increment';
 
 export type SnapCandidate =
   | {
@@ -218,6 +218,59 @@ export function getPdfContentSnapCandidates(index: PdfPageGeometryIndex | null |
 
   const candidates = withIntersectionCandidates(index.primitives.flatMap((primitive) => snapCandidatesForPdfContentPrimitive(primitive)));
   pdfContentSnapCandidateCache.set(index, candidates);
+  return candidates;
+}
+
+export function getPageGridSnapCandidates(index: PdfPageGeometryIndex | null | undefined): readonly SnapCandidate[] {
+  if (!index?.pageGrid) return [];
+  return pageGridSnapCandidates(index.pageGrid);
+}
+
+export function getConstructionGridSnapCandidates(
+  width: number,
+  height: number,
+  spacingMm: number,
+): readonly SnapCandidate[] {
+  return pageGridSnapCandidates({
+    type: 'rectangular',
+    origin: pdfPoint(0, 0),
+    spacing: spacingMm * 72 / 25.4,
+    width,
+    height,
+    rotationDegrees: 0,
+    source: 'manual',
+  }).map((candidate) => ({ ...candidate, source: 'construction-grid' as const }));
+}
+
+function pageGridSnapCandidates(grid: PdfPageGridDefinition): readonly SnapCandidate[] {
+  const candidates: SnapCandidate[] = [];
+  if (grid.type === 'ruled') {
+    for (let y = grid.origin.y; y <= grid.height; y += grid.spacing) {
+      if (y >= 0) candidates.push({ kind: 'edge', start: pdfPoint(0, y), end: pdfPoint(grid.width, y), source: 'page-grid', role: 'edge' });
+    }
+    return candidates;
+  }
+  if (grid.type === 'rectangular') {
+    for (let x = grid.origin.x; x <= grid.width; x += grid.spacing) {
+      if (x < 0) continue;
+      for (let y = grid.origin.y; y <= grid.height; y += grid.spacing) {
+        if (y >= 0) candidates.push({ kind: 'point', point: pdfPoint(x, y), source: 'page-grid', role: 'intersection' });
+      }
+    }
+    return candidates;
+  }
+  return angledGridIntersections(grid);
+}
+
+function angledGridIntersections(grid: PdfPageGridDefinition): readonly SnapCandidate[] {
+  const verticalSpacing = grid.type === 'triangle' ? grid.spacing * Math.sqrt(3) / 2 : grid.spacing * Math.sqrt(3) / 2;
+  const candidates: SnapCandidate[] = [];
+  for (let row = 0, y = grid.origin.y; y <= grid.height; row += 1, y += verticalSpacing) {
+    const offset = row % 2 === 0 ? 0 : grid.spacing / 2;
+    for (let x = grid.origin.x + offset; x <= grid.width; x += grid.spacing) {
+      if (x >= 0 && y >= 0) candidates.push({ kind: 'point', point: pdfPoint(x, y), source: 'page-grid', role: 'intersection' });
+    }
+  }
   return candidates;
 }
 
@@ -718,7 +771,7 @@ function snapTargetForRole(role: SnapRole): SnapTarget {
   if (role === 'vertex' || role === 'endpoint') {
     return 'endpoint';
   }
-  if (role === 'edge' || role === 'bounds') {
+  if (role === 'edge' || role === 'bounds' || role === 'increment') {
     return 'nearest';
   }
   return role;
@@ -735,6 +788,8 @@ function rolePriority(role: SnapRole): number {
       return 2;
     case 'center':
       return 3;
+    case 'increment':
+      return 4;
     case 'edge':
     case 'bounds':
       return 8;

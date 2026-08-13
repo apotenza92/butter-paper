@@ -51,7 +51,8 @@ describe('simple shape placement', () => {
   });
 
   it('creates a rectangle with one drag', () => {
-    const layer = renderRectangleLayer();
+    const onMarkupPlaced = vi.fn();
+    const layer = renderRectangleLayer('rectangle', onMarkupPlaced);
 
     dispatchPointer(layer, 'pointerdown', 10, 10);
     dispatchPointer(layer, 'pointermove', 40, 40);
@@ -60,6 +61,7 @@ describe('simple shape placement', () => {
     expect(documentModel.markups).toEqual([
       expect.objectContaining({ kind: 'rectangle', rect: { x: 10, y: 752, width: 30, height: 30 } }),
     ]);
+    expect(onMarkupPlaced).toHaveBeenCalledOnce();
   });
 
   it('creates a perfect circle when Shift is held while dragging an ellipse', () => {
@@ -74,7 +76,10 @@ describe('simple shape placement', () => {
     ]);
   });
 
-  function renderRectangleLayer(activeTool: 'rectangle' | 'ellipse' = 'rectangle'): SVGSVGElement {
+  function renderRectangleLayer(
+    activeTool: 'rectangle' | 'ellipse' = 'rectangle',
+    onMarkupPlaced = vi.fn(),
+  ): SVGSVGElement {
     const page = { id: 'page-1', index: 0, size: { width: 612, height: 792 }, rotation: 0 } as const;
     documentModel = { ...documentModel, pages: [page] };
     act(() => root.render(createElement(AnnotationLayer, {
@@ -88,6 +93,7 @@ describe('simple shape placement', () => {
       setSelectedMarkupIds: vi.fn(),
       setPostPlacement: vi.fn(),
       consumePendingImageAsset: vi.fn(() => null),
+      onMarkupPlaced,
       updateDocument,
     })));
 

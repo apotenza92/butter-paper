@@ -10,9 +10,10 @@ import {
 
 interface BlankPdfPagePreviewProps {
   settings: BlankPdfSettings;
+  compact?: boolean;
 }
 
-export function BlankPdfPagePreview({ settings }: BlankPdfPagePreviewProps) {
+export function BlankPdfPagePreview({ settings, compact = false }: BlankPdfPagePreviewProps) {
   const patternId = `blank-pdf-preview-${useId().replaceAll(':', '')}`;
   const dimensions = previewDimensions(settings);
   const spacingMm = previewSpacing(settings);
@@ -32,7 +33,9 @@ export function BlankPdfPagePreview({ settings }: BlankPdfPagePreviewProps) {
 
   return (
     <div
-      className="flex h-48 w-full items-center justify-center rounded-lg bg-muted/50 p-3"
+      className={compact
+        ? 'flex h-32 w-full items-center justify-center rounded-lg bg-muted/50 p-2'
+        : 'flex h-48 w-full items-center justify-center rounded-lg bg-muted/50 p-3'}
       data-domain-ui-exception="blank-pdf-page-preview"
       data-testid="blank-pdf-page-preview-frame"
       style={{ containerType: 'size' }}
@@ -76,7 +79,7 @@ export function BlankPdfPagePreview({ settings }: BlankPdfPagePreviewProps) {
             />
           ) : null}
         </svg>
-        <div
+        {!compact ? <div
           className="absolute inset-0 flex items-center justify-center"
           aria-hidden="true"
         >
@@ -86,22 +89,22 @@ export function BlankPdfPagePreview({ settings }: BlankPdfPagePreviewProps) {
           >
             {paperLabel}
           </span>
-        </div>
-        <span
+        </div> : null}
+        {!compact ? <span
           className="absolute bottom-1 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-sm bg-white/90 px-1 py-0.5 text-xs leading-none text-black/70"
           data-testid="blank-pdf-page-preview-width-label"
           aria-hidden="true"
         >
           {dimensions.widthMm} mm wide
-        </span>
-        <span
+        </span> : null}
+        {!compact ? <span
           className="absolute left-1 top-1/2 -translate-y-1/2 rotate-180 whitespace-nowrap rounded-sm bg-white/90 px-1 py-0.5 text-xs leading-none text-black/70"
           data-testid="blank-pdf-page-preview-height-label"
           aria-hidden="true"
           style={{ writingMode: 'vertical-rl' }}
         >
           {dimensions.heightMm} mm high
-        </span>
+        </span> : null}
       </div>
     </div>
   );
@@ -121,21 +124,21 @@ function PatternDefinition({
   if (type === 'dots') {
     return (
       <pattern id={id} width={spacing} height={spacing} patternUnits="userSpaceOnUse">
-        <circle cx={spacing / 2} cy={spacing / 2} r={Math.max(0.6, spacing / 16)} fill={color} />
+        <circle cx={spacing / 2} cy={spacing / 2} r={Math.max(1.1, spacing / 10)} fill={color} />
       </pattern>
     );
   }
   if (type === 'grid') {
     return (
       <pattern id={id} width={spacing} height={spacing} patternUnits="userSpaceOnUse">
-        <path d={`M ${spacing} 0 L 0 0 0 ${spacing}`} fill="none" stroke={color} strokeWidth="0.75" vectorEffect="non-scaling-stroke" />
+        <path d={`M ${spacing} 0 L 0 0 0 ${spacing}`} fill="none" stroke={color} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
       </pattern>
     );
   }
   if (type === 'lined') {
     return (
       <pattern id={id} width={spacing} height={spacing} patternUnits="userSpaceOnUse">
-        <path d={`M 0 ${spacing} H ${spacing}`} fill="none" stroke={color} strokeWidth="0.75" vectorEffect="non-scaling-stroke" />
+        <path d={`M 0 ${spacing} H ${spacing}`} fill="none" stroke={color} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
       </pattern>
     );
   }
@@ -153,7 +156,7 @@ function PatternDefinition({
         d={`M 0 0 H ${spacing * 2} M 0 0 L ${spacing} ${triangleHeight} ${spacing * 2} 0`}
         fill="none"
         stroke={color}
-        strokeWidth="0.75"
+        strokeWidth="1.5"
         vectorEffect="non-scaling-stroke"
       />
     </pattern>

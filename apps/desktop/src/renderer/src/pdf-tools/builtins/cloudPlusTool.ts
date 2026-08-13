@@ -575,6 +575,7 @@ export function cloudPlusRoutingObstacles(
       switch (markup.kind) {
         case 'text-box':
         case 'rectangle':
+        case 'redact':
         case 'ellipse':
         case 'arc':
         case 'image':

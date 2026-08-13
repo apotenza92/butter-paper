@@ -15,8 +15,10 @@ export interface VisibleThumbnailRange {
 export const THUMBNAIL_MAX_WIDTH = 188;
 export const THUMBNAIL_MAX_HEIGHT = 220;
 
+const A3_LANDSCAPE_WIDTH_MM = 420;
+const A3_LANDSCAPE_HEIGHT_MM = 297;
 const MIN_THUMBNAIL_WIDTH = 120;
-const CONTAINER_GAP = 0;
+const CONTAINER_GAP = 8;
 const ITEM_GAP = 16;
 const ITEM_HEADER_HEIGHT = 32;
 const ITEM_CONTENT_GAP = 10;
@@ -32,15 +34,15 @@ export function computeThumbnailPreviewWidth(viewportWidth: number): number {
 }
 
 export function computeThumbnailPreviewHeight(
-  page: Pick<PageModel, 'size'>,
+  _page: Pick<PageModel, 'size'>,
   previewWidth: number,
   maxPreviewHeight = THUMBNAIL_MAX_HEIGHT,
 ): number {
-  const safePageWidth = Math.max(1, page.size.width);
-  const safePageHeight = Math.max(1, page.size.height);
-  const scaledHeight = Math.round((previewWidth * safePageHeight) / safePageWidth);
+  const a3LandscapeHeight = Math.round(
+    (previewWidth * A3_LANDSCAPE_HEIGHT_MM) / A3_LANDSCAPE_WIDTH_MM,
+  );
 
-  return Math.max(1, Math.min(maxPreviewHeight, scaledHeight));
+  return Math.max(1, Math.min(maxPreviewHeight, a3LandscapeHeight));
 }
 
 export function computeThumbnailContentSize(

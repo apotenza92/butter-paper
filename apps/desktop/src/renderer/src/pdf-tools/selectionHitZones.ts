@@ -55,6 +55,7 @@ export function projectChromeHandlePoint(
   point: { readonly x: number; readonly y: number },
   source: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
   target: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
+  outsideOffsetPx?: number,
 ) {
   const sourceRight = source.x + source.width;
   const sourceBottom = source.y + source.height;
@@ -62,8 +63,8 @@ export function projectChromeHandlePoint(
   const targetBottom = target.y + target.height;
 
   return {
-    x: projectChromeAxis(point.x, source.x, sourceRight, target.x, targetRight),
-    y: projectChromeAxis(point.y, source.y, sourceBottom, target.y, targetBottom),
+    x: projectChromeAxis(point.x, source.x, sourceRight, target.x, targetRight, outsideOffsetPx),
+    y: projectChromeAxis(point.y, source.y, sourceBottom, target.y, targetBottom, outsideOffsetPx),
   };
 }
 
@@ -86,13 +87,20 @@ export function unrotateViewportPointAroundBounds(
   };
 }
 
-function projectChromeAxis(value: number, sourceStart: number, sourceEnd: number, targetStart: number, targetEnd: number): number {
+function projectChromeAxis(
+  value: number,
+  sourceStart: number,
+  sourceEnd: number,
+  targetStart: number,
+  targetEnd: number,
+  outsideOffsetPx?: number,
+): number {
   if (value < sourceStart) {
-    return targetStart + (value - sourceStart);
+    return targetStart - (outsideOffsetPx ?? sourceStart - value);
   }
 
   if (value > sourceEnd) {
-    return targetEnd + (value - sourceEnd);
+    return targetEnd + (outsideOffsetPx ?? value - sourceEnd);
   }
 
   const sourceSize = sourceEnd - sourceStart;

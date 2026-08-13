@@ -111,4 +111,24 @@ describe('blank PDF page preview', () => {
     expect(host.querySelector('pattern path')?.getAttribute('stroke')).toBe('#4e95cc');
     expect(host.querySelector('[data-testid="blank-pdf-page-preview-artwork"]')?.getAttribute('preserveAspectRatio')).toBe('xMidYMid meet');
   });
+
+  it('uses exaggerated artwork only in the live preview', () => {
+    act(() => root.render(createElement(BlankPdfPagePreview, {
+      settings: {
+        ...DEFAULT_BLANK_PDF_SETTINGS,
+        patternType: 'dots',
+        patternSpacingPreset: '10',
+      },
+    })));
+
+    expect(host.querySelector('pattern circle')?.getAttribute('r')).toBe('1.1');
+
+    act(() => root.render(createElement(BlankPdfPagePreview, {
+      settings: {
+        ...DEFAULT_BLANK_PDF_SETTINGS,
+        patternType: 'grid',
+      },
+    })));
+    expect(host.querySelector('pattern path')?.getAttribute('stroke-width')).toBe('1.5');
+  });
 });

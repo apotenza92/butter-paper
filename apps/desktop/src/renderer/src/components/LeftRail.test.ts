@@ -32,9 +32,12 @@ describe('LeftRail', () => {
     })));
 
     const pages = host.querySelector<HTMLButtonElement>('[data-testid="left-rail-pages"]');
+    const rail = host.querySelector<HTMLElement>('[data-testid="left-rail"]');
     expect(pages?.getAttribute('aria-expanded')).toBe('true');
     expect(pages?.getAttribute('aria-controls')).toBe('left-sidebar-panel');
     expect(pages?.tabIndex).toBe(0);
+    expect(rail?.className).toContain('border-r');
+    expect(rail?.className).toContain('border-border');
     pages?.focus();
     expect(document.activeElement).toBe(pages);
 

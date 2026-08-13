@@ -1,7 +1,7 @@
 import type { DocumentModel, Markup, SignatureAppearanceAsset } from '@butter-paper/core';
-import type { PdfPageGeometryIndex, PdfSaveMode, PdfSaveResult } from '@butter-paper/pdf';
+import type { PdfPageGeometryIndex, PdfSaveResult } from '@butter-paper/pdf';
 
-export type ToolMode = 'select' | 'pan' | 'text-box' | 'rectangle' | 'ellipse' | 'arc' | 'line' | 'arrow' | 'dimension' | 'length' | 'polylength' | 'area' | 'polyline' | 'polygon' | 'pen' | 'highlight' | 'cloud' | 'cloud-plus' | 'callout' | 'image' | 'snapshot';
+export type ToolMode = 'select' | 'pan' | 'text-box' | 'rectangle' | 'ellipse' | 'arc' | 'line' | 'arrow' | 'dimension' | 'length' | 'polylength' | 'area' | 'polyline' | 'polygon' | 'pen' | 'highlight' | 'cloud' | 'cloud-plus' | 'callout' | 'redact' | 'image' | 'snapshot';
 export type ScrollMode = 'continuous' | 'single-page';
 export type ScrollWheelMode = 'zoom' | 'scroll';
 export type ZoomPreset = 'manual' | 'fit-width' | 'fit-page';
@@ -31,6 +31,7 @@ export type ApplicationMenuCommand =
   | 'open-pdf'
   | 'save'
   | 'save-as'
+  | 'save-document-as-template'
   | 'undo'
   | 'redo'
   | 'cut'
@@ -302,6 +303,14 @@ export interface BlankPdfCreateResult {
   readonly temporarySourcePath: string;
 }
 
+export interface ImportedPdfTemplateRecord {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: 'imported-pdf';
+  readonly pageCount: number;
+  readonly createdAt: string;
+}
+
 export interface PdfDocumentAccessDescriptor {
   readonly handle: string;
 }
@@ -316,17 +325,20 @@ export interface PdfDocumentAccessRequest {
   readonly documentHandle: string;
 }
 
-export interface SaveDocumentRequest {
+interface SaveDocumentRequestBase {
   readonly documentHandle: string;
-  readonly targetHandle: string;
   markups: readonly Markup[];
   pageScales?: DocumentModel['pageScales'];
   pageRotations?: ReadonlyArray<{
     readonly pageIndex: number;
     readonly rotation: DocumentModel['pages'][number]['rotation'];
   }>;
-  mode: PdfSaveMode;
 }
+
+export type SaveDocumentRequest = SaveDocumentRequestBase & (
+  | { readonly mode: 'save'; readonly targetHandle?: never }
+  | { readonly mode: 'saveAs'; readonly targetHandle: string }
+);
 
 
 export interface PageGeometryRequest {
@@ -383,6 +395,15 @@ export interface RecentSignaturesSnapshot {
   signatures: RecentSignature[];
 }
 
+export interface PdfOpenProgress {
+  readonly fileName: string;
+  readonly sourceName: string | null;
+  readonly totalBytes: number | null;
+  readonly bytesRead: number;
+  readonly phase: 'reading' | 'processing';
+  readonly estimatedSecondsRemaining: number | null;
+}
+
 export interface ButterPaperBridge {
   readonly environment: {
     readonly testMode: boolean;
@@ -397,6 +418,8 @@ export interface ButterPaperBridge {
     takePendingPdfPaths(): Promise<string[]>;
     authorizeDroppedPdf(file: File): Promise<string>;
     onOpenPdfPaths(listener: (filePaths: string[]) => void): () => void;
+    onPdfOpenPendingChanged(listener: (pending: boolean) => void): () => void;
+    onPdfOpenProgressChanged(listener: (progress: PdfOpenProgress | null) => void): () => void;
     setCloseBlocked(blocked: boolean): Promise<void>;
     onCloseRequested(listener: () => void): () => void;
     onCloseTabRequested(listener: () => void): () => void;
@@ -428,6 +451,13 @@ export interface ButterPaperBridge {
   readonly dialogs: {
     openPdfDialog(): Promise<string[] | null>;
     savePdfAsDialog(defaultPath?: string): Promise<PdfSaveTargetDescriptor | null>;
+  };
+  readonly templates: {
+    list(): Promise<readonly ImportedPdfTemplateRecord[]>;
+    importPdf(): Promise<ImportedPdfTemplateRecord | null>;
+    importDocument(request: PdfDocumentAccessRequest & { readonly name: string }): Promise<ImportedPdfTemplateRecord>;
+    remove(templateId: string): Promise<void>;
+    createDocument(templateId: string): Promise<BlankPdfCreateResult>;
   };
   readonly signaturePhone: {
     start(mode: PhoneSignatureMode): Promise<PhoneSignatureSession>;

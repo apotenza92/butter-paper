@@ -48,6 +48,16 @@ describe('PageThumbnailItem interactions', () => {
           renderPriority: 2000,
           renderUrgency: 'visible',
           sessionVersion: 0,
+          pageScale: {
+            pageIndex: 0,
+            source: 'preset',
+            name: '1:100',
+            pdfUnits: 'cm',
+            realUnits: 'm',
+            scaleX: 1,
+            scaleY: 1,
+            precision: { mode: 'decimal', value: 0.01 },
+          },
           onSelect,
           onSetPageScale,
           onRotate,
@@ -59,17 +69,33 @@ describe('PageThumbnailItem interactions', () => {
     const selection = host.querySelector<HTMLButtonElement>('[data-testid="page-thumbnail-select-1"]');
     const actions = host.querySelector<HTMLElement>('[data-testid="page-thumbnail-actions-1"]');
     const label = host.querySelector<HTMLElement>('[data-testid="page-thumbnail-label-1"]');
+    const scalePosition = host.querySelector<HTMLElement>('[data-testid="page-thumbnail-scale-position-1"]');
+    const scaleBadge = host.querySelector<HTMLElement>('[data-testid="page-thumbnail-scale-badge-1"]');
     const preview = host.querySelector<HTMLElement>('[data-testid="page-thumbnail-preview-1"]');
     const setScale = host.querySelector<HTMLButtonElement>('[data-testid="page-thumbnail-set-scale-1"]');
     const rotateLeft = host.querySelector<HTMLButtonElement>('[data-testid="page-thumbnail-rotate-left-1"]');
     const rotateRight = host.querySelector<HTMLButtonElement>('[data-testid="page-thumbnail-rotate-right-1"]');
 
     expect(item?.getAttribute('data-variant')).toBe('outline');
+    expect(item?.getAttribute('data-selected')).toBeNull();
+    expect(item?.className).toContain('left-2');
+    expect(item?.className).toContain('right-2');
+    expect(item?.className).toContain('rounded-lg');
+    expect(item?.className).toContain('border-border');
+    expect(item?.className).not.toContain('border-[0.5px]');
     expect(selection?.className).toContain('absolute');
     expect(selection?.className).toContain('inset-0');
+    expect(selection?.className).toContain('z-0');
+    expect(selection?.className).toContain('rounded-lg');
     expect(actions?.className).toContain('relative');
+    expect(actions?.className).toContain('z-10');
     expect(preview?.className).toContain('relative');
+    expect(preview?.className).toContain('z-10');
+    expect(host.querySelector('[data-testid="page-thumbnail-content-1"]')?.className).not.toContain('bp-current-page-outline');
     expect(item?.contains(label)).toBe(true);
+    expect(scalePosition?.className).toContain('flex-1');
+    expect(scalePosition?.className).toContain('justify-center');
+    expect(scalePosition?.contains(scaleBadge ?? null)).toBe(true);
     expect(item?.contains(preview)).toBe(true);
     expect(label?.closest('button')).toBeNull();
     expect(selection?.contains(label)).toBe(false);
@@ -80,6 +106,7 @@ describe('PageThumbnailItem interactions', () => {
     expect(setScale?.className).toContain('size-8');
     expect(rotateLeft?.className).toContain('size-8');
     expect(rotateRight?.className).toContain('size-8');
+    expect(host.querySelector('[data-testid="page-thumbnail-separator-1"]')).toBeNull();
     expect(host.querySelector('[data-testid="page-thumbnail-more-1"]')).toBeNull();
 
     act(() => selection?.click());
@@ -93,6 +120,46 @@ describe('PageThumbnailItem interactions', () => {
     expect(onRotate).toHaveBeenNthCalledWith(1, 'left');
     expect(onRotate).toHaveBeenNthCalledWith(2, 'right');
   });
+
+  it('uses the stock muted item state for the active page without an extra preview outline', () => {
+    act(() => {
+      root.render(
+        createElement(PageThumbnailItem, {
+          session: createSessionStub(),
+          page: {
+            id: 'page-1',
+            index: 0,
+            rotation: 0,
+            size: { width: 612, height: 792 },
+          } as PageModel,
+          top: 0,
+          previewWidth: 188,
+          previewHeight: 133,
+          itemHeight: 195,
+          markups: [],
+          isActive: true,
+          renderPriority: 2000,
+          renderUrgency: 'visible',
+          sessionVersion: 0,
+          onSelect: () => undefined,
+          onSetPageScale: () => undefined,
+          onRotate: () => undefined,
+        }),
+      );
+    });
+
+    const item = host.querySelector<HTMLElement>('[data-testid="page-thumbnail-item-1"]');
+    const selection = host.querySelector<HTMLButtonElement>('[data-testid="page-thumbnail-select-1"]');
+    const content = host.querySelector<HTMLElement>('[data-testid="page-thumbnail-content-1"]');
+
+    expect(item?.getAttribute('data-variant')).toBe('muted');
+    expect(item?.getAttribute('data-selected')).toBe('true');
+    expect(item?.className).toContain('bg-muted/50');
+    expect(item?.className).toContain('border-transparent');
+    expect(selection?.getAttribute('aria-current')).toBe('page');
+    expect(content?.className).not.toContain('bp-current-page-outline');
+  });
+
 });
 
 function createSessionStub(): LocalPdfSession {

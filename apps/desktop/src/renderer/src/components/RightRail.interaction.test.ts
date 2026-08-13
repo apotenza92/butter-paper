@@ -19,8 +19,14 @@ class TestResizeObserver {
 }
 
 const SNAP_SETTINGS: SnapSettings = {
-  snapToContent: true,
-  snapToMarkup: true,
+      snapToContent: true,
+      snapToMarkup: true,
+      snapToPageGrid: true,
+      dimensionIncrementEnabled: false,
+      dimensionIncrementMm: 5,
+      constructionGridEnabled: false,
+      constructionGridVisible: true,
+      constructionGridSpacingMm: 10,
   sensitivityPx: 8,
   snapTargets: ['endpoint', 'midpoint', 'center', 'intersection'],
   snapGuidesEnabled: true,
@@ -51,7 +57,7 @@ describe('RightRail properties interactions', () => {
     vi.unstubAllGlobals();
   });
 
-  it('uses one consistent icon-only grid for Properties, Snap, Select, and Pan', () => {
+  it('pins Properties and Snap above the scrollable General tools', () => {
     act(() =>
       root.render(
         createElement(RightRail, {
@@ -79,9 +85,6 @@ describe('RightRail properties interactions', () => {
     expect(trigger?.textContent).toBe('');
     expect(
       host.querySelector('[data-testid="properties-trigger-slot"]')?.className,
-    ).toContain('gap-2');
-    expect(
-      host.querySelector('[data-testid="properties-trigger-slot"]')?.className,
     ).toContain('w-full');
     expect(
       host.querySelectorAll('[data-testid="properties-trigger-slot"]'),
@@ -92,6 +95,9 @@ describe('RightRail properties interactions', () => {
     const controlGrid = host.querySelector<HTMLElement>(
       '[data-testid="top-rail-control-grid"]',
     );
+    const generalGrid = host.querySelector<HTMLElement>(
+      '[data-testid="general-rail-control-grid"]',
+    );
     expect(heading?.textContent).toBe('General');
     expect(heading?.className).toContain('text-center');
     expect(heading?.className).toContain('text-sm');
@@ -101,11 +107,16 @@ describe('RightRail properties interactions', () => {
         child.getAttribute('data-testid'),
       ),
     ).toEqual([
-      'tool-select',
-      'tool-pan',
       'properties-sidebar-trigger',
       'viewer-snap-controls',
     ]);
+    expect(generalGrid?.style.width).toBe('72px');
+    expect(generalGrid?.className).toContain('justify-center');
+    expect(
+      Array.from(generalGrid?.children ?? []).map((child) =>
+        child.getAttribute('data-testid'),
+      ),
+    ).toEqual(['tool-select', 'tool-pan']);
 
     const snapTrigger = host.querySelector<HTMLButtonElement>(
       '[data-testid="viewer-snap-target-menu"]',
@@ -125,6 +136,9 @@ describe('RightRail properties interactions', () => {
     const imageTrigger = host.querySelector<HTMLButtonElement>(
       '[data-testid="tool-image"]',
     );
+    const redactTrigger = host.querySelector<HTMLButtonElement>(
+      '[data-testid="tool-redact"]',
+    );
     const signatureTrigger = host.querySelector<HTMLButtonElement>(
       '[data-testid="tool-signature"]',
     );
@@ -135,8 +149,8 @@ describe('RightRail properties interactions', () => {
     expect(snapTrigger?.getAttribute('aria-pressed')).toBe('false');
     expect(snapControls?.parentElement).toBe(controlGrid);
     expect(snapControls?.className).not.toContain('w-full');
-    expect(selectTrigger?.parentElement).toBe(controlGrid);
-    expect(panTrigger?.parentElement).toBe(controlGrid);
+    expect(selectTrigger?.parentElement).toBe(generalGrid);
+    expect(panTrigger?.parentElement).toBe(generalGrid);
     expect(selectTrigger?.textContent).toBe('');
     expect(panTrigger?.textContent).toBe('');
     expect(panTrigger?.getAttribute('data-rail-tooltip')).toBe(
@@ -149,6 +163,7 @@ describe('RightRail properties interactions', () => {
     expect(selectTrigger?.className).not.toContain('border-input');
     expect(panTrigger?.className).not.toContain('border-input');
     expect(markupGroup?.contains(signatureTrigger ?? null)).toBe(true);
+    expect(redactTrigger?.nextElementSibling?.querySelector('[data-testid="tool-signature"]')).toBe(signatureTrigger);
     expect(signatureTrigger?.getAttribute('data-rail-tooltip')).toBe('Signature');
     expect(signatureTrigger?.closest('[data-testid="signature-controls"]')?.nextElementSibling).toBe(imageTrigger);
     for (const control of [trigger, snapTrigger, selectTrigger, panTrigger]) {
@@ -171,11 +186,19 @@ describe('RightRail properties interactions', () => {
       railViewport?.contains(
         host.querySelector('[data-testid="properties-trigger-slot"]'),
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
-      host.querySelector('[data-testid="properties-trigger-slot"]')
-        ?.parentElement,
-    ).toBe(markupGroup?.parentElement);
+      railViewport?.contains(host.querySelector('[data-testid="general-rail-group"]')),
+    ).toBe(true);
+    const pinnedRow = host.querySelector<HTMLElement>('[data-testid="properties-trigger-slot"]');
+    expect(pinnedRow?.className).toContain('h-12');
+    expect(pinnedRow?.className).toContain('border-b');
+    expect(pinnedRow?.className).toContain('border-border');
+    expect(host.querySelector('[data-testid="right-rail-pinned-divider"]')).toBeNull();
+    for (const divider of host.querySelectorAll<HTMLElement>('[data-testid^="right-rail-group-divider-"]')) {
+      expect(divider.className).toContain('w-full');
+      expect(divider.className).not.toContain('-mx-2');
+    }
     for (const groupHeading of host.querySelectorAll<HTMLElement>(
       'section > h2',
     )) {
@@ -265,7 +288,7 @@ describe('RightRail properties interactions', () => {
     expect(onSelectTool).not.toHaveBeenCalled();
   });
 
-  it('stacks all four icon-only controls at one column', () => {
+  it('stacks each fixed and General control pair at one column', () => {
     act(() =>
       root.render(
         createElement(RightRail, {
@@ -305,16 +328,21 @@ describe('RightRail properties interactions', () => {
     const controlGrid = host.querySelector<HTMLElement>(
       '[data-testid="top-rail-control-grid"]',
     );
+    const generalGrid = host.querySelector<HTMLElement>(
+      '[data-testid="general-rail-control-grid"]',
+    );
     expect(
       host
         .querySelector('[data-testid="right-rail"]')
         ?.getAttribute('data-column-count'),
     ).toBe('1');
     expect(controlGrid?.style.gridTemplateColumns).toBe('repeat(1, 32px)');
+    expect(generalGrid?.style.width).toBe('32px');
     expect(
       host.querySelector('[data-testid="right-rail-general-heading"]'),
     ).toBeNull();
-    expect(slot?.className).toContain('gap-2');
+    expect(slot?.className).toContain('shrink-0');
+    expect(controlGrid?.className).toContain('gap-2');
     expect(propertiesTrigger?.textContent).toBe('');
     expect(
       host.querySelector('[data-testid="properties-sidebar-label"]'),
@@ -371,6 +399,8 @@ describe('RightRail properties interactions', () => {
     );
     expect(legends.map((legend) => legend.textContent)).toEqual([
       'Snap to',
+      'Construction grid',
+      'Dimension increments',
       'Snap points',
       'Snap guides',
     ]);
@@ -641,10 +671,12 @@ describe('RightRail properties interactions', () => {
     expect(snapSourceSettingsForValues(['markup'])).toEqual({
       snapToContent: false,
       snapToMarkup: true,
+      snapToPageGrid: false,
     });
     expect(snapSourceSettingsForValues([])).toEqual({
       snapToContent: false,
       snapToMarkup: false,
+      snapToPageGrid: false,
     });
   });
 });

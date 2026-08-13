@@ -11,7 +11,7 @@ export const APPLICATION_MENU_BAR_VISIBILITY_LABEL = 'Show Menu Bar in App Windo
 export const APPLICATION_MENU_COMMANDS = {
   newPdf: {
     command: 'new-pdf',
-    label: 'New Blank PDF...',
+    label: 'New from Template...',
     accelerator: 'CommandOrControl+N',
   },
   openPdf: {
@@ -28,6 +28,10 @@ export const APPLICATION_MENU_COMMANDS = {
     command: 'save-as',
     label: 'Save As...',
     accelerator: 'CommandOrControl+Shift+S',
+  },
+  saveDocumentAsTemplate: {
+    command: 'save-document-as-template',
+    label: 'Save Document as Template...',
   },
   undo: { command: 'undo', label: 'Undo', accelerator: 'CommandOrControl+Z' },
   redo: { command: 'redo', label: 'Redo', accelerator: 'CommandOrControl+Shift+Z' },

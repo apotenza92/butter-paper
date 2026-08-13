@@ -7,10 +7,11 @@ import {
   ViewerToolbar,
 } from './ViewerToolbar';
 
-function renderToolbar(cadViewEnabled: boolean): string {
+function renderToolbar(cadViewEnabled: boolean, disabled = false): string {
   const doNothing = () => undefined;
   return renderToStaticMarkup(createElement(ViewerToolbar, {
     cadViewEnabled,
+    disabled,
     zoom: 1,
     zoomPreset: 'manual',
     scrollMode: 'continuous',
@@ -46,6 +47,13 @@ describe('viewer toolbar control semantics', () => {
 
   it('does not render a separate zoom reset button', () => {
     expect(renderToolbar(false)).not.toContain('data-testid="viewer-zoom-reset"');
+  });
+
+  it('does not show a selected view mode when no document is open', () => {
+    const toolbar = renderToolbar(true, true);
+
+    expect(toolbar).not.toContain('data-state="on"');
+    expect(toolbar).not.toContain('aria-pressed="true"');
   });
 });
 

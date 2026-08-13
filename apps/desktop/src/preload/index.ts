@@ -7,6 +7,7 @@ import type {
   ApplicationMenuCommand,
   ApplicationMenuState,
   PageGeometryRequest,
+  PdfOpenProgress,
   PdfDocumentAccessRequest,
   PhoneSignatureMode,
   SaveDocumentRequest,
@@ -20,12 +21,16 @@ const { contextBridge, ipcRenderer, webUtils } = electron;
 const isTestMode = process.env.BP_TEST_MODE === '1';
 const defaultSamplePdfPath = resolveDefaultSamplePdfPath();
 let openPdfPathsListener: ((filePaths: string[]) => void) | null = null;
+let pdfOpenPendingListener: ((pending: boolean) => void) | null = null;
+let pdfOpenProgressListener: ((progress: PdfOpenProgress | null) => void) | null = null;
 let closeRequestedListener: (() => void) | null = null;
 let closeTabRequestedListener: (() => void) | null = null;
 let menuCommandListener: ((command: ApplicationMenuCommand) => void) | null = null;
 let menuBarVisibilityListener: ((visible: boolean) => void) | null = null;
 let windowFullScreenListener: ((fullScreen: boolean) => void) | null = null;
 const pendingOpenPdfPaths: string[][] = [];
+const pendingPdfOpenChanges: boolean[] = [];
+const pendingPdfOpenProgressChanges: Array<PdfOpenProgress | null> = [];
 const pendingCloseRequests: true[] = [];
 const pendingCloseTabRequests: true[] = [];
 const pendingMenuCommands: ApplicationMenuCommand[] = [];
@@ -37,6 +42,22 @@ ipcRenderer.on(ipcChannels.applicationOpenPdfPaths, (_event, filePaths: string[]
     openPdfPathsListener(filePaths);
   } else {
     pendingOpenPdfPaths.push(filePaths);
+  }
+});
+
+ipcRenderer.on(ipcChannels.applicationPdfOpenPendingChanged, (_event, pending: boolean) => {
+  if (pdfOpenPendingListener) {
+    pdfOpenPendingListener(pending);
+  } else {
+    pendingPdfOpenChanges.push(pending);
+  }
+});
+
+ipcRenderer.on(ipcChannels.applicationPdfOpenProgressChanged, (_event, progress: PdfOpenProgress | null) => {
+  if (pdfOpenProgressListener) {
+    pdfOpenProgressListener(progress);
+  } else {
+    pendingPdfOpenProgressChanges.push(progress);
   }
 });
 
@@ -89,6 +110,28 @@ const bridge: ButterPaperBridge = {
       return () => {
         if (openPdfPathsListener === listener) {
           openPdfPathsListener = null;
+        }
+      };
+    },
+    onPdfOpenPendingChanged: (listener: (pending: boolean) => void) => {
+      pdfOpenPendingListener = listener;
+      for (const pending of pendingPdfOpenChanges.splice(0)) {
+        listener(pending);
+      }
+      return () => {
+        if (pdfOpenPendingListener === listener) {
+          pdfOpenPendingListener = null;
+        }
+      };
+    },
+    onPdfOpenProgressChanged: (listener: (progress: PdfOpenProgress | null) => void) => {
+      pdfOpenProgressListener = listener;
+      for (const progress of pendingPdfOpenProgressChanges.splice(0)) {
+        listener(progress);
+      }
+      return () => {
+        if (pdfOpenProgressListener === listener) {
+          pdfOpenProgressListener = null;
         }
       };
     },
@@ -203,6 +246,13 @@ const bridge: ButterPaperBridge = {
   dialogs: {
     openPdfDialog: async () => ipcRenderer.invoke(ipcChannels.dialogOpenPdf),
     savePdfAsDialog: async (defaultPath?: string) => ipcRenderer.invoke(ipcChannels.dialogSavePdfAs, defaultPath),
+  },
+  templates: {
+    list: async () => ipcRenderer.invoke(ipcChannels.templateList),
+    importPdf: async () => ipcRenderer.invoke(ipcChannels.templateImportPdf),
+    importDocument: async (request) => ipcRenderer.invoke(ipcChannels.templateImportDocument, request),
+    remove: async (templateId: string) => ipcRenderer.invoke(ipcChannels.templateRemove, templateId),
+    createDocument: async (templateId: string) => ipcRenderer.invoke(ipcChannels.templateCreateDocument, templateId),
   },
   signaturePhone: {
     start: async (mode: PhoneSignatureMode) => ipcRenderer.invoke(ipcChannels.signaturePhoneStart, mode),

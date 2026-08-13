@@ -24,7 +24,10 @@ export const VIEWER_TOOLBAR_INSET_X = 'px-2';
 
 export const SHELL_SURFACE_APP = 'bg-background';
 export const SHELL_SURFACE_PANEL = 'bg-background';
-export const SHELL_BORDER_SUBTLE = 'border-border';
+export const SHELL_PANEL_BORDER_LEFT = 'border-l border-border';
+export const SHELL_PANEL_BORDER_RIGHT = 'border-r border-border';
+export const SHELL_BAND_BORDER_BOTTOM = 'border-b border-border';
+export const SHELL_HORIZONTAL_SEPARATOR = 'w-full';
 export const SHELL_TEXT_PRIMARY = 'text-foreground';
 export const SHELL_TEXT_SECONDARY = 'text-muted-foreground';
 export const SHELL_TEXT_MUTED = 'text-muted-foreground';

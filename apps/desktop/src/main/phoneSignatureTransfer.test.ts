@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+// @ts-expect-error The relay serves this browser module directly to the phone page.
+import { createEncryptedEnvelope } from '../../../signature-relay/public/phone-protocol.js';
 import {
   encryptPhoneSignaturePayloadForTest,
   PhoneSignatureTransferService,
@@ -23,6 +25,56 @@ describe('PhoneSignatureTransferService', () => {
   afterEach(() => {
     service?.dispose();
     service = null;
+  });
+
+  it('decrypts and acknowledges an envelope created by the phone browser module', async () => {
+    let storedEnvelope: Uint8Array | null = null;
+    const request = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (method === 'POST' && url.endsWith(`/api/sessions/${SESSION_ID}`)) {
+        return jsonResponse({ expiresAt: NOW + 300_000 }, 201);
+      }
+      if (method === 'PUT' && url.endsWith(`/api/sessions/${SESSION_ID}/payload`)) {
+        storedEnvelope = new Uint8Array(init?.body as ArrayBuffer);
+        return new Response(null, { status: 201 });
+      }
+      if (method === 'GET' && url.endsWith(`/api/sessions/${SESSION_ID}/payload`)) {
+        return storedEnvelope
+          ? new Response(responseBody(Buffer.from(storedEnvelope)), { status: 200 })
+          : new Response(null, { status: 204 });
+      }
+      if (method === 'POST' && url.endsWith(`/api/sessions/${SESSION_ID}/ack`)) {
+        storedEnvelope = null;
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 404 });
+    });
+    service = createService(request);
+    const session = await service.start(13, 'draw');
+    const phonePayload = await createEncryptedEnvelope({
+      rawBytes: new Uint8Array(PNG_BYTES),
+      mediaType: 'image/png',
+      sessionId: session.id,
+      expiresAt: session.expiresAt,
+      mode: 'draw',
+      keyBytes: new Uint8Array(ENCRYPTION_KEY),
+      messageId: new Uint8Array(16).fill(0x55),
+      iv: new Uint8Array(12).fill(0x66),
+    });
+
+    const upload = await request(`https://signatures.example.test/api/sessions/${session.id}/payload`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${PHONE_TOKEN}` },
+      body: phonePayload.envelope.buffer,
+    });
+
+    expect(upload.status).toBe(201);
+    await expect(service.poll(session.id, 13)).resolves.toEqual({
+      status: 'received',
+      image: { dataUrl: PNG_DATA_URL, mimeType: 'image/png', mode: 'draw' },
+    });
+    expect(storedEnvelope).toBeNull();
   });
 
   it('creates a QR session without exposing its capabilities to the renderer', async () => {

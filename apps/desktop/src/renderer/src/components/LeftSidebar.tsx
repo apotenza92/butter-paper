@@ -1,17 +1,12 @@
 import type { PageModel, PageRotationDirection } from '@butter-paper/core';
 import type { LocalPdfSession } from '../services/documentSession';
 import type { LeftSidebarPanel } from '../state/viewerStore';
-import {
-  DEFAULT_LEFT_SIDEBAR_WIDTH,
-  MAX_LEFT_SIDEBAR_WIDTH,
-  MIN_LEFT_SIDEBAR_WIDTH,
-} from '../state/viewerStore';
 import { PageThumbnailList } from './PageThumbnailList';
-import { SidebarResizeHandle } from './SidebarResizeHandle';
 import {
   PRIMARY_BAND_HEIGHT,
-  SHELL_BORDER_SUBTLE,
+  SHELL_BAND_BORDER_BOTTOM,
   SHELL_HEADER_INSET_X,
+  SHELL_PANEL_BORDER_RIGHT,
   SHELL_SURFACE_PANEL,
   SHELL_TEXT_MUTED,
   SHELL_TEXT_PRIMARY,
@@ -21,29 +16,28 @@ interface LeftSidebarProps {
   session: LocalPdfSession | null;
   pages: readonly PageModel[];
   panel: LeftSidebarPanel;
-  width: number;
   mutationDisabled?: boolean;
   onSelectPage: (pageIndex: number, source?: 'thumbnail', previewUrl?: string | null) => void;
   onSetPageScale: (pageIndex: number) => void;
   onRotatePage: (pageIndex: number, direction: PageRotationDirection) => void;
-  onWidthChange: (width: number) => void;
 }
 
-export function LeftSidebar({ session, pages, width, mutationDisabled = false, onSelectPage, onSetPageScale, onRotatePage, onWidthChange }: LeftSidebarProps) {
+export function LeftSidebar({ session, pages, mutationDisabled = false, onSelectPage, onSetPageScale, onRotatePage }: LeftSidebarProps) {
   const title = 'Page Thumbnails';
   return (
     <aside
-      className={['relative flex h-full flex-none flex-col border-r', SHELL_SURFACE_PANEL, SHELL_BORDER_SUBTLE].join(' ')}
+      className={['relative flex h-full flex-none flex-col', SHELL_SURFACE_PANEL, SHELL_PANEL_BORDER_RIGHT].join(' ')}
       data-testid="left-sidebar"
       id="left-sidebar-panel"
       aria-label={title}
-      style={{ width: `${width}px` }}
+      style={{ width: '300px' }}
     >
       <div
         className={[
           'flex items-center justify-center text-center text-[12px] font-semibold',
           PRIMARY_BAND_HEIGHT,
           SHELL_HEADER_INSET_X,
+          SHELL_BAND_BORDER_BOTTOM,
           SHELL_TEXT_PRIMARY,
         ].join(' ')}
         data-testid="left-sidebar-header"
@@ -64,16 +58,6 @@ export function LeftSidebar({ session, pages, width, mutationDisabled = false, o
           Open a PDF to browse page thumbnails.
         </div>
       )}
-      <SidebarResizeHandle
-        side="left"
-        width={width}
-        minWidth={MIN_LEFT_SIDEBAR_WIDTH}
-        maxWidth={MAX_LEFT_SIDEBAR_WIDTH}
-        defaultWidth={DEFAULT_LEFT_SIDEBAR_WIDTH}
-        label={`${title} sidebar`}
-        testId="left-sidebar-resize-handle"
-        onWidthChange={onWidthChange}
-      />
     </aside>
   );
 }

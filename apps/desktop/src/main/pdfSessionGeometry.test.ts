@@ -1,9 +1,10 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { degrees, PDFDocument, PDFName, PDFNumber } from 'pdf-lib';
-import { loadDocumentPayload } from './pdfSession';
+import { identifyStorageSource, loadDocumentPayload, readPdfBytesWithProgress } from './pdfSession';
+import type { PdfOpenProgress } from '../shared/protocol';
 
 const temporaryDirectories: string[] = [];
 
@@ -36,5 +37,37 @@ describe('PDF session page geometry', () => {
       size: { width: 1_440, height: 1_080 },
       rotation: 270,
     }]);
+  });
+
+  it('reports logical size and bytes read while streaming a cloud-backed source', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'bp-pdf-session-progress-'));
+    temporaryDirectories.push(directory);
+    const oneDriveDirectory = join(directory, 'OneDrive - Example');
+    await mkdir(oneDriveDirectory);
+    const source = join(oneDriveDirectory, 'drawing.pdf');
+    const bytes = Buffer.alloc(256 * 1024, 7);
+    await writeFile(source, bytes);
+    const progress: PdfOpenProgress[] = [];
+
+    const loaded = await readPdfBytesWithProgress(source, (event) => progress.push(event));
+
+    expect(loaded).toEqual(new Uint8Array(bytes));
+    expect(progress[0]).toMatchObject({
+      fileName: 'drawing.pdf',
+      sourceName: 'OneDrive',
+      totalBytes: bytes.byteLength,
+      bytesRead: 0,
+      phase: 'reading',
+    });
+    expect(progress.at(-1)).toMatchObject({
+      totalBytes: bytes.byteLength,
+      bytesRead: bytes.byteLength,
+    });
+  });
+
+  it('identifies common storage providers without guessing for local paths', () => {
+    expect(identifyStorageSource('C:\\Cloud\\OneDrive\\drawing.pdf')).toBe('OneDrive');
+    expect(identifyStorageSource('/Library/Mobile Documents/com~apple~CloudDocs/drawing.pdf')).toBe('iCloud Drive');
+    expect(identifyStorageSource('/var/local/drawing.pdf')).toBeNull();
   });
 });

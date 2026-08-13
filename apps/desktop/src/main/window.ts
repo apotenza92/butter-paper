@@ -26,6 +26,7 @@ import {
 import { resolveApplicationMetadata } from './applicationMetadata';
 import { ancestorFileCandidates } from './applicationPaths';
 import { BlankPdfTemporaryStore } from './blankPdfTemporaryStore';
+import { PdfTemplateStore } from './pdfTemplateStore';
 import { configureCameraPermissions } from './cameraPermissions';
 import { setAsDefaultPdfApp } from './defaultPdfApp';
 import { takePendingPdfPaths } from './pendingPdfPaths';
@@ -59,6 +60,7 @@ let themeListenerRegistered = false;
 let updaterService: DesktopUpdaterService | null = null;
 let unsubscribeUpdaterStatus: (() => void) | null = null;
 let blankPdfTemporaryStore: BlankPdfTemporaryStore | null = null;
+let pdfTemplateStore: PdfTemplateStore | null = null;
 let applicationQuitRequested = false;
 let applicationMenuBarVisible = true;
 let applicationMenuState: ApplicationMenuState = {
@@ -185,6 +187,7 @@ function assertPhoneSignatureMode(value: unknown): asserts value is 'draw' | 'im
 const APPLICATION_MENU_ITEM_IDS = {
   save: 'butter-paper-save',
   saveAs: 'butter-paper-save-as',
+  saveDocumentAsTemplate: 'butter-paper-save-document-as-template',
   undo: 'butter-paper-undo',
   redo: 'butter-paper-redo',
   cut: 'butter-paper-cut',
@@ -213,11 +216,17 @@ function isUpdateCheckInProgress(status: UpdateStatus | null): boolean {
 }
 
 function synchronizeApplicationMenu(state: ApplicationMenuState): void {
+  state = {
+    ...state,
+    menuBarVisible: process.platform === 'darwin' ? state.menuBarVisible : true,
+  };
   applicationMenuState = state;
   const saveItem = findApplicationMenuItem(APPLICATION_MENU_ITEM_IDS.save);
   const saveAsItem = findApplicationMenuItem(APPLICATION_MENU_ITEM_IDS.saveAs);
+  const saveDocumentAsTemplateItem = findApplicationMenuItem(APPLICATION_MENU_ITEM_IDS.saveDocumentAsTemplate);
   if (saveItem) saveItem.enabled = state.canSave;
   if (saveAsItem) saveAsItem.enabled = state.canSave;
+  if (saveDocumentAsTemplateItem) saveDocumentAsTemplateItem.enabled = state.canSave;
   for (const [key, enabled] of [
     ['undo', state.canUndo],
     ['redo', state.canRedo],
@@ -348,6 +357,7 @@ function installApplicationMenu(productName: string): void {
       { type: 'separator' },
       { id: APPLICATION_MENU_ITEM_IDS.save, label: APPLICATION_MENU_COMMANDS.save.label, accelerator: APPLICATION_MENU_COMMANDS.save.accelerator, enabled: false, click: () => sendApplicationMenuCommand(APPLICATION_MENU_COMMANDS.save.command) },
       { id: APPLICATION_MENU_ITEM_IDS.saveAs, label: APPLICATION_MENU_COMMANDS.saveAs.label, accelerator: APPLICATION_MENU_COMMANDS.saveAs.accelerator, enabled: false, click: () => sendApplicationMenuCommand(APPLICATION_MENU_COMMANDS.saveAs.command) },
+      { id: APPLICATION_MENU_ITEM_IDS.saveDocumentAsTemplate, label: APPLICATION_MENU_COMMANDS.saveDocumentAsTemplate.label, enabled: false, click: () => sendApplicationMenuCommand(APPLICATION_MENU_COMMANDS.saveDocumentAsTemplate.command) },
     ],
   };
   const editMenu: MenuItemConstructorOptions = {
@@ -365,7 +375,7 @@ function installApplicationMenu(productName: string): void {
   const viewMenu: MenuItemConstructorOptions = {
     label: 'View',
     submenu: [
-      {
+      ...(process.platform === 'darwin' ? [{
         id: APPLICATION_MENU_ITEM_IDS.menuBarVisibility,
         label: APPLICATION_MENU_BAR_VISIBILITY_LABEL,
         type: 'checkbox',
@@ -378,8 +388,7 @@ function installApplicationMenu(productName: string): void {
           }
           window.webContents.send(ipcChannels.applicationMenuBarVisibilityChanged, applicationMenuBarVisible);
         },
-      },
-      { type: 'separator' },
+      } as MenuItemConstructorOptions, { type: 'separator' } as MenuItemConstructorOptions] : []),
       { role: 'reload' },
       { role: 'forceReload' },
       { role: 'togglefullscreen' },
@@ -752,7 +761,10 @@ export function registerIpcHandlers(): void {
     if (typeof visible !== 'boolean') {
       throw new TypeError('Application menu-bar visibility must be a boolean.');
     }
-    synchronizeApplicationMenu({ ...applicationMenuState, menuBarVisible: visible });
+    synchronizeApplicationMenu({
+      ...applicationMenuState,
+      menuBarVisible: process.platform === 'darwin' ? visible : true,
+    });
   });
 
   ipcMain.handle(ipcChannels.applicationToggleWindowFullScreen, async (event) => {
@@ -875,6 +887,54 @@ export function registerIpcHandlers(): void {
     return await desktopPdfAccessRegistry.authorizeSaveTarget(event.sender.id, result.filePath);
   });
 
+  ipcMain.handle(ipcChannels.templateList, async (event) => {
+    assertApplicationWindowSender(event);
+    return requirePdfTemplateStore().list();
+  });
+
+  ipcMain.handle(ipcChannels.templateImportPdf, async (event) => {
+    assertApplicationWindowSender(event);
+    const window = BrowserWindow.getFocusedWindow();
+    const result = window
+      ? await dialog.showOpenDialog(window, {
+          title: 'Import PDF as Template',
+          properties: ['openFile'],
+          filters: [{ name: 'PDF', extensions: ['pdf'] }],
+        })
+      : await dialog.showOpenDialog({
+          title: 'Import PDF as Template',
+          properties: ['openFile'],
+          filters: [{ name: 'PDF', extensions: ['pdf'] }],
+        });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return requirePdfTemplateStore().importPdf(result.filePaths[0]);
+  });
+
+  ipcMain.handle(ipcChannels.templateRemove, async (event, templateId: string) => {
+    assertApplicationWindowSender(event);
+    await requirePdfTemplateStore().remove(templateId);
+  });
+
+  ipcMain.handle(ipcChannels.templateImportDocument, async (event, request: PdfDocumentAccessRequest & { name: string }) => {
+    assertPdfDocumentAccessRequest(request, ['name']);
+    if (typeof request.name !== 'string') throw new TypeError('Template name is invalid.');
+    const source = await desktopPdfAccessRegistry.resolveDocument(event.sender.id, request.documentHandle);
+    return requirePdfTemplateStore().importBytes(readFileSync(source.sourcePath), request.name);
+  });
+
+  ipcMain.handle(ipcChannels.templateCreateDocument, async (event, templateId: string) => {
+    assertApplicationWindowSender(event);
+    const bytes = await requirePdfTemplateStore().readSource(templateId);
+    const temporaryDocument = await requireBlankPdfTemporaryStore().createFromBytes(bytes);
+    try {
+      await desktopPdfAccessRegistry.authorizeSource(event.sender.id, temporaryDocument.filePath, { cleanupOnRelease: true });
+      return temporaryDocument;
+    } catch (error) {
+      await requireBlankPdfTemporaryStore().release(temporaryDocument.temporarySourcePath).catch(() => undefined);
+      throw error;
+    }
+  });
+
   ipcMain.handle(ipcChannels.signaturePhoneStart, async (event, mode: unknown) => {
     assertApplicationWindowSender(event);
     assertPhoneSignatureMode(mode);
@@ -944,11 +1004,18 @@ export function registerIpcHandlers(): void {
     const openedAccess = await desktopPdfAccessRegistry.openAuthorizedSource(event.sender.id, filePath);
     let keepAccess = false;
     try {
-      const payload = await loadDocumentPayload(openedAccess.sourcePath);
+      const payload = await loadDocumentPayload(openedAccess.sourcePath, (progress) => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send(ipcChannels.applicationPdfOpenProgressChanged, progress);
+        }
+      });
       await desktopPdfAccessRegistry.resolveDocument(event.sender.id, openedAccess.descriptor.handle);
       keepAccess = true;
       return { ...payload, documentAccess: openedAccess.descriptor };
     } finally {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send(ipcChannels.applicationPdfOpenProgressChanged, null);
+      }
       if (!keepAccess) {
         let temporarySourcePath: string | null = null;
         try {
@@ -978,17 +1045,21 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(ipcChannels.pdfSaveDocument, async (event, request: SaveDocumentRequest) => {
     assertSaveDocumentRequest(request);
     const source = await desktopPdfAccessRegistry.resolveDocument(event.sender.id, request.documentHandle);
-    const target = await desktopPdfAccessRegistry.takeSaveTarget(event.sender.id, request.targetHandle);
+    const target = request.mode === 'saveAs'
+      ? await desktopPdfAccessRegistry.takeSaveTarget(event.sender.id, request.targetHandle)
+      : undefined;
     const result = await saveDocumentPayload(
       source.sourcePath,
       request.markups,
-      'saveAs',
-      target.targetPath,
+      request.mode,
+      target?.targetPath,
       request.pageScales,
       request.pageRotations,
-      target.directoryIdentity,
+      target?.directoryIdentity,
     );
-    await desktopPdfAccessRegistry.resolveDocument(event.sender.id, request.documentHandle);
+    if (request.mode === 'saveAs') {
+      await desktopPdfAccessRegistry.resolveDocument(event.sender.id, request.documentHandle);
+    }
     await desktopPdfAccessRegistry.authorizeSource(event.sender.id, result.path);
     return result;
   });
@@ -1063,6 +1134,7 @@ export async function bootstrapDesktop(): Promise<void> {
     console.warn('Unable to synchronize Butter Paper PDF application registration.', error);
   });
   blankPdfTemporaryStore = new BlankPdfTemporaryStore(app.getPath('temp'), `butter-paper-${metadata.channel}-blank-`);
+  pdfTemplateStore = new PdfTemplateStore(app.getPath('userData'));
   await blankPdfTemporaryStore.cleanupStaleSessions().catch((error) => {
     console.warn('Unable to remove stale blank PDF temporary files.', error);
   });
@@ -1103,6 +1175,7 @@ export async function bootstrapDesktop(): Promise<void> {
   app.on('will-quit', () => {
     blankPdfTemporaryStore?.cleanupSync();
     blankPdfTemporaryStore = null;
+    pdfTemplateStore = null;
   });
 
   app.on('activate', () => {
@@ -1115,6 +1188,11 @@ export async function bootstrapDesktop(): Promise<void> {
 function requireBlankPdfTemporaryStore(): BlankPdfTemporaryStore {
   blankPdfTemporaryStore ??= new BlankPdfTemporaryStore(app.getPath('temp'));
   return blankPdfTemporaryStore;
+}
+
+function requirePdfTemplateStore(): PdfTemplateStore {
+  pdfTemplateStore ??= new PdfTemplateStore(app.getPath('userData'));
+  return pdfTemplateStore;
 }
 
 function assertPdfDocumentAccessRequest(
@@ -1149,9 +1227,9 @@ function assertSaveDocumentRequest(request: unknown): asserts request is SaveDoc
   if (Object.keys(value).some((key) => !allowedKeys.has(key))
     || typeof value.documentHandle !== 'string'
     || value.documentHandle.length === 0
-    || typeof value.targetHandle !== 'string'
-    || value.targetHandle.length === 0
-    || value.mode !== 'saveAs'
+    || (value.mode !== 'save' && value.mode !== 'saveAs')
+    || (value.mode === 'saveAs' && (typeof value.targetHandle !== 'string' || value.targetHandle.length === 0))
+    || (value.mode === 'save' && value.targetHandle !== undefined)
     || !Array.isArray(value.markups)
     || (value.pageRotations !== undefined && !Array.isArray(value.pageRotations))) {
     throw new TypeError('Save PDF request is invalid.');

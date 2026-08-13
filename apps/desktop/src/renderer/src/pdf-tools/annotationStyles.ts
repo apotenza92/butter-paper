@@ -1,4 +1,4 @@
-import { resolveMarkupAppearance, type Markup, type Rect } from '@butter-paper/core';
+import { annotationFontCssFamily, resolveMarkupAppearance, type Markup, type Rect } from '@butter-paper/core';
 import type { TextContentStyle } from './types';
 
 export interface AnnotationContentStyle {
@@ -60,8 +60,4 @@ export function getVerticallyCenteredAnnotationTextContentStyle(
   };
 }
 
-export function annotationFontCssFamily(fontId: string): string {
-  return fontId === 'ArialUnicode'
-    ? 'Arial Unicode MS, Arial, sans-serif'
-    : 'Helvetica, Arial, sans-serif';
-}
+export { annotationFontCssFamily };

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  THUMBNAIL_MAX_HEIGHT,
   buildThumbnailLayouts,
   computeThumbnailContentSize,
   computeThumbnailItemHeight,
@@ -10,48 +9,60 @@ import {
 } from './thumbnailLayout';
 
 describe('thumbnail layout helpers', () => {
-  it('caps portrait thumbnails at the maximum preview height', () => {
+  const a3LandscapePreviewHeight = Math.round((188 * 297) / 420);
+
+  it('uses an A3 landscape preview box for every page shape', () => {
+    const portraitHeight = computeThumbnailPreviewHeight({ size: { width: 612, height: 792 } }, 188);
+    const landscapeHeight = computeThumbnailPreviewHeight({ size: { width: 1584, height: 1224 } }, 188);
+
+    expect(portraitHeight).toBe(a3LandscapePreviewHeight);
+    expect(landscapeHeight).toBe(portraitHeight);
+  });
+
+  it('fits A3 landscape exactly inside the fixed preview box', () => {
+    const previewHeight = computeThumbnailPreviewHeight({ size: { width: 420, height: 297 } }, 188);
+    const contentSize = computeThumbnailContentSize({ size: { width: 420, height: 297 } }, 188, previewHeight);
+
+    expect(contentSize.width).toBe(188);
+    expect(contentSize.height).toBeCloseTo((188 * 297) / 420);
+  });
+
+  it('fits portrait pages inside the fixed A3 landscape preview box', () => {
     const previewHeight = computeThumbnailPreviewHeight({ size: { width: 612, height: 792 } }, 188);
+    const contentSize = computeThumbnailContentSize({ size: { width: 612, height: 792 } }, 188, previewHeight);
 
-    expect(previewHeight).toBe(THUMBNAIL_MAX_HEIGHT);
+    expect(contentSize.height).toBe(a3LandscapePreviewHeight);
+    expect(contentSize.width).toBeCloseTo((a3LandscapePreviewHeight * 612) / 792);
   });
 
-  it('shrinks landscape thumbnails to match the page aspect ratio', () => {
-    const previewHeight = computeThumbnailPreviewHeight({ size: { width: 1584, height: 1224 } }, 188);
-
-    expect(previewHeight).toBe(145);
-    expect(previewHeight).toBeLessThan(THUMBNAIL_MAX_HEIGHT);
-  });
-
-  it('fits annotation overlay content to capped portrait thumbnails', () => {
-    const contentSize = computeThumbnailContentSize({ size: { width: 612, height: 792 } }, 188, THUMBNAIL_MAX_HEIGHT);
-
-    expect(contentSize.height).toBe(THUMBNAIL_MAX_HEIGHT);
-    expect(contentSize.width).toBeCloseTo(170);
-    expect(contentSize.scale).toBeCloseTo(THUMBNAIL_MAX_HEIGHT / 792);
-  });
-
-  it('builds variable item heights from preview dimensions', () => {
+  it('builds fixed item heights for different page dimensions', () => {
     const previewWidth = computeThumbnailPreviewWidth(220);
+    const previewHeight = Math.round((previewWidth * 297) / 420);
     const { layouts, totalHeight } = buildThumbnailLayouts([
       { index: 0, size: { width: 612, height: 792 } },
       { index: 1, size: { width: 1584, height: 1224 } },
     ], previewWidth);
 
     expect(layouts).toHaveLength(2);
-    expect(layouts[0]?.previewHeight).toBe(THUMBNAIL_MAX_HEIGHT);
-    expect(layouts[0]?.itemHeight).toBe(computeThumbnailItemHeight(THUMBNAIL_MAX_HEIGHT));
-    expect(layouts[1]?.previewHeight).toBe(139);
-    expect(layouts[1]?.itemHeight).toBe(computeThumbnailItemHeight(139));
+    expect(layouts[0]?.previewHeight).toBe(previewHeight);
+    expect(layouts[0]?.itemHeight).toBe(computeThumbnailItemHeight(previewHeight));
+    expect(layouts[1]?.previewHeight).toBe(previewHeight);
+    expect(layouts[1]?.itemHeight).toBe(computeThumbnailItemHeight(previewHeight));
+    expect(layouts[0]?.top).toBe(8);
     expect(layouts[1]?.top).toBe(layouts[0]!.top + layouts[0]!.itemHeight + 16);
     expect(totalHeight).toBe(layouts[1]!.top + layouts[1]!.itemHeight + 16);
+    for (const layout of layouts) {
+      expect(Number.isInteger(layout.top)).toBe(true);
+      expect(Number.isInteger(layout.previewHeight)).toBe(true);
+      expect(Number.isInteger(layout.itemHeight)).toBe(true);
+    }
   });
 
   it('uses the default item header, content gap, and vertical padding around every preview', () => {
     expect(computeThumbnailItemHeight(220)).toBe(32 + 10 + 220 + 20);
   });
 
-  it('computes the visible range against variable item heights', () => {
+  it('computes the visible range against fixed item heights', () => {
     const { layouts } = buildThumbnailLayouts([
       { index: 0, size: { width: 612, height: 792 } },
       { index: 1, size: { width: 1584, height: 1224 } },

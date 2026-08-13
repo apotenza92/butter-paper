@@ -20,6 +20,7 @@ const THUMBNAIL_MOTION_SETTLE_MS = 180;
 const THUMBNAIL_ACTIVE_SCROLL_MARGIN_PX = 24;
 const QUICK_VISIBLE_THUMBNAIL_WIDTH = 64;
 const EMPTY_MARKUPS: readonly Markup[] = [];
+export const PAGE_THUMBNAIL_VIEWPORT_CLASS_NAME = 'overflow-y-auto overflow-x-hidden px-0 py-0';
 
 interface PageThumbnailListProps {
   session: LocalPdfSession;
@@ -339,7 +340,7 @@ export function PageThumbnailList({ session, pages, mutationDisabled = false, on
     <CustomScrollArea
       ref={containerRef}
       className="min-h-0 flex-1"
-      viewportClassName="overflow-y-auto overflow-x-hidden px-0 py-1"
+      viewportClassName={PAGE_THUMBNAIL_VIEWPORT_CLASS_NAME}
       viewportTestId="page-thumbnail-list"
       verticalTrackTestId="page-thumbnail-scrollbar-track"
       verticalThumbTestId="page-thumbnail-scrollbar-thumb"

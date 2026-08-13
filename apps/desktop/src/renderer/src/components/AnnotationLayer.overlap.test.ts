@@ -158,6 +158,55 @@ describe('overlapping annotation targeting', () => {
     expect(host.querySelector<SVGRectElement>('[data-testid="markup-rectangle-1"] rect')?.getAttribute('x')).toBe('40');
   });
 
+  it('selects a locked markup without moving it or showing transform handles', () => {
+    const page = { id: 'page-1', index: 0, size: { width: 612, height: 792 }, rotation: 0 } as const;
+    const markup = {
+      ...createRectangleMarkup({
+        id: 'locked-rectangle',
+        pageIndex: 0,
+        rect: rect(40, 712, 100, 80),
+        appearance: { fill: { color: '#ffffff' } },
+      }),
+      locked: true,
+    };
+    const setSelectedMarkupIds = vi.fn();
+    const updateDocument = vi.fn();
+
+    act(() => root.render(createElement(AnnotationLayer, {
+      page,
+      markups: [markup],
+      transform: createPageTransform(page, 1),
+      activeTool: 'select',
+      selectedMarkupIds: [markup.id],
+      postPlacement: null,
+      pendingImageAsset: null,
+      setSelectedMarkupIds,
+      setPostPlacement: vi.fn(),
+      consumePendingImageAsset: vi.fn(() => null),
+      updateDocument,
+    })));
+
+    const layer = host.querySelector<SVGSVGElement>('[data-testid="annotation-layer-1"]')!;
+    vi.spyOn(layer, 'getBoundingClientRect').mockReturnValue({
+      x: 0, y: 0, left: 0, top: 0, right: 612, bottom: 792, width: 612, height: 792, toJSON: () => ({}),
+    });
+    Object.defineProperties(layer, {
+      setPointerCapture: { value: vi.fn() },
+      hasPointerCapture: { value: vi.fn(() => false) },
+      releasePointerCapture: { value: vi.fn() },
+    });
+
+    expect(host.querySelector('[data-handle-id]')).toBeNull();
+    const primitive = host.querySelector<SVGRectElement>('[data-testid="markup-locked-rectangle"] rect')!;
+    dispatchPointer(primitive, 'pointerdown', 75, 60);
+    dispatchPointer(layer, 'pointermove', 95, 60);
+    dispatchPointer(layer, 'pointerup', 95, 60);
+
+    expect(setSelectedMarkupIds).toHaveBeenLastCalledWith([markup.id]);
+    expect(updateDocument).not.toHaveBeenCalled();
+    expect(primitive.getAttribute('x')).toBe('40');
+  });
+
   it('commits a resize once after rendering it as a transient preview', () => {
     const page = { id: 'page-1', index: 0, size: { width: 612, height: 792 }, rotation: 0 } as const;
     const markup = createRectangleMarkup({

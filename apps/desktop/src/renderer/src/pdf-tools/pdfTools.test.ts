@@ -16,7 +16,7 @@ import { getMarkupToolDefinition, getToolDefinition, PDF_TOOL_RAIL_GROUPS, PDF_T
 
 describe('PDF tool registry', () => {
   it('exposes only the implemented reset tools', () => {
-    expect(PDF_TOOL_REGISTRY.map((tool) => tool.id)).toEqual(['select', 'pan', 'text-box', 'rectangle', 'ellipse', 'arc', 'line', 'arrow', 'dimension', 'length', 'polylength', 'area', 'polyline', 'polygon', 'pen', 'highlight', 'cloud', 'cloud-plus', 'callout', 'image', 'snapshot']);
+    expect(PDF_TOOL_REGISTRY.map((tool) => tool.id)).toEqual(['select', 'pan', 'text-box', 'rectangle', 'ellipse', 'arc', 'line', 'arrow', 'dimension', 'length', 'polylength', 'area', 'polyline', 'polygon', 'pen', 'highlight', 'cloud', 'cloud-plus', 'callout', 'redact', 'image', 'snapshot']);
     expect(getToolDefinition('text-box')).toMatchObject({ label: 'Text Box', shortcut: 'T', cursor: 'default' });
     expect(getToolDefinition('rectangle')).toMatchObject({ label: 'Rectangle', shortcut: 'R' });
     expect(getToolDefinition('ellipse')).toMatchObject({ label: 'Ellipse', shortcut: 'E' });
@@ -34,16 +34,17 @@ describe('PDF tool registry', () => {
     expect(getToolDefinition('cloud')).toMatchObject({ label: 'Cloud', shortcut: 'C' });
     expect(getToolDefinition('cloud-plus')).toMatchObject({ label: 'Cloud+', shortcut: 'K' });
     expect(getToolDefinition('callout')).toMatchObject({ label: 'Callout', shortcut: 'Q' });
+    expect(getToolDefinition('redact')).toMatchObject({ label: 'Redact', cursor: 'crosshair' });
     expect(getToolDefinition('image')).toMatchObject({ label: 'Insert Image', shortcut: 'I' });
     expect(getToolDefinition('snapshot')).toMatchObject({ label: 'Snapshot', shortcut: 'G' });
   });
 
   it('assigns every visible tool to exactly one ordered rail group', () => {
     expect(PDF_TOOL_RAIL_GROUPS.markup).toEqual([
-      'text-box', 'arrow', 'pen', 'highlight', 'cloud', 'cloud-plus', 'callout', 'image', 'snapshot',
+      'text-box', 'arrow', 'highlight', 'cloud', 'cloud-plus', 'callout', 'redact', 'image', 'snapshot',
     ]);
     expect(PDF_TOOL_RAIL_GROUPS.draw).toEqual([
-      'rectangle', 'ellipse', 'line', 'arc', 'polyline', 'polygon', 'dimension',
+      'rectangle', 'ellipse', 'line', 'polyline', 'pen', 'arc', 'polygon', 'dimension',
     ]);
     expect(PDF_TOOL_RAIL_GROUPS.measure).toEqual([
       'length', 'polylength', 'area',
@@ -68,7 +69,7 @@ describe('PDF tool registry', () => {
     expect(clickPlacementTools.map((tool) => [tool, getToolDefinition(tool).interaction?.placement])).toEqual(
       clickPlacementTools.map((tool) => [tool, 'click']),
     );
-    const clickOrDragPlacementTools: readonly ToolMode[] = ['rectangle', 'ellipse', 'line', 'arrow'];
+    const clickOrDragPlacementTools: readonly ToolMode[] = ['rectangle', 'ellipse', 'line', 'arrow', 'redact'];
     expect(clickOrDragPlacementTools.map((tool) => [tool, getToolDefinition(tool).interaction?.placement])).toEqual(
       clickOrDragPlacementTools.map((tool) => [tool, 'click-or-drag']),
     );
@@ -1811,13 +1812,13 @@ describe('interaction chrome', () => {
     expect(hoveredStyle.handleFill).toBe('#fef08a');
     expect(hoveredStyle.handleStroke).toBe('#facc15');
     expect(hoveredStyle.strokeDasharray).toBe('4 3');
-    expect(hoveredStyle.boundsOutsetPx).toBe(8);
-    expect(selectedStyle.boundsOutsetPx).toBe(8);
+    expect(hoveredStyle.boundsOutsetPx).toBe(0);
+    expect(selectedStyle.boundsOutsetPx).toBe(0);
     expect(selectedStyle.boundsStroke).toBe('#2563eb');
     expect(selectedStyle.handleFill).toBe('#facc15');
     expect(selectedStyle.strokeDasharray).toBe('5 4');
     expect(groupStyle.boundsStroke).toBe('#1d4ed8');
-    expect(groupStyle.boundsOutsetPx).toBe(8);
+    expect(groupStyle.boundsOutsetPx).toBe(0);
     expect(groupStyle.strokeDasharray).toBe('5 4');
     expect(groupStyle.handleSize).toBeGreaterThan(0);
     expect(passiveHoverHandle).toMatchObject({ fill: '#fef08a', stroke: '#facc15', strokeWidth: 1 });

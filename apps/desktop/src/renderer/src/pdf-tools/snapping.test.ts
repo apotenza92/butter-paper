@@ -7,6 +7,8 @@ import {
   findNearestSnapPoint,
   findObjectSnapTrackingPoint,
   getAnnotationSnapCandidates,
+  getConstructionGridSnapCandidates,
+  getPageGridSnapCandidates,
   getPdfContentSnapCandidates,
   isPointOnOrthogonalConstraint,
   toggleAcquiredTrackingPoint,
@@ -21,6 +23,36 @@ const page: PageModel = {
 };
 
 describe('snapping helpers', () => {
+  it('creates semantic snap points from a page grid instead of its rendered pixels', () => {
+    const candidates = getPageGridSnapCandidates({
+      pageIndex: 0,
+      primitives: [],
+      buildMs: 0,
+      pageGrid: {
+        type: 'rectangular',
+        origin: pdfPoint(0, 0),
+        spacing: 10,
+        width: 20,
+        height: 20,
+        rotationDegrees: 0,
+        source: 'generated',
+      },
+    });
+
+    expect(candidates).toHaveLength(9);
+    expect(candidates).toContainEqual({
+      kind: 'point',
+      point: pdfPoint(10, 10),
+      source: 'page-grid',
+      role: 'intersection',
+    });
+  });
+
+  it('creates a construction grid for any page independently of PDF content', () => {
+    const candidates = getConstructionGridSnapCandidates(60, 60, 10);
+    expect(candidates.length).toBeGreaterThan(4);
+    expect(candidates.every((candidate) => candidate.source === 'construction-grid')).toBe(true);
+  });
   it('indexes annotation corners, midpoints, centers, and edges', () => {
     const markup = createRectangleMarkup({
       id: 'rect-1',

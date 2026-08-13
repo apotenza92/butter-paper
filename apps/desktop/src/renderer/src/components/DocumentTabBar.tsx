@@ -13,8 +13,11 @@ import { ButtonGroup } from '@/components/ui/button-group';
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsList } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { LastTemplateTooltip } from './LastTemplateTooltip';
+import { TemplatePickerPopover } from './TemplatePickerPopover';
+import { lastTemplate, type PdfTemplate } from './templateLibrary';
+import type { ReturnTypeOfLoadTemplateLibrary } from './templateLibraryTypes';
 import type { BlankPdfSettings } from './blankPdfSettings';
-import { BlankPdfSettingsPopover } from './BlankPdfSettingsPopover';
 import { ClosableDocumentTab } from './domain-ui/ClosableDocumentTab';
 import { SplitButtonSegment } from './domain-ui/SplitButtonSegment';
 
@@ -41,10 +44,16 @@ interface DocumentTabBarProps {
   onCloseTab: (tabId: string) => void;
   onReorderTabs: (orderedTabIds: string[]) => void;
   onOpenTab: () => void;
-  onNewPdf: () => void;
-  onBlankPdfSettingsChange: (settings: BlankPdfSettings) => void;
-  blankPdfSettings: BlankPdfSettings;
-  blankPdfDefaultLabel: string;
+  onNewPdf: (template: PdfTemplate) => void | Promise<void>;
+  onManageTemplates?: () => void;
+  onUseTemplate?: (templateId: string) => void;
+  templateLibrary?: ReturnTypeOfLoadTemplateLibrary;
+  /** @deprecated Compatibility for tests while the blank-PDF picker migrates to templates. */
+  onBlankPdfSettingsChange?: (settings: BlankPdfSettings) => void;
+  /** @deprecated Compatibility for tests while the blank-PDF picker migrates to templates. */
+  blankPdfSettings?: BlankPdfSettings;
+  /** @deprecated Compatibility for tests while the blank-PDF picker migrates to templates. */
+  blankPdfDefaultLabel?: string;
   closeConfirmation: DocumentTabCloseConfirmationState;
 }
 
@@ -56,9 +65,9 @@ export function DocumentTabBar({
   onReorderTabs,
   onOpenTab,
   onNewPdf,
-  onBlankPdfSettingsChange,
-  blankPdfSettings,
-  blankPdfDefaultLabel,
+  onManageTemplates,
+  onUseTemplate,
+  templateLibrary,
   closeConfirmation,
 }: DocumentTabBarProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -67,6 +76,9 @@ export function DocumentTabBar({
   const sensors = useSensors(useSensor(PointerSensor, {
     activationConstraint: { distance: 6 },
   }));
+  const resolvedLibrary = templateLibrary ?? { version: 1 as const, customTemplates: [], importedTemplates: [], lastTemplateId: 'built-in-blank' };
+  const currentTemplate = lastTemplate(resolvedLibrary);
+  const useSelectedTemplate = onUseTemplate ?? (() => undefined);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -210,29 +222,28 @@ export function DocumentTabBar({
                   Open PDF
                 </TooltipContent>
               </Tooltip>
-              <ButtonGroup aria-label="New blank PDF controls">
-                <Tooltip>
-                  <TooltipTrigger
-                    render={(
-                      <SplitButtonSegment
-                        type="button"
-                        size="icon"
-                        aria-label={`New blank PDF using ${blankPdfDefaultLabel}`}
-                        data-testid="document-tab-new-pdf"
-                        onClick={onNewPdf}
-                      >
-                        <FilePlus data-icon="inline-start" aria-hidden="true" />
-                      </SplitButtonSegment>
-                    )}
-                  />
-                  <TooltipContent side={DOCUMENT_TAB_TOOLTIP_SIDE} data-testid="document-tab-new-pdf-tooltip">
-                    New blank PDF · {blankPdfDefaultLabel}
-                  </TooltipContent>
-                </Tooltip>
-                <BlankPdfSettingsPopover
-                  settings={blankPdfSettings}
+              <ButtonGroup aria-label="New from template controls">
+                <LastTemplateTooltip
+                  template={currentTemplate}
+                  side={DOCUMENT_TAB_TOOLTIP_SIDE}
+                  trigger={(
+                    <SplitButtonSegment
+                      type="button"
+                      size="icon"
+                      aria-label={`New from ${currentTemplate.name}`}
+                      data-testid="document-tab-new-pdf"
+                      onClick={() => void Promise.resolve(onNewPdf(currentTemplate)).then(() => useSelectedTemplate(currentTemplate.id))}
+                    >
+                      <FilePlus data-icon="inline-start" aria-hidden="true" />
+                    </SplitButtonSegment>
+                  )}
+                />
+                <TemplatePickerPopover
+                  library={resolvedLibrary}
                   tooltipSide={DOCUMENT_TAB_TOOLTIP_SIDE}
-                  onSettingsChange={onBlankPdfSettingsChange}
+                  onCreate={onNewPdf}
+                  onManage={onManageTemplates ?? (() => undefined)}
+                  onUseTemplate={useSelectedTemplate}
                 />
               </ButtonGroup>
             </div>

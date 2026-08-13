@@ -1,8 +1,8 @@
-import { mkdtemp, realpath, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, realpath, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { PdfAccessRegistry, PdfAccessRegistryError } from './pdfAccessRegistry';
+import { PdfAccessRegistry, PdfAccessRegistryError, samePdfSourceIdentity, type StableFileIdentity } from './pdfAccessRegistry';
 
 const temporaryDirectories: string[] = [];
 
@@ -134,6 +134,35 @@ describe('PdfAccessRegistry', () => {
     const registry = createRegistry({ maxSourceBytes: 512 * 1024 * 1024 });
 
     await expectCode(registry.authorizeSource(1, sourcePath), 'LIMIT_EXCEEDED');
+  });
+
+  it('uses one bigint metadata snapshot for a regular source identity', async () => {
+    const sourcePath = await createPdf('identity.pdf');
+    const expected = await lstat(sourcePath, { bigint: true });
+    const registry = createRegistry();
+
+    await registry.authorizeSource(1, sourcePath);
+    const opened = await registry.openAuthorizedSource(1, sourcePath);
+    const bytes = await registry.readDocumentBytes(1, opened.descriptor.handle);
+
+    expect(expected.isFile()).toBe(true);
+    expect(Buffer.from(bytes).toString()).toBe('%PDF test');
+  });
+
+  it('allows only the Windows ctime change caused by cloud placeholder hydration', () => {
+    const before: StableFileIdentity = {
+      dev: 1n,
+      ino: 2n,
+      size: 3n,
+      mtimeMs: 4n,
+      ctimeMs: 5n,
+    };
+
+    expect(samePdfSourceIdentity(before, { ...before, ctimeMs: 6n }, 'win32')).toBe(true);
+    expect(samePdfSourceIdentity(before, { ...before, ctimeMs: 6n }, 'darwin')).toBe(false);
+    expect(samePdfSourceIdentity(before, { ...before, ino: 7n }, 'win32')).toBe(false);
+    expect(samePdfSourceIdentity(before, { ...before, size: 7n }, 'win32')).toBe(false);
+    expect(samePdfSourceIdentity(before, { ...before, mtimeMs: 7n }, 'win32')).toBe(false);
   });
 });
 

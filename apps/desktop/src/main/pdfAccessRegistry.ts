@@ -15,7 +15,7 @@ const DEFAULT_MAX_SOURCE_GRANTS = 128;
 const DEFAULT_MAX_TARGET_GRANTS = 64;
 const DEFAULT_MAX_SOURCE_BYTES = 512 * 1024 * 1024;
 
-interface StableFileIdentity {
+export interface StableFileIdentity {
   readonly dev: bigint;
   readonly ino: bigint;
   readonly size: bigint;
@@ -365,14 +365,20 @@ async function snapshotRegularPdf(filePath: string, maxSourceBytes: number): Pro
   if (extname(filePath).toLowerCase() !== '.pdf') {
     throw new PdfAccessRegistryError('UNSAFE_SOURCE', 'The selected source is not a PDF file.');
   }
-  const inputInfo = await lstat(filePath).catch((error) => {
+  const inputInfo = await lstat(filePath, { bigint: true }).catch((error) => {
     throw new PdfAccessRegistryError('UNSAFE_SOURCE', 'The selected PDF source is unavailable.', { cause: error });
   });
   if (!inputInfo.isFile() || inputInfo.isSymbolicLink()) {
     throw new PdfAccessRegistryError('UNSAFE_SOURCE', 'The selected PDF source is unsafe.');
   }
-  const canonicalPath = await realpath(filePath);
-  const info = await stat(canonicalPath, { bigint: true });
+  // Windows Cloud Files can block in realpath() while an online-only file is
+  // still a placeholder. lstat() already rejects links, so the normalized
+  // absolute path is a stable capability boundary on Windows. The descriptor-
+  // bound read below is allowed to trigger hydration.
+  const canonicalPath = process.platform === 'win32' ? filePath : await realpath(filePath);
+  const info = process.platform === 'win32'
+    ? inputInfo
+    : await stat(canonicalPath, { bigint: true });
   if (!info.isFile()) throw new PdfAccessRegistryError('UNSAFE_SOURCE', 'The selected PDF source is unsafe.');
   if (info.size > BigInt(maxSourceBytes)) {
     throw new PdfAccessRegistryError('LIMIT_EXCEEDED', 'The selected PDF exceeds the supported size limit.');
@@ -400,13 +406,21 @@ function sourceGrantKey(ownerWebContentsId: number, requestedPath: string): stri
   return `${ownerWebContentsId}\0${requestedPath}`;
 }
 
-function sameIdentity(left: StableFileIdentity, right: StableFileIdentity): boolean {
+export function samePdfSourceIdentity(
+  left: StableFileIdentity,
+  right: StableFileIdentity,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
   return left.dev === right.dev
     && left.ino === right.ino
     && left.size === right.size
     && left.mtimeMs === right.mtimeMs
-    && left.ctimeMs === right.ctimeMs;
+    // Windows Cloud Files update ctime when an online-only placeholder is
+    // hydrated. File ID, size, and mtime remain stable across that transition.
+    && (platform === 'win32' || left.ctimeMs === right.ctimeMs);
 }
+
+const sameIdentity = samePdfSourceIdentity;
 
 function identityFromStats(info: BigIntStats): StableFileIdentity {
   return {

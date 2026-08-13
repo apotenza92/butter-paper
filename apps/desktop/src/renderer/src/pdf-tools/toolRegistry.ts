@@ -14,6 +14,7 @@ import { AREA_TOOL_DEFINITION, LENGTH_TOOL_DEFINITION, POLYLENGTH_TOOL_DEFINITIO
 import { POLYLINE_TOOL_DEFINITION } from './builtins/polylineTool';
 import { POLYGON_TOOL_DEFINITION } from './builtins/polygonTool';
 import { RECTANGLE_TOOL_DEFINITION } from './builtins/rectangleTool';
+import { REDACT_TOOL_DEFINITION } from './builtins/redactTool';
 import { SNAPSHOT_TOOL_DEFINITION } from './builtins/snapshotTool';
 import { TEXT_BOX_TOOL_DEFINITION } from './builtins/textBoxTool';
 import type { PdfToolDefinition } from './types';
@@ -62,6 +63,7 @@ export const PDF_TOOL_REGISTRY = [
   CLOUD_TOOL_DEFINITION,
   CLOUD_PLUS_TOOL_DEFINITION,
   CALLOUT_TOOL_DEFINITION,
+  REDACT_TOOL_DEFINITION,
   IMAGE_TOOL_DEFINITION,
   SNAPSHOT_TOOL_DEFINITION,
 ] as const satisfies readonly RegistryToolDefinition[];
@@ -70,11 +72,11 @@ export const PDF_TOOL_RAIL_GROUPS = {
   markup: [
     'text-box',
     'arrow',
-    'pen',
     'highlight',
     'cloud',
     'cloud-plus',
     'callout',
+    'redact',
     'image',
     'snapshot',
   ],
@@ -82,8 +84,9 @@ export const PDF_TOOL_RAIL_GROUPS = {
     'rectangle',
     'ellipse',
     'line',
-    'arc',
     'polyline',
+    'pen',
+    'arc',
     'polygon',
     'dimension',
   ],
@@ -106,6 +109,10 @@ export function getToolDefinition(tool: ToolMode): RegistryToolDefinition {
 export function getMarkupToolDefinition(markup: Markup): PdfToolDefinition | null {
   if (markup.kind === 'rectangle') {
     return RECTANGLE_TOOL_DEFINITION;
+  }
+
+  if (markup.kind === 'redact') {
+    return REDACT_TOOL_DEFINITION;
   }
 
   if (markup.kind === 'ellipse') {

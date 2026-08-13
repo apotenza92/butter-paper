@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   SignatureSession,
 } from '../src/index';
+// @ts-expect-error The static browser module is imported directly for an end-to-end transfer test.
+import { createEncryptedEnvelope } from '../public/phone-protocol.js';
 import {
   ENVELOPE_FIXED_OVERHEAD_BYTES,
   MAX_ACK_ATTEMPTS,
@@ -115,6 +117,31 @@ afterEach(async () => {
 });
 
 describe('signature relay API', () => {
+  it('carries an encrypted phone signature through the relay for desktop retrieval', async () => {
+    const sessionId = nextSessionId();
+    const desktopToken = token(1);
+    const phoneToken = token(2);
+    const created = await createSession(sessionId, desktopToken, phoneToken);
+    const { expiresAt } = (await created.json()) as { expiresAt: number };
+    const phonePayload = await createEncryptedEnvelope({
+      rawBytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      mediaType: 'image/png',
+      sessionId,
+      expiresAt,
+      mode: 'draw',
+      keyBytes: fixedBytes(32, 0x44),
+      messageId: fixedBytes(16, 0x55),
+      iv: fixedBytes(12, 0x66),
+    });
+
+    expect((await upload(sessionId, phoneToken, bytesToArrayBuffer(phonePayload.envelope))).status).toBe(201);
+    const desktopResponse = await retrieve(sessionId, desktopToken);
+    expect(desktopResponse.status).toBe(200);
+    expect(new Uint8Array(await desktopResponse.arrayBuffer())).toEqual(phonePayload.envelope);
+    expect((await acknowledge(sessionId, desktopToken, bytesToBase64Url(phonePayload.messageId))).status).toBe(204);
+    expect((await retrieve(sessionId, desktopToken)).status).toBe(410);
+  });
+
   it('creates once and reports a five-minute logical expiry', async () => {
     const sessionId = nextSessionId();
     const desktopToken = token(1);

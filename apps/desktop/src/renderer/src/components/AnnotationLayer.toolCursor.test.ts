@@ -25,7 +25,7 @@ describe('annotation tool cursor icon', () => {
     vi.unstubAllGlobals();
   });
 
-  it('shows the toolbar icon below a crosshair and hides it for navigation tools', () => {
+  it('shows the toolbar icon below and right of a crosshair and hides it for navigation tools', () => {
     renderLayer('rectangle');
 
     const layer = host.querySelector<SVGSVGElement>('[data-testid="annotation-layer-1"]')!;
@@ -46,7 +46,7 @@ describe('annotation tool cursor icon', () => {
 
     act(() => layer.dispatchEvent(pointerEvent('pointermove', 200, 300)));
 
-    expect(cursorIcon.style.transform).toBe('translate3d(192px, 320px, 0)');
+    expect(cursorIcon.style.transform).toBe('translate3d(220px, 320px, 0)');
     expect(cursorIcon.style.opacity).toBe('1');
     expect(cursorIcon.querySelector('.lucide-square')).not.toBeNull();
     expect(cursorIcon.classList.contains('size-4')).toBe(true);
@@ -57,7 +57,7 @@ describe('annotation tool cursor icon', () => {
 
     renderLayer('ellipse');
     const switchedCursorIcon = host.querySelector<HTMLDivElement>('[data-testid="tool-cursor-icon"]')!;
-    expect(switchedCursorIcon.style.transform).toBe('translate3d(192px, 320px, 0)');
+    expect(switchedCursorIcon.style.transform).toBe('translate3d(220px, 320px, 0)');
     expect(switchedCursorIcon.style.opacity).toBe('1');
     expect(switchedCursorIcon.querySelector('.lucide-circle')).not.toBeNull();
 

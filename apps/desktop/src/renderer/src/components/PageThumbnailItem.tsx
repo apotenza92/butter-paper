@@ -4,7 +4,6 @@ import { Badge } from '@/components/ui/badge';
 import { Item, ItemActions, ItemContent, ItemHeader, ItemTitle } from '@/components/ui/item';
 import { Spinner } from '@/components/ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { cn } from '@/lib/utils';
 import {
   createPageTransform,
   formatPageScaleRatio,
@@ -381,30 +380,33 @@ export function PageThumbnailItem({
 
   return (
     <Item
-      variant="outline"
+      variant={isActive ? 'muted' : 'outline'}
       role="listitem"
       className="absolute left-2 right-2 w-auto flex-nowrap flex-col items-stretch"
+      data-selected={isActive ? 'true' : undefined}
       data-testid={`page-thumbnail-item-${page.index + 1}`}
       style={{ top: `${top}px`, height: `${itemHeight}px` }}
     >
       <Button
         type="button"
         variant="ghost"
-        className="absolute inset-0 h-auto w-auto rounded-lg"
+        className="absolute inset-0 z-0 h-auto w-auto rounded-lg"
         data-testid={`page-thumbnail-select-${page.index + 1}`}
         aria-label={`Open page ${page.index + 1}`}
         aria-current={isActive ? 'page' : undefined}
         onClick={() => onSelect(sourceUrlRef.current)}
       />
-      <ItemHeader className="pointer-events-none relative h-8 w-full basis-auto" data-testid={`page-thumbnail-actions-${page.index + 1}`}>
+      <ItemHeader className="pointer-events-none relative z-10 h-8 w-full basis-auto" data-testid={`page-thumbnail-actions-${page.index + 1}`}>
         <ItemContent className="min-w-0 flex-row items-center">
           <ItemTitle className="min-w-0" data-testid={`page-thumbnail-label-${page.index + 1}`}>
             <span className="truncate tabular-nums">Page {page.index + 1}</span>
           </ItemTitle>
           {pageScale ? (
-            <Badge variant="secondary" data-testid={`page-thumbnail-scale-badge-${page.index + 1}`}>
-              {formatPageScaleRatio(pageScale)}
-            </Badge>
+            <div className="flex flex-1 justify-center" data-testid={`page-thumbnail-scale-position-${page.index + 1}`}>
+              <Badge variant="secondary" data-testid={`page-thumbnail-scale-badge-${page.index + 1}`}>
+                {formatPageScaleRatio(pageScale)}
+              </Badge>
+            </div>
           ) : null}
         </ItemContent>
         <ItemActions className="pointer-events-auto">
@@ -432,12 +434,12 @@ export function PageThumbnailItem({
         </ItemActions>
       </ItemHeader>
       <div
-        className="pointer-events-none relative flex w-full flex-none items-center justify-center"
+        className="pointer-events-none relative z-10 flex w-full flex-none items-center justify-center"
         data-testid={`page-thumbnail-preview-${page.index + 1}`}
         style={{ height: `${previewHeight}px` }}
       >
         <div
-          className={cn('relative overflow-hidden bg-white', isActive && 'bp-current-page-outline')}
+          className="relative overflow-hidden bg-white"
           data-testid={`page-thumbnail-content-${page.index + 1}`}
           style={{
             width: `${contentSize.width}px`,

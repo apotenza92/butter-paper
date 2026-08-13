@@ -10,6 +10,7 @@ import { bootstrapDesktop } from './window';
 const { app, BrowserWindow } = electron;
 const isTestMode = process.env.BP_TEST_MODE === '1';
 let pendingPdfFlushScheduled = false;
+let activePdfOpenDispatches = 0;
 
 const testUserDataDir = process.env.BP_TEST_USER_DATA_DIR?.trim();
 if (testUserDataDir) {
@@ -101,6 +102,8 @@ async function dispatchPdfPaths(filePaths: readonly string[]): Promise<void> {
     window.restore();
   }
   window.focus();
+  activePdfOpenDispatches += 1;
+  window.webContents.send(ipcChannels.applicationPdfOpenPendingChanged, true);
   try {
     const authorizedPaths = await Promise.all(pdfPaths.map((filePath) => (
       desktopPdfAccessRegistry.authorizeSource(window.webContents.id, filePath)
@@ -110,6 +113,11 @@ async function dispatchPdfPaths(filePaths: readonly string[]): Promise<void> {
     }
   } catch {
     console.error('Unable to authorize PDFs supplied by the operating system.');
+  } finally {
+    activePdfOpenDispatches = Math.max(0, activePdfOpenDispatches - 1);
+    if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+      window.webContents.send(ipcChannels.applicationPdfOpenPendingChanged, activePdfOpenDispatches > 0);
+    }
   }
 }
 

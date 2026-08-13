@@ -58,6 +58,12 @@ export const DEFAULT_SNAP_GUIDE_TYPES: readonly SnapGuideType[] = ['alignment', 
 export interface SnapSettings {
   readonly snapToContent: boolean;
   readonly snapToMarkup: boolean;
+  readonly snapToPageGrid: boolean;
+  readonly dimensionIncrementEnabled: boolean;
+  readonly dimensionIncrementMm: number;
+  readonly constructionGridEnabled: boolean;
+  readonly constructionGridVisible: boolean;
+  readonly constructionGridSpacingMm: number;
   readonly sensitivityPx: number;
   readonly snapTargets: readonly SnapTarget[];
   readonly snapGuidesEnabled: boolean;
@@ -212,6 +218,12 @@ const initialState = {
   snapSettings: {
     snapToContent: true,
     snapToMarkup: true,
+    snapToPageGrid: true,
+    dimensionIncrementEnabled: false,
+    dimensionIncrementMm: 5,
+    constructionGridEnabled: false,
+    constructionGridVisible: true,
+    constructionGridSpacingMm: 10,
     sensitivityPx: 8,
     snapTargets: DEFAULT_SNAP_TARGETS,
     snapGuidesEnabled: true,

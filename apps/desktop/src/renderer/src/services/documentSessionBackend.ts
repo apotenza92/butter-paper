@@ -44,7 +44,7 @@ export interface PdfSessionBackendOpenResult {
 
 export interface PdfSessionSaveArgs {
   documentHandle: string;
-  target: PdfSaveTargetDescriptor;
+  target?: PdfSaveTargetDescriptor;
   markups: readonly Markup[];
   pageScales?: readonly PageScale[];
   pageRotations?: ReadonlyArray<{
@@ -99,14 +99,22 @@ export function createPdfJsSessionBackend(): PdfSessionBackend {
       }
     },
     async save({ documentHandle, target, markups, pageScales, pageRotations }) {
-      return await window.butterPaper.pdf.saveDocument({
+      const request = {
         documentHandle,
-        targetHandle: target.targetHandle,
         markups,
         pageScales,
         pageRotations,
-        mode: 'saveAs',
-      });
+      };
+      return target
+        ? await window.butterPaper.pdf.saveDocument({
+            ...request,
+            targetHandle: target.targetHandle,
+            mode: 'saveAs',
+          })
+        : await window.butterPaper.pdf.saveDocument({
+            ...request,
+            mode: 'save',
+          });
     },
   };
 }

@@ -11,10 +11,6 @@ vi.mock('./ToolPropertiesPanel', () => ({
   ToolPropertiesPanel: () => null,
 }));
 
-vi.mock('./SidebarResizeHandle', () => ({
-  SidebarResizeHandle: () => null,
-}));
-
 describe('RightSidebar', () => {
   let host: HTMLDivElement;
   let root: Root;
@@ -31,23 +27,19 @@ describe('RightSidebar', () => {
     host.remove();
   });
 
-  it('centres the tool heading without a preview badge', () => {
+  it('uses the active tool as the fixed sidebar heading', () => {
     act(() => {
-      root.render(createElement(RightSidebar, {
-        activeTool: 'cloud',
-        width: 300,
-        onWidthChange: () => undefined,
-      }));
+      root.render(
+        createElement(RightSidebar, {
+          activeTool: 'cloud',
+        }),
+      );
     });
 
-    const header = host.querySelector('[data-testid="right-sidebar-header"]');
-    const heading = host.querySelector('[data-testid="right-sidebar-heading"]');
-
-    expect(heading?.textContent).toBe('Cloud');
-    expect(heading?.className).toContain('text-center');
-    expect(header?.className).toContain('justify-center');
-    expect(header?.textContent).not.toContain('Preview');
-    expect(header?.children).toHaveLength(1);
+    expect(host.querySelector('[data-testid="right-sidebar-header"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="right-sidebar-heading"]')?.textContent).toBe('Cloud');
+    expect(host.querySelector<HTMLElement>('[data-testid="right-sidebar"]')?.style.width).toBe('300px');
+    expect(host.querySelector('[data-testid="right-sidebar-resize-handle"]')).toBeNull();
   });
 
   it('resolves the focused markup from the selection order', () => {
@@ -58,7 +50,7 @@ describe('RightSidebar', () => {
     expect(findFocusedSelectedMarkup([first, focused], [])).toBeNull();
   });
 
-  it('shows the selected markup heading while the Select tool is active', () => {
+  it('passes the focused markup to the properties panel while Select is active', () => {
     const selectedMarkup: RectangleMarkup = {
       id: 'rectangle-1',
       kind: 'rectangle',
@@ -81,13 +73,14 @@ describe('RightSidebar', () => {
     });
 
     act(() => {
-      root.render(createElement(RightSidebar, {
-        activeTool: 'select',
-        width: 300,
-        onWidthChange: () => undefined,
-      }));
+      root.render(
+        createElement(RightSidebar, {
+          activeTool: 'select',
+        }),
+      );
     });
 
+    expect(findFocusedSelectedMarkup([selectedMarkup], [selectedMarkup.id])).toBe(selectedMarkup);
     expect(host.querySelector('[data-testid="right-sidebar-heading"]')?.textContent).toBe('Rectangle');
   });
 });

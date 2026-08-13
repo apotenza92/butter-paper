@@ -1,11 +1,37 @@
 import { describe, expect, it } from 'vitest';
-import { createCalloutMarkup, createCloudPlusMarkup, createPageTransform, createRectangleMarkup, pdfPoint, rect } from '@butter-paper/core';
+import { createCalloutMarkup, createCloudPlusMarkup, createPageTransform, createRectangleMarkup, createTextBoxMarkup, pdfPoint, rect, resolveMarkupAppearance } from '@butter-paper/core';
 import { getVerticallyCenteredAnnotationTextContentStyle } from '../pdf-tools/annotationStyles';
 import { expandViewportRect, isPointNearSelectionChromeEdge, projectChromeHandlePoint } from '../pdf-tools/selectionHitZones';
 import { layoutTextBoxLines, splitAnnotationTextLines } from '../pdf-tools/textLayout';
-import { autosizeTextBoxRect, autosizeTextBoxRectDownward, centeredCompositeTextBoxRect, getInteractionState, imagePlacementRect, interactionContextForPage, isCloudPolygonClosePoint, isDirectManipulationTool, isPostPlacementSelectionActive, orthogonalAnchorForDraft, resolveAnnotationCursor, scaleAnnotationDashArray, scaleAnnotationFirstBaselineOffset, scaleAnnotationFontSize, scaleAnnotationLineHeight, scaleAnnotationStrokeWidth, scaleAnnotationTextInset, selectionAfterMarkupClick, shouldCancelDraftForToolChange, shouldConsumeSelectionClickAway, shouldRenderMarkupAtZoom, shouldSelectMarkupAfterHandleTransform, textBoxCaretGeometry, updateMarkupTextAndCenterOnLeader } from './AnnotationLayer';
+import { applyTextBoxToolPropertyValues, autosizeTextBoxRect, autosizeTextBoxRectDownward, centeredCompositeTextBoxRect, getInteractionState, imagePlacementRect, interactionContextForPage, isCloudPolygonClosePoint, isDirectManipulationTool, isPostPlacementSelectionActive, markupWithResetRotation, orthogonalAnchorForDraft, resolveAnnotationCursor, scaleAnnotationDashArray, scaleAnnotationFirstBaselineOffset, scaleAnnotationFontSize, scaleAnnotationLineHeight, scaleAnnotationStrokeWidth, scaleAnnotationTextInset, selectionAfterMarkupClick, shouldCancelDraftForToolChange, shouldConsumeSelectionClickAway, shouldRenderMarkupAtZoom, shouldSelectMarkupAfterHandleTransform, textBoxCaretGeometry, updateMarkupTextAndCenterOnLeader } from './AnnotationLayer';
 
 describe('annotation layer rendering', () => {
+  it('applies live text-box defaults to both appearance and measured bounds', () => {
+    const markup = createTextBoxMarkup({
+      id: 'pending-text',
+      pageIndex: 0,
+      rect: rect(10, 20, 80, 20),
+      text: 'A longer live preview',
+      color: '#ff0000',
+      fontFamily: 'Helvetica',
+      fontSizePt: 12,
+      lineHeightPt: 13.8,
+    });
+    const updated = applyTextBoxToolPropertyValues(markup, {
+      textColor: '#0000ff',
+      fontFamily: 'Helvetica',
+      fontSizePt: 24,
+      opacity: 0.55,
+    });
+
+    expect(resolveMarkupAppearance(updated)).toMatchObject({
+      opacity: 0.55,
+      text: { color: '#0000ff', fontSizePt: 24 },
+    });
+    expect(updated.rect.width).toBeGreaterThan(markup.rect.width);
+    expect(updated.rect.height).toBeGreaterThan(markup.rect.height);
+  });
+
   it('supplies page bounds and same-page markups to interaction algorithms', () => {
     const page = { id: 'page-1', index: 1, size: { width: 612, height: 792 }, rotation: 0 } as const;
     const onPage = createRectangleMarkup({ id: 'on-page', pageIndex: 1, rect: rect(10, 10, 20, 20) });
@@ -149,6 +175,26 @@ describe('annotation layer rendering', () => {
     expect(projectChromeHandlePoint({ x: 110, y: 45 }, source, target)).toEqual({ x: 118, y: 45 });
     expect(projectChromeHandlePoint({ x: 10, y: 70 }, source, target)).toEqual({ x: 2, y: 78 });
     expect(projectChromeHandlePoint({ x: 60, y: 82 }, source, target)).toEqual({ x: 60, y: 90 });
+  });
+
+  it('keeps the rotation handle offset constant in viewport pixels', () => {
+    expect(projectChromeHandlePoint(
+      { x: 60, y: 82 },
+      { x: 10, y: 20, width: 100, height: 50 },
+      { x: 10, y: 20, width: 100, height: 50 },
+      12,
+    )).toEqual({ x: 60, y: 82 });
+    expect(projectChromeHandlePoint(
+      { x: 30, y: 41 },
+      { x: 5, y: 10, width: 50, height: 25 },
+      { x: 5, y: 10, width: 50, height: 25 },
+      12,
+    )).toEqual({ x: 30, y: 47 });
+  });
+
+  it('resets a rotated markup without changing its geometry', () => {
+    const rotatedRectangle = createRectangleMarkup({ id: 'rect', pageIndex: 0, rect: rect(10, 10, 50, 30), rotation: 37 });
+    expect(markupWithResetRotation(rotatedRectangle)).toMatchObject({ rotation: 0 });
   });
 
   it('keeps the content edge inside the chrome-outset edge hit band', () => {

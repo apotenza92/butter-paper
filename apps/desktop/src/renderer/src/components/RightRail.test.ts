@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   getToolPropertiesDoubleClickTooltip,
+  getToolGroupColumnCount,
   getTopControlColumnCount,
   getRightRailWidth,
   resolveRightRailColumnCount,
@@ -45,12 +46,19 @@ describe('resizable right rail sizing', () => {
     expect(shouldShowRightRailHeadings(RIGHT_RAIL_MAX_COLUMNS)).toBe(true);
   });
 
-  it('wraps the four General controls across the available tool columns', () => {
+  it('keeps the two pinned controls together above wider tool grids', () => {
     expect(getTopControlColumnCount(1)).toBe(1);
     expect(getTopControlColumnCount(2)).toBe(2);
-    expect(getTopControlColumnCount(3)).toBe(3);
-    expect(getTopControlColumnCount(4)).toBe(4);
-    expect(getTopControlColumnCount(RIGHT_RAIL_MAX_COLUMNS)).toBe(4);
+    expect(getTopControlColumnCount(3)).toBe(2);
+    expect(getTopControlColumnCount(4)).toBe(2);
+    expect(getTopControlColumnCount(RIGHT_RAIL_MAX_COLUMNS)).toBe(2);
+  });
+
+  it('centers each tool group instead of reserving empty expansion columns', () => {
+    expect(getToolGroupColumnCount('markup', RIGHT_RAIL_MAX_COLUMNS)).toBe(8);
+    expect(getToolGroupColumnCount('draw', RIGHT_RAIL_MAX_COLUMNS)).toBe(8);
+    expect(getToolGroupColumnCount('measure', RIGHT_RAIL_MAX_COLUMNS)).toBe(4);
+    expect(getToolGroupColumnCount('measure', 2)).toBe(2);
   });
 
   it('dispatches one selection side effect for pointer and keyboard activation', () => {

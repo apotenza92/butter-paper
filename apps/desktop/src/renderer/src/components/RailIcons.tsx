@@ -15,6 +15,7 @@ import {
   Route,
   Ruler,
   RulerDimensionLine,
+  ShieldX,
   Waypoints,
   Pentagon,
   Spline,
@@ -303,6 +304,18 @@ export function ImageRailIcon({ className }: RailIconProps) {
   );
 }
 
+export function RedactRailIcon({ className }: RailIconProps) {
+  return (
+    <ShieldX
+      aria-hidden="true"
+      size={CONTROL_ICON_SIZE}
+      strokeWidth={CONTROL_ICON_STROKE_WIDTH}
+      absoluteStrokeWidth
+      className={railIconClassName(className)}
+    />
+  );
+}
+
 export function SnapshotRailIcon({ className }: RailIconProps) {
   return (
     <ScanSearch
@@ -335,6 +348,7 @@ const TOOL_RAIL_ICON_COMPONENTS = {
   cloud: CloudRailIcon,
   'cloud-plus': CloudPlusRailIcon,
   callout: CalloutRailIcon,
+  redact: RedactRailIcon,
   image: ImageRailIcon,
   snapshot: SnapshotRailIcon,
 } satisfies Record<ToolMode, ComponentType<RailIconProps>>;

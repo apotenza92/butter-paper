@@ -17,7 +17,8 @@ import {
 import { useSessionVersion } from '../services/sessionHooks';
 import { useRenderCoordinator } from '../services/renderCoordinator';
 import { useViewerStore } from '../state/viewerStore';
-import { getPdfContentSnapCandidates, type SnapCandidate } from '../pdf-tools/snapping';
+import { ConstructionGridOverlay } from './domain-ui/ConstructionGridOverlay';
+import { getConstructionGridSnapCandidates, getPageGridSnapCandidates, getPdfContentSnapCandidates, type SnapCandidate } from '../pdf-tools/snapping';
 import {
   computeDetailRasterZoom,
   computeDisplayRasterLod,
@@ -44,6 +45,7 @@ interface PageViewProps {
     pageNumber: number;
   } | null;
   calibrationPickActive?: boolean;
+  calibrationStartPoint?: PdfPoint | null;
   onCalibrationPoint?: (pageIndex: number, point: PdfPoint) => void;
   onSelectPage?: (pageIndex: number) => void;
   onHoverPage?: (pageIndex: number) => void;
@@ -68,6 +70,7 @@ export function PageView({
   visiblePageViewportRect = null,
   overviewLabel = null,
   calibrationPickActive = false,
+  calibrationStartPoint = null,
   onCalibrationPoint,
   onSelectPage,
   onHoverPage,
@@ -343,15 +346,25 @@ export function PageView({
   }, [renderPriority, renderUrgency]);
 
   useEffect(() => {
-    if (!snapSettings.snapToContent) {
-      setPdfContentSnapCandidates([]);
+    const constructionGridCandidates = snapSettings.constructionGridEnabled
+      ? getConstructionGridSnapCandidates(page.size.width, page.size.height, snapSettings.constructionGridSpacingMm)
+      : [];
+
+    if (!snapSettings.snapToContent && !snapSettings.snapToPageGrid) {
+      // The construction grid is renderer-owned. Do not open or parse the PDF
+      // geometry index when it is the only active snap source.
+      setPdfContentSnapCandidates(constructionGridCandidates);
       return;
     }
 
     let cancelled = false;
     void session.getPageGeometryIndex(page.index).then((index) => {
       if (!cancelled) {
-        setPdfContentSnapCandidates(getPdfContentSnapCandidates(index));
+        setPdfContentSnapCandidates([
+          ...(snapSettings.snapToContent ? getPdfContentSnapCandidates(index) : []),
+          ...(snapSettings.snapToPageGrid ? getPageGridSnapCandidates(index) : []),
+          ...constructionGridCandidates,
+        ]);
       }
     }).catch(() => {
       if (!cancelled) {
@@ -362,7 +375,7 @@ export function PageView({
     return () => {
       cancelled = true;
     };
-  }, [page.index, session, snapSettings.snapToContent]);
+  }, [page.index, page.size.height, page.size.width, session, snapSettings.constructionGridEnabled, snapSettings.constructionGridSpacingMm, snapSettings.snapToContent, snapSettings.snapToPageGrid]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1066,18 +1079,27 @@ export function PageView({
           data-render-quality="detail-crop"
         />
       ) : null}
+      {snapSettings.constructionGridEnabled && snapSettings.constructionGridVisible ? (
+        <ConstructionGridOverlay
+          pageIndex={page.index}
+          width={page.size.width}
+          height={page.size.height}
+          spacing={snapSettings.constructionGridSpacingMm * 72 / 25.4}
+        />
+      ) : null}
       <AnnotationLayer
         page={page}
         pageScale={pageScale}
         markups={pageMarkups}
         transform={transform}
         pdfContentSnapCandidates={pdfContentSnapCandidates}
-        snapToContent={snapSettings.snapToContent}
+        snapToContent={snapSettings.snapToContent || snapSettings.snapToPageGrid || snapSettings.constructionGridEnabled}
         snapToMarkup={snapSettings.snapToMarkup}
         snapTolerancePx={snapSettings.sensitivityPx}
         snapTargets={snapSettings.snapTargets}
         snapGuidesEnabled={snapSettings.snapGuidesEnabled}
         snapGuideTypes={snapSettings.snapGuideTypes}
+        dimensionIncrementMm={snapSettings.dimensionIncrementEnabled ? snapSettings.dimensionIncrementMm : null}
         activeTool={activeTool}
         toolPropertyValues={toolPropertyValues}
         selectedMarkupIds={selectedMarkupIds}
@@ -1086,6 +1108,7 @@ export function PageView({
         setSelectedMarkupIds={setSelectedMarkupIds}
         setPostPlacement={setPostPlacement}
         consumePendingImageAsset={consumePendingImageAsset}
+        onMarkupPlaced={() => setActiveTool('select')}
         onImagePlaced={() => setActiveTool('select')}
         onToggleProperties={(wasSelectedBeforeDoubleClick) => {
           if (propertiesDoubleClickSidebarAction(wasSelectedBeforeDoubleClick, rightSidebarOpen) === 'collapse') {
@@ -1098,6 +1121,7 @@ export function PageView({
         updateDocument={updateDocument}
         onToolError={setStatusMessage}
         calibrationPickActive={calibrationPickActive}
+        calibrationStartPoint={calibrationStartPoint}
         onCalibrationPoint={onCalibrationPoint}
       />
     </div>

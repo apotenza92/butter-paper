@@ -23,6 +23,15 @@ import { DocumentViewport } from './components/DocumentViewport';
 import { LeftRail } from './components/LeftRail';
 import { LeftSidebar } from './components/LeftSidebar';
 import { NewBlankPdfDialog } from './components/NewBlankPdfDialog';
+import { TemplateManagerDialog } from './components/TemplateManagerDialog';
+import {
+  loadTemplateLibrary,
+  saveTemplateLibrary,
+  templateCreateRequest,
+  useTemplate,
+  withImportedTemplates,
+  type PdfTemplate,
+} from './components/templateLibrary';
 import { PageScaleDialog } from './components/PageScaleDialog';
 import { RightRail, shouldDispatchToolSelection } from './components/RightRail';
 import { RightSidebar } from './components/RightSidebar';
@@ -46,13 +55,13 @@ import {
   type SnapSettings,
 } from './state/viewerStore';
 import { subscribeToThemeMode } from './theme';
-import type { ApplicationMenuCommand, ApplicationMenuState, ApplicationMetadata, BlankPdfCreateRequest, LoadedDocumentPayload, PdfSaveTargetDescriptor, ScrollMode, ScrollWheelMode, ThemeMode, ToolMode, ViewerDiagnostics, ZoomPreset } from '../../shared/protocol';
+import type { ApplicationMenuCommand, ApplicationMenuState, ApplicationMetadata, BlankPdfCreateRequest, BlankPdfCreateResult, LoadedDocumentPayload, PdfOpenProgress, PdfSaveTargetDescriptor, ScrollMode, ScrollWheelMode, ThemeMode, ToolMode, ViewerDiagnostics, ZoomPreset } from '../../shared/protocol';
 import { PDF_TOOL_REGISTRY } from './pdf-tools/toolRegistry';
 import { clampViewerZoom } from './utils/renderZoom';
 import { resolveDocumentKeyboardNavigation } from './utils/documentKeyboardNavigation';
 import { selectDroppedPdfFiles } from './utils/droppedPdfFiles';
 import { resolveMacosFullScreenLayout } from './utils/macosFullScreenLayout';
-import { resolveMenuBarVisibility } from './utils/menuBarVisibility';
+import { canHideMenuBar, resolveMenuBarVisibility } from './utils/menuBarVisibility';
 import { signatureAppearanceToPendingImageAsset } from './utils/signaturePlacement';
 import {
   dismissToolShortcutPopup,
@@ -282,6 +291,12 @@ function initialViewSnapshot(initiallyDirty = false): ViewerTabSnapshot {
     snapSettings: {
       snapToContent: true,
       snapToMarkup: true,
+      snapToPageGrid: true,
+      dimensionIncrementEnabled: false,
+      dimensionIncrementMm: 5,
+      constructionGridEnabled: false,
+      constructionGridVisible: true,
+      constructionGridSpacingMm: 10,
       sensitivityPx: 8,
       snapTargets: ['endpoint', 'midpoint', 'center', 'intersection'],
       snapGuidesEnabled: true,
@@ -343,8 +358,11 @@ export function App({ initialThemeMode }: AppProps) {
   const [pageScaleCalibrationPick, setPageScaleCalibrationPick] = useState<PageScaleCalibrationPick | null>(null);
   const [blankPdfSettings, setBlankPdfSettings] = useState(() => loadBlankPdfSettings(window.localStorage));
   const [newBlankPdfDialogOpen, setNewBlankPdfDialogOpen] = useState(false);
+  const [templateLibrary, setTemplateLibrary] = useState(() => loadTemplateLibrary(window.localStorage));
+  const [templateManagerOpen, setTemplateManagerOpen] = useState(false);
   const [pendingCloseTabId, setPendingCloseTabId] = useState<string | null>(null);
   const [applicationCloseRequested, setApplicationCloseRequested] = useState(false);
+  const menuBarCanBeHidden = canHideMenuBar(navigator.platform);
   const [menuBarVisible, setMenuBarVisible] = useState(() => resolveMenuBarVisibility(
     navigator.platform,
     window.localStorage.getItem(MENU_BAR_VISIBILITY_STORAGE_KEY),
@@ -352,6 +370,21 @@ export function App({ initialThemeMode }: AppProps) {
   const [windowFullScreen, setWindowFullScreen] = useState(false);
   const [closeActionBusy, setCloseActionBusy] = useState(false);
   const [canvasClipboardCount, setCanvasClipboardCount] = useState(0);
+  const [documentOpenCount, setDocumentOpenCount] = useState(0);
+  const [systemDocumentOpenPending, setSystemDocumentOpenPending] = useState(false);
+  const [documentOpenProgress, setDocumentOpenProgress] = useState<PdfOpenProgress | null>(null);
+
+  useEffect(() => {
+    const templatesBridge = window.butterPaper.templates;
+    if (!templatesBridge) return;
+    let active = true;
+    void templatesBridge.list().then((records) => {
+      if (active) setTemplateLibrary((current) => withImportedTemplates(current, records));
+    }).catch((error) => {
+      console.warn('Unable to load PDF templates.', error);
+    });
+    return () => { active = false; };
+  }, []);
   const setDocument = useViewerStore((state) => state.setDocument);
   const updateDocument = useViewerStore((state) => state.updateDocument);
   const replaceDocumentAfterSave = useViewerStore((state) => state.replaceDocumentAfterSave);
@@ -396,10 +429,7 @@ export function App({ initialThemeMode }: AppProps) {
   const zoom = useViewerStore((state) => state.zoom);
   const snapSettings = useViewerStore((state) => state.snapSettings);
   const setSnapSettings = useViewerStore((state) => state.setSnapSettings);
-  const leftSidebarWidth = useViewerStore((state) => state.leftSidebarWidth);
   const rightSidebarWidth = useViewerStore((state) => state.rightSidebarWidth);
-  const setLeftSidebarWidth = useViewerStore((state) => state.setLeftSidebarWidth);
-  const setRightSidebarWidth = useViewerStore((state) => state.setRightSidebarWidth);
   const isTestMode = window.butterPaper.environment.testMode;
   const cadViewEnabled = window.butterPaper.environment.cadViewEnabled;
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
@@ -438,6 +468,9 @@ export function App({ initialThemeMode }: AppProps) {
     });
     return unsubscribe;
   }, [setErrorMessage]);
+
+  useEffect(() => window.butterPaper.application.onPdfOpenPendingChanged(setSystemDocumentOpenPending), []);
+  useEffect(() => window.butterPaper.application.onPdfOpenProgressChanged(setDocumentOpenProgress), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -530,51 +563,56 @@ export function App({ initialThemeMode }: AppProps) {
     }
     const candidates = [...new Set(filePaths.map((path) => path.trim()).filter((path) => /\.pdf$/i.test(path)))];
     if (candidates.length === 0) return;
-    setErrorMessage(null); setStatusMessage(candidates.length === 1 ? 'Loading document' : `Loading ${candidates.length} documents`);
-    const currentTabs = tabs;
-    const created: DocumentTab[] = [];
-    let firstOpenError: Error | null = null;
-    let duplicateToFocus: string | null = null;
-    for (const filePath of candidates) {
-      const normalizedPath = normalizeDocumentPath(filePath);
-      const existing = options.forceNewTabs
-        ? undefined
-        : [...currentTabs, ...created].find((tab) => tab.normalizedPath === normalizedPath);
-      if (existing) { duplicateToFocus ??= existing.id; continue; }
-      const nextSession = new LocalPdfSession(filePath);
-      try {
-        const payload = await nextSession.open();
-        if (options.defaultSample && userOpenRequestedRef.current) {
+    setDocumentOpenCount((count) => count + 1);
+    try {
+      setErrorMessage(null); setStatusMessage(candidates.length === 1 ? 'Loading document' : `Loading ${candidates.length} documents`);
+      const currentTabs = tabs;
+      const created: DocumentTab[] = [];
+      let firstOpenError: Error | null = null;
+      let duplicateToFocus: string | null = null;
+      for (const filePath of candidates) {
+        const normalizedPath = normalizeDocumentPath(filePath);
+        const existing = options.forceNewTabs
+          ? undefined
+          : [...currentTabs, ...created].find((tab) => tab.normalizedPath === normalizedPath);
+        if (existing) { duplicateToFocus ??= existing.id; continue; }
+        const nextSession = new LocalPdfSession(filePath);
+        try {
+          const payload = await nextSession.open();
+          if (options.defaultSample && userOpenRequestedRef.current) {
+            nextSession.dispose();
+            continue;
+          }
+          created.push({
+            id: `tab-${nextTabId++}`,
+            filePath: payload.filePath,
+            normalizedPath: normalizeDocumentPath(payload.filePath),
+            session: nextSession,
+            document: loadedDocumentState(payload),
+            viewSnapshot: initialViewSnapshot(),
+            temporarySourcePath: null,
+          });
+        } catch (error) {
           nextSession.dispose();
-          continue;
+          firstOpenError ??= error instanceof Error ? error : new Error(`Failed to open ${filePath}`);
+          setErrorMessage(firstOpenError.message);
         }
-        created.push({
-          id: `tab-${nextTabId++}`,
-          filePath: payload.filePath,
-          normalizedPath: normalizeDocumentPath(payload.filePath),
-          session: nextSession,
-          document: loadedDocumentState(payload),
-          viewSnapshot: initialViewSnapshot(),
-          temporarySourcePath: null,
-        });
-      } catch (error) {
-        nextSession.dispose();
-        firstOpenError ??= error instanceof Error ? error : new Error(`Failed to open ${filePath}`);
-        setErrorMessage(firstOpenError.message);
       }
-    }
-    const nextTabs = [...currentTabs, ...created];
-    setTabs(nextTabs);
-    const targetId = created[0]?.id ?? duplicateToFocus ?? activeTabId ?? nextTabs[0]?.id ?? null;
-    activateTab(targetId, nextTabs);
-    created.forEach((tab, index) => {
-      if (tab.id !== targetId) {
-        scheduleFirstVisibleWarmup(tab, 20 + index * 20);
+      const nextTabs = [...currentTabs, ...created];
+      setTabs(nextTabs);
+      const targetId = created[0]?.id ?? duplicateToFocus ?? activeTabId ?? nextTabs[0]?.id ?? null;
+      activateTab(targetId, nextTabs);
+      created.forEach((tab, index) => {
+        if (tab.id !== targetId) {
+          scheduleFirstVisibleWarmup(tab, 20 + index * 20);
+        }
+      });
+      setStatusMessage(created.length > 1 ? `Loaded ${created.length} documents` : created.length === 1 ? `Loaded ${created[0].document.fileName}` : 'Focused existing document');
+      if (created.length === 0 && firstOpenError) {
+        throw firstOpenError;
       }
-    });
-    setStatusMessage(created.length > 1 ? `Loaded ${created.length} documents` : created.length === 1 ? `Loaded ${created[0].document.fileName}` : 'Focused existing document');
-    if (created.length === 0 && firstOpenError) {
-      throw firstOpenError;
+    } finally {
+      setDocumentOpenCount((count) => Math.max(0, count - 1));
     }
   }
   openDocumentPathsRef.current = openDocumentPaths;
@@ -582,11 +620,13 @@ export function App({ initialThemeMode }: AppProps) {
   async function loadDocumentFromPath(filePath: string) { await openDocumentPaths([filePath]); }
 
   async function handleCreateBlankPdf(request: BlankPdfCreateRequest): Promise<void> {
+    return handleCreateTemporaryDocument(await window.butterPaper.pdf.createBlankDocument(request));
+  }
+
+  async function handleCreateTemporaryDocument(temporaryDocument: BlankPdfCreateResult): Promise<void> {
     await window.butterPaper.application.setCloseBlocked(true);
-    let temporaryDocument: Awaited<ReturnType<typeof window.butterPaper.pdf.createBlankDocument>> | null = null;
     let nextSession: LocalPdfSession | null = null;
     try {
-      temporaryDocument = await window.butterPaper.pdf.createBlankDocument(request);
       nextSession = new LocalPdfSession(temporaryDocument.filePath);
       const payload = await nextSession.open();
       const nextTab: DocumentTab = {
@@ -620,6 +660,55 @@ export function App({ initialThemeMode }: AppProps) {
     }
   }
 
+  async function handleCreateFromTemplate(template: PdfTemplate): Promise<void> {
+    try {
+      if (template.kind === 'generated') {
+        await handleCreateBlankPdf(templateCreateRequest(template));
+      } else {
+        await handleCreateTemporaryDocument(await window.butterPaper.templates.createDocument(template.id));
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to create a PDF from the template.');
+      throw error;
+    }
+  }
+
+  function handleTemplateLibraryChange(nextLibrary: typeof templateLibrary): void {
+    const removedImported = templateLibrary.importedTemplates.filter((template) => (
+      !nextLibrary.importedTemplates.some((candidate) => candidate.id === template.id)
+    ));
+    for (const template of removedImported) void window.butterPaper.templates.remove(template.id);
+    saveTemplateLibrary(window.localStorage, nextLibrary);
+    setTemplateLibrary(nextLibrary);
+  }
+
+  function handleUseTemplate(templateId: string): void {
+    handleTemplateLibraryChange(useTemplate(templateLibrary, templateId));
+  }
+
+  async function handleImportPdfTemplate(): Promise<void> {
+    const imported = await window.butterPaper.templates.importPdf();
+    if (!imported) return;
+    const next = withImportedTemplates(templateLibrary, [...templateLibrary.importedTemplates, imported]);
+    handleTemplateLibraryChange({ ...next, lastTemplateId: imported.id });
+    setStatusMessage(`Imported ${imported.name} as a template`);
+  }
+
+  async function handleSaveDocumentAsTemplate(): Promise<void> {
+    if (!documentState) return;
+    try {
+      const imported = await window.butterPaper.templates.importDocument({
+        documentHandle: documentState.documentAccess.handle,
+        name: documentState.fileName,
+      });
+      const next = withImportedTemplates(templateLibrary, [...templateLibrary.importedTemplates, imported]);
+      handleTemplateLibraryChange({ ...next, lastTemplateId: imported.id });
+      setStatusMessage(`Saved ${imported.name} as a template`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to save the document as a template.');
+    }
+  }
+
   function handleBlankPdfSettingsChange(settings: BlankPdfSettings): void {
     saveBlankPdfSettings(window.localStorage, settings);
     setBlankPdfSettings(settings);
@@ -649,7 +738,7 @@ export function App({ initialThemeMode }: AppProps) {
       currentPage: useViewerStore.getState().currentPage,
       visiblePageIndices: useViewerStore.getState().visiblePageIndices,
       selectedMarkupIds: useViewerStore.getState().selectedMarkupIds,
-      leftSidebarOpen, rightSidebarOpen, leftSidebarWidth, rightSidebarWidth,
+      leftSidebarOpen, rightSidebarOpen, leftSidebarWidth: 300, rightSidebarWidth,
       markupCount: documentState?.document.markups.length ?? 0,
       renderCacheEntries: activeDiagnostics.renderCacheEntries,
       renderCacheBytes: activeDiagnostics.renderCacheBytes,
@@ -749,7 +838,15 @@ export function App({ initialThemeMode }: AppProps) {
     return () => trimTimers.forEach((timer) => window.clearTimeout(timer));
   }, [activeTabId, tabs]);
 
-  async function handleOpen() { const paths = await window.butterPaper.dialogs.openPdfDialog(); if (paths?.length) await openDocumentPaths(paths); }
+  async function handleOpen() {
+    setDocumentOpenCount((count) => count + 1);
+    try {
+      const paths = await window.butterPaper.dialogs.openPdfDialog();
+      if (paths?.length) await openDocumentPaths(paths);
+    } finally {
+      setDocumentOpenCount((count) => Math.max(0, count - 1));
+    }
+  }
 
   async function handleSetAsDefaultPdfApp(): Promise<void> {
     try {
@@ -768,10 +865,11 @@ export function App({ initialThemeMode }: AppProps) {
   async function saveTab(tab: DocumentTab | null, explicitTarget?: PdfSaveTargetDescriptor): Promise<boolean> {
     if (!tab) return false;
     const sourceDocument = documentStateForTab(tab);
-    const target = explicitTarget ?? await window.butterPaper.dialogs.savePdfAsDialog(
-      tab.temporarySourcePath ? sourceDocument.fileName : saveDefaultName(sourceDocument.fileName),
-    ) ?? undefined;
-    if (!target) return false;
+    let target = explicitTarget;
+    if (tab.temporarySourcePath && !target) {
+      target = await window.butterPaper.dialogs.savePdfAsDialog(sourceDocument.fileName) ?? undefined;
+      if (!target) return false;
+    }
 
     const payload = await tab.session.save(
       sourceDocument.document.markups,
@@ -800,7 +898,9 @@ export function App({ initialThemeMode }: AppProps) {
     if (tab.id === activeTabId) {
       replaceDocumentAfterSave(nextDocument);
     }
-    setStatusMessage(`Saved new PDF ${payload.fileName}; the original was preserved.`);
+    setStatusMessage(target
+      ? `Saved new PDF ${payload.fileName}; the original was preserved.`
+      : `Saved ${payload.fileName}`);
     setErrorMessage(null);
     return true;
   }
@@ -993,12 +1093,22 @@ export function App({ initialThemeMode }: AppProps) {
     }
 
     const selectedIds = new Set(ids);
+    const lockedIds = new Set(
+      (useViewerStore.getState().document?.document.markups ?? [])
+        .filter((markup) => selectedIds.has(markup.id) && markup.locked)
+        .map((markup) => markup.id),
+    );
+    const deletableIds = new Set(ids.filter((id) => !lockedIds.has(id)));
+    if (deletableIds.size === 0) {
+      setStatusMessage(ids.length === 1 ? 'Markup is locked' : 'Selected markups are locked');
+      return true;
+    }
     updateDocument((document) => ({
       ...document,
-      markups: document.markups.filter((markup) => !selectedIds.has(markup.id)),
+      markups: document.markups.filter((markup) => !deletableIds.has(markup.id)),
     }));
-    setSelectedMarkupIds([]);
-    setStatusMessage(ids.length === 1 ? 'Deleted markup' : `Deleted ${ids.length} markups`);
+    setSelectedMarkupIds(ids.filter((id) => lockedIds.has(id)));
+    setStatusMessage(deletableIds.size === 1 ? 'Deleted markup' : `Deleted ${deletableIds.size} markups`);
     return true;
   }
 
@@ -1100,10 +1210,14 @@ export function App({ initialThemeMode }: AppProps) {
       return;
     }
     userOpenRequestedRef.current = true;
+    setDocumentOpenCount((count) => count + 1);
     void Promise.all(pdfFiles.map((file) => window.butterPaper.application.authorizeDroppedPdf(file)))
       .then((pdfPaths) => openDocumentPaths(pdfPaths, { forceNewTabs: true }))
       .catch((error) => {
         setErrorMessage(error instanceof Error ? error.message : 'Unable to open the dropped PDF.');
+      })
+      .finally(() => {
+        setDocumentOpenCount((count) => Math.max(0, count - 1));
       });
   }
 
@@ -1323,8 +1437,8 @@ export function App({ initialThemeMode }: AppProps) {
   }), [activeTabId, documentState, tabs]);
 
   useEffect(() => window.butterPaper.application.onMenuBarVisibilityChanged((visible) => {
-    setMenuBarVisible(visible);
-  }), []);
+    setMenuBarVisible(menuBarCanBeHidden ? visible : true);
+  }), [menuBarCanBeHidden]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1367,7 +1481,7 @@ export function App({ initialThemeMode }: AppProps) {
   useEffect(() => window.butterPaper.application.onMenuCommand((command: ApplicationMenuCommand) => {
     switch (command) {
       case 'new-pdf':
-        setNewBlankPdfDialogOpen(true);
+        setTemplateManagerOpen(true);
         break;
       case 'open-pdf':
         void handleOpen();
@@ -1377,6 +1491,9 @@ export function App({ initialThemeMode }: AppProps) {
         break;
       case 'save-as':
         void handleSaveAs();
+        break;
+      case 'save-document-as-template':
+        void handleSaveDocumentAsTemplate();
         break;
       case 'undo':
         handleUndo();
@@ -1423,6 +1540,7 @@ export function App({ initialThemeMode }: AppProps) {
           productName={applicationMetadata.productName}
           updateStatus={updater.status}
           menuBarVisible={menuBarVisible}
+          showMenuBarVisibilityOption={menuBarCanBeHidden}
           canUndo={documentHistory.past.length > 0}
           canRedo={documentHistory.future.length > 0}
           canCut={selectedMarkupIds.length > 0}
@@ -1433,6 +1551,7 @@ export function App({ initialThemeMode }: AppProps) {
           onOpen={() => void handleOpen()}
           onSave={() => void handleSave()}
           onSaveAs={() => void handleSaveAs()}
+          onSaveDocumentAsTemplate={() => void handleSaveDocumentAsTemplate()}
           onUndo={() => handleUndo()}
           onRedo={() => handleRedo()}
           onCut={() => cutSelectedMarkups()}
@@ -1471,10 +1590,10 @@ export function App({ initialThemeMode }: AppProps) {
         }}
         onReorderTabs={(orderedTabIds) => setTabs((currentTabs) => applyTabOrder(currentTabs, orderedTabIds))}
         onOpenTab={() => void handleOpen()}
-        onNewPdf={() => void handleCreateDefaultBlankPdf()}
-        onBlankPdfSettingsChange={handleBlankPdfSettingsChange}
-        blankPdfSettings={blankPdfSettings}
-        blankPdfDefaultLabel={formatBlankPdfSettings(blankPdfSettings)}
+        onNewPdf={handleCreateFromTemplate}
+        onManageTemplates={() => setTemplateManagerOpen(true)}
+        onUseTemplate={handleUseTemplate}
+        templateLibrary={templateLibrary}
       />
       <input
         ref={imageInputRef}
@@ -1498,12 +1617,10 @@ export function App({ initialThemeMode }: AppProps) {
               session={session}
               pages={pages}
               panel={leftSidebarPanel}
-              width={leftSidebarWidth}
               mutationDisabled={documentMutationDisabled}
               onSelectPage={handleSelectPage}
               onSetPageScale={openPageScaleDialogForPage}
               onRotatePage={handleRotatePage}
-              onWidthChange={setLeftSidebarWidth}
             />
           ) : null}
           <div
@@ -1528,12 +1645,12 @@ export function App({ initialThemeMode }: AppProps) {
                   onSetPageScale={openPageScaleDialogForPage}
                   onRotatePage={handleRotatePage}
                 >
-                  <DocumentViewport session={session} onOpenDocument={() => void handleOpen()} calibrationPick={!documentMutationDisabled && pageScaleCalibrationPick ? { active: true, pointCount: pageScaleCalibrationPick.points.length } : null} onCalibrationPoint={handlePageScaleCalibrationPoint} onCancelCalibrationPick={cancelPageScaleCalibrationPick} />
+                  <DocumentViewport session={session} opening={documentOpenCount > 0 || systemDocumentOpenPending} openingProgress={documentOpenProgress} onOpenDocument={() => void handleOpen()} calibrationPick={!documentMutationDisabled && pageScaleCalibrationPick ? { active: true, pointCount: pageScaleCalibrationPick.points.length, pageIndex: pageScaleCalibrationPick.pageIndex, startPoint: pageScaleCalibrationPick.points[0] ?? null } : null} onCalibrationPoint={handlePageScaleCalibrationPoint} onCancelCalibrationPick={cancelPageScaleCalibrationPick} />
                 </CanvasContextMenu>
               </div>
             </>
           </div>
-          {rightSidebarOpen ? <RightSidebar activeTool={activeTool} mutationDisabled={documentMutationDisabled} width={rightSidebarWidth} onWidthChange={setRightSidebarWidth} /> : null}
+          {rightSidebarOpen ? <RightSidebar activeTool={activeTool} mutationDisabled={documentMutationDisabled} /> : null}
           <RightRail
             activeTool={activeTool}
             disabled={viewerControlsDisabled}
@@ -1555,6 +1672,13 @@ export function App({ initialThemeMode }: AppProps) {
         onCreate={handleCreateBlankPdf}
         onOpenChange={setNewBlankPdfDialogOpen}
         onSettingsChange={handleBlankPdfSettingsChange}
+      />
+      <TemplateManagerDialog
+        open={templateManagerOpen}
+        library={templateLibrary}
+        onLibraryChange={handleTemplateLibraryChange}
+        onOpenChange={setTemplateManagerOpen}
+        onImportPdf={handleImportPdfTemplate}
       />
       {pageScaleDialogOpen && documentState && !documentMutationDisabled ? (
         <PageScaleDialog

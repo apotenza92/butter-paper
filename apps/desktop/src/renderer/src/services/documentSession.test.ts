@@ -261,6 +261,47 @@ describe('LocalPdfSession', () => {
     expect(mockedOpenPdfDocumentFromBytes).not.toHaveBeenCalled();
   });
 
+  it('saves to the opened PDF when no Save As target is supplied', async () => {
+    const firstHandle = createBackendHandle();
+    const secondHandle = createBackendHandle();
+    const backend: PdfSessionBackend = {
+      kind: 'test-backend',
+      open: vi
+        .fn()
+        .mockResolvedValueOnce({
+          payload: createPayload('/tmp/opened.pdf'),
+          handle: firstHandle,
+          backendInfo: {
+            sessionBackendKind: 'pdfjs' as const,
+            surfaceTransportKind: 'pdfjs-blob-url' as const,
+          },
+          openStageTimings: { mainPayloadMs: 1, rendererFileReadMs: 2, rendererBrowserOpenMs: 3 },
+        })
+        .mockResolvedValueOnce({
+          payload: createPayload('/tmp/opened.pdf'),
+          handle: secondHandle,
+          backendInfo: {
+            sessionBackendKind: 'pdfjs' as const,
+            surfaceTransportKind: 'pdfjs-blob-url' as const,
+          },
+          openStageTimings: { mainPayloadMs: 4, rendererFileReadMs: 5, rendererBrowserOpenMs: 6 },
+        }),
+      save: vi.fn(async () => ({ path: '/tmp/opened.pdf' })),
+    };
+    const session = new LocalPdfSession('/tmp/opened.pdf', backend);
+    await session.open();
+
+    await session.save([]);
+
+    expect(backend.save).toHaveBeenCalledWith({
+      documentHandle: `pdfdoc_${'a'.repeat(32)}`,
+      target: undefined,
+      markups: [],
+      pageScales: undefined,
+      pageRotations: undefined,
+    });
+  });
+
   it('treats render requests during a save reopen as transient instead of session errors', async () => {
     const firstHandle = createBackendHandle();
     const secondHandle = createBackendHandle();

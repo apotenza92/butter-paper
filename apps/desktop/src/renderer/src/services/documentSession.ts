@@ -376,7 +376,7 @@ export class LocalPdfSession {
 
   async save(
     markups: readonly Markup[],
-    target: PdfSaveTargetDescriptor,
+    target?: PdfSaveTargetDescriptor,
     pageScales?: readonly PageScale[],
     pages?: readonly PageModel[],
   ): Promise<LoadedDocumentPayload> {

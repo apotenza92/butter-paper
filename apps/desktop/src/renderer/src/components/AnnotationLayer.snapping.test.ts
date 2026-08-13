@@ -70,7 +70,7 @@ describe('annotation snap source feedback', () => {
     dispatchPointerMove(layer, 100, 42);
     const hoverChrome = host.querySelector<SVGGElement>('[data-testid="markup-signature-source"] [data-interaction-state="hovered"]')!;
     expect(hoverChrome).toBeTruthy();
-    expect(hoverChrome.querySelector('rect[stroke="#93c5fd"]')?.getAttribute('x')).toBe('92');
+    expect(hoverChrome.querySelector('rect[stroke="#93c5fd"]')?.getAttribute('x')).toBe('100');
     expect(hoverChrome.querySelector('[data-handle-id]')).toBeTruthy();
     expect(hoverChrome.querySelector('[data-handle-id="rectangle.rotate"]')).toBeNull();
     const endpointMarker = host.querySelector<SVGRectElement>('[data-testid="snap-indicator"] rect')!;

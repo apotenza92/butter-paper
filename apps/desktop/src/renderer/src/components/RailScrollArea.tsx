@@ -44,6 +44,7 @@ export function resolveRailTooltipAnchor(
 interface RailScrollAreaProps {
   children: ReactNode;
   contentClassName?: string;
+  fixedContent?: ReactNode;
   overflowIndicatorTestId: string;
   overflowSide: 'left' | 'right';
   viewportTestId?: string;
@@ -52,6 +53,7 @@ interface RailScrollAreaProps {
 export function RailScrollArea({
   children,
   contentClassName,
+  fixedContent,
   overflowIndicatorTestId,
   overflowSide,
   viewportTestId,
@@ -119,7 +121,7 @@ export function RailScrollArea({
     }
 
     const trigger = target.closest<HTMLElement>(`[${RAIL_TOOLTIP_ATTRIBUTE}]`);
-    if (!trigger || !contentRef.current?.contains(trigger) || !rootRef.current) {
+    if (!trigger || !rootRef.current?.contains(trigger)) {
       if (clearWhenMissing) {
         hideTooltip();
       }
@@ -169,7 +171,7 @@ export function RailScrollArea({
 
     const trigger = event.target.closest<HTMLElement>(`[${RAIL_DOUBLE_CLICK_TOOLTIP_ATTRIBUTE}]`);
     const label = trigger?.getAttribute(RAIL_DOUBLE_CLICK_TOOLTIP_ATTRIBUTE);
-    if (!trigger || !label || !contentRef.current?.contains(trigger)) {
+    if (!trigger || !label || !rootRef.current.contains(trigger)) {
       return;
     }
 
@@ -288,26 +290,30 @@ export function RailScrollArea({
   );
 
   return (
-    <div ref={rootRef} className="relative min-h-0 w-full flex-1 overflow-visible">
+    <div
+      ref={rootRef}
+      className="relative flex min-h-0 w-full flex-1 flex-col overflow-visible"
+      onBlurCapture={(event) => {
+        if (!rootRef.current?.contains(event.relatedTarget as Node | null)) {
+          hideAllTooltips();
+        }
+      }}
+      onClick={showDoubleClickTooltip}
+      onDoubleClick={() => hideDoubleClickTooltip(true)}
+      onFocusCapture={(event) => updateTooltip(event.target, true, true)}
+      onPointerLeave={hideAllTooltips}
+      onPointerMove={(event) => updateTooltip(event.target)}
+      onPointerOver={(event) => updateTooltip(event.target)}
+    >
+      {fixedContent}
       <div
         ref={viewportRef}
-        className="bp-native-scroll-hidden h-full overflow-y-auto overflow-x-hidden"
+        className="bp-native-scroll-hidden min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
         data-testid={viewportTestId}
       >
         <div
           ref={contentRef}
           className={['flex flex-col items-center', RAIL_BUTTON_GAP, contentClassName].filter(Boolean).join(' ')}
-          onBlurCapture={(event) => {
-            if (!contentRef.current?.contains(event.relatedTarget as Node | null)) {
-              hideAllTooltips();
-            }
-          }}
-          onClick={showDoubleClickTooltip}
-          onDoubleClick={() => hideDoubleClickTooltip(true)}
-          onFocusCapture={(event) => updateTooltip(event.target, true, true)}
-          onPointerLeave={hideAllTooltips}
-          onPointerMove={(event) => updateTooltip(event.target)}
-          onPointerOver={(event) => updateTooltip(event.target)}
         >
           {children}
         </div>

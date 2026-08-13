@@ -18,6 +18,10 @@ import {
   RAIL_COLUMN_PITCH_PX,
   RAIL_HEADING_TEXT_CLASS,
   RAIL_SINGLE_COLUMN_WIDTH_PX,
+  PRIMARY_BAND_HEIGHT,
+  SHELL_BAND_BORDER_BOTTOM,
+  SHELL_HORIZONTAL_SEPARATOR,
+  SHELL_PANEL_BORDER_LEFT,
   SHELL_SURFACE_APP,
 } from './shellSpacing';
 
@@ -42,7 +46,22 @@ export const RIGHT_RAIL_COLUMN_PITCH = RAIL_COLUMN_PITCH_PX;
 const RIGHT_RAIL_WIDTH_OFFSET = RAIL_SINGLE_COLUMN_WIDTH_PX - RIGHT_RAIL_COLUMN_PITCH;
 
 export function getTopControlColumnCount(columnCount: number): number {
-  return Math.min(TOP_RAIL_TOOL_IDS.length + 2, clampRightRailColumnCount(columnCount));
+  return Math.min(2, clampRightRailColumnCount(columnCount));
+}
+
+export function getToolGroupColumnCount(
+  group: keyof typeof PDF_TOOL_RAIL_GROUPS,
+  columnCount: number,
+): number {
+  const extraControlCount = group === 'markup' || group === 'measure' ? 1 : 0;
+  return Math.min(
+    PDF_TOOL_RAIL_GROUPS[group].length + extraControlCount,
+    clampRightRailColumnCount(columnCount),
+  );
+}
+
+function getControlGroupWidth(columnCount: number): number {
+  return columnCount * RIGHT_RAIL_COLUMN_PITCH - (RIGHT_RAIL_COLUMN_PITCH - 32);
 }
 
 export function shouldDispatchToolSelection(clickCount: number): boolean {
@@ -129,8 +148,8 @@ export function RightRail({ activeTool, disabled = false, mutationDisabled = fal
   return (
     <aside
       className={cn(
-        'relative flex h-full min-h-0 flex-none flex-col items-center border-l border-border',
-        'px-2',
+        'relative flex h-full min-h-0 flex-none flex-col items-center',
+        SHELL_PANEL_BORDER_LEFT,
         SHELL_SURFACE_APP,
       )}
       data-testid="right-rail"
@@ -139,6 +158,17 @@ export function RightRail({ activeTool, disabled = false, mutationDisabled = fal
     >
       <RailScrollArea
         contentClassName="py-2"
+        fixedContent={(
+          <PinnedRailControls
+            columnCount={columnCount}
+            disabled={disabled}
+            mutationDisabled={mutationDisabled}
+            propertiesOpen={propertiesOpen}
+            snapSettings={snapSettings}
+            onSnapSettingsChange={onSnapSettingsChange}
+            onToggleProperties={onToggleProperties}
+          />
+        )}
         overflowIndicatorTestId="right-rail-overflow-indicator"
         overflowSide="left"
         viewportTestId="right-rail-viewport"
@@ -149,13 +179,12 @@ export function RightRail({ activeTool, disabled = false, mutationDisabled = fal
           disabled={disabled}
           mutationDisabled={mutationDisabled}
           propertiesOpen={propertiesOpen}
-          snapSettings={snapSettings}
           onSelectTool={onSelectTool}
-          onSnapSettingsChange={onSnapSettingsChange}
           onToggleProperties={onToggleProperties}
         />
         <Separator
           aria-label="General and Markup tools"
+          className={SHELL_HORIZONTAL_SEPARATOR}
           data-testid="right-rail-group-divider-markup"
         />
         {RIGHT_RAIL_GROUP_DEFINITIONS.map(({ group, heading }, index) => (
@@ -163,6 +192,7 @@ export function RightRail({ activeTool, disabled = false, mutationDisabled = fal
             {index > 0 ? (
               <Separator
                 aria-label={`${RIGHT_RAIL_GROUP_DEFINITIONS[index - 1].heading} and ${heading} tools`}
+                className={SHELL_HORIZONTAL_SEPARATOR}
                 data-testid={`right-rail-group-divider-${group}`}
               />
             ) : null}
@@ -204,17 +234,14 @@ function GeneralRailGroup({
   disabled,
   mutationDisabled = false,
   propertiesOpen,
-  snapSettings,
   onSelectTool,
-  onSnapSettingsChange,
   onToggleProperties,
-}: RightRailProps & { columnCount: number }) {
-  const editingControlsDisabled = disabled || mutationDisabled;
+}: Pick<RightRailProps, 'activeTool' | 'disabled' | 'mutationDisabled' | 'propertiesOpen' | 'onSelectTool' | 'onToggleProperties'> & { columnCount: number }) {
   return (
     <section
       aria-label="General tools"
-      className="flex w-full flex-col items-center gap-2"
-      data-testid="properties-trigger-slot"
+      className="flex w-full flex-col items-center gap-2 px-2"
+      data-testid="general-rail-group"
     >
       {shouldShowRightRailHeadings(columnCount) ? (
         <h2
@@ -225,9 +252,9 @@ function GeneralRailGroup({
         </h2>
       ) : null}
       <div
-        className="grid shrink-0 justify-center gap-2"
-        data-testid="top-rail-control-grid"
-        style={{ gridTemplateColumns: `repeat(${getTopControlColumnCount(columnCount)}, 32px)` }}
+        className="flex shrink-0 flex-wrap justify-center gap-2"
+        data-testid="general-rail-control-grid"
+        style={{ width: `${getControlGroupWidth(getTopControlColumnCount(columnCount))}px` }}
       >
         {TOP_RAIL_TOOL_IDS.map((toolId) => {
           const tool = getToolDefinition(toolId);
@@ -247,6 +274,36 @@ function GeneralRailGroup({
             />
           );
         })}
+      </div>
+    </section>
+  );
+}
+
+function PinnedRailControls({
+  columnCount,
+  disabled = false,
+  mutationDisabled = false,
+  propertiesOpen,
+  snapSettings,
+  onSnapSettingsChange,
+  onToggleProperties,
+}: Pick<RightRailProps, 'disabled' | 'mutationDisabled' | 'propertiesOpen' | 'snapSettings' | 'onSnapSettingsChange' | 'onToggleProperties'> & { columnCount: number }) {
+  const editingControlsDisabled = disabled || mutationDisabled;
+  return (
+    <section
+      aria-label="Properties and snap settings"
+      className={cn(
+        'flex w-full shrink-0 items-center justify-center px-2',
+        PRIMARY_BAND_HEIGHT,
+        SHELL_BAND_BORDER_BOTTOM,
+      )}
+      data-testid="properties-trigger-slot"
+    >
+      <div
+        className="grid shrink-0 justify-center gap-2"
+        data-testid="top-rail-control-grid"
+        style={{ gridTemplateColumns: `repeat(${getTopControlColumnCount(columnCount)}, 32px)` }}
+      >
         <Toggle
           type="button"
           pressed={propertiesOpen}
@@ -300,7 +357,7 @@ function RightRailGroup({
   return (
     <section
       aria-label={`${heading} tools`}
-      className="flex w-full flex-col items-center gap-2"
+      className="flex w-full flex-col items-center gap-2 px-2"
       data-testid={`right-rail-${group}`}
     >
       {shouldShowRightRailHeadings(columnCount) ? (
@@ -309,8 +366,8 @@ function RightRailGroup({
         </h2>
       ) : null}
       <div
-        className="grid justify-center gap-2"
-        style={{ gridTemplateColumns: `repeat(${columnCount}, 32px)` }}
+        className="flex flex-wrap justify-center gap-2"
+        style={{ width: `${getControlGroupWidth(getToolGroupColumnCount(group, columnCount))}px` }}
       >
         {group === 'measure' ? (
           <Button

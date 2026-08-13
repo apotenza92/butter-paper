@@ -87,7 +87,7 @@ export function getChromeStyle(state: InteractionState, _boundsKind: ChromeBound
       boundsStrokeWidth: 1.25,
       haloStrokeWidth: 4,
       handleSize: 6,
-      boundsOutsetPx: 8,
+      boundsOutsetPx: 0,
     };
   }
 
@@ -100,7 +100,7 @@ export function getChromeStyle(state: InteractionState, _boundsKind: ChromeBound
     boundsStrokeWidth: state === 'focused' ? 1.75 : 1.5,
     haloStrokeWidth: 5,
     handleSize: 7,
-    boundsOutsetPx: 8,
+    boundsOutsetPx: 0,
   };
 }
 

@@ -45,6 +45,7 @@ import {
   CONTROL_ICON_SIZE_CLASS,
   CONTROL_ICON_STROKE_WIDTH,
   PRIMARY_BAND_HEIGHT,
+  SHELL_BAND_BORDER_BOTTOM,
   SHELL_SURFACE_PANEL,
   VIEWER_TOOLBAR_INSET_X,
 } from './shellSpacing';
@@ -665,7 +666,7 @@ function CadViewButton({
   onPagesPerColumnChange: (count: number) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const cadViewActive = scrollMode === 'continuous' && pageColumnsEnabled;
+  const cadViewActive = !disabled && scrollMode === 'continuous' && pageColumnsEnabled;
   const settingsTooltipId = 'viewer-cad-view-settings';
   const countLabel = cadViewOrganisation === 'columns' ? 'Pages/column' : 'Pages/row';
 
@@ -862,8 +863,9 @@ export function ViewerToolbar({
     <ToolbarTooltipRegistryContext.Provider value={toolbarTooltipRegistry}>
       <div
         className={[
-          'bp-native-scroll-hidden flex min-w-0 items-center overflow-x-auto border-b border-border [justify-content:safe_center]',
+          'bp-native-scroll-hidden flex min-w-0 items-center overflow-x-auto [justify-content:safe_center]',
           PRIMARY_BAND_HEIGHT,
+          SHELL_BAND_BORDER_BOTTOM,
           VIEWER_TOOLBAR_INSET_X,
           'gap-2',
           SHELL_SURFACE_PANEL,
@@ -926,7 +928,7 @@ export function ViewerToolbar({
         aria-label="Fit controls"
         variant="outline"
         spacing={0}
-        value={zoomPreset === 'manual' ? [] : [zoomPreset]}
+        value={disabled || zoomPreset === 'manual' ? [] : [zoomPreset]}
         onValueChange={(values) => {
           const nextValue = values.at(-1);
           if (nextValue === 'fit-width') {
@@ -996,7 +998,7 @@ export function ViewerToolbar({
 
       <ButtonGroup aria-label="Page view controls">
         <ViewWheelControl
-          active={scrollMode === 'continuous' && !pageColumnsEnabled}
+          active={!disabled && scrollMode === 'continuous' && !pageColumnsEnabled}
           disabled={disabled}
           icon={ContinuousIcon}
           preserveIconGeometry
@@ -1017,7 +1019,7 @@ export function ViewerToolbar({
           onModeChange={onContinuousScrollWheelModeChange}
         />
         <ViewWheelControl
-          active={scrollMode === 'single-page'}
+          active={!disabled && scrollMode === 'single-page'}
           disabled={disabled}
           icon={RectangleVertical}
           label="Single Page View"

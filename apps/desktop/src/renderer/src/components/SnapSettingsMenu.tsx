@@ -17,6 +17,7 @@ import {
 import { Field, FieldLabel, FieldLegend, FieldSet } from '@/components/ui/field';
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
+import { Input } from '@/components/ui/input';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { cn } from '@/lib/utils';
 import type { SnapGuideType, SnapSettings, SnapTarget } from '../state/viewerStore';
@@ -31,11 +32,12 @@ const SNAP_TARGET_OPTIONS: ReadonlyArray<{ target: SnapTarget; label: string }> 
   { target: 'nearest', label: 'Nearest' },
 ];
 
-type SnapSource = 'content' | 'markup';
+type SnapSource = 'content' | 'markup' | 'page-grid';
 
 const SNAP_SOURCE_OPTIONS: ReadonlyArray<{ source: SnapSource; label: string }> = [
   { source: 'content', label: 'Content' },
   { source: 'markup', label: 'Markup' },
+  { source: 'page-grid', label: 'Page grid' },
 ];
 
 const SNAP_GUIDE_OPTIONS: ReadonlyArray<{ type: SnapGuideType; label: string }> = [
@@ -53,20 +55,23 @@ function SnapTargetGlyph({ target }: { target: SnapTarget }) {
   return <SquareIcon aria-hidden="true" className={className} color={SNAP_MARKER_COLOR} data-snap-target-glyph={target} />;
 }
 
-export function snapTargetsAvailable(settings: Pick<SnapSettings, 'snapToContent' | 'snapToMarkup'>): boolean {
-  return settings.snapToContent || settings.snapToMarkup;
+type SnapSourceSettingValues = Pick<SnapSettings, 'snapToContent' | 'snapToMarkup'> & Partial<Pick<SnapSettings, 'snapToPageGrid'>>;
+
+export function snapTargetsAvailable(settings: SnapSourceSettingValues): boolean {
+  return settings.snapToContent || settings.snapToMarkup || Boolean(settings.snapToPageGrid);
 }
 
-export function enabledSnapSources(settings: Pick<SnapSettings, 'snapToContent' | 'snapToMarkup'>): SnapSource[] {
+export function enabledSnapSources(settings: SnapSourceSettingValues): SnapSource[] {
   return SNAP_SOURCE_OPTIONS
-    .filter(({ source }) => source === 'content' ? settings.snapToContent : settings.snapToMarkup)
+    .filter(({ source }) => source === 'content' ? settings.snapToContent : source === 'markup' ? settings.snapToMarkup : Boolean(settings.snapToPageGrid))
     .map(({ source }) => source);
 }
 
-export function snapSourceSettingsForValues(values: readonly string[]): Pick<SnapSettings, 'snapToContent' | 'snapToMarkup'> {
+export function snapSourceSettingsForValues(values: readonly string[]): Pick<SnapSettings, 'snapToContent' | 'snapToMarkup' | 'snapToPageGrid'> {
   return {
     snapToContent: values.includes('content'),
     snapToMarkup: values.includes('markup'),
+    snapToPageGrid: values.includes('page-grid'),
   };
 }
 
@@ -148,6 +153,48 @@ export function SnapSettingsMenu({
                 );
               })}
             </ToggleGroup>
+          </FieldSet>
+          <Separator />
+          <FieldSet className="gap-2">
+            <FieldLegend variant="label" className="w-full">Construction grid</FieldLegend>
+            <Field orientation="horizontal">
+              <FieldLabel htmlFor="snap-construction-grid">Snap to grid</FieldLabel>
+              <Switch id="snap-construction-grid" checked={snapSettings.constructionGridEnabled} onCheckedChange={(checked) => onSnapSettingsChange({ constructionGridEnabled: checked })} />
+            </Field>
+            <Field orientation="horizontal">
+              <FieldLabel htmlFor="show-construction-grid">Show grid</FieldLabel>
+              <Switch id="show-construction-grid" checked={snapSettings.constructionGridVisible} disabled={!snapSettings.constructionGridEnabled} onCheckedChange={(checked) => onSnapSettingsChange({ constructionGridVisible: checked })} />
+            </Field>
+            <Field orientation="horizontal">
+              <FieldLabel htmlFor="construction-grid-spacing">Spacing (mm)</FieldLabel>
+              <Input id="construction-grid-spacing" type="number" min="1" max="500" className="w-24" disabled={!snapSettings.constructionGridEnabled} value={snapSettings.constructionGridSpacingMm} onChange={(event) => onSnapSettingsChange({ constructionGridSpacingMm: Math.min(500, Math.max(1, Number(event.currentTarget.value) || 10)) })} />
+            </Field>
+          </FieldSet>
+          <Separator />
+          <FieldSet className="gap-2">
+            <FieldLegend variant="label" className="w-full">Dimension increments</FieldLegend>
+            <Field orientation="horizontal">
+              <FieldLabel htmlFor="snap-dimension-increments">Snap dimensions</FieldLabel>
+              <Switch
+                id="snap-dimension-increments"
+                checked={snapSettings.dimensionIncrementEnabled}
+                onCheckedChange={(checked) => onSnapSettingsChange({ dimensionIncrementEnabled: checked })}
+              />
+            </Field>
+            <Field orientation="horizontal">
+              <FieldLabel htmlFor="snap-dimension-increment-mm">Increment (mm)</FieldLabel>
+              <Input
+                id="snap-dimension-increment-mm"
+                type="number"
+                min="0.1"
+                max="500"
+                step="0.1"
+                className="w-24"
+                disabled={!snapSettings.dimensionIncrementEnabled}
+                value={snapSettings.dimensionIncrementMm}
+                onChange={(event) => onSnapSettingsChange({ dimensionIncrementMm: Math.min(500, Math.max(0.1, Number(event.currentTarget.value) || 5)) })}
+              />
+            </Field>
           </FieldSet>
           <Separator />
           <FieldSet className="gap-2">

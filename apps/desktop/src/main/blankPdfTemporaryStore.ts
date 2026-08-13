@@ -26,6 +26,10 @@ export class BlankPdfTemporaryStore {
 
   async create(request: BlankPdfCreateRequest): Promise<BlankPdfCreateResult> {
     const bytes = await createBlankPdf(request);
+    return this.createFromBytes(bytes);
+  }
+
+  async createFromBytes(bytes: Uint8Array): Promise<BlankPdfCreateResult> {
     const sessionDirectory = await this.getSessionDirectory();
     const documentNumber = this.nextDocumentNumber++;
     const fileName = documentNumber === 1 ? 'Untitled.pdf' : `Untitled ${documentNumber}.pdf`;

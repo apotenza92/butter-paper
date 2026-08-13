@@ -4,7 +4,7 @@ import { Alert, AlertAction, AlertDescription } from '@/components/ui/alert';
 import { Spinner } from '@/components/ui/spinner';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { PageModel, PdfPoint, Rect } from '@butter-paper/core';
-import type { ToolMode, ZoomPreset } from '../../../shared/protocol';
+import type { PdfOpenProgress, ToolMode, ZoomPreset } from '../../../shared/protocol';
 import { isRenderBacklogIdle, type DiagnosticsSnapshot, type LocalPdfSession } from '../services/documentSession';
 import { useRenderCoordinator } from '../services/renderCoordinator';
 import { useSessionVersion } from '../services/sessionHooks';
@@ -54,6 +54,7 @@ const MIDDLE_DOUBLE_CLICK_MS = 400;
 const MIDDLE_CLICK_DRAG_TOLERANCE_PX = 4;
 const MIDDLE_DOUBLE_CLICK_TOLERANCE_PX = 8;
 const MINIMUM_ZOOM_PAN_VISIBLE_RATIO = 0.5;
+export const DOCUMENT_OPENING_INDICATOR_DELAY_MS = 700;
 
 interface ViewportPanState {
   readonly pointerId: number;
@@ -137,20 +138,38 @@ type ScrollDirection = 'down' | 'up' | 'none';
 
 interface DocumentViewportProps {
   session: LocalPdfSession | null;
+  opening?: boolean;
+  openingProgress?: PdfOpenProgress | null;
   onOpenDocument: () => void;
-  calibrationPick?: { active: boolean; pointCount: number } | null;
+  calibrationPick?: {
+    active: boolean;
+    pointCount: number;
+    pageIndex: number | null;
+    startPoint: PdfPoint | null;
+  } | null;
   onCalibrationPoint?: (pageIndex: number, point: PdfPoint) => void;
   onCancelCalibrationPick?: () => void;
 }
 
 export function DocumentViewport({
   session,
+  opening = false,
+  openingProgress = null,
   onOpenDocument,
   calibrationPick = null,
   onCalibrationPoint,
   onCancelCalibrationPick,
 }: DocumentViewportProps) {
   recordComponentRender('DocumentViewport');
+  const [showOpeningIndicator, setShowOpeningIndicator] = useState(false);
+  useEffect(() => {
+    if (!opening) {
+      setShowOpeningIndicator(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setShowOpeningIndicator(true), DOCUMENT_OPENING_INDICATOR_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [opening]);
   const documentState = useViewerStore((state) => state.document);
   const zoom = useViewerStore((state) => state.zoom);
   const zoomPreset = useViewerStore((state) => state.zoomPreset);
@@ -1545,6 +1564,10 @@ export function DocumentViewport({
     requestThumbnailScroll(pageIndex);
   }, [requestThumbnailScroll, setCurrentPage]);
 
+  if (opening && showOpeningIndicator) {
+    return <DocumentOpeningIndicator progress={openingProgress} />;
+  }
+
   if (!documentState || !session) {
     return (
       <section className="flex h-full items-center justify-center bg-background text-muted-foreground">
@@ -1657,6 +1680,7 @@ export function DocumentViewport({
             visiblePageViewportRect={visiblePageViewportRect}
             overviewLabel={null}
             calibrationPickActive={Boolean(calibrationPick?.active)}
+            calibrationStartPoint={calibrationPick?.pageIndex === page.index ? calibrationPick.startPoint : null}
             onCalibrationPoint={onCalibrationPoint}
             onSelectPage={handleSelectPage}
             onHoverPage={setPointerPageIndex}
@@ -1689,7 +1713,9 @@ export function DocumentViewport({
       {calibrationPick?.active ? (
         <Alert className="pointer-events-auto absolute left-1/2 top-4 z-30 w-fit -translate-x-1/2 pr-20" data-testid="page-scale-calibration-instructions">
           <AlertDescription>
-            {calibrationPick.pointCount === 0 ? 'Click the first point of a known distance.' : 'Click the second point of the same distance.'}
+            {calibrationPick.pointCount === 0
+              ? 'Click the first point of a known distance.'
+              : 'Click the second point of the same distance. Hold Shift for horizontal or vertical.'}
           </AlertDescription>
           <AlertAction>
             <Button type="button" variant="outline" size="xs" onClick={onCancelCalibrationPick}>
@@ -1700,6 +1726,53 @@ export function DocumentViewport({
       ) : null}
     </div>
   );
+}
+
+export function DocumentOpeningIndicator({ progress = null }: { readonly progress?: PdfOpenProgress | null }) {
+  const size = progress?.totalBytes ? formatFileSize(progress.totalBytes) : null;
+  const percentage = progress?.totalBytes && progress.phase === 'reading'
+    ? Math.min(100, Math.round(progress.bytesRead / progress.totalBytes * 100))
+    : null;
+  const title = progress?.fileName ? `Opening “${progress.fileName}”${size ? ` · ${size}` : ''}` : 'Opening PDF';
+  const source = progress?.sourceName;
+  const detail = progress?.phase === 'processing'
+    ? 'Finishing…'
+    : percentage !== null && percentage > 0
+      ? `${source ? `Downloading from ${source}` : 'Reading file'} · ${percentage}%${formatEta(progress?.estimatedSecondsRemaining)}`
+      : source
+        ? `Waiting for ${source} to download the file…`
+        : 'If the file is stored online, your storage provider may need to download it first.';
+  return (
+    <section
+      className="flex h-full items-center justify-center bg-background text-muted-foreground"
+      aria-live="polite"
+      data-testid="viewport-opening-document"
+    >
+      <div className="flex max-w-sm flex-col items-center gap-3 text-center">
+        <Spinner className="size-6" />
+        <div className="flex flex-col gap-1">
+          <div className="text-[14px] font-medium text-foreground">{title}</div>
+          <div className="text-sm">{detail}</div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const unitIndex = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / 1024 ** unitIndex;
+  const digits = unitIndex === 0 ? 0 : value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(digits)} ${units[unitIndex]}`;
+}
+
+function formatEta(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds) || seconds < 2) return '';
+  if (seconds < 60) return ` · About ${Math.max(2, Math.round(seconds / 5) * 5)} seconds remaining`;
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  return ` · About ${minutes} ${minutes === 1 ? 'minute' : 'minutes'} remaining`;
 }
 
 export function resolveVisiblePageViewportRect(

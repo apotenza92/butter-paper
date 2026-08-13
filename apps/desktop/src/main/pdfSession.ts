@@ -1,6 +1,6 @@
-import { link, lstat, mkdtemp, open, readFile, rm, stat } from 'node:fs/promises';
+import { chmod, link, lstat, mkdtemp, open, readFile, rename, rm, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, createReadStream } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   createDocument,
@@ -9,8 +9,8 @@ import {
   type PageModel,
   type PageScale,
 } from '@butter-paper/core';
-import { openPdfDocument, openPdfGeometryDocument, type PdfGeometryDocument, type PdfPageGeometryIndex, type PdfPageRotation, type PdfSaveMode, type PdfSaveResult } from '@butter-paper/pdf';
-import type { DocumentOpenStageTimings, LoadedDocumentPayload } from '../shared/protocol';
+import { inspectPdfDocumentBytes, openPdfDocument, openPdfGeometryDocument, type PdfGeometryDocument, type PdfPageGeometryIndex, type PdfPageRotation, type PdfSaveMode, type PdfSaveResult } from '@butter-paper/pdf';
+import type { DocumentOpenStageTimings, LoadedDocumentPayload, PdfOpenProgress } from '../shared/protocol';
 import {
   assertPdfPublicationDirectory,
   capturePdfPublicationTarget,
@@ -36,20 +36,28 @@ const maxGeometryDocumentCacheEntries = 4;
 const geometryDocumentCache = new Map<string, CachedGeometryDocument>();
 export async function loadDocumentPayload(
   filePath: string,
+  onProgress?: (progress: PdfOpenProgress) => void,
 ): Promise<Omit<LoadedDocumentPayload, 'documentAccess'>> {
   const loadStartedAt = performance.now();
-  const sourceBytes = new Uint8Array(await readFile(filePath));
-  const handle = await openPdfDocument(filePath, { sourceBytes });
-
-  try {
+  const sourceBytes = await readPdfBytesWithProgress(filePath, onProgress);
+  onProgress?.({
+    fileName: basename(filePath),
+    sourceName: identifyStorageSource(filePath),
+    totalBytes: sourceBytes.byteLength,
+    bytesRead: sourceBytes.byteLength,
+    phase: 'processing',
+    estimatedSecondsRemaining: null,
+  });
+  const inspection = await inspectPdfDocumentBytes(sourceBytes);
+  {
     const metadataStartedAt = performance.now();
-    const metadata = await handle.getMetadata();
+    const metadata = inspection.metadata;
     const mainMetadataMs = performance.now() - metadataStartedAt;
 
     const pageModelStartedAt = performance.now();
     const pages: PageModel[] = [];
-    for (let pageIndex = 0; pageIndex < metadata.pageCount; pageIndex += 1) {
-      const pageInfo = await handle.getPageInfo(pageIndex);
+    for (const pageInfo of inspection.pages) {
+      const pageIndex = pageInfo.index;
       pages.push({
         id: `${filePath}#page-${pageIndex + 1}`,
         index: pageIndex,
@@ -62,7 +70,7 @@ export async function loadDocumentPayload(
     const mainPageModelMs = performance.now() - pageModelStartedAt;
 
     const annotationStartedAt = performance.now();
-    const annotationsByPage = await handle.annotations.readAllPageAnnotations();
+    const annotationsByPage = inspection.annotationsByPage;
     const markups: Markup[] = annotationsByPage.flat();
     const mainAnnotationReadMs = performance.now() - annotationStartedAt;
 
@@ -91,9 +99,59 @@ export async function loadDocumentPayload(
       }),
       openStageTimings,
     };
-  } finally {
-    await handle.close();
   }
+}
+
+export async function readPdfBytesWithProgress(
+  filePath: string,
+  onProgress?: (progress: PdfOpenProgress) => void,
+): Promise<Uint8Array> {
+  const fileName = basename(filePath);
+  const sourceName = identifyStorageSource(filePath);
+  const metadata = await stat(filePath).catch(() => null);
+  const totalBytes = metadata?.isFile() && Number.isSafeInteger(metadata.size) && metadata.size > 0
+    ? metadata.size
+    : null;
+  const chunks: Buffer[] = [];
+  let bytesRead = 0;
+  let smoothedBytesPerSecond: number | null = null;
+  let previousBytes = 0;
+  const readStartedAt = performance.now();
+  let previousTime = readStartedAt;
+  onProgress?.({ fileName, sourceName, totalBytes, bytesRead, phase: 'reading', estimatedSecondsRemaining: null });
+
+  for await (const chunk of createReadStream(filePath, { highWaterMark: 1024 * 1024 })) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    chunks.push(bytes);
+    bytesRead += bytes.byteLength;
+    const now = performance.now();
+    const elapsedSeconds = (now - previousTime) / 1000;
+    if (elapsedSeconds >= 0.2 || bytesRead === totalBytes) {
+      const currentRate = (bytesRead - previousBytes) / Math.max(elapsedSeconds, 0.001);
+      smoothedBytesPerSecond = smoothedBytesPerSecond === null
+        ? currentRate
+        : smoothedBytesPerSecond * 0.7 + currentRate * 0.3;
+      const remainingBytes = totalBytes === null ? null : Math.max(0, totalBytes - bytesRead);
+      const estimatedSecondsRemaining = remainingBytes !== null
+        && smoothedBytesPerSecond > 0
+        && now - readStartedAt >= 2_000
+        ? remainingBytes / smoothedBytesPerSecond
+        : null;
+      onProgress?.({ fileName, sourceName, totalBytes, bytesRead, phase: 'reading', estimatedSecondsRemaining });
+      previousBytes = bytesRead;
+      previousTime = now;
+    }
+  }
+  return new Uint8Array(Buffer.concat(chunks));
+}
+
+export function identifyStorageSource(filePath: string): string | null {
+  const normalized = filePath.replaceAll('\\', '/').toLowerCase();
+  if (normalized.includes('/onedrive')) return 'OneDrive';
+  if (normalized.includes('/dropbox')) return 'Dropbox';
+  if (normalized.includes('/google drive') || normalized.includes('/googledrive')) return 'Google Drive';
+  if (normalized.includes('/mobile documents/com~apple~clouddocs') || normalized.includes('/icloud')) return 'iCloud Drive';
+  return null;
 }
 
 function roundDuration(value: number): number {
@@ -127,15 +185,10 @@ export async function saveDocumentPayload(
   if (!isAbsolute(sourcePath) || (targetPath !== undefined && !isAbsolute(targetPath))) {
     throw new TypeError('PDF save paths must be absolute main-process paths.');
   }
-  if (mode === 'save') {
-    throw new PdfOutputPublicationError(
-      'In-place full-rewrite saving is disabled because it cannot conditionally replace the exact validated source. Use Save As to create a new PDF while preserving the original.',
-    );
-  }
   const source = resolve(sourcePath);
-  const requestedDestination = resolve(targetPath ?? '');
-  if (!targetPath) throw new TypeError('Save As requires an absolute destination path.');
-  if (requestedDestination === source) {
+  if (mode === 'saveAs' && !targetPath) throw new TypeError('Save As requires an absolute destination path.');
+  const requestedDestination = mode === 'save' ? source : resolve(targetPath!);
+  if (mode === 'saveAs' && requestedDestination === source) {
     throw new PdfOutputPublicationError('Save As will not replace the source PDF. Choose a new destination so the original remains preserved.');
   }
   const capturedPublicationTarget = await capturePdfPublicationTarget(requestedDestination);
@@ -189,22 +242,33 @@ export async function saveDocumentPayload(
       throw new PdfDocumentSourceError();
     }
 
-    try {
-      await assertPdfPublicationDirectory(publicationDirectory);
-      await link(temporaryOutput, destination);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-        throw new PdfOutputPublicationError('Save As will not replace an existing destination.');
+    if (mode === 'save') {
+      const sourceInfo = await lstat(source);
+      if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink()) {
+        throw new PdfDocumentSourceError();
       }
-      throw error;
-    }
-    try {
       await assertPdfPublicationDirectory(publicationDirectory);
-    } catch {
-      await removeLinkedTargetIfOurs(destination, temporaryOutput).catch(() => undefined);
-      throw new PdfOutputPublicationError('The selected Save As destination changed during publication.');
+      await chmod(temporaryOutput, sourceInfo.mode & 0o777);
+      await rename(temporaryOutput, destination);
+      await assertPdfPublicationDirectory(publicationDirectory);
+    } else {
+      try {
+        await assertPdfPublicationDirectory(publicationDirectory);
+        await link(temporaryOutput, destination);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+          throw new PdfOutputPublicationError('Save As will not replace an existing destination.');
+        }
+        throw error;
+      }
+      try {
+        await assertPdfPublicationDirectory(publicationDirectory);
+      } catch {
+        await removeLinkedTargetIfOurs(destination, temporaryOutput).catch(() => undefined);
+        throw new PdfOutputPublicationError('The selected Save As destination changed during publication.');
+      }
+      await rm(temporaryOutput);
     }
-    await rm(temporaryOutput);
     await syncDirectory(dirname(destination));
     return { path: requestedDestination, bytesWritten: confirmedOutputBytes.byteLength };
   } finally {

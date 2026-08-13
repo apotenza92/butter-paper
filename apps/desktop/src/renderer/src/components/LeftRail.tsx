@@ -6,6 +6,7 @@ import {
   RAIL_INSET,
   RAIL_BUTTON_SIZE,
   RAIL_WIDTH,
+  SHELL_PANEL_BORDER_RIGHT,
   SHELL_SURFACE_APP,
 } from './shellSpacing';
 
@@ -19,7 +20,8 @@ export function LeftRail({ activePanel, disabled = false, onToggle }: LeftRailPr
   return (
     <aside
       className={cn(
-        'flex h-full min-h-0 flex-none flex-col items-center border-r border-border',
+        'flex h-full min-h-0 flex-none flex-col items-center',
+        SHELL_PANEL_BORDER_RIGHT,
         RAIL_WIDTH,
         RAIL_INSET,
         SHELL_SURFACE_APP,

@@ -9,10 +9,11 @@ import type { ApplicationMenuState } from './protocol';
 describe('application menu definitions', () => {
   it('keeps command labels and accelerators stable', () => {
     expect(Object.values(APPLICATION_MENU_COMMANDS)).toEqual([
-      { command: 'new-pdf', label: 'New Blank PDF...', accelerator: 'CommandOrControl+N' },
+      { command: 'new-pdf', label: 'New from Template...', accelerator: 'CommandOrControl+N' },
       { command: 'open-pdf', label: 'Open...', accelerator: 'CommandOrControl+O' },
       { command: 'save', label: 'Save', accelerator: 'CommandOrControl+S' },
       { command: 'save-as', label: 'Save As...', accelerator: 'CommandOrControl+Shift+S' },
+      { command: 'save-document-as-template', label: 'Save Document as Template...' },
       { command: 'undo', label: 'Undo', accelerator: 'CommandOrControl+Z' },
       { command: 'redo', label: 'Redo', accelerator: 'CommandOrControl+Shift+Z' },
       { command: 'cut', label: 'Cut', accelerator: 'CommandOrControl+X' },

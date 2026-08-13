@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PAGE_THUMBNAIL_VIEWPORT_CLASS_NAME,
   resolveNearbyThumbnailWarmCandidates,
   shouldWarmNearbyThumbnails,
 } from './PageThumbnailList';
@@ -44,5 +45,12 @@ describe('page thumbnail nearby warming', () => {
       endIndex: 6,
       pageCount: 12,
     })).toEqual([3, 7]);
+  });
+});
+
+describe('page thumbnail list layout', () => {
+  it('keeps viewport padding out of the floating card layout', () => {
+    expect(PAGE_THUMBNAIL_VIEWPORT_CLASS_NAME).toContain('py-0');
+    expect(PAGE_THUMBNAIL_VIEWPORT_CLASS_NAME).not.toContain('py-1');
   });
 });
