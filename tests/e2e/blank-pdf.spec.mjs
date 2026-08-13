@@ -131,17 +131,20 @@ test.describe('New blank PDF', () => {
     expect(temporarySourcePath && existsSync(temporarySourcePath)).toBe(true);
     await page.getByTestId('document-tab-0').hover();
     await page.getByRole('button', { name: 'Close Untitled.pdf' }).click();
-    const unsavedDialog = page.getByTestId('unsaved-changes-dialog');
-    await expect(unsavedDialog).toBeVisible();
-    await unsavedDialog.getByRole('button', { name: 'Cancel' }).click();
-    await expect(unsavedDialog).toHaveCount(0);
+    const closeConfirmation = page.getByTestId('confirmation-popover');
+    await expect(closeConfirmation).toBeVisible();
+    await closeConfirmation.getByRole('button', { name: 'Cancel' }).click();
+    await expect(closeConfirmation).toHaveCount(0);
     await expect(page.getByTestId('document-tab-0')).toBeVisible();
     await page.getByTestId('document-tab-0').hover();
     await page.getByRole('button', { name: 'Close Untitled.pdf' }).click();
-    await unsavedDialog.getByTestId('unsaved-discard').click();
+    await closeConfirmation.getByRole('button', { name: 'Discard' }).click();
     await expect(page.getByTestId('document-tab-0')).toHaveCount(0);
     expect(existsSync(temporarySourcePath)).toBe(false);
 
+    await page.evaluate(() => {
+      void window.butterPaper.application.confirmClose();
+    });
     await app.close();
   });
 
