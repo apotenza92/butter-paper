@@ -25,6 +25,7 @@ import {
   resolveNearbyPagePreviewWarmCandidates,
   resolveViewportCentreAnchorScroll,
   resolvePageCenteredScroll,
+  resolveRapidViewportMotion,
   resolveVisiblePageViewportRect,
   resolveViewportVisibleOverscanPx,
   shouldScrollViewportWheel,
@@ -37,6 +38,31 @@ import {
   shouldUseCanvasColumnOverview,
   shouldUseColumnOverviewMode,
 } from './DocumentViewport';
+
+describe('document viewport motion quality', () => {
+  it('enters rapid mode only for fast motion and exits with hysteresis', () => {
+    expect(resolveRapidViewportMotion({
+      previousRapid: false,
+      distancePx: 24,
+      elapsedMs: 20,
+    })).toBe(false);
+    expect(resolveRapidViewportMotion({
+      previousRapid: false,
+      distancePx: 32,
+      elapsedMs: 20,
+    })).toBe(true);
+    expect(resolveRapidViewportMotion({
+      previousRapid: true,
+      distancePx: 20,
+      elapsedMs: 20,
+    })).toBe(true);
+    expect(resolveRapidViewportMotion({
+      previousRapid: true,
+      distancePx: 10,
+      elapsedMs: 20,
+    })).toBe(false);
+  });
+});
 
 describe('document viewport shell resize synchronisation', () => {
   it('measures the committed viewport for a synchronous fitted-layout update', () => {

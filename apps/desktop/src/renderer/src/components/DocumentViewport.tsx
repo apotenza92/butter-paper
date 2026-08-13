@@ -47,6 +47,8 @@ const COLUMN_CANVAS_OVERVIEW_PREFETCH_PREVIEW_BATCH_SIZE = 12;
 const COLUMN_CANVAS_OVERVIEW_PREVIEW_BATCH_DELAY_MS = 120;
 const FIT_VIEWPORT_SETTLE_MS = 140;
 const VIEWPORT_MOTION_SETTLE_MS = 180;
+const RAPID_VIEWPORT_ENTER_PX_PER_MS = 1.5;
+const RAPID_VIEWPORT_EXIT_PX_PER_MS = 0.75;
 const CONTINUOUS_CURRENT_PAGE_SCROLL_SUPPRESSION_MS = 500;
 const BLUEBEAM_TRACKPAD_ZOOM_RATE = 0.00165;
 const WHEEL_ZOOM_MAX_DELTA_PER_FRAME = 120;
@@ -204,6 +206,7 @@ export function DocumentViewport({
   const [startupPageRenderReady, setStartupPageRenderReady] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const [viewportInMotion, setViewportInMotion] = useState(false);
+  const [rapidViewportMotion, setRapidViewportMotion] = useState(false);
   const [columnOverviewModeActive, setColumnOverviewModeActive] = useState(false);
   const [pointerPageIndex, setPointerPageIndex] = useState<number | null>(null);
   const panState = useRef<ViewportPanState | null>(null);
@@ -220,6 +223,9 @@ export function DocumentViewport({
   const pendingScrollTopRef = useRef(0);
   const pendingScrollLeftRef = useRef(0);
   const lastObservedScrollTopRef = useRef(0);
+  const lastObservedScrollLeftRef = useRef(0);
+  const lastObservedScrollAtRef = useRef<number | null>(null);
+  const lastWheelMotionAtRef = useRef<number | null>(null);
   const previousContinuousCurrentPageScrollTopRef = useRef(0);
   const scrollDirectionRef = useRef<ScrollDirection>('none');
   const lastScrollWasUserScrollRef = useRef(true);
@@ -238,6 +244,7 @@ export function DocumentViewport({
   const pendingPanScrollRef = useRef<PendingPanScroll | null>(null);
   const previousZoomRef = useRef(zoom);
   const viewportInMotionRef = useRef(false);
+  const rapidViewportMotionRef = useRef(false);
   const previousPageColumnsEnabledRef = useRef(pageColumnsEnabled);
   const layoutModeRef = useRef<'continuous' | 'columns' | 'single-page'>('continuous');
   const pageLayoutListRef = useRef<readonly PageLayout[]>([]);
@@ -304,16 +311,20 @@ export function DocumentViewport({
     resetViewportContentOffset();
   }, [zoom]);
 
-  const markViewportInMotion = () => {
+  const markViewportInMotion = (rapid = rapidViewportMotionRef.current) => {
     const activeSession = sessionRef.current;
     if (!activeSession) {
       return;
     }
 
-    activeSession.setViewportInMotion(true);
+    activeSession.setViewportInMotion(true, !rapid);
     if (!viewportInMotionRef.current) {
       viewportInMotionRef.current = true;
       setViewportInMotion(true);
+    }
+    if (rapidViewportMotionRef.current !== rapid) {
+      rapidViewportMotionRef.current = rapid;
+      setRapidViewportMotion(rapid);
     }
     if (viewportMotionTimeoutRef.current !== null) {
       window.clearTimeout(viewportMotionTimeoutRef.current);
@@ -322,7 +333,9 @@ export function DocumentViewport({
       viewportMotionTimeoutRef.current = null;
       sessionRef.current?.setViewportInMotion(false);
       viewportInMotionRef.current = false;
+      rapidViewportMotionRef.current = false;
       setViewportInMotion(false);
+      setRapidViewportMotion(false);
     }, VIEWPORT_MOTION_SETTLE_MS);
   };
 
@@ -572,7 +585,22 @@ export function DocumentViewport({
 
     const handleScroll = () => {
       recordEvent('DocumentViewport.scroll');
-      markViewportInMotion();
+      const observedAt = performance.now();
+      const elapsedMs = lastObservedScrollAtRef.current === null
+        ? 0
+        : observedAt - lastObservedScrollAtRef.current;
+      const distancePx = Math.hypot(
+        container.scrollLeft - lastObservedScrollLeftRef.current,
+        container.scrollTop - lastObservedScrollTopRef.current,
+      );
+      const rapid = resolveRapidViewportMotion({
+        previousRapid: rapidViewportMotionRef.current,
+        distancePx,
+        elapsedMs,
+      });
+      lastObservedScrollAtRef.current = observedAt;
+      lastObservedScrollLeftRef.current = container.scrollLeft;
+      markViewportInMotion(rapid);
       const isUserScrollForCurrentPage = !suppressContinuousCurrentPageScrollRef.current && !panState.current;
       if (isUserScrollForCurrentPage) {
         const nextScroll = constrainViewportScrollToPanBounds(
@@ -633,8 +661,10 @@ export function DocumentViewport({
       }
       sessionRef.current?.setViewportInMotion(false);
       viewportInMotionRef.current = false;
+      rapidViewportMotionRef.current = false;
       suppressContinuousCurrentPageScrollRef.current = false;
       setViewportInMotion(false);
+      setRapidViewportMotion(false);
     };
   }, [hasDocumentView]);
 
@@ -993,7 +1023,17 @@ export function DocumentViewport({
       }
 
       event.preventDefault();
-      markViewportInMotion();
+      const wheelAt = performance.now();
+      const wheelElapsedMs = lastWheelMotionAtRef.current === null
+        ? 16
+        : wheelAt - lastWheelMotionAtRef.current;
+      const rapid = resolveRapidViewportMotion({
+        previousRapid: rapidViewportMotionRef.current,
+        distancePx: Math.hypot(event.deltaX, event.deltaY),
+        elapsedMs: wheelElapsedMs,
+      });
+      lastWheelMotionAtRef.current = wheelAt;
+      markViewportInMotion(rapid);
       const shouldScroll = shouldScrollViewportWheel(layoutMode, scrollWheelMode, event.ctrlKey);
       if (shouldScroll) {
         if (wheelZoomFrameRef.current !== null) {
@@ -1677,6 +1717,7 @@ export function DocumentViewport({
             isStrictlyVisible={isStrictlyVisible}
             isTargetPage={page.index === currentPage}
             viewportInMotion={viewportInMotion}
+            deferHighQualityDuringMotion={rapidViewportMotion}
             visiblePageViewportRect={visiblePageViewportRect}
             overviewLabel={null}
             calibrationPickActive={Boolean(calibrationPick?.active)}
@@ -1879,6 +1920,25 @@ export function shouldRenderColumnOverviewPreview(
 
 export function shouldDeferColumnOverviewPreview(viewportInMotion: boolean, isStrictlyVisible: boolean): boolean {
   return viewportInMotion && !isStrictlyVisible;
+}
+
+export function resolveRapidViewportMotion({
+  previousRapid,
+  distancePx,
+  elapsedMs,
+}: {
+  previousRapid: boolean;
+  distancePx: number;
+  elapsedMs: number;
+}): boolean {
+  if (!Number.isFinite(distancePx) || !Number.isFinite(elapsedMs) || elapsedMs <= 0) {
+    return previousRapid;
+  }
+
+  const speedPxPerMs = Math.max(0, distancePx) / elapsedMs;
+  return previousRapid
+    ? speedPxPerMs >= RAPID_VIEWPORT_EXIT_PX_PER_MS
+    : speedPxPerMs >= RAPID_VIEWPORT_ENTER_PX_PER_MS;
 }
 
 export function resolveColumnOverviewPreviewBatch({

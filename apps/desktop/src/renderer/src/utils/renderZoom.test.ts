@@ -137,7 +137,7 @@ describe('render zoom helpers', () => {
       desiredDisplayWidth: 160,
       desiredDisplayHeight: 240,
       desiredRasterZoom: 0.35,
-      minimumReusableDisplayWidth: 28.8,
+      minimumReusableDisplayWidth: 80,
       upgradeDisplayWidth: 144,
     });
   });

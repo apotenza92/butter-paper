@@ -135,11 +135,23 @@ describe('page view progressive quality promotion', () => {
     })).toBeNull();
   });
 
-  it('suppresses full-quality promotion during viewport motion', () => {
+  it('immediately promotes visible previews during viewport motion', () => {
     expect(resolveNextPageImageQualityRequest({
       currentQuality: 'preview',
       renderUrgency: 'visible',
       viewportInMotion: true,
+    })).toEqual({
+      quality: 'full',
+      delayMs: 0,
+    });
+  });
+
+  it('defers new full-quality work only during rapid viewport motion', () => {
+    expect(resolveNextPageImageQualityRequest({
+      currentQuality: 'preview',
+      renderUrgency: 'visible',
+      viewportInMotion: true,
+      deferHighQualityDuringMotion: true,
     })).toBeNull();
   });
 

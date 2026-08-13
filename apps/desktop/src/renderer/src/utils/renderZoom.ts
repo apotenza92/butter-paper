@@ -11,7 +11,8 @@ const MAX_DETAIL_RASTER_PIXELS = 72_000_000;
 const DISPLAY_LOD_MOTION_RATIO = 0.5;
 const DISPLAY_LOD_PREFETCH_RATIO = 0.5;
 const MIN_STABLE_REUSABLE_DISPLAY_RATIO = 0.55;
-const MIN_MOTION_REUSABLE_DISPLAY_RATIO = 0.18;
+const MIN_MOTION_VISIBLE_REUSABLE_DISPLAY_RATIO = 0.5;
+const MIN_MOTION_PREFETCH_REUSABLE_DISPLAY_RATIO = 0.18;
 
 export const MIN_VIEWER_ZOOM = 0.0625;
 export const MAX_VIEWER_ZOOM = 64;
@@ -168,7 +169,9 @@ export function computeDisplayRasterLod({
     ? Math.max(MIN_PREVIEW_RASTER_ZOOM, fullRasterZoom * (isStrictlyVisible ? DISPLAY_LOD_MOTION_RATIO : DISPLAY_LOD_PREFETCH_RATIO))
     : fullRasterZoom;
   const desiredRasterZoom = Math.min(fullRasterZoom, quantizeRasterZoomForMax(displayRasterZoom, isTargetPage ? MAX_DETAIL_RASTER_ZOOM : MAX_RASTER_ZOOM));
-  const reusableRatio = viewportInMotion ? MIN_MOTION_REUSABLE_DISPLAY_RATIO : MIN_STABLE_REUSABLE_DISPLAY_RATIO;
+  const reusableRatio = viewportInMotion
+    ? (isStrictlyVisible ? MIN_MOTION_VISIBLE_REUSABLE_DISPLAY_RATIO : MIN_MOTION_PREFETCH_REUSABLE_DISPLAY_RATIO)
+    : MIN_STABLE_REUSABLE_DISPLAY_RATIO;
 
   return {
     desiredDisplayWidth: Number(displayWidth.toFixed(2)),

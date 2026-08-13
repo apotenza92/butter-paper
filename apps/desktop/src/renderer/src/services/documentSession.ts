@@ -222,6 +222,17 @@ export function isRenderTaskAllowedDuringActivationCriticalWindow(
   return task.requestClass === 'visible-thumbnail' || task.requestClass === 'overview-thumbnail';
 }
 
+export function isPageRenderTaskAllowedDuringViewportMotion(
+  requestClass: RenderRequestClass,
+  allowVisibleHqDuringMotion: boolean,
+): boolean {
+  return requestClass === 'target-page-preview'
+    || requestClass === 'visible-page-preview'
+    || requestClass === 'target-page-hq'
+    || requestClass === 'target-page-crop'
+    || (allowVisibleHqDuringMotion && requestClass === 'visible-page-hq-upgrade');
+}
+
 export class LocalPdfSession {
   private filePath: string;
   private fileName: string;
@@ -270,6 +281,7 @@ export class LocalPdfSession {
   private resourceEpoch = 0;
   private previewReuseEnabled = false;
   private viewportInMotion = false;
+  private allowVisibleHqDuringMotion = false;
   private thumbnailListInMotion = false;
   private activationCriticalUntil = 0;
   private activationCriticalTimer: ReturnType<typeof setTimeout> | null = null;
@@ -334,6 +346,7 @@ export class LocalPdfSession {
     this.documentAccessHandle = payload.documentAccess.handle;
     this.previewReuseEnabled = false;
     this.viewportInMotion = false;
+    this.allowVisibleHqDuringMotion = false;
     this.thumbnailListInMotion = false;
     this.clearActivationCriticalWindow();
     this.navigationIntentPageIndex = null;
@@ -787,12 +800,17 @@ export class LocalPdfSession {
     );
   }
 
-  setViewportInMotion(inMotion: boolean): void {
-    if (this.viewportInMotion === inMotion) {
+  setViewportInMotion(inMotion: boolean, allowVisibleHqDuringMotion = false): void {
+    const nextAllowVisibleHq = inMotion && allowVisibleHqDuringMotion;
+    if (
+      this.viewportInMotion === inMotion
+      && this.allowVisibleHqDuringMotion === nextAllowVisibleHq
+    ) {
       return;
     }
 
     this.viewportInMotion = inMotion;
+    this.allowVisibleHqDuringMotion = nextAllowVisibleHq;
     this.pumpAllRenderQueues();
   }
 
@@ -1318,6 +1336,7 @@ export class LocalPdfSession {
     }
     this.previewReuseEnabled = false;
     this.viewportInMotion = false;
+    this.allowVisibleHqDuringMotion = false;
     this.thumbnailListInMotion = false;
     this.clearActivationCriticalWindow();
     this.navigationIntentPageIndex = null;
@@ -2096,10 +2115,10 @@ export class LocalPdfSession {
         return true;
       }
 
-      return task.requestClass === 'target-page-preview'
-        || task.requestClass === 'visible-page-preview'
-        || task.requestClass === 'target-page-hq'
-        || task.requestClass === 'target-page-crop';
+      return isPageRenderTaskAllowedDuringViewportMotion(
+        task.requestClass,
+        this.allowVisibleHqDuringMotion,
+      );
     }
 
     if (this.viewportInMotion) {

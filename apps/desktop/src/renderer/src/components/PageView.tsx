@@ -40,6 +40,7 @@ interface PageViewProps {
   isStrictlyVisible: boolean;
   isTargetPage: boolean;
   viewportInMotion: boolean;
+  deferHighQualityDuringMotion: boolean;
   visiblePageViewportRect?: Rect | null;
   overviewLabel?: {
     pageNumber: number;
@@ -66,6 +67,7 @@ export function PageView({
   renderUrgency,
   isStrictlyVisible,
   viewportInMotion,
+  deferHighQualityDuringMotion,
   isTargetPage,
   visiblePageViewportRect = null,
   overviewLabel = null,
@@ -553,6 +555,7 @@ export function PageView({
         currentQuality,
         renderUrgency: renderUrgencyRef.current,
         viewportInMotion,
+        deferHighQualityDuringMotion,
         immediateTargetPromotion: isThumbnailNavigationTarget,
       });
       if (!nextRequest) {
@@ -583,11 +586,9 @@ export function PageView({
 
     if (hasDisplayedImage) {
       // Scrolling changes visibility and target-page priority, but it must not
-      // tear down the image already on screen. Wait until motion settles before
-      // scheduling a quality upgrade for the displayed raster.
-      if (!viewportInMotion) {
-        scheduleNextQuality(imageQuality);
-      }
+      // tear down the image already on screen. Keep that raster visible and
+      // promote a visible preview immediately, including during motion.
+      scheduleNextQuality(imageQuality);
       return () => {
         cancelled = true;
         abortController.abort();
@@ -635,6 +636,7 @@ export function PageView({
     renderCoordinator,
     session,
     viewportInMotion,
+    deferHighQualityDuringMotion,
     imageQuality,
     cadRenderExperiment,
     detailCrop,
@@ -1170,14 +1172,20 @@ export function resolveNextPageImageQualityRequest({
   currentQuality,
   renderUrgency,
   viewportInMotion,
+  deferHighQualityDuringMotion = false,
   immediateTargetPromotion = false,
 }: {
   currentQuality: PageImageQuality | null;
   renderUrgency: 'visible' | 'prefetch';
   viewportInMotion: boolean;
+  deferHighQualityDuringMotion?: boolean;
   immediateTargetPromotion?: boolean;
 }): { quality: 'full'; delayMs: number } | null {
   if (renderUrgency !== 'visible') {
+    return null;
+  }
+
+  if (viewportInMotion && deferHighQualityDuringMotion && !immediateTargetPromotion) {
     return null;
   }
 
@@ -1188,10 +1196,10 @@ export function resolveNextPageImageQualityRequest({
     };
   }
 
-  if (currentQuality === 'preview' && !viewportInMotion) {
+  if (currentQuality === 'preview') {
     return {
       quality: 'full',
-      delayMs: FULL_QUALITY_DELAY_MS,
+      delayMs: viewportInMotion ? 0 : FULL_QUALITY_DELAY_MS,
     };
   }
 
