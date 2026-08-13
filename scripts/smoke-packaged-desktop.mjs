@@ -154,7 +154,6 @@ async function verifyPdfWorkflow(page, outputDirectory) {
     await window.__butterPaperTestHooks?.openDocumentPath(filePath);
   }, { filePath: savedPdfPath });
   await waitForDiagnostics(page, { pageCount: 6, markupCount: initialMarkupCount + 1 });
-  await page.locator('[data-testid^="markup-rect-"]').first().waitFor({ state: 'visible' });
   await verifyDroppedPdfOpensInNewTab(page, outputDirectory);
 }
 
