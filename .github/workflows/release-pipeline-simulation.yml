@@ -114,8 +114,13 @@ jobs:
       - name: Seal disposable metadata
         shell: bash
         run: |
-          find simulation/feed -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > simulation/feed/SHA256SUMS
-          (cd simulation/feed && sha256sum --check --strict SHA256SUMS)
+          (
+            cd simulation/feed
+            checksum_file=$(mktemp)
+            find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > "$checksum_file"
+            mv "$checksum_file" SHA256SUMS
+            sha256sum --check --strict SHA256SUMS
+          )
 
       - name: Upload sealed updater metadata
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
