@@ -176,7 +176,7 @@ jobs:
   attest:
     name: Attest promoted candidate checksums
     needs: verify-candidate
-    if: inputs.mode != 'prepare'
+    if: ${{ always() && inputs.mode != 'prepare' && needs.verify-candidate.result == 'success' }}
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -199,7 +199,7 @@ jobs:
   seal:
     name: Seal promoted candidate feeds
     needs: verify-candidate
-    if: inputs.mode != 'prepare'
+    if: ${{ always() && inputs.mode != 'prepare' && needs.verify-candidate.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Download verified candidate
@@ -233,7 +233,7 @@ jobs:
   stage:
     name: Promote without publishing
     needs: [verify-candidate, attest, seal]
-    if: inputs.mode != 'prepare'
+    if: ${{ always() && inputs.mode != 'prepare' && needs.verify-candidate.result == 'success' && needs.attest.result == 'success' && needs.seal.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout promotion verifier
