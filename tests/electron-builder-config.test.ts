@@ -103,7 +103,7 @@ describe('Electron Builder release identity', () => {
       afterPack: 'build/after-pack.cjs',
       compression: 'maximum',
       electronLanguages: ['en-US'],
-      releaseNotes: expect.stringContaining('Replaced the stable and beta application icons with the exact faceted origami'),
+      releaseNotes: expect.stringContaining('Added a reusable blank PDF template library'),
       nsisInclude: 'build/installer.nsh',
       nsisOneClick: false,
       macMinimumSystemVersion: '12.0',

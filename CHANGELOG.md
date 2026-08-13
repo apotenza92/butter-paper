@@ -2,6 +2,36 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.22]
+
+### Templates and document workflow
+
+- Added a reusable blank PDF template library with built-in and custom
+  templates, PDF import, live previews, last-template reuse, and direct access
+  from the document tab bar.
+- Added cloud-storage source detection and opening progress for large PDFs.
+  Improved safe save and Save As handling around opaque file access grants.
+- Improved page thumbnails, blank-page previews, document opening feedback,
+  constrained-window layout, and menu and rail controls.
+
+### Markup tools and properties
+
+- Added redaction placement, locked-markup handling, calibration-line feedback,
+  dimension-increment snapping, and more consistent selection hit zones.
+- Expanded tool properties with bundled standard annotation fonts, live text
+  appearance updates, compact colour controls, persistent sortable colour
+  presets, and construction-grid feedback.
+- Improved annotation import and export fidelity for appearance, geometry,
+  rotation, text, line endings, images, snapshots, and page content.
+
+### Verification
+
+- Added deterministic coverage for templates, saving, storage progress,
+  calibration, colour presets, PDF round trips, phone-transfer limits, and
+  packaged drag-and-drop behavior.
+- Allowed explicitly isolated local macOS GUI checks while keeping updater
+  replacement tests restricted to disposable GitHub Actions runners.
+
 ## [0.0.21]
 
 - Introduced the Butter Paper brand identity with Trace Teal, Markup Coral,
