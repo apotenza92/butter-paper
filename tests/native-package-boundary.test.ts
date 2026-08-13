@@ -101,14 +101,11 @@ describe('native release package boundaries', () => {
   it('promotes stable code to both isolated products while beta releases remain beta-only', () => {
     const workflow = readWorkflow();
 
+    expect(workflow).not.toContain('process.env.GITHUB_ACTOR');
+    expect(workflow).not.toContain('stable-release-self');
+    expect(workflow).not.toContain('beta-release-self');
     expect(workflow).toContain(
-      'process.env.GITHUB_ACTOR === process.env.GITHUB_REPOSITORY_OWNER',
-    );
-    expect(workflow).toContain(
-      "ownerRelease ? 'stable-release-self' : 'stable-release'",
-    );
-    expect(workflow).toContain(
-      "ownerRelease ? 'beta-release-self' : 'beta-release'",
+      "const environment = stable\n            ? 'stable-release'\n            : 'beta-release';",
     );
     expect(workflow).toContain(
       "['channel=stable', `environment=${environment}`, 'prerelease=false', 'variants=[\"stable\",\"beta\"]']",
