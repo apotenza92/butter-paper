@@ -37,7 +37,7 @@ test.describe('New blank PDF', () => {
 
       await expect(dialog).toHaveCount(0);
       await expect.poll(async () => (await getDiagnostics(page))?.documentName).toBe('Untitled.pdf');
-      await expect(page.getByTestId('document-tab-new-pdf')).toHaveAttribute('aria-label', 'New blank PDF using A4 · Portrait');
+      await expect(page.getByTestId('document-tab-new-pdf')).toHaveAttribute('aria-label', 'New from Blank Paper');
       const outputPath = join(outputDirectory, 'file-menu-a4-portrait.pdf');
       await saveCurrentDocumentAs(page, outputPath);
       const document = await PDFDocument.load(await readFile(outputPath), { updateMetadata: false });
@@ -53,7 +53,7 @@ test.describe('New blank PDF', () => {
     }
   });
 
-  test('keeps equally spaced document actions after the tabs, remembers the blank default, and protects a dirty tab', async () => {
+  test('keeps equally spaced document actions after the tabs, uses the template picker, and protects a dirty tab', async () => {
     test.skip(!resolveDesktopEntryPoint(), 'Desktop app entrypoint not available yet');
     const app = await launchButterPaper({ theme: 'light' });
     if (!app) test.skip(true, 'Desktop app could not be launched');
@@ -61,7 +61,7 @@ test.describe('New blank PDF', () => {
     const page = await firstWindow(app);
     const openButton = page.getByTestId('document-tab-open');
     const newPdfButton = page.getByTestId('document-tab-new-pdf');
-    const settingsButton = page.getByTestId('document-tab-new-pdf-settings');
+    const templatePickerButton = page.getByTestId('document-tab-template-picker');
     const initialOpenBounds = await openButton.boundingBox();
     const initialNewPdfBounds = await newPdfButton.boundingBox();
     expect(initialOpenBounds).not.toBeNull();
@@ -69,34 +69,26 @@ test.describe('New blank PDF', () => {
     expect(initialOpenBounds.x).toBeLessThan(100);
     expect(initialNewPdfBounds.x - (initialOpenBounds.x + initialOpenBounds.width)).toBeCloseTo(8, 0);
 
-    await settingsButton.click();
-    const settings = page.getByTestId('new-blank-pdf-settings');
-    await expect(settings).toBeVisible();
-    await expect(page.getByTestId('new-blank-pdf-paper-size')).toHaveValue('a3');
-    await expect(page.getByTestId('new-blank-pdf-landscape')).toHaveAttribute('aria-pressed', 'true');
-    await page.getByTestId('new-blank-pdf-paper-size').selectOption('custom');
-    await expect(page.getByRole('group', { name: 'Orientation' })).toHaveCount(0);
-    await page.getByTestId('new-blank-pdf-width').fill('9');
-    expect(await page.getByTestId('new-blank-pdf-width').evaluate((input) => input.checkValidity())).toBe(false);
+    await templatePickerButton.click();
+    const templatePicker = page.getByTestId('template-picker');
+    await expect(templatePicker).toBeVisible();
+    await expect(page.getByTestId('template-picker-item-built-in-blank')).toBeVisible();
+    await expect(page.getByTestId('template-preview-card')).toContainText('Blank Paper');
 
     const browserWindow = await app.browserWindow(page);
     await browserWindow.evaluate((window) => window.webContents.setZoomFactor(2));
     await expect.poll(async () => {
-      const settingsBounds = await settings.boundingBox();
+      const settingsBounds = await templatePicker.boundingBox();
       const constrainedViewportHeight = await page.evaluate(() => window.innerHeight);
       return settingsBounds !== null
         && settingsBounds.y >= 0
         && settingsBounds.y + settingsBounds.height <= constrainedViewportHeight;
     }).toBe(true);
     await page.keyboard.press('Escape');
-    await expect(settings).toHaveCount(0);
-    await expect(settingsButton).toBeFocused();
+    await expect(templatePicker).toHaveCount(0);
+    await expect(templatePickerButton).toBeFocused();
     await browserWindow.evaluate((window) => window.webContents.setZoomFactor(1));
 
-    await settingsButton.click();
-    await page.getByTestId('new-blank-pdf-paper-size').selectOption('a3');
-    await page.keyboard.press('Escape');
-    await expect(settings).toHaveCount(0);
     await newPdfButton.click();
     await expect.poll(async () => (await getDiagnostics(page))?.documentName).toBe('Untitled.pdf');
     await expect.poll(async () => (await getDiagnostics(page))?.tabs?.[0]?.dirty).toBe(true);

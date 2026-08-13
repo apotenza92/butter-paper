@@ -87,6 +87,7 @@ export function SnapSettingsMenu({
   onSnapSettingsChange,
 }: SnapSettingsMenuProps) {
   const [open, setOpen] = useState(false);
+  const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight);
   const guidesEnabledId = useId();
   const targets = snapSettings.snapTargets;
   const selectedTargets = new Set(targets);
@@ -98,6 +99,16 @@ export function SnapSettingsMenu({
       setOpen(false);
     }
   }, [disabled]);
+
+  useEffect(() => {
+    const updateViewportHeight = () => setViewportHeight(window.innerHeight);
+    window.addEventListener('resize', updateViewportHeight);
+    window.visualViewport?.addEventListener('resize', updateViewportHeight);
+    return () => {
+      window.removeEventListener('resize', updateViewportHeight);
+      window.visualViewport?.removeEventListener('resize', updateViewportHeight);
+    };
+  }, []);
 
   return (
     <div className="flex" data-testid="viewer-snap-controls">
@@ -119,8 +130,9 @@ export function SnapSettingsMenu({
           side="left"
           align="start"
           sideOffset={8}
-          className="w-80"
+          className="max-h-(--available-height) w-80 overflow-y-auto overscroll-contain"
           data-testid="viewer-snap-popover"
+          style={{ maxHeight: Math.max(0, viewportHeight - 16) }}
         >
           <FieldSet className="gap-2">
             <FieldLegend variant="label" className="w-full">Snap to</FieldLegend>

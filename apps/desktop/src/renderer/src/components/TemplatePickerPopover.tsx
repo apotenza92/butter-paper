@@ -60,7 +60,7 @@ export function TemplatePickerPopover({ library, tooltipSide, onCreate, onManage
       </Tooltip>
       <PopoverContent
         align="start"
-        className="flex w-[560px] max-w-[calc(100vw-16px)] flex-col gap-3"
+        className="max-h-(--available-height) flex w-[560px] max-w-[calc(100vw-16px)] flex-col gap-3 overflow-y-auto overscroll-contain"
         data-testid="template-picker"
         finalFocus={() => document.querySelector<HTMLElement>('[data-testid="document-tab-template-picker"]')}
       >

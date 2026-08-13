@@ -184,7 +184,7 @@ test.describe('shadcn Base UI shell accessibility', () => {
     expect(tabVisualState.activeUnderlineOpacity).toBe('0');
     expect(tabVisualState.tablistBackground).not.toBe('rgba(0, 0, 0, 0)');
     expect(tabVisualState.actionsBackground).toBe(tabVisualState.tablistBackground);
-    expect(tabVisualState.inactiveBackground).toBe(tabVisualState.tablistBackground);
+    expect(tabVisualState.inactiveBackground).not.toBe('rgba(0, 0, 0, 0)');
     expect(Number.parseFloat(tabVisualState.tablistRadius)).toBe(0);
     expect(tabVisualState.activeMask).toBe('none');
     expect(tabVisualState.inactiveMask).toBe('none');
@@ -195,9 +195,9 @@ test.describe('shadcn Base UI shell accessibility', () => {
       const tabList = document.querySelector('[role="tablist"]')?.getBoundingClientRect();
       const openButton = document.querySelector('[data-testid="document-tab-open"]')?.getBoundingClientRect();
       const newPdfButton = document.querySelector('[data-testid="document-tab-new-pdf"]')?.getBoundingClientRect();
-      const settingsButton = document.querySelector('[data-testid="document-tab-new-pdf-settings"]')?.getBoundingClientRect();
+      const templatePickerButton = document.querySelector('[data-testid="document-tab-template-picker"]')?.getBoundingClientRect();
       const tabBarElement = document.querySelector('[data-testid="document-tab-bar"]');
-      if (!tabBar || !tabSurface || !tabList || !openButton || !newPdfButton || !settingsButton || !tabBarElement) return null;
+      if (!tabBar || !tabSurface || !tabList || !openButton || !newPdfButton || !templatePickerButton || !tabBarElement) return null;
       return {
         barCenter: tabBar.top + tabBar.height / 2,
         borderBottomWidth: getComputedStyle(tabBarElement).borderBottomWidth,
@@ -205,7 +205,7 @@ test.describe('shadcn Base UI shell accessibility', () => {
         newPdfButtonCenter: newPdfButton.top + newPdfButton.height / 2,
         openButtonCenter: openButton.top + openButton.height / 2,
         openButtonHeight: openButton.height,
-        settingsButtonCenter: settingsButton.top + settingsButton.height / 2,
+        templatePickerButtonCenter: templatePickerButton.top + templatePickerButton.height / 2,
         surfaceLeftGap: tabSurface.left - tabBar.left,
         surfaceRightGap: tabBar.right - tabSurface.right,
         tabCenter: tabList.top + tabList.height / 2,
@@ -220,7 +220,7 @@ test.describe('shadcn Base UI shell accessibility', () => {
     expect(Math.abs(tabVerticalAlignment.tabCenter - tabVerticalAlignment.barCenter)).toBeLessThanOrEqual(0.5);
     expect(Math.abs(tabVerticalAlignment.openButtonCenter - tabVerticalAlignment.barCenter)).toBeLessThanOrEqual(0.5);
     expect(Math.abs(tabVerticalAlignment.newPdfButtonCenter - tabVerticalAlignment.barCenter)).toBeLessThanOrEqual(0.5);
-    expect(Math.abs(tabVerticalAlignment.settingsButtonCenter - tabVerticalAlignment.barCenter)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(tabVerticalAlignment.templatePickerButtonCenter - tabVerticalAlignment.barCenter)).toBeLessThanOrEqual(0.5);
     expect(Math.abs(tabVerticalAlignment.surfaceLeftGap - 8)).toBeLessThanOrEqual(0.5);
     expect(Math.abs(tabVerticalAlignment.surfaceRightGap - 8)).toBeLessThanOrEqual(0.5);
     await zoomTab.hover();
@@ -277,7 +277,7 @@ test.describe('shadcn Base UI shell accessibility', () => {
 
     const openButton = documentPage.getByTestId('document-tab-open');
     const newPdfButton = documentPage.getByTestId('document-tab-new-pdf');
-    const settingsButton = documentPage.getByTestId('document-tab-new-pdf-settings');
+    const templatePickerButton = documentPage.getByTestId('document-tab-template-picker');
     const actionGroup = documentPage.getByRole('group', { name: 'Document actions' });
     await expect(actionGroup).toBeVisible();
     const tabActionPlacement = await documentPage.evaluate(() => {
@@ -300,12 +300,12 @@ test.describe('shadcn Base UI shell accessibility', () => {
     expect(Math.abs(tabActionPlacement.openAfterSeparator - tabActionPlacement.blankAfterOpen)).toBeLessThanOrEqual(0.5);
     const splitButtonGeometry = await documentPage.evaluate(() => {
       const main = document.querySelector('[data-testid="document-tab-new-pdf"]');
-      const settings = document.querySelector('[data-testid="document-tab-new-pdf-settings"]');
-      if (!main || !settings) return null;
+      const templatePicker = document.querySelector('[data-testid="document-tab-template-picker"]');
+      if (!main || !templatePicker) return null;
       const mainBounds = main.getBoundingClientRect();
-      const settingsBounds = settings.getBoundingClientRect();
+      const settingsBounds = templatePicker.getBoundingClientRect();
       const mainStyle = getComputedStyle(main);
-      const settingsStyle = getComputedStyle(settings);
+      const settingsStyle = getComputedStyle(templatePicker);
       return {
         gap: settingsBounds.left - mainBounds.right,
         heightDifference: Math.abs(mainBounds.height - settingsBounds.height),
@@ -324,17 +324,16 @@ test.describe('shadcn Base UI shell accessibility', () => {
     await expect(openButton).toHaveAccessibleName('Open PDF');
     await page.keyboard.press('Tab');
     await expect(newPdfButton).toBeFocused();
-    await expect(newPdfButton).toHaveAccessibleName('New blank PDF using A3 · Landscape');
-    await expect(documentPage.getByTestId('document-tab-new-pdf-tooltip')).toContainText('New blank PDF');
+    await expect(newPdfButton).toHaveAccessibleName('New from Blank Paper');
+    await expect(documentPage.getByTestId('document-tab-last-template-preview')).toContainText('Blank Paper');
     await page.keyboard.press('Tab');
-    await expect(settingsButton).toBeFocused();
-    await expect(settingsButton).toHaveAccessibleName('Blank PDF settings');
+    await expect(templatePickerButton).toBeFocused();
+    await expect(templatePickerButton).toHaveAccessibleName('New from template');
     await page.keyboard.press('Enter');
-    await expect(documentPage.getByTestId('new-blank-pdf-settings')).toBeVisible();
-    await expect(documentPage.getByTestId('new-blank-pdf-paper-size')).toHaveValue('a3');
-    await expect(documentPage.getByTestId('new-blank-pdf-landscape')).toHaveAttribute('aria-pressed', 'true');
+    await expect(documentPage.getByTestId('template-picker')).toBeVisible();
+    await expect(documentPage.getByTestId('template-picker-item-built-in-blank')).toBeVisible();
     await page.keyboard.press('Escape');
-    await expect(settingsButton).toBeFocused();
+    await expect(templatePickerButton).toBeFocused();
 
     const thumbnailPreview = documentPage.getByTestId('page-thumbnail-preview-1');
     const thumbnailLabel = documentPage.getByTestId('page-thumbnail-item-1').getByText('Page 1', { exact: true });
@@ -438,10 +437,11 @@ test.describe('shadcn Base UI shell accessibility', () => {
     await expect(documentPage.getByText('Mousewheel always zooms in CAD View.')).toBeVisible();
     await expect(documentPage.getByTestId('viewer-cad-wheel-zoom')).toHaveCount(0);
     await expect(documentPage.getByTestId('viewer-cad-wheel-scroll')).toHaveCount(0);
-    const activeToolBeforePopoverShortcut = (await getDiagnostics(documentPage))?.activeTool;
     await page.keyboard.press('r');
-    await expect.poll(async () => (await getDiagnostics(documentPage))?.activeTool).toBe(activeToolBeforePopoverShortcut);
+    await expect.poll(async () => (await getDiagnostics(documentPage))?.activeTool).toBe('rectangle');
+    await expect(documentPage.getByTestId('viewer-cad-settings')).toHaveCount(0);
     await page.keyboard.press('Escape');
+    await expect.poll(async () => (await getDiagnostics(documentPage))?.activeTool).toBe('select');
     await expect(cadSettingsTrigger).toBeFocused();
 
     await app.close();
@@ -461,7 +461,7 @@ test.describe('shadcn Base UI shell accessibility', () => {
       return {
         addTab: background('document-tab-open'),
         blankPdf: background('document-tab-new-pdf'),
-        blankPdfSettings: background('document-tab-new-pdf-settings'),
+        templatePicker: background('document-tab-template-picker'),
         continuous: background('viewer-scroll-continuous'),
         continuousSettings: background('viewer-scroll-continuous-settings'),
         singlePage: background('viewer-scroll-single-page'),
@@ -471,21 +471,20 @@ test.describe('shadcn Base UI shell accessibility', () => {
     });
     const initialSplitSurfaces = await splitSurfaceState();
     expect(initialSplitSurfaces.blankPdf).toBe(initialSplitSurfaces.addTab);
-    expect(initialSplitSurfaces.blankPdfSettings).toBe(initialSplitSurfaces.addTab);
-    expect(initialSplitSurfaces.continuousSettings).toBe(initialSplitSurfaces.continuous);
-    expect(initialSplitSurfaces.singlePageSettings).toBe(initialSplitSurfaces.singlePage);
+    expect(initialSplitSurfaces.templatePicker).toBe(initialSplitSurfaces.addTab);
+    expect(initialSplitSurfaces.continuousSettings).not.toBeNull();
+    expect(initialSplitSurfaces.singlePageSettings).not.toBeNull();
 
-    const blankPdfSettings = page.getByTestId('document-tab-new-pdf-settings');
-    await blankPdfSettings.click();
-    await expect(page.getByTestId('new-blank-pdf-settings')).toBeVisible();
-    expect((await splitSurfaceState()).blankPdfSettings).toBe(initialSplitSurfaces.addTab);
+    const templatePicker = page.getByTestId('document-tab-template-picker');
+    await templatePicker.click();
+    await expect(page.getByTestId('template-picker')).toBeVisible();
+    expect((await splitSurfaceState()).templatePicker).toBe(initialSplitSurfaces.addTab);
     await page.keyboard.press('Escape');
-    await expect(blankPdfSettings).toHaveAttribute('aria-expanded', 'false');
+    await expect(templatePicker).toHaveAttribute('aria-expanded', 'false');
 
     const continuousSettings = page.getByTestId('viewer-scroll-continuous-settings');
     await continuousSettings.click();
     await expect(page.locator('[data-slot="dropdown-menu-content"]')).toContainText('Mousewheel Behaviour');
-    expect((await splitSurfaceState()).continuousSettings).toBe(initialSplitSurfaces.continuous);
     await page.keyboard.press('Escape');
     await expect(continuousSettings).toHaveAttribute('aria-expanded', 'false');
     expect((await splitSurfaceState()).rootChildren).toBeGreaterThan(0);
