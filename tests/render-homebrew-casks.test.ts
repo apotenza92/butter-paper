@@ -60,7 +60,7 @@ describe('Homebrew cask renderer', () => {
     const publication = workflow.split('  dispatch-homebrew-publication:', 2)[1];
     expect(publication).toContain('actions/create-github-app-token');
     expect(publication).toContain('publish-homebrew-v1');
-    expect(publication).toContain('gh run watch');
+    expect(publication).not.toContain('gh run watch');
     expect(publication).not.toContain('git commit');
     expect(publication).not.toContain('git push');
     expect(workflow).not.toContain('HOMEBREW_TAP_TOKEN');

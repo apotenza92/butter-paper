@@ -85,7 +85,7 @@ describe('macOS updater integration harness', () => {
         .toContain('needs: prepare');
     }
     expect(releaseWorkflow).toContain(
-      'needs: [prepare, validate, package-macos, package-windows, package-linux, test-macos-updater, test-nonmac-updater]',
+      'needs: [prepare, validate, package-macos, package-windows, package-linux]',
     );
     expect(releaseWorkflow.match(/BP_TEST_STARTUP_ONLY: \$\{\{ matrix\.variant != needs\.prepare\.outputs\.channel/g))
       .toHaveLength(3);
@@ -197,17 +197,17 @@ describe('macOS updater integration harness', () => {
     );
   });
 
-  it('makes native updater rejection and replacement tests a publication prerequisite', () => {
+  it('keeps one representative updater audit outside the publication critical path', () => {
     const workflow = readFileSync(resolve('.github/workflows/release.yml'), 'utf8');
     expect(workflow).toContain('test-macos-updater:');
     expect(workflow).toContain('runs-on: ${{ matrix.arch == \'arm64\' && \'macos-15\' || \'macos-15-intel\' }}');
-    expect(workflow).toContain('scenario: [valid]');
-    for (const scenario of ['channel', 'corrupt', 'signature']) {
-      expect(workflow).toContain(`scenario: ${scenario}`);
-    }
+    expect(workflow).toContain('scenario: valid');
+    expect(workflow).not.toContain('scenario: channel');
+    expect(workflow).not.toContain('scenario: corrupt');
+    expect(workflow).not.toContain('scenario: signature');
     expect(workflow).toContain('--scenario "$RELEASE_SCENARIO"');
     expect(workflow).toContain(
-      'needs: [prepare, validate, package-macos, package-windows, package-linux, test-macos-updater, test-nonmac-updater]',
+      'needs: [prepare, validate, package-macos, package-windows, package-linux]',
     );
 
     expect(workflow).toContain('name: release-assets');
@@ -221,7 +221,7 @@ describe('macOS updater integration harness', () => {
       workflow.indexOf('  test-macos-updater:'),
       workflow.indexOf('\n  assemble:'),
     );
-    expect(updaterJob).toContain('name: ${{ matrix.variant }}-updater-verification');
+    expect(updaterJob).not.toContain('updater-verification');
     expect(updaterJob).not.toContain('name: ${{ needs.prepare.outputs.environment }}');
     expect(updaterJob).not.toContain('environment: release-signing');
     expect(updaterJob).not.toContain('APPLE_SIGNING_CERTIFICATE_P12');

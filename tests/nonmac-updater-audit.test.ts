@@ -109,9 +109,11 @@ describe('native Windows and Linux updater audit', () => {
     );
     expect(script).toContain('PACKAGE_SHA256SUMS');
     expect(script).not.toContain('copyFileSync(privateKeyPath');
-    expect(release).toContain('uses: ./.github/workflows/nonmac-updater-audit.yml');
+    expect(release).not.toContain('uses: ./.github/workflows/nonmac-updater-audit.yml');
+    expect(readFileSync(resolve('.github/workflows/ci.yml'), 'utf8'))
+      .toContain('uses: ./.github/workflows/nonmac-updater-audit.yml');
     expect(release).toContain(
-      'needs: [prepare, validate, package-macos, package-windows, package-linux, test-macos-updater, test-nonmac-updater]',
+      'needs: [prepare, validate, package-macos, package-windows, package-linux]',
     );
   });
 });

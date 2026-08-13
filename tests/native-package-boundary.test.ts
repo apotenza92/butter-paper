@@ -93,7 +93,9 @@ describe('native release package boundaries', () => {
     expect(workflow).toContain('update-${{ matrix.variant }}-linux');
     expect(contract).toContain('update-${variant}-win32');
     expect(contract).toContain('update-${variant}-linux');
-    expect(workflow).toContain('uses: ./.github/workflows/nonmac-updater-audit.yml');
+    expect(workflow).not.toContain('uses: ./.github/workflows/nonmac-updater-audit.yml');
+    expect(readFileSync(resolve('.github/workflows/ci.yml'), 'utf8'))
+      .toContain('uses: ./.github/workflows/nonmac-updater-audit.yml');
   });
 
   it('promotes stable code to both isolated products while beta releases remain beta-only', () => {
