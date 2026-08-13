@@ -31,6 +31,7 @@ const DEFAULT_TEXT = {
 
 const DEFAULTS: Record<Markup['kind'], ResolvedMarkupAppearance> = {
   rectangle: shapeAppearance(1, null),
+  redact: shapeAppearance(1, null),
   ellipse: shapeAppearance(1, null),
   arc: shapeAppearance(1),
   line: shapeAppearance(1),

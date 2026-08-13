@@ -18,6 +18,7 @@ import {
   createPolylengthMarkup,
   createPolylineMarkup,
   createRectangleMarkup,
+  createRedactMarkup,
   createSnapshotMarkup,
   createTextBoxMarkup,
 } from './markup.js';
@@ -25,7 +26,7 @@ import { defaultMarkupAppearance, resolveMarkupAppearance } from './appearance.j
 import { pdfPoint, rect } from './points.js';
 
 const BUILT_IN_KINDS = [
-  'rectangle', 'ellipse', 'arc', 'line', 'arrow', 'dimension', 'length', 'polylength',
+  'rectangle', 'redact', 'ellipse', 'arc', 'line', 'arrow', 'dimension', 'length', 'polylength',
   'area', 'polyline', 'polygon', 'pen', 'highlight', 'cloud', 'cloud-plus', 'text-box',
   'callout', 'image', 'snapshot',
 ] as const;
@@ -115,6 +116,7 @@ function createBuiltInMarkup(kind: typeof BUILT_IN_KINDS[number]): Exclude<Marku
   const points = [pdfPoint(0, 0), pdfPoint(20, 0), pdfPoint(20, 20)];
   switch (kind) {
     case 'rectangle': return createRectangleMarkup({ ...base, rect: rect(0, 0, 20, 20) });
+    case 'redact': return createRedactMarkup({ ...base, rect: rect(0, 0, 20, 20) });
     case 'ellipse': return createEllipseMarkup({ ...base, rect: rect(0, 0, 20, 20) });
     case 'arc': return createArcMarkup({ ...base, rect: rect(0, 0, 20, 20), angle1: 0, angle2: 90 });
     case 'line': return createLineMarkup({ ...base, start: points[0], end: points[1] });

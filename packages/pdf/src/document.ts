@@ -3,8 +3,8 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { deflateSync } from 'node:zlib';
-import type { AnnotationMetadata, AnnotationMetadataRole, Markup, MarkupAppearance, PageScale, PdfPoint, ResolvedMarkupAppearance, TextBoxRichTextRun } from '@butter-paper/core';
-import { convertScaledValueUnit, createArcMarkup, createAreaMarkup, createArrowMarkup, createCalloutMarkup, createCloudMarkup, createCloudPlusMarkup, createDimensionMarkup, createEllipseMarkup, createHighlightMarkup, createImageMarkup, createImportedAnnotationMarkup, createLengthMarkup, createLineMarkup, createPenMarkup, createPolygonMarkup, createPolylengthMarkup, createPolylineMarkup, createRectangleMarkup, createSnapshotMarkup, createTextBoxMarkup, formatScaledAreaLabel, formatScaledLengthLabel, measureScaledLength, measureScaledPolygonArea, measureScaledPolyline, pdfPoint, resolveMarkupAppearance } from '@butter-paper/core';
+import type { AnnotationMetadata, AnnotationMetadataRole, CompatibleAnnotationFontId, Markup, MarkupAppearance, PageScale, PdfPoint, ResolvedMarkupAppearance, TextBoxRichTextRun } from '@butter-paper/core';
+import { compatibleAnnotationFontId, convertScaledValueUnit, createArcMarkup, createAreaMarkup, createArrowMarkup, createCalloutMarkup, createCloudMarkup, createCloudPlusMarkup, createDimensionMarkup, createEllipseMarkup, createHighlightMarkup, createImageMarkup, createImportedAnnotationMarkup, createLengthMarkup, createLineMarkup, createPenMarkup, createPolygonMarkup, createPolylengthMarkup, createPolylineMarkup, createRectangleMarkup, createRedactMarkup, createSnapshotMarkup, createTextBoxMarkup, formatScaledAreaLabel, formatScaledLengthLabel, measureScaledLength, measureScaledPolygonArea, measureScaledPolyline, pdfPoint, resolveMarkupAppearance } from '@butter-paper/core';
 import fontkit from '@pdf-lib/fontkit';
 import { decodePDFRawStream, degrees, PDFArray, PDFBool, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFString, StandardFonts, type PDFDict, type PDFFont, type PDFImage, type PDFObject, type PDFPage, type PDFRef } from 'pdf-lib';
 import { PdfRenderCache } from './cache.js';
@@ -32,17 +32,26 @@ const bluebeamTextBoxFontSizePt = 12;
 const bluebeamTextBoxInsetPt = 5;
 const bluebeamTextBoxLineHeightRatio = 1.15;
 const bluebeamTextBoxFirstBaselineOffsetRatio = 14.3146 / 12;
-const unicodeFontPaths = [
-  '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
-  '/System/Library/Fonts/Hiragino Sans GB.ttc',
-];
+
+type EmbeddedAnnotationFontId = Exclude<CompatibleAnnotationFontId, 'Helvetica'>;
+
+interface PdfExportFontFamily {
+  readonly id: EmbeddedAnnotationFontId;
+  readonly resourceStem: string;
+  readonly regular: PDFFont;
+  readonly bold?: PDFFont;
+  readonly italic?: PDFFont;
+  readonly boldItalic?: PDFFont;
+}
+
+type PdfFontVariant = 'regular' | 'bold' | 'italic' | 'boldItalic';
 
 interface PdfExportFonts {
   readonly helvetica: PDFFont;
   readonly helveticaBold: PDFFont;
   readonly helveticaOblique: PDFFont;
   readonly helveticaBoldOblique: PDFFont;
-  readonly unicode?: PDFFont;
+  readonly embedded: ReadonlyMap<EmbeddedAnnotationFontId, PdfExportFontFamily>;
 }
 
 interface CreatedAnnotation {
@@ -68,9 +77,9 @@ interface ReusableMediaAppearance {
 
 interface PdfTextBoxFont {
   readonly font: PDFFont;
-  readonly resourceName: 'Helv' | 'HelvBold' | 'HelvOblique' | 'HelvBoldOblique' | 'BPUnicode';
-  readonly styleName: 'Helvetica' | 'Arial Unicode MS';
-  readonly usesEmbeddedUnicodeFont: boolean;
+  readonly resourceName: string;
+  readonly styleName: CompatibleAnnotationFontId;
+  readonly usesEmbeddedFont: boolean;
 }
 
 interface TextBoxAppearanceRun extends TextBoxRichTextRun {
@@ -239,6 +248,50 @@ export async function openPdfDocument(path: string, options?: { sourceBytes?: Ui
   return PdfDocumentHandle.open(path, options);
 }
 
+export async function inspectPdfDocumentBytes(sourceBytes: Uint8Array): Promise<{
+  readonly metadata: PdfDocumentMetadata;
+  readonly pages: readonly PdfPageInfo[];
+  readonly annotationsByPage: readonly (readonly ImportedPdfMarkup[])[];
+}> {
+  const bytes = new Uint8Array(sourceBytes);
+  const document = await PDFDocument.load(bytes);
+  const pages = document.getPages().map((page, index) => {
+    const cropBox = page.getCropBox();
+    const rotation = normalizeRotation(page.getRotation().angle);
+    const swapsAxes = rotation === 90 || rotation === 270;
+    const userUnitObject = page.node.lookupMaybe(PDFName.of('UserUnit'), PDFNumber);
+    const userUnit = normalizeUserUnit(userUnitObject?.asNumber() ?? 1);
+    return {
+      index,
+      width: (swapsAxes ? cropBox.height : cropBox.width) * userUnit,
+      height: (swapsAxes ? cropBox.width : cropBox.height) * userUnit,
+      rotation,
+      viewBox: normalizePdfRect([
+        cropBox.x,
+        cropBox.y,
+        cropBox.x + cropBox.width,
+        cropBox.y + cropBox.height,
+      ]),
+      userUnit,
+    } satisfies PdfPageInfo;
+  });
+  const annotationsByPage = document.getPages().map((_page, pageIndex) => (
+    readPageAnnotationMarkups(document, pageIndex)
+  ));
+  return {
+    metadata: {
+      pageCount: pages.length,
+      title: document.getTitle(),
+      author: document.getAuthor(),
+      subject: document.getSubject(),
+      creator: document.getCreator(),
+      producer: document.getProducer(),
+    },
+    pages,
+    annotationsByPage,
+  };
+}
+
 export class PdfAnnotationAdapter {
   constructor(private readonly source: string | Uint8Array) {}
 
@@ -344,31 +397,65 @@ async function createPdfExportFonts(pdfDoc: PDFDocument, markups: readonly Marku
     helveticaBold,
     helveticaOblique,
     helveticaBoldOblique,
+    embedded: new Map<EmbeddedAnnotationFontId, PdfExportFontFamily>(),
   };
-  if (!markups.some((markup) => markup.kind === 'text-box' && needsUnicodeTextBoxFont(markup))) {
+  const requiredFamilies = new Map<EmbeddedAnnotationFontId, Set<PdfFontVariant>>();
+  const requireVariant = (fontId: EmbeddedAnnotationFontId, variant: PdfFontVariant) => {
+    const variants = requiredFamilies.get(fontId) ?? new Set<PdfFontVariant>();
+    variants.add(variant);
+    requiredFamilies.set(fontId, variants);
+  };
+  for (const markup of markups) {
+    if (isUntouchedImportedMarkup(markup)) continue;
+    const textAppearance = resolveMarkupAppearance(markup).text;
+    if (!textAppearance) continue;
+    const fontId = compatibleAnnotationFontId(resolveMarkupAppearance(markup).text?.fontId);
+    if (fontId !== 'Helvetica') requireVariant(fontId, 'regular');
+    if (markup.kind === 'text-box' && needsUnicodeTextBoxFont(markup)) requireVariant('Noto Sans', 'regular');
+    if (markup.kind !== 'text-box' && 'text' in markup && typeof markup.text === 'string' && !canEncodeWithWinAnsi(markup.text)) requireVariant('Noto Sans', 'regular');
+    if (markup.kind !== 'text-box') continue;
+    for (const run of markup.richTextRuns ?? []) {
+      const requestedRunFontId = compatibleAnnotationFontId(run.fontId ?? fontId);
+      const runFontId = requestedRunFontId === 'Helvetica' && !canEncodeWithWinAnsi(run.text) ? 'Noto Sans' : requestedRunFontId;
+      if (runFontId !== 'Helvetica') requireVariant(runFontId, pdfFontVariant(run));
+    }
+  }
+  if (requiredFamilies.size === 0) {
     return standardFonts;
   }
 
-  const unicodeBytes = await readFirstAvailableFile(unicodeFontPaths);
-  if (!unicodeBytes) {
-    throw new Error(`Unable to export Unicode text box: no compatible Unicode font found in ${unicodeFontPaths.join(', ')}`);
-  }
-
   pdfDoc.registerFontkit(fontkit);
+  const embedded = new Map<EmbeddedAnnotationFontId, PdfExportFontFamily>();
+  for (const [fontId, variants] of requiredFamilies) {
+    embedded.set(fontId, await embedAnnotationFontFamily(pdfDoc, fontId, variants));
+  }
   return {
     ...standardFonts,
-    unicode: await pdfDoc.embedFont(unicodeBytes, { subset: true }),
+    embedded,
   };
 }
 
-async function readFirstAvailableFile(paths: readonly string[]): Promise<Uint8Array | undefined> {
-  for (const path of paths) {
-    const bytes = await readFile(path).catch(() => undefined);
-    if (bytes) {
-      return bytes;
-    }
-  }
-  return undefined;
+async function embedAnnotationFontFamily(pdfDoc: PDFDocument, fontId: EmbeddedAnnotationFontId, variants: ReadonlySet<PdfFontVariant>): Promise<PdfExportFontFamily> {
+  const packageName = fontId.toLowerCase().replaceAll(' ', '-');
+  const fileStem = fontId.replaceAll(' ', '');
+  const resourceStem = `BP${fontId.replaceAll(' ', '')}`;
+  const readVariant = async (weight: 400 | 700, style: 'normal' | 'italic') => {
+    const folder = weight === 700 ? (style === 'italic' ? '700Bold_Italic' : '700Bold') : (style === 'italic' ? '400Regular_Italic' : '400Regular');
+    const suffix = weight === 700 ? (style === 'italic' ? '700Bold_Italic' : '700Bold') : (style === 'italic' ? '400Regular_Italic' : '400Regular');
+    const path = require.resolve(`@expo-google-fonts/${packageName}/${folder}/${fileStem}_${suffix}.ttf`);
+    // Revu 21 renders pdf-lib's subset CID fonts as blank text. Embed the full
+    // TrueType program so the same appearance works in Revu and PDF.js.
+    return pdfDoc.embedFont(new Uint8Array(await readFile(path)), { subset: false });
+  };
+  const regular = await readVariant(400, 'normal');
+  const bold = variants.has('bold') || variants.has('boldItalic') ? await readVariant(700, 'normal') : undefined;
+  const italic = variants.has('italic') || variants.has('boldItalic') ? await readVariant(400, 'italic') : undefined;
+  const boldItalic = variants.has('boldItalic') ? await readVariant(700, 'italic') : undefined;
+  return { id: fontId, resourceStem, regular, bold, italic, boldItalic };
+}
+
+function pdfFontVariant(run: Partial<TextBoxRichTextRun>): PdfFontVariant {
+  return run.bold && run.italic ? 'boldItalic' : run.bold ? 'bold' : run.italic ? 'italic' : 'regular';
 }
 
 async function createRenderCanvas(width: number, height: number): Promise<PdfCanvasLike> {
@@ -392,6 +479,16 @@ function mapAnnotationToMarkup(pageIndex: number, annotation: PdfJsAnnotation): 
         annotationId: annotation.id,
         source: 'imported',
       },
+    });
+  }
+
+  if (subtype === 'redact') {
+    return createRedactMarkup({
+      id: annotation.id ?? `page-${pageIndex}-redact`,
+      pageIndex,
+      rect: normalizePdfRect(annotation.rect ?? [0, 0, 0, 0]),
+      overlayText: String((annotation as { overlayText?: string }).overlayText ?? '') || undefined,
+      source: { annotationId: annotation.id, source: 'imported' },
     });
   }
 
@@ -595,10 +692,15 @@ function readPdfJsTextAlign(annotation: PdfJsAnnotation): 'left' | 'center' | 'r
   return undefined;
 }
 
-function readTextBoxFontFamily(annotation: PdfJsAnnotation): 'Helvetica' | 'ArialUnicode' {
+function readTextBoxFontFamily(annotation: PdfJsAnnotation): string {
   const style = annotation.richText?.html?.attributes?.style;
-  const font = typeof (style as { font?: unknown } | undefined)?.font === 'string' ? (style as { font: string }).font : '';
-  return font.toLowerCase().includes('arial unicode') ? 'ArialUnicode' : 'Helvetica';
+  const fontFamily = typeof (style as { fontFamily?: unknown } | undefined)?.fontFamily === 'string'
+    ? (style as { fontFamily: string }).fontFamily
+    : undefined;
+  const font = typeof (style as { font?: unknown } | undefined)?.font === 'string'
+    ? (style as { font: string }).font
+    : undefined;
+  return cleanCssFontFamily(fontFamily ?? font ?? '') || 'Helvetica';
 }
 
 function groupMarkupsByPage(markups: readonly Markup[]): Map<number, readonly Markup[]> {
@@ -833,6 +935,26 @@ async function addMarkupAnnotationInternal(
     fill?.color ?? textAppearance?.color,
   );
   switch (markup.kind) {
+    case 'redact': {
+      const x1 = markup.rect.x;
+      const y1 = markup.rect.y;
+      const x2 = x1 + markup.rect.width;
+      const y2 = y1 + markup.rect.height;
+      const annot = pdfDoc.context.obj({
+        Type: PDFName.of('Annot'),
+        Subtype: PDFName.of('Redact'),
+        Rect: [x1, y1, x2, y2],
+        QuadPoints: [x1, y2, x2, y2, x1, y1, x2, y1],
+        IC: pdfColorArray(markup.redactionColor ?? '#000000'),
+        ...(markup.overlayText ? { OverlayText: PDFString.of(markup.overlayText) } : {}),
+        NM: PDFString.of(toManagedAnnotationId(markup.id)),
+        Subj: PDFString.of('Redaction'),
+        Contents: PDFString.of('Marked for redaction'),
+        F: PDFNumber.of(4),
+      });
+      appendAnnotation(page, pdfDoc, annot, resolvedAppearance);
+      return;
+    }
     case 'rectangle': {
       const annot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
@@ -932,6 +1054,7 @@ async function addMarkupAnnotationInternal(
     }
     case 'dimension': {
       const appearance = createDimensionAppearance(pdfDoc, markup, fonts);
+      const textFont = getMarkupTextFont(markup, fonts, markup.text);
       const annot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('Line'),
@@ -950,8 +1073,9 @@ async function addMarkupAnnotationInternal(
         LLE: PDFNumber.of(4),
         Cap: PDFString.of(markup.text),
         Contents: PDFString.of(markup.text),
-        DA: PDFString.of(pdfTextDefaultAppearance(textAppearance)),
-        DS: PDFString.of(pdfTextDefaultStyle(textAppearance)),
+        DA: PDFString.of(pdfTextDefaultAppearance(textAppearance, textFont)),
+        DS: PDFString.of(pdfTextDefaultStyle(textAppearance, undefined, textFont)),
+        DR: pdfDoc.context.obj({ Font: createTextBoxAppearanceFontResources(fonts, textFont) } as any),
         ...opacityFields,
         NM: PDFString.of(toManagedAnnotationId(markup.id)),
         Subj: PDFString.of('Dimension'),
@@ -967,6 +1091,7 @@ async function addMarkupAnnotationInternal(
       const pageScale = pageScales.find((scale) => scale.pageIndex === markup.pageIndex);
       const label = measurementLabel(markup, pageScale);
       const appearance = createLengthAppearance(pdfDoc, markup, label, fonts);
+      const textFont = getMarkupTextFont(markup, fonts, label);
       const annot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('Line'),
@@ -987,10 +1112,11 @@ async function addMarkupAnnotationInternal(
         MeasurementTypes: PDFNumber.of(130),
         Measure: createMeasurementScaleDictionary(pdfDoc, pageScale, markup.displayUnit),
         Contents: PDFString.of(label),
-        RC: PDFString.of(createMeasurementRichContent(label, textAppearance)),
+        RC: PDFString.of(createMeasurementRichContent(label, textAppearance, textFont)),
         Label: PDFString.of(''),
-        DA: PDFString.of(pdfTextDefaultAppearance(textAppearance)),
-        DS: PDFString.of(pdfTextDefaultStyle(textAppearance, 'center')),
+        DA: PDFString.of(pdfTextDefaultAppearance(textAppearance, textFont)),
+        DS: PDFString.of(pdfTextDefaultStyle(textAppearance, 'center', textFont)),
+        DR: pdfDoc.context.obj({ Font: createTextBoxAppearanceFontResources(fonts, textFont) } as any),
         ...opacityFields,
         NM: PDFString.of(toManagedAnnotationId(markup.id)),
         Subj: PDFString.of('Length Measurement'),
@@ -1006,6 +1132,7 @@ async function addMarkupAnnotationInternal(
       const pageScale = pageScales.find((scale) => scale.pageIndex === markup.pageIndex);
       const label = measurementLabel(markup, pageScale);
       const appearance = createPathMeasurementAppearance(pdfDoc, markup, false, label, fonts);
+      const textFont = getMarkupTextFont(markup, fonts, label);
       const annot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('PolyLine'),
@@ -1024,10 +1151,11 @@ async function addMarkupAnnotationInternal(
         MeasurementTypes: PDFNumber.of(130),
         Measure: createMeasurementScaleDictionary(pdfDoc, pageScale, markup.displayUnit),
         Contents: PDFString.of(label),
-        RC: PDFString.of(createMeasurementRichContent(label, textAppearance)),
+        RC: PDFString.of(createMeasurementRichContent(label, textAppearance, textFont)),
         Label: PDFString.of(''),
-        DA: PDFString.of(pdfTextDefaultAppearance(textAppearance)),
-        DS: PDFString.of(pdfTextDefaultStyle(textAppearance, 'center')),
+        DA: PDFString.of(pdfTextDefaultAppearance(textAppearance, textFont)),
+        DS: PDFString.of(pdfTextDefaultStyle(textAppearance, 'center', textFont)),
+        DR: pdfDoc.context.obj({ Font: createTextBoxAppearanceFontResources(fonts, textFont) } as any),
         ...opacityFields,
         NM: PDFString.of(toManagedAnnotationId(markup.id)),
         Subj: PDFString.of('Polylength Measurement'),
@@ -1043,6 +1171,7 @@ async function addMarkupAnnotationInternal(
       const pageScale = pageScales.find((scale) => scale.pageIndex === markup.pageIndex);
       const label = measurementLabel(markup, pageScale);
       const appearance = createPathMeasurementAppearance(pdfDoc, markup, true, label, fonts);
+      const textFont = getMarkupTextFont(markup, fonts, label);
       const annot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('Polygon'),
@@ -1062,10 +1191,11 @@ async function addMarkupAnnotationInternal(
         MeasurementTypes: PDFNumber.of(129),
         Measure: createMeasurementScaleDictionary(pdfDoc, pageScale, markup.displayUnit),
         Contents: PDFString.of(label),
-        RC: PDFString.of(createMeasurementRichContent(label, textAppearance)),
+        RC: PDFString.of(createMeasurementRichContent(label, textAppearance, textFont)),
         Label: PDFString.of(''),
-        DA: PDFString.of(pdfTextDefaultAppearance(textAppearance)),
-        DS: PDFString.of(pdfTextDefaultStyle(textAppearance, 'center')),
+        DA: PDFString.of(pdfTextDefaultAppearance(textAppearance, textFont)),
+        DS: PDFString.of(pdfTextDefaultStyle(textAppearance, 'center', textFont)),
+        DR: pdfDoc.context.obj({ Font: createTextBoxAppearanceFontResources(fonts, textFont) } as any),
         ...opacityFields,
         NM: PDFString.of(toManagedAnnotationId(markup.id)),
         Subj: PDFString.of('Area Measurement'),
@@ -1217,6 +1347,7 @@ async function addMarkupAnnotationInternal(
         appearance: markup.appearance,
         source: markup.source,
       }, fonts, { showArrow: false });
+      const textFont = getMarkupTextFont(markup, fonts, markup.text);
       const textAnnot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('FreeText'),
@@ -1228,9 +1359,10 @@ async function addMarkupAnnotationInternal(
         CL: flattenedPoints,
         LE: [PDFName.of('None'), PDFName.of('None')],
         Q: PDFNumber.of(0),
-        DA: PDFString.of(pdfTextDefaultAppearance(textAppearance)),
-        DS: PDFString.of(pdfTextDefaultStyle(textAppearance)),
-        RC: createPdfTextString(createFreeTextRichContent(markup.text, textAppearance)),
+        DA: PDFString.of(pdfTextDefaultAppearance(textAppearance, textFont)),
+        DS: PDFString.of(pdfTextDefaultStyle(textAppearance, undefined, textFont)),
+        RC: createPdfTextString(createFreeTextRichContent(markup.text, textAppearance, textFont)),
+        DR: pdfDoc.context.obj({ Font: createTextBoxAppearanceFontResources(fonts, textFont) } as any),
         Border: [0, 0, 0],
         BS: pdfDoc.context.obj({ W: PDFNumber.of(0), S: PDFName.of('S'), Type: PDFName.of('Border') }),
         NM: PDFString.of(textName),
@@ -1289,6 +1421,9 @@ async function addMarkupAnnotationInternal(
         DA: PDFString.of(`${rgbToPdfOperator(textAppearance?.color ?? '#ff0000')} /${textBoxFont.resourceName} ${formatPdfNumber(getTextBoxFontSize(markup))} Tf`),
         DS: PDFString.of(createTextBoxDefaultStyle(markup, textBoxFont)),
         RC: createPdfTextString(createTextBoxRichContent(markup.text, markup, textBoxFont)),
+        DR: pdfDoc.context.obj({
+          Font: createTextBoxAppearanceFontResources(fonts, textBoxFont),
+        } as any),
         BS: pdfDoc.context.obj({
           W: PDFNumber.of(stroke?.widthPt ?? 0),
           S: PDFName.of('S'),
@@ -1320,6 +1455,7 @@ async function addMarkupAnnotationInternal(
         ...markup,
         leader: { points: serializedLeaderPoints },
       }, fonts);
+      const textFont = getMarkupTextFont(markup, fonts, markup.text);
       const annot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('FreeText'),
@@ -1330,9 +1466,10 @@ async function addMarkupAnnotationInternal(
         CL: flattenedPoints,
         LE: [PDFName.of('None'), PDFName.of('OpenArrow')],
         Q: PDFNumber.of(textAlignToPdfQ(textAppearance?.align)),
-        DA: PDFString.of(pdfTextDefaultAppearance(textAppearance)),
-        DS: PDFString.of(pdfTextDefaultStyle(textAppearance)),
-        RC: createPdfTextString(createFreeTextRichContent(markup.text, textAppearance)),
+        DA: PDFString.of(pdfTextDefaultAppearance(textAppearance, textFont)),
+        DS: PDFString.of(pdfTextDefaultStyle(textAppearance, undefined, textFont)),
+        RC: createPdfTextString(createFreeTextRichContent(markup.text, textAppearance, textFont)),
+        DR: pdfDoc.context.obj({ Font: createTextBoxAppearanceFontResources(fonts, textFont) } as any),
         Border: [0, 0, 0],
         BS: pdfDoc.context.obj({ W: PDFNumber.of(0), S: PDFName.of('S'), Type: PDFName.of('Border') }),
         NM: PDFString.of(toManagedAnnotationId(markup.id)),
@@ -1439,6 +1576,7 @@ function createDimensionAppearance(pdfDoc: PDFDocument, markup: Extract<Markup, 
   const appearance = resolveMarkupAppearance(markup);
   const strokeAppearance = appearance.stroke!;
   const textAppearance = appearance.text!;
+  const textFont = getMarkupTextFont(markup, fonts, markup.text);
   const stroke = colorToRgb(strokeAppearance.color);
   const text = colorToRgb(textAppearance.color);
   const baselineOffset = textAppearance.fontSizePt * (13 / 12);
@@ -1452,7 +1590,7 @@ function createDimensionAppearance(pdfDoc: PDFDocument, markup: Extract<Markup, 
     'f',
     polygonPath(rightArrow),
     'f',
-    `BT ${formatPdfNumber(text.red)} ${formatPdfNumber(text.green)} ${formatPdfNumber(text.blue)} rg /Helv ${formatPdfNumber(textAppearance.fontSizePt)} Tf 1 0 0 1 ${formatPdfNumber(caption.x + textAppearance.insetPt)} ${formatPdfNumber(caption.y + caption.height - baselineOffset)} Tm (${escapePdfLiteralString(markup.text)}) Tj ET`,
+    `BT ${formatPdfNumber(text.red)} ${formatPdfNumber(text.green)} ${formatPdfNumber(text.blue)} rg /${textFont.resourceName} ${formatPdfNumber(textAppearance.fontSizePt)} Tf 1 0 0 1 ${formatPdfNumber(caption.x + textAppearance.insetPt)} ${formatPdfNumber(caption.y + caption.height - baselineOffset)} Tm ${encodePdfTextShow(markup.text, textFont)} Tj ET`,
     'Q',
   ];
   const stream = pdfDoc.context.flateStream(`${commands.join(' ')} `, {
@@ -1462,14 +1600,7 @@ function createDimensionAppearance(pdfDoc: PDFDocument, markup: Extract<Markup, 
     BBox: [bounds.x, bounds.y, bounds.x + bounds.width, bounds.y + bounds.height],
     Resources: pdfDoc.context.obj({
       ProcSet: [PDFName.of('PDF'), PDFName.of('Text')],
-      Font: {
-        Helv: {
-          Type: PDFName.of('Font'),
-          Subtype: PDFName.of('Type1'),
-          BaseFont: PDFName.of('Helvetica'),
-          Encoding: PDFName.of('WinAnsiEncoding'),
-        },
-      },
+      Font: createTextBoxAppearanceFontResources(fonts, textFont),
       ExtGState: {
         GS0: pdfDoc.context.obj({
           Type: PDFName.of('ExtGState'),
@@ -1504,7 +1635,7 @@ function dimensionGeometry(markup: Extract<Markup, { kind: 'dimension' }>, fonts
 
 function dimensionCaptionRect(markup: Extract<Markup, { kind: 'dimension' }>, fonts: PdfExportFonts, center: PdfPoint): { x: number; y: number; width: number; height: number } {
   const text = resolveMarkupAppearance(markup).text!;
-  const measuredWidth = fonts.helvetica.widthOfTextAtSize(markup.text, text.fontSizePt);
+  const measuredWidth = getMarkupTextFont(markup, fonts, markup.text).font.widthOfTextAtSize(markup.text, text.fontSizePt);
   const width = Math.max(text.fontSizePt, measuredWidth + text.insetPt * 2);
   const height = Math.max(text.lineHeightPt, text.fontSizePt);
   return { x: center.x - width * 0.5, y: center.y - height * 0.5, width, height };
@@ -1677,7 +1808,7 @@ function createPathMeasurementAppearance(
 ): { ref: PDFRef } {
   const points = markup.kind === 'length' ? [markup.start, markup.end] : markup.points;
   const text = resolveMarkupAppearance(markup).text;
-  const labelBox = measurementLabelRect(closed ? polygonCentroid(points) : pathMidpoint(points), label, text, fonts);
+  const labelBox = measurementLabelRect(closed ? polygonCentroid(points) : pathMidpoint(points), label, markup, fonts);
   const bounds = measurementPathBounds(markup, closed, label, fonts);
   const appearance = resolveMarkupAppearance(markup);
   const stroke = appearance.stroke;
@@ -1685,6 +1816,7 @@ function createPathMeasurementAppearance(
   const strokeRgb = colorToRgb(stroke?.color ?? '#ff0000');
   const fillRgb = colorToRgb(fill?.color ?? stroke?.color ?? '#ff0000');
   const textRgb = colorToRgb(text?.color ?? '#ff0000');
+  const textFont = getMarkupTextFont(markup, fonts, label);
   const opacity = appearance.opacity;
   const fontSize = text?.fontSizePt ?? 12;
   const baselineOffset = fontSize * (13 / 12);
@@ -1701,7 +1833,7 @@ function createPathMeasurementAppearance(
     ...pathCommands,
     closed ? 'B' : 'S',
     'Q q /GSText gs',
-    `BT ${rgbToPdfOperator(text?.color ?? '#ff0000')} /Helv ${formatPdfNumber(fontSize)} Tf 1 0 0 1 ${formatPdfNumber(labelBox.x + (text?.insetPt ?? 0))} ${formatPdfNumber(labelBox.y + labelBox.height - baselineOffset)} Tm (${escapePdfLiteralString(label)}) Tj ET`,
+    `BT ${rgbToPdfOperator(text?.color ?? '#ff0000')} /${textFont.resourceName} ${formatPdfNumber(fontSize)} Tf 1 0 0 1 ${formatPdfNumber(labelBox.x + (text?.insetPt ?? 0))} ${formatPdfNumber(labelBox.y + labelBox.height - baselineOffset)} Tm ${encodePdfTextShow(label, textFont)} Tj ET`,
     'Q',
   ];
   const stream = pdfDoc.context.flateStream(`${commands.join(' ')} `, {
@@ -1711,14 +1843,7 @@ function createPathMeasurementAppearance(
     BBox: rectToPdfArray(bounds),
     Resources: pdfDoc.context.obj({
       ProcSet: [PDFName.of('PDF'), PDFName.of('Text')],
-      Font: {
-        Helv: {
-          Type: PDFName.of('Font'),
-          Subtype: PDFName.of('Type1'),
-          BaseFont: PDFName.of('Helvetica'),
-          Encoding: PDFName.of('WinAnsiEncoding'),
-        },
-      },
+      Font: createTextBoxAppearanceFontResources(fonts, textFont),
       ExtGState: {
         GSPath: pdfDoc.context.obj({
           Type: PDFName.of('ExtGState'),
@@ -1765,15 +1890,15 @@ function measurementNumberFormat(pdfDoc: PDFDocument, unit: string, conversion: 
   });
 }
 
-function createMeasurementRichContent(label: string, text: ResolvedMarkupAppearance['text']): string {
-  return `<?xml version="1.0"?><body xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/" xfa:contentType="text/html" xfa:APIVersion="BluebeamPDFRevu:2018" xfa:spec="2.2.0" style="${pdfTextDefaultStyle(text, 'center')}" xmlns="http://www.w3.org/1999/xhtml"><p>${escapeXml(label)}</p></body>`;
+function createMeasurementRichContent(label: string, text: ResolvedMarkupAppearance['text'], textFont: PdfTextBoxFont): string {
+  return `<?xml version="1.0"?><body xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/" xfa:contentType="text/html" xfa:APIVersion="BluebeamPDFRevu:2018" xfa:spec="2.2.0" style="${pdfTextDefaultStyle(text, 'center', textFont)}" xmlns="http://www.w3.org/1999/xhtml"><p>${escapeXml(label)}</p></body>`;
 }
 
 function measurementLengthBounds(markup: Extract<Markup, { kind: 'length' }>, label: string, fonts: PdfExportFonts): { x: number; y: number; width: number; height: number } {
   const appearance = resolveMarkupAppearance(markup);
   return unionBounds(
     pointsBounds([markup.start, markup.end], Math.max(8, (appearance.stroke?.widthPt ?? 0) * 0.5)),
-    measurementLabelRect(midpointPdfPoint(markup.start, markup.end), label, appearance.text, fonts),
+    measurementLabelRect(midpointPdfPoint(markup.start, markup.end), label, markup, fonts),
   );
 }
 
@@ -1787,20 +1912,21 @@ function measurementPathBounds(
   const appearance = resolveMarkupAppearance(markup);
   return unionBounds(
     pointsBounds(points, Math.max(8, (appearance.stroke?.widthPt ?? 0) * 0.5)),
-    measurementLabelRect(closed ? polygonCentroid(points) : pathMidpoint(points), label, appearance.text, fonts),
+    measurementLabelRect(closed ? polygonCentroid(points) : pathMidpoint(points), label, markup, fonts),
   );
 }
 
 function measurementLabelRect(
   anchor: PdfPoint,
   label: string,
-  text: ResolvedMarkupAppearance['text'],
+  markup: Extract<Markup, { kind: 'length' | 'polylength' | 'area' }>,
   fonts: PdfExportFonts,
 ): { x: number; y: number; width: number; height: number } {
+  const text = resolveMarkupAppearance(markup).text;
   const fontSize = text?.fontSizePt ?? 12;
   const lineHeight = text?.lineHeightPt ?? fontSize * 1.15;
   const inset = text?.insetPt ?? 0;
-  const width = fonts.helvetica.widthOfTextAtSize(label, fontSize);
+  const width = getMarkupTextFont(markup, fonts, label).font.widthOfTextAtSize(label, fontSize);
   return {
     x: anchor.x + 6,
     y: anchor.y + 6,
@@ -2174,8 +2300,14 @@ function createTextBoxAppearanceFontResources(fonts: PdfExportFonts, defaultFont
     },
   };
 
-  if (defaultFont.usesEmbeddedUnicodeFont && fonts.unicode) {
-    resources.BPUnicode = fonts.unicode.ref;
+  for (const family of fonts.embedded.values()) {
+    resources[family.resourceStem] = family.regular.ref;
+    if (family.bold) resources[`${family.resourceStem}Bold`] = family.bold.ref;
+    if (family.italic) resources[`${family.resourceStem}Italic`] = family.italic.ref;
+    if (family.boldItalic) resources[`${family.resourceStem}BoldItalic`] = family.boldItalic.ref;
+  }
+  if (defaultFont.usesEmbeddedFont && !resources[defaultFont.resourceName]) {
+    resources[defaultFont.resourceName] = defaultFont.font.ref;
   }
 
   return resources;
@@ -2199,20 +2331,21 @@ function createCalloutAppearance(
   const textAppearance = appearance.text!;
   const stroke = colorToRgb(strokeAppearance.color);
   const text = colorToRgb(textAppearance.color);
+  const textFont = getMarkupTextFont(markup, fonts, markup.text);
   const inset = textAppearance.insetPt;
-  const lines = wrapTextBoxText(markup.text, markup.textBox.width, fonts.helvetica, textAppearance.fontSizePt, inset);
+  const lines = wrapTextBoxText(markup.text, markup.textBox.width, textFont.font, textAppearance.fontSizePt, inset);
   const textBlockHeight = lines.length * textAppearance.lineHeightPt;
   const lineBoxTop = Math.max(0, (markup.textBox.height - textBlockHeight) * 0.5);
   const baselineWithinLine = (textAppearance.lineHeightPt - textAppearance.fontSizePt) * 0.5 + textAppearance.fontSizePt * 0.8;
   const firstBaseline = markup.textBox.y + markup.textBox.height - lineBoxTop - baselineWithinLine;
   const textCommands = lines.flatMap((line, index) => {
-    const measuredWidth = fonts.helvetica.widthOfTextAtSize(line, textAppearance.fontSizePt);
+    const measuredWidth = textFont.font.widthOfTextAtSize(line, textAppearance.fontSizePt);
     const x = textAppearance.align === 'center'
       ? markup.textBox.x + markup.textBox.width * 0.5 - measuredWidth * 0.5
       : textAppearance.align === 'right'
         ? markup.textBox.x + markup.textBox.width - inset - measuredWidth
         : markup.textBox.x + inset;
-    return [`1 0 0 1 ${formatPdfNumber(x)} ${formatPdfNumber(firstBaseline - index * textAppearance.lineHeightPt)} Tm (${escapePdfLiteralString(line)}) Tj`];
+    return [`1 0 0 1 ${formatPdfNumber(x)} ${formatPdfNumber(firstBaseline - index * textAppearance.lineHeightPt)} Tm ${encodePdfTextShow(line, textFont)} Tj`];
   });
   const commands = [
     'q /GS0 gs 1 0 0 1 0 0 cm',
@@ -2223,7 +2356,7 @@ function createCalloutAppearance(
     ...(arrow.length === 3
       ? [`${formatPdfNumber(arrow[0].x)} ${formatPdfNumber(arrow[0].y)} m ${formatPdfNumber(tip.x)} ${formatPdfNumber(tip.y)} l ${formatPdfNumber(arrow[2].x)} ${formatPdfNumber(arrow[2].y)} l S`]
       : []),
-    `0 w BT ${formatPdfNumber(text.red)} ${formatPdfNumber(text.green)} ${formatPdfNumber(text.blue)} rg /Helv ${formatPdfNumber(textAppearance.fontSizePt)} Tf`,
+    `0 w BT ${formatPdfNumber(text.red)} ${formatPdfNumber(text.green)} ${formatPdfNumber(text.blue)} rg /${textFont.resourceName} ${formatPdfNumber(textAppearance.fontSizePt)} Tf`,
     ...textCommands,
     'ET Q',
   ];
@@ -2236,14 +2369,7 @@ function createCalloutAppearance(
     Matrix: [1, 0, 0, 1, -bounds[0], -bounds[1]],
     Resources: pdfDoc.context.obj({
       ProcSet: [PDFName.of('PDF'), PDFName.of('Text')],
-      Font: {
-        Helv: {
-          Type: PDFName.of('Font'),
-          Subtype: PDFName.of('Type1'),
-          BaseFont: PDFName.of('Helvetica'),
-          Encoding: PDFName.of('WinAnsiEncoding'),
-        },
-      },
+      Font: createTextBoxAppearanceFontResources(fonts, textFont),
       ExtGState: {
         GS0: pdfDoc.context.obj({
           Type: PDFName.of('ExtGState'),
@@ -2815,13 +2941,25 @@ function openArrowHeadPoints(start: PdfPoint, end: PdfPoint, length: number, wid
 }
 
 function getTextBoxFont(markup: Extract<Markup, { kind: 'text-box' }>, fonts: PdfExportFonts, run: Partial<TextBoxRichTextRun>): PdfTextBoxFont {
-  if (fonts.unicode && needsUnicodeTextBoxFont(markup)) {
-    return {
-      font: fonts.unicode,
-      resourceName: 'BPUnicode',
-      styleName: 'Arial Unicode MS',
-      usesEmbeddedUnicodeFont: true,
-    };
+  const runText = run.text ?? markup.text;
+  return getMarkupTextFont(markup, fonts, runText, run);
+}
+
+function getMarkupTextFont(markup: Markup, fonts: PdfExportFonts, text: string, run: Partial<TextBoxRichTextRun> = {}): PdfTextBoxFont {
+  const requestedId = compatibleAnnotationFontId(run.fontId ?? resolveMarkupAppearance(markup).text?.fontId);
+  const fontId = requestedId === 'Helvetica' && !canEncodeWithWinAnsi(text) ? 'Noto Sans' : requestedId;
+
+  if (fontId !== 'Helvetica') {
+    const family = fonts.embedded.get(fontId);
+    if (family) {
+      const suffix = run.bold && run.italic ? 'BoldItalic' : run.bold ? 'Bold' : run.italic ? 'Italic' : '';
+      return {
+        font: (run.bold && run.italic ? family.boldItalic : run.bold ? family.bold : run.italic ? family.italic : family.regular) ?? family.regular,
+        resourceName: `${family.resourceStem}${suffix}`,
+        styleName: family.id,
+        usesEmbeddedFont: true,
+      };
+    }
   }
 
   if (run.bold && run.italic) {
@@ -2829,7 +2967,7 @@ function getTextBoxFont(markup: Extract<Markup, { kind: 'text-box' }>, fonts: Pd
       font: fonts.helveticaBoldOblique,
       resourceName: 'HelvBoldOblique',
       styleName: 'Helvetica',
-      usesEmbeddedUnicodeFont: false,
+      usesEmbeddedFont: false,
     };
   }
   if (run.bold) {
@@ -2837,7 +2975,7 @@ function getTextBoxFont(markup: Extract<Markup, { kind: 'text-box' }>, fonts: Pd
       font: fonts.helveticaBold,
       resourceName: 'HelvBold',
       styleName: 'Helvetica',
-      usesEmbeddedUnicodeFont: false,
+      usesEmbeddedFont: false,
     };
   }
   if (run.italic) {
@@ -2845,7 +2983,7 @@ function getTextBoxFont(markup: Extract<Markup, { kind: 'text-box' }>, fonts: Pd
       font: fonts.helveticaOblique,
       resourceName: 'HelvOblique',
       styleName: 'Helvetica',
-      usesEmbeddedUnicodeFont: false,
+      usesEmbeddedFont: false,
     };
   }
 
@@ -2853,13 +2991,12 @@ function getTextBoxFont(markup: Extract<Markup, { kind: 'text-box' }>, fonts: Pd
     font: fonts.helvetica,
     resourceName: 'Helv',
     styleName: 'Helvetica',
-    usesEmbeddedUnicodeFont: false,
+    usesEmbeddedFont: false,
   };
 }
 
 function needsUnicodeTextBoxFont(markup: Extract<Markup, { kind: 'text-box' }>): boolean {
-  return resolveMarkupAppearance(markup).text!.fontId === 'ArialUnicode'
-    || !canEncodeWithWinAnsi(markup.text)
+  return !canEncodeWithWinAnsi(markup.text)
     || Boolean(markup.richTextRuns?.some((run) => !canEncodeWithWinAnsi(run.text)));
 }
 
@@ -2874,7 +3011,7 @@ function canEncodeWithWinAnsi(text: string): boolean {
 }
 
 function encodePdfTextShow(text: string, textBoxFont: PdfTextBoxFont): string {
-  if (textBoxFont.usesEmbeddedUnicodeFont) {
+  if (textBoxFont.usesEmbeddedFont) {
     return textBoxFont.font.encodeText(text).toString();
   }
   return `(${escapePdfLiteralString(text)})`;
@@ -3101,6 +3238,7 @@ function normalizeRichTextRun(run: TextBoxRichTextRun): TextBoxAppearanceRun {
 
 function richRunStyleKey(run: Partial<TextBoxRichTextRun>): string {
   return JSON.stringify({
+    fontId: run.fontId,
     bold: Boolean(run.bold),
     italic: Boolean(run.italic),
     color: run.color?.toLowerCase(),
@@ -3161,7 +3299,7 @@ function createTextBoxRichContent(text: string, markup?: Extract<Markup, { kind:
 function createRichTextRunStyle(run: TextBoxRichTextRun, markup: Extract<Markup, { kind: 'text-box' }>): string {
   const textAppearance = resolveMarkupAppearance(markup).text!;
   const styles = [
-    `font-family:Helvetica`,
+    `font-family:${compatibleAnnotationFontId(run.fontId ?? textAppearance.fontId)}`,
     `font-size:${formatPdfNumber(run.fontSizePt ?? getTextBoxFontSize(markup))}pt`,
     `color:${normalizeCssHex(run.color ?? textAppearance.color).toUpperCase()}`,
   ];
@@ -3219,7 +3357,9 @@ function readRichTextRunStyle(style: string | undefined): Omit<TextBoxRichTextRu
   const lowerStyle = style.toLowerCase();
   const color = style.match(/(?:^|;)\s*color\s*:\s*(#[0-9a-f]{6})/i)?.[1];
   const fontSize = style.match(/(?:^|;)\s*font-size\s*:\s*([0-9.]+)pt/i)?.[1];
+  const fontFamily = style.match(/(?:^|;)\s*font-family\s*:\s*([^;]+)/i)?.[1];
   return {
+    fontId: fontFamily ? cleanCssFontFamily(fontFamily) : undefined,
     bold: /(?:^|;)\s*font-weight\s*:\s*(bold|700)\b/i.test(lowerStyle) || undefined,
     italic: /(?:^|;)\s*font-style\s*:\s*italic\b/i.test(lowerStyle) || undefined,
     color: color?.toLowerCase(),
@@ -3274,17 +3414,18 @@ function pdfAnnotationOpacityFields(opacity: number, strokeColor?: string, nonSt
   };
 }
 
-function pdfTextDefaultAppearance(text: ResolvedMarkupAppearance['text']): string {
+function pdfTextDefaultAppearance(text: ResolvedMarkupAppearance['text'], textFont?: PdfTextBoxFont): string {
   const color = text?.color ?? '#ff0000';
-  const resourceName = text?.fontId === 'ArialUnicode' ? 'BPUnicode' : 'Helv';
+  const resourceName = textFont?.resourceName ?? 'Helv';
   return `${rgbToPdfOperator(color)} /${resourceName} ${formatPdfNumber(text?.fontSizePt ?? 12)} Tf`;
 }
 
 function pdfTextDefaultStyle(
   text: ResolvedMarkupAppearance['text'],
   alignOverride?: 'left' | 'center' | 'right',
+  textFont?: PdfTextBoxFont,
 ): string {
-  const fontName = text?.fontId === 'ArialUnicode' ? 'Arial Unicode MS' : 'Helvetica';
+  const fontName = textFont?.styleName ?? compatibleAnnotationFontId(text?.fontId);
   const fontSize = text?.fontSizePt ?? 12;
   const align = alignOverride ?? text?.align ?? 'left';
   const lineHeight = text?.lineHeightPt ?? fontSize * bluebeamTextBoxLineHeightRatio;
@@ -3299,8 +3440,8 @@ function pdfTextDefaultStyle(
   ].join('; ');
 }
 
-function createFreeTextRichContent(text: string, appearance: ResolvedMarkupAppearance['text']): string {
-  return `<?xml version="1.0"?><body xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/" xfa:contentType="text/html" xfa:APIVersion="BluebeamPDFRevu:2018" xfa:spec="2.2.0" style="${pdfTextDefaultStyle(appearance)}" xmlns="http://www.w3.org/1999/xhtml"><p>${escapeXml(text)}</p></body>`;
+function createFreeTextRichContent(text: string, appearance: ResolvedMarkupAppearance['text'], textFont?: PdfTextBoxFont): string {
+  return `<?xml version="1.0"?><body xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/" xfa:contentType="text/html" xfa:APIVersion="BluebeamPDFRevu:2018" xfa:spec="2.2.0" style="${pdfTextDefaultStyle(appearance, undefined, textFont)}" xmlns="http://www.w3.org/1999/xhtml"><p>${escapeXml(text)}</p></body>`;
 }
 
 function escapeXml(text: string): string {
@@ -3478,6 +3619,7 @@ function withImportedTracking(markup: ImportedPdfMarkup, annotationMetadata: rea
   const annotationIds = annotationMetadata.map((metadata) => metadata.annotationId);
   const tracked = {
     ...markup,
+    locked: annotationMetadata.some((metadata) => typeof metadata.flags === 'number' && (metadata.flags & 128) !== 0),
     source: {
       ...markup.source,
       annotationId: markup.source?.annotationId ?? annotationIds[0],
@@ -3625,7 +3767,10 @@ function applySafeAnnotationMetadata(
   annotation.set(PDFName.of('M'), PDFString.of(modificationDate));
 
   if (metadata?.flags !== undefined && Number.isInteger(metadata.flags) && metadata.flags >= 0) {
-    annotation.set(PDFName.of('F'), PDFNumber.of(metadata.flags));
+    const flags = markup.locked ? metadata.flags | 128 : metadata.flags & ~128;
+    annotation.set(PDFName.of('F'), PDFNumber.of(flags));
+  } else if (markup.locked) {
+    annotation.set(PDFName.of('F'), PDFNumber.of(128));
   }
   if (metadata?.status && metadata.statusModel && isValidAnnotationStatus(metadata.statusModel, metadata.status)) {
     annotation.set(PDFName.of('State'), PDFString.of(metadata.status));
@@ -3724,6 +3869,19 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
 
   if (subtype === 'link') {
     return undefined;
+  }
+
+  if (subtype === 'redact') {
+    const id = managedId ?? rawName ?? `page-${pageIndex}-redact-${fallbackIndex}`;
+    return createRedactMarkup({
+      id,
+      pageIndex,
+      appearance: importedAppearance,
+      rect,
+      redactionColor: colorToHex(readNumericArray(annot.get(PDFName.of('IC')))) ?? '#000000',
+      overlayText: readText(annot.get(PDFName.of('OverlayText'))),
+      source: { annotationId: id, source: 'imported' },
+    });
   }
 
   if ((subtype === 'square' || subtype === 'rect') && (subject === 'Image' || intent.toLowerCase() === 'squareimage')) {
@@ -4008,7 +4166,7 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
       color,
       borderColor: color ?? readColorArray(annot.get(PDFName.of('C'))),
       borderWidth,
-      fontFamily: readFontFamily(ds, da),
+      fontFamily: readFontFamily(ds, da, annot),
       fontSizePt: readFontSize(da),
       lineHeightPt: readLineHeight(ds),
       textAlign: readTextAlign(annot.get(PDFName.of('Q')), ds),
@@ -4398,13 +4556,59 @@ function readTextAlign(qValue: unknown, dsValue: unknown): 'left' | 'center' | '
   return match ? match[1].toLowerCase() as 'left' | 'center' | 'right' : undefined;
 }
 
-function readFontFamily(dsValue: unknown, daValue: unknown): 'Helvetica' | 'ArialUnicode' {
+function readFontFamily(dsValue: unknown, daValue: unknown, annot?: PDFDict): string {
   const ds = readText(dsValue);
-  if (ds?.toLowerCase().includes('arial unicode')) {
-    return 'ArialUnicode';
+  const cssFamily = readCssFontFamily(ds);
+  if (cssFamily) {
+    return cssFamily;
   }
   const da = readText(daValue);
-  return da?.includes('/BPUnicode') ? 'ArialUnicode' : 'Helvetica';
+  const resourceName = da?.match(/\/([^\s]+)\s+[0-9.]+\s+Tf\b/)?.[1];
+  const baseName = resourceName && annot ? readAnnotationFontBaseName(annot, resourceName) : undefined;
+  return normalizePdfFontFamilyName(baseName ?? resourceName ?? 'Helvetica');
+}
+
+function readCssFontFamily(style: string | undefined): string | undefined {
+  if (!style) return undefined;
+  const family = style.match(/(?:^|;)\s*font-family\s*:\s*([^;]+)/i)?.[1]
+    ?? style.match(/(?:^|;)\s*font\s*:\s*(.+?)\s+[0-9.]+pt(?:\s*;|$)/i)?.[1];
+  const cleaned = cleanCssFontFamily(family ?? '');
+  return cleaned || undefined;
+}
+
+function cleanCssFontFamily(value: string): string {
+  return normalizePdfFontFamilyName(value.split(',')[0]?.trim().replace(/^['"]|['"]$/g, '') ?? '');
+}
+
+function readAnnotationFontBaseName(annot: PDFDict, resourceName: string): string | undefined {
+  const appearance = getNormalAppearanceStream(annot);
+  const resourceContainers = [
+    annot.context.lookup(annot.get(PDFName.of('DR'))),
+    appearance ? appearance.dict.context.lookup(appearance.dict.get(PDFName.of('Resources'))) : undefined,
+  ];
+  for (const resources of resourceContainers) {
+    if (!isPdfDict(resources)) continue;
+    const fonts = resources.context.lookup(resources.get(PDFName.of('Font')));
+    if (!isPdfDict(fonts)) continue;
+    const font = fonts.context.lookup(fonts.get(PDFName.of(resourceName)));
+    if (!isPdfDict(font)) continue;
+    const baseName = readName(font.get(PDFName.of('BaseFont')));
+    if (baseName) return baseName;
+  }
+  return undefined;
+}
+
+function normalizePdfFontFamilyName(value: string): string {
+  const name = value.replace(/^[A-Z]{6}\+/, '').replace(/^\//, '').trim();
+  if (/^(Helv|Helvetica)(?:-|$)/i.test(name)) return 'Helvetica';
+  if (/^(BP)?Arimo(?:-|$)/i.test(name)) return 'Arimo';
+  if (/^(BP)?(?:RobotoMono|Cousine)(?:-|$)/i.test(name)) return 'Roboto Mono';
+  if (/^(BP)?NotoSans(?:-|$)/i.test(name)) return 'Noto Sans';
+  if (/^(BP)?Tinos(?:-|$)/i.test(name)) return 'Tinos';
+  if (/Arial/i.test(name)) return 'Arial';
+  if (/CourierNew/i.test(name)) return 'Courier New';
+  if (/TimesNewRoman/i.test(name)) return 'Times New Roman';
+  return name.replace(/-(?:BoldItalic|BoldOblique|Bold|Italic|Oblique|Regular)$/i, '').replaceAll('-', ' ');
 }
 
 function readPdfAnnotationAppearance(annot: PDFDict): MarkupAppearance {
@@ -4442,7 +4646,7 @@ function readPdfAnnotationAppearance(annot: PDFDict): MarkupAppearance {
     ...(hasTextAppearance ? {
       text: {
         ...(textColor ? { color: textColor } : {}),
-        ...(readText(ds) || readText(da) ? { fontId: readFontFamily(ds, da) } : {}),
+        ...(readText(ds) || readText(da) ? { fontId: readFontFamily(ds, da, annot) } : {}),
         ...(fontSizePt !== undefined ? { fontSizePt } : {}),
         ...(lineHeightPt !== undefined ? { lineHeightPt } : {}),
         ...(align ? { align } : {}),

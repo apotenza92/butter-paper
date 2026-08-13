@@ -1,4 +1,4 @@
-import { PDFDocument, rgb, type PDFPage } from 'pdf-lib';
+import { beginMarkedContent, endMarkedContent, PDFDocument, rgb, type PDFPage } from 'pdf-lib';
 
 export const MIN_BLANK_PDF_DIMENSION_MM = 10;
 export const MAX_BLANK_PDF_DIMENSION_MM = 5_000;
@@ -35,12 +35,29 @@ export async function createBlankPdf(params: CreateBlankPdfParams): Promise<Uint
   document.setTitle('Untitled');
   document.setCreator('Butter Paper');
   document.setProducer('Butter Paper');
+  if (params.pattern) document.setSubject(pageGridSubject(params, params.pattern));
   const page = document.addPage([
     millimetresToPdfPoints(params.widthMm),
     millimetresToPdfPoints(params.heightMm),
   ]);
   if (params.pattern) drawBlankPdfPattern(page, params, params.pattern);
   return document.save();
+}
+
+function pageGridSubject(params: CreateBlankPdfParams, pattern: BlankPdfPattern): string {
+  const type = pattern.type === 'dots' || pattern.type === 'grid'
+    ? 'rectangular'
+    : pattern.type === 'lined' ? 'ruled' : pattern.type;
+  return `butter-paper:page-grid:${JSON.stringify({
+    version: 1,
+    type,
+    origin: { x: 0, y: 0 },
+    spacing: millimetresToPdfPoints(pattern.spacingMm),
+    width: millimetresToPdfPoints(params.widthMm),
+    height: millimetresToPdfPoints(params.heightMm),
+    rotationDegrees: 0,
+    source: 'generated',
+  })}`;
 }
 
 function assertBlankPdfPattern(params: CreateBlankPdfParams, pattern: BlankPdfPattern): void {
@@ -69,6 +86,16 @@ function assertBlankPdfPattern(params: CreateBlankPdfParams, pattern: BlankPdfPa
 }
 
 function drawBlankPdfPattern(
+  page: PDFPage,
+  params: CreateBlankPdfParams,
+  pattern: BlankPdfPattern,
+): void {
+  page.pushOperators(beginMarkedContent('Artifact'));
+  drawBlankPdfPatternArtwork(page, params, pattern);
+  page.pushOperators(endMarkedContent());
+}
+
+function drawBlankPdfPatternArtwork(
   page: PDFPage,
   params: CreateBlankPdfParams,
   pattern: BlankPdfPattern,

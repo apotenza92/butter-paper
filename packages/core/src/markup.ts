@@ -1,4 +1,4 @@
-import type { ArcMarkup, AreaMarkup, ArrowMarkup, CalloutMarkup, CloudMarkup, CloudPlusMarkup, DimensionMarkup, EllipseMarkup, HighlightMarkup, ImageMarkup, ImportedAnnotationMarkup, LengthMarkup, LineMarkup, Markup, MarkupBase, PenMarkup, PolygonMarkup, PolylengthMarkup, PolylineMarkup, RectangleMarkup, SnapshotMarkup, TextBoxMarkup } from './document.js';
+import type { ArcMarkup, AreaMarkup, ArrowMarkup, CalloutMarkup, CloudMarkup, CloudPlusMarkup, DimensionMarkup, EllipseMarkup, HighlightMarkup, ImageMarkup, ImportedAnnotationMarkup, LengthMarkup, LineMarkup, Markup, MarkupBase, PenMarkup, PolygonMarkup, PolylengthMarkup, PolylineMarkup, RectangleMarkup, RedactMarkup, SnapshotMarkup, TextBoxMarkup } from './document.js';
 import { resolveMarkupAppearance } from './appearance.js';
 import { normalizeRect, rect, translatePoint, translateRect } from './points.js';
 import type { PointLike } from './points.js';
@@ -10,6 +10,17 @@ export function createRectangleMarkup(
     ...params,
     kind: 'rectangle',
     rect: normalizeRect(params.rect),
+  });
+}
+
+export function createRedactMarkup(
+  params: MarkupBase & Omit<RedactMarkup, keyof MarkupBase | 'kind'>,
+): RedactMarkup {
+  return withCanonicalAppearance({
+    ...params,
+    kind: 'redact',
+    rect: normalizeRect(params.rect),
+    redactionColor: params.redactionColor ?? '#000000',
   });
 }
 
@@ -218,6 +229,7 @@ export function translateMarkup<MarkupType extends Markup>(
 ): MarkupType {
   switch (markup.kind) {
     case 'rectangle':
+    case 'redact':
     case 'ellipse':
       return {
         ...markup,

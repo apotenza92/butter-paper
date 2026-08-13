@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { pdfPoint, rect, type PdfPoint } from '@butter-paper/core';
 import { decodePDFRawStream, PDFArray, PDFDocument, PDFName, PDFRawStream, type PDFPage } from 'pdf-lib';
-import type { PdfContentPrimitive, PdfPageGeometryIndex } from './types.js';
+import type { PdfContentPrimitive, PdfPageGeometryIndex, PdfPageGridDefinition } from './types.js';
 
 type Matrix = readonly [number, number, number, number, number, number];
 
@@ -17,6 +17,7 @@ interface PathState {
 
 type Token =
   | { readonly kind: 'number'; readonly value: number }
+  | { readonly kind: 'name'; readonly value: string }
   | { readonly kind: 'operator'; readonly value: string };
 
 export interface PdfGeometryDocument {
@@ -58,8 +59,29 @@ export function extractPdfPageGeometryIndexFromDocument(
   return {
     pageIndex,
     primitives,
+    pageGrid: readPageGridDefinition(pdfDoc),
     buildMs: roundDuration(performanceNow() - startedAt),
   };
+}
+
+function readPageGridDefinition(pdfDoc: PDFDocument): PdfPageGridDefinition | undefined {
+  const prefix = 'butter-paper:page-grid:';
+  const subject = pdfDoc.getSubject();
+  if (!subject?.startsWith(prefix)) return undefined;
+  try {
+    const value = JSON.parse(subject.slice(prefix.length)) as Partial<PdfPageGridDefinition> & { version?: number };
+    if (value.version !== 1
+      || !['rectangular', 'ruled', 'isometric', 'triangle'].includes(value.type ?? '')
+      || !value.origin || !Number.isFinite(value.origin.x) || !Number.isFinite(value.origin.y)
+      || !Number.isFinite(value.spacing) || value.spacing! <= 0
+      || !Number.isFinite(value.width) || value.width! <= 0
+      || !Number.isFinite(value.height) || value.height! <= 0
+      || !Number.isFinite(value.rotationDegrees)
+      || !['generated', 'detected', 'manual'].includes(value.source ?? '')) return undefined;
+    return value as PdfPageGridDefinition;
+  } catch {
+    return undefined;
+  }
 }
 
 export function extractPageContentPrimitives(pdfDoc: PDFDocument, page: PDFPage): readonly PdfContentPrimitive[] {
@@ -102,15 +124,26 @@ function parsePdfContentStream(content: string): readonly PdfContentPrimitive[] 
   const graphicsStack: GraphicsState[] = [];
   let graphicsState: GraphicsState = { ctm: identityMatrix };
   let path: PathState = createEmptyPath();
+  const markedContentArtifactStack: boolean[] = [];
+  const nameOperands: string[] = [];
 
   for (const token of tokenizePdfContent(content)) {
     if (token.kind === 'number') {
       operandStack.push(token.value);
       continue;
     }
+    if (token.kind === 'name') {
+      nameOperands.push(token.value);
+      continue;
+    }
 
     const op = token.value;
-    if (op === 'q') {
+    const insideArtifact = markedContentArtifactStack.at(-1) ?? false;
+    if (op === 'BMC' || op === 'BDC') {
+      markedContentArtifactStack.push(insideArtifact || nameOperands.includes('Artifact'));
+    } else if (op === 'EMC') {
+      markedContentArtifactStack.pop();
+    } else if (op === 'q') {
       graphicsStack.push(graphicsState);
     } else if (op === 'Q') {
       graphicsState = graphicsStack.pop() ?? { ctm: identityMatrix };
@@ -124,7 +157,7 @@ function parsePdfContentStream(content: string): readonly PdfContentPrimitive[] 
     } else if (op === 'l' && operandStack.length >= 2) {
       const [x, y] = takeOperands(operandStack, 2);
       const point = transformPoint(graphicsState.ctm, x, y);
-      if (path.current) {
+      if (path.current && !insideArtifact) {
         primitives.push({ kind: 'line', start: path.current, end: point });
       }
       path.points.push(point);
@@ -132,16 +165,16 @@ function parsePdfContentStream(content: string): readonly PdfContentPrimitive[] 
     } else if ((op === 'c' || op === 'v' || op === 'y') && operandStack.length >= 2) {
       const [x, y] = takeOperands(operandStack, 2);
       const point = transformPoint(graphicsState.ctm, x, y);
-      if (path.current) {
+      if (path.current && !insideArtifact) {
         primitives.push({ kind: 'line', start: path.current, end: point });
       }
       path.points.push(point);
       path.current = point;
     } else if (op === 'h') {
-      if (path.current && path.start && !samePoint(path.current, path.start)) {
+      if (!insideArtifact && path.current && path.start && !samePoint(path.current, path.start)) {
         primitives.push({ kind: 'line', start: path.current, end: path.start });
       }
-      if (path.points.length >= 3) {
+      if (!insideArtifact && path.points.length >= 3) {
         primitives.push(rectPrimitiveFromClosedPath(path.points) ?? { kind: 'polyline', points: [...path.points], closed: true });
       }
       path.current = path.start;
@@ -153,13 +186,14 @@ function parsePdfContentStream(content: string): readonly PdfContentPrimitive[] 
         transformPoint(graphicsState.ctm, x + width, y + height),
         transformPoint(graphicsState.ctm, x, y + height),
       ];
-      primitives.push(rectPrimitiveFromCorners(corners));
+      if (!insideArtifact) primitives.push(rectPrimitiveFromCorners(corners));
       path = { points: corners, start: corners[0], current: corners[3] };
     } else if (pathPaintOperators.has(op) || pathResetOperators.has(op)) {
       path = createEmptyPath();
     }
 
     operandStack.length = 0;
+    nameOperands.length = 0;
   }
 
   return primitives;
@@ -194,7 +228,11 @@ function* tokenizePdfContent(input: string): Generator<Token> {
     const end = scanTokenEnd(input, index);
     const raw = input.slice(index, end);
     index = end;
-    if (!raw || raw[0] === '/') {
+    if (!raw) {
+      continue;
+    }
+    if (raw[0] === '/') {
+      yield { kind: 'name', value: raw.slice(1) };
       continue;
     }
 

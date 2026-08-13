@@ -44,6 +44,9 @@ describe('blank PDF creation', () => {
       const content = readPageContent(document);
 
       expect(content.length).toBeGreaterThan(0);
+      expect(content).toMatch(/\/Artifact\s+BMC/);
+      expect(content).toMatch(/\bEMC\b/);
+      expect(document.getSubject()).toMatch(/^butter-paper:page-grid:/);
       if (type === 'dots') {
         expect(content).toMatch(/\bc\b/);
       } else {

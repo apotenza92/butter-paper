@@ -3,6 +3,7 @@ export * from './document.js';
 export * from './transforms.js';
 export * from './markup.js';
 export * from './appearance.js';
+export * from './fonts.js';
 export * from './scale.js';
 export * from './signatureAppearance.js';
 export * from './signatureImageProcessing.js';

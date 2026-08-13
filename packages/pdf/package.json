@@ -23,6 +23,10 @@
   },
   "dependencies": {
     "@butter-paper/core": "workspace:*",
+    "@expo-google-fonts/arimo": "0.4.3",
+    "@expo-google-fonts/noto-sans": "0.4.2",
+    "@expo-google-fonts/roboto-mono": "0.4.2",
+    "@expo-google-fonts/tinos": "0.4.2",
     "@napi-rs/canvas": "0.1.97",
     "@pdf-lib/fontkit": "^1.1.1",
     "pdf-lib": "1.17.1",

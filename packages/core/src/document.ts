@@ -133,6 +133,7 @@ export interface ResolvedMarkupAppearance {
 export interface MarkupBase {
   readonly id: MarkupId;
   readonly pageIndex: number;
+  readonly locked?: boolean;
   readonly color?: string;
   readonly opacity?: number;
   readonly appearance?: MarkupAppearance;
@@ -143,6 +144,14 @@ export interface RectangleMarkup extends MarkupBase {
   readonly kind: 'rectangle';
   readonly rect: Rect;
   readonly rotation?: number;
+}
+
+/** A pending ISO PDF redaction mark. The covered page content remains until redactions are applied. */
+export interface RedactMarkup extends MarkupBase {
+  readonly kind: 'redact';
+  readonly rect: Rect;
+  readonly redactionColor?: string;
+  readonly overlayText?: string;
 }
 
 export interface EllipseMarkup extends MarkupBase {
@@ -250,6 +259,7 @@ export interface CloudPlusMarkup extends MarkupBase {
 
 export interface TextBoxRichTextRun {
   readonly text: string;
+  readonly fontId?: string;
   readonly bold?: boolean;
   readonly italic?: boolean;
   readonly color?: string;
@@ -265,7 +275,7 @@ export interface TextBoxMarkup extends MarkupBase {
   readonly appearanceTextLines?: readonly string[];
   readonly borderColor?: string;
   readonly borderWidth?: number;
-  readonly fontFamily?: 'Helvetica' | 'ArialUnicode';
+  readonly fontFamily?: string;
   readonly fontSizePt?: number;
   readonly lineHeightPt?: number;
   readonly textAlign?: 'left' | 'center' | 'right';
@@ -308,7 +318,7 @@ export interface ImportedAnnotationMarkup extends MarkupBase {
   readonly contents?: string;
 }
 
-export type Markup = RectangleMarkup | EllipseMarkup | ArcMarkup | LineMarkup | ArrowMarkup | DimensionMarkup | LengthMarkup | PolylengthMarkup | AreaMarkup | PolylineMarkup | PolygonMarkup | PenMarkup | HighlightMarkup | CloudMarkup | CloudPlusMarkup | TextBoxMarkup | CalloutMarkup | ImageMarkup | SnapshotMarkup | ImportedAnnotationMarkup;
+export type Markup = RectangleMarkup | RedactMarkup | EllipseMarkup | ArcMarkup | LineMarkup | ArrowMarkup | DimensionMarkup | LengthMarkup | PolylengthMarkup | AreaMarkup | PolylineMarkup | PolygonMarkup | PenMarkup | HighlightMarkup | CloudMarkup | CloudPlusMarkup | TextBoxMarkup | CalloutMarkup | ImageMarkup | SnapshotMarkup | ImportedAnnotationMarkup;
 
 export interface SelectionState {
   readonly markupIds: readonly MarkupId[];
@@ -319,6 +329,7 @@ export type ToolState =
   | { readonly kind: 'select' }
   | { readonly kind: 'pan' }
   | { readonly kind: 'rectangle' }
+  | { readonly kind: 'redact' }
   | { readonly kind: 'ellipse' }
   | { readonly kind: 'arc' }
   | { readonly kind: 'line' }

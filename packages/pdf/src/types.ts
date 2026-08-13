@@ -1,4 +1,4 @@
-import type { ArcMarkup, AreaMarkup, ArrowMarkup, CalloutMarkup, CloudMarkup, CloudPlusMarkup, DimensionMarkup, EllipseMarkup, HighlightMarkup, ImageMarkup, ImportedAnnotationMarkup, LengthMarkup, LineMarkup, PdfPoint, PenMarkup, PolygonMarkup, PolylengthMarkup, PolylineMarkup, Rect, RectangleMarkup, SnapshotMarkup, TextBoxMarkup } from '@butter-paper/core';
+import type { ArcMarkup, AreaMarkup, ArrowMarkup, CalloutMarkup, CloudMarkup, CloudPlusMarkup, DimensionMarkup, EllipseMarkup, HighlightMarkup, ImageMarkup, ImportedAnnotationMarkup, LengthMarkup, LineMarkup, PdfPoint, PenMarkup, PolygonMarkup, PolylengthMarkup, PolylineMarkup, Rect, RectangleMarkup, RedactMarkup, SnapshotMarkup, TextBoxMarkup } from '@butter-paper/core';
 
 export interface PdfPageRotation {
   readonly pageIndex: number;
@@ -99,10 +99,21 @@ export type PdfContentPrimitive =
 export interface PdfPageGeometryIndex {
   readonly pageIndex: number;
   readonly primitives: readonly PdfContentPrimitive[];
+  readonly pageGrid?: PdfPageGridDefinition;
   readonly buildMs: number;
 }
 
-export type ImportedPdfMarkup = RectangleMarkup | EllipseMarkup | ArcMarkup | LineMarkup | ArrowMarkup | DimensionMarkup | LengthMarkup | PolylengthMarkup | AreaMarkup | PolylineMarkup | PolygonMarkup | PenMarkup | HighlightMarkup | CloudMarkup | CloudPlusMarkup | TextBoxMarkup | CalloutMarkup | ImageMarkup | SnapshotMarkup | ImportedAnnotationMarkup;
+export interface PdfPageGridDefinition {
+  readonly type: 'rectangular' | 'ruled' | 'isometric' | 'triangle';
+  readonly origin: PdfPoint;
+  readonly spacing: number;
+  readonly width: number;
+  readonly height: number;
+  readonly rotationDegrees: number;
+  readonly source: 'generated' | 'detected' | 'manual';
+}
+
+export type ImportedPdfMarkup = RectangleMarkup | RedactMarkup | EllipseMarkup | ArcMarkup | LineMarkup | ArrowMarkup | DimensionMarkup | LengthMarkup | PolylengthMarkup | AreaMarkup | PolylineMarkup | PolygonMarkup | PenMarkup | HighlightMarkup | CloudMarkup | CloudPlusMarkup | TextBoxMarkup | CalloutMarkup | ImageMarkup | SnapshotMarkup | ImportedAnnotationMarkup;
 
 export type PdfSaveMode = 'save' | 'saveAs';
 

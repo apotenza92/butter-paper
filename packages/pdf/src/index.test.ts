@@ -6,9 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { describe, expect, it } from 'vitest';
-import { decodePDFRawStream, PDFArray, PDFBool, PDFDict, PDFDocument, PDFName, PDFNumber, PDFRawStream, PDFString, StandardFonts, rgb, type PDFRef } from 'pdf-lib';
-import { extractPdfPageGeometryIndex, openPdfDocument, PdfAnnotationWriter, PdfRenderCache } from './index.js';
-import { createArcMarkup, createAreaMarkup, createArrowMarkup, createCalloutMarkup, createCloudMarkup, createCloudPlusMarkup, createCustomPageScale, createDimensionMarkup, createEllipseMarkup, createHighlightMarkup, createImageMarkup, createLengthMarkup, createLineMarkup, createPenMarkup, createPolygonMarkup, createPolylengthMarkup, createPolylineMarkup, createRectangleMarkup, createSnapshotMarkup, createTextBoxMarkup, pdfPoint } from '@butter-paper/core';
+import { beginMarkedContent, decodePDFRawStream, endMarkedContent, PDFArray, PDFBool, PDFDict, PDFDocument, PDFName, PDFNumber, PDFRawStream, PDFString, StandardFonts, rgb, type PDFRef } from 'pdf-lib';
+import { extractPdfPageGeometryIndex, inspectPdfDocumentBytes, openPdfDocument, PdfAnnotationWriter, PdfRenderCache } from './index.js';
+import { createArcMarkup, createAreaMarkup, createArrowMarkup, createCalloutMarkup, createCloudMarkup, createCloudPlusMarkup, createCustomPageScale, createDimensionMarkup, createEllipseMarkup, createHighlightMarkup, createImageMarkup, createLengthMarkup, createLineMarkup, createPenMarkup, createPolygonMarkup, createPolylengthMarkup, createPolylineMarkup, createRectangleMarkup, createRedactMarkup, createSnapshotMarkup, createTextBoxMarkup, pdfPoint } from '@butter-paper/core';
 
 const testImageDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAAAoCAYAAABOzvzpAAAABHNCSVQICAgIfAhkiAAAAAFzUkdCAK7OHOkAAAIpSURBVGiB7Zi/TxNhHMafO0vvWiBBlIC2ooi1xkT5MZFAHEwMJCwMpotuDqZx4R9QEyWyOJkuYhxcTAcHEkYSEjc3fqXByo9AyJUCRh3s3XE1d06uvO8dtd8v6T3z8z7vk8/dffO+p6QeHXpoYKnUBagVAqAuQK0QAHUBaoUAqAtQKwRAXYBaSumXF54EG1khAOoC1IpQF5CR67n48nsFBWsT36wdFO1tKFCQjl3Gdf0KbsauYqjlNlTF//NkPwRLziFeGm+xaq4f67sVT+Fp4jEuRjt85QsBxO7f8xUokvVpXto79/Mz3pQ/wnJtKX9M1THZ9QDjZ+9I78H2E5j9sYDXex98rbFcG9Ol96h6fzDRfldqDcshaDgHyO3nA6/P7edhOAdSXnYAXHiYMmZgu0eBM2z3CFPGDFyIxxs7AGvWlnDgyWjVXMeatSX0sQNQMDfqmsUOwGLla82yCtam0MMOgExp6SzzFAKopRyvKvSwA5DSu+uaxQ7AtRoCkMliB6Dh34CR1gH06skT5/RoCYy0Dgp97ADoqoZniSyalODXlCYlgheXnkBXo0IvOwAA0Ksnke3MBF6f7cygR0tIedneBjPnRqGpUeTKeenrcMuZOCa7HmKsbVh6H/Y/RPaq3/HKeCc8IQ4038DzZBbnI22+8tkD+Kddp4ylShFLZhHLlSI8eOhvTqMvnkZ/PI1u7UKg3FMD4H+J5RCsp0IA1AWoFQKgLkCtv9cipgMsRDYAAAAAAElFTkSuQmCC';
 
@@ -110,6 +110,44 @@ async function createBluebeamNativeFixturePdf(): Promise<string> {
 
   const dir = await mkdtemp(join(tmpdir(), 'butter-paper-bluebeam-native-'));
   const file = join(dir, 'bluebeam-native.pdf');
+  await writeFile(file, await pdfDoc.save());
+  return file;
+}
+
+async function createProprietaryFontFixturePdf(): Promise<string> {
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([240, 180]);
+  const arial = pdfDoc.context.obj({
+    Type: PDFName.of('Font'),
+    Subtype: PDFName.of('Type1'),
+    BaseFont: PDFName.of('Arial'),
+    Encoding: PDFName.of('WinAnsiEncoding'),
+  });
+  const arialRef = pdfDoc.context.register(arial);
+  const appearance = pdfDoc.context.flateStream('q BT /Arial 12 Tf 1 0 0 rg 4 14 Td (Imported Arial) Tj ET Q', {
+    Type: PDFName.of('XObject'),
+    Subtype: PDFName.of('Form'),
+    FormType: PDFNumber.of(1),
+    BBox: [0, 0, 160, 30],
+    Resources: pdfDoc.context.obj({ Font: { Arial: arialRef } }),
+  });
+  const annotation = pdfDoc.context.obj({
+    Type: PDFName.of('Annot'),
+    Subtype: PDFName.of('FreeText'),
+    Rect: [20, 80, 180, 110],
+    Contents: PDFString.of('Imported Arial'),
+    NM: PDFString.of('PROPRIETARY-ARIAL'),
+    DA: PDFString.of('/Arial 12 Tf 1 0 0 rg'),
+    DS: PDFString.of('font: Arial 12pt; text-align:left; margin:4pt; line-height:14pt; color:#FF0000'),
+    DR: pdfDoc.context.obj({ Font: { Arial: arialRef } }),
+    AP: pdfDoc.context.obj({ N: pdfDoc.context.register(appearance) }),
+    C: [1, 0, 0],
+    Border: [0, 0, 1],
+  });
+  page.node.set(PDFName.of('Annots'), pdfDoc.context.obj([pdfDoc.context.register(annotation)]));
+
+  const dir = await mkdtemp(join(tmpdir(), 'butter-paper-proprietary-font-'));
+  const file = join(dir, 'proprietary-font.pdf');
   await writeFile(file, await pdfDoc.save());
   return file;
 }
@@ -621,6 +659,18 @@ describe('pdf package', () => {
     await handle.close();
   }, 15_000);
 
+  it('inspects metadata and page information without starting the render backend', async () => {
+    const file = await createFixturePdf();
+    const inspection = await inspectPdfDocumentBytes(new Uint8Array(await readFile(file)));
+
+    expect(inspection.metadata.pageCount).toBe(1);
+    expect(inspection.pages).toHaveLength(1);
+    expect(inspection.pages[0]).toMatchObject({ index: 0, rotation: 0, userUnit: 1 });
+    expect(inspection.pages[0].width).toBeGreaterThan(0);
+    expect(inspection.pages[0].height).toBeGreaterThan(0);
+    expect(inspection.annotationsByPage).toHaveLength(1);
+  });
+
   it('persists page rotation when saving', async () => {
     const file = await createFixturePdf();
     const handle = await openPdfDocument(file);
@@ -652,6 +702,23 @@ describe('pdf package', () => {
     ]));
   });
 
+  it('excludes artifact content from snap geometry', async () => {
+    const document = await PDFDocument.create();
+    const page = document.addPage([200, 200]);
+    page.pushOperators(beginMarkedContent('Artifact'));
+    page.drawLine({ start: { x: 10, y: 10 }, end: { x: 190, y: 10 } });
+    page.pushOperators(endMarkedContent());
+    page.drawLine({ start: { x: 20, y: 20 }, end: { x: 180, y: 20 } });
+    const directory = await mkdtemp(join(tmpdir(), 'butter-paper-artifact-geometry-'));
+    const file = join(directory, 'artifact.pdf');
+    await writeFile(file, await document.save());
+
+    const index = await extractPdfPageGeometryIndex(file, 0);
+    expect(index.primitives).toEqual([
+      { kind: 'line', start: { x: 20, y: 20 }, end: { x: 180, y: 20 } },
+    ]);
+  });
+
   it('renders a page and caches the surface', async () => {
     const file = await createFixturePdf();
     const handle = await openPdfDocument(file);
@@ -674,6 +741,34 @@ describe('pdf package', () => {
     cache.set('b', { pageIndex: 0, width: 10, height: 10, canvas: canvas as never });
     cache.set('c', { pageIndex: 0, width: 10, height: 10, canvas: canvas as never });
     expect(cache.stats().entries).toBeLessThanOrEqual(2);
+  });
+
+  it('writes and reopens a native pending redaction annotation', async () => {
+    const file = await createFixturePdf();
+    const output = file.replace(/\.pdf$/i, '.redact.pdf');
+    const handle = await openPdfDocument(file);
+    const redact = createRedactMarkup({
+      id: 'redact-1',
+      pageIndex: 0,
+      rect: { x: 20, y: 130, width: 90, height: 20 },
+    });
+
+    await handle.writer.save(handle, [redact], 'saveAs', output);
+    await handle.close();
+
+    const rawDocument = await PDFDocument.load(await readFile(output));
+    const annotations = rawDocument.getPage(0).node.Annots();
+    const rawRedact = annotations?.lookup(0, PDFDict);
+    expect(String(rawRedact?.get(PDFName.of('Subtype')))).toBe('/Redact');
+    expect(readPdfNumberArray(rawRedact?.get(PDFName.of('Rect')))).toEqual([20, 130, 110, 150]);
+    expect(readPdfNumberArray(rawRedact?.get(PDFName.of('QuadPoints')))).toEqual([20, 150, 110, 150, 20, 130, 110, 130]);
+    expect(readPdfNumberArray(rawRedact?.get(PDFName.of('IC')))).toEqual([0, 0, 0]);
+
+    const reopened = await openPdfDocument(output);
+    expect(await reopened.annotations.readPageAnnotations(0)).toEqual([
+      expect.objectContaining({ id: 'redact-1', kind: 'redact', rect: { x: 20, y: 130, width: 90, height: 20 } }),
+    ]);
+    await reopened.close();
   });
 
   it('round-trips rectangle, text box and callout annotations', async () => {
@@ -1281,6 +1376,231 @@ describe('pdf package', () => {
 
     await handle.close();
     await reopened.close();
+  });
+
+  it('embeds and round-trips the compatible annotation fonts under their real family names', async () => {
+    const file = await createFixturePdf();
+    const handle = await openPdfDocument(file);
+    const output = file.replace(/\.pdf$/i, '.compatible-fonts.annotated.pdf');
+    const fonts = [
+      ['Arimo', 'BPArimo'],
+      ['Roboto Mono', 'BPRobotoMono'],
+      ['Noto Sans', 'BPNotoSans'],
+      ['Tinos', 'BPTinos'],
+    ] as const;
+    const markups = fonts.map(([fontId], index) => {
+      const text = `${fontId} compatible text`;
+      return createTextBoxMarkup({
+        id: `font-${index}`,
+        pageIndex: 0,
+        rect: { x: 15, y: 20 + index * 32, width: 190, height: 28 },
+        text,
+        ...(fontId === 'Arimo' ? {
+          richTextRuns: [
+            { text: 'Arimo ', fontId, bold: true },
+            { text: 'compatible ', fontId, italic: true },
+            { text: 'text', fontId, bold: true, italic: true },
+          ],
+        } : {}),
+        appearance: { text: { fontId } },
+      });
+    });
+
+    await handle.writer.save(handle, markups, 'saveAs', output);
+    const rawPdf = await PDFDocument.load(await readFile(output));
+    const rawAnnots = rawPdf.context.lookup(rawPdf.getPage(0).node.Annots()) as PDFArray;
+    const annotations = rawAnnots.asArray().map((ref) => rawPdf.context.lookup(ref)).filter((value): value is PDFDict => value instanceof PDFDict);
+    for (const [fontId, resourceName] of fonts) {
+      const annotation = annotations.find((item) => readPdfText(item.get(PDFName.of('Contents')))?.startsWith(fontId));
+      expect(readPdfText(annotation?.get(PDFName.of('DA')))).toContain(`/${resourceName} 12 Tf`);
+      expect(readPdfText(annotation?.get(PDFName.of('DS')))).toContain(`font: ${fontId} 12pt`);
+      const defaultResources = rawPdf.context.lookup(annotation?.get(PDFName.of('DR')));
+      const defaultResourceFonts = defaultResources instanceof PDFDict ? rawPdf.context.lookup(defaultResources.get(PDFName.of('Font'))) : undefined;
+      expect(defaultResourceFonts).toBeInstanceOf(PDFDict);
+      expect((defaultResourceFonts as PDFDict).has(PDFName.of(resourceName))).toBe(true);
+      const appearance = rawPdf.context.lookup(annotation?.get(PDFName.of('AP')));
+      const normal = appearance instanceof PDFDict ? rawPdf.context.lookup(appearance.get(PDFName.of('N'))) : undefined;
+      expect(normal).toBeInstanceOf(PDFRawStream);
+      const appearanceSource = new TextDecoder().decode(decodePDFRawStream(normal as PDFRawStream).decode());
+      const encodedText = appearanceSource.match(/<([0-9A-F]+)>\s+Tj/i)?.[1] ?? '';
+      const glyphIds = encodedText.match(/.{4}/g) ?? [];
+      expect(new Set(glyphIds).size).toBeGreaterThan(5);
+      const resources = normal instanceof PDFRawStream ? rawPdf.context.lookup(normal.dict.get(PDFName.of('Resources'))) : undefined;
+      const resourceFonts = resources instanceof PDFDict ? rawPdf.context.lookup(resources.get(PDFName.of('Font'))) : undefined;
+      expect(resourceFonts).toBeInstanceOf(PDFDict);
+      expect((resourceFonts as PDFDict).has(PDFName.of(resourceName))).toBe(true);
+      if (fontId === 'Arimo') {
+        expect((resourceFonts as PDFDict).has(PDFName.of(`${resourceName}Bold`))).toBe(true);
+        expect((resourceFonts as PDFDict).has(PDFName.of(`${resourceName}Italic`))).toBe(true);
+        expect((resourceFonts as PDFDict).has(PDFName.of(`${resourceName}BoldItalic`))).toBe(true);
+      } else {
+        expect((resourceFonts as PDFDict).has(PDFName.of(`${resourceName}Bold`))).toBe(false);
+      }
+    }
+
+    const reopened = await openPdfDocument(output);
+    const imported = await reopened.annotations.readPageAnnotations(0);
+    expect(imported.filter((markup) => markup.kind === 'text-box').map((markup) => markup.kind === 'text-box' ? markup.fontFamily : '')).toEqual(fonts.map(([fontId]) => fontId));
+    await handle.close();
+    await reopened.close();
+  });
+
+  it('writes Bluebeam-compatible Helvetica annotations without embedding a font program', async () => {
+    const file = await createFixturePdf();
+    const handle = await openPdfDocument(file);
+    const output = file.replace(/\.pdf$/i, '.helvetica.annotated.pdf');
+    const textBox = createTextBoxMarkup({
+      id: 'helvetica-default',
+      pageIndex: 0,
+      rect: { x: 20, y: 80, width: 180, height: 40 },
+      text: 'Helvetica default',
+      appearance: { text: { fontId: 'Helvetica' } },
+    });
+
+    await handle.writer.save(handle, [textBox], 'saveAs', output);
+    const rawPdf = await PDFDocument.load(await readFile(output));
+    const annots = rawPdf.context.lookup(rawPdf.getPage(0).node.Annots()) as PDFArray;
+    const annotation = rawPdf.context.lookup(annots.get(0));
+    expect(annotation).toBeInstanceOf(PDFDict);
+    expect(readPdfText((annotation as PDFDict).get(PDFName.of('DA')))).toContain('/Helv 12 Tf');
+    expect(readPdfText((annotation as PDFDict).get(PDFName.of('DS')))).toContain('font: Helvetica 12pt');
+    const defaultResources = rawPdf.context.lookup((annotation as PDFDict).get(PDFName.of('DR')));
+    const defaultFonts = defaultResources instanceof PDFDict ? rawPdf.context.lookup(defaultResources.get(PDFName.of('Font'))) : undefined;
+    const helvetica = defaultFonts instanceof PDFDict ? rawPdf.context.lookup(defaultFonts.get(PDFName.of('Helv'))) : undefined;
+    expect(helvetica).toBeInstanceOf(PDFDict);
+    expect((helvetica as PDFDict).get(PDFName.of('BaseFont'))).toEqual(PDFName.of('Helvetica'));
+    expect((helvetica as PDFDict).has(PDFName.of('FontDescriptor'))).toBe(false);
+
+    const reopened = await openPdfDocument(output);
+    const imported = await reopened.annotations.readPageAnnotations(0);
+    expect(imported).toEqual([
+      expect.objectContaining({
+        kind: 'text-box',
+        fontFamily: 'Helvetica',
+        appearance: expect.objectContaining({ text: expect.objectContaining({ fontId: 'Helvetica' }) }),
+      }),
+    ]);
+    await handle.close();
+    await reopened.close();
+  });
+
+  it('silently embeds Noto Sans when Helvetica cannot encode the text', async () => {
+    const file = await createFixturePdf();
+    const handle = await openPdfDocument(file);
+    const output = file.replace(/\.pdf$/i, '.unicode-fallback.annotated.pdf');
+    const textBox = createTextBoxMarkup({
+      id: 'unicode-fallback',
+      pageIndex: 0,
+      rect: { x: 20, y: 80, width: 180, height: 40 },
+      text: 'Price €10',
+      appearance: { text: { fontId: 'Helvetica' } },
+    });
+
+    await handle.writer.save(handle, [textBox], 'saveAs', output);
+    const rawPdf = await PDFDocument.load(await readFile(output));
+    const annots = rawPdf.context.lookup(rawPdf.getPage(0).node.Annots()) as PDFArray;
+    const annotation = rawPdf.context.lookup(annots.get(0));
+    expect(annotation).toBeInstanceOf(PDFDict);
+    expect(readPdfText((annotation as PDFDict).get(PDFName.of('DA')))).toContain('/BPNotoSans 12 Tf');
+    expect(readPdfText((annotation as PDFDict).get(PDFName.of('DS')))).toContain('font: Noto Sans 12pt');
+    await handle.close();
+  });
+
+  it('uses compatible fonts for callouts, dimensions, and measurement labels', async () => {
+    const file = await createFixturePdf();
+    const handle = await openPdfDocument(file);
+    const output = file.replace(/\.pdf$/i, '.compatible-text-tools.pdf');
+    const callout = createCalloutMarkup({
+      id: 'font-callout',
+      pageIndex: 0,
+      leader: { points: [pdfPoint(20, 20), pdfPoint(40, 40), pdfPoint(70, 70)] },
+      textBox: { x: 80, y: 55, width: 130, height: 40 },
+      text: 'Tinos callout',
+      appearance: { text: { fontId: 'Tinos' } },
+    });
+    const dimension = createDimensionMarkup({
+      id: 'font-dimension',
+      pageIndex: 0,
+      start: pdfPoint(20, 120),
+      end: pdfPoint(140, 120),
+      dimensionLineOffset: 20,
+      text: 'Arimo dimension',
+      appearance: { text: { fontId: 'Arimo' } },
+    });
+    const length = createLengthMarkup({
+      id: 'font-length',
+      pageIndex: 0,
+      start: pdfPoint(20, 150),
+      end: pdfPoint(140, 150),
+      appearance: { text: { fontId: 'Roboto Mono' } },
+    });
+
+    await handle.writer.save(handle, [callout, dimension, length], 'saveAs', output);
+    const rawPdf = await PDFDocument.load(await readFile(output));
+    const annots = rawPdf.context.lookup(rawPdf.getPage(0).node.Annots()) as PDFArray;
+    const annotations = annots.asArray().map((ref) => rawPdf.context.lookup(ref)).filter((value): value is PDFDict => value instanceof PDFDict);
+    for (const [contents, resourceName, family] of [
+      ['Tinos callout', 'BPTinos', 'Tinos'],
+      ['Arimo dimension', 'BPArimo', 'Arimo'],
+      ['Scale not set', 'BPRobotoMono', 'Roboto Mono'],
+    ] as const) {
+      const annotation = annotations.find((item) => readPdfText(item.get(PDFName.of('Contents'))) === contents);
+      expect(annotation).toBeDefined();
+      expect(readPdfText(annotation?.get(PDFName.of('DA')))).toContain(`/${resourceName} 12 Tf`);
+      expect(readPdfText(annotation?.get(PDFName.of('DS')))).toContain(`font: ${family} 12pt`);
+      const appearance = rawPdf.context.lookup(annotation?.get(PDFName.of('AP')));
+      const normal = appearance instanceof PDFDict ? rawPdf.context.lookup(appearance.get(PDFName.of('N'))) : undefined;
+      expect(normal).toBeInstanceOf(PDFRawStream);
+      expect(new TextDecoder().decode(decodePDFRawStream(normal as PDFRawStream).decode())).toContain(`/${resourceName} 12 Tf`);
+    }
+    await handle.close();
+  });
+
+  it('preserves an untouched proprietary font and converts it only when an edit rebuilds the annotation', async () => {
+    const file = await createProprietaryFontFixturePdf();
+    const handle = await openPdfDocument(file);
+    const imported = await handle.annotations.readPageAnnotations(0);
+    const textBox = imported[0];
+    expect(textBox).toMatchObject({
+      kind: 'text-box',
+      fontFamily: 'Arial',
+      appearance: { text: { fontId: 'Arial' } },
+    });
+
+    const untouchedOutput = file.replace(/\.pdf$/i, '.untouched.pdf');
+    await handle.writer.save(handle, imported, 'saveAs', untouchedOutput);
+    const untouchedPdf = await PDFDocument.load(await readFile(untouchedOutput));
+    const untouchedAnnots = untouchedPdf.context.lookup(untouchedPdf.getPage(0).node.Annots()) as PDFArray;
+    const untouched = untouchedPdf.context.lookup(untouchedAnnots.get(0));
+    expect(untouched).toBeInstanceOf(PDFDict);
+    expect(readPdfText((untouched as PDFDict).get(PDFName.of('DA')))).toContain('/Arial 12 Tf');
+    expect(readPdfText((untouched as PDFDict).get(PDFName.of('DS')))).toContain('font: Arial 12pt');
+
+    if (!textBox || textBox.kind !== 'text-box') {
+      throw new Error('Expected imported text box');
+    }
+    const editedOutput = file.replace(/\.pdf$/i, '.edited.pdf');
+    const edited = {
+      ...textBox,
+      appearance: {
+        ...textBox.appearance,
+        opacity: 0.5,
+      },
+    };
+    await handle.writer.save(handle, [edited], 'saveAs', editedOutput);
+    const editedPdf = await PDFDocument.load(await readFile(editedOutput));
+    const editedAnnots = editedPdf.context.lookup(editedPdf.getPage(0).node.Annots()) as PDFArray;
+    const rebuilt = editedPdf.context.lookup(editedAnnots.get(0));
+    expect(rebuilt).toBeInstanceOf(PDFDict);
+    expect(readPdfText((rebuilt as PDFDict).get(PDFName.of('DA')))).toContain('/BPArimo 12 Tf');
+    expect(readPdfText((rebuilt as PDFDict).get(PDFName.of('DS')))).toContain('font: Arimo 12pt');
+
+    const reopened = await openPdfDocument(editedOutput);
+    expect(await reopened.annotations.readPageAnnotations(0)).toEqual([
+      expect.objectContaining({ kind: 'text-box', fontFamily: 'Arimo' }),
+    ]);
+    await reopened.close();
+    await handle.close();
   });
 
   it('writes and reopens non-default appearance supplied directly in markup data', async () => {
