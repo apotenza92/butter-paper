@@ -72,6 +72,7 @@ describe('native release package boundaries', () => {
     expect(verifier).toContain('rpm2cpio "$rpm"');
     expect(verifier.match(/pnpm test:package:desktop/g)).toHaveLength(2);
     expect(verifier.match(/BP_RELEASE_CHANNEL="\$channel"/g)).toHaveLength(2);
+    expect(verifier).toContain('BP_TEST_STARTUP_ONLY=1');
     expect(verifier).toContain('Package verification requires native');
     expect(verifier).toContain('assert_update_contract');
     expect(verifier).toContain('verify-packaged-runtime-dependencies.cjs');
@@ -135,6 +136,7 @@ describe('native release package boundaries', () => {
     expect(smokeHarness).toContain("resolve(repoRoot, 'apps/desktop', configuredReleaseDir)");
     expect(smokeHarness).toContain("getByTestId('document-tab-template-picker')");
     expect(smokeHarness).toContain("getByTestId('template-picker-item-built-in-blank')");
+    expect(smokeHarness).toContain("process.env.BP_TEST_STARTUP_ONLY === '1'");
     expect(smokeHarness).not.toContain("getByTestId('document-tab-new-pdf-settings')");
   });
 });

@@ -228,7 +228,9 @@ try {
     { timeout: 30_000 },
   );
 
-  if (process.env.BP_TEST_DRAG_DROP_ONLY === '1') {
+  if (process.env.BP_TEST_STARTUP_ONLY === '1') {
+    console.log(`Packaged ${expectedProductName} startup test passed: channel identity and initial PDF rendered.`);
+  } else if (process.env.BP_TEST_DRAG_DROP_ONLY === '1') {
     await verifyDroppedPdfOpensInNewTab(page, temporaryDirectory);
     console.log(`Packaged ${expectedProductName} drag-and-drop test passed: dropped PDF opened in a new tab.`);
   } else {

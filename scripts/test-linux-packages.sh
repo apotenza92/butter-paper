@@ -220,6 +220,7 @@ smoke_executable() {
   assert_update_contract "$executable"
   BP_ELECTRON_EXECUTABLE_PATH="$executable" \
     BP_RELEASE_CHANNEL="$channel" \
+    BP_TEST_STARTUP_ONLY=1 \
     BP_TEST_USER_DATA_DIR="$work_root/user-data-$label" \
     xvfb-run -a pnpm test:package:desktop
 }
