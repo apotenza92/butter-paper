@@ -39,6 +39,37 @@ export function isEditableShortcutTarget(target: EventTarget | null): boolean {
   return tagName === 'input' || tagName === 'textarea' || tagName === 'select';
 }
 
+export function isInteractiveShortcutTarget(target: EventTarget | null): boolean {
+  if (isEditableShortcutTarget(target)) {
+    return true;
+  }
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  return Boolean(target.closest([
+    'button',
+    'a[href]',
+    '[role="button"]',
+    '[role="combobox"]',
+    '[role="checkbox"]',
+    '[role="dialog"]',
+    '[role="grid"]',
+    '[role="listbox"]',
+    '[role="menu"]',
+    '[role="menuitem"]',
+    '[role="menuitemcheckbox"]',
+    '[role="menuitemradio"]',
+    '[role="option"]',
+    '[role="radio"]',
+    '[role="slider"]',
+    '[role="switch"]',
+    '[role="tab"]',
+    '[role="textbox"]',
+    '[role="tree"]',
+  ].join(',')));
+}
+
 export function isToolShortcutPopupTarget(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && Boolean(target.closest([
     '[data-slot="dropdown-menu-content"]',

@@ -96,6 +96,7 @@ const bridge: ButterPaperBridge = {
   },
   application: {
     getMetadata: async () => ipcRenderer.invoke(ipcChannels.applicationGetMetadata),
+    getPerformanceResources: async () => ipcRenderer.invoke(ipcChannels.applicationGetPerformanceResources),
     setAsDefaultPdfApp: async () => ipcRenderer.invoke(ipcChannels.applicationSetDefaultPdfApp),
     takePendingPdfPaths: async () => ipcRenderer.invoke(ipcChannels.applicationTakePendingPdfPaths),
     authorizeDroppedPdf: async (file: File) => {

@@ -26,6 +26,7 @@ import {
   computeInitialPreviewRasterZoom,
 } from '../utils/renderZoom';
 import { resolveCadRenderExperimentConfig } from '../utils/cadRenderExperiment';
+import { resolveAdaptiveHqDelayMs, shouldAllowAdaptivePrefetch, type AdaptivePerformanceLevel } from '../utils/adaptivePerformance';
 import type { PageLayout } from '../utils/virtualisation';
 import { AnnotationLayer } from './AnnotationLayer';
 import { Spinner } from '@/components/ui/spinner';
@@ -41,6 +42,7 @@ interface PageViewProps {
   isTargetPage: boolean;
   viewportInMotion: boolean;
   deferHighQualityDuringMotion: boolean;
+  adaptivePerformanceLevel: AdaptivePerformanceLevel;
   visiblePageViewportRect?: Rect | null;
   overviewLabel?: {
     pageNumber: number;
@@ -52,8 +54,6 @@ interface PageViewProps {
   onHoverPage?: (pageIndex: number) => void;
 }
 
-const FULL_QUALITY_DELAY_MS = 360;
-const MOTION_FULL_QUALITY_DELAY_MS = 120;
 const MAX_PLACEHOLDER_SPINNER_SIZE_PX = 28;
 const MIN_PLACEHOLDER_SPINNER_SIZE_PX = 4;
 const MIN_ANIMATED_PLACEHOLDER_SPINNER_SIZE_PX = 10;
@@ -69,6 +69,7 @@ export function PageView({
   isStrictlyVisible,
   viewportInMotion,
   deferHighQualityDuringMotion,
+  adaptivePerformanceLevel,
   isTargetPage,
   visiblePageViewportRect = null,
   overviewLabel = null,
@@ -558,6 +559,8 @@ export function PageView({
         viewportInMotion,
         deferHighQualityDuringMotion,
         immediateTargetPromotion: isThumbnailNavigationTarget,
+        isTargetPage,
+        adaptivePerformanceLevel,
       });
       if (!nextRequest) {
         return;
@@ -571,6 +574,7 @@ export function PageView({
         && !shouldRequestColdPrefetchPageRender({
           viewportInMotion,
           renderBacklogIdle,
+          adaptivePerformanceLevel,
         })
       ) {
         return;
@@ -638,6 +642,7 @@ export function PageView({
     session,
     viewportInMotion,
     deferHighQualityDuringMotion,
+    adaptivePerformanceLevel,
     imageQuality,
     cadRenderExperiment,
     detailCrop,
@@ -1175,12 +1180,16 @@ export function resolveNextPageImageQualityRequest({
   viewportInMotion,
   deferHighQualityDuringMotion = false,
   immediateTargetPromotion = false,
+  isTargetPage = false,
+  adaptivePerformanceLevel = 0,
 }: {
   currentQuality: PageImageQuality | null;
   renderUrgency: 'visible' | 'prefetch';
   viewportInMotion: boolean;
   deferHighQualityDuringMotion?: boolean;
   immediateTargetPromotion?: boolean;
+  isTargetPage?: boolean;
+  adaptivePerformanceLevel?: AdaptivePerformanceLevel;
 }): { quality: 'full'; delayMs: number } | null {
   if (renderUrgency !== 'visible') {
     return null;
@@ -1200,7 +1209,11 @@ export function resolveNextPageImageQualityRequest({
   if (currentQuality === 'preview') {
     return {
       quality: 'full',
-      delayMs: viewportInMotion ? MOTION_FULL_QUALITY_DELAY_MS : FULL_QUALITY_DELAY_MS,
+      delayMs: resolveAdaptiveHqDelayMs({
+        level: adaptivePerformanceLevel,
+        isTargetPage,
+        viewportInMotion,
+      }),
     };
   }
 
@@ -1210,11 +1223,15 @@ export function resolveNextPageImageQualityRequest({
 export function shouldRequestColdPrefetchPageRender({
   viewportInMotion,
   renderBacklogIdle,
+  adaptivePerformanceLevel = 0,
 }: {
   viewportInMotion: boolean;
   renderBacklogIdle: boolean;
+  adaptivePerformanceLevel?: AdaptivePerformanceLevel;
 }): boolean {
-  return !viewportInMotion && renderBacklogIdle;
+  return !viewportInMotion
+    && renderBacklogIdle
+    && shouldAllowAdaptivePrefetch(adaptivePerformanceLevel);
 }
 
 export function shouldReplaceDisplayedPageWithRenderError(hasDisplayedImage: boolean): boolean {

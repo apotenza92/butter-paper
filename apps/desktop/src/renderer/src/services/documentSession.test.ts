@@ -6,6 +6,7 @@ import {
   isRenderBacklogIdle,
   isRenderTaskAllowedDuringActivationCriticalWindow,
   resolveInitialOverviewThumbnailConcurrencyLimit,
+  resolveAdaptiveRenderConcurrency,
   resolveOverviewThumbnailConcurrencyCeiling,
   shouldProtectFreshImageUrlCacheEntry,
 } from './documentSession';
@@ -2014,6 +2015,25 @@ describe('adaptive overview thumbnail concurrency', () => {
     expect(resolveOverviewThumbnailConcurrencyCeiling(12, 3, 2)).toBe(12);
     expect(resolveInitialOverviewThumbnailConcurrencyLimit(4, 3, 2)).toBe(2);
     expect(resolveOverviewThumbnailConcurrencyCeiling(0, 3, 2)).toBe(3);
+  });
+});
+
+describe('adaptive render concurrency', () => {
+  it('preserves normal throughput with headroom and reserves one visible render under stability pressure', () => {
+    expect(resolveAdaptiveRenderConcurrency(0)).toEqual({
+      page: 2,
+      thumbnail: 2,
+      total: 3,
+      prefetch: 1,
+      overviewThumbnailCeiling: null,
+    });
+    expect(resolveAdaptiveRenderConcurrency(3)).toEqual({
+      page: 1,
+      thumbnail: 1,
+      total: 1,
+      prefetch: 0,
+      overviewThumbnailCeiling: 1,
+    });
   });
 });
 

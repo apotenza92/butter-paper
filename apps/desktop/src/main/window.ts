@@ -36,6 +36,7 @@ import { RECENT_SIGNATURES_FILE_NAME, RecentSignatureStore } from './recentSigna
 import { sanitizePhoneSignatureImage, sanitizeSignatureAppearanceAsset } from './signatureImageSanitizer';
 import { loadDocumentPayload, loadPageGeometryIndex, saveDocumentPayload } from './pdfSession';
 import { createDesktopProcessMetricsSnapshot } from './processMetrics';
+import { desktopPerformanceResources } from './performanceResources';
 import { synchronizeMacosApplicationRegistration } from './applicationRegistration';
 import { getFocusedWindowState, isTestModeEnabled, resolveFixturePath, setFocusedWindowBounds } from './testMode';
 import { DesktopUpdaterService, loadElectronAutoUpdater } from './updater';
@@ -703,6 +704,15 @@ export function createMainWindow(): BrowserWindowInstance {
 export function registerIpcHandlers(): void {
   ipcMain.handle(ipcChannels.applicationGetMetadata, async () => {
     return getApplicationMetadata();
+  });
+
+  ipcMain.handle(ipcChannels.applicationGetPerformanceResources, async (event) => {
+    assertApplicationWindowSender(event);
+    const applicationWindow = BrowserWindow.fromWebContents(event.sender);
+    const displayRefreshHz = applicationWindow
+      ? screen.getDisplayMatching(applicationWindow.getBounds()).displayFrequency
+      : null;
+    return desktopPerformanceResources.sample(app.getAppMetrics(), process.getSystemMemoryInfo(), { displayRefreshHz });
   });
 
   ipcMain.handle(ipcChannels.applicationGetWindowFullScreen, async (event) => {

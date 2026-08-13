@@ -8,6 +8,7 @@ import type { PdfOpenProgress, ToolMode, ZoomPreset } from '../../../shared/prot
 import { isRenderBacklogIdle, type DiagnosticsSnapshot, type LocalPdfSession } from '../services/documentSession';
 import { useRenderCoordinator } from '../services/renderCoordinator';
 import { useSessionVersion } from '../services/sessionHooks';
+import { useAdaptivePerformance } from '../services/useAdaptivePerformance';
 import { useViewerStore, type ScrollWheelMode } from '../state/viewerStore';
 import { buildPageLayouts, computeVisibleLayoutPositions } from '../utils/virtualisation';
 import type { PageLayout } from '../utils/virtualisation';
@@ -20,12 +21,15 @@ import {
 } from '../utils/canvasPadding';
 import type { CanvasPadding } from '../utils/canvasPadding';
 import { resolveSinglePageWheelNavigation } from '../utils/singlePageWheelNavigation';
+import { resolveDocumentKeyboardNavigation, type DocumentKeyboardAction } from '../utils/documentKeyboardNavigation';
+import { isInteractiveShortcutTarget } from '../utils/toolShortcuts';
+import { resolveAdaptiveMotionOverscanPx, shouldAllowAdaptivePrefetch, type AdaptivePerformanceLevel } from '../utils/adaptivePerformance';
 import { recordComponentRender, recordEvent, recordOverviewFocusPreviewQuality, recordOverviewVisiblePreviewFill } from '../services/perfTracker';
 import { CustomScrollArea } from './CustomScrollArea';
 import { PageView, shouldRetryBrokenPageImageSource } from './PageView';
 
 const DOCUMENT_VISIBLE_OVERSCAN_PX = 1200;
-const DOCUMENT_MOTION_OVERSCAN_PX = 480;
+const DOCUMENT_MOTION_OVERSCAN_PX = 1200;
 const COLUMN_VISIBLE_OVERSCAN_PX = 320;
 const COLUMN_OVERVIEW_ZOOM_THRESHOLD = 0.3;
 const COLUMN_OVERVIEW_ZOOM_EXIT_THRESHOLD = 0.42;
@@ -56,6 +60,7 @@ const MIDDLE_DOUBLE_CLICK_MS = 400;
 const MIDDLE_CLICK_DRAG_TOLERANCE_PX = 4;
 const MIDDLE_DOUBLE_CLICK_TOLERANCE_PX = 8;
 const MINIMUM_ZOOM_PAN_VISIBLE_RATIO = 0.5;
+const DOCUMENT_KEYBOARD_SCROLL_STEP_PX = 48;
 export const DOCUMENT_OPENING_INDICATOR_DELAY_MS = 700;
 
 interface ViewportPanState {
@@ -193,6 +198,7 @@ export function DocumentViewport({
   const consumePageScroll = useViewerStore((state) => state.consumePageScroll);
   const consumeDocumentScroll = useViewerStore((state) => state.consumeDocumentScroll);
   const requestPageScroll = useViewerStore((state) => state.requestPageScroll);
+  const requestDocumentScroll = useViewerStore((state) => state.requestDocumentScroll);
   const requestThumbnailScroll = useViewerStore((state) => state.requestThumbnailScroll);
   const setCurrentPage = useViewerStore((state) => state.setCurrentPage);
   const setVisiblePageIndices = useViewerStore((state) => state.setVisiblePageIndices);
@@ -251,6 +257,7 @@ export function DocumentViewport({
   const hasDocumentView = Boolean(documentState && session);
   const sessionVersion = useSessionVersion(session);
   const renderCoordinator = useRenderCoordinator(session);
+  const adaptivePerformance = useAdaptivePerformance(session, hasDocumentView);
 
   const resetViewportContentOffset = () => {
     viewportContentOffsetRef.current = { x: 0, y: 0 };
@@ -1275,6 +1282,7 @@ export function DocumentViewport({
     layoutMode,
     viewportInMotion,
     renderBacklogIdle,
+    adaptivePerformanceLevel: adaptivePerformance.level,
   });
   const visibleLayoutPositions = useMemo(() => {
     return computeVisibleLayoutPositions(pageLayouts.layouts, {
@@ -1451,6 +1459,7 @@ export function DocumentViewport({
       diagnostics,
       viewportInMotion,
       strictVisiblePageCount: strictVisibleLayoutPositions.length,
+      adaptivePerformanceLevel: adaptivePerformance.level,
     })) {
       return;
     }
@@ -1501,6 +1510,7 @@ export function DocumentViewport({
     };
   }, [
     currentPage,
+    adaptivePerformance.level,
     layoutMode,
     pageByIndex,
     pageLayouts.layouts,
@@ -1565,6 +1575,90 @@ export function DocumentViewport({
       window.cancelAnimationFrame(frameId);
     };
   }, [consumeDocumentScroll, pendingDocumentScroll]);
+
+  useEffect(() => {
+    if (!hasDocumentView) {
+      return;
+    }
+
+    const handleKeyboardNavigation = (event: KeyboardEvent) => {
+      const isMacPlatform = navigator.platform.toLowerCase().includes('mac');
+      const primaryModifierPressed = isMacPlatform ? event.metaKey : event.ctrlKey;
+      const secondaryModifierPressed = isMacPlatform ? event.ctrlKey : event.metaKey;
+      const isPageShortcut = primaryModifierPressed && (event.key === 'ArrowLeft' || event.key === 'ArrowRight');
+      if (
+        event.defaultPrevented
+        || event.altKey
+        || event.shiftKey
+        || secondaryModifierPressed
+        || (primaryModifierPressed && !isPageShortcut)
+        || isInteractiveShortcutTarget(event.target)
+      ) {
+        return;
+      }
+
+      const actionByKey: Partial<Record<string, DocumentKeyboardAction>> = {
+        ArrowUp: 'arrow-up',
+        ArrowDown: 'arrow-down',
+        ArrowLeft: 'arrow-left',
+        ArrowRight: 'arrow-right',
+        PageUp: 'page-up',
+        PageDown: 'page-down',
+        Home: 'home',
+        End: 'end',
+      };
+      const action = isPageShortcut
+        ? event.key === 'ArrowLeft' ? 'previous-page' : 'next-page'
+        : actionByKey[event.key];
+      if (!action) {
+        return;
+      }
+
+      const container = containerRef.current;
+      if (!container) {
+        return;
+      }
+
+      const navigation = resolveDocumentKeyboardNavigation({
+        action,
+        pageIndices: pages.map((page) => page.index),
+        currentPage,
+      });
+
+      event.preventDefault();
+      if (!navigation) {
+        return;
+      }
+
+      if (navigation.kind === 'document-edge') {
+        const pageIndex = navigation.edge === 'top' ? pages[0]?.index : pages.at(-1)?.index;
+        if (pageIndex !== undefined && currentPage !== pageIndex) {
+          setCurrentPage(pageIndex);
+        }
+        requestDocumentScroll(navigation.edge);
+        return;
+      }
+
+      if (navigation.kind === 'page') {
+        sessionRef.current?.setNavigationIntent(navigation.pageIndex, 1200, 'generic');
+        setCurrentPage(navigation.pageIndex);
+        requestPageScroll(navigation.pageIndex);
+        return;
+      }
+
+      const distance = navigation.distance === 'page'
+        ? Math.max(DOCUMENT_KEYBOARD_SCROLL_STEP_PX, container.clientHeight * 0.9)
+        : DOCUMENT_KEYBOARD_SCROLL_STEP_PX;
+      container.scrollBy({
+        left: navigation.axis === 'horizontal' ? navigation.direction * distance : 0,
+        top: navigation.axis === 'vertical' ? navigation.direction * distance : 0,
+        behavior: 'auto',
+      });
+    };
+
+    window.addEventListener('keydown', handleKeyboardNavigation);
+    return () => window.removeEventListener('keydown', handleKeyboardNavigation);
+  }, [currentPage, hasDocumentView, pages, requestDocumentScroll, requestPageScroll, setCurrentPage]);
 
   useEffect(() => {
     if (!pendingPageScroll || !containerRef.current) {
@@ -1718,6 +1812,7 @@ export function DocumentViewport({
             isTargetPage={page.index === currentPage}
             viewportInMotion={viewportInMotion}
             deferHighQualityDuringMotion={viewportInMotion && (rapidViewportMotion || page.index !== currentPage)}
+            adaptivePerformanceLevel={adaptivePerformance.level}
             visiblePageViewportRect={visiblePageViewportRect}
             overviewLabel={null}
             calibrationPickActive={Boolean(calibrationPick?.active)}
@@ -1742,6 +1837,12 @@ export function DocumentViewport({
         className="relative h-full bg-background"
         orientation="both"
         viewportClassName={isPanning ? 'cursor-grabbing' : activeTool === 'pan' ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'}
+        viewportProps={{
+          'data-adaptive-performance-level': adaptivePerformance.level,
+          'data-adaptive-performance-reason': adaptivePerformance.reason,
+          'data-adaptive-refresh-hz': adaptivePerformance.detectedRefreshHz,
+          'data-adaptive-target-frame-ms': adaptivePerformance.targetFrameMs,
+        } as React.HTMLAttributes<HTMLDivElement>}
         viewportTestId="document-viewport"
         verticalTrackTestId="document-viewport-scrollbar-track-y"
         verticalThumbTestId="document-viewport-scrollbar-thumb-y"
@@ -1851,17 +1952,19 @@ export function resolveViewportVisibleOverscanPx({
   layoutMode,
   viewportInMotion,
   renderBacklogIdle,
+  adaptivePerformanceLevel = 0,
 }: {
   layoutMode: 'continuous' | 'columns' | 'single-page';
   viewportInMotion: boolean;
   renderBacklogIdle: boolean;
+  adaptivePerformanceLevel?: AdaptivePerformanceLevel;
 }): number {
   if (layoutMode === 'columns') {
     return COLUMN_VISIBLE_OVERSCAN_PX;
   }
 
   if (viewportInMotion) {
-    return DOCUMENT_MOTION_OVERSCAN_PX;
+    return Math.min(DOCUMENT_MOTION_OVERSCAN_PX, resolveAdaptiveMotionOverscanPx(adaptivePerformanceLevel));
   }
 
   if (!renderBacklogIdle) {
@@ -1888,15 +1991,19 @@ export function shouldUseColumnOverviewMode({
     return false;
   }
 
+  const shouldUseMotionOverview = viewportInMotion
+    && zoom <= COLUMN_MOTION_OVERVIEW_ZOOM_THRESHOLD
+    && mountedPageCount >= COLUMN_OVERVIEW_MOUNTED_PAGE_EXIT_THRESHOLD;
+
   if (currentlyActive) {
     return zoom <= COLUMN_OVERVIEW_ZOOM_EXIT_THRESHOLD
       || mountedPageCount > COLUMN_OVERVIEW_MOUNTED_PAGE_EXIT_THRESHOLD
-      || (viewportInMotion && zoom <= COLUMN_MOTION_OVERVIEW_ZOOM_THRESHOLD);
+      || shouldUseMotionOverview;
   }
 
   return zoom <= COLUMN_OVERVIEW_ZOOM_THRESHOLD
     || mountedPageCount > COLUMN_OVERVIEW_MOUNTED_PAGE_THRESHOLD
-    || (viewportInMotion && zoom <= COLUMN_MOTION_OVERVIEW_ZOOM_THRESHOLD);
+    || shouldUseMotionOverview;
 }
 
 export function shouldUseCanvasColumnOverview({
@@ -2121,13 +2228,16 @@ export function shouldWarmNearbyPagePreviews({
   diagnostics,
   viewportInMotion,
   strictVisiblePageCount,
+  adaptivePerformanceLevel = 0,
 }: {
   diagnostics: RenderBacklogDiagnostics;
   viewportInMotion: boolean;
   strictVisiblePageCount: number;
+  adaptivePerformanceLevel?: AdaptivePerformanceLevel;
 }): boolean {
   return !viewportInMotion
     && strictVisiblePageCount > 0
+    && shouldAllowAdaptivePrefetch(adaptivePerformanceLevel)
     && isRenderBacklogIdle(diagnostics);
 }
 

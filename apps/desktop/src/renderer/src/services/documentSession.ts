@@ -112,6 +112,23 @@ type NormalisedThumbnailRenderOptions = ThumbnailRenderOptions & {
 type RenderUrgency = 'visible' | 'prefetch';
 type NavigationIntentSource = 'generic' | 'thumbnail';
 export type RenderRequestClass = PdfRenderRequestClass;
+type AdaptivePerformanceLevel = 0 | 1 | 2 | 3;
+
+export function resolveAdaptiveRenderConcurrency(level: AdaptivePerformanceLevel): {
+  page: number;
+  thumbnail: number;
+  total: number;
+  prefetch: number;
+  overviewThumbnailCeiling: number | null;
+} {
+  if (level === 3) {
+    return { page: 1, thumbnail: 1, total: 1, prefetch: 0, overviewThumbnailCeiling: 1 };
+  }
+  if (level === 2) {
+    return { page: 2, thumbnail: 1, total: 2, prefetch: 0, overviewThumbnailCeiling: 2 };
+  }
+  return { page: 2, thumbnail: 2, total: 3, prefetch: 1, overviewThumbnailCeiling: null };
+}
 
 interface RenderRequestOptions {
   signal?: AbortSignal;
@@ -250,12 +267,12 @@ export class LocalPdfSession {
   private readonly maxBitmapRenderCacheBytes = 32 * 1024 * 1024;
   private readonly maxThumbnailCacheEntries = 1200;
   private readonly maxThumbnailCacheBytes = 64 * 1024 * 1024;
-  private readonly maxConcurrentPageRenders = 2;
   private readonly maxConcurrentThumbnailRenders = 2;
   private readonly maxConcurrentTotalRenders = 3;
   private readonly maxConcurrentPrefetchPageRenders = 1;
   private readonly maxConcurrentPrefetchThumbnailRenders = 1;
   private overviewThumbnailConcurrencyLimit: number | null = null;
+  private adaptivePerformanceLevel: AdaptivePerformanceLevel = 0;
   private overviewThumbnailWindowStartedAt: number | null = null;
   private overviewThumbnailWindowCompletions = 0;
   private overviewThumbnailWindowDurationMs = 0;
@@ -802,6 +819,18 @@ export class LocalPdfSession {
     }
 
     this.thumbnailListInMotion = inMotion;
+    this.pumpAllRenderQueues();
+  }
+
+  setAdaptivePerformanceLevel(level: AdaptivePerformanceLevel): void {
+    if (this.adaptivePerformanceLevel === level) {
+      return;
+    }
+    this.adaptivePerformanceLevel = level;
+    if (level >= 2) {
+      this.clearQueuedRenderTasks(this.pageRenderQueue, (task) => task.urgency === 'prefetch' || task.requestClass === 'warming');
+      this.clearQueuedRenderTasks(this.thumbnailRenderQueue, (task) => task.urgency === 'prefetch' || task.requestClass === 'warming');
+    }
     this.pumpAllRenderQueues();
   }
 
@@ -1991,8 +2020,10 @@ export class LocalPdfSession {
   }
 
   private findNextQueuedRenderTaskIndex(kind: 'page' | 'thumbnail', queue: QueuedRenderTask[]): number {
-    const maxPrefetchConcurrent =
-      kind === 'page' ? this.maxConcurrentPrefetchPageRenders : this.maxConcurrentPrefetchThumbnailRenders;
+    const adaptiveConcurrency = resolveAdaptiveRenderConcurrency(this.adaptivePerformanceLevel);
+    const maxPrefetchConcurrent = adaptiveConcurrency.prefetch === 0
+      ? 0
+      : kind === 'page' ? this.maxConcurrentPrefetchPageRenders : this.maxConcurrentPrefetchThumbnailRenders;
     const activePrefetchCount =
       kind === 'page' ? this.activePrefetchPageRenderCount : this.activePrefetchThumbnailRenderCount;
 
@@ -2021,7 +2052,7 @@ export class LocalPdfSession {
         kind === 'thumbnail'
         && !isUserVisibleThumbnailTask(task)
         && this.hasQueuedCriticalPageRender()
-        && this.getActiveTotalRenderCount() >= this.maxConcurrentTotalRenders - 1
+        && this.getActiveTotalRenderCount() >= this.getAdaptiveMaxTotalRenderCount() - 1
       ) {
         continue;
       }
@@ -2168,21 +2199,30 @@ export class LocalPdfSession {
   }
 
   private getMaxPotentialConcurrentRenderCount(kind: 'page' | 'thumbnail'): number {
-    return kind === 'page'
-      ? this.maxConcurrentPageRenders
-      : Math.max(this.resolveOverviewThumbnailConcurrencyCeiling(), this.resolveOverviewThumbnailConcurrencyLimit());
+    const adaptiveConcurrency = resolveAdaptiveRenderConcurrency(this.adaptivePerformanceLevel);
+    if (kind === 'page') {
+      return adaptiveConcurrency.page;
+    }
+    const overviewLimit = Math.max(this.resolveOverviewThumbnailConcurrencyCeiling(), this.resolveOverviewThumbnailConcurrencyLimit());
+    return adaptiveConcurrency.overviewThumbnailCeiling === null
+      ? overviewLimit
+      : Math.min(overviewLimit, adaptiveConcurrency.overviewThumbnailCeiling);
   }
 
   private getMaxConcurrentRenderCount(kind: 'page' | 'thumbnail', task?: QueuedRenderTask): number {
     if (kind === 'page') {
-      return this.maxConcurrentPageRenders;
+      return resolveAdaptiveRenderConcurrency(this.adaptivePerformanceLevel).page;
     }
 
     if (!task || !isAdaptiveBurstThumbnailTask(task)) {
-      return this.maxConcurrentThumbnailRenders;
+      return resolveAdaptiveRenderConcurrency(this.adaptivePerformanceLevel).thumbnail;
     }
 
-    return this.resolveOverviewThumbnailConcurrencyLimit();
+    const adaptiveConcurrency = resolveAdaptiveRenderConcurrency(this.adaptivePerformanceLevel);
+    const overviewLimit = this.resolveOverviewThumbnailConcurrencyLimit();
+    return adaptiveConcurrency.overviewThumbnailCeiling === null
+      ? overviewLimit
+      : Math.min(overviewLimit, adaptiveConcurrency.overviewThumbnailCeiling);
   }
 
   private getMaxTotalRenderCount(kind: 'page' | 'thumbnail', task: QueuedRenderTask): number {
@@ -2191,10 +2231,18 @@ export class LocalPdfSession {
       && isAdaptiveBurstThumbnailTask(task)
       && (!this.hasRenderInputPressure() || task.requestClass === 'visible-thumbnail')
     ) {
-      return Math.max(this.maxConcurrentTotalRenders, this.resolveOverviewThumbnailConcurrencyLimit());
+      const adaptiveConcurrency = resolveAdaptiveRenderConcurrency(this.adaptivePerformanceLevel);
+      const overviewLimit = adaptiveConcurrency.overviewThumbnailCeiling === null
+        ? this.resolveOverviewThumbnailConcurrencyLimit()
+        : Math.min(this.resolveOverviewThumbnailConcurrencyLimit(), adaptiveConcurrency.overviewThumbnailCeiling);
+      return Math.max(adaptiveConcurrency.total, overviewLimit);
     }
 
-    return this.maxConcurrentTotalRenders;
+    return this.getAdaptiveMaxTotalRenderCount();
+  }
+
+  private getAdaptiveMaxTotalRenderCount(): number {
+    return resolveAdaptiveRenderConcurrency(this.adaptivePerformanceLevel).total;
   }
 
   private resolveOverviewThumbnailConcurrencyLimit(): number {

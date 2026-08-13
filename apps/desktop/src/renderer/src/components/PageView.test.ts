@@ -112,7 +112,7 @@ describe('page view progressive quality promotion', () => {
       viewportInMotion: false,
     })).toEqual({
       quality: 'full',
-      delayMs: 360,
+      delayMs: 24,
     });
   });
 
@@ -121,9 +121,10 @@ describe('page view progressive quality promotion', () => {
       currentQuality: 'preview',
       renderUrgency: 'visible',
       viewportInMotion: false,
+      isTargetPage: true,
     })).toEqual({
       quality: 'full',
-      delayMs: 360,
+      delayMs: 0,
     });
   });
 
@@ -142,7 +143,7 @@ describe('page view progressive quality promotion', () => {
       viewportInMotion: true,
     })).toEqual({
       quality: 'full',
-      delayMs: 120,
+      delayMs: 48,
     });
   });
 
@@ -182,6 +183,11 @@ describe('page view cold prefetch gating', () => {
     expect(shouldRequestColdPrefetchPageRender({
       viewportInMotion: false,
       renderBacklogIdle: false,
+    })).toBe(false);
+    expect(shouldRequestColdPrefetchPageRender({
+      viewportInMotion: false,
+      renderBacklogIdle: true,
+      adaptivePerformanceLevel: 2,
     })).toBe(false);
   });
 });

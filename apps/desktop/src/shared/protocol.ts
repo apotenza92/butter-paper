@@ -125,6 +125,16 @@ export interface DesktopProcessMetricsSnapshot {
   processes: DesktopProcessMetric[];
 }
 
+export interface DesktopPerformanceResourcesSnapshot {
+  capturedAt: number;
+  totalMemoryKiB: number;
+  reclaimableMemoryKiB: number;
+  appWorkingSetKiB: number;
+  appCpuPercent: number;
+  systemCpuUsagePercent: number | null;
+  displayRefreshHz: number | null;
+}
+
 export interface DocumentOpenStageTimings {
   mainPayloadMs: number;
   mainMetadataMs?: number;
@@ -414,6 +424,7 @@ export interface ButterPaperBridge {
   };
   readonly application: {
     getMetadata(): Promise<ApplicationMetadata>;
+    getPerformanceResources(): Promise<DesktopPerformanceResourcesSnapshot>;
     setAsDefaultPdfApp(): Promise<DefaultPdfAppResult>;
     takePendingPdfPaths(): Promise<string[]>;
     authorizeDroppedPdf(file: File): Promise<string>;

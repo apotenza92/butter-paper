@@ -58,7 +58,6 @@ import { subscribeToThemeMode } from './theme';
 import type { ApplicationMenuCommand, ApplicationMenuState, ApplicationMetadata, BlankPdfCreateRequest, BlankPdfCreateResult, LoadedDocumentPayload, PdfOpenProgress, PdfSaveTargetDescriptor, ScrollMode, ScrollWheelMode, ThemeMode, ToolMode, ViewerDiagnostics, ZoomPreset } from '../../shared/protocol';
 import { PDF_TOOL_REGISTRY } from './pdf-tools/toolRegistry';
 import { clampViewerZoom } from './utils/renderZoom';
-import { resolveDocumentKeyboardNavigation } from './utils/documentKeyboardNavigation';
 import { selectDroppedPdfFiles } from './utils/droppedPdfFiles';
 import { resolveMacosFullScreenLayout } from './utils/macosFullScreenLayout';
 import { canHideMenuBar, resolveMenuBarVisibility } from './utils/menuBarVisibility';
@@ -66,6 +65,7 @@ import { signatureAppearanceToPendingImageAsset } from './utils/signaturePlaceme
 import {
   dismissToolShortcutPopup,
   isEditableShortcutTarget,
+  isInteractiveShortcutTarget,
   isToolShortcutBlockedTarget,
   normalizeShortcutKey,
   parseToolShortcut,
@@ -109,37 +109,6 @@ function normalizeDocumentPath(filePath: string): string {
   return navigator.platform.toLowerCase().includes('mac') || navigator.platform.toLowerCase().includes('win')
     ? normalized.toLowerCase()
     : normalized;
-}
-
-function isInteractiveShortcutTarget(target: EventTarget | null): boolean {
-  if (isEditableShortcutTarget(target)) {
-    return true;
-  }
-  if (!(target instanceof HTMLElement)) {
-    return false;
-  }
-
-  return Boolean(target.closest([
-    'button',
-    'a[href]',
-    '[role="button"]',
-    '[role="combobox"]',
-    '[role="checkbox"]',
-    '[role="dialog"]',
-    '[role="grid"]',
-    '[role="listbox"]',
-    '[role="menu"]',
-    '[role="menuitem"]',
-    '[role="menuitemcheckbox"]',
-    '[role="menuitemradio"]',
-    '[role="option"]',
-    '[role="radio"]',
-    '[role="slider"]',
-    '[role="switch"]',
-    '[role="tab"]',
-    '[role="textbox"]',
-    '[role="tree"]',
-  ].join(',')));
 }
 
 function toolForKeyboardEvent(event: KeyboardEvent): ToolMode | null {
@@ -403,7 +372,6 @@ export function App({ initialThemeMode }: AppProps) {
   const toggleLeftSidebar = useViewerStore((state) => state.toggleLeftSidebar);
   const toggleRightSidebar = useViewerStore((state) => state.toggleRightSidebar);
   const requestPageScroll = useViewerStore((state) => state.requestPageScroll);
-  const requestDocumentScroll = useViewerStore((state) => state.requestDocumentScroll);
   const setStatusMessage = useViewerStore((state) => state.setStatusMessage);
   const setErrorMessage = useViewerStore((state) => state.setErrorMessage);
   const setSelectedMarkupIds = useViewerStore((state) => state.setSelectedMarkupIds);
@@ -1221,37 +1189,6 @@ export function App({ initialThemeMode }: AppProps) {
       });
   }
 
-  function handleDocumentKeyboardNavigation(action: Parameters<typeof resolveDocumentKeyboardNavigation>[0]['action']): boolean {
-    const pageIndices = documentState?.document.pages.map((page) => page.index) ?? [];
-    const navigation = resolveDocumentKeyboardNavigation({
-      action,
-      pageIndices,
-      currentPage,
-      scrollMode,
-    });
-    if (!navigation) {
-      return false;
-    }
-
-    if (navigation.kind === 'document-edge') {
-      const pageIndex = navigation.edge === 'top' ? pageIndices[0] : pageIndices.at(-1);
-      if (pageIndex !== undefined && currentPage !== pageIndex) {
-        setCurrentPage(pageIndex);
-      }
-      requestDocumentScroll(navigation.edge);
-      return true;
-    }
-
-    session?.setNavigationIntent(navigation.pageIndex, 1200, 'generic');
-    if (navigation.resetZoom) {
-      setZoomPreset('manual');
-      setZoom(1);
-    }
-    setCurrentPage(navigation.pageIndex);
-    requestPageScroll(navigation.pageIndex);
-    return true;
-  }
-
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const key = normalizeShortcutKey(event.key);
@@ -1343,15 +1280,6 @@ export function App({ initialThemeMode }: AppProps) {
         if (deleteSelectedMarkups()) {
           event.preventDefault();
         }
-        return;
-      }
-
-      if ((key === 'home' || key === 'end' || key === 'pageup' || key === 'pagedown')
-        && !isInteractiveShortcutTarget(event.target)
-        && handleDocumentKeyboardNavigation(
-          key === 'home' ? 'home' : key === 'end' ? 'end' : key === 'pageup' ? 'page-up' : 'page-down',
-        )) {
-        event.preventDefault();
         return;
       }
 

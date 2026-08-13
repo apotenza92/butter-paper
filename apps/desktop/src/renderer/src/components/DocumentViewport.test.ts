@@ -153,6 +153,15 @@ describe('document viewport column overview crossover', () => {
     })).toBe(true);
   });
 
+  it('keeps normal pages mounted during motion in an ordinary continuous document', () => {
+    expect(shouldUseColumnOverviewMode({
+      layoutMode: 'continuous',
+      zoom: 0.44,
+      mountedPageCount: 4,
+      viewportInMotion: true,
+    })).toBe(false);
+  });
+
   it('uses the same overview path for very zoomed-out continuous view', () => {
     expect(shouldUseColumnOverviewMode({
       layoutMode: 'continuous',
@@ -500,6 +509,12 @@ describe('document viewport nearby page warming', () => {
       viewportInMotion: true,
       strictVisiblePageCount: 1,
     })).toBe(false);
+    expect(shouldWarmNearbyPagePreviews({
+      diagnostics: idleDiagnostics,
+      viewportInMotion: false,
+      strictVisiblePageCount: 1,
+      adaptivePerformanceLevel: 2,
+    })).toBe(false);
   });
 
   it('caps nearby page warming candidates to two pages', () => {
@@ -517,7 +532,16 @@ describe('document viewport visible overscan', () => {
       layoutMode: 'continuous',
       viewportInMotion: true,
       renderBacklogIdle: true,
-    })).toBe(480);
+    })).toBe(1200);
+  });
+
+  it('reduces speculative motion overscan only in the stability tier', () => {
+    expect(resolveViewportVisibleOverscanPx({
+      layoutMode: 'continuous',
+      viewportInMotion: true,
+      renderBacklogIdle: false,
+      adaptivePerformanceLevel: 3,
+    })).toBe(600);
   });
 
   it('holds continuous overscan at the strict viewport while critical render work is active', () => {
