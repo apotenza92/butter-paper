@@ -68,10 +68,9 @@ jobs:
           if (rootPackage.version !== version || desktopPackage.version !== version) {
             throw new Error(`Tag ${tag} must match root and desktop package versions (${rootPackage.version}, ${desktopPackage.version})`);
           }
-          const ownerRelease = process.env.GITHUB_ACTOR === process.env.GITHUB_REPOSITORY_OWNER;
           const environment = stable
-            ? (ownerRelease ? 'stable-release-self' : 'stable-release')
-            : (ownerRelease ? 'beta-release-self' : 'beta-release');
+            ? 'stable-release'
+            : 'beta-release';
           const lines = stable
             ? ['channel=stable', `environment=${environment}`, 'prerelease=false', 'variants=["stable","beta"]']
             : ['channel=beta', `environment=${environment}`, 'prerelease=true', 'variants=["beta"]'];
