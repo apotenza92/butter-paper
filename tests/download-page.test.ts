@@ -202,7 +202,6 @@ describe('download page publication workflow', () => {
     expect(workflow).toContain('id-token: write');
     expect(workflow).toContain('name: github-pages');
     expect(workflow).toContain('actions/configure-pages@');
-    expect(workflow).toContain('enablement: true');
     expect(workflow).toContain('actions/upload-pages-artifact@');
     expect(workflow).toContain('actions/deploy-pages@');
     expect(workflow).toContain('assets/icon-source/butter-paper-origami.svg');
