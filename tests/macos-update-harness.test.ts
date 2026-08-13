@@ -53,6 +53,12 @@ describe('macOS updater integration harness', () => {
       workflow.indexOf('\n  manual-package-smoke:'),
     );
     expect(manualElectronJob).toContain('fetch-depth: 0');
+    expect(manualElectronJob).toContain("BP_DEV_SKIP_FRESHNESS_CHECK: '1'");
+    const manualStartupJob = workflow.slice(
+      workflow.indexOf('  manual-gui-startup:'),
+      workflow.indexOf('\n  manual-gui-e2e:'),
+    );
+    expect(manualStartupJob).toContain("BP_DEV_SKIP_FRESHNESS_CHECK: '1'");
     const productionSigningAuditJob = workflow.slice(
       workflow.indexOf('  manual-production-tuf-signing-audit:'),
       workflow.indexOf('\n  manual-nonmac-updater-audit:'),
@@ -65,6 +71,8 @@ describe('macOS updater integration harness', () => {
       workflow.indexOf('\n  manual-production-tuf-signing-audit:'),
     );
     expect(manualPackageJob).toContain("if: github.event_name == 'workflow_dispatch' && inputs.scope == 'full'");
+    expect(manualPackageJob).toContain('run: pnpm build:desktop');
+    expect(manualPackageJob).not.toContain('run: pnpm build\n');
     const manualUpdaterAuditJob = workflow.slice(workflow.indexOf('  manual-nonmac-updater-audit:'));
     expect(manualUpdaterAuditJob).toContain("if: github.event_name == 'workflow_dispatch' && inputs.scope == 'full'");
 

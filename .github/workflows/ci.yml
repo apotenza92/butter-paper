@@ -81,6 +81,7 @@ jobs:
 
       - name: Electron startup probe
         env:
+          BP_DEV_SKIP_FRESHNESS_CHECK: '1'
           BP_E2E_FIRST_WINDOW_TIMEOUT_MS: 15000
         run: pnpm test:e2e:startup
 
@@ -120,6 +121,7 @@ jobs:
 
       - name: Electron E2E tests
         env:
+          BP_DEV_SKIP_FRESHNESS_CHECK: '1'
           BP_E2E_FIRST_WINDOW_TIMEOUT_MS: 15000
         run: pnpm test:e2e --shard=${{ matrix.shard }}
 
@@ -245,8 +247,8 @@ jobs:
       - name: Generate PDF fixtures
         run: pnpm generate:fixtures
 
-      - name: Build workspace
-        run: pnpm build
+      - name: Build desktop application
+        run: pnpm build:desktop
 
       - name: Build unpacked macOS application
         if: runner.os == 'macOS'
