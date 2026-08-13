@@ -133,6 +133,9 @@ describe('native release package boundaries', () => {
 
     expect(smokeHarness).toContain('process.env.BP_RELEASE_OUTPUT_DIR?.trim()');
     expect(smokeHarness).toContain("resolve(repoRoot, 'apps/desktop', configuredReleaseDir)");
+    expect(smokeHarness).toContain("getByTestId('document-tab-template-picker')");
+    expect(smokeHarness).toContain("getByTestId('template-picker-item-built-in-blank')");
+    expect(smokeHarness).not.toContain("getByTestId('document-tab-new-pdf-settings')");
   });
 });
 

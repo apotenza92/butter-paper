@@ -159,10 +159,13 @@ async function verifyPdfWorkflow(page, outputDirectory) {
 }
 
 async function verifyBlankPdfWorkflow(page, outputDirectory) {
-  await page.getByTestId('document-tab-new-pdf-settings').click();
-  await page.getByTestId('new-blank-pdf-settings').waitFor({ state: 'visible' });
-  assert(await page.getByTestId('new-blank-pdf-paper-size').inputValue() === 'a3', 'Blank PDF settings did not default to A3');
-  assert(await page.getByTestId('new-blank-pdf-landscape').getAttribute('aria-pressed') === 'true', 'Blank PDF settings did not default to landscape');
+  await page.getByTestId('document-tab-template-picker').click();
+  await page.getByTestId('template-picker').waitFor({ state: 'visible' });
+  await page.getByTestId('template-picker-item-built-in-blank').waitFor({ state: 'visible' });
+  assert(
+    (await page.getByTestId('template-preview-card').textContent())?.includes('Blank Paper'),
+    'Template picker did not default to Blank Paper',
+  );
   await page.keyboard.press('Escape');
   await page.getByTestId('document-tab-new-pdf').click();
   await waitForDiagnostics(page, { pageCount: 1, documentName: 'Untitled.pdf' });
