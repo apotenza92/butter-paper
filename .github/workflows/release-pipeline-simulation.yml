@@ -2,29 +2,49 @@ name: Release pipeline simulation
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Prepare a candidate, promote an existing candidate, or run both phases together
+        required: true
+        default: full
+        type: choice
+        options:
+          - full
+          - prepare
+          - promote
+      candidate_run_id:
+        description: Successful prepare run ID required for promote mode
+        required: false
+        type: string
+      candidate_sha:
+        description: Exact candidate commit required for promote mode
+        required: false
+        type: string
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
-  group: release-pipeline-simulation-${{ github.ref }}
+  group: release-pipeline-simulation-${{ github.ref }}-${{ inputs.mode }}
   cancel-in-progress: true
 
 jobs:
   prepare:
-    name: Prepare disposable release contract
+    name: Prepare immutable disposable candidate
+    if: inputs.mode != 'promote'
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout
+      - name: Checkout exact candidate commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Create disposable stable assets and feeds
+      - name: Create disposable candidate assets and feeds
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p simulation/assets simulation/feed release-manifest/assets
+          mkdir -p candidate/assets candidate/feed candidate/release-manifest/assets
           node --input-type=module <<'NODE'
           import { mkdirSync, writeFileSync } from 'node:fs';
           import { dirname, join } from 'node:path';
@@ -32,92 +52,170 @@ jobs:
 
           for (const name of expectedReleaseAssetNames('stable')) {
             if (name !== 'SHA256SUMS') {
-              writeFileSync(join('simulation/assets', name), `disposable release simulation: ${name}\n`);
+              writeFileSync(join('candidate/assets', name), `disposable candidate ${process.env.GITHUB_SHA}: ${name}\n`);
             }
           }
           for (const channel of ['stable', 'beta']) {
             for (const platform of ['darwin', 'win32', 'linux']) {
               for (const arch of ['arm64', 'x64']) {
-                const path = join('simulation/feed', channel, platform, arch, 'simulation.yml');
+                const path = join('candidate/feed', channel, platform, arch, 'simulation.yml');
                 mkdirSync(dirname(path), { recursive: true });
-                writeFileSync(path, `channel: ${channel}\nplatform: ${platform}\narch: ${arch}\n`);
+                writeFileSync(
+                  path,
+                  `candidateSha: ${process.env.GITHUB_SHA}\nchannel: ${channel}\nplatform: ${platform}\narch: ${arch}\n`,
+                );
               }
             }
           }
+          writeFileSync('candidate/release-manifest/candidate.json', `${JSON.stringify({
+            repository: process.env.GITHUB_REPOSITORY,
+            sha: process.env.GITHUB_SHA,
+            runId: process.env.GITHUB_RUN_ID,
+            runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            workflow: process.env.GITHUB_WORKFLOW,
+          }, null, 2)}\n`);
           NODE
           (
-            cd simulation/assets
+            cd candidate/assets
             checksum_file=$(mktemp)
             find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | LC_ALL=C sort | xargs sha256sum > "$checksum_file"
             mv "$checksum_file" SHA256SUMS
+            sha256sum --check --strict SHA256SUMS
           )
           node scripts/release-asset-contract.mjs \
             --channel stable \
-            --directory simulation/assets \
-            > release-manifest/expected-assets.txt
-          cp simulation/assets/SHA256SUMS release-manifest/assets/SHA256SUMS
+            --directory candidate/assets \
+            > candidate/release-manifest/expected-assets.txt
+          cp candidate/assets/SHA256SUMS candidate/release-manifest/assets/SHA256SUMS
 
-      - name: Upload disposable release assets
+      - name: Upload immutable disposable candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: simulation-release-assets
-          path: simulation/assets
+          name: simulation-release-candidate
+          path: candidate
           if-no-files-found: error
           retention-days: 1
+          compression-level: 0
 
-      - name: Upload disposable update feeds
+  verify-candidate:
+    name: Verify exact candidate for promotion
+    needs: prepare
+    if: ${{ always() && inputs.mode != 'prepare' && (inputs.mode == 'promote' || needs.prepare.result == 'success') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout promotion contract
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Require an exact prior candidate in promote mode
+        if: inputs.mode == 'promote'
+        env:
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$CANDIDATE_SHA" = "$GITHUB_SHA"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" > candidate-run.json
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg sha "$CANDIDATE_SHA" \
+            '.name == "Release pipeline simulation"
+              and .event == "workflow_dispatch"
+              and .status == "completed"
+              and .conclusion == "success"
+              and .head_repository.full_name == $repository
+              and .head_sha == $sha' \
+            candidate-run.json >/dev/null
+
+      - name: Download candidate from its preparation run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: simulation-release-candidate
+          path: promotion-input
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.mode == 'promote' && inputs.candidate_run_id || github.run_id }}
+
+      - name: Verify candidate identity, checksums, and asset contract
+        env:
+          CANDIDATE_RUN_ID: ${{ inputs.mode == 'promote' && inputs.candidate_run_id || github.run_id }}
+          CANDIDATE_SHA: ${{ inputs.mode == 'promote' && inputs.candidate_sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const candidate = JSON.parse(readFileSync('promotion-input/release-manifest/candidate.json', 'utf8'));
+          if (candidate.repository !== process.env.GITHUB_REPOSITORY) throw new Error('Candidate repository mismatch.');
+          if (candidate.sha !== process.env.CANDIDATE_SHA) throw new Error('Candidate commit mismatch.');
+          if (candidate.sha !== process.env.GITHUB_SHA) throw new Error('Promotion checkout does not match candidate commit.');
+          if (candidate.runId !== process.env.CANDIDATE_RUN_ID) throw new Error('Candidate run mismatch.');
+          if (candidate.workflow !== process.env.GITHUB_WORKFLOW) throw new Error('Candidate workflow mismatch.');
+          NODE
+          (cd promotion-input/assets && sha256sum --check --strict SHA256SUMS)
+          cmp promotion-input/assets/SHA256SUMS promotion-input/release-manifest/assets/SHA256SUMS
+          node scripts/release-asset-contract.mjs \
+            --channel stable \
+            --directory promotion-input/assets \
+            > promotion-input/actual-assets.txt
+          cmp promotion-input/release-manifest/expected-assets.txt promotion-input/actual-assets.txt
+
+      - name: Upload verified promotion input
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: simulation-release-feed-unsealed
-          path: simulation/feed
+          name: simulation-verified-candidate
+          path: promotion-input
           if-no-files-found: error
           retention-days: 1
-
-      - name: Upload compact release manifest
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: simulation-release-manifest
-          path: release-manifest
-          if-no-files-found: error
-          retention-days: 1
+          compression-level: 0
 
   attest:
-    name: Attest disposable checksums
-    needs: prepare
+    name: Attest promoted candidate checksums
+    needs: verify-candidate
+    if: inputs.mode != 'prepare'
     runs-on: ubuntu-24.04
     permissions:
+      actions: read
       contents: read
       id-token: write
       attestations: write
       artifact-metadata: write
     steps:
-      - name: Download compact release manifest
+      - name: Download verified candidate manifest
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: simulation-release-manifest
-          path: release-manifest
+          name: simulation-verified-candidate
+          path: promotion-input
 
       - name: Attest disposable asset digests
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
-          subject-checksums: release-manifest/assets/SHA256SUMS
+          subject-checksums: promotion-input/release-manifest/assets/SHA256SUMS
 
   seal:
-    name: Seal disposable update feeds
-    needs: prepare
+    name: Seal promoted candidate feeds
+    needs: verify-candidate
+    if: inputs.mode != 'prepare'
     runs-on: ubuntu-24.04
     steps:
-      - name: Download only updater metadata
+      - name: Download verified candidate
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: simulation-release-feed-unsealed
-          path: simulation/feed
+          name: simulation-verified-candidate
+          path: promotion-input
 
       - name: Seal disposable metadata
         shell: bash
         run: |
+          set -euo pipefail
+          mkdir -p sealed-feed
+          cp -R promotion-input/feed/. sealed-feed/
           (
-            cd simulation/feed
+            cd sealed-feed
             checksum_file=$(mktemp)
             find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > "$checksum_file"
             mv "$checksum_file" SHA256SUMS
@@ -128,25 +226,26 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: simulation-release-feed-sealed
-          path: simulation/feed
+          path: sealed-feed
           if-no-files-found: error
           retention-days: 1
 
   stage:
-    name: Stage without publishing
-    needs: [prepare, attest, seal]
+    name: Promote without publishing
+    needs: [verify-candidate, attest, seal]
+    if: inputs.mode != 'prepare'
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout contract verifier
+      - name: Checkout promotion verifier
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Download disposable release assets
+      - name: Download verified candidate
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: simulation-release-assets
-          path: staged/assets
+          name: simulation-verified-candidate
+          path: staged/candidate
 
       - name: Download sealed updater metadata
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -154,20 +253,17 @@ jobs:
           name: simulation-release-feed-sealed
           path: staged/feed
 
-      - name: Download compact release manifest
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: simulation-release-manifest
-          path: staged/manifest
-
-      - name: Verify staged release without external writes
+      - name: Verify staged promotion without external writes
         shell: bash
         run: |
-          (cd staged/assets && sha256sum --check --strict SHA256SUMS)
+          set -euo pipefail
+          (cd staged/candidate/assets && sha256sum --check --strict SHA256SUMS)
           (cd staged/feed && sha256sum --check --strict SHA256SUMS)
           node scripts/release-asset-contract.mjs \
             --channel stable \
-            --directory staged/assets \
+            --directory staged/candidate/assets \
             > staged/actual-assets.txt
-          cmp staged/manifest/expected-assets.txt staged/actual-assets.txt
-          echo 'Disposable release staging passed without a tag, GitHub Release, updater-feed write, or Homebrew dispatch.'
+          cmp staged/candidate/release-manifest/expected-assets.txt staged/actual-assets.txt
+          node -e \
+            "const c=require('./staged/candidate/release-manifest/candidate.json'); if(c.sha!==process.env.GITHUB_SHA) throw Error('Staged candidate mismatch')"
+          echo 'Exact-SHA candidate promotion passed without a tag, GitHub Release, updater-feed write, or Homebrew dispatch.'

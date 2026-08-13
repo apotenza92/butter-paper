@@ -60,9 +60,12 @@ describe('release asset contract', () => {
   it('keeps release simulations disposable and non-publishing', () => {
     const workflow = readFileSync('.github/workflows/release-pipeline-simulation.yml', 'utf8');
     expect(workflow).toContain('workflow_dispatch:');
-    expect(workflow).toContain('subject-checksums: release-manifest/assets/SHA256SUMS');
+    expect(workflow).toContain('Prepare immutable disposable candidate');
+    expect(workflow).toContain('Verify exact candidate for promotion');
+    expect(workflow).toContain("test \"$CANDIDATE_SHA\" = \"$GITHUB_SHA\"");
+    expect(workflow).toContain('subject-checksums: promotion-input/release-manifest/assets/SHA256SUMS');
     expect(workflow).toContain('name: simulation-release-feed-sealed');
-    expect(workflow).toContain('Stage without publishing');
+    expect(workflow).toContain('Promote without publishing');
     expect(workflow).not.toContain('contents: write');
     expect(workflow).not.toContain('gh release create');
     expect(workflow).not.toContain('git push');
