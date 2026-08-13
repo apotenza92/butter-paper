@@ -17,6 +17,13 @@ import {
   XIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuGroup,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu';
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import {
@@ -529,57 +536,73 @@ export function SignatureMenu({ disabled = false, contextId = null, onUseSignatu
       data-testid="recent-signatures"
     >
       {sortedRecentSignatures.map((recent, index) => (
-        <div
-          key={recent.id}
-          role="listitem"
-          className="group/signature relative min-w-0"
-          data-recent-signature-id={recent.id}
-        >
-          <Item
+        <ContextMenu key={recent.id}>
+          <ContextMenuTrigger
             render={(
-              <Button
-                type="button"
-                variant="outline"
-                ref={(element) => { recentUseButtonRefs.current[index] = element; }}
+              <div
+                role="listitem"
+                className="group/signature relative min-w-0"
+                data-recent-signature-id={recent.id}
               />
             )}
-            variant="outline"
-            size="sm"
-            className="h-24 min-w-0 cursor-pointer justify-center p-2 hover:bg-muted"
-            aria-label={recentSignatureActionLabel('Use', recent, index)}
-            onClick={() => useAsset(recent.asset)}
           >
-            <span className="flex size-full items-center justify-center rounded-md bg-white p-2">
-              <img src={recent.asset.dataUrl} alt="" className="max-h-full max-w-full object-contain" />
-            </span>
-          </Item>
-          <ItemActions className="absolute right-1.5 top-1.5 opacity-0 transition-opacity group-hover/signature:opacity-100 group-focus-within/signature:opacity-100">
-            <ConfirmationPopover
-              open={pendingDeleteId === recent.id}
-              onOpenChange={(nextOpen) => setPendingDeleteId(nextOpen ? recent.id : null)}
-              trigger={(
+            <Item
+              render={(
                 <Button
                   type="button"
                   variant="outline"
-                  size="icon-xs"
-                  aria-label={recentSignatureActionLabel('Remove', recent, index)}
-                >
-                  <Trash2Icon aria-hidden="true" />
-                </Button>
+                  ref={(element) => { recentUseButtonRefs.current[index] = element; }}
+                />
               )}
-              side="left"
-              align="start"
-              title="Delete this signature?"
-              description="This removes it from Recent. This action cannot be undone."
-              actionLabel="Delete"
-              actionVariant="destructive"
-              onAction={() => {
-                setPendingDeleteId(null);
-                void removeRecentSignature(recent.id, index);
-              }}
-            />
-          </ItemActions>
-        </div>
+              variant="outline"
+              size="sm"
+              className="h-24 min-w-0 cursor-pointer justify-center p-2 hover:bg-muted"
+              aria-label={recentSignatureActionLabel('Use', recent, index)}
+              onClick={() => useAsset(recent.asset)}
+            >
+              <span className="flex size-full items-center justify-center rounded-md bg-white p-2">
+                <img src={recent.asset.dataUrl} alt="" className="max-h-full max-w-full object-contain" />
+              </span>
+            </Item>
+            <ItemActions className="absolute right-1.5 top-1.5 opacity-0 transition-opacity group-hover/signature:opacity-100 group-focus-within/signature:opacity-100">
+              <ConfirmationPopover
+                open={pendingDeleteId === recent.id}
+                onOpenChange={(nextOpen) => setPendingDeleteId(nextOpen ? recent.id : null)}
+                trigger={(
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon-xs"
+                    aria-label={recentSignatureActionLabel('Remove', recent, index)}
+                  >
+                    <Trash2Icon aria-hidden="true" />
+                  </Button>
+                )}
+                side="left"
+                align="start"
+                title="Delete this signature?"
+                description="This removes it from Recent. This action cannot be undone."
+                actionLabel="Delete"
+                actionVariant="destructive"
+                onAction={() => {
+                  setPendingDeleteId(null);
+                  void removeRecentSignature(recent.id, index);
+                }}
+              />
+            </ItemActions>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuGroup>
+              <ContextMenuItem
+                variant="destructive"
+                onClick={() => setPendingDeleteId(recent.id)}
+              >
+                <Trash2Icon aria-hidden="true" />
+                Delete
+              </ContextMenuItem>
+            </ContextMenuGroup>
+          </ContextMenuContent>
+        </ContextMenu>
       ))}
     </ItemGroup>
   );

@@ -760,6 +760,33 @@ describe('SignatureMenu', () => {
     expect(document.activeElement?.getAttribute('aria-label')).toBe('Use recent drawn signature 1');
   });
 
+  it('offers deletion from the recent signature context menu', async () => {
+    const recent = recentSignature('a');
+    recentList.mockResolvedValue({ available: true, signatures: [recent] });
+    recentRemove.mockResolvedValue({ available: true, signatures: [] });
+    act(() => root.render(createElement(SignatureMenu, { onUseSignature: vi.fn() })));
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="tool-signature"]')?.click());
+    await act(async () => { await Promise.resolve(); });
+
+    const row = document.querySelector<HTMLElement>('[data-recent-signature-id]');
+    await act(async () => {
+      row?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+    const contextDelete = Array.from(document.querySelectorAll<HTMLElement>('[data-slot="context-menu-item"]'))
+      .find((item) => item.textContent === 'Delete');
+    expect(contextDelete?.getAttribute('data-variant')).toBe('destructive');
+
+    act(() => contextDelete?.click());
+    expect(recentRemove).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-testid="confirmation-popover"]')).toBeTruthy();
+    await act(async () => {
+      findButton(document.body, 'Delete')?.click();
+      await Promise.resolve();
+    });
+    expect(recentRemove).toHaveBeenCalledWith(recent.id);
+  });
+
   it('reports when secure recent-signature storage is unavailable', async () => {
     recentList.mockResolvedValue({ available: false, signatures: [] });
     act(() => root.render(createElement(SignatureMenu, { onUseSignature: vi.fn() })));
