@@ -154,6 +154,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
           BP_RELEASE_CHANNEL: ${{ matrix.variant }}
+          BP_TEST_STARTUP_ONLY: ${{ matrix.variant != needs.prepare.outputs.channel && '1' || '0' }}
         shell: bash
         run: |
           OUTPUT="apps/desktop/release/${{ matrix.variant }}/darwin/${{ matrix.arch }}"
@@ -249,6 +250,8 @@ jobs:
           --label "${{ matrix.variant }} ARM64 release candidate"
 
       - name: Install, launch, feature-test, and uninstall NSIS package
+        env:
+          BP_TEST_STARTUP_ONLY: ${{ matrix.variant != needs.prepare.outputs.channel && '1' || '0' }}
         shell: pwsh
         run: |
           ./scripts/test-windows-installer.ps1 `
@@ -361,6 +364,8 @@ jobs:
         run: pnpm --dir apps/desktop exec electron-builder --config electron-builder.config.cjs --linux AppImage deb rpm --${{ matrix.arch }} --publish never
 
       - name: Extract or install, launch, feature-test, and remove Linux packages
+        env:
+          BP_TEST_STARTUP_ONLY: ${{ matrix.variant != needs.prepare.outputs.channel && '1' || '0' }}
         shell: bash
         run: >-
           ./scripts/test-linux-packages.sh

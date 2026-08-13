@@ -87,6 +87,8 @@ describe('macOS updater integration harness', () => {
     expect(releaseWorkflow).toContain(
       'needs: [prepare, validate, package-macos, package-windows, package-linux, test-macos-updater, test-nonmac-updater]',
     );
+    expect(releaseWorkflow.match(/BP_TEST_STARTUP_ONLY: \$\{\{ matrix\.variant != needs\.prepare\.outputs\.channel/g))
+      .toHaveLength(3);
   });
 
   it('parses an explicit scenario without accepting unknown options', () => {

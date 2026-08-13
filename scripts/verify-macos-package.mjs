@@ -855,6 +855,7 @@ function launchPackagedApp(executablePath, temporaryDirectory, channel) {
     env: createSmokeEnvironment(process.env, {
       BP_ELECTRON_EXECUTABLE_PATH: wrapperPath,
       BP_RELEASE_CHANNEL: channel,
+      BP_TEST_STARTUP_ONLY: process.env.BP_TEST_STARTUP_ONLY === '1' ? '1' : '0',
       BP_TEST_USER_DATA_DIR: userDataPath,
     }),
   });

@@ -58,6 +58,7 @@ describe('macOS release contract', () => {
     expect(verifier).toContain('NSCameraUsageDescription: CAMERA_USAGE_DESCRIPTION');
     expect(verifier).toContain('NSLocalNetworkUsageDescription: LOCAL_NETWORK_USAGE_DESCRIPTION');
     expect(verifier).toContain("requiredEntitlements: bundlePath === resolvedAppPath");
+    expect(verifier).toContain("BP_TEST_STARTUP_ONLY: process.env.BP_TEST_STARTUP_ONLY === '1' ? '1' : '0'");
   });
 
   it('allowlists smoke variables without passing release credentials to the app', () => {
