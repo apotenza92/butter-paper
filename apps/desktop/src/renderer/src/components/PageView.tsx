@@ -53,6 +53,7 @@ interface PageViewProps {
 }
 
 const FULL_QUALITY_DELAY_MS = 360;
+const MOTION_FULL_QUALITY_DELAY_MS = 120;
 const MAX_PLACEHOLDER_SPINNER_SIZE_PX = 28;
 const MIN_PLACEHOLDER_SPINNER_SIZE_PX = 4;
 const MIN_ANIMATED_PLACEHOLDER_SPINNER_SIZE_PX = 10;
@@ -587,7 +588,7 @@ export function PageView({
     if (hasDisplayedImage) {
       // Scrolling changes visibility and target-page priority, but it must not
       // tear down the image already on screen. Keep that raster visible and
-      // promote a visible preview immediately, including during motion.
+      // promote a visible preview after a short motion dwell when permitted.
       scheduleNextQuality(imageQuality);
       return () => {
         cancelled = true;
@@ -1199,7 +1200,7 @@ export function resolveNextPageImageQualityRequest({
   if (currentQuality === 'preview') {
     return {
       quality: 'full',
-      delayMs: viewportInMotion ? 0 : FULL_QUALITY_DELAY_MS,
+      delayMs: viewportInMotion ? MOTION_FULL_QUALITY_DELAY_MS : FULL_QUALITY_DELAY_MS,
     };
   }
 

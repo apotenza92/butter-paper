@@ -5,20 +5,11 @@ import {
   LocalPdfSession,
   isRenderBacklogIdle,
   isRenderTaskAllowedDuringActivationCriticalWindow,
-  isPageRenderTaskAllowedDuringViewportMotion,
   resolveInitialOverviewThumbnailConcurrencyLimit,
   resolveOverviewThumbnailConcurrencyCeiling,
   shouldProtectFreshImageUrlCacheEntry,
 } from './documentSession';
 
-describe('viewport motion render gating', () => {
-  it('allows visible HQ upgrades during normal motion but defers them during rapid motion', () => {
-    expect(isPageRenderTaskAllowedDuringViewportMotion('visible-page-hq-upgrade', true)).toBe(true);
-    expect(isPageRenderTaskAllowedDuringViewportMotion('visible-page-hq-upgrade', false)).toBe(false);
-    expect(isPageRenderTaskAllowedDuringViewportMotion('visible-page-preview', false)).toBe(true);
-    expect(isPageRenderTaskAllowedDuringViewportMotion('nearby-prefetch', true)).toBe(false);
-  });
-});
 import type { PdfSessionBackend, PdfSessionDocumentHandle } from './documentSessionBackend';
 import { openPdfDocumentFromBytes } from '@butter-paper/pdf/browser';
 

@@ -317,7 +317,7 @@ export function DocumentViewport({
       return;
     }
 
-    activeSession.setViewportInMotion(true, !rapid);
+    activeSession.setViewportInMotion(true);
     if (!viewportInMotionRef.current) {
       viewportInMotionRef.current = true;
       setViewportInMotion(true);
@@ -1717,7 +1717,7 @@ export function DocumentViewport({
             isStrictlyVisible={isStrictlyVisible}
             isTargetPage={page.index === currentPage}
             viewportInMotion={viewportInMotion}
-            deferHighQualityDuringMotion={rapidViewportMotion}
+            deferHighQualityDuringMotion={viewportInMotion && (rapidViewportMotion || page.index !== currentPage)}
             visiblePageViewportRect={visiblePageViewportRect}
             overviewLabel={null}
             calibrationPickActive={Boolean(calibrationPick?.active)}
