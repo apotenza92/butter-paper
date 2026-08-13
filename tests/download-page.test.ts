@@ -3,8 +3,8 @@ import { JSDOM } from 'jsdom';
 
 const html = readFileSync('docs/index.html', 'utf8');
 const readme = readFileSync('README.md', 'utf8');
-const productDescription = 'Butter Paper is a free, open-source, cross-platform alternative to Bluebeam Revu for PDF review and markup in architecture, engineering, and construction—available on macOS, Windows, and Linux.';
-const readmeProductDescription = readme.match(/<\/p>\n\n([\s\S]*?)\n\n/)?.[1].replaceAll('\n', ' ');
+const productDescription = 'Butter Paper is a free, open-source PDF markup app for macOS, Windows, and Linux. It is a cross-platform alternative to Bluebeam Revu for everyday document review, including architecture, engineering, and construction workflows.';
+const readmeProductDescription = readme.split('/>\n\n')[1]?.trim().replaceAll('\n', ' ');
 
 async function loadPage({
   architecture = '',
@@ -49,16 +49,23 @@ function hero(dom: JSDOM) {
 }
 
 describe('Butter Paper download page', () => {
-  it('keeps the product description and download destination aligned with the README', async () => {
+  it('keeps the product description aligned with the concise README', async () => {
     const dom = await loadPage();
     expect(readmeProductDescription).toBe(productDescription);
     expect(dom.window.document.querySelector('.subtitle')!.textContent).toBe(readmeProductDescription);
     expect(dom.window.document.querySelector('meta[name="description"]')!.getAttribute('content')).toBe(readmeProductDescription);
     expect(dom.window.document.getElementById('app-icon')!.getAttribute('src')).toBe('./assets/brand/icon.svg');
     expect(dom.window.document.getElementById('favicon')!.getAttribute('href')).toBe('./assets/brand/icon.svg');
-    expect(dom.window.document.querySelector('.promise')!.textContent).toBe('Clarity you can work on.');
-    expect(readme).toContain('assets/icon-source/butter-paper-origami.svg');
-    expect(readme).toContain('https://apotenza92.github.io/butter-paper/');
+    expect(dom.window.document.querySelector('.promise')).toBeNull();
+    expect(readme).not.toContain('Clarity you can work on.');
+    const repositoryLink = dom.window.document.querySelector('.site-header .repository-link')!;
+    expect(repositoryLink.textContent!.trim()).toBe('GitHub repository');
+    expect(repositoryLink.getAttribute('href')).toBe('https://github.com/apotenza92/butter-paper');
+    expect(readme).toContain('src="assets/butter-paper-icon.png"');
+    expect(readme).not.toContain('align="center"');
+    expect(readme).not.toContain('<a ');
+    expect(readme).not.toContain('## What you can do');
+    expect(readme).not.toContain('[Download Butter Paper]');
   });
 
   it('positions Butter Paper as a free cross-platform Bluebeam Revu alternative', async () => {
@@ -71,10 +78,13 @@ describe('Butter Paper download page', () => {
 
     expect(copy).toContain('free');
     expect(copy).toContain('cross-platform');
+    expect(copy).toContain('PDF markup app');
+    expect(copy).toContain('everyday document review');
     expect(copy).toContain('Bluebeam Revu');
     expect(copy).toContain('macOS');
     expect(copy).toContain('Windows');
     expect(copy).toContain('Linux');
+    expect(copy).not.toContain(String.fromCodePoint(0x2014));
   });
 
   it.each([
@@ -133,12 +143,10 @@ describe('Butter Paper download page', () => {
     expect(hero(dom).href).toContain('Butter-Paper-Linux-x64.rpm');
   });
 
-  it('shows unsigned-package context only for Windows and Linux selections', async () => {
+  it('keeps the public copy focused on the product and downloads', async () => {
     const dom = await loadPage({ architecture: 'x86', platform: 'Windows' });
-    const document = dom.window.document;
-    expect((document.getElementById('unsigned-package-notice') as HTMLElement).hidden).toBe(false);
-    document.getElementById('platform-mac')!.click();
-    expect((document.getElementById('unsigned-package-notice') as HTMLElement).hidden).toBe(true);
+    const publicCopy = `${dom.window.document.body.textContent} ${readme}`;
+    expect(publicCopy).not.toMatch(/early-stage|rough edges|unsigned|TUF|provenance|authenticated/i);
   });
 
   it('uses release metadata for stable and beta version and size details', async () => {
@@ -187,14 +195,17 @@ describe('Butter Paper download page', () => {
 });
 
 describe('download page publication workflow', () => {
-  it('prepares a manual checksum-sealed bundle without deployment credentials', () => {
+  it('deploys the site through the native GitHub Pages environment', () => {
     const workflow = readFileSync('.github/workflows/pages.yml', 'utf8');
     expect(workflow).toContain('workflow_dispatch:');
-    expect(workflow).toContain('butter-paper-pages-publication-');
-    expect(workflow).toContain('SHA256SUMS');
-    expect(workflow).toContain('Apply these exact reviewed bytes manually.');
+    expect(workflow).toContain('pages: write');
+    expect(workflow).toContain('id-token: write');
+    expect(workflow).toContain('name: github-pages');
+    expect(workflow).toContain('actions/configure-pages@');
+    expect(workflow).toContain('actions/upload-pages-artifact@');
+    expect(workflow).toContain('actions/deploy-pages@');
     expect(workflow).toContain('assets/icon-source/butter-paper-origami.svg');
     expect(workflow).toContain('assets/icon-source/butter-paper-origami-beta.svg');
-    expect(workflow).not.toMatch(/PAGES_DEPLOY_KEY|git commit|git push/);
+    expect(workflow).not.toMatch(/PAGES_DEPLOY_KEY|git commit|git push|Apply these exact reviewed bytes manually/);
   });
 });
