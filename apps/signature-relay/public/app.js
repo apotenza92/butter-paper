@@ -9,6 +9,7 @@ const statusElement = document.querySelector('#status');
 const drawPanel = document.querySelector('#draw-panel');
 const imagePanel = document.querySelector('#image-panel');
 const canvas = document.querySelector('#signature-canvas');
+const expandDrawingButton = document.querySelector('#expand-drawing-button');
 const clearButton = document.querySelector('#clear-button');
 const sendDrawingButton = document.querySelector('#send-drawing-button');
 const imageInput = document.querySelector('#image-input');
@@ -23,6 +24,7 @@ let hasDrawing = false;
 let resizeFrame = null;
 let pendingUpload = null;
 let imageSelectionRequest = 0;
+let expandedDrawing = false;
 
 function setStatus(message, kind = 'neutral') {
   statusElement.textContent = message;
@@ -123,6 +125,14 @@ function preserveDrawingOnResize() {
     resizeFrame = null;
     configureCanvas({ preserve: true });
   });
+}
+
+function toggleExpandedDrawing() {
+  expandedDrawing = !expandedDrawing;
+  document.body.classList.toggle('drawing-expanded', expandedDrawing);
+  expandDrawingButton.setAttribute('aria-pressed', String(expandedDrawing));
+  expandDrawingButton.textContent = expandedDrawing ? 'Exit full screen' : 'Full screen';
+  preserveDrawingOnResize();
 }
 
 function pointForEvent(event) {
@@ -326,6 +336,7 @@ canvas.addEventListener('pointermove', continueDrawing);
 canvas.addEventListener('pointerup', stopDrawing);
 canvas.addEventListener('pointercancel', stopDrawing);
 clearButton.addEventListener('click', clearDrawing);
+expandDrawingButton.addEventListener('click', toggleExpandedDrawing);
 sendDrawingButton.addEventListener('click', sendDrawing);
 imageInput.addEventListener('change', selectImage);
 sendImageButton.addEventListener('click', sendImage);

@@ -19,11 +19,19 @@
       <p id="status" class="status" role="status" aria-live="polite">Opening secure session…</p>
 
       <section id="draw-panel" class="panel" aria-labelledby="draw-title" hidden>
-        <div>
-          <h2 id="draw-title">Draw signature</h2>
-          <p>Draw inside the box with your finger or a pointer.</p>
+        <div class="draw-heading">
+          <div>
+            <h2 id="draw-title">Draw signature</h2>
+            <p>Draw inside the box with your finger or a pointer.</p>
+          </div>
+          <button id="expand-drawing-button" class="secondary compact" type="button" aria-pressed="false">Full screen</button>
         </div>
-        <canvas id="signature-canvas" aria-label="Signature drawing area"></canvas>
+        <div class="signature-surface">
+          <canvas id="signature-canvas" aria-label="Signature drawing area. Sign above the guide line."></canvas>
+          <div class="signature-guide" aria-hidden="true">
+            <span>Sign above the line</span>
+          </div>
+        </div>
         <div class="actions">
           <button id="clear-button" class="secondary" type="button">Clear</button>
           <button id="send-drawing-button" type="button">Send signature</button>
@@ -36,7 +44,7 @@
           <p>Use dark ink on white paper. We remove the background before sending.</p>
         </div>
         <label class="file-picker" for="image-input">Take photo or choose image</label>
-        <input id="image-input" type="file" accept="image/png,image/jpeg" capture="environment" />
+        <input id="image-input" type="file" accept="image/png,image/jpeg" />
         <img id="image-preview" alt="Selected signature preview" hidden />
         <button id="send-image-button" type="button" disabled>Send signature</button>
       </section>

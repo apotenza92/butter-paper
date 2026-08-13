@@ -54,8 +54,9 @@ describe('phone page static contract', () => {
     expect(protocolScript).toContain('writeUint32(plaintext.byteLength)');
   });
 
-  it('supports pointer drawing, image capture, one MiB input, and retry of one envelope', () => {
-    expect(page).toContain('capture="environment"');
+  it('supports pointer drawing, image selection, one MiB input, and retry of one envelope', () => {
+    expect(page).toContain('accept="image/png,image/jpeg"');
+    expect(page).not.toContain('capture=');
     expect(page).toContain('accept="image/png,image/jpeg"');
     expect(appScript).toContain("canvas.addEventListener('pointerdown'");
     expect(appScript).toContain('if (!pendingUpload)');
@@ -156,6 +157,22 @@ describe('phone page static contract', () => {
     expect(appScript).toContain('event.clientY - bounds.top');
   });
 
+  it('provides a viewport-filling drawing mode that preserves the current drawing', () => {
+    expect(page).toContain('id="expand-drawing-button"');
+    expect(page).toContain('aria-pressed="false">Full screen</button>');
+    expect(appScript).toContain("expandDrawingButton.addEventListener('click', toggleExpandedDrawing)");
+    expect(appScript).toContain("document.body.classList.toggle('drawing-expanded', expandedDrawing)");
+    expect(appScript).toContain("expandedDrawing ? 'Exit full screen' : 'Full screen'");
+    expect(appScript).toMatch(/function toggleExpandedDrawing\(\)[\s\S]*preserveDrawingOnResize\(\)/u);
+  });
+
+  it('shows a signing guide without drawing it into the canvas bitmap', () => {
+    expect(page).toContain('class="signature-guide" aria-hidden="true"');
+    expect(page).toContain('Sign above the line');
+    expect(page).toContain('aria-label="Signature drawing area. Sign above the guide line."');
+    expect(page).not.toContain('context.fillText');
+  });
+
   it('declares restrictive headers, no CORS, edge limits, SQLite exports, and a disabled production switch', () => {
     expect(headers).toContain('Cache-Control: no-store');
     expect(headers).toContain("default-src 'none'");
@@ -176,8 +193,9 @@ describe('phone page static contract', () => {
 
   it('provides accessible status and controls for both modes', () => {
     expect(page).toContain('role="status" aria-live="polite"');
-    expect(page).toContain('aria-label="Signature drawing area"');
+    expect(page).toContain('aria-label="Signature drawing area. Sign above the guide line."');
     expect(page).toContain('id="clear-button"');
+    expect(page).toContain('id="expand-drawing-button"');
     expect(page).toContain('id="send-drawing-button"');
     expect(page).toContain('id="send-image-button"');
   });

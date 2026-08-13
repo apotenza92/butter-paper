@@ -86,9 +86,27 @@ h2 {
   display: grid;
 }
 
-#signature-canvas {
+.draw-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.draw-heading p {
+  margin-bottom: 0;
+}
+
+.signature-surface {
+  position: relative;
   width: 100%;
   height: 220px;
+  min-height: 0;
+}
+
+#signature-canvas {
+  width: 100%;
+  height: 100%;
   border: 1px solid #a99f92;
   border-radius: 12px;
   background-color: #fff;
@@ -101,6 +119,26 @@ h2 {
   background-size: 16px 16px;
   cursor: crosshair;
   touch-action: none;
+}
+
+.signature-guide {
+  position: absolute;
+  right: 8%;
+  bottom: 27%;
+  left: 8%;
+  border-bottom: 1px solid #8f867b;
+  color: #756d64;
+  font-size: 0.75rem;
+  line-height: 1;
+  pointer-events: none;
+  text-align: right;
+}
+
+.signature-guide span {
+  position: relative;
+  top: -6px;
+  padding-left: 8px;
+  background: #fff;
 }
 
 .actions {
@@ -127,6 +165,43 @@ button.secondary,
 .file-picker {
   background: transparent;
   color: #332b23;
+}
+
+button.compact {
+  min-height: 40px;
+  padding: 8px 12px;
+  white-space: nowrap;
+}
+
+body.drawing-expanded {
+  overflow: hidden;
+  padding: 0;
+  place-items: stretch;
+}
+
+body.drawing-expanded .shell {
+  width: 100%;
+  height: 100dvh;
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+body.drawing-expanded .shell > header,
+body.drawing-expanded .status {
+  display: none;
+}
+
+body.drawing-expanded #draw-panel {
+  height: 100%;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+body.drawing-expanded .signature-surface {
+  height: 100%;
+  min-height: 0;
 }
 
 button:focus-visible,
