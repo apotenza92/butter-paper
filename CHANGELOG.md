@@ -2,6 +2,31 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.23]
+
+### Rendering and navigation
+
+- Added adaptive rendering that responds to display refresh rate, available
+  memory, processor capacity, render latency, and PDF.js backlog pressure.
+- Improved page sharpness during normal scrolling while reducing background
+  prefetch and high-quality work when the device or document is under load.
+- Added direct arrow-key viewport scrolling, Page Up and Page Down scrolling,
+  Home and End document navigation, and primary-modifier page navigation.
+
+### Signatures and document controls
+
+- Improved phone signature drawing controls and added context-menu deletion for
+  individual recent signatures.
+- Kept template and snapping popovers within constrained windows and removed
+  obsolete blank-PDF settings compatibility code.
+
+### Release delivery
+
+- Reduced duplicate native release checks and artifact transfers, parallelized
+  post-publication verification, and added non-publishing release simulations.
+- Added an exact-commit candidate promotion simulation that verifies asset
+  names, checksums, attestations, and update-feed sealing without publishing.
+
 ## [0.0.22]
 
 ### Templates and document workflow

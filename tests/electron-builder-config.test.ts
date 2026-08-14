@@ -103,7 +103,7 @@ describe('Electron Builder release identity', () => {
       afterPack: 'build/after-pack.cjs',
       compression: 'normal',
       electronLanguages: ['en-US'],
-      releaseNotes: expect.stringContaining('Added a reusable blank PDF template library'),
+      releaseNotes: expect.stringContaining('Added adaptive rendering that responds to display refresh rate'),
       nsisInclude: 'build/installer.nsh',
       nsisOneClick: false,
       macMinimumSystemVersion: '12.0',
