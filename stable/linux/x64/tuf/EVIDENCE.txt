@@ -2,13 +2,13 @@ Butter Paper production TUF repository
 Root version: 1
 Root SHA-256: 9dd29ed74569f0f7e9288eaaed47118c66d71f58ba2f9d25242c6f304f2f12cb
 Target: latest-linux.yml
-Target SHA-256: e4ffdb48e0a3b9a9999ed6d804a7d3190c96e4693ce0233872de2394581a5fd6
-targets version: 12
-targets expires: 2027-08-13T11:06:50.000Z
+Target SHA-256: 09a88b5bd35ed705a03cc0c31f2c84f3f3c9f498e78ec1fa7e3d31018cad3939
+targets version: 13
+targets expires: 2027-08-14T05:06:36.000Z
 targets key ID: 8a90d65949498adabc97adaef23a8fefb89a5b5ca309f3e6084cf11a6c9fc591
-snapshot version: 12
-snapshot expires: 2027-02-09T11:06:50.000Z
+snapshot version: 13
+snapshot expires: 2027-02-10T05:06:36.000Z
 snapshot key ID: ce190af2743b7a08f379a9a1fc58771c3e081e4eba1920a49ef397ea9cf2ba6e
-timestamp version: 12
-timestamp expires: 2026-09-27T11:06:50.000Z
+timestamp version: 13
+timestamp expires: 2026-09-28T05:06:36.000Z
 timestamp key ID: 7c436786e7036f056f9082866ac1f4a6e5967a1d53f22ece96519a2b7671a8a9

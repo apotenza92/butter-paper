@@ -1,40 +1,35 @@
-version: 0.0.22
+version: 0.0.23
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Beta-macOS-x64.zip
-    sha512: VxAKg7G6uk3NSoLA1LboDWtsMqO9ufRGdnx5HhFSJjXQhTPTNKeTQxzDEfoo5S9qrcRotmEpt8Khu4lyeCPiTg==
-    size: 150956152
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Beta-macOS-x64.dmg
-    sha512: Ih+eYfTDn1MYN79CYxdw3NCDakiyLfz5Dw9VjwTAYSlMu7N9IITB/QYTFhZsmEWh9y8J2Wqf/wydN7j8WmLn2Q==
-    size: 143978125
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Beta-macOS-x64.zip
-sha512: VxAKg7G6uk3NSoLA1LboDWtsMqO9ufRGdnx5HhFSJjXQhTPTNKeTQxzDEfoo5S9qrcRotmEpt8Khu4lyeCPiTg==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-Beta-macOS-x64.zip
+    sha512: bhZczhLyxa6UWAkGkhAduwRgHAiSzuEtrY89tQ66RnSwuo5NE8oXnu7IehuC6/K76WBGiDRz+5iTnahXnc7fMA==
+    size: 151484496
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-Beta-macOS-x64.dmg
+    sha512: 2dDdvpuTEOnd1F/YMpcCKhzFenkysCpXlmpA5piAoC79kPbnZFUPy9R0y8XHg4ERzLdbPpCb9I0+KvzWHFZ5YA==
+    size: 156564253
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-Beta-macOS-x64.zip
+sha512: bhZczhLyxa6UWAkGkhAduwRgHAiSzuEtrY89tQ66RnSwuo5NE8oXnu7IehuC6/K76WBGiDRz+5iTnahXnc7fMA==
 releaseNotes: |-
-  ### Templates and document workflow
+  ### Rendering and navigation
 
-  - Added a reusable blank PDF template library with built-in and custom
-    templates, PDF import, live previews, last-template reuse, and direct access
-    from the document tab bar.
-  - Added cloud-storage source detection and opening progress for large PDFs.
-    Improved safe save and Save As handling around opaque file access grants.
-  - Improved page thumbnails, blank-page previews, document opening feedback,
-    constrained-window layout, and menu and rail controls.
+  - Added adaptive rendering that responds to display refresh rate, available
+    memory, processor capacity, render latency, and PDF.js backlog pressure.
+  - Improved page sharpness during normal scrolling while reducing background
+    prefetch and high-quality work when the device or document is under load.
+  - Added direct arrow-key viewport scrolling, Page Up and Page Down scrolling,
+    Home and End document navigation, and primary-modifier page navigation.
 
-  ### Markup tools and properties
+  ### Signatures and document controls
 
-  - Added redaction placement, locked-markup handling, calibration-line feedback,
-    dimension-increment snapping, and more consistent selection hit zones.
-  - Expanded tool properties with bundled standard annotation fonts, live text
-    appearance updates, compact colour controls, persistent sortable colour
-    presets, and construction-grid feedback.
-  - Improved annotation import and export fidelity for appearance, geometry,
-    rotation, text, line endings, images, snapshots, and page content.
+  - Improved phone signature drawing controls and added context-menu deletion for
+    individual recent signatures.
+  - Kept template and snapping popovers within constrained windows and removed
+    obsolete blank-PDF settings compatibility code.
 
-  ### Verification
+  ### Release delivery
 
-  - Added deterministic coverage for templates, saving, storage progress,
-    calibration, colour presets, PDF round trips, phone-transfer limits, and
-    packaged drag-and-drop behavior.
-  - Allowed explicitly isolated local macOS GUI checks while keeping updater
-    replacement tests restricted to disposable GitHub Actions runners.
-releaseDate: 2026-08-13T10:40:06.094Z
+  - Reduced duplicate native release checks and artifact transfers, parallelized
+    post-publication verification, and added non-publishing release simulations.
+  - Added an exact-commit candidate promotion simulation that verifies asset
+    names, checksums, attestations, and update-feed sealing without publishing.
+releaseDate: 2026-08-14T04:56:36.085Z
 butterPaperChannel: beta

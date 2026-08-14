@@ -1,62 +1,52 @@
-version: 0.0.22
+version: 0.0.23
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Beta-Windows-arm64-Setup.exe
-    sha512: wJyzJ4rBKKd7w/5pP2usgx7P5iRl0MKb+EQsVZ042tHN6W+BZqa4hdE7EjStFSy9OoPvI0eWpvSS3k2z5AxP8w==
-    size: 124698260
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Beta-Windows-arm64-Setup.exe
-sha512: wJyzJ4rBKKd7w/5pP2usgx7P5iRl0MKb+EQsVZ042tHN6W+BZqa4hdE7EjStFSy9OoPvI0eWpvSS3k2z5AxP8w==
-releaseNotes: "### Templates and document workflow\r
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-Beta-Windows-arm64-Setup.exe
+    sha512: 1x2tjGqeYOo0Uxi4+4Wz8VIfanmMoyyVwbXqZ3UkWT0SKFNAOhCAfL6H+vk7aJTc0CMweQZSAefywpE9V4f47A==
+    size: 124701182
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-Beta-Windows-arm64-Setup.exe
+sha512: 1x2tjGqeYOo0Uxi4+4Wz8VIfanmMoyyVwbXqZ3UkWT0SKFNAOhCAfL6H+vk7aJTc0CMweQZSAefywpE9V4f47A==
+releaseNotes: "### Rendering and navigation\r
 
   \r
 
-  - Added a reusable blank PDF template library with built-in and custom\r
+  - Added adaptive rendering that responds to display refresh rate, available\r
 
-  \  templates, PDF import, live previews, last-template reuse, and direct access\r
+  \  memory, processor capacity, render latency, and PDF.js backlog pressure.\r
 
-  \  from the document tab bar.\r
+  - Improved page sharpness during normal scrolling while reducing background\r
 
-  - Added cloud-storage source detection and opening progress for large PDFs.\r
+  \  prefetch and high-quality work when the device or document is under load.\r
 
-  \  Improved safe save and Save As handling around opaque file access grants.\r
+  - Added direct arrow-key viewport scrolling, Page Up and Page Down scrolling,\r
 
-  - Improved page thumbnails, blank-page previews, document opening feedback,\r
-
-  \  constrained-window layout, and menu and rail controls.\r
+  \  Home and End document navigation, and primary-modifier page navigation.\r
 
   \r
 
-  ### Markup tools and properties\r
+  ### Signatures and document controls\r
 
   \r
 
-  - Added redaction placement, locked-markup handling, calibration-line feedback,\r
+  - Improved phone signature drawing controls and added context-menu deletion for\r
 
-  \  dimension-increment snapping, and more consistent selection hit zones.\r
+  \  individual recent signatures.\r
 
-  - Expanded tool properties with bundled standard annotation fonts, live text\r
+  - Kept template and snapping popovers within constrained windows and removed\r
 
-  \  appearance updates, compact colour controls, persistent sortable colour\r
-
-  \  presets, and construction-grid feedback.\r
-
-  - Improved annotation import and export fidelity for appearance, geometry,\r
-
-  \  rotation, text, line endings, images, snapshots, and page content.\r
+  \  obsolete blank-PDF settings compatibility code.\r
 
   \r
 
-  ### Verification\r
+  ### Release delivery\r
 
   \r
 
-  - Added deterministic coverage for templates, saving, storage progress,\r
+  - Reduced duplicate native release checks and artifact transfers, parallelized\r
 
-  \  calibration, colour presets, PDF round trips, phone-transfer limits, and\r
+  \  post-publication verification, and added non-publishing release simulations.\r
 
-  \  packaged drag-and-drop behavior.\r
+  - Added an exact-commit candidate promotion simulation that verifies asset\r
 
-  - Allowed explicitly isolated local macOS GUI checks while keeping updater\r
-
-  \  replacement tests restricted to disposable GitHub Actions runners."
-releaseDate: 2026-08-13T10:25:30.908Z
+  \  names, checksums, attestations, and update-feed sealing without publishing."
+releaseDate: 2026-08-14T04:56:16.013Z
 butterPaperChannel: beta

@@ -1,44 +1,39 @@
-version: 0.0.22
+version: 0.0.23
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Linux-arm64.AppImage
-    sha512: 9iSFiA0nD3TDJfajmnT63bsVaIeZyl/rEK9vSMVJb49ifyVNY4D7+gTWTlBC6OO5YA1hZ9YX0KzNv4endUE+3A==
-    size: 116875867
-    blockMapSize: 122279
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Linux-arm64.deb
-    sha512: APOs8jsOG/KxCaRP9cA2ybShN+w1MzPESg65ESyqHgVokGEdOsJYaBb9Z53UwjBv41aAEkNjXMqZ38ZwMSgAgQ==
-    size: 114620212
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Linux-arm64.rpm
-    sha512: skUUPBGbQRCDTZ8QJmDlmhWW4wDMe3s7q3kXojRqve+zIs0nW6rUNYI9inmoi44ONG/NhZBitjZ5xK02H93gLg==
-    size: 101009109
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.22/Butter-Paper-Linux-arm64.AppImage
-sha512: 9iSFiA0nD3TDJfajmnT63bsVaIeZyl/rEK9vSMVJb49ifyVNY4D7+gTWTlBC6OO5YA1hZ9YX0KzNv4endUE+3A==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-Linux-arm64.AppImage
+    sha512: jTRdg8LllmIo8GjdeQo1tPt7HhqGxpsZ9bIdLtA4TgutFc3qG8I5vLRlS7/BKjYStL78KE0lEXjZ9fbSlPK9ag==
+    size: 116879850
+    blockMapSize: 122166
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-Linux-arm64.deb
+    sha512: jWV8ZQI1Jojgq3pgFTexT+RDE41VG2AvvbZkqwbgKR6SCc58UYDIarb3UlX9R8/s1FGiBBdijDr3mpMJeMHxpA==
+    size: 114700764
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-Linux-arm64.rpm
+    sha512: v2CNnx6jNXuB6C8qXuhgprb0Td5UvMpSpqvv5PJKUmN6YgtalZT99qORv2d7W1qEOgtn2+BYixnjG0pCj6A5JA==
+    size: 101026241
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-Linux-arm64.AppImage
+sha512: jTRdg8LllmIo8GjdeQo1tPt7HhqGxpsZ9bIdLtA4TgutFc3qG8I5vLRlS7/BKjYStL78KE0lEXjZ9fbSlPK9ag==
 releaseNotes: |-
-  ### Templates and document workflow
+  ### Rendering and navigation
 
-  - Added a reusable blank PDF template library with built-in and custom
-    templates, PDF import, live previews, last-template reuse, and direct access
-    from the document tab bar.
-  - Added cloud-storage source detection and opening progress for large PDFs.
-    Improved safe save and Save As handling around opaque file access grants.
-  - Improved page thumbnails, blank-page previews, document opening feedback,
-    constrained-window layout, and menu and rail controls.
+  - Added adaptive rendering that responds to display refresh rate, available
+    memory, processor capacity, render latency, and PDF.js backlog pressure.
+  - Improved page sharpness during normal scrolling while reducing background
+    prefetch and high-quality work when the device or document is under load.
+  - Added direct arrow-key viewport scrolling, Page Up and Page Down scrolling,
+    Home and End document navigation, and primary-modifier page navigation.
 
-  ### Markup tools and properties
+  ### Signatures and document controls
 
-  - Added redaction placement, locked-markup handling, calibration-line feedback,
-    dimension-increment snapping, and more consistent selection hit zones.
-  - Expanded tool properties with bundled standard annotation fonts, live text
-    appearance updates, compact colour controls, persistent sortable colour
-    presets, and construction-grid feedback.
-  - Improved annotation import and export fidelity for appearance, geometry,
-    rotation, text, line endings, images, snapshots, and page content.
+  - Improved phone signature drawing controls and added context-menu deletion for
+    individual recent signatures.
+  - Kept template and snapping popovers within constrained windows and removed
+    obsolete blank-PDF settings compatibility code.
 
-  ### Verification
+  ### Release delivery
 
-  - Added deterministic coverage for templates, saving, storage progress,
-    calibration, colour presets, PDF round trips, phone-transfer limits, and
-    packaged drag-and-drop behavior.
-  - Allowed explicitly isolated local macOS GUI checks while keeping updater
-    replacement tests restricted to disposable GitHub Actions runners.
-releaseDate: 2026-08-13T10:28:24.219Z
+  - Reduced duplicate native release checks and artifact transfers, parallelized
+    post-publication verification, and added non-publishing release simulations.
+  - Added an exact-commit candidate promotion simulation that verifies asset
+    names, checksums, attestations, and update-feed sealing without publishing.
+releaseDate: 2026-08-14T04:57:13.705Z
 butterPaperChannel: stable
