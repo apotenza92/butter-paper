@@ -1,16 +1,17 @@
 import electron from 'electron';
-import { appendFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { ipcChannels } from '../shared/ipc';
 import { resolvePdfPathsFromCommandLine } from './openPdfPaths';
 import { enqueuePendingPdfPaths, hasPendingPdfPaths, takePendingPdfPaths } from './pendingPdfPaths';
 import { desktopPdfAccessRegistry } from './pdfAccessRegistry';
+import { recordTestStartupMilestone } from './startupDiagnostics';
 import { bootstrapDesktop } from './window';
 
 const { app, BrowserWindow } = electron;
 const isTestMode = process.env.BP_TEST_MODE === '1';
 let pendingPdfFlushScheduled = false;
 let activePdfOpenDispatches = 0;
+let pdfSessionPreparationPromise: Promise<unknown> | null = null;
 
 const testUserDataDir = process.env.BP_TEST_USER_DATA_DIR?.trim();
 if (testUserDataDir) {
@@ -23,7 +24,13 @@ if (testUserDataDir) {
 
 recordTestStartupMilestone('main-module-loaded');
 app.on('ready', () => recordTestStartupMilestone('app-ready'));
-app.on('browser-window-created', () => recordTestStartupMilestone('browser-window-created'));
+app.on('browser-window-created', (_event, window) => {
+  recordTestStartupMilestone('browser-window-created');
+  window.webContents.once('did-start-loading', () => recordTestStartupMilestone('renderer-load-started'));
+  window.webContents.once('dom-ready', () => recordTestStartupMilestone('renderer-dom-ready'));
+  window.webContents.once('did-finish-load', () => recordTestStartupMilestone('renderer-load-finished'));
+  window.once('ready-to-show', () => recordTestStartupMilestone('window-ready-to-show'));
+});
 
 process.on('unhandledRejection', (error) => {
   console.error('Unhandled rejection in main process:', error);
@@ -36,6 +43,9 @@ process.on('uncaughtException', (error) => {
 const singleInstance = isTestMode ? true : app.requestSingleInstanceLock();
 const initialPdfPaths = resolvePdfPathsFromCommandLine(process.argv.slice(1), process.cwd());
 enqueuePendingPdfPaths(initialPdfPaths);
+if (initialPdfPaths.length > 0) {
+  preparePdfSessionForOpen();
+}
 
 app.on('open-file', (event, filePath) => {
   event.preventDefault();
@@ -80,6 +90,7 @@ async function dispatchPdfPaths(filePaths: readonly string[]): Promise<void> {
   if (pdfPaths.length === 0) {
     return;
   }
+  preparePdfSessionForOpen();
 
   const window = BrowserWindow.getAllWindows()[0];
   if (!window || window.isDestroyed()) {
@@ -133,17 +144,17 @@ function queuePendingPdfPaths(filePaths: readonly string[]): void {
   enqueuePendingPdfPaths(filePaths);
 }
 
-function recordTestStartupMilestone(name: string, error?: unknown): void {
-  const logPath = process.env.BP_TEST_STARTUP_LOG_PATH?.trim();
-  if (!isTestMode || !logPath || !isAbsolute(logPath)) {
+function preparePdfSessionForOpen(): void {
+  if (pdfSessionPreparationPromise) {
     return;
   }
-  const detail = error instanceof Error
-    ? `${error.name}: ${error.message}\n${error.stack ?? ''}`
-    : error == null ? '' : String(error);
-  try {
-    appendFileSync(logPath, `${new Date().toISOString()} ${name}${detail ? ` ${detail}` : ''}\n`);
-  } catch {
-    // Startup diagnostics must never affect application startup.
-  }
+  recordTestStartupMilestone('pdf-session-preparation-started');
+  pdfSessionPreparationPromise = import('./pdfSession')
+    .then(() => {
+      recordTestStartupMilestone('pdf-session-preparation-completed');
+    })
+    .catch((error) => {
+      recordTestStartupMilestone('pdf-session-preparation-failed', error);
+      console.warn('Unable to prepare PDF services before opening a document.', error);
+    });
 }

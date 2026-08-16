@@ -334,7 +334,10 @@ export function recordPageImageVisible(
   const target = state.pageImageVisibility[pageKey] ??= {};
 
   target.firstVisibleMs ??= visibleAtMs;
-  state.firstPageImageVisibleMs ??= visibleAtMs;
+  if (state.firstPageImageVisibleMs == null) {
+    state.firstPageImageVisibleMs = visibleAtMs;
+    performance.mark('bp-startup:first-page-image-visible');
+  }
   const renderedWidthRatio =
     renderedWidth !== undefined && displayedWidth !== undefined && displayedWidth > 0
       ? Number((renderedWidth / displayedWidth).toFixed(3))
@@ -363,12 +366,18 @@ export function recordPageImageVisible(
   if (quality === 'detail') {
     target.detailVisibleMs ??= visibleAtMs;
     target.fullVisibleMs ??= visibleAtMs;
-    state.firstPageFullVisibleMs ??= visibleAtMs;
+    if (state.firstPageFullVisibleMs == null) {
+      state.firstPageFullVisibleMs = visibleAtMs;
+      performance.mark('bp-startup:first-page-full-visible');
+    }
     return;
   }
 
   target.fullVisibleMs ??= visibleAtMs;
-  state.firstPageFullVisibleMs ??= visibleAtMs;
+  if (state.firstPageFullVisibleMs == null) {
+    state.firstPageFullVisibleMs = visibleAtMs;
+    performance.mark('bp-startup:first-page-full-visible');
+  }
 }
 
 export function recordOverviewVisiblePreviewFill(

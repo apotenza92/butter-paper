@@ -13,7 +13,7 @@ import { ButtonGroup } from '@/components/ui/button-group';
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsList } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { LastTemplateTooltip } from './LastTemplateTooltip';
+import { LastTemplatePreviewTooltip } from './domain-ui/LastTemplatePreviewTooltip';
 import { TemplatePickerPopover } from './TemplatePickerPopover';
 import { lastTemplate, type PdfTemplate } from './templateLibrary';
 import type { ReturnTypeOfLoadTemplateLibrary } from './templateLibraryTypes';
@@ -216,7 +216,7 @@ export function DocumentTabBar({
                 </TooltipContent>
               </Tooltip>
               <ButtonGroup aria-label="New from template controls">
-                <LastTemplateTooltip
+                <LastTemplatePreviewTooltip
                   template={currentTemplate}
                   side={DOCUMENT_TAB_TOOLTIP_SIDE}
                   trigger={(

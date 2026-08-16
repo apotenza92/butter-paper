@@ -113,7 +113,10 @@ describe('LocalPdfSession', () => {
           cadRenderExperiment: null,
         },
         pdf: {
-          loadDocument: vi.fn(async (filePath: string) => createPayload(filePath)),
+          loadDocument: vi.fn(async (filePath: string) => ({
+            ...createPayload(filePath),
+            documentBytes: new Uint8Array([1, 2, 3]),
+          })),
           readDocumentBytes: vi.fn(async () => new Uint8Array()),
           releaseDocument: vi.fn(async () => undefined),
         },
@@ -127,6 +130,18 @@ describe('LocalPdfSession', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it('opens PDF.js with the bytes already read for main-process inspection', async () => {
+    const browserHandle = createBackendHandle();
+    mockedOpenPdfDocumentFromBytes.mockResolvedValue(browserHandle as never);
+
+    const session = new LocalPdfSession('/tmp/fixture.pdf');
+    await session.open();
+
+    expect(mockedOpenPdfDocumentFromBytes).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
+    expect(window.butterPaper.pdf.readDocumentBytes).not.toHaveBeenCalled();
+    expect(session.diagnostics().openStageTimings?.rendererFileReadMs).toBe(0);
   });
 
   it('ignores stale page render completions after dispose', async () => {

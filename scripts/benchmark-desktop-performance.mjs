@@ -26,6 +26,7 @@ export function summarizeSamples(values) {
 export function summarizeScenario(samples) {
   const metrics = {
     startupTargetMs: samples.map((sample) => sample.startupTargetMs),
+    shellReadyMs: samples.map((sample) => sample.shellReadyMs),
     documentReadyMs: samples.map((sample) => sample.documentReadyMs),
     firstPageImageVisibleMs: samples.map((sample) => sample.perf.firstPageImageVisibleMs).filter(isNumber),
     firstPageFullVisibleMs: samples.map((sample) => sample.perf.firstPageFullVisibleMs).filter(isNumber),
@@ -37,9 +38,53 @@ export function summarizeScenario(samples) {
     longTaskCount: samples.map((sample) => sample.perf.longTasks.count),
     maxLongTaskMs: samples.map((sample) => sample.perf.longTasks.maxDuration),
   };
-  return Object.fromEntries(
+  return {
+    ...Object.fromEntries(
     Object.entries(metrics).map(([name, values]) => [name, summarizeSamples(values)]),
-  );
+    ),
+    startupTimeline: summarizeNamedMetrics(samples, 'startupTimeline'),
+    startupPhases: summarizeNamedMetrics(samples, 'startupPhases'),
+  };
+}
+
+export function alignStartupMilestones(entries, launchedAtEpochMs) {
+  const milestones = {};
+  for (const entry of entries) {
+    if (!entry || typeof entry.name !== 'string' || !isNumber(entry.capturedAtEpochMs)) continue;
+    const alignedTime = round(entry.capturedAtEpochMs - launchedAtEpochMs);
+    milestones[`${toCamelCase(entry.name)}Ms`] ??= alignedTime;
+    if (milestones.mainProcessStartedMs == null && isNumber(entry.processUptimeMs)) {
+      milestones.mainProcessStartedMs = round(alignedTime - entry.processUptimeMs);
+    }
+  }
+  return milestones;
+}
+
+export function deriveStartupPhases(timeline) {
+  return compactMetrics({
+    processLaunchToMainStartMs: difference(timeline.mainProcessStartedMs, 0),
+    mainProcessModuleLoadMs: difference(timeline.mainModuleLoadedMs, timeline.mainProcessStartedMs),
+    pdfSessionPreparationMs: difference(
+      timeline.pdfSessionPreparationCompletedMs,
+      timeline.pdfSessionPreparationStartedMs,
+    ),
+    appReadyWaitMs: difference(timeline.appReadyMs, timeline.mainModuleLoadedMs),
+    readyToBootstrapEntryMs: difference(timeline.bootstrapReadyEnteredMs, timeline.appReadyMs),
+    bootstrapStoreSetupMs: difference(timeline.bootstrapStoresCreatedMs, timeline.bootstrapReadyEnteredMs),
+    bootstrapIpcRegistrationMs: difference(timeline.bootstrapIpcRegisteredMs, timeline.bootstrapStoresCreatedMs),
+    bootstrapMenuInstallMs: difference(timeline.bootstrapMenuInstalledMs, timeline.bootstrapIpcRegisteredMs),
+    browserWindowConstructionMs: difference(timeline.browserWindowCreatedMs, timeline.bootstrapMenuInstalledMs),
+    windowLoadRequestMs: difference(timeline.bootstrapWindowLoadRequestedMs, timeline.browserWindowCreatedMs),
+    windowToNavigationMs: difference(timeline.rendererNavigationStartedMs, timeline.browserWindowCreatedMs),
+    navigationToPreloadMs: difference(timeline.preloadModuleEvaluatedMs, timeline.rendererNavigationStartedMs),
+    preloadBridgeMs: difference(timeline.preloadBridgeExposedMs, timeline.preloadModuleEvaluatedMs),
+    rendererModuleEvaluationMs: difference(timeline.rendererModuleEvaluatedMs, timeline.preloadBridgeExposedMs),
+    themeBootstrapMs: difference(timeline.themeReadyMs, timeline.themeRequestedMs),
+    reactCommitMs: difference(timeline.reactCommittedMs, timeline.reactRenderRequestedMs),
+    commitToFirstFrameMs: difference(timeline.firstAnimationFrameMs, timeline.reactCommittedMs),
+    commitToDocumentVisibleMs: difference(timeline.firstPageImageVisibleMs, timeline.reactCommittedMs),
+    documentPreviewToFullMs: difference(timeline.firstPageFullVisibleMs, timeline.firstPageImageVisibleMs),
+  });
 }
 
 export function assertBenchmarkRendererIdentity(identity, expectedSource) {
@@ -57,7 +102,9 @@ export function assertBenchmarkRendererIdentity(identity, expectedSource) {
   }
   const expectedTitle = `Butter Paper Dev · ${expectedSource.branch}@${expectedSource.commit.slice(0, 8)}${expectedSource.dirty ? ' dirty' : ''}`;
   if (identity.title !== expectedTitle || metadata.windowTitle !== expectedTitle) {
-    throw new Error(`Benchmark renderer title mismatch: expected ${expectedTitle}.`);
+    throw new Error(
+      `Benchmark renderer title mismatch: expected ${expectedTitle}; received document title ${identity.title} and metadata title ${metadata.windowTitle}.`,
+    );
   }
   return metadata;
 }
@@ -78,6 +125,16 @@ export async function runBenchmark(options = {}) {
 
   const scenarios = [
     { name: 'empty-shell', pdfPath: null },
+    {
+      name: 'blank-document',
+      pdfPath: null,
+      blankRequest: { widthMm: 210, heightMm: 297 },
+    },
+    {
+      name: 'cold-pdf-single-page',
+      pdfPath: resolve(repositoryRoot, 'tests/fixtures/generated/engineering-large.pdf'),
+      launchWithPdf: true,
+    },
     {
       name: 'engineering-single-page',
       pdfPath: resolve(repositoryRoot, 'tests/fixtures/generated/engineering-large.pdf'),
@@ -109,7 +166,12 @@ export async function runBenchmark(options = {}) {
         samples.push(await runScenario({ ...scenario, settleMs, benchmarkDirectory, expectedSource: report.source }));
       }
       report.scenarios[scenario.name] = {
-        workload: scenario.pdfPath ? basename(scenario.pdfPath) : null,
+        workload: scenario.pdfPath
+          ? basename(scenario.pdfPath)
+          : scenario.blankRequest
+            ? `${scenario.blankRequest.widthMm}x${scenario.blankRequest.heightMm}mm blank PDF`
+            : null,
+        launchMode: scenario.launchWithPdf ? 'command-line-pdf' : 'empty-shell',
         summary: summarizeScenario(samples),
         samples,
       };
@@ -124,7 +186,15 @@ export async function runBenchmark(options = {}) {
   return { report, outputPath };
 }
 
-async function runScenario({ name, pdfPath, settleMs, benchmarkDirectory, expectedSource }) {
+async function runScenario({
+  name,
+  pdfPath,
+  blankRequest,
+  launchWithPdf,
+  settleMs,
+  benchmarkDirectory,
+  expectedSource,
+}) {
   const port = await availablePort();
   const userDataDirectory = mkdtempSync(join(benchmarkDirectory, `${name}-user-data-`));
   const electronExecutable = resolveElectronExecutable();
@@ -132,8 +202,10 @@ async function runScenario({ name, pdfPath, settleMs, benchmarkDirectory, expect
     `--remote-debugging-port=${port}`,
     'apps/desktop',
   ];
+  if (launchWithPdf && pdfPath) args.push(pdfPath);
   const output = [];
   const startedAt = performance.now();
+  const launchedAtEpochMs = Date.now();
   const child = spawn(electronExecutable, args, {
     cwd: repositoryRoot,
     env: {
@@ -173,15 +245,19 @@ async function runScenario({ name, pdfPath, settleMs, benchmarkDirectory, expect
         return { metadata: null, title: document.title, hasAppRoot: false, href: location.href };
       })()`);
       assertBenchmarkRendererIdentity(identity, expectedSource);
-      if (pdfPath) {
+      const shellReadyMs = performance.now() - startedAt;
+      if (pdfPath && !launchWithPdf) {
         await cdp.evaluate(`window.__butterPaperTestHooks.openDocumentPath(${JSON.stringify(pdfPath)})`);
+      }
+      if (blankRequest) {
+        await cdp.evaluate(`window.__butterPaperTestHooks.createBlankPdf(${JSON.stringify(blankRequest)})`);
       }
       const ready = await cdp.evaluate(`(async () => {
         const deadline = Date.now() + 20000;
         while (Date.now() < deadline) {
           const hooks = window.__butterPaperTestHooks;
           const diagnostics = hooks?.getDiagnostics() ?? null;
-          const documentReady = ${Boolean(pdfPath)}
+          const documentReady = ${Boolean(pdfPath || blankRequest)}
             ? Boolean(diagnostics?.documentPath && diagnostics.pageRenderReady)
             : Boolean(diagnostics && diagnostics.documentPath === null);
           if (hooks && documentReady) {
@@ -206,7 +282,14 @@ async function runScenario({ name, pdfPath, settleMs, benchmarkDirectory, expect
         diagnostics: window.__butterPaperTestHooks.getDiagnostics(),
         perf: window.__butterPaperTestHooks.getPerfSnapshot(),
         processMetrics: await window.butterPaper.test.getProcessMetrics(),
+        mainStartupMilestones: await window.butterPaper.test.getStartupMilestones(),
         navigation: performance.getEntriesByType('navigation')[0]?.toJSON() ?? null,
+        timeOrigin: performance.timeOrigin,
+        startupMarks: Object.fromEntries(
+          performance.getEntriesByType('mark')
+            .filter((entry) => entry.name.startsWith('bp-startup:'))
+            .map((entry) => [entry.name.slice('bp-startup:'.length), entry.startTime]),
+        ),
       }))()`);
       const heapBeforeGc = await cdp.send('Runtime.getHeapUsage');
       await cdp.send('HeapProfiler.collectGarbage');
@@ -214,9 +297,24 @@ async function runScenario({ name, pdfPath, settleMs, benchmarkDirectory, expect
       const dom = await cdp.send('Memory.getDOMCounters');
       const browserMetrics = await cdp.send('Performance.getMetrics');
 
+      const startupTimeline = {
+        ...alignStartupMilestones(settled.mainStartupMilestones, launchedAtEpochMs),
+        rendererNavigationStartedMs: round(settled.timeOrigin - launchedAtEpochMs),
+        ...Object.fromEntries(Object.entries(settled.startupMarks).map(([markName, startTime]) => [
+          `${toCamelCase(markName)}Ms`,
+          round(settled.timeOrigin + startTime - launchedAtEpochMs),
+        ])),
+        cdpTargetAvailableMs: round(startupTargetMs),
+        shellReadyMs: round(shellReadyMs),
+        documentReadyMs: round(documentReadyMs),
+      };
+
       return {
         startupTargetMs: round(startupTargetMs),
+        shellReadyMs: round(shellReadyMs),
         documentReadyMs: round(documentReadyMs),
+        startupTimeline,
+        startupPhases: deriveStartupPhases(startupTimeline),
         rendererHeapBeforeGcBytes: heapBeforeGc.usedSize,
         rendererHeapAfterGcBytes: heapAfterGc.usedSize,
         dom,
@@ -234,6 +332,26 @@ async function runScenario({ name, pdfPath, settleMs, benchmarkDirectory, expect
   } finally {
     await terminateChild(child);
   }
+}
+
+function summarizeNamedMetrics(samples, property) {
+  const names = new Set(samples.flatMap((sample) => Object.keys(sample[property] ?? {})));
+  return Object.fromEntries([...names].map((name) => [
+    name,
+    summarizeSamples(samples.map((sample) => sample[property]?.[name]).filter(isNumber)),
+  ]));
+}
+
+function compactMetrics(metrics) {
+  return Object.fromEntries(Object.entries(metrics).filter(([, value]) => isNumber(value)));
+}
+
+function difference(end, start) {
+  return isNumber(end) && isNumber(start) ? round(end - start) : null;
+}
+
+function toCamelCase(value) {
+  return value.replace(/-([a-z0-9])/g, (_match, character) => character.toUpperCase());
 }
 
 async function createManyPagePdf(sourcePath, outputPath, pageCount) {

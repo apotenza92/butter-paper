@@ -1,7 +1,6 @@
 import { rmSync } from 'node:fs';
 import { mkdtemp, mkdir, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
-import { createBlankPdf } from '@butter-paper/pdf';
 import type { BlankPdfCreateRequest, BlankPdfCreateResult } from '../shared/protocol';
 
 export class BlankPdfTemporaryStore {
@@ -25,6 +24,7 @@ export class BlankPdfTemporaryStore {
   }
 
   async create(request: BlankPdfCreateRequest): Promise<BlankPdfCreateResult> {
+    const { createBlankPdf } = await import('@butter-paper/pdf/blank');
     const bytes = await createBlankPdf(request);
     return this.createFromBytes(bytes);
   }

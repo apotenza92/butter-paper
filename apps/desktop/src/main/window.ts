@@ -25,21 +25,19 @@ import {
 } from '../shared/applicationMenu';
 import { resolveApplicationMetadata } from './applicationMetadata';
 import { ancestorFileCandidates } from './applicationPaths';
-import { BlankPdfTemporaryStore } from './blankPdfTemporaryStore';
-import { PdfTemplateStore } from './pdfTemplateStore';
+import type { BlankPdfTemporaryStore } from './blankPdfTemporaryStore';
+import type { PdfTemplateStore } from './pdfTemplateStore';
 import { configureCameraPermissions } from './cameraPermissions';
 import { setAsDefaultPdfApp } from './defaultPdfApp';
 import { takePendingPdfPaths } from './pendingPdfPaths';
 import { desktopPdfAccessRegistry } from './pdfAccessRegistry';
-import { PhoneSignatureTransferService } from './phoneSignatureTransfer';
+import type { PhoneSignatureTransferService } from './phoneSignatureTransfer';
 import { RECENT_SIGNATURES_FILE_NAME, RecentSignatureStore } from './recentSignatureStore';
-import { sanitizePhoneSignatureImage, sanitizeSignatureAppearanceAsset } from './signatureImageSanitizer';
-import { loadDocumentPayload, loadPageGeometryIndex, saveDocumentPayload } from './pdfSession';
 import { createDesktopProcessMetricsSnapshot } from './processMetrics';
 import { desktopPerformanceResources } from './performanceResources';
-import { synchronizeMacosApplicationRegistration } from './applicationRegistration';
 import { getFocusedWindowState, isTestModeEnabled, resolveFixturePath, setFocusedWindowBounds } from './testMode';
-import { DesktopUpdaterService, loadElectronAutoUpdater } from './updater';
+import { getTestStartupMilestones, recordTestStartupMilestone } from './startupDiagnostics';
+import type { DesktopUpdaterService } from './updater';
 import { resolveReleasePageUrl } from './releasePage';
 import { resolveApplicationShortcutAction } from './windowShortcuts';
 import { MAIN_WINDOW_GEOMETRY } from './windowGeometry';
@@ -58,10 +56,13 @@ const preloadPath = join(moduleDir, 'preload.cjs');
 const defaultSamplePdfPath = join(moduleDir, '../../../..', 'tests/fixtures/generated/zoom-target.pdf');
 let mainWindow: BrowserWindowInstance | null = null;
 let themeListenerRegistered = false;
-let updaterService: DesktopUpdaterService | null = null;
+let updaterServicePromise: Promise<DesktopUpdaterService> | null = null;
 let unsubscribeUpdaterStatus: (() => void) | null = null;
 let blankPdfTemporaryStore: BlankPdfTemporaryStore | null = null;
+let blankPdfTemporaryStorePromise: Promise<BlankPdfTemporaryStore> | null = null;
 let pdfTemplateStore: PdfTemplateStore | null = null;
+let pdfTemplateStorePromise: Promise<PdfTemplateStore> | null = null;
+let pdfSessionModulePromise: Promise<typeof import('./pdfSession')> | null = null;
 let applicationQuitRequested = false;
 let applicationMenuBarVisible = true;
 let applicationMenuState: ApplicationMenuState = {
@@ -79,11 +80,8 @@ const closeBlockedWebContents = new Set<number>();
 const closeConfirmedWebContents = new Set<number>();
 const trustedRendererUrls = new Map<number, string>();
 const phoneSignatureRelayTestMode = !app.isPackaged && process.env.BP_SIGNATURE_RELAY_TEST_MODE === '1';
-const phoneSignatureTransferService = new PhoneSignatureTransferService({
-  allowInsecureLoopback: phoneSignatureRelayTestMode,
-  relayOrigin: phoneSignatureRelayTestMode ? process.env.BP_SIGNATURE_RELAY_URL : undefined,
-  sanitizeImage: sanitizePhoneSignatureImage,
-});
+let phoneSignatureTransferService: PhoneSignatureTransferService | null = null;
+let phoneSignatureTransferServicePromise: Promise<PhoneSignatureTransferService> | null = null;
 let recentSignatureStore: RecentSignatureStore | null = null;
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -155,6 +153,24 @@ function assertApplicationWindowSender(event: IpcMainInvokeEvent): void {
 function requireRecentSignatureStore(): RecentSignatureStore {
   if (!recentSignatureStore) throw new Error('Recent signature storage is not initialized.');
   return recentSignatureStore;
+}
+
+async function requirePhoneSignatureTransferService(): Promise<PhoneSignatureTransferService> {
+  if (phoneSignatureTransferService) {
+    return phoneSignatureTransferService;
+  }
+  phoneSignatureTransferServicePromise ??= import('./phoneSignatureTransfer').then(({ PhoneSignatureTransferService }) => {
+    const service = new PhoneSignatureTransferService({
+      allowInsecureLoopback: phoneSignatureRelayTestMode,
+      relayOrigin: phoneSignatureRelayTestMode ? process.env.BP_SIGNATURE_RELAY_URL : undefined,
+      sanitizeImage: async (image) => (
+        await import('./signatureImageSanitizer')
+      ).sanitizePhoneSignatureImage(image),
+    });
+    phoneSignatureTransferService = service;
+    return service;
+  });
+  return phoneSignatureTransferServicePromise;
 }
 
 function matchesTrustedRendererUrl(actualValue: string, trustedValue: string): boolean {
@@ -327,8 +343,9 @@ function installApplicationMenu(productName: string): void {
           label: frequency.label,
           type: 'checkbox' as const,
           click: () => {
-            void requireUpdaterService().setFrequency(frequency.value).then(() => {
-              const status = requireUpdaterService().getStatus();
+            void requireUpdaterService().then(async (service) => {
+              await service.setFrequency(frequency.value);
+              const status = service.getStatus();
               synchronizeApplicationMenu({
                 ...applicationMenuState,
                 updateStatus: status,
@@ -603,7 +620,7 @@ export function createMainWindow(): BrowserWindowInstance {
   });
 
   window.webContents.on('render-process-gone', (_event: ElectronEvent, details: RenderProcessGoneDetails) => {
-    phoneSignatureTransferService.stopOwner(window.webContents.id);
+    phoneSignatureTransferService?.stopOwner(window.webContents.id);
     console.error('Renderer process gone', details);
   });
 
@@ -644,6 +661,9 @@ export function createMainWindow(): BrowserWindowInstance {
   } else {
     void window.loadFile(rendererHtmlPath);
   }
+  void requireBlankPdfTemporaryStore().then((store) => store.cleanupStaleSessions()).catch((error) => {
+    console.warn('Unable to remove stale blank PDF temporary files.', error);
+  });
 
   const webContentsId = window.webContents.id;
   let windowStateSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -686,7 +706,7 @@ export function createMainWindow(): BrowserWindowInstance {
     closeConfirmedWebContents.delete(webContentsId);
   });
   window.on('closed', () => {
-    phoneSignatureTransferService.stopOwner(webContentsId);
+    phoneSignatureTransferService?.stopOwner(webContentsId);
     trustedRendererUrls.delete(webContentsId);
     if (windowStateSaveTimer != null) {
       clearTimeout(windowStateSaveTimer);
@@ -820,23 +840,23 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(ipcChannels.updatesGetStatus, async () => {
-    return requireUpdaterService().getStatus();
+    return (await requireUpdaterService()).getStatus();
   });
 
   ipcMain.handle(ipcChannels.updatesSetFrequency, async (_event, frequency: UpdateFrequency) => {
-    const service = requireUpdaterService();
+    const service = await requireUpdaterService();
     await service.setFrequency(frequency);
     return service.getStatus();
   });
 
   ipcMain.handle(ipcChannels.updatesCheckNow, async () => {
-    const service = requireUpdaterService();
+    const service = await requireUpdaterService();
     await service.checkNow();
     return service.getStatus();
   });
 
   ipcMain.handle(ipcChannels.updatesInstallDownloaded, async () => {
-    if (!await requireUpdaterService().installDownloaded()) {
+    if (!await (await requireUpdaterService()).installDownloaded()) {
       throw new Error('No downloaded Butter Paper update is ready to install.');
     }
   });
@@ -845,11 +865,11 @@ export function registerIpcHandlers(): void {
     if (typeof blocked !== 'boolean') {
       throw new TypeError('Update restart-blocked state must be a boolean.');
     }
-    requireUpdaterService().setRestartBlocked(blocked);
+    (await requireUpdaterService()).setRestartBlocked(blocked);
   });
 
   ipcMain.handle(ipcChannels.updatesOpenReleasePage, async () => {
-    const availableVersion = requireUpdaterService().getStatus().availableVersion;
+    const availableVersion = (await requireUpdaterService()).getStatus().availableVersion;
     await shell.openExternal(resolveReleasePageUrl(availableVersion));
   });
 
@@ -899,7 +919,7 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(ipcChannels.templateList, async (event) => {
     assertApplicationWindowSender(event);
-    return requirePdfTemplateStore().list();
+    return (await requirePdfTemplateStore()).list();
   });
 
   ipcMain.handle(ipcChannels.templateImportPdf, async (event) => {
@@ -917,30 +937,31 @@ export function registerIpcHandlers(): void {
           filters: [{ name: 'PDF', extensions: ['pdf'] }],
         });
     if (result.canceled || result.filePaths.length === 0) return null;
-    return requirePdfTemplateStore().importPdf(result.filePaths[0]);
+    return (await requirePdfTemplateStore()).importPdf(result.filePaths[0]);
   });
 
   ipcMain.handle(ipcChannels.templateRemove, async (event, templateId: string) => {
     assertApplicationWindowSender(event);
-    await requirePdfTemplateStore().remove(templateId);
+    await (await requirePdfTemplateStore()).remove(templateId);
   });
 
   ipcMain.handle(ipcChannels.templateImportDocument, async (event, request: PdfDocumentAccessRequest & { name: string }) => {
     assertPdfDocumentAccessRequest(request, ['name']);
     if (typeof request.name !== 'string') throw new TypeError('Template name is invalid.');
     const source = await desktopPdfAccessRegistry.resolveDocument(event.sender.id, request.documentHandle);
-    return requirePdfTemplateStore().importBytes(readFileSync(source.sourcePath), request.name);
+    return (await requirePdfTemplateStore()).importBytes(readFileSync(source.sourcePath), request.name);
   });
 
   ipcMain.handle(ipcChannels.templateCreateDocument, async (event, templateId: string) => {
     assertApplicationWindowSender(event);
-    const bytes = await requirePdfTemplateStore().readSource(templateId);
-    const temporaryDocument = await requireBlankPdfTemporaryStore().createFromBytes(bytes);
+    const bytes = await (await requirePdfTemplateStore()).readSource(templateId);
+    const blankStore = await requireBlankPdfTemporaryStore();
+    const temporaryDocument = await blankStore.createFromBytes(bytes);
     try {
       await desktopPdfAccessRegistry.authorizeSource(event.sender.id, temporaryDocument.filePath, { cleanupOnRelease: true });
       return temporaryDocument;
     } catch (error) {
-      await requireBlankPdfTemporaryStore().release(temporaryDocument.temporarySourcePath).catch(() => undefined);
+      await blankStore.release(temporaryDocument.temporarySourcePath).catch(() => undefined);
       throw error;
     }
   });
@@ -948,19 +969,19 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(ipcChannels.signaturePhoneStart, async (event, mode: unknown) => {
     assertApplicationWindowSender(event);
     assertPhoneSignatureMode(mode);
-    return await phoneSignatureTransferService.start(event.sender.id, mode);
+    return await (await requirePhoneSignatureTransferService()).start(event.sender.id, mode);
   });
 
   ipcMain.handle(ipcChannels.signaturePhonePoll, async (event, sessionId: unknown) => {
     assertApplicationWindowSender(event);
     assertPhoneSignatureSessionId(sessionId);
-    return await phoneSignatureTransferService.poll(sessionId, event.sender.id);
+    return await (await requirePhoneSignatureTransferService()).poll(sessionId, event.sender.id);
   });
 
   ipcMain.handle(ipcChannels.signaturePhoneStop, async (event, sessionId: unknown) => {
     assertApplicationWindowSender(event);
     assertPhoneSignatureSessionId(sessionId);
-    await phoneSignatureTransferService.stop(sessionId, event.sender.id);
+    await (await requirePhoneSignatureTransferService()).stop(sessionId, event.sender.id);
   });
 
   ipcMain.handle(ipcChannels.signatureRecentList, async (event) => {
@@ -989,14 +1010,15 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(ipcChannels.pdfCreateBlankDocument, async (event, request: BlankPdfCreateRequest) => {
-    const temporaryDocument = await requireBlankPdfTemporaryStore().create(request);
+    const blankStore = await requireBlankPdfTemporaryStore();
+    const temporaryDocument = await blankStore.create(request);
     try {
       await desktopPdfAccessRegistry.authorizeSource(event.sender.id, temporaryDocument.filePath, {
         cleanupOnRelease: true,
       });
       return temporaryDocument;
     } catch (error) {
-      await requireBlankPdfTemporaryStore().release(temporaryDocument.temporarySourcePath).catch(() => undefined);
+      await blankStore.release(temporaryDocument.temporarySourcePath).catch(() => undefined);
       throw error;
     }
   });
@@ -1004,7 +1026,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(ipcChannels.pdfReleaseDocument, async (event, request: PdfDocumentAccessRequest) => {
     assertPdfDocumentAccessRequest(request, []);
     const temporarySourcePath = desktopPdfAccessRegistry.releaseDocument(event.sender.id, request.documentHandle);
-    if (temporarySourcePath) await requireBlankPdfTemporaryStore().release(temporarySourcePath);
+    if (temporarySourcePath) await (await requireBlankPdfTemporaryStore()).release(temporarySourcePath);
   });
 
   ipcMain.handle(ipcChannels.pdfLoadDocument, async (event, filePath: string) => {
@@ -1014,6 +1036,7 @@ export function registerIpcHandlers(): void {
     const openedAccess = await desktopPdfAccessRegistry.openAuthorizedSource(event.sender.id, filePath);
     let keepAccess = false;
     try {
+      const { loadDocumentPayload } = await requirePdfSessionModule();
       const payload = await loadDocumentPayload(openedAccess.sourcePath, (progress) => {
         if (!event.sender.isDestroyed()) {
           event.sender.send(ipcChannels.applicationPdfOpenProgressChanged, progress);
@@ -1036,7 +1059,9 @@ export function registerIpcHandlers(): void {
         } catch {
           // A failed final identity check may already have revoked the handle.
         }
-        if (temporarySourcePath) await requireBlankPdfTemporaryStore().release(temporarySourcePath).catch(() => undefined);
+        if (temporarySourcePath) {
+          await (await requireBlankPdfTemporaryStore()).release(temporarySourcePath).catch(() => undefined);
+        }
       }
     }
   });
@@ -1047,6 +1072,7 @@ export function registerIpcHandlers(): void {
       throw new TypeError('PDF page geometry request is invalid.');
     }
     const source = await desktopPdfAccessRegistry.resolveDocument(event.sender.id, request.documentHandle);
+    const { loadPageGeometryIndex } = await requirePdfSessionModule();
     const geometry = await loadPageGeometryIndex(source.sourcePath, request.pageIndex);
     await desktopPdfAccessRegistry.resolveDocument(event.sender.id, request.documentHandle);
     return geometry;
@@ -1058,6 +1084,7 @@ export function registerIpcHandlers(): void {
     const target = request.mode === 'saveAs'
       ? await desktopPdfAccessRegistry.takeSaveTarget(event.sender.id, request.targetHandle)
       : undefined;
+    const { saveDocumentPayload } = await requirePdfSessionModule();
     const result = await saveDocumentPayload(
       source.sourcePath,
       request.markups,
@@ -1125,43 +1152,50 @@ export function registerIpcHandlers(): void {
 
     return createDesktopProcessMetricsSnapshot(app.getAppMetrics());
   });
+
+  ipcMain.handle(ipcChannels.testGetStartupMilestones, async () => {
+    return isTestModeEnabled() ? getTestStartupMilestones() : [];
+  });
 }
 
 export async function bootstrapDesktop(): Promise<void> {
   await app.whenReady();
+  recordTestStartupMilestone('bootstrap-ready-entered');
   recentSignatureStore = new RecentSignatureStore({
     statePath: join(app.getPath('userData'), RECENT_SIGNATURES_FILE_NAME),
     secureStorage: safeStorage,
-    sanitizeAsset: sanitizeSignatureAppearanceAsset,
+    sanitizeAsset: async (asset) => (
+      await import('./signatureImageSanitizer')
+    ).sanitizeSignatureAppearanceAsset(asset),
   });
   const metadata = getApplicationMetadata();
-  void synchronizeMacosApplicationRegistration({
-    platform: process.platform,
-    isPackaged: app.isPackaged,
-    executablePath: app.getPath('exe'),
-    bundleIdentifier: metadata.channel === 'beta' ? 'com.butterpaper.desktop.beta' : 'com.butterpaper.desktop',
-  }).catch((error) => {
-    console.warn('Unable to synchronize Butter Paper PDF application registration.', error);
-  });
-  blankPdfTemporaryStore = new BlankPdfTemporaryStore(app.getPath('temp'), `butter-paper-${metadata.channel}-blank-`);
-  pdfTemplateStore = new PdfTemplateStore(app.getPath('userData'));
-  await blankPdfTemporaryStore.cleanupStaleSessions().catch((error) => {
-    console.warn('Unable to remove stale blank PDF temporary files.', error);
-  });
-  updaterService = createUpdaterService();
+  recordTestStartupMilestone('bootstrap-stores-created');
   registerThemeListener();
   registerIpcHandlers();
+  recordTestStartupMilestone('bootstrap-ipc-registered');
   installApplicationMenu(metadata.productName);
-  createMainWindow();
-  unsubscribeUpdaterStatus = updaterService.subscribe((status) => {
-    synchronizeApplicationMenu({ ...applicationMenuState, updateStatus: status });
-    for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed()) {
-        window.webContents.send(ipcChannels.updatesStatusChanged, status);
-      }
-    }
-  });
-  await updaterService.start();
+  recordTestStartupMilestone('bootstrap-menu-installed');
+  const window = createMainWindow();
+  recordTestStartupMilestone('bootstrap-window-load-requested');
+  if (process.platform === 'darwin' && app.isPackaged) {
+    window.once('ready-to-show', () => {
+      setTimeout(() => {
+        void import('./applicationRegistration').then(({ synchronizeMacosApplicationRegistration }) => (
+          synchronizeMacosApplicationRegistration({
+            platform: process.platform,
+            isPackaged: app.isPackaged,
+            executablePath: app.getPath('exe'),
+            bundleIdentifier: metadata.channel === 'beta'
+              ? 'com.butterpaper.desktop.beta'
+              : 'com.butterpaper.desktop',
+          })
+        )).catch((error) => {
+          console.warn('Unable to synchronize Butter Paper PDF application registration.', error);
+        });
+      }, 1_000).unref();
+    });
+  }
+  updaterServicePromise = initializeUpdaterService();
 
   app.on('before-quit', (event) => {
     const blockedWindows = BrowserWindow.getAllWindows().filter((window) => (
@@ -1179,13 +1213,18 @@ export async function bootstrapDesktop(): Promise<void> {
     applicationQuitRequested = false;
     unsubscribeUpdaterStatus?.();
     unsubscribeUpdaterStatus = null;
-    void updaterService?.stop();
+    void updaterServicePromise?.then((service) => service.stop()).catch((error) => {
+      console.warn('Unable to stop the Butter Paper updater.', error);
+    });
   });
 
   app.on('will-quit', () => {
     blankPdfTemporaryStore?.cleanupSync();
     blankPdfTemporaryStore = null;
+    blankPdfTemporaryStorePromise = null;
     pdfTemplateStore = null;
+    pdfTemplateStorePromise = null;
+    pdfSessionModulePromise = null;
   });
 
   app.on('activate', () => {
@@ -1195,14 +1234,37 @@ export async function bootstrapDesktop(): Promise<void> {
   });
 }
 
-function requireBlankPdfTemporaryStore(): BlankPdfTemporaryStore {
-  blankPdfTemporaryStore ??= new BlankPdfTemporaryStore(app.getPath('temp'));
-  return blankPdfTemporaryStore;
+function requireBlankPdfTemporaryStore(): Promise<BlankPdfTemporaryStore> {
+  if (blankPdfTemporaryStore) {
+    return Promise.resolve(blankPdfTemporaryStore);
+  }
+  blankPdfTemporaryStorePromise ??= import('./blankPdfTemporaryStore').then(({ BlankPdfTemporaryStore }) => {
+    const metadata = getApplicationMetadata();
+    const store = new BlankPdfTemporaryStore(
+      app.getPath('temp'),
+      `butter-paper-${metadata.channel}-blank-`,
+    );
+    blankPdfTemporaryStore = store;
+    return store;
+  });
+  return blankPdfTemporaryStorePromise;
 }
 
-function requirePdfTemplateStore(): PdfTemplateStore {
-  pdfTemplateStore ??= new PdfTemplateStore(app.getPath('userData'));
-  return pdfTemplateStore;
+function requirePdfTemplateStore(): Promise<PdfTemplateStore> {
+  if (pdfTemplateStore) {
+    return Promise.resolve(pdfTemplateStore);
+  }
+  pdfTemplateStorePromise ??= import('./pdfTemplateStore').then(({ PdfTemplateStore }) => {
+    const store = new PdfTemplateStore(app.getPath('userData'));
+    pdfTemplateStore = store;
+    return store;
+  });
+  return pdfTemplateStorePromise;
+}
+
+function requirePdfSessionModule(): Promise<typeof import('./pdfSession')> {
+  pdfSessionModulePromise ??= import('./pdfSession');
+  return pdfSessionModulePromise;
 }
 
 function assertPdfDocumentAccessRequest(
@@ -1268,8 +1330,9 @@ function isPathInsideRoot(rootPath: string, candidatePath: string): boolean {
   return child.length > 0 && child !== '..' && !child.startsWith(`..${sep}`);
 }
 
-function createUpdaterService(): DesktopUpdaterService {
-  return new DesktopUpdaterService({
+async function initializeUpdaterService(): Promise<DesktopUpdaterService> {
+  const { DesktopUpdaterService, loadElectronAutoUpdater } = await import('./updater');
+  const service = new DesktopUpdaterService({
     updater: loadElectronAutoUpdater(),
     isPackaged: app.isPackaged,
     userDataPath: app.getPath('userData'),
@@ -1278,13 +1341,25 @@ function createUpdaterService(): DesktopUpdaterService {
     platform: process.platform,
     buildMetadata: readDesktopPackageMetadata(),
   });
+  unsubscribeUpdaterStatus = service.subscribe((status) => {
+    synchronizeApplicationMenu({ ...applicationMenuState, updateStatus: status });
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send(ipcChannels.updatesStatusChanged, status);
+      }
+    }
+  });
+  void service.start().catch((error) => {
+    console.warn('Unable to start the Butter Paper updater.', error);
+  });
+  return service;
 }
 
-function requireUpdaterService(): DesktopUpdaterService {
-  if (updaterService == null) {
+function requireUpdaterService(): Promise<DesktopUpdaterService> {
+  if (updaterServicePromise == null) {
     throw new Error('Butter Paper updater has not been initialised.');
   }
-  return updaterService;
+  return updaterServicePromise;
 }
 
 function readDesktopPackageMetadata(): unknown {

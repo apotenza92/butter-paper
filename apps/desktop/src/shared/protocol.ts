@@ -125,6 +125,12 @@ export interface DesktopProcessMetricsSnapshot {
   processes: DesktopProcessMetric[];
 }
 
+export interface DesktopStartupMilestone {
+  readonly name: string;
+  readonly capturedAtEpochMs: number;
+  readonly processUptimeMs: number;
+}
+
 export interface DesktopPerformanceResourcesSnapshot {
   capturedAt: number;
   totalMemoryKiB: number;
@@ -295,6 +301,11 @@ export interface LoadedDocumentPayload {
   /** Opaque owner-scoped capability for all privileged access to the loaded PDF. */
   documentAccess: PdfDocumentAccessDescriptor;
   openStageTimings?: DocumentOpenStageTimings;
+}
+
+export interface PdfDocumentOpenPayload extends LoadedDocumentPayload {
+  /** Bytes read from the authorized source during main-process inspection. */
+  readonly documentBytes: Uint8Array;
 }
 
 export interface BlankPdfCreateRequest {
@@ -483,7 +494,7 @@ export interface ButterPaperBridge {
   };
   readonly pdf: {
     createBlankDocument(request: BlankPdfCreateRequest): Promise<BlankPdfCreateResult>;
-    loadDocument(filePath: string): Promise<LoadedDocumentPayload>;
+    loadDocument(filePath: string): Promise<PdfDocumentOpenPayload>;
     readDocumentBytes(request: PdfDocumentAccessRequest): Promise<Uint8Array>;
     releaseDocument(request: PdfDocumentAccessRequest): Promise<void>;
     getPageGeometry(request: PageGeometryRequest): Promise<PdfPageGeometryIndex>;
@@ -496,6 +507,7 @@ export interface ButterPaperBridge {
     getWindowState(): Promise<WindowState | null>;
     setWindowBounds(bounds: Partial<WindowBounds>): Promise<WindowState | null>;
     getProcessMetrics(): Promise<DesktopProcessMetricsSnapshot | null>;
+    getStartupMilestones(): Promise<readonly DesktopStartupMilestone[]>;
   } | null;
 }
 

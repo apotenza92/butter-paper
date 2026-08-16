@@ -55,6 +55,7 @@ describe('repository hygiene release guardrails', () => {
     const appRenderer = readFileSync('apps/desktop/src/renderer/src/app.tsx', 'utf8');
     const closableTab = readFileSync('apps/desktop/src/renderer/src/components/domain-ui/ClosableDocumentTab.tsx', 'utf8');
     const splitButtonSegment = readFileSync('apps/desktop/src/renderer/src/components/domain-ui/SplitButtonSegment.tsx', 'utf8');
+    const templatePreviewTooltip = readFileSync('apps/desktop/src/renderer/src/components/domain-ui/LastTemplatePreviewTooltip.tsx', 'utf8');
     const styles = readFileSync('apps/desktop/src/renderer/src/styles.css', 'utf8');
 
     expect(hygiene).toContain('ClosableDocumentTab.tsx');
@@ -94,6 +95,10 @@ describe('repository hygiene release guardrails', () => {
     expect(splitButtonSegment).toContain('data-domain-ui-exception="split-button-segment"');
     expect(splitButtonSegment).toContain('dark:aria-expanded:bg-transparent!');
     expect(splitButtonSegment).toContain('dark:aria-expanded:bg-muted!');
+    expect(documentTabBar).toContain("import { LastTemplatePreviewTooltip } from './domain-ui/LastTemplatePreviewTooltip';");
+    expect(templatePreviewTooltip).toContain('data-domain-ui-exception="last-template-preview-tooltip"');
+    expect(templatePreviewTooltip).toContain('[&>div[aria-hidden=true]:last-child]:bg-popover!');
+    expect(hygiene).toContain('stock tooltip colours must not be partially overridden outside a reviewed domain UI exception');
     expect(styles).not.toMatch(/\[data-domain-ui-exception="closable-document-tab"\][^{]*\[data-slot="tabs-trigger"\]/);
   });
 

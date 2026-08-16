@@ -103,7 +103,7 @@ describe('Electron Builder release identity', () => {
       afterPack: 'build/after-pack.cjs',
       compression: 'normal',
       electronLanguages: ['en-US'],
-      releaseNotes: expect.stringContaining('Added adaptive rendering that responds to display refresh rate'),
+      releaseNotes: expect.stringContaining('Made blank and PDF launches faster by delaying non-essential updater'),
       nsisInclude: 'build/installer.nsh',
       nsisOneClick: false,
       macMinimumSystemVersion: '12.0',

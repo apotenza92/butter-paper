@@ -5,6 +5,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@butter-paper/core': fileURLToPath(new URL('./packages/core/src/index.ts', import.meta.url)),
+      '@butter-paper/pdf/blank': fileURLToPath(new URL('./packages/pdf/src/blankPdf.ts', import.meta.url)),
       '@butter-paper/pdf/browser': fileURLToPath(new URL('./packages/pdf/src/browser.ts', import.meta.url)),
       '@butter-paper/pdf': fileURLToPath(new URL('./packages/pdf/src/index.ts', import.meta.url)),
       '@': fileURLToPath(new URL('./apps/desktop/src/renderer/src', import.meta.url)),

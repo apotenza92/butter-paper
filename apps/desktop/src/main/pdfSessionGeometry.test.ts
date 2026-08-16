@@ -29,6 +29,7 @@ describe('PDF session page geometry', () => {
 
     const loaded = await loadDocumentPayload(source);
 
+    expect(loaded.documentBytes.byteLength).toBeGreaterThan(0);
     expect(loaded.document.pages).toEqual([{
       id: `${source}#page-1`,
       index: 0,

@@ -12,6 +12,7 @@ const external = [
   'node:url',
   '@butter-paper/core',
   '@butter-paper/pdf',
+  '@butter-paper/pdf/blank',
   '@napi-rs/canvas',
   'pdf-lib',
   'pdfjs-dist',

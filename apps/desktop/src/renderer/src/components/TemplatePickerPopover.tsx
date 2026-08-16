@@ -73,10 +73,10 @@ export function TemplatePickerPopover({ library, tooltipSide, onCreate, onManage
               {templates.map((template) => (
                 <Item
                   key={template.id}
-                  render={<Button type="button" variant="ghost" />}
+                  render={<Button type="button" variant="ghost" className="h-auto min-w-0 whitespace-normal" />}
                   variant={selected.id === template.id ? 'muted' : 'default'}
                   size="sm"
-                  className="flex-nowrap text-left"
+                  className="min-w-0 flex-nowrap text-left"
                   data-testid={`template-picker-item-${template.id}`}
                   onClick={() => setSelectedId(template.id)}
                   onDoubleClick={() => {
@@ -87,9 +87,9 @@ export function TemplatePickerPopover({ library, tooltipSide, onCreate, onManage
                     });
                   }}
                 >
-                  <ItemContent>
-                    <ItemTitle>{template.name}</ItemTitle>
-                    <ItemDescription>{templateSummary(template)} · {templateGridSummary(template)}</ItemDescription>
+                  <ItemContent className="min-w-0">
+                    <ItemTitle className="max-w-full">{template.name}</ItemTitle>
+                    <ItemDescription className="break-words">{templateSummary(template)} · {templateGridSummary(template)}</ItemDescription>
                   </ItemContent>
                   {selected.id === template.id ? <CheckIcon aria-hidden="true" /> : null}
                 </Item>

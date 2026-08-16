@@ -202,6 +202,15 @@ const approvedDomainUiExceptions = new Map([
     },
   ],
   [
+    `${domainUiDirectory}/LastTemplatePreviewTooltip.tsx`,
+    {
+      reason: 'the rich last-template preview needs a popover surface whose compound tooltip arrow matches that surface, which the official single-style TooltipContent cannot provide',
+      allowVisualStyling: true,
+      allowDynamicDragStyle: false,
+      rawElements: new Set(),
+    },
+  ],
+  [
     `${domainUiDirectory}/PropertyControls.tsx`,
     {
       reason: 'Bluebeam-compatible property editors require reusable visual previews, mixed-value presentation, unit-aware numeric composition, and conditional multi-control groups that official single controls do not provide',
@@ -258,6 +267,10 @@ for (const filePath of compositionFiles) {
   const contents = readFileSync(filePath, 'utf8');
   if (/from\s+['"]@base-ui\/react(?:\/[^'"]*)?['"]/.test(contents)) {
     violations.push(`${filePath}: Base UI primitives must be consumed through generated components/ui boundaries`);
+  }
+  if (!filePath.startsWith(`${domainUiDirectory}/`)
+    && /<TooltipContent\b[^>]*\bclassName="[^"]*(?:\bbg-|\btext-)/.test(contents)) {
+    violations.push(`${filePath}: stock tooltip colours must not be partially overridden outside a reviewed domain UI exception`);
   }
   if (/data-\[state=/.test(contents)) {
     violations.push(`${filePath}: composition code must not depend on Radix-style data-state selectors`);

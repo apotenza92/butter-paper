@@ -39,6 +39,10 @@ describe('TemplatePickerPopover', () => {
     act(() => host.querySelector<HTMLButtonElement>('[data-testid="document-tab-template-picker"]')?.click());
     const grid = document.querySelector<HTMLButtonElement>('[data-testid="template-picker-item-built-in-grid"]');
     expect(grid).toBeTruthy();
+    expect(grid?.className).toContain('h-auto');
+    expect(grid?.className).toContain('min-w-0');
+    expect(grid?.className).toContain('whitespace-normal');
+    expect(grid?.querySelector('[data-slot="item-content"]')?.className).toContain('min-w-0');
     act(() => grid?.click());
     expect(document.querySelector('[data-testid="template-preview-card"]')?.textContent).toContain('Square Grid');
     await act(async () => document.querySelector<HTMLButtonElement>('[data-testid="template-picker-create"]')?.click());

@@ -16,6 +16,36 @@ const PAPER_SIZES = [
   ['A0', 841, 1189],
 ];
 
+async function expectTemplatePickerLayout(page) {
+  const layout = await page.getByTestId('template-picker-list').evaluate((group) => {
+    const viewport = group.closest('[data-slot="scroll-area-viewport"]');
+    if (!(viewport instanceof HTMLElement)) return null;
+    const tolerance = 1;
+    const outsideItems = [...group.querySelectorAll('[data-testid^="template-picker-item-"]')]
+      .filter((item) => {
+        const itemBounds = item.getBoundingClientRect();
+        return [...item.querySelectorAll('[data-slot="item-title"], [data-slot="item-description"]')]
+          .some((content) => {
+            const contentBounds = content.getBoundingClientRect();
+            return contentBounds.left < itemBounds.left - tolerance
+              || contentBounds.right > itemBounds.right + tolerance
+              || contentBounds.top < itemBounds.top - tolerance
+              || contentBounds.bottom > itemBounds.bottom + tolerance;
+          });
+      })
+      .map((item) => item.getAttribute('data-testid'));
+    return {
+      clientWidth: viewport.clientWidth,
+      scrollWidth: viewport.scrollWidth,
+      outsideItems,
+    };
+  });
+
+  expect(layout).not.toBeNull();
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
+  expect(layout.outsideItems).toEqual([]);
+}
+
 test.describe('New blank PDF', () => {
   test('opens the size picker from the File menu and creates the selected page', async () => {
     test.skip(!resolveDesktopEntryPoint(), 'Desktop app entrypoint not available yet');
@@ -74,6 +104,7 @@ test.describe('New blank PDF', () => {
     await expect(templatePicker).toBeVisible();
     await expect(page.getByTestId('template-picker-item-built-in-blank')).toBeVisible();
     await expect(page.getByTestId('template-preview-card')).toContainText('Blank Paper');
+    await expectTemplatePickerLayout(page);
 
     const browserWindow = await app.browserWindow(page);
     await browserWindow.evaluate((window) => window.webContents.setZoomFactor(2));
@@ -84,6 +115,7 @@ test.describe('New blank PDF', () => {
         && settingsBounds.y >= 0
         && settingsBounds.y + settingsBounds.height <= constrainedViewportHeight;
     }).toBe(true);
+    await expectTemplatePickerLayout(page);
     await page.keyboard.press('Escape');
     await expect(templatePicker).toHaveCount(0);
     await expect(templatePickerButton).toBeFocused();

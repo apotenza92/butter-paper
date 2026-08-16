@@ -19,6 +19,7 @@ import type {
 const { contextBridge, ipcRenderer, webUtils } = electron;
 
 const isTestMode = process.env.BP_TEST_MODE === '1';
+markTestStartup('preload-module-evaluated');
 const defaultSamplePdfPath = resolveDefaultSamplePdfPath();
 let openPdfPathsListener: ((filePaths: string[]) => void) | null = null;
 let pdfOpenPendingListener: ((pending: boolean) => void) | null = null;
@@ -289,11 +290,20 @@ const bridge: ButterPaperBridge = {
         getWindowState: async () => ipcRenderer.invoke(ipcChannels.testGetWindowState),
         setWindowBounds: async (bounds) => ipcRenderer.invoke(ipcChannels.testSetWindowBounds, bounds),
         getProcessMetrics: async () => ipcRenderer.invoke(ipcChannels.testGetProcessMetrics),
+        getStartupMilestones: async () => ipcRenderer.invoke(ipcChannels.testGetStartupMilestones),
       }
     : null,
 };
 
 contextBridge.exposeInMainWorld('butterPaper', bridge);
+markTestStartup('preload-bridge-exposed');
+
+function markTestStartup(name: string): void {
+  if (!isTestMode || typeof performance === 'undefined') {
+    return;
+  }
+  performance.mark(`bp-startup:${name}`);
+}
 
 function resolveDefaultSamplePdfPath(): string | null {
   if (isTestMode || process.env.BP_OPEN_SAMPLE_PDF === '0') {

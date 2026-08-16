@@ -10,7 +10,7 @@ import {
   type PageScale,
 } from '@butter-paper/core';
 import { inspectPdfDocumentBytes, openPdfDocument, openPdfGeometryDocument, type PdfGeometryDocument, type PdfPageGeometryIndex, type PdfPageRotation, type PdfSaveMode, type PdfSaveResult } from '@butter-paper/pdf';
-import type { DocumentOpenStageTimings, LoadedDocumentPayload, PdfOpenProgress } from '../shared/protocol';
+import type { DocumentOpenStageTimings, PdfDocumentOpenPayload, PdfOpenProgress } from '../shared/protocol';
 import {
   assertPdfPublicationDirectory,
   capturePdfPublicationTarget,
@@ -37,7 +37,7 @@ const geometryDocumentCache = new Map<string, CachedGeometryDocument>();
 export async function loadDocumentPayload(
   filePath: string,
   onProgress?: (progress: PdfOpenProgress) => void,
-): Promise<Omit<LoadedDocumentPayload, 'documentAccess'>> {
+): Promise<Omit<PdfDocumentOpenPayload, 'documentAccess'>> {
   const loadStartedAt = performance.now();
   const sourceBytes = await readPdfBytesWithProgress(filePath, onProgress);
   onProgress?.({
@@ -84,6 +84,7 @@ export async function loadDocumentPayload(
     return {
       filePath,
       fileName: basename(filePath),
+      documentBytes: sourceBytes,
       document: createDocument({
         id: filePath,
         path: filePath,

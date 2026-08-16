@@ -55,6 +55,7 @@ export const ipcChannels = {
   testGetWindowState: 'test:get-window-state',
   testSetWindowBounds: 'test:set-window-bounds',
   testGetProcessMetrics: 'test:get-process-metrics',
+  testGetStartupMilestones: 'test:get-startup-milestones',
 } as const;
 
 export type IpcChannel = (typeof ipcChannels)[keyof typeof ipcChannels];

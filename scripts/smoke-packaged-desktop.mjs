@@ -96,6 +96,92 @@ async function verifyCustomIcons(page) {
   }
 }
 
+async function readTemplatePickerLayout(page) {
+  return await page.getByTestId('template-picker-list').evaluate((group) => {
+    const viewport = group.closest('[data-slot="scroll-area-viewport"]');
+    if (!(viewport instanceof HTMLElement)) {
+      return { error: 'Template picker scroll viewport is missing' };
+    }
+
+    const tolerance = 1;
+    const outsideItems = [];
+    for (const item of group.querySelectorAll('[data-testid^="template-picker-item-"]')) {
+      const itemBounds = item.getBoundingClientRect();
+      for (const content of item.querySelectorAll('[data-slot="item-title"], [data-slot="item-description"]')) {
+        const contentBounds = content.getBoundingClientRect();
+        if (contentBounds.left < itemBounds.left - tolerance
+          || contentBounds.right > itemBounds.right + tolerance
+          || contentBounds.top < itemBounds.top - tolerance
+          || contentBounds.bottom > itemBounds.bottom + tolerance) {
+          outsideItems.push(item.getAttribute('data-testid'));
+          break;
+        }
+      }
+    }
+
+    return {
+      clientWidth: viewport.clientWidth,
+      scrollWidth: viewport.scrollWidth,
+      outsideItems,
+    };
+  });
+}
+
+async function verifyTemplatePickerLayout(page, zoomLabel) {
+  const layout = await readTemplatePickerLayout(page);
+  assert(!layout.error, layout.error);
+  assert(
+    layout.scrollWidth <= layout.clientWidth + 1,
+    `Template picker has horizontal overflow at ${zoomLabel} zoom (${layout.scrollWidth}px > ${layout.clientWidth}px)`,
+  );
+  assert(
+    layout.outsideItems.length === 0,
+    `Template picker content escaped its row at ${zoomLabel} zoom: ${layout.outsideItems.join(', ')}`,
+  );
+}
+
+async function verifyLastTemplateTooltip(page) {
+  await page.getByTestId('document-tab-new-pdf').hover();
+  const tooltip = page.getByTestId('document-tab-last-template-preview');
+  await tooltip.waitFor({ state: 'visible' });
+  const visual = await tooltip.evaluate(async (popup) => {
+    await Promise.race([
+      Promise.all(popup.getAnimations({ subtree: true }).map(async (animation) => {
+        try {
+          await animation.finished;
+        } catch {
+          // A replaced animation is safe to ignore. The computed state below is authoritative.
+        }
+      })),
+      new Promise((resolve) => window.setTimeout(resolve, 1_000)),
+    ]);
+    const arrow = popup.querySelector(':scope > div[aria-hidden="true"]:last-child');
+    if (!(arrow instanceof HTMLElement)) return { error: 'Rich tooltip arrow is missing' };
+    const popupBounds = popup.getBoundingClientRect();
+    const arrowBounds = arrow.getBoundingClientRect();
+    const popupStyle = getComputedStyle(popup);
+    const arrowStyle = getComputedStyle(arrow);
+    return {
+      popupBackground: popupStyle.backgroundColor,
+      arrowBackground: arrowStyle.backgroundColor,
+      opacity: popupStyle.opacity,
+      arrowTouchesPopup: arrowBounds.bottom >= popupBounds.top - 1
+        && arrowBounds.top <= popupBounds.bottom + 1
+        && arrowBounds.right >= popupBounds.left - 1
+        && arrowBounds.left <= popupBounds.right + 1,
+    };
+  });
+  assert(!visual.error, visual.error);
+  assert(visual.opacity === '1', `Rich tooltip was captured before it became opaque (opacity ${visual.opacity})`);
+  assert(
+    visual.arrowBackground === visual.popupBackground,
+    `Rich tooltip arrow does not match its surface (popup ${visual.popupBackground}, arrow ${visual.arrowBackground})`,
+  );
+  assert(visual.arrowTouchesPopup, 'Rich tooltip arrow is detached from its popup surface');
+  await page.mouse.move(0, 0);
+  await tooltip.waitFor({ state: 'hidden' });
+}
+
 async function verifyDroppedPdfOpensInNewTab(page, outputDirectory) {
   const droppedPdfPath = join(outputDirectory, 'packaged-dropped.pdf');
   await copyFile(fixturePath, droppedPdfPath);
@@ -157,7 +243,8 @@ async function verifyPdfWorkflow(page, outputDirectory) {
   await verifyDroppedPdfOpensInNewTab(page, outputDirectory);
 }
 
-async function verifyBlankPdfWorkflow(page, outputDirectory) {
+async function verifyBlankPdfWorkflow(page, outputDirectory, electronApp) {
+  await verifyLastTemplateTooltip(page);
   await page.getByTestId('document-tab-template-picker').click();
   await page.getByTestId('template-picker').waitFor({ state: 'visible' });
   await page.getByTestId('template-picker-item-built-in-blank').waitFor({ state: 'visible' });
@@ -165,6 +252,17 @@ async function verifyBlankPdfWorkflow(page, outputDirectory) {
     (await page.getByTestId('template-preview-card').textContent())?.includes('Blank Paper'),
     'Template picker did not default to Blank Paper',
   );
+  await verifyTemplatePickerLayout(page, '100%');
+  const browserWindow = await electronApp.browserWindow(page);
+  await browserWindow.evaluate((window) => window.webContents.setZoomFactor(2));
+  await page.evaluate(async () => await new Promise((resolve) => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
+  }));
+  await verifyTemplatePickerLayout(page, '200%');
+  await browserWindow.evaluate((window) => window.webContents.setZoomFactor(1));
+  await page.evaluate(async () => await new Promise((resolve) => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
+  }));
   await page.keyboard.press('Escape');
   await page.getByTestId('document-tab-new-pdf').click();
   await waitForDiagnostics(page, { pageCount: 1, documentName: 'Untitled.pdf' });
@@ -235,7 +333,7 @@ try {
     console.log(`Packaged ${expectedProductName} drag-and-drop test passed: dropped PDF opened in a new tab.`);
   } else {
     await verifyPdfWorkflow(page, temporaryDirectory);
-    await verifyBlankPdfWorkflow(page, temporaryDirectory);
+    await verifyBlankPdfWorkflow(page, temporaryDirectory, app);
     const diagnostics = await getDiagnostics(page);
     console.log(
       `Packaged ${expectedProductName} smoke test passed: channel identity, PDF annotation round-trip, blank PDF creation, custom icons, and fit controls (${diagnostics.sessionBackendKind} backend).`,

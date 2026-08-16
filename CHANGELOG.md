@@ -2,6 +2,23 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.24]
+
+### Startup performance
+
+- Made blank and PDF launches faster by delaying non-essential updater,
+  registration, template, signature, and PDF services until they are needed.
+- Reused inspected PDF bytes during document opening to avoid reading the same
+  file twice, while keeping PDF preparation available for direct file launches.
+
+### Templates and verification
+
+- Improved long template-name layout and kept the last-template preview within
+  constrained windows.
+- Added detailed startup timing diagnostics and expanded deterministic and
+  packaged checks for blank documents, direct PDF launches, and lazy runtime
+  boundaries.
+
 ## [0.0.23]
 
 ### Rendering and navigation

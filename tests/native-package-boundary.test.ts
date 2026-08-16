@@ -135,6 +135,11 @@ describe('native release package boundaries', () => {
     expect(smokeHarness).toContain("resolve(repoRoot, 'apps/desktop', configuredReleaseDir)");
     expect(smokeHarness).toContain("getByTestId('document-tab-template-picker')");
     expect(smokeHarness).toContain("getByTestId('template-picker-item-built-in-blank')");
+    expect(smokeHarness).toContain('verifyTemplatePickerLayout(page, \'100%\')');
+    expect(smokeHarness).toContain('verifyTemplatePickerLayout(page, \'200%\')');
+    expect(smokeHarness).toContain('verifyLastTemplateTooltip(page)');
+    expect(smokeHarness).toContain('popup.getAnimations({ subtree: true })');
+    expect(smokeHarness).toContain('visual.arrowBackground === visual.popupBackground');
     expect(smokeHarness).toContain("process.env.BP_TEST_STARTUP_ONLY === '1'");
     expect(smokeHarness).not.toContain("getByTestId('document-tab-new-pdf-settings')");
   });

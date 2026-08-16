@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { PDFDocument } from 'pdf-lib';
 import type { ImportedPdfTemplateRecord } from '../shared/protocol';
 
 interface StoredTemplate extends ImportedPdfTemplateRecord {
@@ -32,6 +31,7 @@ export class PdfTemplateStore {
   }
 
   async importBytes(bytes: Uint8Array, name: string): Promise<ImportedPdfTemplateRecord> {
+    const { PDFDocument } = await import('pdf-lib');
     const document = await PDFDocument.load(bytes, { updateMetadata: false });
     if (document.getPageCount() < 1) throw new Error('The template PDF has no pages.');
 

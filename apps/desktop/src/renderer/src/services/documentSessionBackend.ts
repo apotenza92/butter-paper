@@ -64,18 +64,12 @@ export function createPdfJsSessionBackend(): PdfSessionBackend {
     kind: 'pdfjs',
     async open(filePath) {
       const mainPayloadStartedAt = performance.now();
-      const payload = await window.butterPaper.pdf.loadDocument(filePath);
+      const { documentBytes, ...payload } = await window.butterPaper.pdf.loadDocument(filePath);
       const mainPayloadMs = performance.now() - mainPayloadStartedAt;
 
       try {
-        const fileReadStartedAt = performance.now();
-        const bytes = await window.butterPaper.pdf.readDocumentBytes({
-          documentHandle: payload.documentAccess.handle,
-        });
-        const rendererFileReadMs = performance.now() - fileReadStartedAt;
-
         const browserOpenStartedAt = performance.now();
-        const handle = await openPdfDocumentFromBytes(bytes);
+        const handle = await openPdfDocumentFromBytes(documentBytes);
         const rendererBrowserOpenMs = performance.now() - browserOpenStartedAt;
 
         return {
@@ -87,7 +81,7 @@ export function createPdfJsSessionBackend(): PdfSessionBackend {
           },
           openStageTimings: {
             mainPayloadMs,
-            rendererFileReadMs,
+            rendererFileReadMs: 0,
             rendererBrowserOpenMs,
           },
         };
