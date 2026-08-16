@@ -2,7 +2,7 @@
 
 All notable Butter Paper changes are recorded here.
 
-## [0.0.24]
+## [0.0.25]
 
 ### Startup performance
 

@@ -2,6 +2,22 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 describe('native release package boundaries', () => {
+  it('resolves the lazy blank-PDF subpath before generated package output exists', () => {
+    const desktopTsconfig = JSON.parse(
+      readFileSync(resolve('apps/desktop/tsconfig.json'), 'utf8'),
+    ) as { compilerOptions: { paths: Record<string, string[]> } };
+    const pdfPackage = JSON.parse(
+      readFileSync(resolve('packages/pdf/package.json'), 'utf8'),
+    ) as { exports: Record<string, { types: string; import: string }> };
+
+    expect(desktopTsconfig.compilerOptions.paths['@butter-paper/pdf/blank'])
+      .toEqual(['../../packages/pdf/src/blankPdf.ts']);
+    expect(pdfPackage.exports['./blank']).toEqual({
+      types: './dist/blankPdf.d.ts',
+      import: './dist/blankPdf.js',
+    });
+  });
+
   it('keeps notarization credentials and public identifiers in their correct contexts', () => {
     const workflow = readWorkflow();
 

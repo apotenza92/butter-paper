@@ -9,6 +9,7 @@
       "@/*": ["src/renderer/src/*"],
       "@butter-paper/core": ["../../packages/core/src/index.ts"],
       "@butter-paper/pdf": ["../../packages/pdf/src/index.ts"],
+      "@butter-paper/pdf/blank": ["../../packages/pdf/src/blankPdf.ts"],
       "@butter-paper/pdf/browser": ["../../packages/pdf/src/browser.ts"]
     },
     "types": ["node", "vitest/globals"]
