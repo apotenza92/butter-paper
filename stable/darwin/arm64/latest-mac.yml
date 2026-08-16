@@ -1,35 +1,27 @@
-version: 0.0.23
+version: 0.0.25
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-macOS-arm64.zip
-    sha512: J9lyzObEG159HyovvMcUVVoZnjxuHQsxwtXCj5nL88/MwxQ1fLqU4Z09Vp0DDKASH1CuBxKRXzq9AOOhRKo59A==
-    size: 145188503
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-macOS-arm64.dmg
-    sha512: 1peIIoMXLm0R6UP5EQSfUjoxLDVptiKST14SHEbhWJRGot3o26KKq3tsOlXHd9K3VDvaynWAsa5HGmb3j7424A==
-    size: 150217712
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-macOS-arm64.zip
-sha512: J9lyzObEG159HyovvMcUVVoZnjxuHQsxwtXCj5nL88/MwxQ1fLqU4Z09Vp0DDKASH1CuBxKRXzq9AOOhRKo59A==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-macOS-arm64.zip
+    sha512: xpAccr9vxfaZbQFJxFNj7oNYbnbmEPSEhpffoarl/1NIbQZKj1CpksvmL7lLZ1WxAwSivzsbH8HLn0ophCje5Q==
+    size: 145191142
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-macOS-arm64.dmg
+    sha512: zULRo5jJvkKGdbLNcDzh9mmuAMRr1aoO4YPQFF+2/sb08UcIpMyvNPoI8eNatg64vNbvehwwlMobT8smoP78zA==
+    size: 150226516
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-macOS-arm64.zip
+sha512: xpAccr9vxfaZbQFJxFNj7oNYbnbmEPSEhpffoarl/1NIbQZKj1CpksvmL7lLZ1WxAwSivzsbH8HLn0ophCje5Q==
 releaseNotes: |-
-  ### Rendering and navigation
+  ### Startup performance
 
-  - Added adaptive rendering that responds to display refresh rate, available
-    memory, processor capacity, render latency, and PDF.js backlog pressure.
-  - Improved page sharpness during normal scrolling while reducing background
-    prefetch and high-quality work when the device or document is under load.
-  - Added direct arrow-key viewport scrolling, Page Up and Page Down scrolling,
-    Home and End document navigation, and primary-modifier page navigation.
+  - Made blank and PDF launches faster by delaying non-essential updater,
+    registration, template, signature, and PDF services until they are needed.
+  - Reused inspected PDF bytes during document opening to avoid reading the same
+    file twice, while keeping PDF preparation available for direct file launches.
 
-  ### Signatures and document controls
+  ### Templates and verification
 
-  - Improved phone signature drawing controls and added context-menu deletion for
-    individual recent signatures.
-  - Kept template and snapping popovers within constrained windows and removed
-    obsolete blank-PDF settings compatibility code.
-
-  ### Release delivery
-
-  - Reduced duplicate native release checks and artifact transfers, parallelized
-    post-publication verification, and added non-publishing release simulations.
-  - Added an exact-commit candidate promotion simulation that verifies asset
-    names, checksums, attestations, and update-feed sealing without publishing.
-releaseDate: 2026-08-14T04:54:44.385Z
+  - Improved long template-name layout and kept the last-template preview within
+    constrained windows.
+  - Added detailed startup timing diagnostics and expanded deterministic and
+    packaged checks for blank documents, direct PDF launches, and lazy runtime
+    boundaries.
+releaseDate: 2026-08-16T13:30:42.565Z
 butterPaperChannel: stable

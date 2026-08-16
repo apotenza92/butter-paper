@@ -1,39 +1,31 @@
-version: 0.0.23
+version: 0.0.25
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-Beta-Linux-arm64.AppImage
-    sha512: JelMz8EUiK1NjfSKazlYa1mDv9NysBw21Jdms7PO/7E+6wN0V6AWSSZ1mvqQawIBrnIIBcIhCBf/FpxJ4dVymg==
-    size: 116883908
-    blockMapSize: 122128
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-Beta-Linux-arm64.deb
-    sha512: fO/ZarjG1tiEVYj/T8OMP0Ki0J/r9w/DAKsJ4YI9GvjCTidHmG/TSDsXRWrp1qE3UJAZN4wamG+rkZ5wNH2cng==
-    size: 114705332
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-Beta-Linux-arm64.rpm
-    sha512: D/OtDCM81TxLQoT6t4k1ar/zlPptOL9Kd2yn6HT5PJx2TH3dNZAi4HATp9arG5kSSUb6WoH9QRLxuiqrwG86aA==
-    size: 101014869
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-Beta-Linux-arm64.AppImage
-sha512: JelMz8EUiK1NjfSKazlYa1mDv9NysBw21Jdms7PO/7E+6wN0V6AWSSZ1mvqQawIBrnIIBcIhCBf/FpxJ4dVymg==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-Beta-Linux-arm64.AppImage
+    sha512: Mw9pFYsCQf2+5GmQ+A5TwcbheV/hfDxTXPO5590oeb0Am7trJ7CdGLDBxX9RQyNKBojgNXsLv/RYG/1Qrpr1qg==
+    size: 116892003
+    blockMapSize: 122031
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-Beta-Linux-arm64.deb
+    sha512: WAnW7QVKDfsD5ooqaum11q/gH8HYAm3zzt6S2R90p1yc8YaC/zTIiMViPUh5GT85hCHHDfLxyq2T6r9XcaiEug==
+    size: 114708616
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-Beta-Linux-arm64.rpm
+    sha512: wGBwX0Q2145EjRcugI57p4UCfuU6YN+Ma2dPTM0UPg8SiZZDSddENknQwrCJgg433McC+tMsBTPxX+Yem1xHqA==
+    size: 101021641
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-Beta-Linux-arm64.AppImage
+sha512: Mw9pFYsCQf2+5GmQ+A5TwcbheV/hfDxTXPO5590oeb0Am7trJ7CdGLDBxX9RQyNKBojgNXsLv/RYG/1Qrpr1qg==
 releaseNotes: |-
-  ### Rendering and navigation
+  ### Startup performance
 
-  - Added adaptive rendering that responds to display refresh rate, available
-    memory, processor capacity, render latency, and PDF.js backlog pressure.
-  - Improved page sharpness during normal scrolling while reducing background
-    prefetch and high-quality work when the device or document is under load.
-  - Added direct arrow-key viewport scrolling, Page Up and Page Down scrolling,
-    Home and End document navigation, and primary-modifier page navigation.
+  - Made blank and PDF launches faster by delaying non-essential updater,
+    registration, template, signature, and PDF services until they are needed.
+  - Reused inspected PDF bytes during document opening to avoid reading the same
+    file twice, while keeping PDF preparation available for direct file launches.
 
-  ### Signatures and document controls
+  ### Templates and verification
 
-  - Improved phone signature drawing controls and added context-menu deletion for
-    individual recent signatures.
-  - Kept template and snapping popovers within constrained windows and removed
-    obsolete blank-PDF settings compatibility code.
-
-  ### Release delivery
-
-  - Reduced duplicate native release checks and artifact transfers, parallelized
-    post-publication verification, and added non-publishing release simulations.
-  - Added an exact-commit candidate promotion simulation that verifies asset
-    names, checksums, attestations, and update-feed sealing without publishing.
-releaseDate: 2026-08-14T04:56:09.906Z
+  - Improved long template-name layout and kept the last-template preview within
+    constrained windows.
+  - Added detailed startup timing diagnostics and expanded deterministic and
+    packaged checks for blank documents, direct PDF launches, and lazy runtime
+    boundaries.
+releaseDate: 2026-08-16T13:33:36.603Z
 butterPaperChannel: beta

@@ -1,52 +1,36 @@
-version: 0.0.23
+version: 0.0.25
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-Windows-arm64-Setup.exe
-    sha512: izl4UOSnKc+/rodVI73xi7kEbR7gIb/WRMafgw53yXTWEm81fJO3GOlKJ+yRvzOnTYk/k1dQhqGki7owDdR7bQ==
-    size: 124697848
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.23/Butter-Paper-Windows-arm64-Setup.exe
-sha512: izl4UOSnKc+/rodVI73xi7kEbR7gIb/WRMafgw53yXTWEm81fJO3GOlKJ+yRvzOnTYk/k1dQhqGki7owDdR7bQ==
-releaseNotes: "### Rendering and navigation\r
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-Windows-arm64-Setup.exe
+    sha512: 2FBtVCkzXu9UESz0TDV6FvmaFBw6FtaylNaw8VeLYpCABrQZ1H7ssopwkxL/cB5+u/ItPNyIfewWzNdCLbcxtw==
+    size: 124700447
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-Windows-arm64-Setup.exe
+sha512: 2FBtVCkzXu9UESz0TDV6FvmaFBw6FtaylNaw8VeLYpCABrQZ1H7ssopwkxL/cB5+u/ItPNyIfewWzNdCLbcxtw==
+releaseNotes: "### Startup performance\r
 
   \r
 
-  - Added adaptive rendering that responds to display refresh rate, available\r
+  - Made blank and PDF launches faster by delaying non-essential updater,\r
 
-  \  memory, processor capacity, render latency, and PDF.js backlog pressure.\r
+  \  registration, template, signature, and PDF services until they are needed.\r
 
-  - Improved page sharpness during normal scrolling while reducing background\r
+  - Reused inspected PDF bytes during document opening to avoid reading the same\r
 
-  \  prefetch and high-quality work when the device or document is under load.\r
-
-  - Added direct arrow-key viewport scrolling, Page Up and Page Down scrolling,\r
-
-  \  Home and End document navigation, and primary-modifier page navigation.\r
+  \  file twice, while keeping PDF preparation available for direct file launches.\r
 
   \r
 
-  ### Signatures and document controls\r
+  ### Templates and verification\r
 
   \r
 
-  - Improved phone signature drawing controls and added context-menu deletion for\r
+  - Improved long template-name layout and kept the last-template preview within\r
 
-  \  individual recent signatures.\r
+  \  constrained windows.\r
 
-  - Kept template and snapping popovers within constrained windows and removed\r
+  - Added detailed startup timing diagnostics and expanded deterministic and\r
 
-  \  obsolete blank-PDF settings compatibility code.\r
+  \  packaged checks for blank documents, direct PDF launches, and lazy runtime\r
 
-  \r
-
-  ### Release delivery\r
-
-  \r
-
-  - Reduced duplicate native release checks and artifact transfers, parallelized\r
-
-  \  post-publication verification, and added non-publishing release simulations.\r
-
-  - Added an exact-commit candidate promotion simulation that verifies asset\r
-
-  \  names, checksums, attestations, and update-feed sealing without publishing."
-releaseDate: 2026-08-14T04:55:17.801Z
+  \  boundaries."
+releaseDate: 2026-08-16T13:31:36.832Z
 butterPaperChannel: stable

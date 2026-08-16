@@ -1,5 +1,5 @@
 Butter Paper static update-feed publication bundle
-release-tag=v0.0.23
-release-commit=8591fd4064e2a397232f898a1a81d12198de660a
+release-tag=v0.0.25
+release-commit=9e947ae4b43eb05c15e60b1ef9bb6c7f16444081
 destination=apotenza92/butter-paper:updates
 Publication: tag workflow, after tag-source and native release verification gates.
