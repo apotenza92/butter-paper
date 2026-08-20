@@ -1,0 +1,32 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Butter Paper performance comparison</title><style>
+  :root{font-family:Inter,system-ui,sans-serif;color:#18181b;background:#f4f4f5}body{margin:0}.page{max-width:1120px;margin:auto;padding:32px}.hero,section{background:white;border:1px solid #d4d4d8;border-radius:14px;padding:24px;margin-bottom:20px}.eyebrow{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#71717a}h1,h2{margin:.35rem 0}.lede,.sources{color:#52525b;line-height:1.5}.section-head{display:flex;justify-content:space-between;gap:16px;align-items:start}.status-pair{display:flex;gap:8px;flex-wrap:wrap}.status{font-size:12px;font-weight:650;border-radius:999px;padding:5px 9px}.good{background:#dcfce7;color:#166534}.bad{background:#fee2e2;color:#991b1b}table{border-collapse:collapse;width:100%;margin-top:18px}th,td{text-align:left;border-top:1px solid #e4e4e7;padding:10px 12px}thead th{border-top:0;background:#fafafa}tbody th{width:40%;font-weight:550}a{color:#0f766e}@media(max-width:700px){.page{padding:14px}.section-head{display:block}.status-pair{margin-top:12px}th,td{font-size:13px;padding:8px}}
+  </style></head><body><main class="page"><header class="hero"><span class="eyebrow">Generated local development evidence</span><h1>Electron and GPUI performance comparison</h1><p class="lede">The same Hibbeler PDF and scripted interactions are compared. End-to-end product latency is comparable. PDF.js and Poppler raster costs are renderer-specific and must not be attributed only to Electron, React, or GPUI.</p><p><a href="protocol.md">Read the fixed protocol</a> · <a href="../index.html">Return to the UI migration review</a></p></header><section>
+  <div class="section-head"><div><span class="eyebrow">Matched Hibbeler scenario</span><h2>open-pdf</h2></div><div class="status-pair"><span class="status good">Electron: Measured</span><span class="status good">GPUI: Measured</span></div></div>
+  <table><thead><tr><th>Metric</th><th>Electron + PDF.js</th><th>GPUI + Poppler</th></tr></thead><tbody><tr><th>Successful / failed runs</th><td>1 / 0</td><td>3 / 0</td></tr>
+<tr><th>Open request to first visible frame</th><td>2431.3 ms</td><td>520.6 ms</td></tr>
+<tr><th>Scripted operation median</th><td>Not measured</td><td>Not measured</td></tr>
+<tr><th>Frame interval p95</th><td>24.90 ms</td><td>11.65 ms</td></tr>
+<tr><th>Peak process-tree RSS</th><td>1393.0 MiB</td><td>142.4 MiB</td></tr>
+<tr><th>Peak process-tree CPU</th><td>175.2 %</td><td>139.1 %</td></tr></tbody></table>
+  <p class="sources">Raw evidence: <a href="electron-open-pdf-smoke.json">electron-open-pdf-smoke.json</a> · <a href="results/gpui-open-pdf-agent-3.json">gpui-open-pdf-agent-3.json</a></p>
+</section>
+<section>
+  <div class="section-head"><div><span class="eyebrow">Matched Hibbeler scenario</span><h2>page-navigation</h2></div><div class="status-pair"><span class="status good">Electron: Measured</span><span class="status good">GPUI: Measured</span></div></div>
+  <table><thead><tr><th>Metric</th><th>Electron + PDF.js</th><th>GPUI + Poppler</th></tr></thead><tbody><tr><th>Successful / failed runs</th><td>1 / 0</td><td>3 / 0</td></tr>
+<tr><th>Open request to first visible frame</th><td>1820.5 ms</td><td>504.8 ms</td></tr>
+<tr><th>Scripted operation median</th><td>162.4 ms</td><td>429.1 ms</td></tr>
+<tr><th>Frame interval p95</th><td>16.60 ms</td><td>9.06 ms</td></tr>
+<tr><th>Peak process-tree RSS</th><td>1501.1 MiB</td><td>276.2 MiB</td></tr>
+<tr><th>Peak process-tree CPU</th><td>308.8 %</td><td>240.2 %</td></tr></tbody></table>
+  <p class="sources">Raw evidence: <a href="electron-page-navigation-smoke.json">electron-page-navigation-smoke.json</a> · <a href="results/gpui-page-navigation-agent-3.json">gpui-page-navigation-agent-3.json</a></p>
+</section>
+<section>
+  <div class="section-head"><div><span class="eyebrow">Matched Hibbeler scenario</span><h2>zoom</h2></div><div class="status-pair"><span class="status good">Electron: Measured</span><span class="status good">GPUI: Measured</span></div></div>
+  <table><thead><tr><th>Metric</th><th>Electron + PDF.js</th><th>GPUI + Poppler</th></tr></thead><tbody><tr><th>Successful / failed runs</th><td>1 / 0</td><td>3 / 0</td></tr>
+<tr><th>Open request to first visible frame</th><td>1805.5 ms</td><td>542.1 ms</td></tr>
+<tr><th>Scripted operation median</th><td>23.7 ms</td><td>75.0 ms</td></tr>
+<tr><th>Frame interval p95</th><td>9.70 ms</td><td>8.97 ms</td></tr>
+<tr><th>Peak process-tree RSS</th><td>1298.6 MiB</td><td>447.6 MiB</td></tr>
+<tr><th>Peak process-tree CPU</th><td>250.6 %</td><td>292.1 %</td></tr></tbody></table>
+  <p class="sources">Raw evidence: <a href="electron-zoom-smoke.json">electron-zoom-smoke.json</a> · <a href="results/gpui-zoom-agent-3.json">gpui-zoom-agent-3.json</a></p>
+</section></main></body></html>

@@ -1,0 +1,7 @@
+gpui-gallery/target/
+captures/
+performance/results/*
+!performance/results/gpui-native-launch-blocker.md
+runtime-source/
+runtime-user-data/
+tmp/

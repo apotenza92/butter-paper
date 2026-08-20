@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Butter Paper Electron → GPUI pixel overlay</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .overlay-controls { display:grid; grid-template-columns:repeat(4,minmax(150px,1fr)); gap:10px; }
+    .overlay-controls label { min-width:0; overflow:hidden; display:grid; gap:5px; font-size:12px; font-weight:650; }
+    .overlay-controls input, .overlay-controls select { min-width:0; width:100%; max-width:100%; min-height:34px; }
+    .overlay-mode { display:flex; flex-wrap:wrap; gap:6px; }
+    .overlay-mode button[aria-pressed="true"] { background:#171717; color:#fff; border-color:#171717; }
+    .overlay-stage { margin-top:14px; padding:12px; overflow:auto; border:1px solid var(--border); border-radius:10px; background:repeating-conic-gradient(#d4d4d4 0 25%,#ececec 0 50%) 50% / 16px 16px; }
+    #comparison-canvas { display:block; width:100%; height:auto; margin:auto; background:#fff; image-rendering:auto; }
+    .overlay-metrics { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin-top:12px; }
+    .overlay-metric { padding:10px; border:1px solid var(--border); border-radius:8px; background:#fff; }
+    .overlay-metric output { display:block; margin-top:3px; font-size:20px; font-weight:720; letter-spacing:-.03em; }
+    .overlay-file-note { margin:8px 0 0; color:var(--muted-foreground); font-size:12px; }
+    .acceptance-grid { display:grid; grid-template-columns:160px 1fr 1fr; gap:1px; background:var(--border); border:1px solid var(--border); }
+    .acceptance-grid > div { padding:9px; background:#fff; }
+    @media (max-width:900px) { .overlay-controls { grid-template-columns:1fr 1fr; } .overlay-metrics { grid-template-columns:1fr 1fr; } }
+    @media (max-width:560px) { .overlay-controls, .overlay-metrics { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body><main class="page">
+  <header class="topbar"><strong>Butter Paper → GPUI</strong><nav><a href="index.html">Full comparison</a><a aria-current="page" href="pixel-overlay.html">Pixel overlay</a><a href="inventory.html">Inventory</a><a href="risks.html">Risks</a></nav></header>
+  <section class="hero"><div class="eyebrow">1:1 transition harness</div><h1>Overlay Electron and GPUI at the same frame.</h1><p class="lede">Choose a current Electron state, then load the matching GPUI PNG. The self-test initially compares the Electron capture with itself. Use identical window dimensions, display scale, theme, font assets, content, zoom, and interaction state.</p></section>
+
+  <section class="card">
+    <div class="overlay-controls">
+      <label>Electron baseline
+        <select id="baseline-state">
+          <option value="captures/current-empty-shell.png">Empty shell</option>
+          <option value="captures/current-hibbeler-workspace.png" selected>Hibbeler workspace</option>
+          <option value="captures/current-hibbeler-high-zoom-400.png">Hibbeler at 400%</option>
+          <option value="captures/current-active-rectangle-properties.png">Rectangle tool properties</option>
+          <option value="captures/current-active-annotation-selected.png">Selected rectangle</option>
+          <option value="captures/current-thumbnail-navigation-page-8.png">Thumbnail navigation, page 8</option>
+          <option value="captures/current-multiple-tabs.png">Multiple tabs</option>
+          <option value="captures/current-properties-empty-selection.png">Properties, no selection</option>
+        </select>
+      </label>
+      <label>Optional baseline PNG
+        <input id="baseline-file" type="file" accept="image/png,image/jpeg">
+      </label>
+      <label>GPUI candidate PNG
+        <input id="candidate-file" type="file" accept="image/png,image/jpeg">
+      </label>
+      <label>Scored component region
+        <select id="compare-region">
+          <option value="full">Whole frame</option>
+          <option value="window-chrome">Window chrome and app menu</option>
+          <option value="document-tabs">Document tab bar</option>
+          <option value="workspace-toolbar">Workspace toolbar band</option>
+          <option value="left-navigation">Left rail and thumbnails</option>
+          <option value="document-viewport">Document viewport</option>
+          <option value="right-tools">Right tool rail</option>
+        </select>
+      </label>
+      <label>Difference threshold
+        <input id="threshold" type="range" min="0" max="32" value="4">
+        <span><output id="threshold-value">4</output> per RGB channel</span>
+      </label>
+      <label>Overlay opacity
+        <input id="opacity" type="range" min="0" max="100" value="50">
+        <span><output id="opacity-value">50</output>% GPUI</span>
+      </label>
+      <label>Candidate X offset
+        <input id="offset-x" type="number" min="-32" max="32" value="0">
+      </label>
+      <label>Candidate Y offset
+        <input id="offset-y" type="number" min="-32" max="32" value="0">
+      </label>
+      <label>Display mode
+        <div class="overlay-mode" role="group" aria-label="Comparison mode">
+          <button class="control" type="button" data-mode="overlay" aria-pressed="true">Overlay</button>
+          <button class="control" type="button" data-mode="difference" aria-pressed="false">Difference</button>
+          <button class="control" type="button" data-mode="blink" aria-pressed="false">Blink</button>
+          <button class="control" type="button" data-mode="side" aria-pressed="false">Side by side</button>
+        </div>
+      </label>
+    </div>
+    <p class="overlay-file-note" id="candidate-status">Self-test candidate: the current Electron capture. Load a GPUI screenshot to begin migration comparison. The latest native candidate is <a href="captures/gpui-native-current-1152x768.png">available here</a>; its generated <a href="captures/current-native-electron-vs-gpui-metrics.json">region metrics</a> are already recorded.</p>
+  </section>
+
+  <section class="overlay-stage" aria-label="Pixel comparison canvas"><canvas id="comparison-canvas"></canvas></section>
+
+  <section class="overlay-metrics" aria-live="polite">
+    <div class="overlay-metric"><span>Exact RGB match</span><output id="metric-exact">100.000%</output></div>
+    <div class="overlay-metric"><span>Above threshold</span><output id="metric-threshold">0.000%</output></div>
+    <div class="overlay-metric"><span>Mean channel error</span><output id="metric-mean">0.000</output></div>
+    <div class="overlay-metric"><span>Maximum error</span><output id="metric-max">0</output></div>
+    <div class="overlay-metric"><span>Mismatch bounds</span><output id="metric-bounds">none</output></div>
+  </section>
+
+  <h2>What “1:1” should mean</h2>
+  <div class="acceptance-grid">
+    <div><strong>Region</strong></div><div><strong>Required comparison</strong></div><div><strong>Reasonable acceptance</strong></div>
+    <div>Flat shell geometry</div><div>Bands, panels, borders, radii, fills, spacing, control bounds and alignment.</div><div>Exact geometry. Per-channel error 0–1 after matching color space and scale.</div>
+    <div>Text and vector icons</div><div>Font file, size, weight, baseline, glyph/icon bounds and stroke geometry.</div><div>Exact bounds and baseline. Small raster tolerance because shaping and antialiasing can differ.</div>
+    <div>PDF page surface</div><div>Page bounds, scale, crop, color and settled detail.</div><div>Exact geometry. Pixel tolerance depends on whether both paths use the same decoded source surface.</div>
+    <div>Annotations</div><div>PDF coordinates, stroke/fill, handles, hover/selection and cursor-relative placement.</div><div>Exact geometry and document coordinates. Minimal edge antialias tolerance only.</div>
+    <div>Transient states</div><div>Menus, popovers, dialogs, focus rings, hover, pressed, disabled and keyboard selection.</div><div>State-by-state captures at minimum and normal window sizes.</div>
+    <div>Dynamic pixels</div><div>Caret, spinner, animation, OS window controls and timestamps.</div><div>Freeze deterministically or mask before scoring. Do not weaken the rest of the frame.</div>
+  </div>
+
+  <h2>Required capture contract</h2>
+  <article class="card"><ol><li>Capture Electron and GPUI on the same operating system, display, scale factor, theme and color profile.</li><li>Use the same outer and content bounds. Record both dimensions in the filename or manifest.</li><li>Use the same Geist font asset and font metrics. Wait for fonts and PDF detail surfaces to settle.</li><li>Drive both apps to the same fixture state through deterministic actions.</li><li>Compare the full frame, then inspect mismatching bounds by shell region.</li><li>After visual parity, run keyboard, accessibility, IME, document-integrity and performance gates separately.</li></ol></article>
+
+  <script>
+  (() => {
+    const canvas = document.getElementById('comparison-canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const stateSelect = document.getElementById('baseline-state');
+    const baselineFile = document.getElementById('baseline-file');
+    const candidateFile = document.getElementById('candidate-file');
+    const compareRegion = document.getElementById('compare-region');
+    const threshold = document.getElementById('threshold');
+    const opacity = document.getElementById('opacity');
+    const offsetX = document.getElementById('offset-x');
+    const offsetY = document.getElementById('offset-y');
+    const status = document.getElementById('candidate-status');
+    const modeButtons = [...document.querySelectorAll('[data-mode]')];
+    const baselineCanvas = document.createElement('canvas');
+    const candidateCanvas = document.createElement('canvas');
+    const baselineContext = baselineCanvas.getContext('2d', { willReadFrequently: true });
+    const candidateContext = candidateCanvas.getContext('2d', { willReadFrequently: true });
+    let baselineImage;
+    let candidateImage;
+    let mode = 'overlay';
+    let blinkCandidate = false;
+    let blinkTimer;
+
+    const referenceRegions = {
+      'window-chrome': { x: 0, y: 0, width: 1152, height: 62 },
+      'document-tabs': { x: 0, y: 62, width: 1152, height: 47 },
+      'workspace-toolbar': { x: 0, y: 109, width: 1152, height: 45 },
+      'left-navigation': { x: 0, y: 109, width: 334, height: 659 },
+      'document-viewport': { x: 334, y: 154, width: 734, height: 614 },
+      'right-tools': { x: 1068, y: 109, width: 84, height: 659 },
+    };
+
+    const loadImage = src => new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = reject;
+      image.src = src;
+    });
+
+    const loadFile = file => new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      loadImage(url).then(image => { URL.revokeObjectURL(url); resolve(image); }, error => { URL.revokeObjectURL(url); reject(error); });
+    });
+
+    function prepareSources() {
+      if (!baselineImage || !candidateImage) return false;
+      const width = baselineImage.naturalWidth;
+      const height = baselineImage.naturalHeight;
+      if (candidateImage.naturalWidth !== width || candidateImage.naturalHeight !== height) {
+        status.textContent = `Dimension mismatch: Electron ${width}×${height}, GPUI ${candidateImage.naturalWidth}×${candidateImage.naturalHeight}. Capture identical bounds before scoring.`;
+        return false;
+      }
+      baselineCanvas.width = candidateCanvas.width = width;
+      baselineCanvas.height = candidateCanvas.height = height;
+      baselineContext.clearRect(0, 0, width, height);
+      candidateContext.clearRect(0, 0, width, height);
+      baselineContext.drawImage(baselineImage, 0, 0);
+      candidateContext.drawImage(candidateImage, Number(offsetX.value), Number(offsetY.value));
+      return true;
+    }
+
+    function activeRegion(width, height) {
+      const reference = referenceRegions[compareRegion.value];
+      if (!reference) return { x: 0, y: 0, width, height, full: true };
+      const scaleX = width / 1152;
+      const scaleY = height / 768;
+      return {
+        x: Math.round(reference.x * scaleX),
+        y: Math.round(reference.y * scaleY),
+        width: Math.round(reference.width * scaleX),
+        height: Math.round(reference.height * scaleY),
+        full: false,
+      };
+    }
+
+    function analyze() {
+      const width = baselineCanvas.width;
+      const height = baselineCanvas.height;
+      const a = baselineContext.getImageData(0, 0, width, height).data;
+      const b = candidateContext.getImageData(0, 0, width, height).data;
+      const limit = Number(threshold.value);
+      let exact = 0, above = 0, totalError = 0, maximum = 0;
+      let minX = width, minY = height, maxX = -1, maxY = -1;
+      const difference = ctx.createImageData(width, height);
+      difference.data.fill(248);
+      const region = activeRegion(width, height);
+      const pixels = region.width * region.height;
+      for (let y = region.y; y < region.y + region.height; y++) {
+        for (let x = region.x; x < region.x + region.width; x++) {
+        const p = y * width + x;
+        const i = p * 4;
+        const dr = Math.abs(a[i] - b[i]);
+        const dg = Math.abs(a[i + 1] - b[i + 1]);
+        const db = Math.abs(a[i + 2] - b[i + 2]);
+        const peak = Math.max(dr, dg, db);
+        totalError += dr + dg + db;
+        maximum = Math.max(maximum, peak);
+        if (peak === 0) exact++;
+        if (peak > limit) {
+          above++;
+          minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+        }
+        const heat = Math.min(255, peak * 6);
+        difference.data[i] = 255;
+        difference.data[i + 1] = 255 - heat;
+        difference.data[i + 2] = 255 - heat;
+        difference.data[i + 3] = 255;
+        }
+      }
+      document.getElementById('metric-exact').value = `${(100 * exact / pixels).toFixed(3)}%`;
+      document.getElementById('metric-threshold').value = `${(100 * above / pixels).toFixed(3)}%`;
+      document.getElementById('metric-mean').value = (totalError / (pixels * 3)).toFixed(3);
+      document.getElementById('metric-max').value = maximum;
+      document.getElementById('metric-bounds').value = above ? `${minX},${minY} → ${maxX},${maxY}` : 'none';
+      return difference;
+    }
+
+    function markActiveRegion(width, height, xOffset = 0) {
+      const region = activeRegion(width, height);
+      if (region.full) return;
+      ctx.save();
+      ctx.fillStyle = 'rgba(255,255,255,.72)';
+      ctx.fillRect(xOffset, 0, width, region.y);
+      ctx.fillRect(xOffset, region.y + region.height, width, height - region.y - region.height);
+      ctx.fillRect(xOffset, region.y, region.x, region.height);
+      ctx.fillRect(xOffset + region.x + region.width, region.y, width - region.x - region.width, region.height);
+      ctx.strokeStyle = '#0f766e';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(xOffset + region.x + 1, region.y + 1, region.width - 2, region.height - 2);
+      ctx.restore();
+    }
+
+    function render() {
+      if (!prepareSources()) return;
+      const width = baselineCanvas.width;
+      const height = baselineCanvas.height;
+      const difference = analyze();
+      canvas.width = mode === 'side' ? width * 2 : width;
+      canvas.height = height;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (mode === 'difference') {
+        ctx.putImageData(difference, 0, 0);
+      } else if (mode === 'side') {
+        ctx.drawImage(baselineCanvas, 0, 0);
+        ctx.drawImage(candidateCanvas, width, 0);
+      } else if (mode === 'blink') {
+        ctx.drawImage(blinkCandidate ? candidateCanvas : baselineCanvas, 0, 0);
+      } else {
+        ctx.drawImage(baselineCanvas, 0, 0);
+        ctx.globalAlpha = Number(opacity.value) / 100;
+        ctx.drawImage(candidateCanvas, 0, 0);
+        ctx.globalAlpha = 1;
+      }
+      if (mode !== 'difference') {
+        markActiveRegion(width, height);
+        if (mode === 'side') markActiveRegion(width, height, width);
+      }
+    }
+
+    function setMode(next) {
+      mode = next;
+      modeButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.mode === mode)));
+      clearInterval(blinkTimer);
+      if (mode === 'blink') blinkTimer = setInterval(() => { blinkCandidate = !blinkCandidate; render(); }, 500);
+      render();
+    }
+
+    async function setBaseline(src) {
+      baselineImage = await loadImage(src);
+      candidateImage = baselineImage;
+      candidateFile.value = '';
+      status.textContent = 'Self-test candidate: the current Electron capture. Load a GPUI screenshot to begin migration comparison.';
+      render();
+    }
+
+    stateSelect.addEventListener('change', () => setBaseline(stateSelect.value));
+    baselineFile.addEventListener('change', async () => {
+      if (!baselineFile.files[0]) return;
+      baselineImage = await loadFile(baselineFile.files[0]);
+      candidateImage = baselineImage;
+      status.textContent = 'Custom Electron baseline loaded. Load the matching GPUI screenshot.';
+      render();
+    });
+    candidateFile.addEventListener('change', async () => {
+      if (!candidateFile.files[0]) return;
+      candidateImage = await loadFile(candidateFile.files[0]);
+      status.textContent = `GPUI candidate: ${candidateFile.files[0].name}`;
+      render();
+    });
+    threshold.addEventListener('input', () => { document.getElementById('threshold-value').value = threshold.value; render(); });
+    opacity.addEventListener('input', () => { document.getElementById('opacity-value').value = opacity.value; render(); });
+    offsetX.addEventListener('input', render);
+    offsetY.addEventListener('input', render);
+    compareRegion.addEventListener('change', render);
+    modeButtons.forEach(button => button.addEventListener('click', () => setMode(button.dataset.mode)));
+    setBaseline(stateSelect.value);
+  })();
+  </script>
+</main></body>
+</html>

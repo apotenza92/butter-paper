@@ -1,0 +1,11 @@
+[package]
+name = "butter-paper-gpui-gallery"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+gpui = "=0.2.2"
+rfd = "=0.17.2"
+serde_json = "1.0"

@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Component parity gates · Butter Paper GPUI</title>
+  <link rel="stylesheet" href="styles.css?v=5">
+</head>
+<body><main class="page">
+<header class="topbar"><strong>Butter Paper → GPUI</strong><nav aria-label="Review pages"><a href="index.html">Full comparison</a><a href="pixel-overlay.html">Pixel overlay</a><a aria-current="page" href="component-gates.html">Component gates</a><a href="inventory.html">Inventory</a><a href="risks.html">Risks</a></nav></header>
+
+<section class="hero">
+  <div class="eyebrow">Component parity gate · 19 August 2026</div>
+  <h1>Prove the shell one component at a time.</h1>
+  <p class="lede">Each gate uses the actual 1152×768 Electron Hibbeler capture beside the fresh 1152×768 native GPUI capture. The crops below are views into those full frames, not redrawn HTML. Both frames show page 1 at 194% with the same shell regions visible. Window-title and PDF-raster differences remain outside component pass criteria.</p>
+</section>
+
+<section class="grid three" aria-label="Evidence rules">
+  <article class="card"><span class="status pass">Actual Electron pixels</span><h3>Current contract</h3><p class="small">The source mapping explains behavior. The crop proves only the visible state at 1152×768.</p></article>
+  <article class="card proposed"><span class="status proposal">Compiled GPUI pixels</span><h3>Native implementation</h3><p class="small">GPUI layout, SVG, list, image, scroll, action, and click APIs are used directly. Nova remains a thin product layer.</p></article>
+  <article class="card warning"><span class="status warn">No gate passed yet</span><h3>Pass needs matched state</h3><p class="small">A component passes only after normal, hover, focus, selected, disabled, and constrained captures plus keyboard and accessibility checks.</p></article>
+</section>
+
+<h2>Gate summary</h2>
+<div class="gate-summary" role="table" aria-label="Component gate summary">
+  <div class="head">Region</div><div class="head">Direct GPUI</div><div class="head">Thin Nova layer</div><div class="head">Current decision</div>
+  <div><strong>Primitives</strong></div><div><code>div</code>, <code>svg()</code>, click handlers, actions, focus APIs</div><div>32 px target, 16 px icon, 8 px radius, state colors and names</div><div class="target"><span class="status warn">Partial</span> Static and click geometry exists. Focus, disabled semantics, and AccessKit nodes remain.</div>
+  <div><strong>Document tabs</strong></div><div>Flex, horizontal scroll, click routing, element IDs</div><div>Closable tab, dirty state, sortable behavior, safe-close flow</div><div class="target"><span class="status warn">Partial</span> Selection and close work. Keyboard reorder, announcements, dirty confirmation, and focus restoration do not.</div>
+  <div><strong>Zoom toolbar</strong></div><div>Actions, key bindings, SVG, flex layout, state</div><div>Joined seams, product icons, fit algorithms, popup semantics</div><div class="target"><span class="status warn">Partial</span> Core zoom and fit operations work. Menus, tooltips, tab stops, and pointer-centred zoom remain.</div>
+  <div><strong>Left rail + pages</strong></div><div><code>uniform_list</code>, scroll handle, <code>img</code>, click routing</div><div>Page card, selected/current semantics, staged image policy</div><div class="target"><span class="status warn">Partial</span> The 935-page list is live. Item accessibility, quiet actions, and exact card rhythm remain.</div>
+  <div><strong>Right tool rail</strong></div><div>Grid/flex, SVG, pointer actions</div><div>Tool registry, shortcut policy, pressed state, group semantics</div><div class="target"><span class="status block">Visual only</span> The inventory is painted. Tool activation, focus, names, shortcuts, and properties are absent.</div>
+  <div><strong>Constrained shell</strong></div><div>Resize callbacks, constraints, scroll/overflow layout</div><div>Sidebar-first collapse and keyboard-accessible overflow policy</div><div class="target"><span class="status block">Not captured</span> No matched minimum-window Electron baseline or native GPUI constrained capture.</div>
+</div>
+
+<article class="gate-card" id="primitives">
+  <header><h3>1. Primitive buttons and icon buttons</h3><span class="status warn">Partial implementation</span><span class="metric-code">32×32 target</span><span class="metric-code">16×16 icon</span></header>
+  <div class="gate-visuals">
+    <div class="gate-visual"><span class="status pass">Electron actual</span><svg class="region-capture" viewBox="500 108 385 46" role="img" aria-label="Actual Electron zoom and page-view buttons"><image href="captures/current-hibbeler-workspace.png" width="1152" height="768"/></svg><p class="small">Nova outline and selected states in the actual toolbar.</p></div>
+    <div class="gate-visual proposed"><span class="status proposal">Fresh native GPUI</span><svg class="region-capture" viewBox="500 108 385 46" role="img" aria-label="Fresh native GPUI zoom and page-view buttons"><image href="captures/gpui-native-current-1152x768.png" width="1152" height="768"/></svg><p class="small">Same Lucide 1.8 path data through GPUI <code>svg()</code>. The wrapper owns hit size and state styling.</p></div>
+  </div>
+  <div class="gate-contract">
+    <div><h4>Current source</h4><ul class="source-map"><li><code>components/ui/button.tsx</code></li><li><code>components/ui/toggle.tsx</code></li><li><code>components/ui/button-group.tsx</code></li><li><code>shellSpacing.ts</code></li></ul></div>
+    <div><h4>Interaction + keys</h4><p>Click and Space/Enter activate. Pressed controls expose state. Toolbar commands also route through application shortcuts.</p></div>
+    <div><h4>Accessibility</h4><p>Each icon-only target needs an accessible name, disabled state, pressed/expanded state where applicable, visible keyboard focus, and one predictable tab stop.</p></div>
+    <div><h4>Pixel checkpoints</h4><ul class="checkpoint-list"><li>Outer bounds ±0 px</li><li>Icon centroid ±0.5 px</li><li>Radius and seam ownership exact</li><li>Flat colors exact RGB</li><li>Vector-edge tolerance only</li></ul></div>
+  </div>
+</article>
+
+<article class="gate-card" id="tabs">
+  <header><h3>2. Document tabs and document actions</h3><span class="status warn">Behavior gap</span><span class="metric-code">48 px band</span><span class="metric-code">32 px tab</span></header>
+  <div class="gate-visuals">
+    <div class="gate-visual"><span class="status pass">Electron actual</span><svg class="region-capture" viewBox="0 62 590 47" role="img" aria-label="Actual Electron document tab and actions"><image href="captures/current-hibbeler-workspace.png" width="1152" height="768"/></svg><p class="small">Long-title active tab, separate open action, and two-node new/template split action.</p></div>
+    <div class="gate-visual proposed"><span class="status proposal">Fresh native GPUI</span><svg class="region-capture" viewBox="0 62 590 47" role="img" aria-label="Fresh native GPUI document tab and actions"><image href="captures/gpui-native-current-1152x768.png" width="1152" height="768"/></svg><p class="small">Selection and close are live. The GPUI tab width formula is still approximate and clips earlier.</p></div>
+  </div>
+  <div class="gate-contract">
+    <div><h4>Current source</h4><ul class="source-map"><li><code>DocumentTabBar.tsx</code></li><li><code>domain-ui/ClosableDocumentTab.tsx</code></li><li><code>domain-ui/SplitButtonSegment.tsx</code></li><li><code>TemplatePickerPopover.tsx</code></li></ul></div>
+    <div><h4>Interaction + keys</h4><p>Arrow focus activates tabs. Alt+Shift+Left/Right reorders and restores focus. Drag starts after 6 px. Wheel scrolls overflowing tabs. Close moves focus to the adjacent tab.</p></div>
+    <div><h4>Accessibility</h4><p><code>Open documents</code> tablist, distinct close button, dirty-state label, reorder shortcuts and live announcement. Dirty close opens a named save/discard confirmation.</p></div>
+    <div><h4>Pixel checkpoints</h4><ul class="checkpoint-list"><li>8 px outer inset and gap</li><li>Text baseline and truncation</li><li>24 px close hit target</li><li>Selected fill exact</li><li>Separator and action gap exact</li></ul></div>
+  </div>
+</article>
+
+<article class="gate-card" id="toolbar">
+  <header><h3>3. Joined zoom and view toolbar</h3><span class="status warn">Core actions live</span><span class="metric-code">48 px band</span><span class="metric-code">8 px group gap</span></header>
+  <div class="gate-visuals">
+    <div class="gate-visual"><span class="status pass">Electron actual</span><svg class="region-capture" viewBox="515 108 370 46" role="img" aria-label="Actual Electron joined toolbar controls"><image href="captures/current-hibbeler-workspace.png" width="1152" height="768"/></svg><p class="small">Order is Zoom Out, Zoom In, percentage menu; then Fit, Continuous, and Single Page groups.</p></div>
+    <div class="gate-visual proposed"><span class="status proposal">Fresh native GPUI</span><svg class="region-capture" viewBox="515 108 370 46" role="img" aria-label="Fresh native GPUI joined toolbar controls"><image href="captures/gpui-native-current-1152x768.png" width="1152" height="768"/></svg><p class="small">The native spike matches order and group count. Dropdown chevrons are visual-only in this capture.</p></div>
+  </div>
+  <div class="gate-contract">
+    <div><h4>Current source</h4><ul class="source-map"><li><code>ViewerToolbar.tsx</code></li><li><code>components/ui/toggle-group.tsx</code></li><li><code>components/ui/dropdown-menu.tsx</code></li><li><code>viewportZoom.ts</code></li></ul></div>
+    <div><h4>Interaction + keys</h4><p>Cmd/Ctrl +, −, and 0. Percentage menu selects presets and double-click resets. Fit controls activate once; double-click changes view mode. Tooltips arbitrate hover and keyboard focus.</p></div>
+    <div><h4>Accessibility</h4><p>Named <code>Zoom controls</code>, <code>Fit controls</code>, and <code>Page view controls</code> groups. Menu triggers expose expanded state. Disabled fit modes remain discoverable without receiving invalid actions.</p></div>
+    <div><h4>Pixel checkpoints</h4><ul class="checkpoint-list"><li>32 px segments</li><li>Percentage width and tabular digits</li><li>One-pixel internal seams</li><li>Custom fit/view SVG geometry</li><li>Centered group at 1152 px</li></ul></div>
+  </div>
+</article>
+
+<article class="gate-card" id="left-rail">
+  <header><h3>4. Left rail, thumbnail sidebar, and page cards</h3><span class="status warn">Real list live</span><span class="metric-code">48 px rail</span><span class="metric-code">300 px sidebar</span></header>
+  <div class="gate-visuals">
+    <div class="gate-visual"><span class="status pass">Electron actual</span><svg class="region-capture" viewBox="0 108 335 650" role="img" aria-label="Actual Electron left rail and thumbnail sidebar"><image href="captures/current-hibbeler-workspace.png" width="1152" height="768"/></svg><p class="small">Virtualized cards include labels, quiet page actions, real thumbnails, and a selected/current state.</p></div>
+    <div class="gate-visual proposed"><span class="status proposal">Fresh native GPUI</span><svg class="region-capture" viewBox="0 108 335 650" role="img" aria-label="Fresh native GPUI left rail and thumbnail sidebar"><image href="captures/gpui-native-current-1152x768.png" width="1152" height="768"/></svg><p class="small"><code>uniform_list</code> renders the 935-page corpus. Card and thumbnail vertical rhythm still differ.</p></div>
+  </div>
+  <div class="gate-contract">
+    <div><h4>Current source</h4><ul class="source-map"><li><code>LeftSidebar.tsx</code></li><li><code>PageThumbnailList.tsx</code></li><li><code>PageThumbnailItem.tsx</code></li><li><code>CustomScrollArea.tsx</code></li></ul></div>
+    <div><h4>Interaction + keys</h4><p>Click selects page and synchronizes the viewport. Current page changes recenter the list without a scroll feedback loop. Page actions set scale and rotate. Page Up/Down navigation remains available.</p></div>
+    <div><h4>Accessibility</h4><p>Sidebar is named <code>Page Thumbnails</code>. Each recycled row needs a stable page name, current/selected state, action names, logical list position, and no stale accessibility node after reuse.</p></div>
+    <div><h4>Pixel checkpoints</h4><ul class="checkpoint-list"><li>48/300 px seams exact</li><li>48 px header band</li><li>114×132 preview target</li><li>203 px item pitch</li><li>Selected border and scroll thumb</li></ul></div>
+  </div>
+</article>
+
+<article class="gate-card" id="right-rail">
+  <header><h3>5. Right tool rail and grouped markup controls</h3><span class="status block">Visual implementation only</span><span class="metric-code">88 px rail</span><span class="metric-code">32 px targets</span></header>
+  <div class="gate-visuals">
+    <div class="gate-visual"><span class="status pass">Electron actual</span><svg class="region-capture" viewBox="1066 108 86 650" role="img" aria-label="Actual Electron right tool rail"><image href="captures/current-hibbeler-workspace.png" width="1152" height="768"/></svg><p class="small">General, Markup, Draw, and Measure groups use the product tool inventory.</p></div>
+    <div class="gate-visual proposed"><span class="status proposal">Fresh native GPUI</span><svg class="region-capture" viewBox="1066 108 86 650" role="img" aria-label="Fresh native GPUI right tool rail"><image href="captures/gpui-native-current-1152x768.png" width="1152" height="768"/></svg><p class="small">Exact Lucide paths are painted in matching group order. The targets do not yet activate tools.</p></div>
+  </div>
+  <div class="gate-contract">
+    <div><h4>Current source</h4><ul class="source-map"><li><code>RightRail.tsx</code></li><li><code>RailIcons.tsx</code></li><li><code>pdf-tools/toolRegistry.ts</code></li><li><code>RightSidebar.tsx</code></li></ul></div>
+    <div><h4>Interaction + keys</h4><p>V selects, Space temporarily pans, and product tool shortcuts activate markups. Shortcut routing is suppressed while an editor, dialog, menu, or popover owns input.</p></div>
+    <div><h4>Accessibility</h4><p>Each icon needs its tool label and shortcut. The active tool exposes pressed/current state. Groups need useful names and a predictable focus order. Disabled tools must explain state without trapping focus.</p></div>
+    <div><h4>Pixel checkpoints</h4><ul class="checkpoint-list"><li>Two-column 32 px rhythm</li><li>8 px group gaps/insets</li><li>Section baselines/dividers</li><li>Selected and hover surfaces</li><li>Icon paths and stroke weight</li></ul></div>
+  </div>
+</article>
+
+<article class="gate-card" id="constrained">
+  <header><h3>6. Constrained shell and overflow behavior</h3><span class="status block">Capture required</span></header>
+  <div class="gate-visuals">
+    <div class="gate-visual"><span class="status rep">Current source contract</span><div class="mini-shell" style="margin-top:8px;width:560px;max-width:100%"><div>File &nbsp; Edit &nbsp; View</div><div>Hibbeler… × <span style="float:right">＋ ▣⌄</span></div><div style="white-space:nowrap;overflow:hidden;text-align:center">− &nbsp; ＋ &nbsp; 194%⌄ &nbsp; ↔ &nbsp; ▣ &nbsp; ▯⌄ &nbsp; ▯⌄</div><div class="mini-body" style="grid-template-columns:26px 64px 1fr 26px"><div class="mini-rail">▤</div><div class="mini-side">Pages</div><div class="mini-page">PDF</div><div class="mini-rail">⌖<br>▭</div></div></div><p class="small">Representative rendering only. No verified constrained Electron screenshot exists.</p></div>
+    <div class="gate-visual proposed"><span class="status proposal">Proposed policy</span><div class="mini-shell" style="margin-top:8px;width:560px;max-width:100%"><div>File &nbsp; Edit &nbsp; View</div><div>Hibbeler… × <span style="float:right">＋ •••</span></div><div style="white-space:nowrap;text-align:center">▤ &nbsp; − &nbsp; ＋ &nbsp; 194%⌄ &nbsp; ↔ &nbsp; ••• &nbsp; ▭</div><div class="mini-body" style="grid-template-columns:26px 1fr 26px"><div class="mini-rail">▤</div><div class="mini-page">PDF</div><div class="mini-rail">▭</div></div></div><p class="small">Collapse sidebars before rails. Keep zoom and the active tool visible. Move secondary controls into an anchored overflow menu.</p></div>
+  </div>
+  <div class="gate-contract">
+    <div><h4>Current source</h4><ul class="source-map"><li><code>ViewerToolbar.tsx</code> safe-centred horizontal overflow</li><li><code>DocumentTabBar.tsx</code> horizontal wheel</li><li><code>LeftSidebar.tsx</code> fixed 300 px</li><li><code>RightSidebar.tsx</code> fixed product width</li></ul></div>
+    <div><h4>Interaction + keys</h4><p>Resize while menus are open. Keyboard users must reach overflowed controls. Escape closes the top transient surface and returns focus. Document shortcuts must not leak through a popup.</p></div>
+    <div><h4>Accessibility</h4><p>Collapsed panels retain an accessible reopen action and state. Overflow moves actions without duplicating nodes or changing shortcut meaning. Increased text size must not clip names or targets.</p></div>
+    <div><h4>Pass checkpoints</h4><ul class="checkpoint-list"><li>Capture actual minimum size first</li><li>No viewport below usable minimum</li><li>No clipped focus rings</li><li>Popup repositions on resize</li><li>Long titles and 200% text</li></ul></div>
+  </div>
+</article>
+
+<h2>Execution order</h2>
+<section class="sequence" aria-label="Component gate execution order">
+  <div><span><strong>Fresh capture</strong></span><span>Capture Electron and GPUI at 1152×768 with the same Hibbeler page, zoom, panel state, appearance, and display scale.</span></div>
+  <div><span><strong>Geometry</strong></span><span>Fix band heights, rails, sidebars, target bounds, baselines, gaps, seams, and page viewport before tuning colors.</span></div>
+  <div><span><strong>Static pixels</strong></span><span>Require exact flat fills and borders. Limit tolerance to text antialiasing, SVG edges, and PDF raster pixels after bounds match.</span></div>
+  <div><span><strong>State atlas</strong></span><span>Capture normal, hover, keyboard focus, selected/open, disabled, dirty, loading, error, and minimum-window states per component.</span></div>
+  <div><span><strong>Behavior</strong></span><span>Run keyboard, pointer, focus return, shortcut arbitration, resize, virtual-list reuse, and multi-tab state checks.</span></div>
+  <div><span><strong>Accessibility</strong></span><span>Inspect the AccessKit tree and screen-reader output. A visual match cannot pass a component with missing roles, names, state, order, or announcements.</span></div>
+</section>
+
+<article class="card warning"><h3>Current recommendation</h3><p>Continue component by component. The shell geometry is close enough to make regional pixel work efficient, but no component gate is complete. Use GPUI directly for layout, SVG, lists, images, scrolling, actions, and pointer events. Keep Butter Paper wrappers only where Nova styling or product semantics exist. Do not call a region “default GPUI”: GPUI 0.2.2 supplies framework primitives, not finished desktop widgets.</p></article>
+</main></body></html>
