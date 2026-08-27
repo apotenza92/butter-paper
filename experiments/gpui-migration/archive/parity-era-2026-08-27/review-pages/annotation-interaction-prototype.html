@@ -1,0 +1,552 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PROTOTYPE — Butter Paper annotation interaction architecture</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      --bg: #f5f5f4;
+      --panel: #fff;
+      --ink: #1c1917;
+      --muted: #78716c;
+      --line: #d6d3d1;
+      --accent: #2563eb;
+      --accent-soft: #dbeafe;
+      --ok: #166534;
+      --ok-soft: #dcfce7;
+      --warn: #92400e;
+      --warn-soft: #fef3c7;
+      --bad: #991b1b;
+      --bad-soft: #fee2e2;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); }
+    button { font: inherit; cursor: pointer; }
+    button:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 30%, transparent); outline-offset: 2px; }
+    main { width: min(1500px, 100%); margin: auto; padding: 22px; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 8px; font-size: clamp(26px, 3.2vw, 40px); }
+    h2 { font-size: 19px; }
+    h3 { font-size: 14px; }
+    .hero, .panel { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+    .hero { display: flex; justify-content: space-between; gap: 24px; padding: 20px; }
+    .hero p { max-width: 980px; margin-bottom: 0; color: var(--muted); line-height: 1.55; }
+    .eyebrow { margin-bottom: 7px; color: var(--accent); font-size: 12px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+    .prototype { align-self: start; padding: 7px 10px; border-radius: 999px; background: #ede9fe; color: #5b21b6; font-size: 11px; font-weight: 850; white-space: nowrap; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(390px, .8fr); gap: 18px; margin-top: 18px; }
+    .panel { padding: 18px; }
+    .panel + .panel { margin-top: 18px; }
+    .architecture { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+    .module { padding: 11px; border: 1px solid var(--line); border-radius: 9px; background: #fafaf9; }
+    .module strong { display: block; margin-bottom: 4px; font-size: 12px; }
+    .module span { color: var(--muted); font-size: 11px; line-height: 1.4; }
+    .canvas-grid { display: grid; grid-template-columns: minmax(330px, 1fr) minmax(260px, .7fr); gap: 16px; }
+    .page-wrap { min-height: 470px; display: grid; place-items: center; padding: 14px; border-radius: 10px; background: #292524; overflow: auto; }
+    .page { position: relative; width: 306px; height: 396px; background: #fff; box-shadow: 0 8px 30px #0008; }
+    .markup { position: absolute; border: 2px solid #2563eb; background: #93c5fd55; }
+    .markup.imported { border-color: #a16207; background: #fde68a55; }
+    .markup.selected { outline: 2px solid #0f172a; outline-offset: 4px; }
+    .markup.primary::after { content: ""; position: absolute; right: -8px; bottom: -8px; width: 9px; height: 9px; border: 1px solid #0f172a; background: #fff; }
+    .markup.locked::before { content: "LOCKED"; position: absolute; left: 3px; top: 3px; padding: 2px 3px; background: #fef3c7; color: #92400e; font-size: 7px; font-weight: 850; }
+    .markup.preview { border-style: dashed; opacity: .7; }
+    .state-cards { display: grid; gap: 8px; }
+    .state-card { padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fafaf9; }
+    .state-card strong { display: block; font-size: 11px; text-transform: uppercase; color: var(--muted); }
+    .state-card span { display: block; margin-top: 4px; font-size: 13px; font-weight: 750; }
+    .message { min-height: 58px; padding: 10px; border-radius: 8px; background: var(--accent-soft); color: #1e3a8a; font-size: 12px; line-height: 1.45; }
+    .message.rejected { background: var(--bad-soft); color: var(--bad); }
+    .actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-top: 10px; }
+    .actions button, .tabs button, .steps button { min-height: 35px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+    .actions button:hover, .steps button:hover { border-color: var(--accent); }
+    .tabs { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
+    .tabs button[aria-selected="true"] { border-color: #1c1917; background: #1c1917; color: #fff; }
+    .walkthrough { min-height: 180px; }
+    .walkthrough p { color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .steps { display: flex; flex-wrap: wrap; gap: 7px; }
+    .steps button.done { background: var(--ok-soft); color: var(--ok); }
+    .steps button.next { border-color: var(--accent); background: var(--accent); color: #fff; }
+    .steps button:disabled { cursor: default; opacity: .55; }
+    .a11y-list { display: grid; gap: 6px; padding: 0; list-style: none; }
+    .a11y-list li { padding: 8px; border: 1px solid var(--line); border-radius: 7px; font-size: 11px; }
+    .a11y-list code { color: var(--accent); }
+    .a11y-list small { display: block; margin-top: 3px; color: var(--muted); }
+    pre { max-height: 520px; overflow: auto; padding: 12px; border-radius: 8px; background: #1c1917; color: #e7e5e4; font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+    .verdict { margin-top: 12px; padding: 12px; border-left: 3px solid var(--ok); background: var(--ok-soft); color: var(--ok); font-size: 12px; line-height: 1.45; }
+    @media (max-width: 1050px) { .layout, .canvas-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 700px) { main { padding: 10px; } .hero { flex-direction: column; } .architecture { grid-template-columns: 1fr; } .actions { grid-template-columns: repeat(2, 1fr); } }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <div>
+        <div class="eyebrow">Throwaway logic prototype · annotation architecture</div>
+        <h1>Can GPUI editing stay responsive without corrupting document state?</h1>
+        <p>This prototype tests whether one revisioned interaction model can preserve immutable PDF-space annotations while pointer drafts, selection, property previews, save results, and accessibility stay independent. It is a state-model experiment, not the future Butter Paper interface.</p>
+      </div>
+      <span class="prototype">PROTOTYPE — NOT PRODUCT UI</span>
+    </header>
+
+    <div class="layout">
+      <div>
+        <section class="panel">
+          <h2>Proposed deep modules and seams</h2>
+          <div class="architecture">
+            <div class="module"><strong>AnnotationSession module</strong><span>Small interface: execute one semantic command, undo, redo, and read an immutable revision.</span></div>
+            <div class="module"><strong>AnnotationInteraction module</strong><span>Small interface: reduce normalized input into a transient draft or one document command.</span></div>
+            <div class="module"><strong>ToolDefinition module</strong><span>Owns canonical PDF-space geometry, exact hit tests, painting primitives, handles, properties, and PDF mapping.</span></div>
+            <div class="module"><strong>PageTransform adapter</strong><span>Maps unrotated default-user-space PDF points through CropBox, UserUnit, rotation, zoom, and device scale.</span></div>
+            <div class="module"><strong>PageAnnotationElement adapter</strong><span>One custom GPUI element batches visible vector paint, spatial-index hit tests, pointer capture, and fixed-device-pixel chrome.</span></div>
+            <div class="module"><strong>AccessibilityProjection adapter</strong><span>Creates stable, windowed annotation and handle nodes from semantic state. Pixels are never the accessibility source.</span></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Interactive page and full relevant state</h2>
+          <div class="canvas-grid">
+            <div class="page-wrap"><div class="page" id="page" aria-label="Prototype PDF page"></div></div>
+            <div>
+              <div class="state-cards" id="state-cards"></div>
+              <div class="message" id="message" aria-live="polite"></div>
+              <h3 style="margin-top:14px">Free play</h3>
+              <div class="actions" id="actions"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Guided walkthroughs</h2>
+          <div class="tabs" role="tablist" aria-label="Annotation state scenarios">
+            <button role="tab" aria-selected="true" data-scenario="rectangle">Rectangle workflow</button>
+            <button role="tab" aria-selected="false" data-scenario="cancel">Transform cancellation</button>
+            <button role="tab" aria-selected="false" data-scenario="locked">Locked import</button>
+            <button role="tab" aria-selected="false" data-scenario="group">Group command</button>
+            <button role="tab" aria-selected="false" data-scenario="save-race">Save race</button>
+            <button role="tab" aria-selected="false" data-scenario="wrong-pointer">Pointer ownership</button>
+          </div>
+          <div class="walkthrough" id="walkthrough"></div>
+        </section>
+      </div>
+
+      <aside>
+        <section class="panel">
+          <h2>Accessibility projection</h2>
+          <p style="color:var(--muted);font-size:12px">The production adapter will expose only visible annotations plus the active selection, with stable IDs across page virtualization.</p>
+          <ul class="a11y-list" id="a11y"></ul>
+        </section>
+        <section class="panel">
+          <h2>Raw model state</h2>
+          <pre id="raw-state"></pre>
+          <div class="verdict">The model is viable if every gesture owns one pointer and transform generation, previews never enter history, each completed gesture emits exactly one command, stale save results publish only their captured revision, and accessibility derives from semantic state.</div>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <script>
+    // Pure prototype module. It has no DOM access and can be lifted into a native implementation.
+    const AnnotationModel = (() => {
+      const clone = (value) => structuredClone(value);
+      const fixtureMarkups = () => [
+        { id: 'rect-a', kind: 'rectangle', pageIndex: 0, rect: { x: 70, y: 610, width: 135, height: 70 }, appearance: { stroke: '#2563eb', fill: '#bfdbfe', opacity: 0.7 }, locked: false, source: 'butter' },
+        { id: 'rect-b', kind: 'rectangle', pageIndex: 0, rect: { x: 285, y: 470, width: 155, height: 95 }, appearance: { stroke: '#7c3aed', fill: '#ddd6fe', opacity: 0.6 }, locked: false, source: 'butter' },
+        { id: 'imported-locked', kind: 'rectangle', pageIndex: 0, rect: { x: 355, y: 655, width: 165, height: 60 }, appearance: { stroke: '#a16207', fill: '#fde68a', opacity: 0.65 }, locked: true, source: 'imported' },
+      ];
+
+      const initialState = () => ({
+        document: { revision: 0, savedRevision: 0, markups: fixtureMarkups(), nextMarkupId: 1 },
+        history: { past: [], future: [] },
+        view: { tool: 'select', selectedIds: [], primaryId: null, zoom: 1, rotation: 0, transformGeneration: 1 },
+        interaction: null,
+        save: { nextRequestId: 1, inFlight: null, lastCompleted: null },
+        audit: { lastEvent: 'reset', outcome: 'accepted', message: 'Known fixture loaded. Selection and drafts are view state, not document state.', rejectedEvents: 0 },
+      });
+
+      const withAudit = (state, event, message, outcome = 'accepted') => ({
+        ...state,
+        audit: {
+          lastEvent: event,
+          outcome,
+          message,
+          rejectedEvents: state.audit.rejectedEvents + (outcome === 'rejected' ? 1 : 0),
+        },
+      });
+      const reject = (state, event, message) => withAudit(state, event, message, 'rejected');
+      const snapshot = (state) => ({ revision: state.document.revision, markups: clone(state.document.markups), nextMarkupId: state.document.nextMarkupId });
+      const pruneSelection = (view, markups) => {
+        const ids = new Set(markups.map((markup) => markup.id));
+        const selectedIds = view.selectedIds.filter((id) => ids.has(id));
+        return { ...view, selectedIds, primaryId: selectedIds.includes(view.primaryId) ? view.primaryId : (selectedIds[0] ?? null) };
+      };
+      const execute = (state, event, description, mutate) => {
+        if (state.interaction) return reject(state, event, 'A document command cannot run while a transient interaction owns the surface. Cancel or finish it first.');
+        const markups = mutate(clone(state.document.markups));
+        const past = [...state.history.past, snapshot(state)].slice(-100);
+        const document = { ...state.document, revision: state.document.revision + 1, markups };
+        return withAudit({ ...state, document, history: { past, future: [] }, view: pruneSelection(state.view, markups) }, event, `${description} One semantic command created revision ${document.revision}.`);
+      };
+      const interactionOwnerMatches = (state, action) => state.interaction
+        && state.interaction.pointerId === action.pointerId
+        && state.interaction.transformGeneration === state.view.transformGeneration
+        && state.interaction.baseRevision === state.document.revision;
+      const normalizedRect = (start, current) => ({
+        x: Math.min(start.x, current.x),
+        y: Math.min(start.y, current.y),
+        width: Math.abs(current.x - start.x),
+        height: Math.abs(current.y - start.y),
+      });
+      const selectedEditable = (state) => state.view.selectedIds.filter((id) => {
+        const markup = state.document.markups.find((candidate) => candidate.id === id);
+        return markup && !markup.locked;
+      });
+
+      const reducer = (state, action) => {
+        switch (action.type) {
+          case 'reset': return initialState();
+          case 'choose-tool':
+            if (state.interaction) return reject(state, action.type, 'Finish or cancel the current interaction before changing tools.');
+            return withAudit({ ...state, view: { ...state.view, tool: action.tool } }, action.type, `${action.tool} is now the active tool.`);
+          case 'select': {
+            if (state.interaction) return reject(state, action.type, 'Selection cannot change during an owned interaction.');
+            const ids = action.ids.filter((id) => state.document.markups.some((markup) => markup.id === id));
+            return withAudit({ ...state, view: { ...state.view, selectedIds: ids, primaryId: ids[0] ?? null } }, action.type, ids.length ? `Selected ${ids.join(', ')}. Selection did not change the document revision.` : 'Selection cleared.');
+          }
+          case 'select-created': {
+            const id = `rect-${state.document.nextMarkupId - 1}`;
+            if (!state.document.markups.some((markup) => markup.id === id)) return reject(state, action.type, 'No newly created rectangle exists.');
+            return reducer(state, { type: 'select', ids: [id] });
+          }
+          case 'pointer-down-draw':
+            if (state.interaction) return reject(state, action.type, 'The surface already has an active interaction.');
+            if (state.view.tool !== 'rectangle') return reject(state, action.type, 'Choose Rectangle before starting a rectangle draft.');
+            return withAudit({ ...state, interaction: { kind: 'drawing', pointerId: action.pointerId, transformGeneration: state.view.transformGeneration, baseRevision: state.document.revision, start: action.point, current: action.point, preview: null } }, action.type, 'Rectangle draft owns pointer 1. No document revision or history entry was created.');
+          case 'begin-resize': {
+            if (state.interaction) return reject(state, action.type, 'The surface already has an active interaction.');
+            const markup = state.document.markups.find((candidate) => candidate.id === state.view.primaryId);
+            if (!markup) return reject(state, action.type, 'Select one rectangle before resizing.');
+            if (markup.locked) return reject(state, action.type, 'Locked imported annotations are selectable but cannot expose mutation handles.');
+            const start = { x: markup.rect.x + markup.rect.width, y: markup.rect.y };
+            return withAudit({ ...state, interaction: { kind: 'resizing', pointerId: action.pointerId, transformGeneration: state.view.transformGeneration, baseRevision: state.document.revision, markupId: markup.id, original: clone(markup), start, current: start, preview: clone(markup) } }, action.type, `Resize handle for ${markup.id} owns pointer ${action.pointerId}.`);
+          }
+          case 'begin-move': {
+            if (state.interaction) return reject(state, action.type, 'The surface already has an active interaction.');
+            const ids = selectedEditable(state);
+            if (!ids.length) return reject(state, action.type, 'The selection contains no editable annotations.');
+            const originals = state.document.markups.filter((markup) => ids.includes(markup.id)).map(clone);
+            return withAudit({ ...state, interaction: { kind: 'moving', pointerId: action.pointerId, transformGeneration: state.view.transformGeneration, baseRevision: state.document.revision, markupIds: ids, originals, start: action.point, current: action.point, preview: originals } }, action.type, `${ids.length} editable annotation${ids.length === 1 ? '' : 's'} now share one move interaction.`);
+          }
+          case 'pointer-move': {
+            if (!state.interaction) return reject(state, action.type, 'No interaction owns this pointer move.');
+            if (!interactionOwnerMatches(state, action)) return reject(state, action.type, 'Ignored a pointer event with the wrong pointer, document revision, or page-transform generation.');
+            const interaction = clone(state.interaction);
+            interaction.current = action.point;
+            if (interaction.kind === 'drawing') interaction.preview = { id: 'draft', kind: 'rectangle', rect: normalizedRect(interaction.start, action.point), appearance: { stroke: '#2563eb', fill: '#bfdbfe', opacity: 0.55 }, locked: false, source: 'draft' };
+            if (interaction.kind === 'resizing') interaction.preview = { ...interaction.original, rect: { ...interaction.original.rect, width: Math.max(1, action.point.x - interaction.original.rect.x), height: Math.max(1, interaction.original.rect.y + interaction.original.rect.height - action.point.y), y: action.point.y } };
+            if (interaction.kind === 'moving') {
+              const delta = { x: action.point.x - interaction.start.x, y: action.point.y - interaction.start.y };
+              interaction.preview = interaction.originals.map((markup) => ({ ...markup, rect: { ...markup.rect, x: markup.rect.x + delta.x, y: markup.rect.y + delta.y } }));
+            }
+            return withAudit({ ...state, interaction }, action.type, 'Transient preview updated. Document revision and history are unchanged.');
+          }
+          case 'pointer-up': {
+            if (!state.interaction) return reject(state, action.type, 'No interaction owns this pointer release.');
+            if (!interactionOwnerMatches(state, action)) return reject(state, action.type, 'Ignored a pointer release with stale ownership.');
+            const interaction = state.interaction;
+            if (!interaction.preview) return withAudit({ ...state, interaction: null }, action.type, 'Empty interaction was cancelled without a document command.');
+            const cleared = { ...state, interaction: null };
+            if (interaction.kind === 'drawing') {
+              const id = `rect-${state.document.nextMarkupId}`;
+              const created = { ...interaction.preview, id, source: 'butter' };
+              const next = execute(cleared, action.type, `Created ${id}.`, (markups) => [...markups, created]);
+              return { ...next, document: { ...next.document, nextMarkupId: state.document.nextMarkupId + 1 }, view: { ...next.view, selectedIds: [id], primaryId: id } };
+            }
+            const replacements = new Map(interaction.preview.map ? interaction.preview.map((markup) => [markup.id, markup]) : [[interaction.preview.id, interaction.preview]]);
+            return execute(cleared, action.type, interaction.kind === 'moving' ? 'Committed the group move.' : `Committed resize for ${interaction.markupId}.`, (markups) => markups.map((markup) => replacements.get(markup.id) ?? markup));
+          }
+          case 'pointer-cancel':
+            if (!state.interaction) return reject(state, action.type, 'No interaction is active.');
+            if (state.interaction.pointerId !== action.pointerId) return reject(state, action.type, 'A different pointer cannot cancel the owned interaction.');
+            return withAudit({ ...state, interaction: null }, action.type, 'Pointer cancellation discarded the preview. Revision and history are unchanged.');
+          case 'escape':
+            if (!state.interaction) return withAudit({ ...state, view: { ...state.view, selectedIds: [], primaryId: null } }, action.type, 'Escape cleared selection because no draft was active.');
+            return withAudit({ ...state, interaction: null }, action.type, 'Escape discarded the transient interaction without changing the document.');
+          case 'transform-changed': {
+            const generation = state.view.transformGeneration + 1;
+            const next = { ...state, view: { ...state.view, zoom: action.zoom, rotation: action.rotation ?? state.view.rotation, transformGeneration: generation }, interaction: null };
+            return withAudit(next, action.type, state.interaction ? `Page transform advanced to generation ${generation}; the owned interaction was cancelled to prevent a geometry jump.` : `Page transform advanced to generation ${generation}.`);
+          }
+          case 'property-preview': {
+            if (state.interaction) return reject(state, action.type, 'Another interaction already owns the surface.');
+            const markup = state.document.markups.find((candidate) => candidate.id === state.view.primaryId);
+            if (!markup || markup.locked) return reject(state, action.type, 'Select an editable annotation before previewing a property.');
+            const preview = { ...clone(markup), appearance: { ...markup.appearance, fill: action.value } };
+            return withAudit({ ...state, interaction: { kind: 'property-preview', baseRevision: state.document.revision, markupId: markup.id, key: 'fill', value: action.value, preview } }, action.type, 'Property preview changed paint only. It did not enter document history.');
+          }
+          case 'property-commit': {
+            if (state.interaction?.kind !== 'property-preview') return reject(state, action.type, 'No property preview is ready to commit.');
+            if (state.interaction.baseRevision !== state.document.revision) return reject({ ...state, interaction: null }, action.type, 'The property preview was based on a stale document revision and was discarded.');
+            const preview = state.interaction.preview;
+            return execute({ ...state, interaction: null }, action.type, `Committed ${state.interaction.key} for ${preview.id}.`, (markups) => markups.map((markup) => markup.id === preview.id ? preview : markup));
+          }
+          case 'toggle-lock': {
+            const markup = state.document.markups.find((candidate) => candidate.id === state.view.primaryId);
+            if (!markup) return reject(state, action.type, 'Select an annotation before changing its lock state.');
+            return execute(state, action.type, `${markup.locked ? 'Unlocked' : 'Locked'} ${markup.id}.`, (markups) => markups.map((candidate) => candidate.id === markup.id ? { ...candidate, locked: !candidate.locked } : candidate));
+          }
+          case 'delete-selection': {
+            const editable = new Set(selectedEditable(state));
+            if (!editable.size) return reject(state, action.type, 'Locked annotations cannot be deleted.');
+            return execute(state, action.type, `Deleted ${editable.size} editable annotation${editable.size === 1 ? '' : 's'}; locked selections were preserved.`, (markups) => markups.filter((markup) => !editable.has(markup.id)));
+          }
+          case 'undo': {
+            if (state.interaction) return reject(state, action.type, 'Cancel or commit the transient interaction before undo.');
+            const prior = state.history.past.at(-1);
+            if (!prior) return reject(state, action.type, 'No document command is available to undo.');
+            const current = snapshot(state);
+            const document = { ...state.document, revision: prior.revision, markups: clone(prior.markups), nextMarkupId: prior.nextMarkupId };
+            return withAudit({ ...state, document, history: { past: state.history.past.slice(0, -1), future: [current, ...state.history.future] }, view: pruneSelection(state.view, document.markups) }, action.type, `Restored revision ${document.revision}.`);
+          }
+          case 'redo': {
+            if (state.interaction) return reject(state, action.type, 'Cancel or commit the transient interaction before redo.');
+            const [future, ...rest] = state.history.future;
+            if (!future) return reject(state, action.type, 'No document command is available to redo.');
+            const current = snapshot(state);
+            const document = { ...state.document, revision: future.revision, markups: clone(future.markups), nextMarkupId: future.nextMarkupId };
+            return withAudit({ ...state, document, history: { past: [...state.history.past, current], future: rest }, view: pruneSelection(state.view, document.markups) }, action.type, `Reapplied revision ${document.revision}.`);
+          }
+          case 'save-start': {
+            if (state.save.inFlight) return reject(state, action.type, 'A save worker request is already in flight.');
+            const request = { id: state.save.nextRequestId, requestedRevision: state.document.revision };
+            return withAudit({ ...state, save: { ...state.save, nextRequestId: request.id + 1, inFlight: request } }, action.type, `Save worker received immutable revision ${request.requestedRevision}.`);
+          }
+          case 'save-complete': {
+            const request = state.save.inFlight;
+            if (!request || request.id !== action.requestId) return reject(state, action.type, 'Ignored a stale or unknown save result.');
+            const document = { ...state.document, savedRevision: request.requestedRevision };
+            return withAudit({ ...state, document, save: { ...state.save, inFlight: null, lastCompleted: request } }, action.type, document.revision === request.requestedRevision ? `Published revision ${request.requestedRevision}; the document is clean.` : `Published revision ${request.requestedRevision}; current revision ${document.revision} remains dirty. The worker result did not replace document state.`);
+          }
+          default: return reject(state, action.type ?? 'unknown', 'Unknown action.');
+        }
+      };
+
+      const visibleMarkups = (state) => {
+        if (!state.interaction?.preview) return state.document.markups;
+        if (state.interaction.kind === 'drawing') return [...state.document.markups, state.interaction.preview];
+        const previews = Array.isArray(state.interaction.preview) ? state.interaction.preview : [state.interaction.preview];
+        const byId = new Map(previews.map((markup) => [markup.id, markup]));
+        return state.document.markups.map((markup) => byId.get(markup.id) ?? markup);
+      };
+      const accessibilityProjection = (state) => state.document.markups.map((markup) => {
+        const selected = state.view.selectedIds.includes(markup.id);
+        const primary = state.view.primaryId === markup.id;
+        const actions = ['select', 'open properties'];
+        if (!markup.locked) actions.push('move by keyboard', 'delete');
+        return {
+          id: `annotation:${markup.id}`,
+          role: 'annotation',
+          name: `${markup.source === 'imported' ? 'Imported ' : ''}Rectangle on page 1${markup.locked ? ', locked' : ''}${selected ? ', selected' : ''}`,
+          actions,
+          children: primary && !markup.locked ? ['handle:nw', 'handle:ne', 'handle:se', 'handle:sw'] : [],
+        };
+      });
+      return { initialState, reducer, visibleMarkups, accessibilityProjection };
+    })();
+
+    const actionCatalog = [
+      ['Choose Rectangle', { type: 'choose-tool', tool: 'rectangle' }],
+      ['Draw: pointer down', { type: 'pointer-down-draw', pointerId: 1, point: { x: 95, y: 315 } }],
+      ['Pointer move', { type: 'pointer-move', pointerId: 1, point: { x: 245, y: 405 } }],
+      ['Pointer release', { type: 'pointer-up', pointerId: 1 }],
+      ['Select new rectangle', { type: 'select-created' }],
+      ['Begin resize', { type: 'begin-resize', pointerId: 1 }],
+      ['Resize preview', { type: 'pointer-move', pointerId: 1, point: { x: 285, y: 285 } }],
+      ['Preview blue fill', { type: 'property-preview', value: '#60a5fa' }],
+      ['Commit property', { type: 'property-commit' }],
+      ['Select two rectangles', { type: 'select', ids: ['rect-a', 'rect-b'] }],
+      ['Begin group move', { type: 'begin-move', pointerId: 1, point: { x: 100, y: 100 } }],
+      ['Move group preview', { type: 'pointer-move', pointerId: 1, point: { x: 135, y: 125 } }],
+      ['Escape / cancel', { type: 'escape' }],
+      ['Cancel pointer 1', { type: 'pointer-cancel', pointerId: 1 }],
+      ['Zoom to 150%', { type: 'transform-changed', zoom: 1.5 }],
+      ['Select locked import', { type: 'select', ids: ['imported-locked'] }],
+      ['Toggle lock', { type: 'toggle-lock' }],
+      ['Delete selection', { type: 'delete-selection' }],
+      ['Undo', { type: 'undo' }],
+      ['Redo', { type: 'redo' }],
+      ['Start save', { type: 'save-start' }],
+      ['Complete save 1', { type: 'save-complete', requestId: 1 }],
+      ['Wrong pointer move', { type: 'pointer-move', pointerId: 2, point: { x: 300, y: 300 } }],
+      ['Reset', { type: 'reset' }],
+    ];
+
+    let state = AnnotationModel.initialState();
+    let scenarioName = 'rectangle';
+    let scenarioStep = 0;
+
+    const scenarios = {
+      rectangle: {
+        title: 'One rectangle becomes one command per completed edit',
+        description: 'Watch the revision remain unchanged during drawing, resize, and property previews. Each release or explicit property commit creates exactly one history entry.',
+        steps: [
+          ['Choose Rectangle', { type: 'choose-tool', tool: 'rectangle' }],
+          ['Start the draft', { type: 'pointer-down-draw', pointerId: 1, point: { x: 95, y: 315 } }],
+          ['Move the draft', { type: 'pointer-move', pointerId: 1, point: { x: 245, y: 405 } }],
+          ['Commit creation', { type: 'pointer-up', pointerId: 1 }],
+          ['Begin resize', { type: 'begin-resize', pointerId: 1 }],
+          ['Preview resize', { type: 'pointer-move', pointerId: 1, point: { x: 285, y: 285 } }],
+          ['Commit resize', { type: 'pointer-up', pointerId: 1 }],
+          ['Preview a property', { type: 'property-preview', value: '#60a5fa' }],
+          ['Commit the property', { type: 'property-commit' }],
+          ['Undo property command', { type: 'undo' }],
+          ['Redo property command', { type: 'redo' }],
+        ],
+      },
+      cancel: {
+        title: 'A page-transform change cancels the active gesture',
+        description: 'Changing zoom, rotation, CropBox, device scale, or viewport geometry advances a generation. The model cancels the draft instead of reinterpreting it under a new transform.',
+        steps: [
+          ['Choose Rectangle', { type: 'choose-tool', tool: 'rectangle' }],
+          ['Start draft', { type: 'pointer-down-draw', pointerId: 1, point: { x: 90, y: 300 } }],
+          ['Preview geometry', { type: 'pointer-move', pointerId: 1, point: { x: 250, y: 410 } }],
+          ['Zoom while dragging', { type: 'transform-changed', zoom: 1.5 }],
+          ['Try stale release', { type: 'pointer-up', pointerId: 1 }],
+        ],
+      },
+      locked: {
+        title: 'Imported and locked annotations remain inspectable',
+        description: 'A locked imported annotation has a stable accessibility node and can be selected. Move, resize, property mutation, and deletion remain unavailable until one explicit unlock command.',
+        steps: [
+          ['Select imported annotation', { type: 'select', ids: ['imported-locked'] }],
+          ['Try to resize', { type: 'begin-resize', pointerId: 1 }],
+          ['Try to delete', { type: 'delete-selection' }],
+          ['Unlock explicitly', { type: 'toggle-lock' }],
+          ['Begin resize now', { type: 'begin-resize', pointerId: 1 }],
+          ['Preview resize', { type: 'pointer-move', pointerId: 1, point: { x: 555, y: 620 } }],
+          ['Commit resize', { type: 'pointer-up', pointerId: 1 }],
+        ],
+      },
+      group: {
+        title: 'Multi-selection moves as one transaction',
+        description: 'Selection order lives in view state. A group move snapshots every editable member, previews all members together, and produces one undoable command on release.',
+        steps: [
+          ['Select two rectangles', { type: 'select', ids: ['rect-a', 'rect-b'] }],
+          ['Begin group move', { type: 'begin-move', pointerId: 1, point: { x: 100, y: 100 } }],
+          ['Preview group move', { type: 'pointer-move', pointerId: 1, point: { x: 145, y: 130 } }],
+          ['Commit once', { type: 'pointer-up', pointerId: 1 }],
+          ['Undo once', { type: 'undo' }],
+        ],
+      },
+      'save-race': {
+        title: 'A completed save cannot overwrite newer edits',
+        description: 'The worker receives an immutable revision. If editing continues, completion marks only that captured revision as published; the current document stays dirty and unchanged.',
+        steps: [
+          ['Start save of revision 0', { type: 'save-start' }],
+          ['Choose Rectangle', { type: 'choose-tool', tool: 'rectangle' }],
+          ['Start new draft', { type: 'pointer-down-draw', pointerId: 1, point: { x: 80, y: 290 } }],
+          ['Preview new draft', { type: 'pointer-move', pointerId: 1, point: { x: 220, y: 380 } }],
+          ['Commit revision 1', { type: 'pointer-up', pointerId: 1 }],
+          ['Old save completes', { type: 'save-complete', requestId: 1 }],
+        ],
+      },
+      'wrong-pointer': {
+        title: 'Only the captured pointer can mutate a draft',
+        description: 'A second pointer, stale revision, or stale transform generation is rejected. This prevents cross-page and multi-touch events from corrupting the active geometry.',
+        steps: [
+          ['Choose Rectangle', { type: 'choose-tool', tool: 'rectangle' }],
+          ['Pointer 1 starts', { type: 'pointer-down-draw', pointerId: 1, point: { x: 90, y: 300 } }],
+          ['Pointer 2 tries to move', { type: 'pointer-move', pointerId: 2, point: { x: 280, y: 430 } }],
+          ['Pointer 1 moves', { type: 'pointer-move', pointerId: 1, point: { x: 240, y: 400 } }],
+          ['Pointer 1 cancels', { type: 'pointer-cancel', pointerId: 1 }],
+        ],
+      },
+    };
+
+    function dispatch(action) {
+      state = AnnotationModel.reducer(state, action);
+      render();
+    }
+
+    function renderPage() {
+      const page = document.querySelector('#page');
+      page.innerHTML = '';
+      const scale = 0.5;
+      AnnotationModel.visibleMarkups(state).forEach((markup) => {
+        const element = document.createElement('div');
+        const selected = state.view.selectedIds.includes(markup.id);
+        const primary = state.view.primaryId === markup.id;
+        element.className = ['markup', markup.source === 'imported' ? 'imported' : '', markup.locked ? 'locked' : '', selected ? 'selected' : '', primary ? 'primary' : '', markup.source === 'draft' ? 'preview' : ''].filter(Boolean).join(' ');
+        element.dataset.markupId = markup.id;
+        element.title = markup.id;
+        element.style.left = `${markup.rect.x * scale}px`;
+        element.style.top = `${(792 - markup.rect.y - markup.rect.height) * scale}px`;
+        element.style.width = `${markup.rect.width * scale}px`;
+        element.style.height = `${markup.rect.height * scale}px`;
+        element.style.borderColor = markup.appearance.stroke;
+        element.style.background = `${markup.appearance.fill}88`;
+        page.append(element);
+      });
+    }
+
+    function renderState() {
+      const dirty = state.document.revision !== state.document.savedRevision;
+      const interaction = state.interaction ? `${state.interaction.kind} · base r${state.interaction.baseRevision}` : 'idle';
+      const selected = state.view.selectedIds.length ? `${state.view.selectedIds.join(', ')} · primary ${state.view.primaryId}` : 'none';
+      document.querySelector('#state-cards').innerHTML = [
+        ['Document', `revision ${state.document.revision} · saved ${state.document.savedRevision} · ${dirty ? 'dirty' : 'clean'}`],
+        ['History', `${state.history.past.length} undo · ${state.history.future.length} redo`],
+        ['Interaction', interaction],
+        ['Selection', selected],
+        ['Page transform', `${Math.round(state.view.zoom * 100)}% · generation ${state.view.transformGeneration}`],
+        ['Save worker', state.save.inFlight ? `request ${state.save.inFlight.id} · revision ${state.save.inFlight.requestedRevision}` : 'idle'],
+      ].map(([label, value]) => `<div class="state-card"><strong>${label}</strong><span>${value}</span></div>`).join('');
+      const message = document.querySelector('#message');
+      message.textContent = `${state.audit.lastEvent}: ${state.audit.message}`;
+      message.classList.toggle('rejected', state.audit.outcome === 'rejected');
+      document.querySelector('#raw-state').textContent = JSON.stringify(state, null, 2);
+    }
+
+    function renderActions() {
+      document.querySelector('#actions').innerHTML = actionCatalog.map(([label, action], index) => `<button data-action-index="${index}">${label}</button>`).join('');
+      document.querySelectorAll('[data-action-index]').forEach((button) => button.addEventListener('click', () => dispatch(actionCatalog[Number(button.dataset.actionIndex)][1])));
+    }
+
+    function renderA11y() {
+      document.querySelector('#a11y').innerHTML = AnnotationModel.accessibilityProjection(state).map((node) => `<li><code>${node.id}</code> · ${node.role}<strong style="display:block;margin-top:3px">${node.name}</strong><small>Actions: ${node.actions.join(', ')}${node.children.length ? ` · Children: ${node.children.join(', ')}` : ''}</small></li>`).join('');
+    }
+
+    function openScenario(name) {
+      scenarioName = name;
+      scenarioStep = 0;
+      state = AnnotationModel.initialState();
+      document.querySelectorAll('[data-scenario]').forEach((tab) => tab.setAttribute('aria-selected', String(tab.dataset.scenario === name)));
+      render();
+    }
+
+    function renderWalkthrough() {
+      const scenario = scenarios[scenarioName];
+      document.querySelector('#walkthrough').innerHTML = `<h3>${scenario.title}</h3><p>${scenario.description}</p><div class="steps">${scenario.steps.map(([label], index) => `<button data-step="${index}" class="${index < scenarioStep ? 'done' : index === scenarioStep ? 'next' : ''}" ${index > scenarioStep ? 'disabled' : ''}>${index + 1}. ${label}</button>`).join('')}</div>`;
+      document.querySelectorAll('[data-step]').forEach((button) => button.addEventListener('click', () => {
+        const index = Number(button.dataset.step);
+        if (index !== scenarioStep) return;
+        dispatch(scenario.steps[index][1]);
+        scenarioStep += 1;
+        renderWalkthrough();
+      }));
+    }
+
+    function render() {
+      renderPage();
+      renderState();
+      renderActions();
+      renderA11y();
+      renderWalkthrough();
+    }
+
+    document.querySelectorAll('[data-scenario]').forEach((tab) => tab.addEventListener('click', () => openScenario(tab.dataset.scenario)));
+    render();
+  </script>
+</body>
+</html>

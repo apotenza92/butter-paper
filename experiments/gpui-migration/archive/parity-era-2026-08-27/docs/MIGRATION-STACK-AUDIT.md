@@ -1852,6 +1852,11 @@ remain partial. Production PDFium, Windows authority, native
 visual/accessibility, packages, physical input/IME, Hibbeler, corpus breadth,
 and matched performance remain blocked or not run.
 
+The final two-layer guarded gate passes 227 active tests plus 23 gated ignores.
+Source/guard policy is 21/21, the exact prepared digest passes, the graph retains
+one GPUI identity across 870 packages, configured dependency policy has no
+denial, and host storage is green.
+
 ## 2026-08-26 Cloud+ stack update
 
 Cloud+ preserves the established dependency direction without an upstream
@@ -1888,3 +1893,24 @@ redistribution, Windows target authority, and live native visual/accessibility
 are blocked. Packages, physical macOS/Windows input, Hibbeler/third-party
 Cloud+ corpora, and matched Electron/GPUI performance are not run. Electron
 remains the shipping rollback.
+
+## 2026-08-27 native viewer stack update
+
+The viewer stack is consolidated on the pinned Longbridge/Zed GPUI graph.
+`NativeDocumentSession` owns CAD, fit/zoom, page mode, scroll, quality,
+cancellation, and page-error state. GPUI Component owns standard controls,
+resizable panels, and scrollbars. Raw GPUI is limited to the PDF/annotation
+canvas and virtualized page list; the GPUI-free gallery planner and PDF worker
+remain shared domain modules. No upstream fork, crate-identity change, or
+production Electron edit was required.
+
+The runtime quality scheduler consumes the frozen Electron dwell and motion
+policy rather than promoting immediately. One cancellable task per document
+releases due work and rejects obsolete document, plan, generation, and raster
+authority. Exact adaptive load measurement is not yet shared with Electron's
+controller; the native seam defaults to level 0 and tests all four policy
+levels.
+
+This is development-only evidence. Production PDFium distribution, native
+visual/accessibility, high contrast, packages, physical platforms, Hibbeler,
+and matched performance remain blocked or not run.

@@ -167,3 +167,35 @@ The real journey now exercises a non-zero CropBox, `/Rotate 90`, and
 Snapshot session seams. The coordinate implementation is development-complete
 for these representative consumers. Product cutover still requires the listed
 corpus, native, packaged, accessibility, and performance gates.
+
+## Native viewer shell and CAD slice (2026-08-27)
+
+| Surface | Electron contract | GPUI mapping | Status | Evidence | Remaining gates |
+| --- | --- | --- | --- | --- | --- |
+| Render, navigate, and thumbnails | Real pages, synchronized current page, lazy all-page thumbnails, keyboard and thumbnail navigation | Session-owned viewer plus raw GPUI `uniform_list`; real GPUI Component rail scrollbar | Partial Linux development evidence | 100 stable rows, End/page-100, lazy thumbnail 13, and checksum-controlled real page-50 pixels pass | Exact six-row/24 px overscan is not exposed by pinned `uniform_list`; native visual/accessibility and hostile corpora not run |
+| Viewer toolbar, page modes, zoom, and CAD | Fit, zoom presets/steps, Single Page/Continuous, CAD Columns/Rows and per-document state | Real GPUI Component ButtonGroup, DropdownButton, Popover/Menu, CAD controls; shallow product icon canvases | Partial Linux development evidence | Independent real sessions; exact 667 px toolbar; product icon IDs; normal/dark/fractional geometry; real gallery CAD planner | Icon-only custom-child accessible name is an upstream gap; tooltip live proof and platform input not run |
+| Rails and two-axis viewport scrolling | Resizable thumbnail/properties rails and independent horizontal/vertical scroll owners | Real GPUI Component `h_resizable` panels and scrollbars | Partial Linux development evidence | 180-360 px thumbnail and 220-420 px inspector constraints; no overlap from 1200x800 through 320x480 and 640x360 constrained proof | Pointer drag of rails and scrollbar thumbs not run; live accessibility not run |
+| Progressive rendering and recovery | Preview/full/detail dwell, motion deferral, bounded eviction, retained pixels, page-local retry | Application-owned scheduler/caches; GPUI Component Alert and Retry Button | Partial Linux development evidence | Exact dwell table, 1.5/0.75 hysteresis, 180 ms settle, 1200 ms detail, stale cancellation, 32/160/64 MiB caches, retained fallback, and real retry pass | Native adaptive load controller is not ported; defaults to tested level 0. Real sustained long-document pressure and matched performance not run |
+
+Blocked: production PDFium redistribution and fresh live visual/accessibility on
+the headless VPS. Not run: high contrast, packages, physical macOS/Windows,
+IME, Hibbeler, hostile PDFs, pointer tooltip/rail/scrollbar proof, and matched
+performance. Electron remains the shipping rollback.
+
+## Issue #85 superseding viewer evidence (2026-08-27)
+
+These rows supersede older viewer gaps where later integration evidence is
+stronger.
+
+| Surface | Electron contract | Native mapping | Status | Deterministic evidence | Remaining gate |
+|---|---|---|---|---|---|
+| Viewer adaptive performance | Frame/input/render/resource pressure, direct stability degradation, slow recovery | Application-owned controller feeding live `NativeDocumentSession` and `DocumentViewerState` | Partial Linux development acceptance | Exact sample windows, refresh inference, thresholds, level changes, level-three single-job limit, and six-evaluation recovery pass; live GPUI frame/input receipt feeds pass | No portable process-resource sampler or platform event timestamp; sustained matched performance not run |
+| Opening and render progress | Opening feedback and stable page-quality status | Real GPUI Component `Progress` in polite status regions over application state | Linux development acceptance | Stable IDs, opening state, busy/settled state, progress dismissal, and unchanged page bounds pass | Native pixels and live accessibility not run |
+| Rails and viewport | Two-axis document scrolling and resizable thumbnail rail | GPUI Component scrollbars and `h_resizable`; application-owned scroll snapshot | Linux development acceptance | Independent horizontal/vertical pointer scrolling persists into document state; real two-phase pointer drag grows the rail by 40 px; 180–360 px and no-overlap geometry pass | Scrollbar-thumb drag and native accessibility not run |
+| Viewer toolbar and tabs | Long labels, 24 px close targets, named icon actions, exact zoom icons | Real GPUI Component TabBar/Tab/Button/ButtonGroup/DropdownButton plus shallow name adapter and product icon canvas | Linux development acceptance | 190 px label cap; exact 24×24 close bounds; stable accessibility IDs/names/tooltips; exact Lucide Zoom In/Out paths; 607/667 px thresholds; toolbar 9/9 and final 232 active plus 23 gated ignores pass | Tooltip-popup pixels are not deterministically inspectable at this pin; native high contrast, packages, physical platforms, screen reader, and IME not run |
+
+Final Linux deterministic gate: 232 active tests plus 23 gated ignores, no
+failures, through both storage guards
+(`button-probe-20260827T135549Z-3041567.log`). Source/guard policy 21/21, exact
+prepared digest, single-GPUI 870-package graph, dependency policy with warnings
+but no denial, and host storage pass.

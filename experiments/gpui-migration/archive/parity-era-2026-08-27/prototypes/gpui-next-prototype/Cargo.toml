@@ -1,0 +1,30 @@
+[package]
+name = "butter-paper-gpui-next-prototype"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[features]
+visual-capture = ["gpui/test-support", "gpui_platform/test-support"]
+
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", features = ["profiler"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "c6ffd3e166abb43bff8845f0aa61711adb128dcf" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "c6ffd3e166abb43bff8845f0aa61711adb128dcf" }
+
+[[bin]]
+name = "capture-shells"
+path = "src/bin/capture_shells.rs"
+required-features = ["visual-capture"]
+
+[profile.dev]
+codegen-units = 16
+debug = "limited"
+split-debuginfo = "unpacked"
+
+[profile.dev.package.gpui]
+opt-level = 3
+
+[profile.dev.package.gpui_platform]
+opt-level = 3

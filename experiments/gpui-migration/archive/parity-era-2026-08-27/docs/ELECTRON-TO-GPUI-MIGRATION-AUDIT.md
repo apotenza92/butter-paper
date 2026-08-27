@@ -1501,3 +1501,36 @@ not run. The complete settings editor, dynamic picker, persistent authority,
 and authorized-source save route are connected. Native Dialog Escape and
 outside-click handling lacks fresh native input proof. Issue #84 is complete as
 Linux development evidence only.
+
+## 2026-08-27 native viewer-shell and CAD evidence
+
+Issue #85 replaces the earlier isolated viewer mock with a session-owned native
+workspace. Real PDF pages and lazy thumbnails render through the pinned worker;
+fit, zoom, page mode, CAD Columns/Rows, page rotation, scroll, and keyboard
+navigation remain independent across documents. Real GPUI Component controls,
+resizable rails, and two-axis scrollbars form the shell.
+
+Preview/Full/Detail now represent distinct raster requests and bounded caches.
+The runtime implements the frozen Electron dwell, motion hysteresis, settle,
+thumbnail-target, detail, cancellation, stale-result, and lower-quality fallback
+rules. Failure recovery is page-local and does not discard the live session.
+Deterministic geometry covers normal, actual Electron minimum, issue minimum,
+narrow, short, dark, and fractional-scale cases without overlap.
+
+Later Issue #85 evidence adds the application-owned adaptive controller, real
+opening and page-render progress/status, application-state synchronization for
+both native scroll axes, real pointer rail resizing, a 190 px long-label cap,
+exact 24×24 named close Buttons, and exact Lucide Zoom In/Out geometry. The
+shallow name adapter applies accessibility metadata to the same pinned real
+GPUI Component Button and does not fork it. The pinned graph still has no
+portable process-resource sampler or platform event timestamp.
+
+Passed evidence is Linux development-only: focused guards and final all-targets
+232 active plus 23 gated ignores in 40 seconds
+(`button-probe-20260827T135549Z-3041567.log`), source/guard policy 21/21, exact
+prepared digest, one GPUI identity across 870 packages, dependency policy with
+warnings but no denial, and green host storage. Failed evidence is fixed
+red-first history. Blocked: production PDFium distribution and fresh native
+visual/live accessibility on this headless host. Not run: tooltip-popup pixels,
+scrollbar-thumb drag, native high contrast, packages, physical devices, screen
+reader, IME, Hibbeler/hostile corpora, and matched performance.
