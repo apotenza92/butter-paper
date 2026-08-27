@@ -15,7 +15,7 @@ pub const TEXT: u32 = 0x0a0a0a;
 pub const MUTED: u32 = 0x737373;
 pub const ACCENT: u32 = 0xf5f5f5;
 pub const FOCUS: u32 = 0xa3a3a3;
-pub const PAGE: u32 = 0xf2efe5;
+pub const PAGE: u32 = 0xffffff;
 pub const VIEWPORT: u32 = 0xf4f4f5;
 
 pub const BODY_FONT_SIZE: f32 = 13.0;
@@ -33,6 +33,15 @@ pub const TAB_HEIGHT: f32 = 32.0;
 pub const DOCUMENT_TAB_BAR_HEIGHT: f32 = 48.0;
 pub const RAIL_WIDTH: f32 = 48.0;
 pub const RIGHT_RAIL_WIDTH: f32 = 88.0;
-pub const RAIL_BUTTON_SIZE: f32 = 32.0;
 pub const RAIL_BUTTON_GAP: f32 = 8.0;
 pub const SIDEBAR_WIDTH: f32 = 300.0;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pdf_page_surface_matches_the_production_white_canvas() {
+        assert_eq!(PAGE, SURFACE);
+    }
+}

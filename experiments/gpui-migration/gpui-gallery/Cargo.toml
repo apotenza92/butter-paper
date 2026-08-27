@@ -3,9 +3,58 @@ name = "butter-paper-gpui-gallery"
 version = "0.1.0"
 edition = "2024"
 publish = false
+license = "MIT"
+autobins = false
+
+[features]
+default = ["gallery", "benchmark-evidence"]
+gallery = ["dep:anyhow", "dep:dirs", "dep:gpui", "dep:gpui_platform", "dep:palette", "dep:smallvec"]
+benchmark-evidence = ["gpui/input-latency-histogram"]
+pdfium-worker = ["dep:pdfium-render"]
+visual-capture = ["gallery", "gpui/test-support", "gpui_platform/test-support"]
 
 [dependencies]
-anyhow = "1.0"
-gpui = "=0.2.2"
-rfd = "=0.17.2"
+anyhow = { version = "1.0", optional = true }
+dirs = { version = "5.0.1", optional = true }
+gpui = { git = "https://github.com/gpui-ce/gpui-ce", rev = "c738623ffbcec2aeddc44a645cc6b74646d5cf97", default-features = false, features = ["wayland", "x11"], optional = true }
+gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "c738623ffbcec2aeddc44a645cc6b74646d5cf97", default-features = false, features = ["font-kit", "wayland", "x11"], optional = true }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+palette = { version = "0.7.7", optional = true }
+lopdf = { version = "=0.44.0", default-features = false }
+libc = "0.2"
+memmap2 = "0.9.8"
+pdfium-render = { git = "https://github.com/ajrcarey/pdfium-render", rev = "6cee8b9a3951832ac0ff62ce4c32800278001cb8", version = "=0.9.4", default-features = false, features = ["pdfium_7881"], optional = true }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
+smallvec = { version = "1.15.1", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", features = ["fs"] }
+
+[dev-dependencies]
+gpui = { git = "https://github.com/gpui-ce/gpui-ce", rev = "c738623ffbcec2aeddc44a645cc6b74646d5cf97", default-features = false, features = ["test-support", "wayland", "x11"] }
+gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "c738623ffbcec2aeddc44a645cc6b74646d5cf97", default-features = false, features = ["font-kit", "test-support", "wayland", "x11"] }
+tempfile = "3.22"
+
+[[bin]]
+name = "butter-paper-gpui-gallery"
+path = "src/main.rs"
+required-features = ["gallery"]
+
+[[bin]]
+name = "component_state_benchmark"
+path = "src/bin/component_state_benchmark.rs"
+
+[[bin]]
+name = "butter-paper-pdf-worker"
+path = "src/bin/butter-paper-pdf-worker.rs"
+required-features = ["pdfium-worker"]
+
+# GPUI's Vulkan dependency can exceed the Linux VPS memory limit while linking
+# full debug metadata. The spike uses explicit event timing instead of symbols.
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0

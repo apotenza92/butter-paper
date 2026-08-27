@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "purpose": "prototype-development-only",
+  "productionApproved": false,
+  "supplier": "bblanchon/pdfium-binaries community build",
+  "supplierNotice": "Community project; not affiliated with Google or Foxit. Replace with an audited application-owned build before production distribution.",
+  "release": "chromium/7881",
+  "apiBuild": 7881,
+  "wrapper": {
+    "package": "pdfium-render",
+    "version": "0.9.4",
+    "source": "https://github.com/ajrcarey/pdfium-render",
+    "revision": "6cee8b9a3951832ac0ff62ce4c32800278001cb8",
+    "feature": "pdfium_7881"
+  },
+  "assets": [
+    {
+      "target": "aarch64-unknown-linux-gnu",
+      "name": "pdfium-linux-arm64.tgz",
+      "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7881/pdfium-linux-arm64.tgz",
+      "bytes": 3588127,
+      "sha256": "ee7f7b7d5468958336a818c1cd580bdd20972846b7377b13f9a923d92d1d4674",
+      "library": "lib/libpdfium.so"
+    },
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "name": "pdfium-linux-x64.tgz",
+      "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7881/pdfium-linux-x64.tgz",
+      "bytes": 3644759,
+      "sha256": "1470e21b8b4a3b4ad7f85684e2da11d94f3b69a86d81dee11b9b6709d927ac1d",
+      "library": "lib/libpdfium.so"
+    },
+    {
+      "target": "aarch64-apple-darwin",
+      "name": "pdfium-mac-arm64.tgz",
+      "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7881/pdfium-mac-arm64.tgz",
+      "bytes": 3533019,
+      "sha256": "52e94ca5aa8847934330daf3f8150c190682c5ca93831468794f8b90d4392e40",
+      "library": "lib/libpdfium.dylib"
+    },
+    {
+      "target": "x86_64-apple-darwin",
+      "name": "pdfium-mac-x64.tgz",
+      "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7881/pdfium-mac-x64.tgz",
+      "bytes": 3588813,
+      "sha256": "6dedf83990e0e3d6b7c93c9e7589c5a126b0ae14b7464d76120cff7a26afb18b",
+      "library": "lib/libpdfium.dylib"
+    },
+    {
+      "target": "aarch64-pc-windows-msvc",
+      "name": "pdfium-win-arm64.tgz",
+      "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7881/pdfium-win-arm64.tgz",
+      "bytes": 3522432,
+      "sha256": "d3035d4d2cacac6ecd1a2ece197a3d702a1b2a58466276b9f870b8cb278a9d84",
+      "library": "bin/pdfium.dll"
+    },
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "name": "pdfium-win-x64.tgz",
+      "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7881/pdfium-win-x64.tgz",
+      "bytes": 3733154,
+      "sha256": "73cc0de638ac2095e7445bf56a38200a5b7c7ca0e9f4ba144598f2457377ac08",
+      "library": "bin/pdfium.dll"
+    }
+  ]
+}

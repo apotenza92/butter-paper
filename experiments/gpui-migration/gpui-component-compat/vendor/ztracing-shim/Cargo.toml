@@ -1,0 +1,10 @@
+[package]
+name = "ztracing"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Butter Paper experimental compatibility replacement for Zed's GPL tracing facade"
+
+[dependencies]
+tracing = { version = "0.1.41", features = ["attributes"] }

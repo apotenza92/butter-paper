@@ -1,0 +1,167 @@
+{
+  "schemaVersion": 1,
+  "component": {
+    "url": "https://github.com/longbridge/gpui-component",
+    "revision": "c27f5d5c8f70d534978c2f0739ad9e10d4e41eb4",
+    "tree": "027dd3ea35614ddd365ac352987047c190ae051f",
+    "license": "Apache-2.0",
+    "licenseFile": "LICENSE-APACHE",
+    "licenseSha256": "d1b0449e5478c574ba4f686c2656df7fe77d66821a61f8b6ed3378a58ed9a811"
+  },
+  "zed": {
+    "url": "https://github.com/zed-industries/zed",
+    "revision": "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc",
+    "tree": "85eccaf309692769ec7458482ec7b39c6faf430f",
+    "license": "Apache-2.0",
+    "licenseFile": "LICENSE-APACHE",
+    "licenseSha256": "752daf2fb234ca4a1fa372c073fe127f44b7b90fd2529ae44273a64f9d53da7a"
+  },
+  "patch": {
+    "path": "patches/gpui-component-exact-zed.patch",
+    "sha256": "7dc772bff21e0fe305a429eb00f05d973d4b6d40a211dc092c564179388a2462"
+  },
+  "prepared": {
+    "directory": ".prepared/gpui-component-c27f5d5c",
+    "treeSha256": "630e9459587c2fef7a791467de6e61351f067ec71ccba95f2ac00c95e967c7a3"
+  },
+  "forbiddenFeatures": [
+    "profiler",
+    "runtime_shaders",
+    "screen-capture"
+  ],
+  "forbiddenReleaseFeatures": [
+    "profiler",
+    "runtime_shaders",
+    "screen-capture",
+    "test-support"
+  ],
+  "forbiddenPackages": [
+    "zlog",
+    "ztracing_macro"
+  ],
+  "replacementPackages": {
+    "ztracing": {
+      "license": "Apache-2.0",
+      "source": null
+    }
+  },
+  "rejectedLicenseExpressions": [
+    "GPL-3.0-or-later"
+  ],
+  "licenseClarifications": {
+    "gpui_shared_string": {
+      "revision": "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc",
+      "license": "Apache-2.0",
+      "evidenceFile": "LICENSE-APACHE",
+      "evidenceSha256": "752daf2fb234ca4a1fa372c073fe127f44b7b90fd2529ae44273a64f9d53da7a"
+    },
+    "gpui_util": {
+      "revision": "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc",
+      "license": "Apache-2.0",
+      "evidenceFile": "LICENSE-APACHE",
+      "evidenceSha256": "752daf2fb234ca4a1fa372c073fe127f44b7b90fd2529ae44273a64f9d53da7a"
+    }
+  },
+  "allowedGitSources": {
+    "https://github.com/zed-industries/zed": "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc",
+    "https://github.com/zed-industries/reqwest.git": "c15662463bda39148ba154100dd44d3fba5873a4",
+    "https://github.com/proptest-rs/proptest": "3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b",
+    "https://github.com/zed-industries/font-kit": "94b0f28166665e8fd2f53ff6d268a14955c82269",
+    "https://github.com/zed-industries/scap": "4afea48c3b002197176fb19cd0f9b180dd36eaac",
+    "https://github.com/zed-industries/xim-rs.git": "16f35a2c881b815a2b6cdfd6687988e84f8447d8",
+    "https://github.com/zed-industries/wasm_thread": "0cf96c7708dfb97ccf3da50347e25edcf75d6937",
+    "https://github.com/ajrcarey/pdfium-render": "6cee8b9a3951832ac0ff62ce4c32800278001cb8"
+  },
+  "sharedExperimentSources": [
+    {
+      "path": "../gpui-gallery/Cargo.toml",
+      "sha256": "478df9ce7acce653393fe118eee8ba74296db01b54a1452ebb98bb32ab937525"
+    },
+    {
+      "path": "../gpui-gallery/src/lib.rs",
+      "sha256": "d5f7e1a80e8ab0a9be7f3f397e80a494a08b76475736b6b8751e241d7c64fedd"
+    },
+    {
+      "path": "../gpui-gallery/src/generated_document.rs",
+      "sha256": "683f9c35ebfd870f5ef70686e84d1940b52ed8a8c198b161e6c6bf2fd6ef8e64"
+    },
+    {
+      "path": "../gpui-gallery/src/template_library.rs",
+      "sha256": "bfbbb1cac6dff51dcd5cf5965e552cb573fa60f91510dda33b6ac0547a917eec"
+    },
+    {
+      "path": "../gpui-gallery/src/pdf_worker.rs",
+      "sha256": "cf2ce7ecc8386774ee33d663d91df8baf332526e3d6a5d5a32b486d640006e88"
+    },
+    {
+      "path": "../gpui-gallery/src/annotation_model.rs",
+      "sha256": "29026764323ea1a11701e403ad2c84eaa7965caa6ced5ccd7e110820475fc220"
+    },
+    {
+      "path": "../gpui-gallery/src/highlight_compositor.rs",
+      "sha256": "71037f505aadf1dba88a6248c6c80a4d42137998fbd3c090d5d7bad6141dd09d"
+    },
+    {
+      "path": "../gpui-gallery/src/image_asset_decode.rs",
+      "sha256": "aa11c325291bec6a0b91ac58bd658a4f3cf30ace0e509240e2aba8f57ca9eafd"
+    },
+    {
+      "path": "../gpui-gallery/src/annotation_adapter.rs",
+      "sha256": "efbbba8b7ce9bdf148d8ddb46d8b7859abce599114fa681b58e1d44608386767"
+    },
+    {
+      "path": "../gpui-gallery/src/semantic_snapping.rs",
+      "sha256": "f8cb13ef5046426ffb7117ead2ddc1256d6ff08f7bdff3363e5981446e340431"
+    },
+    {
+      "path": "../gpui-gallery/src/cloud_plus_routing.rs",
+      "sha256": "6cf8cde177fcfdf4fd275a1399b762bdac7930058274a6e5db2851172eb3efd2"
+    },
+    {
+      "path": "../gpui-gallery/src/selection_geometry.rs",
+      "sha256": "c9a3d9be41e83b2a90922815e7c11cbad435424849d0445b8e915122a8eb8d54"
+    },
+    {
+      "path": "../gpui-gallery/src/density_fixture.rs",
+      "sha256": "d1616677173952e808869a9917e30c9898049af6f0c0ca1b604e0ca0a2979836"
+    },
+    {
+      "path": "../gpui-gallery/src/native_editing_v5.rs",
+      "sha256": "ed9d98b2b065d56e2cfe798d5a81ed3c50d3db7ad339b4d1813c0721b059c206"
+    },
+    {
+      "path": "../gpui-gallery/src/pdf_engine.rs",
+      "sha256": "7915bd949a9035db48ddfc67c47a631856f3654b836ad5663e5481d94a727fe4"
+    },
+    {
+      "path": "../gpui-gallery/src/pdf_file_authority.rs",
+      "sha256": "4b220b9ecdfd2c9848a27630c39059bbb741a77a941a9596533d5527d816a87d"
+    },
+    {
+      "path": "../gpui-gallery/src/viewer.rs",
+      "sha256": "c21f55f7f60e9f05d41022422e4ccc1cdb058d844923f90b3fd83011350fe167"
+    },
+    {
+      "path": "../gpui-gallery/src/bin/butter-paper-pdf-worker.rs",
+      "sha256": "ab16be4d6bf7ac30145610e443a6a6a2a8797259fe966a9d4ad42dbf620be4d8"
+    },
+    {
+      "path": "../gpui-gallery/pdfium-development-binaries.json",
+      "sha256": "87abef82f86d5a2d03242a64bbc44fd7d53f26eaea81c088e6989a15e0d30b8b"
+    }
+  ],
+  "assetProvenance": {
+    "name": "Lucide",
+    "version": "0.546.0",
+    "license": "ISC",
+    "evidence": "reviewed Longbridge website/bun.lock",
+    "integrity": "sha512-Z94u6fKT43lKeYHiVyvyR8fT7pwCzDu7RyMPpTvh054+xahSgj4HFQ+NmflvzdXsoAjYGdCguGaFKYuvq0ThCQ=="
+  },
+  "developmentFixtures": [
+    {
+      "path": "../performance/results/public-fixtures-v1/bp-image-checker-v1.png",
+      "sha256": "fcc714d1ac60ed4b88abf7297830479c7557cb9d219033e7a5a5ad4d6ec18dda",
+      "purpose": "checksum-locked regular PNG annotation journey"
+    }
+  ]
+}

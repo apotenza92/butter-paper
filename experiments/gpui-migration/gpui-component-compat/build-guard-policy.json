@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "preflightFreeKiB": 31457280,
+  "runtimeStopFreeKiB": 20971520,
+  "absoluteMinFreeKiB": 18874368,
+  "maxTargetKiB": 4194304,
+  "minMemoryKiB": 350000,
+  "wallSeconds": 1800,
+  "cargoBuildJobs": 1,
+  "cargoIncremental": 0,
+  "rustMinStackBytes": 16777216,
+  "pollMilliseconds": 1000,
+  "terminationGraceSeconds": 10,
+  "retainedLogBytes": 524288,
+  "targetRelativeToMigration": ".build-targets/gpui-component-compat",
+  "additionalTargetRelativesToMigration": [
+    ".build-targets/gpui-gallery-backend",
+    ".build-targets/gpui-component-performance"
+  ]
+}

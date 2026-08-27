@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "cargoDenyVersion": "0.20.2",
+  "advisoryPolicy": {
+    "vulnerabilities": "deny",
+    "yanked": "deny",
+    "unmaintained": "warn",
+    "ignoredAdvisories": []
+  },
+  "rustToolchain": "1.97.1",
+  "gpuiSource": "https://github.com/gpui-ce/gpui-ce",
+  "gpuiRevision": "c738623ffbcec2aeddc44a645cc6b74646d5cf97",
+  "componentSystem": "gpui-component",
+  "componentSource": "https://github.com/longbridge/gpui-component",
+  "componentRevision": "c27f5d5c8f70d534978c2f0739ad9e10d4e41eb4",
+  "componentIntegrationStatus": "blocked-source-strategy-decision",
+  "targets": [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-pc-windows-msvc",
+    "x86_64-pc-windows-msvc",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu"
+  ],
+  "requiredPlatformFeatures": {
+    "gpui": [
+      "wayland",
+      "x11"
+    ],
+    "gpui_platform": [
+      "font-kit",
+      "wayland",
+      "x11"
+    ]
+  },
+  "forbiddenReleaseFeatures": [
+    "profiler",
+    "runtime_shaders",
+    "screen-capture",
+    "test-support"
+  ],
+  "licenseClarifications": {},
+  "allowedRegistrySources": [
+    "registry+https://github.com/rust-lang/crates.io-index"
+  ],
+  "allowedGitSources": {
+    "https://github.com/proptest-rs/proptest": "3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b",
+    "https://github.com/zed-industries/font-kit": "94b0f28166665e8fd2f53ff6d268a14955c82269",
+    "https://github.com/zed-industries/scap": "4afea48c3b002197176fb19cd0f9b180dd36eaac",
+    "https://github.com/zed-industries/xim-rs.git": "16f35a2c881b815a2b6cdfd6687988e84f8447d8",
+    "https://github.com/ajrcarey/pdfium-render": "6cee8b9a3951832ac0ff62ce4c32800278001cb8",
+    "https://github.com/gpui-ce/gpui-ce": "c738623ffbcec2aeddc44a645cc6b74646d5cf97"
+  }
+}

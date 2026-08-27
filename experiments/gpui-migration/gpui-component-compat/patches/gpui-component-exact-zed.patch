@@ -1,0 +1,28 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 2baa114..16c1f6e 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -40,10 +40,12 @@ gpui-fps = { path = "crates/fps", version = "0.1.0" }
+ story = { path = "crates/story" }
+ 
+-gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed", features = ["profiler"] }
+-gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+-gpui_web = { git = "https://github.com/zed-industries/zed" }
+-gpui_macros = { version = "0.1.0", git = "https://github.com/zed-industries/zed" }
+-reqwest_client = { git = "https://github.com/zed-industries/zed" }
++# Butter Paper preparation: keep the reviewed Zed graph exact and remove
++# release-forbidden features that downstream Cargo manifests cannot subtract.
++gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["wayland", "x11", "windows-manifest"] }
++gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["font-kit", "x11", "wayland"] }
++gpui_web = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc" }
++gpui_macros = { version = "0.1.0", git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc" }
++reqwest_client = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc" }
+ sum-tree = { version = "0.2.0", package = "zed-sum-tree" }
+ # reqwest = { version = "0.12.15-zed", package = "zed-reqwest" }
+ reqwest = { git = "https://github.com/zed-industries/reqwest.git", rev = "c15662463bda39148ba154100dd44d3fba5873a4", default-features = false, features = [
+@@ -142,4 +144,4 @@ ignored = ["log", "anyhow", "serde"]
+ # Patches for WASM compatibility
+ [patch.crates-io]
+ # Use stacker's psm version which may have better WASM support
+-psm = { git = "https://github.com/rust-lang/stacker", branch = "master" }
++psm = { git = "https://github.com/rust-lang/stacker", rev = "100e77fa10a193f3c949af8e7f334c160e1424de" }

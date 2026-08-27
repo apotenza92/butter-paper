@@ -1,0 +1,41 @@
+[package]
+name = "butter-paper-gpui-component-compat"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[features]
+default = []
+benchmark-evidence = ["gpui/profiler"]
+
+[dependencies]
+async-channel = "2.5.0"
+butter-paper-gpui-gallery = { path = "../gpui-gallery", default-features = false }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["wayland", "x11", "windows-manifest"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["font-kit", "wayland", "x11"] }
+gpui-component = { path = ".prepared/gpui-component-c27f5d5c/crates/ui" }
+image = { version = "0.25.10", default-features = false }
+libc = "0.2"
+pdfium-render = { git = "https://github.com/ajrcarey/pdfium-render", rev = "6cee8b9a3951832ac0ff62ce4c32800278001cb8", version = "=0.9.4", default-features = false, features = ["pdfium_7881"] }
+sha2 = "0.10"
+serde_json = "1.0"
+smallvec = "1.15.1"
+
+[dev-dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["test-support", "wayland", "x11", "windows-manifest"] }
+
+[patch."https://github.com/zed-industries/zed"]
+ztracing = { path = "vendor/ztracing-shim" }
+
+[profile.dev]
+codegen-units = 1
+debug = 0
+incremental = false
+strip = "symbols"
+
+[profile.test]
+codegen-units = 1
+debug = 0
+incremental = false
+strip = "symbols"
