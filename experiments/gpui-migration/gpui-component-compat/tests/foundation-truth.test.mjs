@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { validateFoundationTruth } from "../scripts/foundation-truth.mjs";
+import {
+  ACTIVE_FOUNDATION_DOCUMENTS,
+  validateFoundationTruth,
+} from "../scripts/foundation-truth.mjs";
 
 const canonical = Object.freeze({
   componentRevision: "c27f5d5c8f70d534978c2f0739ad9e10d4e41eb4",
@@ -41,6 +44,40 @@ function acceptedInput() {
 
 test("the accepted foundation has one immutable GPUI Component source of truth", () => {
   assert.deepEqual(validateFoundationTruth(acceptedInput()), []);
+});
+
+test("the active foundation gate does not depend on archived chronological worklogs", () => {
+  assert.deepEqual(ACTIVE_FOUNDATION_DOCUMENTS, [
+    {
+      path: "gpui-gallery/FOUNDATION.md",
+      requiredTruths: ["componentRevision", "zedRevision", "preparedDigest"],
+    },
+    {
+      path: "gpui-component-compat/README.md",
+      requiredTruths: ["componentRevision", "zedRevision", "preparedDigest"],
+    },
+    { path: "README.md", requiredTruths: [] },
+  ]);
+  assert.equal(
+    ACTIVE_FOUNDATION_DOCUMENTS.some(({ path }) =>
+      path.includes("archive")
+        || path.includes("MIGRATION-STACK-AUDIT")
+        || path.includes("COMPONENT-PARITY-LEDGER")),
+    false,
+  );
+
+  const input = acceptedInput();
+  input.documents = [{
+    path: "README.md",
+    requiredTruths: [],
+    contents: "Use the pinned Longbridge GPUI Component and Zed GPUI graph.",
+  }];
+  assert.deepEqual(validateFoundationTruth(input), []);
+
+  input.documents[0].contents = "GPUI-CE is the current application candidate.";
+  assert.deepEqual(validateFoundationTruth(input), [
+    "README.md presents GPUI-CE as the current candidate",
+  ]);
 });
 
 test("moving or legacy candidate guidance is rejected", () => {

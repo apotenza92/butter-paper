@@ -14,15 +14,32 @@ export const CANONICAL_FOUNDATION = Object.freeze({
   zedLicenseSha256: "752daf2fb234ca4a1fa372c073fe127f44b7b90fd2529ae44273a64f9d53da7a",
 });
 
+export const ACTIVE_FOUNDATION_DOCUMENTS = Object.freeze([
+  Object.freeze({
+    path: "gpui-gallery/FOUNDATION.md",
+    requiredTruths: Object.freeze(["componentRevision", "zedRevision", "preparedDigest"]),
+  }),
+  Object.freeze({
+    path: "gpui-component-compat/README.md",
+    requiredTruths: Object.freeze(["componentRevision", "zedRevision", "preparedDigest"]),
+  }),
+  Object.freeze({ path: "README.md", requiredTruths: Object.freeze([]) }),
+]);
+
 function documentErrors(document, canonical) {
   const errors = [];
-  if (!document.contents.includes(canonical.componentRevision)) {
+  const requiredTruths = document.requiredTruths
+    ?? ["componentRevision", "zedRevision", "preparedDigest"];
+  if (requiredTruths.includes("componentRevision")
+      && !document.contents.includes(canonical.componentRevision)) {
     errors.push(`${document.path} does not name the reviewed Longbridge GPUI Component revision`);
   }
-  if (!document.contents.includes(canonical.zedRevision)) {
+  if (requiredTruths.includes("zedRevision")
+      && !document.contents.includes(canonical.zedRevision)) {
     errors.push(`${document.path} does not name the exact Zed GPUI revision`);
   }
-  if (!document.contents.includes(canonical.preparedDigest)) {
+  if (requiredTruths.includes("preparedDigest")
+      && !document.contents.includes(canonical.preparedDigest)) {
     errors.push(`${document.path} does not name the prepared source digest`);
   }
   if (/(?:accepts?\s+(?:the\s+)?(?:community-maintained\s+)?GPUI-CE\b[^.\n]*(?:candidate|foundation)|\bGPUI-CE\b[^.\n]*(?:is|remains)\s+(?:the\s+)?(?:current|accepted|exact|application|foundation)[^.\n]*candidate|\b(?:current|accepted|exact)\s+GPUI-CE\s+candidate)/i.test(document.contents)) {
@@ -113,16 +130,9 @@ async function readJson(path) {
 }
 
 export async function validateCurrentFoundation() {
-  const documentPaths = [
-    join(migrationDirectory, "gpui-gallery", "FOUNDATION.md"),
-    join(probeDirectory, "README.md"),
-    join(migrationDirectory, "README.md"),
-    join(migrationDirectory, "MIGRATION-STACK-AUDIT.md"),
-    join(migrationDirectory, "COMPONENT-PARITY-LEDGER.md"),
-  ];
-  const documents = await Promise.all(documentPaths.map(async (path) => ({
-    path: path.slice(migrationDirectory.length + 1),
-    contents: await readFile(path, "utf8"),
+  const documents = await Promise.all(ACTIVE_FOUNDATION_DOCUMENTS.map(async (document) => ({
+    ...document,
+    contents: await readFile(join(migrationDirectory, document.path), "utf8"),
   })));
 
   return validateFoundationTruth({
