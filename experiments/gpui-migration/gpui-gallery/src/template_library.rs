@@ -19,6 +19,14 @@ use crate::{
 };
 
 pub const BUILT_IN_BLANK_ID: &str = "built-in-blank";
+pub const BUILT_IN_TEMPLATE_IDS: [&str; 6] = [
+    BUILT_IN_BLANK_ID,
+    "built-in-dots",
+    "built-in-grid",
+    "built-in-lined",
+    "built-in-isometric",
+    "built-in-triangle",
+];
 const INDEX_VERSION: u32 = 1;
 const INDEX_FILE: &str = "library.json";
 const SENTINEL_FILE: &str = ".butter-paper-template-library-v1";
@@ -74,6 +82,7 @@ pub struct TemplateLibrary {
     root: PathBuf,
     records: Vec<TemplateRecord>,
     last_template_id: String,
+    legacy_blank_migrated: bool,
 }
 
 impl TemplateLibrary {
@@ -83,31 +92,40 @@ impl TemplateLibrary {
         ensure_sentinel(&root)?;
         let index_path = root.join(INDEX_FILE);
         let stored = match fs::read(&index_path) {
-            Ok(bytes) => serde_json::from_slice::<StoredIndex>(&bytes)
-                .ok()
-                .filter(|stored| stored.version == INDEX_VERSION)
-                .unwrap_or_default(),
+            Ok(bytes) => serde_json::from_slice::<StoredIndex>(&bytes)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => StoredIndex::default(),
             Err(error) => return Err(error.into()),
         };
+        let StoredIndex {
+            version,
+            records: stored_records,
+            last_template_id,
+            legacy_blank_migrated,
+        } = stored;
+        if version != INDEX_VERSION {
+            return Err(TemplateLibraryError(format!(
+                "unsupported template library index version {version}"
+            )));
+        }
         let mut records = Vec::new();
-        for record in stored
-            .records
-            .into_iter()
-            .filter_map(StoredRecord::into_record)
-        {
-            if record.id() != BUILT_IN_BLANK_ID
-                && !records
+        for stored_record in stored_records {
+            let record = stored_record.into_record()?;
+            if BUILT_IN_TEMPLATE_IDS.contains(&record.id())
+                || records
                     .iter()
                     .any(|existing: &TemplateRecord| existing.id() == record.id())
             {
-                records.push(record);
+                return Err(TemplateLibraryError(
+                    "template library contains a duplicate identifier".into(),
+                ));
             }
+            records.push(record);
         }
         let mut library = Self {
             root,
             records,
-            last_template_id: stored.last_template_id,
+            last_template_id,
+            legacy_blank_migrated,
         };
         if !library.contains_id(&library.last_template_id) {
             library.last_template_id = BUILT_IN_BLANK_ID.into();
@@ -124,6 +142,47 @@ impl TemplateLibrary {
         self.records.iter().map(TemplateRecord::id).collect()
     }
 
+    pub fn records(&self) -> &[TemplateRecord] {
+        &self.records
+    }
+
+    pub fn migrate_legacy_blank_request(
+        &mut self,
+        request: Option<GeneratedDocumentRequest>,
+    ) -> Result<(), TemplateLibraryError> {
+        if self.legacy_blank_migrated {
+            return Ok(());
+        }
+        let previous_records = self.records.clone();
+        let previous_last = self.last_template_id.clone();
+        let previous_migrated = self.legacy_blank_migrated;
+        if self.records.is_empty() {
+            if let Some(request) = request {
+                if request.to_pdf_bytes().is_ok() {
+                    if let Some(id) = built_in_id_for_request(&request) {
+                        self.last_template_id = id.into();
+                    } else {
+                        let id = "custom-migrated-blank-pdf-default";
+                        self.records.push(TemplateRecord::Generated {
+                            id: id.into(),
+                            name: "Previous Blank PDF".into(),
+                            request,
+                        });
+                        self.last_template_id = id.into();
+                    }
+                }
+            }
+        }
+        self.legacy_blank_migrated = true;
+        if let Err(error) = self.persist() {
+            self.records = previous_records;
+            self.last_template_id = previous_last;
+            self.legacy_blank_migrated = previous_migrated;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     pub fn add_generated(
         &mut self,
         id: &str,
@@ -133,13 +192,18 @@ impl TemplateLibrary {
         validate_custom_id(id)?;
         self.ensure_unique(id)?;
         request.to_pdf_bytes()?;
+        let previous_last = self.last_template_id.clone();
         self.records.push(TemplateRecord::Generated {
             id: id.into(),
             name: normalize_custom_name(name)?,
             request,
         });
         self.last_template_id = id.into();
-        self.persist()?;
+        if let Err(error) = self.persist() {
+            self.records.pop();
+            self.last_template_id = previous_last;
+            return Err(error);
+        }
         Ok(self.records.last().unwrap())
     }
 
@@ -162,6 +226,7 @@ impl TemplateLibrary {
         let directory = self.root.join(id);
         fs::create_dir(&directory)?;
         let source_path = directory.join(SOURCE_FILE);
+        let previous_last = self.last_template_id.clone();
         let result = (|| {
             let mut file = OpenOptions::new()
                 .write(true)
@@ -188,9 +253,7 @@ impl TemplateLibrary {
         })();
         if let Err(error) = result {
             self.records.retain(|record| record.id() != id);
-            if self.last_template_id == id {
-                self.last_template_id = BUILT_IN_BLANK_ID.into();
-            }
+            self.last_template_id = previous_last;
             let _ = fs::remove_dir_all(&directory);
             return Err(error);
         }
@@ -201,8 +264,12 @@ impl TemplateLibrary {
         if !self.contains_id(id) {
             return Err(TemplateLibraryError("the template does not exist".into()));
         }
-        self.last_template_id = id.into();
-        self.persist()
+        let previous = std::mem::replace(&mut self.last_template_id, id.into());
+        if let Err(error) = self.persist() {
+            self.last_template_id = previous;
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn managed_source_path(&self, id: &str) -> Result<PathBuf, TemplateLibraryError> {
@@ -252,18 +319,39 @@ impl TemplateLibrary {
             return Ok(());
         };
         let removed = self.records.remove(index);
+        let previous_last = self.last_template_id.clone();
         if self.last_template_id == id {
             self.last_template_id = BUILT_IN_BLANK_ID.into();
         }
-        self.persist()?;
-        if matches!(removed, TemplateRecord::ImportedPdf { .. }) {
-            fs::remove_dir_all(self.root.join(id))?;
+        let source = self.root.join(id);
+        let tombstone = self.root.join(format!(".{id}.removing"));
+        let moved_source = matches!(removed, TemplateRecord::ImportedPdf { .. }) && source.exists();
+        if moved_source {
+            if let Err(error) = fs::rename(&source, &tombstone) {
+                self.last_template_id = previous_last;
+                self.records.insert(index, removed);
+                return Err(error.into());
+            }
+        }
+        if let Err(error) = self.persist() {
+            self.last_template_id = previous_last;
+            self.records.insert(index, removed);
+            if moved_source {
+                let _ = fs::rename(&tombstone, &source);
+            }
+            return Err(error);
+        }
+        if moved_source {
+            // The durable index no longer references this owned directory.
+            // Failure to reap the tombstone must not resurrect or partially
+            // report a template that was already removed transactionally.
+            let _ = fs::remove_dir_all(&tombstone);
         }
         Ok(())
     }
 
     fn contains_id(&self, id: &str) -> bool {
-        id == BUILT_IN_BLANK_ID || self.records.iter().any(|record| record.id() == id)
+        BUILT_IN_TEMPLATE_IDS.contains(&id) || self.records.iter().any(|record| record.id() == id)
     }
 
     fn ensure_unique(&self, id: &str) -> Result<(), TemplateLibraryError> {
@@ -289,6 +377,7 @@ impl TemplateLibrary {
             version: INDEX_VERSION,
             records: self.records.iter().map(StoredRecord::from_record).collect(),
             last_template_id: self.last_template_id.clone(),
+            legacy_blank_migrated: self.legacy_blank_migrated,
         };
         let bytes = serde_json::to_vec_pretty(&stored)?;
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -320,6 +409,8 @@ struct StoredIndex {
     records: Vec<StoredRecord>,
     #[serde(rename = "lastTemplateId")]
     last_template_id: String,
+    #[serde(rename = "legacyBlankMigrated", default)]
+    legacy_blank_migrated: bool,
 }
 
 impl Default for StoredIndex {
@@ -328,8 +419,48 @@ impl Default for StoredIndex {
             version: INDEX_VERSION,
             records: Vec::new(),
             last_template_id: BUILT_IN_BLANK_ID.into(),
+            legacy_blank_migrated: false,
         }
     }
+}
+
+pub fn built_in_request(id: &str) -> Option<GeneratedDocumentRequest> {
+    let pattern = match id {
+        BUILT_IN_BLANK_ID => None,
+        "built-in-dots" => Some(GeneratedPattern::Dots {
+            spacing_mm: 10.,
+            color: "#d1d5db".into(),
+        }),
+        "built-in-grid" => Some(GeneratedPattern::SquareGrid {
+            spacing_mm: 10.,
+            color: "#d1d5db".into(),
+        }),
+        "built-in-lined" => Some(GeneratedPattern::Ruled {
+            spacing_mm: 10.,
+            color: "#d1d5db".into(),
+        }),
+        "built-in-isometric" => Some(GeneratedPattern::Isometric {
+            spacing_mm: 10.,
+            color: "#d1d5db".into(),
+        }),
+        "built-in-triangle" => Some(GeneratedPattern::Triangle {
+            spacing_mm: 10.,
+            color: "#d1d5db".into(),
+        }),
+        _ => return None,
+    };
+    Some(GeneratedDocumentRequest {
+        title: "Untitled".into(),
+        width_mm: 420.,
+        height_mm: 297.,
+        pattern,
+    })
+}
+
+fn built_in_id_for_request(request: &GeneratedDocumentRequest) -> Option<&'static str> {
+    BUILT_IN_TEMPLATE_IDS
+        .into_iter()
+        .find(|id| built_in_request(id).as_ref() == Some(request))
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -393,7 +524,7 @@ impl StoredRecord {
         }
     }
 
-    fn into_record(self) -> Option<TemplateRecord> {
+    fn into_record(self) -> Result<TemplateRecord, TemplateLibraryError> {
         match self {
             Self::Generated {
                 id,
@@ -403,17 +534,17 @@ impl StoredRecord {
                 height_mm,
                 pattern,
             } => {
-                validate_custom_id(&id).ok()?;
+                validate_custom_id(&id)?;
                 let request = GeneratedDocumentRequest {
                     title,
                     width_mm,
                     height_mm,
-                    pattern: pattern.map(StoredPattern::into_pattern).transpose().ok()?,
+                    pattern: pattern.map(StoredPattern::into_pattern).transpose()?,
                 };
-                request.to_pdf_bytes().ok()?;
-                Some(TemplateRecord::Generated {
+                request.to_pdf_bytes()?;
+                Ok(TemplateRecord::Generated {
                     id,
-                    name: normalize_custom_name(&name).ok()?,
+                    name: normalize_custom_name(&name)?,
                     request,
                 })
             }
@@ -424,11 +555,17 @@ impl StoredRecord {
                 created_at,
                 sha256,
             } => {
-                validate_imported_id(&id).ok()?;
-                if page_count == 0 || created_at.is_empty() || sha256.len() != 64 {
-                    return None;
+                validate_imported_id(&id)?;
+                if page_count == 0
+                    || created_at.trim().is_empty()
+                    || sha256.len() != 64
+                    || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
+                    return Err(TemplateLibraryError(
+                        "imported template metadata is invalid".into(),
+                    ));
                 }
-                Some(TemplateRecord::ImportedPdf {
+                Ok(TemplateRecord::ImportedPdf {
                     id,
                     name: normalize_imported_name(&name),
                     page_count,

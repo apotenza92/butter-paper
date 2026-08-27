@@ -2009,3 +2009,28 @@ only. Next, connect a library snapshot and manager surface using the pinned real
 `Dialog`, list, input, and button APIs. Native visual/accessibility, IME,
 packages, physical platforms, Hibbeler, and matched performance are not run.
 Production PDFium and Windows save-target authority remain blocked.
+
+## Native template manager journey (2026-08-27)
+
+The runnable story now contains an experiment-owned persistent template
+manager. It composes the pinned real GPUI Component `Dialog`, `ListItem`,
+`Input`, `Field`, `ButtonGroup`, `Button`, `Alert`, and scrollbar primitives.
+The view owns transient draft, selection, request-generation, error, and focus
+state only. `PersistentTemplateManager` remains the sole durable authority.
+
+Passed Linux development evidence: final manager/control 16/16
+(`button-probe-20260827T112727Z-2951378.log`); native application menu 6/6
+(`button-probe-20260827T111502Z-2943954.log`); dynamic Document Tab Bar picker
+and commands 23/23 (`button-probe-20260827T105517Z-2932292.log`); real custom
+Square Grid journey 1/1 (`button-probe-20260827T111543Z-2944461.log`); real
+imported 100-page journey 1/1 (`button-probe-20260827T111606Z-2945127.log`);
+and guarded warm all-targets 217 active plus 23 gated ignores in 57 seconds
+(`button-probe-20260827T112800Z-2951882.log`). The fast policy gate is 21/21.
+
+Failed evidence is fixed red-first history only. Blocked: production PDFium
+redistribution and native visual/live accessibility on this headless VPS. Not
+run: packages, physical macOS/Windows input, screen reader, IME, Hibbeler, and
+matched performance. Dynamic rows, the complete settings editor, persistent
+manager, and authorized-source Save Document as Template route are implemented.
+Native Escape/outside-click behavior is configured through the pinned Dialog,
+but fresh native input proof is not run and is not inferred from tests.

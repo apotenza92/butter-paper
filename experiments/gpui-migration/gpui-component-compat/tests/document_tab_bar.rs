@@ -15,10 +15,11 @@ use butter_paper_gpui_component_compat::{
         DocumentTabActivationOrigin, DocumentTabBarTemplateSeam, DocumentTabEvent,
         DocumentTabReorderEvent, DocumentTabReorderOrigin, TEMPLATE_CONTROL_GROUP_ID,
         TEMPLATE_CREATE_ID, TEMPLATE_ITEM_IDS, TEMPLATE_MANAGE_ID, TEMPLATE_PICKER_ID,
-        TEMPLATE_PICKER_POPOVER_ID, TEMPLATE_PRIMARY_ID, TemplateCreationOrigin,
-        TemplateSplitControl, TemplateSplitEvent, dirty_close_title,
-        document_tab_close_accessible_label, document_tab_close_id, document_tab_hover_mask_id,
-        document_tab_id, document_tab_label_id, format_document_tab_label,
+        TEMPLATE_PICKER_POPOVER_ID, TEMPLATE_PRIMARY_ID, TEMPLATE_SAVE_DOCUMENT_ID,
+        TemplateCatalogItem, TemplateCreationOrigin, TemplateSplitControl, TemplateSplitEvent,
+        dirty_close_title, document_tab_close_accessible_label, document_tab_close_id,
+        document_tab_hover_mask_id, document_tab_id, document_tab_label_id,
+        format_document_tab_label,
     },
     page_view_control::{PageViewControl, PageViewMode},
     viewer_toolbar_strip::{VIEWER_TOOLBAR_CONTENT_ID, ViewerToolbarStrip},
@@ -293,6 +294,7 @@ fn template_split_starts_at_the_frozen_contract_and_rendered_ids(cx: &mut TestAp
     assert_eq!(TEMPLATE_PICKER_POPOVER_ID, "template-picker");
     assert_eq!(TEMPLATE_MANAGE_ID, "template-picker-manage");
     assert_eq!(TEMPLATE_CREATE_ID, "template-picker-create");
+    assert_eq!(TEMPLATE_SAVE_DOCUMENT_ID, "template-picker-save-document");
     assert_eq!(BUILT_IN_TEMPLATES.len(), 6);
     assert_eq!(
         BUILT_IN_TEMPLATES.map(|template| (template.id, template.name)),
@@ -351,13 +353,18 @@ fn reusable_template_split_emits_semantic_creation_without_owning_document_tabs(
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let (harness, control) = entities.borrow_mut().take().unwrap();
 
+    assert!(
+        cx.debug_bounds(TEMPLATE_SAVE_DOCUMENT_ID).is_none(),
+        "the save command is inside the closed picker"
+    );
+
     click_target(cx, TEMPLATE_PRIMARY_ID);
     draw(cx);
 
     assert_eq!(
         harness.read_with(cx, |harness, _| harness.events.clone()),
         vec![TemplateSplitEvent::CreateRequested {
-            template_id: "built-in-blank",
+            template_id: "built-in-blank".into(),
             origin: TemplateCreationOrigin::Primary,
         }]
     );
@@ -365,6 +372,83 @@ fn reusable_template_split_emits_semantic_creation_without_owning_document_tabs(
         assert_eq!(control.selected_template_id(), "built-in-blank");
         assert_eq!(control.last_template_id(), "built-in-blank");
         assert!(!control.is_picker_open());
+    });
+
+    control.update(cx, |control, cx| {
+        control.set_creating(true, cx);
+        control.set_save_document_enabled(false, cx);
+    });
+    draw(cx);
+    click_target(cx, TEMPLATE_PRIMARY_ID);
+    draw(cx);
+    assert_eq!(
+        harness.read_with(cx, |harness, _| harness.events.len()),
+        1,
+        "storage-busy suppression must keep the already-recorded event count stable"
+    );
+}
+
+#[gpui::test]
+fn template_split_consumes_dynamic_catalog_and_emits_active_document_save_command(
+    cx: &mut TestAppContext,
+) {
+    let (cx, entities) = open_harness(cx);
+    let custom_id = "custom-project-grid";
+    entities.document_tabs.update(cx, |tabs, cx| {
+        tabs.apply_template_catalog(
+            vec![
+                TemplateCatalogItem::new("built-in-blank", "Blank Paper"),
+                TemplateCatalogItem::new(custom_id, "Project Grid"),
+            ],
+            custom_id,
+            cx,
+        );
+    });
+    draw(cx);
+
+    let template_control = entities
+        .document_tabs
+        .read_with(cx, |tabs, _| tabs.template_control());
+    entities.document_tabs.read_with(cx, |tabs, _| {
+        assert_eq!(tabs.last_template_id(), custom_id);
+        assert_eq!(tabs.selected_template_id(), custom_id);
+    });
+    assert_eq!(
+        template_control.read_with(cx, |control, _| control.templates().to_vec()),
+        vec![
+            TemplateCatalogItem::new("built-in-blank", "Blank Paper"),
+            TemplateCatalogItem::new(custom_id, "Project Grid"),
+        ]
+    );
+
+    click_target(cx, TEMPLATE_PRIMARY_ID);
+    draw(cx);
+    entities.document_tabs.read_with(cx, |tabs, _| {
+        assert_eq!(tabs.tabs().last().unwrap().name, "Project Grid");
+        assert_eq!(
+            tabs.creation_events().last().unwrap().template_id,
+            custom_id
+        );
+    });
+
+    click_target(cx, TEMPLATE_PICKER_ID);
+    draw(cx);
+    bounds(cx, "template-picker-item-custom-project-grid");
+    bounds(cx, TEMPLATE_SAVE_DOCUMENT_ID);
+    click_target(cx, TEMPLATE_SAVE_DOCUMENT_ID);
+    draw(cx);
+
+    entities.document_tabs.read_with(cx, |tabs, _| {
+        assert!(!tabs.is_picker_open());
+        assert_eq!(tabs.save_document_as_template_commands().len(), 1);
+        assert_eq!(
+            tabs.save_document_as_template_commands()[0].tab_id,
+            "template-document-1"
+        );
+        assert_eq!(
+            tabs.save_document_as_template_commands()[0].document_name,
+            "Project Grid"
+        );
     });
 }
 

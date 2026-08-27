@@ -105,15 +105,15 @@ use butter_paper_gpui_gallery::annotation_model::{
 use butter_paper_gpui_gallery::generated_document::{
     GeneratedDocumentRequest, GeneratedDocumentStore, GeneratedPattern,
 };
-use butter_paper_gpui_gallery::template_library::{BUILT_IN_BLANK_ID, TemplateLibrary};
+use butter_paper_gpui_gallery::highlight_compositor::precompose_highlights_multiply_rgba;
 use butter_paper_gpui_gallery::page_geometry::{
     PageCoordinateSpace, PdfPoint as CoordinatePoint, PdfRect as CoordinateRect,
     Rotation as CoordinateRotation,
 };
-use butter_paper_gpui_gallery::semantic_snapping::SemanticSnapRole;
-use butter_paper_gpui_gallery::highlight_compositor::precompose_highlights_multiply_rgba;
 use butter_paper_gpui_gallery::pdf_engine::{PdfPersistenceSession, PdfPublicationOutcome};
 use butter_paper_gpui_gallery::pdf_file_authority::{SaveAsTargetAuthority, SaveTargetErrorKind};
+use butter_paper_gpui_gallery::semantic_snapping::SemanticSnapRole;
+use butter_paper_gpui_gallery::template_library::{BUILT_IN_BLANK_ID, TemplateLibrary};
 use gpui::{
     AppContext as _, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent, MouseUpEvent,
     ScrollDelta, ScrollWheelEvent, TestAppContext, point, px,
@@ -14200,7 +14200,7 @@ fn imported_template_library_restart_materializes_an_independent_dirty_workspace
         .expect("the checksum-controlled multi-page fixture must exist");
     let imported_id = "imported-00000000-0000-4000-8000-000000000000";
 
-    let mut library = TemplateLibrary::open(library_root.clone()).unwrap();
+    let mut library = PersistentTemplateManager::open(library_root.clone()).unwrap();
     library
         .import_pdf(
             imported_id,
@@ -14223,7 +14223,8 @@ fn imported_template_library_restart_materializes_an_independent_dirty_workspace
     assert_ne!(temporary_source, managed_source);
 
     cx.update(gpui_component::init);
-    let workspace = cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(PathRecordingOpener::default()), cx));
+    let workspace =
+        cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(PathRecordingOpener::default()), cx));
     let document_id = workspace
         .update(cx, |workspace, cx| {
             workspace.create_owned_template_document(store.clone(), owned, cx)
@@ -14235,33 +14236,44 @@ fn imported_template_library_restart_materializes_an_independent_dirty_workspace
         NativeDocumentStatus::Ready
     )));
     assert_eq!(
-        workspace.read_with(cx, |workspace, cx| workspace.document_dirty_revision(document_id, cx)),
+        workspace.read_with(cx, |workspace, cx| workspace
+            .document_dirty_revision(document_id, cx)),
         Some(0)
     );
 
     std::fs::write(&invalid_source, b"not a PDF").unwrap();
-    assert!(library
-        .import_pdf(
-            "imported-11111111-1111-4111-8111-111111111111",
-            "Broken",
-            "2026-08-27T00:00:01.000Z",
-            &invalid_source,
-        )
-        .is_err());
+    assert!(
+        library
+            .import_pdf(
+                "imported-11111111-1111-4111-8111-111111111111",
+                "Broken",
+                "2026-08-27T00:00:01.000Z",
+                &invalid_source,
+            )
+            .is_err()
+    );
     assert_eq!(library.last_template_id(), imported_id);
-    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.sessions().len()), 1);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.sessions().len()),
+        1
+    );
     assert!(temporary_source.exists());
 
     library.remove(imported_id).unwrap();
     assert_eq!(library.last_template_id(), BUILT_IN_BLANK_ID);
     assert!(!managed_source.exists());
-    assert!(temporary_source.exists(), "the open document owns an independent temporary copy");
+    assert!(
+        temporary_source.exists(),
+        "the open document owns an independent temporary copy"
+    );
     assert_eq!(
-        workspace.update(cx, |workspace, cx| workspace.request_close_document(document_id, cx)),
+        workspace.update(cx, |workspace, cx| workspace
+            .request_close_document(document_id, cx)),
         CloseRequestDisposition::ConfirmationRequired
     );
     assert_eq!(
-        workspace.update(cx, |workspace, cx| workspace.resolve_dirty_close_discard(cx)),
+        workspace.update(cx, |workspace, cx| workspace
+            .resolve_dirty_close_discard(cx)),
         DirtyCloseResolution::Discarded
     );
     assert!(!temporary_source.exists());
@@ -14271,9 +14283,7 @@ fn imported_template_library_restart_materializes_an_independent_dirty_workspace
 
 #[gpui::test]
 #[ignore = "requires the checksum-pinned development PDFium library; production redistribution remains blocked"]
-fn real_imported_template_library_renders_saves_reopens_and_releases(
-    cx: &mut TestAppContext,
-) {
+fn real_imported_template_library_renders_saves_reopens_and_releases(cx: &mut TestAppContext) {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let test_executable = std::env::current_exe().expect("the test executable path must exist");
     let worker = test_executable
@@ -14304,11 +14314,21 @@ fn real_imported_template_library_renders_saves_reopens_and_releases(
     assert!(pdfium.is_file());
 
     let run_key = format!("real-template-library-{}", std::process::id());
-    let library_root = manifest_dir.join(".prepared").join(format!("{run_key}-library"));
-    let store_root = manifest_dir.join(".prepared").join(format!("{run_key}-documents"));
-    let surface_root = manifest_dir.join(".prepared").join(format!("{run_key}-surfaces"));
-    let saved_path = manifest_dir.join(".prepared").join(format!("{run_key}-saved.pdf"));
-    let invalid_source = manifest_dir.join(".prepared").join(format!("{run_key}-invalid.pdf"));
+    let library_root = manifest_dir
+        .join(".prepared")
+        .join(format!("{run_key}-library"));
+    let store_root = manifest_dir
+        .join(".prepared")
+        .join(format!("{run_key}-documents"));
+    let surface_root = manifest_dir
+        .join(".prepared")
+        .join(format!("{run_key}-surfaces"));
+    let saved_path = manifest_dir
+        .join(".prepared")
+        .join(format!("{run_key}-saved.pdf"));
+    let invalid_source = manifest_dir
+        .join(".prepared")
+        .join(format!("{run_key}-invalid.pdf"));
     let _scratch_directories = ScratchDirectories(vec![
         library_root.clone(),
         store_root.clone(),
@@ -14316,7 +14336,7 @@ fn real_imported_template_library_renders_saves_reopens_and_releases(
     ]);
     let _scratch_files = ScratchFiles(vec![saved_path.clone(), invalid_source.clone()]);
     let imported_id = "imported-00000000-0000-4000-8000-000000000000";
-    let mut library = TemplateLibrary::open(library_root.clone()).unwrap();
+    let mut library = PersistentTemplateManager::open(library_root.clone()).unwrap();
     library
         .import_pdf(
             imported_id,
@@ -14327,14 +14347,18 @@ fn real_imported_template_library_renders_saves_reopens_and_releases(
         .unwrap();
     library.select(imported_id).unwrap();
     drop(library);
-    let mut library = TemplateLibrary::open(library_root).unwrap();
+    let mut library = PersistentTemplateManager::open(library_root).unwrap();
     let managed_source = library.managed_source_path(imported_id).unwrap();
     let store = GeneratedDocumentStore::new(store_root.clone()).unwrap();
     let owned = library
         .materialize(imported_id, "real-imported-template", &store)
         .unwrap();
     let temporary_source = owned.path().to_owned();
-    let backend = Arc::new(PdfiumWorkerBackend::new(worker, pdfium, surface_root.clone()));
+    let backend = Arc::new(PdfiumWorkerBackend::new(
+        worker,
+        pdfium,
+        surface_root.clone(),
+    ));
 
     cx.update(gpui_component::init);
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
@@ -14348,33 +14372,59 @@ fn real_imported_template_library_renders_saves_reopens_and_releases(
         let session = workspace.session(document_id, cx).unwrap().read(cx);
         assert!(matches!(session.status(), NativeDocumentStatus::Ready));
         assert_eq!(session.page_count(), 100);
-        assert!(session.current_base_raster().unwrap().has_spatial_variation());
-        assert!(session.thumbnail_base_raster(0).unwrap().has_spatial_variation());
+        assert!(
+            session
+                .current_base_raster()
+                .unwrap()
+                .has_spatial_variation()
+        );
+        assert!(
+            session
+                .thumbnail_base_raster(0)
+                .unwrap()
+                .has_spatial_variation()
+        );
         session.worker_pid().unwrap()
     });
     assert!(managed_source.exists());
     assert!(temporary_source.exists());
     assert_eq!(
-        workspace.read_with(cx, |workspace, cx| workspace.document_dirty_revision(document_id, cx)),
+        workspace.read_with(cx, |workspace, cx| workspace
+            .document_dirty_revision(document_id, cx)),
         Some(0)
     );
 
     std::fs::write(&invalid_source, b"not a PDF").unwrap();
-    assert!(library
-        .import_pdf(
-            "imported-11111111-1111-4111-8111-111111111111",
-            "Broken",
-            "2026-08-27T00:00:01.000Z",
-            &invalid_source,
-        )
-        .is_err());
-    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.sessions().len()), 1);
-    assert_eq!(workspace.read_with(cx, |workspace, cx| {
-        workspace.session(document_id, cx).unwrap().read(cx).current_page()
-    }), 0);
+    assert!(
+        library
+            .import_pdf(
+                "imported-11111111-1111-4111-8111-111111111111",
+                "Broken",
+                "2026-08-27T00:00:01.000Z",
+                &invalid_source,
+            )
+            .is_err()
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.sessions().len()),
+        1
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .session(document_id, cx)
+                .unwrap()
+                .read(cx)
+                .current_page()
+        }),
+        0
+    );
 
     library.remove(imported_id).unwrap();
-    assert_eq!(library.last_template_id(), BUILT_IN_BLANK_ID);
+    assert_eq!(
+        library.snapshot().unwrap().last_used_id(),
+        BUILT_IN_BLANK_ID
+    );
     assert!(!managed_source.exists());
     assert!(temporary_source.exists());
     workspace
@@ -14388,16 +14438,27 @@ fn real_imported_template_library_renders_saves_reopens_and_releases(
         assert!(matches!(session.status(), NativeDocumentStatus::Ready));
         assert_eq!(session.path(), saved_path.as_path());
         assert_eq!(session.page_count(), 100);
-        assert!(session.current_base_raster().unwrap().has_spatial_variation());
+        assert!(
+            session
+                .current_base_raster()
+                .unwrap()
+                .has_spatial_variation()
+        );
         session.worker_pid().unwrap()
     });
     assert_ne!(first_worker_pid, reopened_worker_pid);
     assert!(!PathBuf::from(format!("/proc/{first_worker_pid}")).exists());
     assert!(!temporary_source.exists());
     assert!(saved_path.exists());
-    assert_eq!(PdfPersistenceSession::open(&saved_path).unwrap().page_count(), 100);
     assert_eq!(
-        workspace.update(cx, |workspace, cx| workspace.request_close_document(document_id, cx)),
+        PdfPersistenceSession::open(&saved_path)
+            .unwrap()
+            .page_count(),
+        100
+    );
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| workspace
+            .request_close_document(document_id, cx)),
         CloseRequestDisposition::Closed
     );
     assert!(!PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
@@ -14571,6 +14632,9 @@ fn real_generated_template_creates_opens_saves_reopens_and_releases(cx: &mut Tes
     assert!(library.is_file());
     let run_key = format!("real-generated-template-{}", std::process::id());
     let store_root = manifest_dir.join(".prepared").join(&run_key);
+    let template_library_root = manifest_dir
+        .join(".prepared")
+        .join(format!("{run_key}-library"));
     let surface_root = manifest_dir
         .join(".prepared")
         .join(format!("{run_key}-surfaces"));
@@ -14578,9 +14642,34 @@ fn real_generated_template_creates_opens_saves_reopens_and_releases(cx: &mut Tes
         .join(".prepared")
         .join(format!("{run_key}-saved.pdf"));
     let _ = std::fs::remove_dir_all(&store_root);
+    let _ = std::fs::remove_dir_all(&template_library_root);
     let _ = std::fs::remove_dir_all(&surface_root);
     let _ = std::fs::remove_file(&saved_path);
     let store = GeneratedDocumentStore::new(store_root.clone()).unwrap();
+    let mut template_manager =
+        PersistentTemplateManager::open(template_library_root.clone()).unwrap();
+    template_manager
+        .save_generated(
+            "custom-real-grid",
+            "Real custom grid",
+            GeneratedDocumentRequest {
+                title: "Untitled".into(),
+                width_mm: 420.,
+                height_mm: 297.,
+                pattern: Some(GeneratedPattern::SquareGrid {
+                    spacing_mm: 10.,
+                    color: "#d1d5db".into(),
+                }),
+            },
+        )
+        .unwrap();
+    let owned = template_manager
+        .materialize("custom-real-grid", "real-custom-grid", &store)
+        .unwrap();
+    assert_eq!(
+        template_manager.snapshot().unwrap().last_used_id(),
+        "custom-real-grid"
+    );
     let backend = Arc::new(PdfiumWorkerBackend::new(
         worker,
         library,
@@ -14588,14 +14677,12 @@ fn real_generated_template_creates_opens_saves_reopens_and_releases(cx: &mut Tes
     ));
 
     cx.update(gpui_component::init);
-    let workspace =
-        cx.new(|cx| DocumentWorkspace::with_opener_and_generated_store(backend, store.clone(), cx));
-    let document_id = match workspace.update(cx, |workspace, cx| {
-        workspace.request_generated_template("built-in-grid", cx)
-    }) {
-        GeneratedTemplateRequestDisposition::Started(document_id) => document_id,
-        other => panic!("the real template command must start: {other:?}"),
-    };
+    let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
+    let document_id = workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_owned_template_document(store.clone(), owned, cx)
+        })
+        .unwrap();
     cx.run_until_parked();
     let (source_path, source_worker_pid) = workspace.read_with(cx, |workspace, cx| {
         let session = workspace.session(document_id, cx).unwrap().read(cx);
@@ -14668,6 +14755,8 @@ fn real_generated_template_creates_opens_saves_reopens_and_releases(cx: &mut Tes
     assert!(!store_root.exists());
     std::fs::remove_file(saved_path).unwrap();
     let _ = std::fs::remove_dir(surface_root);
+    drop(template_manager);
+    std::fs::remove_dir_all(template_library_root).unwrap();
 }
 
 #[gpui::test]
@@ -14757,7 +14846,9 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
         f64::from(thumbnail.raster.width()) / f64::from(thumbnail.raster.height());
     assert!((thumbnail_aspect - page_aspect).abs() < 0.01);
 
-    let worker_pid = opened.worker_pid().expect("the worker PID must be observable");
+    let worker_pid = opened
+        .worker_pid()
+        .expect("the worker PID must be observable");
     assert!(PathBuf::from(format!("/proc/{worker_pid}")).exists());
     opened.close().expect("the real UserUnit worker must close");
     assert!(!PathBuf::from(format!("/proc/{worker_pid}")).exists());
@@ -14782,9 +14873,8 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
         }
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
-    let document_id = workspace.update(cx, |workspace, cx| {
-        workspace.open_path(fixture.clone(), cx)
-    });
+    let document_id =
+        workspace.update(cx, |workspace, cx| workspace.open_path(fixture.clone(), cx));
     cx.run_until_parked();
     let original_worker_pid = workspace
         .read_with(cx, |workspace, cx| {
@@ -14878,33 +14968,39 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
         .expect("the GPUI Component Select tool must render");
     cx.simulate_click(select_tool.center(), Modifiers::default());
     assert_eq!(
-        workspace.read_with(cx, |workspace, cx| workspace.annotation_tool(document_id, cx)),
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(document_id, cx)),
         Some(AnnotationTool::Select)
     );
     assert!(workspace.update(cx, |workspace, cx| {
         workspace.toggle_annotation_selection(document_id, &rectangle_id, cx)
     }));
-    assert!(workspace.read_with(cx, |workspace, cx| workspace
-        .annotation_snapshot(document_id, cx)
-        .unwrap()
-        .selected_id
-        .is_none()));
+    assert!(workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_snapshot(document_id, cx)
+            .unwrap()
+            .selected_id
+            .is_none()
+    }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let current_layer_bounds = cx.debug_bounds(layer_id).unwrap();
     let current_scale = (f64::from(current_layer_bounds.size.width) / display_size.0)
         .min(f64::from(current_layer_bounds.size.height) / display_size.1);
     let current_origin = point(
         current_layer_bounds.origin.x
-            + px(((f64::from(current_layer_bounds.size.width) - display_size.0 * current_scale)
-                / 2.) as f32),
+            + px(
+                ((f64::from(current_layer_bounds.size.width) - display_size.0 * current_scale) / 2.)
+                    as f32,
+            ),
         current_layer_bounds.origin.y
-            + px(((f64::from(current_layer_bounds.size.height) - display_size.1 * current_scale)
-                / 2.) as f32),
+            + px(
+                ((f64::from(current_layer_bounds.size.height) - display_size.1 * current_scale)
+                    / 2.) as f32,
+            ),
     );
     let current_transform =
         PageTransform::from_page_coordinate_space(coordinate_space, current_scale).unwrap();
-    let local_stroke = current_transform
-        .point_to_local_pixels(PdfPoint::new(72., 84.).unwrap());
+    let local_stroke = current_transform.point_to_local_pixels(PdfPoint::new(72., 84.).unwrap());
     let rectangle_stroke = point(
         current_origin.x + px(local_stroke.x as f32),
         current_origin.y + px(local_stroke.y as f32),
@@ -14981,11 +15077,15 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
         .min(f64::from(snapshot_layer.size.height) / display_size.1);
     let snapshot_origin = point(
         snapshot_layer.origin.x
-            + px(((f64::from(snapshot_layer.size.width) - display_size.0 * snapshot_scale) / 2.)
-                as f32),
+            + px(
+                ((f64::from(snapshot_layer.size.width) - display_size.0 * snapshot_scale) / 2.)
+                    as f32,
+            ),
         snapshot_layer.origin.y
-            + px(((f64::from(snapshot_layer.size.height) - display_size.1 * snapshot_scale) / 2.)
-                as f32),
+            + px(
+                ((f64::from(snapshot_layer.size.height) - display_size.1 * snapshot_scale) / 2.)
+                    as f32,
+            ),
     );
     let snapshot_transform =
         PageTransform::from_page_coordinate_space(coordinate_space, snapshot_scale).unwrap();

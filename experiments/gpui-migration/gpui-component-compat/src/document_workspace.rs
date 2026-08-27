@@ -17,8 +17,8 @@ use crate::{
         DOCUMENT_TAB_OPEN_ID, DOCUMENT_TAB_POINTER_DRAG_THRESHOLD,
         DOCUMENT_TAB_REORDER_DESCRIPTION, DOCUMENT_TAB_REORDER_KEYSHORTCUTS,
         DOCUMENT_TAB_REORDER_STATUS_ID, DocumentTabReorderEvent, DocumentTabReorderOrigin,
-        TemplateSplitControl, TemplateSplitEvent, document_tab_close_accessible_label,
-        document_tab_drag_id, document_tab_drop_target_id,
+        TemplateCatalogItem, TemplateCreationEvent, TemplateSplitControl, TemplateSplitEvent,
+        document_tab_close_accessible_label, document_tab_drag_id, document_tab_drop_target_id,
     },
     document_viewer::{DocumentViewerState, resolve_fit_zoom_percent},
     native_document_view_state::{
@@ -76,8 +76,8 @@ use butter_paper_gpui_gallery::{
 };
 use gpui::{
     Anchor, App, AppContext as _, BorderStyle, Bounds, ClickEvent, ContentMask, Context,
-    DispatchPhase, Entity, FocusHandle, Focusable as _, InteractiveElement as _, IntoElement,
-    KeyBinding, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent,
+    DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable as _, InteractiveElement as _,
+    IntoElement, KeyBinding, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent,
     MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement as _, PathBuilder, PathPromptOptions,
     Pixels, Point, Render, RenderImage, Role, ScrollHandle, ScrollWheelEvent, SharedString,
     StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription, TextAlign,
@@ -103,6 +103,8 @@ gpui::actions!(
     document_workspace,
     [
         OpenPdf,
+        NewFromTemplate,
+        SaveDocumentAsTemplate,
         Save,
         SaveAs,
         NavigateHome,
@@ -142,6 +144,8 @@ pub fn init_document_workspace_actions(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-o", OpenPdf, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new("ctrl-o", OpenPdf, Some(DOCUMENT_WORKSPACE_CONTEXT)),
+        KeyBinding::new("cmd-n", NewFromTemplate, Some(DOCUMENT_WORKSPACE_CONTEXT)),
+        KeyBinding::new("ctrl-n", NewFromTemplate, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new("cmd-s", Save, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new("ctrl-s", Save, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new("cmd-shift-s", SaveAs, Some(DOCUMENT_WORKSPACE_CONTEXT)),
@@ -242,6 +246,28 @@ pub fn register_document_workspace_global_actions(
     cx.on_action(move |_: &OpenPdf, cx| {
         if let Some(workspace) = open_workspace.upgrade() {
             workspace.update(cx, |workspace, cx| workspace.prompt_to_open_documents(cx));
+        }
+    });
+    let template_workspace = workspace.downgrade();
+    cx.on_action(move |_: &NewFromTemplate, cx| {
+        if let Some(workspace) = template_workspace.upgrade() {
+            workspace.update(cx, |workspace, cx| {
+                workspace.template_manage_requests =
+                    workspace.template_manage_requests.saturating_add(1);
+                cx.emit(DocumentWorkspaceTemplateCommand::Manage);
+                cx.notify();
+            });
+        }
+    });
+    let save_template_workspace = workspace.downgrade();
+    cx.on_action(move |_: &SaveDocumentAsTemplate, cx| {
+        if let Some(workspace) = save_template_workspace.upgrade() {
+            workspace.update(cx, |workspace, cx| {
+                workspace.handle_template_split_event(
+                    TemplateSplitEvent::SaveDocumentAsTemplateRequested,
+                    cx,
+                );
+            });
         }
     });
     let save_workspace = workspace.downgrade();
@@ -1096,6 +1122,17 @@ pub enum GeneratedTemplateRequestDisposition {
     Started(DocumentId),
     SuppressedPending,
     Rejected(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DocumentWorkspaceTemplateCommand {
+    Create(TemplateCreationEvent),
+    Manage,
+    SaveDocumentAsTemplate {
+        document_id: DocumentId,
+        document_name: String,
+        authorized_source: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2884,12 +2921,16 @@ pub struct DocumentWorkspace {
     _viewer_toolbar_subscriptions: Vec<Subscription>,
     viewer_session_subscriptions: HashMap<DocumentId, Subscription>,
     generated_document_store: Option<GeneratedDocumentStore>,
-    pending_template_id: Option<&'static str>,
+    pending_template_id: Option<String>,
     pending_template_document_id: Option<DocumentId>,
     template_manage_requests: u64,
+    template_save_requests: u64,
+    external_template_authority: bool,
     opener: Option<Arc<dyn NativeDocumentOpener>>,
     saver: Option<Arc<dyn NativeDocumentSaver>>,
 }
+
+impl EventEmitter<DocumentWorkspaceTemplateCommand> for DocumentWorkspace {}
 
 #[derive(Clone, Copy)]
 struct PageInteraction {
@@ -3063,6 +3104,8 @@ impl DocumentWorkspace {
             pending_template_id: None,
             pending_template_document_id: None,
             template_manage_requests: 0,
+            template_save_requests: 0,
+            external_template_authority: false,
             opener: None,
             saver: None,
         }
@@ -3338,13 +3381,53 @@ impl DocumentWorkspace {
         self.template_manage_requests
     }
 
+    pub const fn template_save_requests(&self) -> u64 {
+        self.template_save_requests
+    }
+
+    pub fn use_external_template_authority(&mut self, enabled: bool) {
+        self.external_template_authority = enabled;
+    }
+
+    pub fn apply_template_catalog(
+        &mut self,
+        templates: Vec<TemplateCatalogItem>,
+        durable_last_used_id: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.template_control.update(cx, |control, cx| {
+            control.apply_template_catalog(templates, durable_last_used_id, cx);
+        });
+        cx.notify();
+    }
+
+    pub fn set_template_operation_state(&mut self, storage_busy: bool, cx: &mut Context<Self>) {
+        let save_document_enabled = self.active_document_id.is_some() && !storage_busy;
+        self.template_control.update(cx, |control, cx| {
+            control.set_creating(storage_busy, cx);
+            control.set_save_document_enabled(save_document_enabled, cx);
+        });
+    }
+
     fn handle_template_split_event(&mut self, event: TemplateSplitEvent, cx: &mut Context<Self>) {
         match event {
-            TemplateSplitEvent::CreateRequested { template_id, .. } => {
+            TemplateSplitEvent::CreateRequested {
+                template_id,
+                origin,
+            } => {
+                if self.external_template_authority {
+                    cx.emit(DocumentWorkspaceTemplateCommand::Create(
+                        TemplateCreationEvent {
+                            template_id,
+                            origin,
+                        },
+                    ));
+                    return;
+                }
                 if self.pending_template_id.is_some() {
                     return;
                 }
-                self.pending_template_id = Some(template_id);
+                self.pending_template_id = Some(template_id.clone());
                 let workspace = cx.entity().downgrade();
                 cx.defer(move |cx| {
                     let _ = workspace.update(cx, |workspace, cx| {
@@ -3355,6 +3438,21 @@ impl DocumentWorkspace {
             }
             TemplateSplitEvent::ManageRequested => {
                 self.template_manage_requests = self.template_manage_requests.saturating_add(1);
+                cx.emit(DocumentWorkspaceTemplateCommand::Manage);
+                cx.notify();
+            }
+            TemplateSplitEvent::SaveDocumentAsTemplateRequested => {
+                self.template_save_requests = self.template_save_requests.saturating_add(1);
+                if let Some(document_id) = self.active_document_id
+                    && let Some(session) = self.session(document_id, cx)
+                {
+                    let session = session.read(cx);
+                    cx.emit(DocumentWorkspaceTemplateCommand::SaveDocumentAsTemplate {
+                        document_id,
+                        document_name: session.title().to_owned(),
+                        authorized_source: session.path().to_owned(),
+                    });
+                }
                 cx.notify();
             }
             TemplateSplitEvent::OpenChanged(_) | TemplateSplitEvent::SelectionChanged(_) => {}
@@ -3369,16 +3467,16 @@ impl DocumentWorkspace {
         if self.pending_template_id.is_some() {
             return GeneratedTemplateRequestDisposition::SuppressedPending;
         }
-        self.pending_template_id = Some(template_id);
-        self.start_reserved_template_creation(template_id, cx)
+        self.pending_template_id = Some(template_id.to_owned());
+        self.start_reserved_template_creation(template_id.to_owned(), cx)
     }
 
     fn start_reserved_template_creation(
         &mut self,
-        template_id: &'static str,
+        template_id: String,
         cx: &mut Context<Self>,
     ) -> GeneratedTemplateRequestDisposition {
-        if self.pending_template_id != Some(template_id)
+        if self.pending_template_id.as_deref() != Some(template_id.as_str())
             || self.pending_template_document_id.is_some()
         {
             return GeneratedTemplateRequestDisposition::SuppressedPending;
@@ -3393,7 +3491,7 @@ impl DocumentWorkspace {
             self.finish_template_creation(cx);
             return GeneratedTemplateRequestDisposition::Rejected(error);
         };
-        let request = match generated_document_request_for_template(template_id) {
+        let request = match generated_document_request_for_template(&template_id) {
             Ok(request) => request,
             Err(error) => {
                 self.last_file_error = Some(error.clone());
@@ -12357,6 +12455,18 @@ impl Render for DocumentWorkspace {
             .track_focus(&self.workspace_focus)
             .key_context(DOCUMENT_WORKSPACE_CONTEXT)
             .on_action(cx.listener(Self::open_pdf_from_action))
+            .on_action(cx.listener(|workspace, _: &NewFromTemplate, _, cx| {
+                workspace.template_manage_requests =
+                    workspace.template_manage_requests.saturating_add(1);
+                cx.emit(DocumentWorkspaceTemplateCommand::Manage);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|workspace, _: &SaveDocumentAsTemplate, _, cx| {
+                workspace.handle_template_split_event(
+                    TemplateSplitEvent::SaveDocumentAsTemplateRequested,
+                    cx,
+                );
+            }))
             .on_action(cx.listener(Self::save_from_action))
             .on_action(cx.listener(Self::save_as_from_action))
             .on_action(cx.listener(|workspace, _: &NavigateHome, window, cx| {

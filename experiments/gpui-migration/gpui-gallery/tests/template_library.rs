@@ -8,6 +8,8 @@ use butter_paper_gpui_gallery::{
 use sha2::{Digest, Sha256};
 use tempfile::tempdir;
 
+const INDEX_FILE: &str = "library.json";
+
 fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../performance/results/public-fixtures-v1/bp-multi-page-v1.pdf")
@@ -134,5 +136,119 @@ fn template_library_custom_and_imported_records_survive_restart_and_materialize_
     assert_eq!(
         TemplateLibrary::open(library_root).unwrap().record_ids(),
         ["custom-fixed-grid"]
+    );
+}
+
+#[test]
+fn corrupt_or_unsupported_indexes_are_rejected_without_rewriting_metadata() {
+    for bytes in [
+        b"{not valid json".to_vec(),
+        br#"{
+  "version": 2,
+  "records": [],
+  "lastTemplateId": "built-in-blank",
+  "legacyBlankMigrated": false
+}"#
+        .to_vec(),
+    ] {
+        let root = tempdir().unwrap();
+        let library_root = root.path().join("template-library");
+        drop(TemplateLibrary::open(library_root.clone()).unwrap());
+        let index_path = library_root.join(INDEX_FILE);
+        fs::write(&index_path, &bytes).unwrap();
+
+        assert!(TemplateLibrary::open(library_root).is_err());
+        assert_eq!(fs::read(index_path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn invalid_stored_record_is_rejected_without_dropping_recoverable_metadata() {
+    let root = tempdir().unwrap();
+    let library_root = root.path().join("template-library");
+    drop(TemplateLibrary::open(library_root.clone()).unwrap());
+    let index_path = library_root.join(INDEX_FILE);
+    let bytes = br#"{
+  "version": 1,
+  "records": [
+    {
+      "kind": "generated",
+      "id": "not-a-custom-id",
+      "name": "Recover Me",
+      "title": "Untitled",
+      "widthMm": 420.0,
+      "heightMm": 297.0,
+      "pattern": null
+    }
+  ],
+  "lastTemplateId": "not-a-custom-id",
+  "legacyBlankMigrated": false
+}"#;
+    fs::write(&index_path, bytes).unwrap();
+
+    assert!(TemplateLibrary::open(library_root).is_err());
+    assert_eq!(fs::read(index_path).unwrap(), bytes);
+}
+
+#[test]
+fn imported_remove_rolls_back_memory_when_source_rename_fails() {
+    let root = tempdir().unwrap();
+    let library_root = root.path().join("template-library");
+    let fixture_bytes = fs::read(fixture_path()).unwrap();
+    let original_import = root.path().join("Site Form.pdf");
+    fs::write(&original_import, fixture_bytes).unwrap();
+    let imported_id = "imported-00000000-0000-4000-8000-000000000000";
+    let mut library = TemplateLibrary::open(library_root.clone()).unwrap();
+    library
+        .import_pdf(
+            imported_id,
+            "Site Form",
+            "2026-08-27T00:00:00.000Z",
+            &original_import,
+        )
+        .unwrap();
+    let blocking_tombstone = library_root.join(format!(".{imported_id}.removing"));
+    fs::create_dir(&blocking_tombstone).unwrap();
+    fs::write(blocking_tombstone.join("keep"), b"force rename failure").unwrap();
+
+    assert!(library.remove(imported_id).is_err());
+    assert_eq!(library.record_ids(), [imported_id]);
+    assert_eq!(library.last_template_id(), imported_id);
+    assert!(library.managed_source_path(imported_id).unwrap().is_file());
+    assert_eq!(
+        TemplateLibrary::open(library_root).unwrap().record_ids(),
+        [imported_id]
+    );
+}
+
+#[test]
+fn legacy_migration_rolls_back_memory_when_persistence_fails() {
+    let root = tempdir().unwrap();
+    let library_root = root.path().join("template-library");
+    let mut library = TemplateLibrary::open(library_root.clone()).unwrap();
+    let index_path = library_root.join(INDEX_FILE);
+    fs::create_dir(&index_path).unwrap();
+    fs::write(index_path.join("keep"), b"force rename failure").unwrap();
+    let request = GeneratedDocumentRequest {
+        title: "Untitled".into(),
+        width_mm: 300.,
+        height_mm: 200.,
+        pattern: None,
+    };
+
+    assert!(
+        library
+            .migrate_legacy_blank_request(Some(request.clone()))
+            .is_err()
+    );
+    assert!(library.record_ids().is_empty());
+    assert_eq!(library.last_template_id(), BUILT_IN_BLANK_ID);
+
+    fs::remove_dir_all(&index_path).unwrap();
+    library.migrate_legacy_blank_request(Some(request)).unwrap();
+    assert_eq!(library.record_ids(), ["custom-migrated-blank-pdf-default"]);
+    assert_eq!(
+        library.last_template_id(),
+        "custom-migrated-blank-pdf-default"
     );
 }

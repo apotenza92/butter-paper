@@ -13,9 +13,9 @@ use butter_paper_gpui_component_compat::{
     },
     document_workspace::{
         DocumentOpenBatchRequest, DocumentOpenOrigin, DocumentWorkspace, NativeDocumentOpener,
-        NativeDocumentResource, NativeDocumentSaver, OpenDocumentRequest, OpenPdf,
-        OpenedNativeDocument, RasterSurface, Save, SaveAs, SaveDocumentRequest,
-        SavedNativeDocument, ThumbnailSurface,
+        NativeDocumentResource, NativeDocumentSaver, NewFromTemplate, OpenDocumentRequest, OpenPdf,
+        OpenedNativeDocument, RasterSurface, Save, SaveAs, SaveDocumentAsTemplate,
+        SaveDocumentRequest, SavedNativeDocument, ThumbnailSurface,
     },
     native_application::{
         NativeApplicationMenuState, NativeDocumentIngress, build_native_application_menus,
@@ -50,6 +50,12 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
     assert_action(item(file, "Open…"), |action| {
         action.as_any().is::<OpenPdf>()
     });
+    assert_action(item(file, "New from Template…"), |action| {
+        action.as_any().is::<NewFromTemplate>()
+    });
+    assert_action(item(file, "Save Document as Template…"), |action| {
+        action.as_any().is::<SaveDocumentAsTemplate>()
+    });
     assert_action(item(file, "Save"), |action| action.as_any().is::<Save>());
     assert_action(item(file, "Save As…"), |action| {
         action.as_any().is::<SaveAs>()
@@ -59,11 +65,13 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
     });
     assert!(!item(file, "Save").is_disabled());
     assert!(!item(file, "Save As…").is_disabled());
+    assert!(!item(file, "Save Document as Template…").is_disabled());
 
     let disabled = build_native_application_menus(NativeApplicationMenuState::default());
     let file = menu(&disabled, "File");
     assert!(item(file, "Save").is_disabled());
     assert!(item(file, "Save As…").is_disabled());
+    assert!(item(file, "Save Document as Template…").is_disabled());
 
     let busy = build_native_application_menus(NativeApplicationMenuState {
         has_active_document: true,
@@ -72,6 +80,7 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
     let file = menu(&busy, "File");
     assert!(item(file, "Save").is_disabled());
     assert!(item(file, "Save As…").is_disabled());
+    assert!(item(file, "Save Document as Template…").is_disabled());
 }
 
 #[test]

@@ -29,6 +29,7 @@ pub const TEMPLATE_PICKER_ID: &str = "document-tab-template-picker";
 pub const TEMPLATE_PICKER_POPOVER_ID: &str = "template-picker";
 pub const TEMPLATE_MANAGE_ID: &str = "template-picker-manage";
 pub const TEMPLATE_CREATE_ID: &str = "template-picker-create";
+pub const TEMPLATE_SAVE_DOCUMENT_ID: &str = "template-picker-save-document";
 pub const DOCUMENT_TAB_LIST_ACCESSIBLE_NAME: &str = "Open documents";
 pub const DOCUMENT_TAB_REORDER_STATUS_ID: &str = "document-tab-reorder-status";
 pub const DOCUMENT_TAB_REORDER_KEYSHORTCUTS: &str = "Alt+Shift+ArrowLeft Alt+Shift+ArrowRight";
@@ -111,6 +112,31 @@ pub struct TemplateDefinition {
     pub name: &'static str,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TemplateCatalogItem {
+    pub id: String,
+    pub name: String,
+}
+
+impl TemplateCatalogItem {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+}
+
+impl From<TemplateDefinition> for TemplateCatalogItem {
+    fn from(template: TemplateDefinition) -> Self {
+        Self::new(template.id, template.name)
+    }
+}
+
+pub fn template_picker_item_id(template_id: &str) -> String {
+    format!("template-picker-item-{template_id}")
+}
+
 pub const BUILT_IN_TEMPLATES: [TemplateDefinition; 6] = [
     TemplateDefinition {
         id: "built-in-blank",
@@ -163,19 +189,32 @@ pub enum TemplateCreationOrigin {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TemplateCreationEvent {
-    pub template_id: &'static str,
+    pub template_id: String,
     pub origin: TemplateCreationOrigin,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SaveDocumentAsTemplateCommand {
+    pub tab_id: String,
+    pub document_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DocumentTabBarCommand {
+    ManageTemplates,
+    SaveDocumentAsTemplate(SaveDocumentAsTemplateCommand),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TemplateSplitEvent {
     OpenChanged(bool),
-    SelectionChanged(&'static str),
+    SelectionChanged(String),
     CreateRequested {
-        template_id: &'static str,
+        template_id: String,
         origin: TemplateCreationOrigin,
     },
     ManageRequested,
+    SaveDocumentAsTemplateRequested,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -237,21 +276,15 @@ pub struct DirtyCloseConfirmationEvent {
     pub intent: DirtyCloseConfirmationIntent,
 }
 
-fn template_definition(template_id: &str) -> TemplateDefinition {
-    BUILT_IN_TEMPLATES
-        .iter()
-        .copied()
-        .find(|template| template.id == template_id)
-        .unwrap_or(BUILT_IN_TEMPLATES[0])
-}
-
 /// Owns the retained picker state and emits semantic template intents without
 /// creating, naming, selecting, or closing document tabs.
 pub struct TemplateSplitControl {
     picker_open: bool,
-    selected_template_id: &'static str,
-    last_template_id: &'static str,
+    templates: Vec<TemplateCatalogItem>,
+    selected_template_id: String,
+    last_template_id: String,
     creating: bool,
+    save_document_enabled: bool,
     picker_focus: FocusHandle,
 }
 
@@ -259,9 +292,11 @@ impl TemplateSplitControl {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             picker_open: false,
-            selected_template_id: BUILT_IN_TEMPLATES[0].id,
-            last_template_id: BUILT_IN_TEMPLATES[0].id,
+            templates: BUILT_IN_TEMPLATES.map(TemplateCatalogItem::from).to_vec(),
+            selected_template_id: BUILT_IN_TEMPLATES[0].id.into(),
+            last_template_id: BUILT_IN_TEMPLATES[0].id.into(),
             creating: false,
+            save_document_enabled: false,
             picker_focus: cx.focus_handle(),
         }
     }
@@ -270,12 +305,16 @@ impl TemplateSplitControl {
         self.picker_open
     }
 
-    pub fn selected_template_id(&self) -> &'static str {
-        self.selected_template_id
+    pub fn templates(&self) -> &[TemplateCatalogItem] {
+        &self.templates
     }
 
-    pub fn last_template_id(&self) -> &'static str {
-        self.last_template_id
+    pub fn selected_template_id(&self) -> String {
+        self.selected_template_id.clone()
+    }
+
+    pub fn last_template_id(&self) -> String {
+        self.last_template_id.clone()
     }
 
     pub fn is_creating(&self) -> bool {
@@ -294,21 +333,57 @@ impl TemplateSplitControl {
         cx.notify();
     }
 
+    pub fn set_save_document_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.save_document_enabled == enabled {
+            return;
+        }
+        self.save_document_enabled = enabled;
+        cx.notify();
+    }
+
+    pub fn apply_template_catalog(
+        &mut self,
+        templates: Vec<TemplateCatalogItem>,
+        durable_last_used_id: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if templates.is_empty() {
+            return;
+        }
+        let requested = durable_last_used_id.into();
+        let last_used = templates
+            .iter()
+            .find(|template| template.id == requested)
+            .unwrap_or(&templates[0])
+            .id
+            .clone();
+        self.templates = templates;
+        self.last_template_id = last_used.clone();
+        self.selected_template_id = last_used;
+        cx.notify();
+    }
+
     fn request_create(
         &mut self,
-        template_id: &'static str,
+        template_id: &str,
         origin: TemplateCreationOrigin,
         cx: &mut Context<Self>,
     ) {
         if self.creating && origin == TemplateCreationOrigin::Create {
             return;
         }
-        let template = template_definition(template_id);
-        self.last_template_id = template.id;
-        self.selected_template_id = template.id;
+        let template_id = self
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .unwrap_or(&self.templates[0])
+            .id
+            .clone();
+        self.last_template_id = template_id.clone();
+        self.selected_template_id = template_id.clone();
         self.picker_open = false;
         cx.emit(TemplateSplitEvent::CreateRequested {
-            template_id: template.id,
+            template_id,
             origin,
         });
         cx.notify();
@@ -319,13 +394,19 @@ impl EventEmitter<TemplateSplitEvent> for TemplateSplitControl {}
 
 impl Render for TemplateSplitControl {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let current_template = template_definition(self.last_template_id);
+        let current_template = self
+            .templates
+            .iter()
+            .find(|template| template.id == self.last_template_id)
+            .unwrap_or(&self.templates[0])
+            .clone();
         let primary_control = cx.entity().downgrade();
         let primary = Button::new(TEMPLATE_PRIMARY_ID)
             .small()
             .debug_selector(|| TEMPLATE_PRIMARY_ID.into())
             .accessibility_id(TEMPLATE_PRIMARY_ID)
             .icon(IconName::Plus)
+            .disabled(self.creating)
             .tooltip(format!(
                 "New from {}. Click to create.",
                 current_template.name
@@ -333,7 +414,7 @@ impl Render for TemplateSplitControl {
             .on_click(move |_: &ClickEvent, _, cx| {
                 let _ = primary_control.update(cx, |control, cx| {
                     control.request_create(
-                        current_template.id,
+                        &current_template.id,
                         TemplateCreationOrigin::Primary,
                         cx,
                     );
@@ -351,8 +432,10 @@ impl Render for TemplateSplitControl {
         let picker_content_control = cx.entity().downgrade();
         let picker_open_focus = self.picker_focus.clone();
         let picker_content_focus = self.picker_focus.clone();
-        let selected_template_id = self.selected_template_id;
+        let selected_template_id = self.selected_template_id.clone();
+        let templates = self.templates.clone();
         let creating = self.creating;
+        let save_document_enabled = self.save_document_enabled;
         let picker = Popover::new("document-tab-template-picker-popover")
             .anchor(Anchor::TopLeft)
             .open(self.picker_open)
@@ -362,9 +445,9 @@ impl Render for TemplateSplitControl {
                 let _ = picker_control.update(cx, |control, cx| {
                     control.picker_open = *open;
                     if *open {
-                        control.selected_template_id = control.last_template_id;
+                        control.selected_template_id = control.last_template_id.clone();
                         cx.emit(TemplateSplitEvent::SelectionChanged(
-                            control.selected_template_id,
+                            control.selected_template_id.clone(),
                         ));
                         picker_focus.focus(window, cx);
                     }
@@ -374,34 +457,39 @@ impl Render for TemplateSplitControl {
             })
             .trigger(picker)
             .content(move |_, _, cx| {
-                let template_rows = BUILT_IN_TEMPLATES.into_iter().zip(TEMPLATE_ITEM_IDS).map(
-                    |(template, stable_id)| {
-                        let control = picker_content_control.clone();
-                        Button::new(stable_id)
-                            .debug_selector(move || stable_id.into())
-                            .accessibility_id(stable_id)
-                            .label(template.name)
-                            .selected(selected_template_id == template.id)
-                            .toggled(selected_template_id == template.id)
-                            .on_click(move |event: &ClickEvent, _, cx| {
-                                let _ = control.update(cx, |control, cx| {
-                                    control.selected_template_id = template.id;
-                                    if event.click_count() == 2 {
-                                        control.request_create(
-                                            template.id,
-                                            TemplateCreationOrigin::RowDoubleClick,
-                                            cx,
-                                        );
-                                    } else {
-                                        cx.emit(TemplateSplitEvent::SelectionChanged(template.id));
-                                        cx.notify();
-                                    }
-                                });
-                            })
-                    },
-                );
+                let template_rows = templates.clone().into_iter().map(|template| {
+                    let stable_id = template_picker_item_id(&template.id);
+                    let control = picker_content_control.clone();
+                    Button::new(stable_id.clone())
+                        .debug_selector({
+                            let stable_id = stable_id.clone();
+                            move || stable_id.clone().into()
+                        })
+                        .accessibility_id(stable_id)
+                        .label(template.name.clone())
+                        .selected(selected_template_id == template.id)
+                        .toggled(selected_template_id == template.id)
+                        .on_click(move |event: &ClickEvent, _, cx| {
+                            let _ = control.update(cx, |control, cx| {
+                                control.selected_template_id = template.id.clone();
+                                if event.click_count() == 2 {
+                                    control.request_create(
+                                        &template.id,
+                                        TemplateCreationOrigin::RowDoubleClick,
+                                        cx,
+                                    );
+                                } else {
+                                    cx.emit(TemplateSplitEvent::SelectionChanged(
+                                        template.id.clone(),
+                                    ));
+                                    cx.notify();
+                                }
+                            });
+                        })
+                });
 
                 let manage_control = picker_content_control.clone();
+                let save_document_control = picker_content_control.clone();
                 let create_control = picker_content_control.clone();
                 let create = Button::new(TEMPLATE_CREATE_ID)
                     .debug_selector(|| TEMPLATE_CREATE_ID.into())
@@ -411,9 +499,9 @@ impl Render for TemplateSplitControl {
                     .on_click(move |_: &ClickEvent, _, cx| {
                         let _ = create_control.update(cx, |control, cx| {
                             if !control.creating {
-                                let selected = control.selected_template_id;
+                                let selected = control.selected_template_id.clone();
                                 control.request_create(
-                                    selected,
+                                    &selected,
                                     TemplateCreationOrigin::Create,
                                     cx,
                                 );
@@ -432,6 +520,21 @@ impl Render for TemplateSplitControl {
                     .bg(cx.theme().popover)
                     .child(gpui::div().font_semibold().child("New from template"))
                     .children(template_rows)
+                    .child(
+                        Button::new(TEMPLATE_SAVE_DOCUMENT_ID)
+                            .debug_selector(|| TEMPLATE_SAVE_DOCUMENT_ID.into())
+                            .accessibility_id(TEMPLATE_SAVE_DOCUMENT_ID)
+                            .label("Save Document as Template...")
+                            .disabled(creating || !save_document_enabled)
+                            .on_click(move |_: &ClickEvent, _, cx| {
+                                let _ = save_document_control.update(cx, |control, cx| {
+                                    control.picker_open = false;
+                                    cx.emit(TemplateSplitEvent::OpenChanged(false));
+                                    cx.emit(TemplateSplitEvent::SaveDocumentAsTemplateRequested);
+                                    cx.notify();
+                                });
+                            }),
+                    )
                     .child(
                         h_flex()
                             .justify_between()
@@ -475,11 +578,13 @@ pub struct DocumentTabBarTemplateSeam {
     template_control: Entity<TemplateSplitControl>,
     _template_subscription: Subscription,
     picker_open: bool,
-    selected_template_id: &'static str,
-    last_template_id: &'static str,
+    templates: Vec<TemplateCatalogItem>,
+    selected_template_id: String,
+    last_template_id: String,
     creating: bool,
     creation_events: Vec<TemplateCreationEvent>,
     manage_requests: usize,
+    save_document_as_template_commands: Vec<SaveDocumentAsTemplateCommand>,
     tab_events: Vec<DocumentTabEvent>,
     reorder_events: Vec<DocumentTabReorderEvent>,
     reorder_announcement: String,
@@ -523,6 +628,9 @@ impl DocumentTabBarTemplateSeam {
             .map(|tab| (tab.id.clone(), Rc::new(Cell::new(Bounds::default()))))
             .collect();
         let template_control = cx.new(TemplateSplitControl::new);
+        template_control.update(cx, |control, cx| {
+            control.set_save_document_enabled(true, cx);
+        });
         let picker_focus = template_control.read(cx).picker_focus_handle();
         let template_subscription = cx.subscribe(
             &template_control,
@@ -530,17 +638,30 @@ impl DocumentTabBarTemplateSeam {
                 match event {
                     TemplateSplitEvent::OpenChanged(open) => control.picker_open = *open,
                     TemplateSplitEvent::SelectionChanged(template_id) => {
-                        control.selected_template_id = *template_id;
+                        control.selected_template_id = template_id.clone();
                     }
                     TemplateSplitEvent::CreateRequested {
                         template_id,
                         origin,
                     } => {
-                        control.create_mock_from_template(*template_id, *origin, cx);
+                        control.create_mock_from_template(template_id, *origin, cx);
                         return;
                     }
                     TemplateSplitEvent::ManageRequested => {
                         control.manage_requests += 1;
+                        cx.emit(DocumentTabBarCommand::ManageTemplates);
+                    }
+                    TemplateSplitEvent::SaveDocumentAsTemplateRequested => {
+                        if let Some(tab) = control.tabs.get(control.active_tab_ix) {
+                            let command = SaveDocumentAsTemplateCommand {
+                                tab_id: tab.id.clone(),
+                                document_name: tab.name.clone(),
+                            };
+                            control
+                                .save_document_as_template_commands
+                                .push(command.clone());
+                            cx.emit(DocumentTabBarCommand::SaveDocumentAsTemplate(command));
+                        }
                     }
                 }
                 cx.notify();
@@ -552,11 +673,13 @@ impl DocumentTabBarTemplateSeam {
             template_control,
             _template_subscription: template_subscription,
             picker_open: false,
-            selected_template_id: BUILT_IN_TEMPLATES[0].id,
-            last_template_id: BUILT_IN_TEMPLATES[0].id,
+            templates: BUILT_IN_TEMPLATES.map(TemplateCatalogItem::from).to_vec(),
+            selected_template_id: BUILT_IN_TEMPLATES[0].id.into(),
+            last_template_id: BUILT_IN_TEMPLATES[0].id.into(),
             creating: false,
             creation_events: Vec::new(),
             manage_requests: 0,
+            save_document_as_template_commands: Vec::new(),
             tab_events: Vec::new(),
             reorder_events: Vec::new(),
             reorder_announcement: String::new(),
@@ -638,12 +761,12 @@ impl DocumentTabBarTemplateSeam {
         self.picker_open
     }
 
-    pub fn selected_template_id(&self) -> &'static str {
-        self.selected_template_id
+    pub fn selected_template_id(&self) -> String {
+        self.selected_template_id.clone()
     }
 
-    pub fn last_template_id(&self) -> &'static str {
-        self.last_template_id
+    pub fn last_template_id(&self) -> String {
+        self.last_template_id.clone()
     }
 
     pub fn is_creating(&self) -> bool {
@@ -658,6 +781,10 @@ impl DocumentTabBarTemplateSeam {
         self.manage_requests
     }
 
+    pub fn save_document_as_template_commands(&self) -> &[SaveDocumentAsTemplateCommand] {
+        &self.save_document_as_template_commands
+    }
+
     pub fn focus_handle(&self) -> FocusHandle {
         self.focus_handle.clone()
     }
@@ -668,6 +795,31 @@ impl DocumentTabBarTemplateSeam {
 
     pub fn template_control(&self) -> Entity<TemplateSplitControl> {
         self.template_control.clone()
+    }
+
+    pub fn apply_template_catalog(
+        &mut self,
+        templates: Vec<TemplateCatalogItem>,
+        durable_last_used_id: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if templates.is_empty() {
+            return;
+        }
+        let durable_last_used_id = durable_last_used_id.into();
+        let selected = templates
+            .iter()
+            .find(|template| template.id == durable_last_used_id)
+            .unwrap_or(&templates[0])
+            .id
+            .clone();
+        self.selected_template_id = selected.clone();
+        self.last_template_id = selected;
+        self.templates = templates.clone();
+        self.template_control.update(cx, |control, cx| {
+            control.apply_template_catalog(templates, durable_last_used_id, cx);
+        });
+        cx.notify();
     }
 
     pub fn set_creating(&mut self, creating: bool, cx: &mut Context<Self>) {
@@ -1034,11 +1186,16 @@ impl DocumentTabBarTemplateSeam {
 
     fn create_mock_from_template(
         &mut self,
-        template_id: &'static str,
+        template_id: &str,
         origin: TemplateCreationOrigin,
         cx: &mut Context<Self>,
     ) {
-        let template = template_definition(template_id);
+        let template = self
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .cloned()
+            .unwrap_or_else(|| TemplateCatalogItem::from(BUILT_IN_TEMPLATES[0]));
         let sequence = self.creation_events.len() + 1;
         let tab_id = format!("template-document-{sequence}");
         self.tab_focus_handles
@@ -1047,12 +1204,12 @@ impl DocumentTabBarTemplateSeam {
             .insert(tab_id.clone(), Rc::new(Cell::new(Bounds::default())));
         self.tabs.push(ExperimentDocumentTab {
             id: tab_id,
-            name: template.name.into(),
+            name: template.name,
             dirty: true,
         });
         self.active_tab_ix = self.tabs.len() - 1;
-        self.last_template_id = template.id;
-        self.selected_template_id = template.id;
+        self.last_template_id = template.id.clone();
+        self.selected_template_id = template.id.clone();
         self.picker_open = false;
         self.creation_events.push(TemplateCreationEvent {
             template_id: template.id,
@@ -1061,6 +1218,8 @@ impl DocumentTabBarTemplateSeam {
         cx.notify();
     }
 }
+
+impl EventEmitter<DocumentTabBarCommand> for DocumentTabBarTemplateSeam {}
 
 impl Render for DocumentTabBarTemplateSeam {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

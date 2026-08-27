@@ -268,6 +268,11 @@ test("runner modes expose only fixed reviewed Cargo argument arrays", () => {
     cargoArgs: ["--test", "document_workspace", "generated_template_"],
     controlledFailureStatus: null,
   });
+  assert.deepEqual(resolveRunnerMode("template-manager"), {
+    name: "template-manager",
+    cargoArgs: ["--test", "template_manager"],
+    controlledFailureStatus: null,
+  });
   assert.deepEqual(resolveRunnerMode("line-arrow-workspace"), {
     name: "line-arrow-workspace",
     cargoArgs: ["--test", "document_workspace", "line_arrow_workspace_"],

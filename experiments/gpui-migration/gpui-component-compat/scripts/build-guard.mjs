@@ -140,6 +140,11 @@ const runnerModes = Object.freeze({
     cargoArgs: Object.freeze(["--test", "document_workspace", "generated_template_"]),
     controlledFailureStatus: null,
   }),
+  "template-manager": Object.freeze({
+    name: "template-manager",
+    cargoArgs: Object.freeze(["--test", "template_manager"]),
+    controlledFailureStatus: null,
+  }),
   "line-arrow-workspace": Object.freeze({
     name: "line-arrow-workspace",
     cargoArgs: Object.freeze([

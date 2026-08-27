@@ -1873,3 +1873,21 @@ Hibbeler, and matched performance. Electron remains the shipping rollback.
 Next cutover slice: render the persistent snapshot through real GPUI Component
 `Dialog`, list, input, and button primitives, then connect import/select/create/
 remove commands to this library without duplicating storage logic.
+
+## 2026-08-27 native template-manager progress
+
+The pinned Longbridge/Zed story now includes the persistent native template
+manager. Real GPUI Component dialog, list-item, input, field, button-group,
+button, alert, and scrollbar primitives render application-owned state over a
+single durable GPUI-free authority.
+
+Passed: final manager/control 16/16, native application menu 6/6, dynamic
+tab-bar picker/commands 23/23,
+custom real PDFium 1/1, imported real PDFium 1/1, and warm all-targets 217
+active plus 23 ignored. Failed: fixed
+red-first diagnostics only. Blocked: shipping PDFium approval and live
+visual/accessibility on the headless VPS. Not run: packages, physical
+platforms, screen reader, IME, Hibbeler, and matched performance. The complete
+custom settings editor, dynamic custom/imported picker rows, persistent
+authority, and authorized-source Save Document as Template route are now
+implemented as Linux development evidence. This does not authorize cutover.

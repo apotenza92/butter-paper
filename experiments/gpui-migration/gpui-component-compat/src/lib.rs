@@ -19,5 +19,6 @@ pub mod perf_capture_signal;
 pub mod perf_protocol;
 pub mod perf_scenario;
 pub mod rectangle_property_inspector;
+pub mod template_manager;
 pub mod viewer_toolbar_strip;
 pub mod zoom_control;

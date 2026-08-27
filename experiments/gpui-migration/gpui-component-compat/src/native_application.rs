@@ -5,7 +5,10 @@ use gpui_component::{GlobalState, menu::AppMenuBar};
 
 use crate::{
     application_close_workspace::RequestApplicationClose,
-    document_workspace::{DocumentOpenBatchRequest, DocumentOpenOrigin, OpenPdf, Save, SaveAs},
+    document_workspace::{
+        DocumentOpenBatchRequest, DocumentOpenOrigin, NewFromTemplate, OpenPdf, Save, SaveAs,
+        SaveDocumentAsTemplate,
+    },
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -23,6 +26,10 @@ pub fn build_native_application_menus(state: NativeApplicationMenuState) -> Vec<
         )]),
         Menu::new("File").items([
             MenuItem::action("Open…", OpenPdf),
+            MenuItem::separator(),
+            MenuItem::action("New from Template…", NewFromTemplate),
+            MenuItem::action("Save Document as Template…", SaveDocumentAsTemplate)
+                .disabled(save_disabled),
             MenuItem::separator(),
             MenuItem::action("Save", Save).disabled(save_disabled),
             MenuItem::action("Save As…", SaveAs).disabled(save_disabled),

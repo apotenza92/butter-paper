@@ -1,9 +1,11 @@
 use butter_paper_gpui_component_compat::application_close_workspace::{
     ApplicationCloseShell, ApplicationCloseWorkspace, register_application_close_action,
 };
+use butter_paper_gpui_component_compat::document_tab_bar::TemplateCatalogItem;
 use butter_paper_gpui_component_compat::document_workspace::{
-    DocumentId, DocumentWorkspace, DocumentWorkspaceEvidenceSnapshot, NativeDocumentSaveStatus,
-    PaintedPageEvidence, PdfDocumentSaver, PdfiumWorkerBackend, init_document_workspace_actions,
+    DocumentId, DocumentWorkspace, DocumentWorkspaceEvidenceSnapshot,
+    DocumentWorkspaceTemplateCommand, NativeDocumentSaveStatus, PaintedPageEvidence,
+    PdfDocumentSaver, PdfiumWorkerBackend, init_document_workspace_actions,
     register_document_workspace_global_actions,
 };
 use butter_paper_gpui_component_compat::native_application::{
@@ -20,11 +22,14 @@ use butter_paper_gpui_component_compat::perf_scenario::{
     PresentedCropEvidenceInput, PresentedCropSignalDisposition, QualificationError,
     map_presented_crop_evidence, merge_presented_crop_open_events,
 };
+use butter_paper_gpui_component_compat::template_manager::{
+    TemplateManagerView, legacy_blank_request_from_json, route_workspace_template_command,
+};
 use butter_paper_gpui_gallery::generated_document::GeneratedDocumentStore;
 use gpui::{
     App, AppContext as _, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, Window, WindowBounds,
-    WindowOptions, div, px, size,
+    ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    WindowBounds, WindowOptions, div, px, size,
 };
 use gpui_component::{ActiveTheme as _, Root, menu::AppMenuBar, v_flex};
 use serde_json::json;
@@ -122,6 +127,8 @@ impl PerfStoryRuntime {
 struct ComponentStory {
     document_workspace: Entity<DocumentWorkspace>,
     app_menu_bar: Entity<AppMenuBar>,
+    template_manager: Option<Entity<TemplateManagerView>>,
+    _template_command_subscription: Option<Subscription>,
     last_native_menu_state: Option<NativeApplicationMenuState>,
     perf: Option<PerfStoryRuntime>,
 }
@@ -130,21 +137,81 @@ impl ComponentStory {
     fn new(
         document_workspace: Entity<DocumentWorkspace>,
         app_menu_bar: Entity<AppMenuBar>,
+        template_manager: Option<Entity<TemplateManagerView>>,
         perf: Option<PerfStoryRuntime>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         cx.observe(&document_workspace, |story, _, cx| {
             story.sync_native_application_menu(cx);
+            story.sync_template_operation_state(cx);
         })
         .detach();
+        if template_manager.is_some() {
+            document_workspace.update(cx, |workspace, _| {
+                workspace.use_external_template_authority(true);
+            });
+        }
+        let template_command_subscription = template_manager.as_ref().map(|_| {
+            cx.subscribe_in(
+                &document_workspace,
+                window,
+                |story, _, event: &DocumentWorkspaceTemplateCommand, window, cx| {
+                    let Some(manager) = story.template_manager.as_ref() else {
+                        return;
+                    };
+                    route_workspace_template_command(manager, event, window, cx);
+                },
+            )
+        });
+        if let Some(manager) = template_manager.as_ref() {
+            cx.observe(manager, |story, _, cx| story.sync_template_catalog(cx))
+                .detach();
+        }
         let mut story = Self {
             document_workspace,
             app_menu_bar,
+            template_manager,
+            _template_command_subscription: template_command_subscription,
             last_native_menu_state: None,
             perf,
         };
         story.sync_native_application_menu(cx);
+        story.sync_template_catalog(cx);
         story
+    }
+
+    fn sync_template_catalog(&mut self, cx: &mut Context<Self>) {
+        let Some(manager) = self.template_manager.as_ref() else {
+            return;
+        };
+        let (templates, last_used_id, storage_busy) = {
+            let manager = manager.read(cx);
+            let model = manager.model();
+            (
+                model
+                    .records()
+                    .iter()
+                    .map(|record| TemplateCatalogItem::new(record.id(), record.name()))
+                    .collect(),
+                model.last_used_id().to_owned(),
+                manager.is_storage_busy(),
+            )
+        };
+        self.document_workspace.update(cx, |workspace, cx| {
+            workspace.apply_template_catalog(templates, last_used_id, cx);
+            workspace.set_template_operation_state(storage_busy, cx);
+        });
+    }
+
+    fn sync_template_operation_state(&mut self, cx: &mut Context<Self>) {
+        let storage_busy = self
+            .template_manager
+            .as_ref()
+            .is_some_and(|manager| manager.read(cx).is_storage_busy());
+        self.document_workspace.update(cx, |workspace, cx| {
+            workspace.set_template_operation_state(storage_busy, cx);
+        });
     }
 
     fn begin_perf_open(&mut self, cx: &mut Context<Self>) {
@@ -1042,6 +1109,7 @@ fn main() {
                     surface_root.join("generated-documents"),
                 )
                 .expect("the experiment-owned generated-document store must initialize");
+                let template_manager_root = surface_root.join("template-library");
                 let opener = std::sync::Arc::new(PdfiumWorkerBackend::new(
                     worker_executable,
                     pdfium_library,
@@ -1051,9 +1119,28 @@ fn main() {
                 let document_workspace = cx.new(|cx| {
                     DocumentWorkspace::with_opener_and_generated_store(
                         opener,
-                        generated_store,
+                        generated_store.clone(),
                         cx,
                     )
+                });
+                let template_manager = perf.is_none().then(|| {
+                    cx.new(|cx| {
+                        let legacy_request = std::env::var("BP_LEGACY_BLANK_SETTINGS_JSON")
+                            .ok()
+                            .and_then(|json| legacy_blank_request_from_json(&json).ok());
+                        let mut manager = TemplateManagerView::open_persistent_with_legacy(
+                            template_manager_root,
+                            legacy_request,
+                            window,
+                            cx,
+                        )
+                        .expect("the experiment-owned template library must initialize");
+                        manager.bind_document_workspace(
+                            document_workspace.downgrade(),
+                            generated_store.clone(),
+                        );
+                        manager
+                    })
                 });
                 if perf.is_none() {
                     let ingress = native_ingress.clone();
@@ -1074,7 +1161,14 @@ fn main() {
                     .detach();
                 }
                 let story = cx.new(|cx| {
-                    ComponentStory::new(document_workspace.clone(), app_menu_bar, perf, cx)
+                    ComponentStory::new(
+                        document_workspace.clone(),
+                        app_menu_bar,
+                        template_manager,
+                        perf,
+                        window,
+                        cx,
+                    )
                 });
                 let application_close = cx.new(|_| {
                     ApplicationCloseWorkspace::new(document_workspace.clone(), saver)

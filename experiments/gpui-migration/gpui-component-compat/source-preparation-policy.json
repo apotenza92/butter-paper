@@ -87,7 +87,7 @@
     },
     {
       "path": "../gpui-gallery/src/template_library.rs",
-      "sha256": "bfbbb1cac6dff51dcd5cf5965e552cb573fa60f91510dda33b6ac0547a917eec"
+      "sha256": "b32b41061732a2161f342dcf89b87affd2c3c95c84a186e2c1df1998ac916fdd"
     },
     {
       "path": "../gpui-gallery/src/pdf_worker.rs",
