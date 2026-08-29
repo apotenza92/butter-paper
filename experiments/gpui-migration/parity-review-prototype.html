@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PROTOTYPE — Butter Paper parity review gate</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      --bg: #f5f5f4;
+      --panel: #fff;
+      --ink: #1c1917;
+      --muted: #78716c;
+      --line: #d6d3d1;
+      --accent: #2563eb;
+      --pass: #166534;
+      --pass-bg: #dcfce7;
+      --fail: #991b1b;
+      --fail-bg: #fee2e2;
+      --block: #92400e;
+      --block-bg: #fef3c7;
+      --idle: #57534e;
+      --idle-bg: #e7e5e4;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--ink); background: var(--bg); }
+    button, select, input { font: inherit; }
+    button, select {
+      min-height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel);
+      color: var(--ink);
+    }
+    button { cursor: pointer; padding: 7px 11px; }
+    button:hover { border-color: #a8a29e; }
+    button:focus-visible, select:focus-visible, input:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--accent) 30%, transparent);
+      outline-offset: 1px;
+    }
+    main { width: min(1440px, 100%); margin: auto; padding: 24px; }
+    header.hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 24px;
+      align-items: start;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 8px; font-size: clamp(24px, 3vw, 38px); }
+    h2 { font-size: 20px; }
+    h3 { font-size: 15px; margin-bottom: 8px; }
+    .eyebrow { margin-bottom: 8px; color: var(--accent); font-size: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .lede { max-width: 850px; margin-bottom: 0; color: var(--muted); line-height: 1.55; }
+    .prototype-mark { padding: 8px 10px; border-radius: 999px; background: #ede9fe; color: #5b21b6; font-size: 12px; font-weight: 800; white-space: nowrap; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(340px, .65fr); gap: 18px; margin-top: 18px; }
+    .panel { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 18px; }
+    .panel + .panel { margin-top: 18px; }
+    .controls { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)); gap: 12px; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 700; }
+    select { width: 100%; padding: 6px 10px; }
+    .toggle-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .toggle[aria-pressed="true"] { border-color: #2563eb; background: #dbeafe; color: #1e3a8a; }
+    .matrix { display: grid; grid-template-columns: minmax(170px, 1.25fr) repeat(4, minmax(76px, .7fr)); margin-top: 16px; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+    .matrix > * { min-height: 42px; padding: 8px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .matrix > :nth-child(5n) { border-right: 0; }
+    .matrix > :nth-last-child(-n+5) { border-bottom: 0; }
+    .matrix .head { background: #fafaf9; color: var(--muted); font-size: 11px; font-weight: 800; text-transform: uppercase; }
+    .axis { display: flex; flex-direction: column; justify-content: center; }
+    .axis strong { font-size: 13px; }
+    .axis small { color: var(--muted); }
+    .status-choice { min-height: 30px; padding: 3px 6px; border: 0; border-radius: 5px; font-size: 11px; font-weight: 750; }
+    .status-choice[data-status="pass"] { background: var(--pass-bg); color: var(--pass); }
+    .status-choice[data-status="fail"] { background: var(--fail-bg); color: var(--fail); }
+    .status-choice[data-status="blocked"] { background: var(--block-bg); color: var(--block); }
+    .status-choice[data-status="not-run"] { background: var(--idle-bg); color: var(--idle); }
+    .status-choice[aria-pressed="true"] { box-shadow: inset 0 0 0 2px currentColor; }
+    .review-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+    .review-card { border: 1px solid var(--line); border-radius: 9px; padding: 12px; background: #fafaf9; }
+    .review-card output { display: block; margin-top: 8px; font-weight: 800; }
+    input[type="range"] { width: 100%; }
+    .verdict { border-width: 2px; }
+    .verdict[data-outcome="pass"] { border-color: #22c55e; background: #f0fdf4; }
+    .verdict[data-outcome="fail"] { border-color: #ef4444; background: #fef2f2; }
+    .verdict[data-outcome="blocked"] { border-color: #f59e0b; background: #fffbeb; }
+    .verdict[data-outcome="not-run"] { border-color: #a8a29e; background: #fafaf9; }
+    .verdict h2 { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .badge { padding: 5px 8px; border-radius: 999px; font-size: 11px; text-transform: uppercase; }
+    .verdict[data-outcome="pass"] .badge { background: var(--pass-bg); color: var(--pass); }
+    .verdict[data-outcome="fail"] .badge { background: var(--fail-bg); color: var(--fail); }
+    .verdict[data-outcome="blocked"] .badge { background: var(--block-bg); color: var(--block); }
+    .verdict[data-outcome="not-run"] .badge { background: var(--idle-bg); color: var(--idle); }
+    .reasons { margin-bottom: 0; padding-left: 20px; color: #44403c; line-height: 1.45; }
+    .claim { margin-top: 12px; padding: 10px; border-left: 3px solid var(--accent); background: #eff6ff; color: #1e3a8a; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+    .tabs button[aria-selected="true"] { background: #1c1917; color: #fff; border-color: #1c1917; }
+    .walkthrough { min-height: 210px; }
+    .walkthrough ol { padding-left: 20px; line-height: 1.5; }
+    .scenario-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .state { position: sticky; top: 16px; }
+    pre { max-height: 680px; overflow: auto; padding: 14px; border-radius: 9px; background: #1c1917; color: #e7e5e4; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+    .legend { display: grid; gap: 10px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .legend strong { color: var(--ink); }
+    .note { margin-top: 12px; padding: 10px; border-radius: 8px; background: #fff7ed; color: #9a3412; font-size: 12px; }
+    @media (max-width: 980px) {
+      .layout { grid-template-columns: 1fr; }
+      .controls { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
+      .state { position: static; }
+    }
+    @media (max-width: 640px) {
+      main { padding: 12px; }
+      header.hero { grid-template-columns: 1fr; }
+      .controls, .review-grid { grid-template-columns: 1fr; }
+      .matrix { grid-template-columns: minmax(120px, 1.3fr) repeat(4, minmax(58px, .7fr)); }
+      .matrix > * { padding: 5px; }
+      .status-choice { font-size: 9px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <div>
+        <div class="eyebrow">Throwaway logic prototype · issue 47</div>
+        <h1>Can weak parity evidence accidentally pass?</h1>
+        <p class="lede">Drive a proposed review record through source, development, packaged, and release claims. The gate must distinguish a visual resemblance from a qualified Butter Paper replacement and must preserve failed, blocked, and not-run evidence without turning absence into success.</p>
+      </div>
+      <span class="prototype-mark">PROTOTYPE — NOT PRODUCT UI</span>
+    </header>
+
+    <div class="layout">
+      <div>
+        <section class="panel" aria-labelledby="free-play-title">
+          <h2 id="free-play-title">Free play</h2>
+          <div class="controls">
+            <label>Review scope
+              <select id="scope">
+                <option value="primitive">Primitive control</option>
+                <option value="compound" selected>Compound control</option>
+                <option value="shell">Application shell</option>
+                <option value="workflow">Document workflow</option>
+              </select>
+            </label>
+            <label>Evidence level
+              <select id="level">
+                <option value="source">Source reconstruction</option>
+                <option value="development" selected>Development runtime</option>
+                <option value="packaged">Packaged candidate</option>
+                <option value="release">Release qualification</option>
+              </select>
+            </label>
+            <label>Platform
+              <select id="platform">
+                <option value="linux" selected>Linux</option>
+                <option value="macos">macOS</option>
+                <option value="windows">Windows</option>
+                <option value="all">All required platforms</option>
+              </select>
+            </label>
+            <label>Captured state
+              <select id="state-name">
+                <option value="rest">Rest</option>
+                <option value="hover">Hover</option>
+                <option value="focus" selected>Keyboard focus</option>
+                <option value="selected">Selected/open</option>
+                <option value="disabled">Disabled</option>
+                <option value="loading">Loading</option>
+                <option value="error">Error</option>
+                <option value="constrained">Constrained window</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="toggle-row" aria-label="Review conditions">
+            <button class="toggle" id="matched" aria-pressed="true">Matched environment</button>
+            <button class="toggle" id="fresh" aria-pressed="true">Fresh evidence</button>
+            <button class="toggle" id="difference" aria-pressed="false">Intentional difference</button>
+            <button class="toggle" id="approved" aria-pressed="false">Difference approved</button>
+          </div>
+
+          <div class="matrix" id="matrix" role="group" aria-label="Evidence axis statuses"></div>
+
+          <div class="review-grid" aria-label="Visual comparison measurements">
+            <div class="review-card">
+              <h3>Geometry drift</h3>
+              <label>Maximum edge/baseline drift
+                <input id="geometry" type="range" min="0" max="4" step="0.5" value="1">
+              </label>
+              <output id="geometry-output">1 logical px</output>
+            </div>
+            <div class="review-card">
+              <h3>Non-edge pixel difference</h3>
+              <label>Affected flat/content pixels
+                <input id="pixels" type="range" min="0" max="5" step="0.1" value="0.5">
+              </label>
+              <output id="pixels-output">0.5%</output>
+            </div>
+            <div class="review-card">
+              <h3>Text raster policy</h3>
+              <p style="font-size:12px;color:var(--muted)">Match font family, weight, size, line height, wrapping, and baseline. Mask only glyph antialiasing differences after geometry passes.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel verdict" id="verdict" data-outcome="blocked" aria-live="polite">
+          <h2>Computed verdict <span class="badge" id="verdict-badge">Blocked</span></h2>
+          <p id="verdict-summary"></p>
+          <ul class="reasons" id="reasons"></ul>
+          <div class="claim"><strong>Maximum defensible claim:</strong> <span id="claim"></span></div>
+        </section>
+
+        <section class="panel" aria-labelledby="walkthrough-title">
+          <h2 id="walkthrough-title">Guided walkthroughs</h2>
+          <div class="tabs" role="tablist" aria-label="Parity review scenarios">
+            <button role="tab" aria-selected="true" data-scenario="source-only">Source is not runtime</button>
+            <button role="tab" aria-selected="false" data-scenario="linux-component">Linux component pass</button>
+            <button role="tab" aria-selected="false" data-scenario="difference">Intentional improvement</button>
+            <button role="tab" aria-selected="false" data-scenario="blocked-mac">Blocked Mac capture</button>
+            <button role="tab" aria-selected="false" data-scenario="release">Release proof</button>
+          </div>
+          <div class="walkthrough" id="walkthrough"></div>
+        </section>
+      </div>
+
+      <aside>
+        <section class="panel state" aria-labelledby="state-title">
+          <h2 id="state-title">Full review state</h2>
+          <div class="legend">
+            <div><strong>Pass</strong> — the named check ran against this exact artifact and met its acceptance condition.</div>
+            <div><strong>Fail</strong> — the check ran and contradicted acceptance.</div>
+            <div><strong>Blocked</strong> — the required check could not run because authority, artifact, platform, fixture, or service was unavailable.</div>
+            <div><strong>Not run</strong> — intentionally outside the current review scope.</div>
+          </div>
+          <pre id="state-json"></pre>
+          <div class="note">This state is intentionally in memory only. Reloading the file resets the prototype.</div>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <script>
+    const axisDefinitions = [
+      { id: 'visual', label: 'Visual geometry', help: 'bounds, spacing, tokens, type' },
+      { id: 'pointer', label: 'Pointer behavior', help: 'targets, capture, menus' },
+      { id: 'keyboard', label: 'Keyboard and focus', help: 'order, shortcuts, return' },
+      { id: 'a11y', label: 'Accessibility', help: 'roles, names, state, actions' },
+      { id: 'constrained', label: 'Constrained layout', help: 'overflow, resize, long text' },
+      { id: 'document', label: 'Document fidelity', help: 'geometry, annotations, save' },
+      { id: 'performance', label: 'Performance', help: 'latency, frames, memory' },
+      { id: 'package', label: 'Package/platform', help: 'identity, install, updater' },
+    ];
+
+    const requiredByScope = {
+      primitive: ['visual', 'pointer', 'keyboard', 'a11y', 'constrained'],
+      compound: ['visual', 'pointer', 'keyboard', 'a11y', 'constrained'],
+      shell: ['visual', 'pointer', 'keyboard', 'a11y', 'constrained', 'performance'],
+      workflow: ['visual', 'pointer', 'keyboard', 'a11y', 'constrained', 'document', 'performance'],
+    };
+
+    const state = {
+      scope: 'compound',
+      level: 'development',
+      platform: 'linux',
+      capturedState: 'focus',
+      matchedEnvironment: true,
+      freshEvidence: true,
+      intentionalDifference: false,
+      differenceApproved: false,
+      measurements: { geometryDriftLogicalPx: 1, nonEdgePixelDifferencePercent: 0.5 },
+      evidence: Object.fromEntries(axisDefinitions.map((axis) => [axis.id, 'not-run'])),
+    };
+
+    const statusOrder = ['pass', 'fail', 'blocked', 'not-run'];
+    const statusLabels = { pass: 'Pass', fail: 'Fail', blocked: 'Blocked', 'not-run': 'Not run' };
+    const matrix = document.querySelector('#matrix');
+
+    function buildMatrix() {
+      matrix.replaceChildren();
+      const headings = ['Evidence axis', ...statusOrder.map((status) => statusLabels[status])];
+      for (const heading of headings) {
+        const cell = document.createElement('div');
+        cell.className = 'head';
+        cell.textContent = heading;
+        matrix.append(cell);
+      }
+      for (const axis of axisDefinitions) {
+        const label = document.createElement('div');
+        label.className = 'axis';
+        label.innerHTML = `<strong>${axis.label}</strong><small>${axis.help}</small>`;
+        matrix.append(label);
+        for (const status of statusOrder) {
+          const button = document.createElement('button');
+          button.className = 'status-choice';
+          button.dataset.axis = axis.id;
+          button.dataset.status = status;
+          button.textContent = statusLabels[status];
+          button.setAttribute('aria-pressed', String(state.evidence[axis.id] === status));
+          button.addEventListener('click', () => {
+            state.evidence[axis.id] = status;
+            render();
+          });
+          matrix.append(button);
+        }
+      }
+    }
+
+    function evaluate() {
+      const required = new Set(requiredByScope[state.scope]);
+      if (state.level === 'packaged' || state.level === 'release') required.add('package');
+      const relevant = [...required];
+      const failed = relevant.filter((axis) => state.evidence[axis] === 'fail');
+      const blocked = relevant.filter((axis) => state.evidence[axis] === 'blocked');
+      const notRun = relevant.filter((axis) => state.evidence[axis] === 'not-run');
+      const reasons = [];
+
+      if (!state.freshEvidence) reasons.push('Evidence is stale or historical.');
+      if (!state.matchedEnvironment && state.evidence.visual === 'pass') reasons.push('Visual captures are not matched by platform, scale, window, theme, content, and state.');
+      if (state.intentionalDifference && !state.differenceApproved) reasons.push('The intentional difference has no recorded product approval.');
+      if (state.measurements.geometryDriftLogicalPx > 1) reasons.push('Geometry or text baseline drift exceeds 1 logical pixel.');
+      if (state.measurements.nonEdgePixelDifferencePercent > 0.5) reasons.push('Non-edge pixel difference exceeds 0.5% of the registered crop.');
+      if (state.level === 'source') reasons.push('Source reconstruction cannot prove runtime behavior, pixels, accessibility, or performance.');
+      if (state.level === 'release' && state.platform !== 'all') reasons.push('Release qualification requires every supported platform, not one native lane.');
+      if (state.level === 'development' && state.evidence.package === 'pass') reasons.push('A development runtime cannot provide package evidence.');
+      for (const axis of failed) reasons.push(`${axisLabel(axis)} failed.`);
+      for (const axis of blocked) reasons.push(`${axisLabel(axis)} is blocked.`);
+      for (const axis of notRun) reasons.push(`${axisLabel(axis)} was not run.`);
+
+      let outcome = 'pass';
+      if (failed.length || state.measurements.geometryDriftLogicalPx > 1 || state.measurements.nonEdgePixelDifferencePercent > 0.5) outcome = 'fail';
+      else if (blocked.length || !state.freshEvidence || (state.intentionalDifference && !state.differenceApproved)) outcome = 'blocked';
+      else if (notRun.length || state.level === 'source' || !state.matchedEnvironment || (state.level === 'release' && state.platform !== 'all')) outcome = 'not-run';
+
+      const claim = claimFor(outcome);
+      return { outcome, reasons, claim, required: relevant };
+    }
+
+    function axisLabel(id) {
+      return axisDefinitions.find((axis) => axis.id === id)?.label ?? id;
+    }
+
+    function claimFor(outcome) {
+      if (outcome !== 'pass') {
+        if (state.level === 'source') return 'Source-informed reconstruction only; no parity claim.';
+        return `No pass claim for this ${state.scope}; retain the ${outcome} record.`;
+      }
+      if (state.level === 'development') return `${capitalize(state.platform)} development-runtime ${state.scope} parity for the reviewed states only.`;
+      if (state.level === 'packaged') return `${capitalize(state.platform)} packaged-candidate ${state.scope} parity for this exact artifact.`;
+      if (state.level === 'release' && state.platform === 'all') return `Cross-platform release qualification for this exact ${state.scope} and evidence manifest.`;
+      return 'Source contract is internally consistent; runtime parity remains unproven.';
+    }
+
+    function capitalize(value) {
+      return value.charAt(0).toUpperCase() + value.slice(1);
+    }
+
+    function render() {
+      state.scope = document.querySelector('#scope').value;
+      state.level = document.querySelector('#level').value;
+      state.platform = document.querySelector('#platform').value;
+      state.capturedState = document.querySelector('#state-name').value;
+      state.matchedEnvironment = document.querySelector('#matched').getAttribute('aria-pressed') === 'true';
+      state.freshEvidence = document.querySelector('#fresh').getAttribute('aria-pressed') === 'true';
+      state.intentionalDifference = document.querySelector('#difference').getAttribute('aria-pressed') === 'true';
+      state.differenceApproved = document.querySelector('#approved').getAttribute('aria-pressed') === 'true';
+      state.measurements.geometryDriftLogicalPx = Number(document.querySelector('#geometry').value);
+      state.measurements.nonEdgePixelDifferencePercent = Number(document.querySelector('#pixels').value);
+
+      document.querySelectorAll('.status-choice').forEach((button) => {
+        button.setAttribute('aria-pressed', String(state.evidence[button.dataset.axis] === button.dataset.status));
+      });
+      document.querySelector('#geometry-output').textContent = `${state.measurements.geometryDriftLogicalPx} logical px`;
+      document.querySelector('#pixels-output').textContent = `${state.measurements.nonEdgePixelDifferencePercent}%`;
+
+      const evaluation = evaluate();
+      const verdict = document.querySelector('#verdict');
+      verdict.dataset.outcome = evaluation.outcome;
+      document.querySelector('#verdict-badge').textContent = statusLabels[evaluation.outcome];
+      document.querySelector('#verdict-summary').textContent = evaluation.outcome === 'pass'
+        ? 'Every required axis passed at the selected evidence level.'
+        : 'This record cannot support a parity pass.';
+      const reasons = document.querySelector('#reasons');
+      reasons.replaceChildren();
+      const visibleReasons = evaluation.reasons.length ? evaluation.reasons : ['No failing, blocked, stale, unmatched, or missing requirement remains.'];
+      for (const reason of visibleReasons) {
+        const item = document.createElement('li');
+        item.textContent = reason;
+        reasons.append(item);
+      }
+      document.querySelector('#claim').textContent = evaluation.claim;
+      document.querySelector('#state-json').textContent = JSON.stringify({ ...state, evaluation }, null, 2);
+    }
+
+    function applyScenario(name) {
+      const scenarios = {
+        'source-only': {
+          title: 'A polished HTML reconstruction is useful, but it cannot pass parity.',
+          steps: ['Select source reconstruction.', 'Mark visual geometry as pass.', 'Observe that runtime behavior and accessibility remain not run.', 'The claim ceiling stays at source-informed reconstruction.'],
+          state: { scope: 'compound', level: 'source', platform: 'linux', matchedEnvironment: false, freshEvidence: true, intentionalDifference: false, differenceApproved: false, geometry: 0, pixels: 0, evidence: { visual: 'pass' } },
+        },
+        'linux-component': {
+          title: 'A matched Linux development run can pass one component without qualifying the application.',
+          steps: ['Select development runtime and Linux.', 'Pass every compound-control axis.', 'The result is limited to Linux, this runtime, this control, and the reviewed states.', 'Packaging and other platforms remain separate claims.'],
+          state: { scope: 'compound', level: 'development', platform: 'linux', matchedEnvironment: true, freshEvidence: true, intentionalDifference: false, differenceApproved: false, geometry: 1, pixels: .5, evidence: { visual: 'pass', pointer: 'pass', keyboard: 'pass', a11y: 'pass', constrained: 'pass' } },
+        },
+        difference: {
+          title: 'A better GPUI behavior is still a reviewed product difference.',
+          steps: ['Load a passing compound record.', 'Mark an intentional difference.', 'The gate blocks until approval is recorded with the reason and evidence.', 'Approval cannot waive a failed document-integrity, accessibility, or behavior check.'],
+          state: { scope: 'compound', level: 'development', platform: 'macos', matchedEnvironment: true, freshEvidence: true, intentionalDifference: true, differenceApproved: false, geometry: 1, pixels: .5, evidence: { visual: 'pass', pointer: 'pass', keyboard: 'pass', a11y: 'pass', constrained: 'pass' } },
+        },
+        'blocked-mac': {
+          title: 'A missing Mac capture is blocked, not passed and not a Linux failure.',
+          steps: ['Select a macOS development shell review.', 'Keep visual and accessibility evidence blocked.', 'Retain successful deterministic behavior separately.', 'Do not use the Linux GPU screenshot as a macOS substitute.'],
+          state: { scope: 'shell', level: 'development', platform: 'macos', matchedEnvironment: true, freshEvidence: true, intentionalDifference: false, differenceApproved: false, geometry: 1, pixels: .5, evidence: { visual: 'blocked', pointer: 'pass', keyboard: 'not-run', a11y: 'blocked', constrained: 'not-run', performance: 'not-run' } },
+        },
+        release: {
+          title: 'Release proof is an exact-artifact, all-platform manifest.',
+          steps: ['Select release qualification and all required platforms.', 'Pass every workflow axis and package/platform evidence.', 'The claim names the exact artifact and evidence manifest.', 'Any stale, missing, blocked, or failed required result prevents release qualification.'],
+          state: { scope: 'workflow', level: 'release', platform: 'all', matchedEnvironment: true, freshEvidence: true, intentionalDifference: false, differenceApproved: false, geometry: 1, pixels: .5, evidence: Object.fromEntries(axisDefinitions.map((axis) => [axis.id, 'pass'])) },
+        },
+      };
+      const scenario = scenarios[name];
+      document.querySelector('#walkthrough').innerHTML = `<h3>${scenario.title}</h3><ol>${scenario.steps.map((step) => `<li>${step}</li>`).join('')}</ol><div class="scenario-actions"><button id="load-scenario">Load this state</button>${name === 'difference' ? '<button id="approve-difference">Load and approve difference</button>' : ''}</div>`;
+      document.querySelector('#load-scenario').addEventListener('click', () => loadScenarioState(scenario.state));
+      document.querySelector('#approve-difference')?.addEventListener('click', () => loadScenarioState({ ...scenario.state, differenceApproved: true }));
+    }
+
+    function loadScenarioState(next) {
+      document.querySelector('#scope').value = next.scope;
+      document.querySelector('#level').value = next.level;
+      document.querySelector('#platform').value = next.platform;
+      setToggle('matched', next.matchedEnvironment);
+      setToggle('fresh', next.freshEvidence);
+      setToggle('difference', next.intentionalDifference);
+      setToggle('approved', next.differenceApproved);
+      document.querySelector('#geometry').value = String(next.geometry);
+      document.querySelector('#pixels').value = String(next.pixels);
+      state.evidence = Object.fromEntries(axisDefinitions.map((axis) => [axis.id, next.evidence[axis.id] ?? 'not-run']));
+      render();
+    }
+
+    function setToggle(id, value) {
+      document.querySelector(`#${id}`).setAttribute('aria-pressed', String(value));
+    }
+
+    document.querySelectorAll('select, input[type="range"]').forEach((control) => control.addEventListener('input', render));
+    document.querySelectorAll('.toggle').forEach((button) => button.addEventListener('click', () => {
+      button.setAttribute('aria-pressed', String(button.getAttribute('aria-pressed') !== 'true'));
+      render();
+    }));
+    document.querySelectorAll('[role="tab"]').forEach((tab) => tab.addEventListener('click', () => {
+      document.querySelectorAll('[role="tab"]').forEach((candidate) => candidate.setAttribute('aria-selected', String(candidate === tab)));
+      applyScenario(tab.dataset.scenario);
+    }));
+
+    buildMatrix();
+    applyScenario('source-only');
+    render();
+  </script>
+</body>
+</html>

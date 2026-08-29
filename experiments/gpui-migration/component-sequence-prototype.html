@@ -1,0 +1,572 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PROTOTYPE — Butter Paper GPUI component sequence</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      --bg: #f5f5f4;
+      --panel: #fff;
+      --ink: #1c1917;
+      --muted: #78716c;
+      --line: #d6d3d1;
+      --accent: #2563eb;
+      --pass: #166534;
+      --pass-bg: #dcfce7;
+      --fail: #991b1b;
+      --fail-bg: #fee2e2;
+      --block: #92400e;
+      --block-bg: #fef3c7;
+      --ready: #1e40af;
+      --ready-bg: #dbeafe;
+      --locked: #57534e;
+      --locked-bg: #e7e5e4;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); }
+    button { font: inherit; cursor: pointer; }
+    button:focus-visible, input:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--accent) 30%, transparent);
+      outline-offset: 2px;
+    }
+    main { width: min(1500px, 100%); margin: auto; padding: 22px; }
+    .hero, .panel { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+    .hero { display: flex; justify-content: space-between; gap: 24px; padding: 20px; }
+    .eyebrow { margin-bottom: 7px; color: var(--accent); font-size: 12px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 8px; font-size: clamp(25px, 3.2vw, 40px); }
+    h2 { font-size: 20px; }
+    h3 { font-size: 15px; }
+    .hero p { max-width: 930px; margin-bottom: 0; color: var(--muted); line-height: 1.55; }
+    .prototype { align-self: start; padding: 7px 10px; border-radius: 999px; background: #ede9fe; color: #5b21b6; font-size: 11px; font-weight: 850; white-space: nowrap; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(360px, .55fr); gap: 18px; margin-top: 18px; }
+    .panel { padding: 18px; }
+    .panel + .panel { margin-top: 18px; }
+    .policy { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+    .policy strong { display: block; }
+    .policy small { color: var(--muted); }
+    .switch { min-height: 36px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+    .switch[aria-pressed="true"] { border-color: #22c55e; background: var(--pass-bg); color: var(--pass); }
+    .sequence { display: grid; gap: 10px; }
+    .stage {
+      display: grid;
+      grid-template-columns: 40px minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: start;
+      padding: 13px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fafaf9;
+    }
+    .stage.selected { border-color: var(--accent); box-shadow: 0 0 0 2px #dbeafe; }
+    .stage[data-status="passed"] { background: #f0fdf4; }
+    .stage[data-status="failed"] { background: #fef2f2; }
+    .stage[data-status="blocked"] { background: #fffbeb; }
+    .stage[data-status="locked"] { opacity: .72; }
+    .index { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 999px; background: #e7e5e4; font-weight: 850; }
+    .stage h3 { margin-bottom: 4px; }
+    .stage p { margin-bottom: 8px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .stage button.select { min-height: 32px; border: 1px solid var(--line); border-radius: 7px; background: #fff; padding: 5px 9px; }
+    .deps, .gate-list { display: flex; flex-wrap: wrap; gap: 5px; }
+    .chip, .status { padding: 3px 6px; border-radius: 999px; font-size: 10px; font-weight: 800; }
+    .chip { background: #e7e5e4; color: #44403c; }
+    .status { text-transform: uppercase; white-space: nowrap; }
+    .status.ready { background: var(--ready-bg); color: var(--ready); }
+    .status.in-progress { background: #e0e7ff; color: #3730a3; }
+    .status.passed { background: var(--pass-bg); color: var(--pass); }
+    .status.failed { background: var(--fail-bg); color: var(--fail); }
+    .status.blocked { background: var(--block-bg); color: var(--block); }
+    .status.locked { background: var(--locked-bg); color: var(--locked); }
+    .workspace { position: sticky; top: 14px; }
+    .actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .actions button, .walkthrough button {
+      min-height: 36px;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+    }
+    .actions .primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+    .actions .danger { color: var(--fail); }
+    .actions .warning { color: var(--block); }
+    .message { min-height: 44px; margin-top: 10px; padding: 10px; border-radius: 8px; background: #eff6ff; color: #1e3a8a; font-size: 12px; line-height: 1.4; }
+    .gates { display: grid; gap: 6px; margin-top: 12px; }
+    .gate { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; align-items: center; padding: 7px; border: 1px solid var(--line); border-radius: 7px; }
+    .gate-state { width: 70px; padding: 4px; border: 0; border-radius: 5px; font-size: 10px; font-weight: 850; text-transform: uppercase; }
+    .gate-state.pass { background: var(--pass-bg); color: var(--pass); }
+    .gate-state.fail { background: var(--fail-bg); color: var(--fail); }
+    .gate-state.blocked { background: var(--block-bg); color: var(--block); }
+    .gate-state.not-run { background: var(--locked-bg); color: var(--locked); }
+    .gate span { font-size: 12px; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
+    .tabs button { min-height: 34px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+    .tabs button[aria-selected="true"] { border-color: #1c1917; background: #1c1917; color: #fff; }
+    .walkthrough { min-height: 220px; }
+    .walkthrough ol { padding-left: 20px; line-height: 1.5; }
+    .walkthrough .steps { display: flex; flex-wrap: wrap; gap: 7px; }
+    .walkthrough .steps button.done { background: var(--pass-bg); color: var(--pass); }
+    .summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+    .summary-card { padding: 10px; border-radius: 8px; background: #fafaf9; border: 1px solid var(--line); text-align: center; }
+    .summary-card strong { display: block; font-size: 20px; }
+    .summary-card small { color: var(--muted); }
+    pre { max-height: 420px; overflow: auto; padding: 12px; border-radius: 8px; background: #1c1917; color: #e7e5e4; font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+    .release { margin-top: 12px; padding: 10px; border-left: 3px solid var(--block); background: var(--block-bg); color: var(--block); font-size: 12px; }
+    .release.cleared { border-color: var(--pass); background: var(--pass-bg); color: var(--pass); }
+    @media (max-width: 980px) {
+      .layout { grid-template-columns: 1fr; }
+      .workspace { position: static; }
+    }
+    @media (max-width: 620px) {
+      main { padding: 10px; }
+      .hero { flex-direction: column; }
+      .stage { grid-template-columns: 34px minmax(0, 1fr); }
+      .stage > :last-child { grid-column: 2; }
+      .summary-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <div>
+        <div class="eyebrow">Throwaway logic prototype · issue 49</div>
+        <h1>What must pass before the shell can honestly look finished?</h1>
+        <p>This demo tests the dependency order for Butter Paper-owned GPUI controls and shell regions. A slice unlocks its consumers only after visual, interaction, keyboard, accessibility, constrained-layout, and real-consumer gates pass. A polished placeholder cannot unlock later work.</p>
+      </div>
+      <span class="prototype">PROTOTYPE — NOT PRODUCT UI</span>
+    </header>
+
+    <div class="layout">
+      <div>
+        <section class="panel policy">
+          <div><strong>Distribution foundation gate</strong><small>Component experiments may continue, but no package or beta claim is allowed while the GPUI license graph is unapproved.</small></div>
+          <button class="switch" id="license" aria-pressed="false">License gate not cleared</button>
+        </section>
+
+        <section class="panel">
+          <h2>Dependency sequence</h2>
+          <div class="sequence" id="sequence"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Guided walkthroughs</h2>
+          <div class="tabs" role="tablist" aria-label="Sequence scenarios">
+            <button role="tab" aria-selected="true" data-scenario="visual-only">Visible border is not done</button>
+            <button role="tab" aria-selected="false" data-scenario="overlay-failure">Overlay failure stops compounds</button>
+            <button role="tab" aria-selected="false" data-scenario="page-modes">Reach real page modes</button>
+            <button role="tab" aria-selected="false" data-scenario="shell-placeholder">Shell is not workflow</button>
+            <button role="tab" aria-selected="false" data-scenario="release-blocker">Experiment versus shipping</button>
+          </div>
+          <div class="walkthrough" id="walkthrough"></div>
+        </section>
+      </div>
+
+      <aside>
+        <section class="panel workspace">
+          <h2 id="selected-title">Selected slice</h2>
+          <p id="selected-description"></p>
+          <div class="actions">
+            <button id="start">Start slice</button>
+            <button id="pass-next">Pass next gate</button>
+            <button id="fail-next" class="danger">Fail next gate</button>
+            <button id="block-next" class="warning">Block next gate</button>
+            <button id="accept" class="primary">Try to accept</button>
+            <button id="pass-accept">Pass all + accept</button>
+            <button id="clear">Clear slice evidence</button>
+            <button id="reset">Reset sequence</button>
+          </div>
+          <div class="message" id="message" aria-live="polite"></div>
+          <div class="gates" id="gates"></div>
+          <div class="summary-grid" id="summary"></div>
+          <div class="release" id="release"></div>
+          <h3 style="margin-top:14px">Full state</h3>
+          <pre id="state"></pre>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <script>
+    // Pure prototype module. The DOM below only dispatches actions and renders its result.
+    const SequenceModel = (() => {
+      const slices = [
+        {
+          id: 'foundation',
+          title: 'Foundation contract',
+          description: 'Pin source/toolchain; own Geist, Nova tokens, icons, semantic IDs, testkit, and parity manifests.',
+          dependencies: [],
+          gates: ['Pinned source and feature graph', 'Owned font/token/icon assets', 'Stable semantic identity model', 'Deterministic test and capture harness'],
+          consumer: 'One actual Open PDF action uses the foundation; a gallery alone is insufficient.',
+        },
+        {
+          id: 'actions',
+          title: 'Action and display primitives',
+          description: 'Button, icon button, toggle, separator, badge/status, progress, spinner, and tooltip trigger.',
+          dependencies: ['foundation'],
+          gates: ['Nova geometry and every visual state', 'Pointer hit target and disabled suppression', 'Enter/Space and focus-visible behavior', 'Names, roles, pressed/expanded state', 'Actual Open and tool-selection commands'],
+          consumer: 'Open PDF and Select/Pan use the same implementation that the state atlas reviews.',
+        },
+        {
+          id: 'input',
+          title: 'Focus, text, and form primitives',
+          description: 'Focus scopes, text input/textarea, checkbox/switch, slider, numeric input, selection, and IME.',
+          dependencies: ['actions'],
+          gates: ['Focus traversal and restoration', 'Unicode selection and IME composition', 'Shortcut suppression while editing', 'Range/checked/value semantics', 'Keyboard increments and commit policy', 'Constrained width and long labels'],
+          consumer: 'A zoom percentage editor and one property field mutate a typed command model.',
+        },
+        {
+          id: 'overlays',
+          title: 'Overlay stack and transient surfaces',
+          description: 'Anchoring, z-order, outside dismissal, menu, popover, tooltip, select, dialog, and alert dialog.',
+          dependencies: ['actions', 'input'],
+          gates: ['Anchor, flip, shift, and resize placement', 'Arrow traversal, Escape, and outside dismissal', 'Focus entry, containment, and return', 'Application shortcut suppression', 'Menu/dialog semantic trees and actions', 'Minimum-window scroll containment', 'Actual page-mode menu and dirty dialog consumers'],
+          consumer: 'Continuous/Single settings and dirty-close confirmation prove the shared overlay policy.',
+        },
+        {
+          id: 'compounds',
+          title: 'Joined and split compound controls',
+          description: 'Button groups, two-action split buttons, exclusive choices, zoom percentage, and tool groups.',
+          dependencies: ['actions', 'overlays'],
+          gates: ['Visible outer border, exact seam and radius ownership', 'Two separate hit and focus targets', 'Expanded/selected/disabled semantic state', 'Keyboard traversal and activation', 'Menu containment and focus return', 'Primary and menu segments route different commands', 'Matched rest/hover/focus/open/disabled captures', 'Narrow-window reachability'],
+          consumer: 'New-from-template, Continuous, and Single Page each exercise real primary and settings commands.',
+        },
+        {
+          id: 'tabs',
+          title: 'Document tabs and tab bar',
+          description: 'Closable/sortable tabs, dirty state, open/new actions, overflow, safe close, and announcements.',
+          dependencies: ['compounds'],
+          gates: ['Active tab and separate close target', 'Dirty Save/Discard/Cancel decision', 'Arrow and reorder keyboard policy', 'Six-pixel pointer drag threshold', 'Overflow wheel and active-tab visibility', 'Focus fallback and live reorder announcement', 'Per-tab command/state trace', 'Normal and constrained matched captures'],
+          consumer: 'Two deterministic documents retain distinct zoom, page, tool, selection, and dirty state.',
+        },
+        {
+          id: 'toolbar',
+          title: 'Viewer toolbar and page-view controls',
+          description: 'Zoom, percentage, fit, Continuous, Single Page, wheel policies, tooltips, and overflow.',
+          dependencies: ['compounds'],
+          gates: ['Zoom steps, limits, reset, and anchoring commands', 'Fit Width and Fit Page calculations', 'Continuous and Single Page primary commands', 'Separate Scroll/Zoom settings menus', 'Cmd/Ctrl shortcuts and wheel arbitration', 'Tooltip timing and shortcut descriptions', 'No collision at minimum window', 'Actual viewport model changes, not label-only toggles'],
+          consumer: 'One public multi-page fixture visibly changes layout and wheel behavior for every page-view command.',
+        },
+        {
+          id: 'rails',
+          title: 'Rails, sidebars, and property forms',
+          description: 'Left/right rails, grouped tools, resizable panels, snap/signature menus, and contextual properties.',
+          dependencies: ['input', 'overlays', 'compounds'],
+          gates: ['Named rail groups and active panel/tool state', 'Panel resize and two-axis scroll behavior', 'Contextual field order and labels', 'Live versus commit mutation policy', 'Snap and signature transient flows', 'Keyboard-only tool/property operation', 'Minimum-window collapse and reopen'],
+          consumer: 'Select a rectangle, edit one property, toggle snap, and close/reopen the panel without losing selection.',
+        },
+        {
+          id: 'shell',
+          title: 'Shell frame and constrained composition',
+          description: 'Title/menu, tab bar, toolbar, rails, sidebars, viewport frame, empty state, theme, and overflow.',
+          dependencies: ['tabs', 'toolbar', 'rails'],
+          gates: ['Empty and one-document shell hierarchy', 'Minimum-window collapse/overflow policy', 'Stable focus order through all regions', 'Transient surfaces contained during resize', 'Light/dark and long-text states', 'Matched full-frame and registered region captures'],
+          consumer: 'The actual empty and one-document application states use accepted controls; no painted placeholder region counts as functional.',
+        },
+        {
+          id: 'platform',
+          title: 'Native platform surfaces',
+          description: 'Window chrome, application menus, native dialogs, clipboard, theme, accessibility adapter, and identity.',
+          dependencies: ['shell'],
+          gates: ['macOS menu/window/dialog behavior', 'Windows menu/window/dialog behavior', 'Linux X11 and Wayland portals/dialogs', 'VoiceOver, Narrator, and Orca operation', 'DPI/fractional scaling and IME', 'Exact packaged-candidate identity and helper closure'],
+          consumer: 'The shared Open/Edit/Save scenario runs in the exact package on each native backend.',
+        },
+        {
+          id: 'pages',
+          title: 'Virtualized document presentation',
+          description: 'Thumbnail list, page surfaces, Continuous/Single layouts, custom scroll, zoom/pan, and render generations.',
+          dependencies: ['shell', 'toolbar'],
+          gates: ['Virtual row identity and current-page sync', 'Continuous and Single Page layout behavior', 'Two-axis scroll, pointer pan, and zoom anchor', 'Stale render cancellation and surface lifetime', 'Thumbnail/page semantic alternatives', 'Public long-document and huge-sheet resource gates'],
+          consumer: 'Public deterministic and heavy documents exercise thumbnails, page jumps, 400% pan, 1600% zoom, cancellation, and cleanup.',
+        },
+        {
+          id: 'annotation',
+          title: 'Annotation and workflow surfaces',
+          description: 'Tool selection, page overlay, selection/handles, properties, snapping, undo/redo, save, and reopen.',
+          dependencies: ['rails', 'pages'],
+          gates: ['Create/select/move/resize/vertex command trace', 'Zoom-independent hit testing and pointer capture', 'Keyboard selection, Escape, delete, undo, and redo', 'Property and active-tool synchronization', 'Accessible object/handle actions', 'Semantic save/reopen and untouched-import preservation'],
+          consumer: 'Create, edit, save, close, and reopen every supported generated annotation family.',
+        },
+        {
+          id: 'convergence',
+          title: 'Whole-application convergence',
+          description: 'Only now can the complete GPUI shell and workflows be reviewed as a replacement candidate.',
+          dependencies: ['platform', 'pages', 'annotation'],
+          gates: ['All shared workflows on every native backend', 'Full state atlas and intentional differences approved', 'Public PDF fidelity and performance corpus', 'Private local workload passed or explicitly waived', 'Package, updater, rollback, and N-1 gates', 'No placeholder or historical capture reported as current proof'],
+          consumer: 'An exact beta candidate completes the manifest; this stage does not ship by itself.',
+        },
+      ];
+
+      const initialState = () => ({
+        selected: 'foundation',
+        licenseApproved: false,
+        message: 'Start with the foundation contract. Distribution remains separately blocked.',
+        stages: Object.fromEntries(slices.map((slice) => [slice.id, {
+          accepted: false,
+          started: false,
+          evidence: Object.fromEntries(slice.gates.map((gate) => [gate, 'not-run'])),
+        }])),
+      });
+
+      const dependenciesPassed = (state, slice) => slice.dependencies.every((id) => state.stages[id].accepted);
+
+      const statusOf = (state, slice) => {
+        const record = state.stages[slice.id];
+        if (record.accepted) return 'passed';
+        const statuses = Object.values(record.evidence);
+        if (statuses.includes('fail')) return 'failed';
+        if (statuses.includes('blocked')) return 'blocked';
+        if (!dependenciesPassed(state, slice)) return 'locked';
+        if (record.started || statuses.some((status) => status === 'pass')) return 'in-progress';
+        return 'ready';
+      };
+
+      const nextGate = (state, slice) => slice.gates.find((gate) => state.stages[slice.id].evidence[gate] === 'not-run');
+
+      const reducer = (state, action) => {
+        if (action.type === 'reset') return initialState();
+        if (action.type === 'select') return { ...state, selected: action.id, message: `Selected ${sliceById(action.id).title}.` };
+        if (action.type === 'toggle-license') return { ...state, licenseApproved: !state.licenseApproved, message: !state.licenseApproved ? 'License gate marked cleared for this prototype.' : 'License gate restored to blocked.' };
+        const slice = sliceById(state.selected);
+        const record = state.stages[slice.id];
+        if (action.type === 'start') {
+          if (!dependenciesPassed(state, slice)) return { ...state, message: `${slice.title} is locked. Pass ${missingDependencies(state, slice).join(', ')} first.` };
+          return updateRecord(state, slice.id, { ...record, started: true }, `Started ${slice.title}.`);
+        }
+        if (action.type === 'record-next') {
+          if (!dependenciesPassed(state, slice)) return { ...state, message: `${slice.title} is locked by ${missingDependencies(state, slice).join(', ')}.` };
+          const gate = nextGate(state, slice);
+          if (!gate) return { ...state, message: `${slice.title} has no remaining not-run gate.` };
+          return updateRecord(state, slice.id, { ...record, started: true, evidence: { ...record.evidence, [gate]: action.status } }, `${gate}: ${action.status}.`);
+        }
+        if (action.type === 'clear') {
+          return updateRecord(state, slice.id, { accepted: false, started: false, evidence: Object.fromEntries(slice.gates.map((gate) => [gate, 'not-run'])) }, `Cleared ${slice.title}. Downstream acceptance was also revoked.`, true);
+        }
+        if (action.type === 'pass-all') {
+          if (!dependenciesPassed(state, slice)) return { ...state, message: `${slice.title} is locked by ${missingDependencies(state, slice).join(', ')}.` };
+          const passed = { ...record, started: true, evidence: Object.fromEntries(slice.gates.map((gate) => [gate, 'pass'])) };
+          return acceptRecord(updateRecord(state, slice.id, passed, ''), slice);
+        }
+        if (action.type === 'accept') return acceptRecord(state, slice);
+        return state;
+      };
+
+      const acceptRecord = (state, slice) => {
+        if (!dependenciesPassed(state, slice)) return { ...state, message: `${slice.title} cannot pass before ${missingDependencies(state, slice).join(', ')}.` };
+        const record = state.stages[slice.id];
+        const missing = slice.gates.filter((gate) => record.evidence[gate] !== 'pass');
+        if (missing.length) return { ...state, message: `${slice.title} cannot pass: ${missing.length} required gate${missing.length === 1 ? '' : 's'} are not passed.` };
+        return updateRecord(state, slice.id, { ...record, accepted: true, started: true }, `${slice.title} accepted. Its direct consumers may now start.`);
+      };
+
+      const updateRecord = (state, id, record, message, revokeDownstream = false) => {
+        const stages = { ...state.stages, [id]: record };
+        if (revokeDownstream) {
+          for (const slice of slices) {
+            if (dependsTransitively(slice.id, id)) stages[slice.id] = { ...stages[slice.id], accepted: false };
+          }
+        }
+        return { ...state, stages, message };
+      };
+
+      const dependsTransitively = (candidateId, dependencyId, seen = new Set()) => {
+        if (seen.has(candidateId)) return false;
+        seen.add(candidateId);
+        const candidate = sliceById(candidateId);
+        return candidate.dependencies.includes(dependencyId) || candidate.dependencies.some((id) => dependsTransitively(id, dependencyId, seen));
+      };
+
+      const sliceById = (id) => slices.find((slice) => slice.id === id);
+      const missingDependencies = (state, slice) => slice.dependencies.filter((id) => !state.stages[id].accepted).map((id) => sliceById(id).title);
+      const summary = (state) => Object.fromEntries(['passed', 'ready', 'in-progress', 'failed', 'blocked', 'locked'].map((status) => [status, slices.filter((slice) => statusOf(state, slice) === status).length]));
+
+      return { slices, initialState, reducer, statusOf, summary, sliceById };
+    })();
+
+    let state = SequenceModel.initialState();
+    const sequence = document.querySelector('#sequence');
+
+    function dispatch(action) {
+      state = SequenceModel.reducer(state, action);
+      render();
+    }
+
+    function render() {
+      sequence.replaceChildren();
+      SequenceModel.slices.forEach((slice, index) => {
+        const status = SequenceModel.statusOf(state, slice);
+        const element = document.createElement('article');
+        element.className = `stage${state.selected === slice.id ? ' selected' : ''}`;
+        element.dataset.status = status;
+        const dependencies = slice.dependencies.length
+          ? `<div class="deps">${slice.dependencies.map((id) => `<span class="chip">after ${SequenceModel.sliceById(id).title}</span>`).join('')}</div>`
+          : '<div class="deps"><span class="chip">first frontier</span></div>';
+        element.innerHTML = `<div class="index">${index}</div><div><h3>${slice.title}</h3><p>${slice.description}</p>${dependencies}</div><div><span class="status ${status}">${status.replace('-', ' ')}</span><button class="select" data-select="${slice.id}">Select</button></div>`;
+        sequence.append(element);
+      });
+      document.querySelectorAll('[data-select]').forEach((button) => button.addEventListener('click', () => dispatch({ type: 'select', id: button.dataset.select })));
+
+      const selected = SequenceModel.sliceById(state.selected);
+      const record = state.stages[selected.id];
+      document.querySelector('#selected-title').textContent = selected.title;
+      document.querySelector('#selected-description').textContent = `${selected.description} ${selected.consumer}`;
+      document.querySelector('#message').textContent = state.message;
+      const gates = document.querySelector('#gates');
+      gates.replaceChildren();
+      for (const gate of selected.gates) {
+        const row = document.createElement('div');
+        row.className = 'gate';
+        const gateState = record.evidence[gate];
+        row.innerHTML = `<button class="gate-state ${gateState}" data-gate="${gate}">${gateState}</button><span>${gate}</span>`;
+        gates.append(row);
+      }
+      document.querySelectorAll('[data-gate]').forEach((button) => button.addEventListener('click', () => {
+        const cycle = { 'not-run': 'pass', pass: 'fail', fail: 'blocked', blocked: 'not-run' };
+        const gate = button.dataset.gate;
+        state = {
+          ...state,
+          stages: { ...state.stages, [selected.id]: { ...record, started: true, accepted: false, evidence: { ...record.evidence, [gate]: cycle[record.evidence[gate]] } } },
+          message: `${gate}: ${cycle[record.evidence[gate]]}.`,
+        };
+        render();
+      }));
+
+      const summary = SequenceModel.summary(state);
+      document.querySelector('#summary').innerHTML = ['passed', 'ready', 'in-progress', 'locked'].map((key) => `<div class="summary-card"><strong>${summary[key]}</strong><small>${key.replace('-', ' ')}</small></div>`).join('');
+      const release = document.querySelector('#release');
+      const allAccepted = SequenceModel.slices.every((slice) => state.stages[slice.id].accepted);
+      release.className = `release${state.licenseApproved && allAccepted ? ' cleared' : ''}`;
+      release.textContent = !state.licenseApproved
+        ? 'Shipping claim blocked: GPUI distribution license gate is not cleared. Component experiments may continue.'
+        : allAccepted
+          ? 'Sequence and license gates are clear in this prototype. Real native/package qualification still controls shipping.'
+          : 'License gate is clear, but the component and workflow sequence is incomplete.';
+      document.querySelector('#license').setAttribute('aria-pressed', String(state.licenseApproved));
+      document.querySelector('#license').textContent = state.licenseApproved ? 'License gate marked cleared' : 'License gate not cleared';
+      document.querySelector('#state').textContent = JSON.stringify({
+        selected: state.selected,
+        licenseApproved: state.licenseApproved,
+        message: state.message,
+        summary,
+        stages: Object.fromEntries(SequenceModel.slices.map((slice) => [slice.id, { status: SequenceModel.statusOf(state, slice), ...state.stages[slice.id] }])),
+      }, null, 2);
+    }
+
+    document.querySelector('#license').addEventListener('click', () => dispatch({ type: 'toggle-license' }));
+    document.querySelector('#start').addEventListener('click', () => dispatch({ type: 'start' }));
+    document.querySelector('#pass-next').addEventListener('click', () => dispatch({ type: 'record-next', status: 'pass' }));
+    document.querySelector('#fail-next').addEventListener('click', () => dispatch({ type: 'record-next', status: 'fail' }));
+    document.querySelector('#block-next').addEventListener('click', () => dispatch({ type: 'record-next', status: 'blocked' }));
+    document.querySelector('#accept').addEventListener('click', () => dispatch({ type: 'accept' }));
+    document.querySelector('#pass-accept').addEventListener('click', () => dispatch({ type: 'pass-all' }));
+    document.querySelector('#clear').addEventListener('click', () => dispatch({ type: 'clear' }));
+    document.querySelector('#reset').addEventListener('click', () => dispatch({ type: 'reset' }));
+
+    const scenarios = {
+      'visual-only': {
+        title: 'A visible split-button border does not mean the control is complete.',
+        description: 'The current experiment can paint joined segments. This scenario proves that focus, distinct commands, expanded state, menu containment, and constrained behavior still control acceptance.',
+        steps: [
+          ['Accept foundation', 'foundation'],
+          ['Accept action primitives', 'actions'],
+          ['Accept input/focus primitives', 'input'],
+          ['Accept overlays', 'overlays'],
+          ['Give compounds only one visual pass', 'compound-visual'],
+          ['Try to accept compounds', 'compound-accept'],
+        ],
+      },
+      'overlay-failure': {
+        title: 'One focus-restoration failure must stop every dependent popup and compound.',
+        description: 'Painting a menu early hides the most expensive shared risk. The sequence holds split controls, tabs, toolbars, and rails behind the accepted overlay stack.',
+        steps: [
+          ['Accept foundation', 'foundation'],
+          ['Accept action primitives', 'actions'],
+          ['Accept input/focus primitives', 'input'],
+          ['Fail one overlay gate', 'overlay-fail'],
+          ['Try to start compound controls', 'compound-start'],
+        ],
+      },
+      'page-modes': {
+        title: 'Continuous and Single Page become real only after shared controls and overlays pass.',
+        description: 'The path reaches actual page-mode commands and separate settings menus before the broader shell claims completion.',
+        steps: [
+          ['Accept foundation', 'foundation'],
+          ['Accept action primitives', 'actions'],
+          ['Accept input/focus primitives', 'input'],
+          ['Accept overlays', 'overlays'],
+          ['Accept joined/split controls', 'compounds'],
+          ['Accept actual toolbar/page modes', 'toolbar'],
+        ],
+      },
+      'shell-placeholder': {
+        title: 'A coherent shell frame is still not a PDF or annotation workflow.',
+        description: 'This scenario accepts every shell dependency. Virtual pages, native platform proof, annotations, and convergence remain independently locked or ready.',
+        steps: [
+          ['Accept foundation', 'foundation'],
+          ['Accept actions', 'actions'],
+          ['Accept inputs', 'input'],
+          ['Accept overlays', 'overlays'],
+          ['Accept compounds', 'compounds'],
+          ['Accept tabs', 'tabs'],
+          ['Accept toolbar', 'toolbar'],
+          ['Accept rails/forms', 'rails'],
+          ['Accept shell frame', 'shell'],
+        ],
+      },
+      'release-blocker': {
+        title: 'Experiment progress and permission to distribute are separate state.',
+        description: 'Component slices may proceed on the exact experiment pin. Even a fully accepted sequence cannot support packaging while the current license gate remains blocked.',
+        steps: [
+          ['Accept every slice in dependency order', 'all'],
+          ['Observe shipping remains blocked', 'observe'],
+          ['Mark license gate cleared in prototype', 'license'],
+        ],
+      },
+    };
+
+    function openScenario(name) {
+      const scenario = scenarios[name];
+      state = SequenceModel.initialState();
+      render();
+      const walkthrough = document.querySelector('#walkthrough');
+      walkthrough.innerHTML = `<h3>${scenario.title}</h3><p>${scenario.description}</p><ol>${scenario.steps.map(([label]) => `<li>${label}</li>`).join('')}</ol><div class="steps">${scenario.steps.map(([label, action], index) => `<button data-step="${index}" data-action="${action}">${index + 1}. ${label}</button>`).join('')}</div>`;
+      document.querySelectorAll('[data-step]').forEach((button) => button.addEventListener('click', () => {
+        runScenarioAction(button.dataset.action);
+        button.classList.add('done');
+      }));
+    }
+
+    function runScenarioAction(action) {
+      const accept = (id) => {
+        state = SequenceModel.reducer(state, { type: 'select', id });
+        state = SequenceModel.reducer(state, { type: 'pass-all' });
+      };
+      if (SequenceModel.slices.some((slice) => slice.id === action)) accept(action);
+      else if (action === 'compound-visual') {
+        state = SequenceModel.reducer(state, { type: 'select', id: 'compounds' });
+        state = SequenceModel.reducer(state, { type: 'record-next', status: 'pass' });
+      } else if (action === 'compound-accept') state = SequenceModel.reducer(state, { type: 'accept' });
+      else if (action === 'overlay-fail') {
+        state = SequenceModel.reducer(state, { type: 'select', id: 'overlays' });
+        state = SequenceModel.reducer(state, { type: 'record-next', status: 'fail' });
+      } else if (action === 'compound-start') {
+        state = SequenceModel.reducer(state, { type: 'select', id: 'compounds' });
+        state = SequenceModel.reducer(state, { type: 'start' });
+      } else if (action === 'all') SequenceModel.slices.forEach((slice) => accept(slice.id));
+      else if (action === 'observe') state = { ...state, message: 'All slices passed, but the independent distribution license gate still blocks shipping.' };
+      else if (action === 'license') state = SequenceModel.reducer(state, { type: 'toggle-license' });
+      render();
+    }
+
+    document.querySelectorAll('[role="tab"]').forEach((tab) => tab.addEventListener('click', () => {
+      document.querySelectorAll('[role="tab"]').forEach((candidate) => candidate.setAttribute('aria-selected', String(candidate === tab)));
+      openScenario(tab.dataset.scenario);
+    }));
+
+    render();
+    openScenario('visual-only');
+  </script>
+</body>
+</html>
