@@ -11,6 +11,8 @@ use gpui_component::{
     v_flex,
 };
 
+use crate::accessible_button::accessible_icon_button;
+
 pub const CAD_VIEW_GROUP_ID: &str = "viewer-cad-view-controls";
 pub const CAD_VIEW_PRIMARY_ID: &str = "viewer-cad-view";
 pub const CAD_VIEW_SETTINGS_ID: &str = "viewer-cad-view-settings";
@@ -38,6 +40,8 @@ pub enum CadViewOrganisation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CadViewControlEvent {
     Activated,
+    OrganisationChanged(CadViewOrganisation),
+    PagesPerLaneChanged(usize),
 }
 
 /// Retains application-owned CAD View activation and Popover state while the
@@ -51,21 +55,46 @@ pub struct CadViewControl {
     pages_per_column: usize,
     organisation_changes: usize,
     page_count_changes: usize,
-    pages_input: gpui::Entity<InputState>,
+    pages_input: Option<gpui::Entity<InputState>>,
     popover_focus: gpui::FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
 impl CadViewControl {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut control = Self::new_deferred(cx);
+        control.initialize_input(window, cx);
+        control
+    }
+
+    pub fn new_deferred(cx: &mut Context<Self>) -> Self {
+        Self {
+            active: false,
+            disabled: false,
+            settings_open: false,
+            primary_activations: 0,
+            organisation: CadViewOrganisation::Columns,
+            pages_per_column: DEFAULT_PAGES_PER_COLUMN,
+            organisation_changes: 0,
+            page_count_changes: 0,
+            pages_input: None,
+            popover_focus: cx.focus_handle(),
+            _subscriptions: Vec::new(),
+        }
+    }
+
+    fn initialize_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pages_input.is_some() {
+            return;
+        }
         let pages_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .default_value(DEFAULT_PAGES_PER_COLUMN.to_string())
+                .default_value(self.pages_per_column.to_string())
                 .step(1.)
                 .min(MIN_PAGES_PER_COLUMN as f64)
                 .max(MAX_PAGES_PER_COLUMN as f64)
         });
-        let _subscriptions = vec![cx.subscribe_in(
+        self._subscriptions.push(cx.subscribe_in(
             &pages_input,
             window,
             |this, input, event: &InputEvent, _, cx| {
@@ -80,24 +109,12 @@ impl CadViewControl {
                 if next != this.pages_per_column {
                     this.pages_per_column = next;
                     this.page_count_changes += 1;
+                    cx.emit(CadViewControlEvent::PagesPerLaneChanged(next));
                     cx.notify();
                 }
             },
-        )];
-
-        Self {
-            active: false,
-            disabled: false,
-            settings_open: false,
-            primary_activations: 0,
-            organisation: CadViewOrganisation::Columns,
-            pages_per_column: DEFAULT_PAGES_PER_COLUMN,
-            organisation_changes: 0,
-            page_count_changes: 0,
-            pages_input,
-            popover_focus: cx.focus_handle(),
-            _subscriptions,
-        }
+        ));
+        self.pages_input = Some(pages_input);
     }
 
     pub fn is_active(&self) -> bool {
@@ -138,6 +155,7 @@ impl CadViewControl {
         }
         self.organisation = organisation;
         self.organisation_changes += 1;
+        cx.emit(CadViewControlEvent::OrganisationChanged(organisation));
         cx.notify();
     }
 
@@ -153,9 +171,12 @@ impl CadViewControl {
         }
         self.pages_per_column = next;
         self.page_count_changes += 1;
-        self.pages_input.update(cx, |input, cx| {
-            input.set_value(next.to_string(), window, cx);
-        });
+        if let Some(pages_input) = &self.pages_input {
+            pages_input.update(cx, |input, cx| {
+                input.set_value(next.to_string(), window, cx);
+            });
+        }
+        cx.emit(CadViewControlEvent::PagesPerLaneChanged(next));
         cx.notify();
     }
 
@@ -177,9 +198,44 @@ impl CadViewControl {
         self.settings_open = false;
         self.organisation = CadViewOrganisation::Columns;
         self.pages_per_column = DEFAULT_PAGES_PER_COLUMN;
-        self.pages_input.update(cx, |input, cx| {
-            input.set_value(DEFAULT_PAGES_PER_COLUMN.to_string(), window, cx);
-        });
+        if let Some(pages_input) = &self.pages_input {
+            pages_input.update(cx, |input, cx| {
+                input.set_value(DEFAULT_PAGES_PER_COLUMN.to_string(), window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    pub fn sync_document_state(
+        &mut self,
+        active: bool,
+        organisation: CadViewOrganisation,
+        pages_per_lane: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.initialize_input(window, cx);
+        self.active = active;
+        self.organisation = organisation;
+        self.pages_per_column = pages_per_lane.clamp(1, 100);
+        if let Some(pages_input) = &self.pages_input {
+            pages_input.update(cx, |input, cx| {
+                input.set_value(self.pages_per_column.to_string(), window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    pub fn sync_retained_state(
+        &mut self,
+        active: bool,
+        organisation: CadViewOrganisation,
+        pages_per_lane: usize,
+        cx: &mut Context<Self>,
+    ) {
+        self.active = active;
+        self.organisation = organisation;
+        self.pages_per_column = pages_per_lane.clamp(1, 100);
         cx.notify();
     }
 }
@@ -195,41 +251,51 @@ pub fn clamp_pages_per_column(count: f64) -> usize {
 impl EventEmitter<CadViewControlEvent> for CadViewControl {}
 
 impl Render for CadViewControl {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.initialize_input(window, cx);
         let active = self.active && !self.disabled;
         let disabled = self.disabled;
         let settings_open = self.settings_open;
         let organisation = self.organisation;
-        let pages_input = self.pages_input.clone();
+        let pages_input = self
+            .pages_input
+            .clone()
+            .expect("CAD input must initialize before rendering");
         let popover_focus = self.popover_focus.clone();
 
-        let primary = Button::new(CAD_VIEW_PRIMARY_ID)
-            .small()
-            .debug_selector(|| CAD_VIEW_PRIMARY_ID.into())
-            .accessibility_id(CAD_VIEW_PRIMARY_ID)
-            .icon(IconName::LayoutDashboard)
-            .tooltip(CAD_VIEW_LABEL)
-            .selected(active)
-            .toggled(active)
-            .disabled(disabled)
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                if this.active {
-                    return;
-                }
-                this.active = true;
-                this.primary_activations += 1;
-                cx.emit(CadViewControlEvent::Activated);
-                cx.notify();
-            }));
+        let primary = accessible_icon_button(
+            Button::new(CAD_VIEW_PRIMARY_ID)
+                .small()
+                .debug_selector(|| CAD_VIEW_PRIMARY_ID.into())
+                .accessibility_id(CAD_VIEW_PRIMARY_ID)
+                .icon(IconName::LayoutDashboard)
+                .tooltip(CAD_VIEW_LABEL)
+                .selected(active)
+                .toggled(active)
+                .disabled(disabled)
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    if this.active {
+                        return;
+                    }
+                    this.active = true;
+                    this.primary_activations += 1;
+                    cx.emit(CadViewControlEvent::Activated);
+                    cx.notify();
+                })),
+            CAD_VIEW_LABEL,
+        );
 
-        let settings = Button::new(CAD_VIEW_SETTINGS_ID)
-            .small()
-            .debug_selector(|| CAD_VIEW_SETTINGS_ID.into())
-            .accessibility_id(CAD_VIEW_SETTINGS_ID)
-            .icon(IconName::ChevronDown)
-            .tooltip(CAD_VIEW_SETTINGS_LABEL)
-            .selected(active)
-            .disabled(disabled);
+        let settings = accessible_icon_button(
+            Button::new(CAD_VIEW_SETTINGS_ID)
+                .small()
+                .debug_selector(|| CAD_VIEW_SETTINGS_ID.into())
+                .accessibility_id(CAD_VIEW_SETTINGS_ID)
+                .icon(IconName::ChevronDown)
+                .tooltip(CAD_VIEW_SETTINGS_LABEL)
+                .selected(active)
+                .disabled(disabled),
+            CAD_VIEW_SETTINGS_LABEL,
+        );
 
         let settings = if disabled {
             settings.into_any_element()

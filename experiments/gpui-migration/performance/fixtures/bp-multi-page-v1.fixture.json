@@ -1,0 +1,29 @@
+{
+  "schema_version": "bp-fixture-spec-v1",
+  "fixture_id": "bp-multi-page-v1",
+  "source": { "kind": "deterministically-generated", "license": "MIT", "contains_private_material": false },
+  "coordinate_space": "pdf-points-bottom-left",
+  "document": { "page_count": 100, "page_width": 612, "page_height": 792 },
+  "commands": [
+    { "command_id": "multi:assert-open:001", "operation": "assert-document-open", "expected_page_count": 100 },
+    { "command_id": "multi:assert-navigation:001", "operation": "assert-page-sequence", "page_numbers": [100, 8, 72, 25, 90, 50, 11, 96, 33, 1] }
+  ],
+  "visual_crops": [
+    { "crop_id": "multi-first-registration", "page_id": "bp-multi-page-v1:page:001", "pdf_rect": { "x": 36, "y": 36, "width": 540, "height": 720 }, "expected_annotation_ids": [], "minimum_settled_density": 1 },
+    { "crop_id": "multi-last-registration", "page_id": "bp-multi-page-v1:page:100", "pdf_rect": { "x": 44, "y": 44, "width": 524, "height": 704 }, "expected_annotation_ids": [], "minimum_settled_density": 1 }
+  ],
+  "artifact_sha256": { "pdf": "517ebc78ee84071ce15040da05f2155ca0fe4b5d5871dc95cea1a95c97b1f57b", "commands": "4204dd56dc397a7774fe43fc41c6c6efcb09313a4593ead580fadc9e24b78788", "expected": "64424800ebe28bf0ec1e120becc4ca73062b9061dd558c38198f3f1afbec61ef", "crops": "798a0ca2ba112467235552e7f9938044f712e72fa45431f9492dd0e8f8a9d3f3" },
+  "canonical_expected": {
+    "sha256": "64424800ebe28bf0ec1e120becc4ca73062b9061dd558c38198f3f1afbec61ef",
+    "state": {
+      "schema_version": "bp-canonical-annotation-state-v1",
+      "fixture_id": "bp-multi-page-v1",
+      "document": { "page_count": 100, "page_ids": [] },
+      "annotations": [],
+      "selected_annotation_ids": [],
+      "history": { "undo_depth": 0, "redo_depth": 0 },
+      "dirty": false
+    }
+  },
+  "document_generator": { "expand_page_ids": true }
+}

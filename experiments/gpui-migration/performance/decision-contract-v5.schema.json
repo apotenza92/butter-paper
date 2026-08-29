@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://butterpaper.invalid/schemas/bp-perf-v5-decision-1.json",
+  "title": "Butter Paper GPUI migration decision contract v5",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "supersedes",
+    "source_contract",
+    "evidence_boundary",
+    "execution",
+    "fixtures",
+    "journeys",
+    "hard_components",
+    "stress_lanes",
+    "supplementary_lanes",
+    "resource_observation",
+    "absolute_safety_budgets",
+    "quality_observation",
+    "phases",
+    "statistics",
+    "decision"
+  ],
+  "properties": {
+    "schema_version": { "const": 3 },
+    "contract_version": { "const": "bp-perf-v5-decision-1" },
+    "supersedes": { "const": "bp-perf-v4-decision-1" },
+    "source_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "module", "artifact_sha256"],
+      "properties": {
+        "id": { "const": "bp-perf-v4-decision-1" },
+        "module": { "const": "./decision-contract-v4.mjs" },
+        "artifact_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "evidence_boundary": { "type": "string", "minLength": 1 },
+    "execution": {
+      "type": "object",
+      "required": [
+        "readiness_model",
+        "static_capability_declarations_are_evidence",
+        "required_live_gate_ids",
+        "required_implementations",
+        "required_representative_journey_ids",
+        "required_hard_component_ids"
+      ],
+      "properties": {
+        "readiness_model": { "const": "derived-from-live-evidence" },
+        "static_capability_declarations_are_evidence": { "const": false },
+        "required_live_gate_ids": {
+          "type": "array",
+          "minItems": 9,
+          "maxItems": 9,
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        },
+        "required_implementations": { "const": ["electron", "gpui"] },
+        "required_representative_journey_ids": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        },
+        "required_hard_component_ids": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "fixtures": { "type": "array", "minItems": 5, "maxItems": 5 },
+    "journeys": { "type": "array", "minItems": 6, "maxItems": 6 },
+    "hard_components": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "journey_id",
+          "input_lane",
+          "inference_eligible",
+          "non_inferiority",
+          "benefit_metrics_eligible"
+        ],
+        "properties": {
+          "inference_eligible": { "const": true },
+          "non_inferiority": { "const": "conjunctive" },
+          "benefit_metrics_eligible": { "type": "boolean" }
+        }
+      }
+    },
+    "stress_lanes": { "type": "array", "minItems": 1 },
+    "supplementary_lanes": { "type": "array", "minItems": 1 },
+    "resource_observation": { "type": "object" },
+    "absolute_safety_budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gpui_multi_document"],
+      "properties": {
+        "gpui_multi_document": {
+          "$ref": "#/$defs/gpuiMultiDocumentAbsoluteSafetyBudgets"
+        }
+      }
+    },
+    "quality_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registered_crop_count",
+        "registered_crop_algorithm",
+        "registered_crop_minimum_filtered_ssim_each",
+        "registered_crop_minimum_dark_precision_each",
+        "registered_crop_minimum_dark_recall_each",
+        "registered_crop_minimum_dark_f1_each",
+        "presented_zoom_percent",
+        "presented_device_pixels_per_pdf_point",
+        "presented_pixels_per_point_tolerance",
+        "paired_candidate_scale_tolerance",
+        "checkpoint_hold_count",
+        "checkpoint_hold_ms_each",
+        "candidate_resampling",
+        "reference_resampling",
+        "presented_screenshot_stability",
+        "dynamic_sample_cadence",
+        "dynamic_sample_count",
+        "required_sample_fields",
+        "higher_is_better_lower_95_ratio_thresholds"
+      ],
+      "properties": {
+        "registered_crop_count": { "const": 3 },
+        "registered_crop_algorithm": {
+          "const": "bp-cross-engine-binary-scan-fidelity-v2"
+        },
+        "registered_crop_minimum_filtered_ssim_each": { "const": 0.97 },
+        "registered_crop_minimum_dark_precision_each": { "const": 0.99 },
+        "registered_crop_minimum_dark_recall_each": { "const": 0.99 },
+        "registered_crop_minimum_dark_f1_each": { "const": 0.99 },
+        "presented_zoom_percent": { "const": 100 },
+        "presented_device_pixels_per_pdf_point": { "const": 1 },
+        "presented_pixels_per_point_tolerance": { "const": 0.01 },
+        "paired_candidate_scale_tolerance": { "const": 0.01 },
+        "checkpoint_hold_count": { "const": 3 },
+        "checkpoint_hold_ms_each": { "const": 250 },
+        "candidate_resampling": { "const": "forbidden" },
+        "reference_resampling": { "const": "downsample-only-lanczos3" },
+        "presented_screenshot_stability": {
+          "const": "painted-before-capture-after"
+        },
+        "dynamic_sample_cadence": { "const": "fixed-observer-60hz" },
+        "dynamic_sample_count": { "const": 1921 },
+        "required_sample_fields": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        },
+        "higher_is_better_lower_95_ratio_thresholds": { "type": "object" }
+      }
+    },
+    "phases": { "type": "object" },
+    "statistics": { "type": "object" },
+    "decision": { "type": "object" }
+  },
+  "$defs": {
+    "gpuiMultiDocumentAbsoluteSafetyBudgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "applicability",
+        "aggregation",
+        "conjunction",
+        "outcomes",
+        "metrics"
+      ],
+      "properties": {
+        "applicability": {
+          "const": "every-live-gpui-multi-document-session-report; mandatory-when-electron-benefit-metrics-ineligible"
+        },
+        "aggregation": {
+          "const": "maximum-across-retained-final-gpui-multi-document-reports"
+        },
+        "conjunction": { "const": "all-seven" },
+        "outcomes": {
+          "const": {
+            "exceeded_finite_valid": "measured-no",
+            "missing_nonfinite_or_structurally_invalid": "blocked-not-decision-ready"
+          }
+        },
+        "metrics": {
+          "const": {
+            "cpu_seconds": {
+              "maximum": 120,
+              "unit": "process-cpu-seconds",
+              "provenance": "new-v5-safety-cap-no-v4-absolute"
+            },
+            "cgroup_peak_memory_bytes": {
+              "maximum": 1610612736,
+              "unit": "bytes",
+              "provenance": "summarize-paired-v4 process_memory absoluteBudgetFor"
+            },
+            "product_wall_or_latency_ms": {
+              "maximum": 60000,
+              "unit": "milliseconds",
+              "allowed_source": ["product-latency", "component-wall"],
+              "provenance": "new-v5-safety-cap-no-v4-multi-document-map"
+            },
+            "application_frame_interval_p95_ms": {
+              "maximum": 25,
+              "unit": "milliseconds",
+              "provenance": "v4 native frame absoluteBudgetFor"
+            },
+            "native_input_to_application_frame_ack_p95_ms": {
+              "maximum": 33.333333333333336,
+              "unit": "milliseconds",
+              "provenance": "v4 1000/30 native ack absoluteBudgetFor"
+            },
+            "baseline_adjusted_gpu_peak_memory_mib": {
+              "maximum": 2048,
+              "unit": "MiB",
+              "provenance": "v4 GPU memory absoluteBudgetFor"
+            },
+            "baseline_adjusted_gpu_utilization_p95_percent": {
+              "maximum": 100,
+              "unit": "percent",
+              "provenance": "new-v5 physical percentage ceiling"
+            }
+          }
+        }
+      }
+    }
+  }
+}

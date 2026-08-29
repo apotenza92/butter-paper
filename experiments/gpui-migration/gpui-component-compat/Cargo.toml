@@ -24,6 +24,7 @@ smallvec = "1.15.1"
 
 [dev-dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["test-support", "wayland", "x11", "windows-manifest"] }
+lopdf = { version = "=0.44.0", default-features = false }
 
 [patch."https://github.com/zed-industries/zed"]
 ztracing = { path = "vendor/ztracing-shim" }

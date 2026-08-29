@@ -1,0 +1,50 @@
+{
+  "schema_version": "bp-fixture-spec-v1",
+  "fixture_id": "bp-annotation-all-v1",
+  "source": { "kind": "deterministically-generated", "license": "MIT", "contains_private_material": false },
+  "coordinate_space": "pdf-points-bottom-left",
+  "document": {
+    "page_count": 2,
+    "pages": [
+      { "page_id": "bp-annotation-all-v1:page:001", "width": 612, "height": 792, "rotation": 0, "crop_box": [0, 0, 612, 792] },
+      { "page_id": "bp-annotation-all-v1:page:002", "width": 792, "height": 612, "rotation": 90, "crop_box": [18, 18, 774, 594] }
+    ]
+  },
+  "native_annotations": [
+    { "annotation_id": "bp-annotation-all-v1:rectangle:0001", "native_name": "rectangle-1", "type": "rectangle", "subtype": "Square", "page_id": "bp-annotation-all-v1:page:001", "bounds": { "x": 72, "y": 144, "width": 180, "height": 96 }, "style": { "stroke_rgb": [0.113725, 0.431373, 0.847059], "width_pt": 2 } },
+    { "annotation_id": "bp-annotation-all-v1:highlight:0001", "native_name": "highlight-1", "type": "highlight", "subtype": "Ink", "page_id": "bp-annotation-all-v1:page:001", "bounds": { "x": 80, "y": 290, "width": 260, "height": 50 }, "ink_points": [[90, 312], [150, 319], [220, 311], [330, 316]], "style": { "stroke_rgb": [0.980392, 0.8, 0.082353], "width_pt": 16, "opacity": 0.35, "blend": "Multiply" } },
+    { "annotation_id": "bp-annotation-all-v1:text:0001", "native_name": "text-1", "type": "text", "subtype": "FreeText", "page_id": "bp-annotation-all-v1:page:001", "bounds": { "x": 72, "y": 360, "width": 252, "height": 72 }, "contents": "Beam B-12 / revision 4", "default_appearance": "/Helv 14 Tf 0.067 0.094 0.153 rg" },
+    { "annotation_id": "bp-annotation-all-v1:length:0001", "native_name": "length-1", "type": "length", "subtype": "Line", "page_id": "bp-annotation-all-v1:page:001", "bounds": { "x": 72, "y": 480, "width": 288, "height": 36 }, "line": [90, 498, 342, 498], "contents": "3.50 m", "measure": { "ratio": "1 m = 72 pt", "unit": "m", "precision": 2 } },
+    { "annotation_id": "bp-annotation-all-v1:image:0001", "native_name": "image-1", "type": "image", "subtype": "Square", "page_id": "bp-annotation-all-v1:page:001", "bounds": { "x": 360, "y": 360, "width": 144, "height": 108 }, "asset_id": "bp-image-checker-v1", "source_pixels": { "width": 512, "height": 384 } },
+    { "annotation_id": "unknown-1", "native_name": "unknown-1", "type": "unknown", "subtype": "Text", "page_id": "bp-annotation-all-v1:page:001", "bounds": { "x": 360, "y": 144, "width": 24, "height": 24 }, "contents": "Untouched proprietary annotation", "probes": { "dictionary": "unknown-dictionary-preserve-me", "appearance_dictionary": "unknown-stream-preserve-me", "appearance_content_ascii": "q 0.7 0.2 0.8 rg 0 0 24 24 re f Q\n" } }
+  ],
+  "commands": [
+    { "command_id": "all:import:001", "operation": "import-native-annotations", "expected_native_names": ["rectangle-1", "highlight-1", "text-1", "length-1", "image-1", "unknown-1"] },
+    { "command_id": "all:assert-unknown:001", "operation": "assert-unknown-untouched", "native_name": "unknown-1" },
+    { "command_id": "all:assert-canonical:001", "operation": "assert-canonical-state", "expected_sha256": "9a5cb986de53a1241e2ecdcb9dde6ba010269c0c4fc49c54964f53437418da87" }
+  ],
+  "visual_crops": [
+    { "crop_id": "all-rectangle", "page_id": "bp-annotation-all-v1:page:001", "pdf_rect": { "x": 66, "y": 138, "width": 192, "height": 108 }, "expected_annotation_ids": ["bp-annotation-all-v1:rectangle:0001"], "minimum_settled_density": 1, "minimum_ssim": 0.985 },
+    { "crop_id": "all-highlight", "page_id": "bp-annotation-all-v1:page:001", "pdf_rect": { "x": 74, "y": 284, "width": 272, "height": 62 }, "expected_annotation_ids": ["bp-annotation-all-v1:highlight:0001"], "minimum_settled_density": 1, "minimum_ssim": 0.985 },
+    { "crop_id": "all-text", "page_id": "bp-annotation-all-v1:page:001", "pdf_rect": { "x": 66, "y": 354, "width": 264, "height": 84 }, "expected_annotation_ids": ["bp-annotation-all-v1:text:0001"], "minimum_settled_density": 1, "minimum_ssim": 0.985, "expected_ocr_text": "Beam B-12 / revision 4" },
+    { "crop_id": "all-length", "page_id": "bp-annotation-all-v1:page:001", "pdf_rect": { "x": 66, "y": 474, "width": 300, "height": 48 }, "expected_annotation_ids": ["bp-annotation-all-v1:length:0001"], "minimum_settled_density": 1, "minimum_ssim": 0.985, "expected_ocr_text": "3.50 m" },
+    { "crop_id": "all-image", "page_id": "bp-annotation-all-v1:page:001", "pdf_rect": { "x": 354, "y": 354, "width": 156, "height": 120 }, "expected_annotation_ids": ["bp-annotation-all-v1:image:0001"], "minimum_settled_density": 1, "minimum_ssim": 0.985 },
+    { "crop_id": "all-unknown", "page_id": "bp-annotation-all-v1:page:001", "pdf_rect": { "x": 354, "y": 138, "width": 36, "height": 36 }, "expected_annotation_ids": ["unknown-1"], "minimum_settled_density": 1, "minimum_ssim": 0.985 },
+    { "crop_id": "all-empty-control", "page_id": "bp-annotation-all-v1:page:002", "pdf_rect": { "x": 72, "y": 72, "width": 216, "height": 144 }, "expected_annotation_ids": [], "minimum_settled_density": 1, "minimum_ssim": 0.985 }
+  ],
+  "artifact_sha256": { "pdf": "4a0a94cdbcc08e7ee06504914e5b84d218f2aeb01035b42d62f2275e38d02cbd", "commands": "6704d21940d81bed14f1b53962ff412340b5bed1cee31564011ed9f157261f4a", "expected": "9a5cb986de53a1241e2ecdcb9dde6ba010269c0c4fc49c54964f53437418da87", "crops": "f515275eebe79fa6f61d6ce7ec2fb4a8271f6a2309cf2befcd335e87453a9252", "native": "5ff7d499c7418cb541d06f96439172765c0eeeee46d83851bd78b40b678e06b0" },
+  "asset_sha256": { "bp-image-checker-v1": "fcc714d1ac60ed4b88abf7297830479c7557cb9d219033e7a5a5ad4d6ec18dda" },
+  "canonical_expected": {
+    "sha256": "9a5cb986de53a1241e2ecdcb9dde6ba010269c0c4fc49c54964f53437418da87",
+    "state": {
+      "schema_version": "bp-canonical-annotation-state-v1",
+      "fixture_id": "bp-annotation-all-v1",
+      "document": { "page_count": 2, "page_ids": ["bp-annotation-all-v1:page:001", "bp-annotation-all-v1:page:002"], "pages": [ { "page_id": "bp-annotation-all-v1:page:001", "width": 612, "height": 792, "rotation": 0, "crop_box": [0, 0, 612, 792] }, { "page_id": "bp-annotation-all-v1:page:002", "width": 792, "height": 612, "rotation": 90, "crop_box": [18, 18, 774, 594] } ] },
+      "annotations": [],
+      "selected_annotation_ids": [],
+      "history": { "undo_depth": 0, "redo_depth": 0 },
+      "dirty": false
+    }
+  },
+  "native_annotation_generator": { "copy_annotations_to_canonical_state": true }
+}

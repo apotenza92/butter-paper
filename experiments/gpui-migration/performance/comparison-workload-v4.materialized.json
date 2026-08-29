@@ -1,0 +1,959 @@
+{
+  "schema_version": "bp-comparison-workload-v2",
+  "manifest_id": "bp-perf-v4-decision-1",
+  "decision_contract_version": "bp-perf-v4-decision-1",
+  "supersedes": "bp-perf-v3-decision-3",
+  "seed": 20260824,
+  "coordinate_space": "pdf-points-bottom-left",
+  "environment": {
+    "window_css_pixels": {
+      "width": 1200,
+      "height": 800
+    },
+    "display_scale_factor": 1,
+    "theme": "light",
+    "cache_classes": [
+      "app-cold",
+      "declared-warm"
+    ],
+    "input_lanes": [
+      "native-replay",
+      "semantic-correctness"
+    ]
+  },
+  "source_manifest": {
+    "id": "bp-perf-v3-decision-3",
+    "file": "./comparison-workload.json",
+    "artifact_sha256": "1926113f60f434b383aed89c34f157197f0b5680a4ad71d14f25c539f14cbd2f"
+  },
+  "fixtures": [
+    {
+      "id": "bp-single-page-v1",
+      "sha256": "f31adeeb3f17ef180012fe707cb2f2650854305dab4b16bba34d73652b6d8fdc",
+      "role": "small-shell-open"
+    },
+    {
+      "id": "nasa-apollo-summary-526-v1",
+      "sha256": "68d0f3bb93fd1c4e4f3adf99d483e9161f14293a311e25aa6c31241bbbb84049",
+      "role": "long-document"
+    },
+    {
+      "id": "bp-engineering-sheet-v1",
+      "sha256": "49b417e4652a5fc0efb3b59b1f482b443bf3133f810f652559931a08b68a2b91",
+      "role": "moderate-engineering-sheet"
+    },
+    {
+      "id": "bp-annotation-density-v1",
+      "sha256": "1dad337b97d573ff971e886eb6509e80e5e1cd07f6ac610ae4f2f9419c666682",
+      "role": "dense-mixed-editing"
+    },
+    {
+      "id": "bp-annotation-all-v1",
+      "sha256": "4a0a94cdbcc08e7ee06504914e5b84d218f2aeb01035b42d62f2275e38d02cbd",
+      "role": "persistence"
+    }
+  ],
+  "assets": [
+    {
+      "id": "bp-image-checker-v1",
+      "kind": "generated-rgba-png",
+      "width_pixels": 512,
+      "height_pixels": 384,
+      "decoded_payload_bytes": 786432,
+      "sha256": "fcc714d1ac60ed4b88abf7297830479c7557cb9d219033e7a5a5ad4d6ec18dda"
+    }
+  ],
+  "journeys": [
+    {
+      "id": "small-shell-open-v1",
+      "fixtures": [
+        "bp-single-page-v1"
+      ],
+      "commands": [
+        {
+          "id": "small:launch-cold",
+          "operation": "app.launch-cold",
+          "cache_class": "app-cold",
+          "expected_milestones": [
+            "process-started",
+            "native-window-presented",
+            "interactive-shell"
+          ]
+        },
+        {
+          "id": "small:open-settle",
+          "operation": "document.open-settle",
+          "fixture_id": "bp-single-page-v1",
+          "expected_milestones": [
+            "document-opened",
+            "preview-current-generation",
+            "settled-current-generation-250ms",
+            "fixed-crops-matched"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "nasa-long-document-v1",
+      "fixtures": [
+        "nasa-apollo-summary-526-v1"
+      ],
+      "commands": [
+        {
+          "id": "nasa:open-settle",
+          "operation": "document.open-settle",
+          "fixture_id": "nasa-apollo-summary-526-v1",
+          "expected_milestones": [
+            "document-opened",
+            "preview-current-generation",
+            "settled-current-generation-250ms",
+            "virtual-page-window-bounded"
+          ]
+        },
+        {
+          "id": "viewer:layout-single",
+          "operation": "viewer.set-layout",
+          "layout": "single-page",
+          "expected_milestones": [
+            "per-page-geometry-matched",
+            "annotation-thumbnail-current"
+          ]
+        },
+        {
+          "id": "viewer:layout-continuous",
+          "operation": "viewer.set-layout",
+          "layout": "continuous",
+          "expected_milestones": [
+            "per-page-geometry-matched",
+            "virtual-page-window-bounded"
+          ]
+        },
+        {
+          "id": "viewer:navigate-normalized",
+          "operation": "viewer.navigate-normalized-sequence",
+          "page_formula": [
+            "last",
+            "ceil(0.08*n)",
+            "ceil(0.72*n)",
+            "ceil(0.25*n)",
+            "ceil(0.90*n)",
+            "ceil(0.50*n)",
+            "11",
+            "ceil(0.958*n)",
+            "ceil(0.33*n)",
+            "1"
+          ],
+          "clamp": "1..page-count",
+          "deduplicate_after_clamp": true,
+          "expected_milestones": [
+            "target-page-current",
+            "preview-current-generation",
+            "settled-current-generation-250ms"
+          ]
+        },
+        {
+          "id": "viewer:continuous-scroll",
+          "operation": "viewer.continuous-scroll-path",
+          "fixture_id": "nasa-apollo-summary-526-v1",
+          "input_rate_hz": 120,
+          "path": {
+            "forward_duration_ms": 20000,
+            "forward_viewport_heights": 50,
+            "pause_duration_ms": 2000,
+            "reverse_duration_ms": 10000,
+            "finish_page": 1
+          },
+          "expected_milestones": [
+            "timestamped-input-complete",
+            "virtual-page-window-bounded",
+            "finish-page-current",
+            "visible-raster-readiness-observed"
+          ]
+        },
+        {
+          "id": "nasa:cache-pressure",
+          "operation": "viewer.cache-pressure-cycles",
+          "cycles": 5,
+          "expected_milestones": [
+            "declared-cache-byte-limit-held",
+            "decoded-byte-limit-held",
+            "renderer-resource-submission-bytes-exact"
+          ]
+        },
+        {
+          "id": "viewer:close-recover-reopen",
+          "operation": "document.close-recover-reopen",
+          "reopen_cache_class": "declared-warm",
+          "expected_milestones": [
+            "document-resources-released",
+            "memory-recovery-recorded",
+            "document-reopened",
+            "settled-current-generation-250ms"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "engineering-sheet-v1",
+      "fixtures": [
+        "bp-engineering-sheet-v1"
+      ],
+      "commands": [
+        {
+          "id": "engineering:open-settle",
+          "operation": "document.open-settle",
+          "fixture_id": "bp-engineering-sheet-v1",
+          "expected_milestones": [
+            "document-opened",
+            "preview-current-generation",
+            "settled-current-generation-250ms",
+            "fixed-crops-matched"
+          ]
+        },
+        {
+          "id": "engineering:fit-modes",
+          "operation": "viewer.fit-modes",
+          "modes": [
+            "fit-page",
+            "fit-width"
+          ],
+          "expected_milestones": [
+            "fit-state-current",
+            "visible-tiles-bounded",
+            "settled-density-at-least-1"
+          ]
+        },
+        {
+          "id": "engineering:zoom-sequence",
+          "operation": "viewer.zoom-sequence",
+          "percent": [
+            100,
+            200,
+            400,
+            800,
+            1600,
+            400,
+            100,
+            800,
+            200,
+            100,
+            1200,
+            100
+          ],
+          "expected_milestones": [
+            "zoom-state-current",
+            "visible-tiles-bounded",
+            "settled-density-at-least-1",
+            "stale-generations-presented-zero"
+          ]
+        },
+        {
+          "id": "engineering:pan",
+          "operation": "viewer.pan-path",
+          "zoom_percent": 1600,
+          "duration_ms": 5000,
+          "rate_hz": 120,
+          "normalized_viewport_points": [
+            [
+              0.5,
+              0.5
+            ],
+            [
+              0.75,
+              0.5
+            ],
+            [
+              0.75,
+              0.75
+            ],
+            [
+              0.25,
+              0.75
+            ],
+            [
+              0.25,
+              0.25
+            ],
+            [
+              0.5,
+              0.5
+            ]
+          ],
+          "expected_milestones": [
+            "timestamped-input-complete",
+            "visible-tiles-bounded",
+            "stale-generations-presented-zero",
+            "settled-density-at-least-1"
+          ]
+        },
+        {
+          "id": "engineering:cache-recovery",
+          "operation": "viewer.cache-pressure-and-recover",
+          "cycles": 5,
+          "expected_milestones": [
+            "declared-cache-byte-limit-held",
+            "decoded-byte-limit-held",
+            "renderer-resource-submission-bytes-exact",
+            "memory-recovery-recorded"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dense-mixed-editing-v1",
+      "fixtures": [
+        "bp-annotation-density-v1"
+      ],
+      "commands": [
+        {
+          "id": "rectangle:create-sparse",
+          "operation": "annotation.rectangle.create",
+          "page_role": "empty-interaction-page",
+          "annotation_id": "comparison:rectangle:sparse:1",
+          "pointer_path": {
+            "rate_hz": 120,
+            "duration_ms": 3000,
+            "expected_sample_count": 361,
+            "coordinate_space": "pdf-points-bottom-left",
+            "start": {
+              "x": 72,
+              "y": 144
+            },
+            "finish": {
+              "x": 252,
+              "y": 240
+            },
+            "interpolation": "linear-inclusive"
+          },
+          "style": {
+            "stroke": "#ff0000ff",
+            "fill": null,
+            "width_pt": 1,
+            "dash": "solid",
+            "opacity": 1
+          },
+          "expected_milestones": [
+            "pointer-stream-received",
+            "gesture-committed-once",
+            "annotation-painted",
+            "thumbnail-current"
+          ]
+        },
+        {
+          "id": "rectangle:select-move-resize",
+          "operation": "annotation.rectangle.transform",
+          "annotation_id": "comparison:rectangle:sparse:1",
+          "select_point": {
+            "x": 117,
+            "y": 240
+          },
+          "move": {
+            "rate_hz": 120,
+            "duration_ms": 3000,
+            "delta": {
+              "x": 18,
+              "y": -12
+            }
+          },
+          "resize": {
+            "rate_hz": 120,
+            "duration_ms": 3000,
+            "handle": "east",
+            "delta": {
+              "x": 30,
+              "y": 0
+            }
+          },
+          "expected_milestones": [
+            "hit-test-selected",
+            "move-committed-once",
+            "resize-committed-once"
+          ]
+        },
+        {
+          "id": "rectangle:properties-history",
+          "operation": "annotation.rectangle.properties-history",
+          "annotation_id": "comparison:rectangle:sparse:1",
+          "properties": {
+            "stroke": "#dc2626ff",
+            "fill": "#dc26261f",
+            "width_pt": 3,
+            "dash": "dashed",
+            "opacity": 0.88
+          },
+          "sequence": [
+            "set-properties",
+            "lock",
+            "verify-transform-rejected",
+            "unlock",
+            "undo-each-commit",
+            "redo-each-commit"
+          ],
+          "expected_milestones": [
+            "properties-current",
+            "locked-edit-rejected",
+            "undo-redo-exact",
+            "dirty-current"
+          ]
+        },
+        {
+          "id": "rectangle:repeat-dense",
+          "operation": "annotation.rectangle.repeat-on-dense-page",
+          "page_role": "100-visible-annotations-page",
+          "source_commands": [
+            "rectangle:create-sparse",
+            "rectangle:select-move-resize",
+            "rectangle:properties-history"
+          ],
+          "expected_milestones": [
+            "spatial-index-work-recorded",
+            "annotation-paint-work-recorded",
+            "canonical-state-matched"
+          ]
+        },
+        {
+          "id": "highlight:create",
+          "operation": "annotation.highlight.create",
+          "annotation_id": "comparison:highlight:1",
+          "pointer_path": {
+            "rate_hz": 120,
+            "duration_ms": 3000,
+            "expected_sample_count": 361,
+            "coordinate_space": "pdf-points-bottom-left",
+            "control_points": [
+              [
+                90,
+                330
+              ],
+              [
+                150,
+                337
+              ],
+              [
+                220,
+                329
+              ],
+              [
+                300,
+                334
+              ]
+            ],
+            "interpolation": "catmull-rom-inclusive"
+          },
+          "style": {
+            "color": "#ffff00ff",
+            "width_pt": 12,
+            "opacity": 1,
+            "blend": "multiply"
+          },
+          "expected_milestones": [
+            "pointer-stream-received",
+            "path-smoothed",
+            "gesture-committed-once",
+            "annotation-painted"
+          ]
+        },
+        {
+          "id": "highlight:edit-history",
+          "operation": "annotation.highlight.edit-history",
+          "annotation_id": "comparison:highlight:1",
+          "move_delta": {
+            "x": 12,
+            "y": -6
+          },
+          "sequence": [
+            "select-by-hit-test",
+            "move",
+            "set-opacity-0.45",
+            "undo",
+            "redo"
+          ],
+          "expected_milestones": [
+            "hit-test-selected",
+            "path-bounds-current",
+            "undo-redo-exact",
+            "thumbnail-current"
+          ]
+        },
+        {
+          "id": "text:create",
+          "operation": "annotation.text.create",
+          "annotation_id": "comparison:text:1",
+          "placement": {
+            "point": {
+              "x": 210,
+              "y": 426
+            },
+            "sizing": "shaped-text-autosize-nonblank"
+          },
+          "text": "Beam B-12 / revision 3",
+          "font": {
+            "family": "Helvetica",
+            "size_pt": 14,
+            "weight": 400,
+            "color": "#111827ff",
+            "alignment": "left"
+          },
+          "expected_milestones": [
+            "text-input-committed",
+            "text-shaped",
+            "annotation-painted",
+            "gesture-committed-once"
+          ]
+        },
+        {
+          "id": "text:edit-resize-history",
+          "operation": "annotation.text.edit-resize-history",
+          "annotation_id": "comparison:text:1",
+          "replacement_text": "Beam B-12 / revision 4",
+          "resize_bounds": {
+            "x": 90,
+            "y": 390,
+            "width": 300,
+            "height": 84
+          },
+          "sequence": [
+            "select",
+            "replace-text",
+            "resize",
+            "undo-resize",
+            "redo-resize"
+          ],
+          "expected_milestones": [
+            "selection-current",
+            "layout-current",
+            "font-persistence-recorded",
+            "undo-redo-exact"
+          ]
+        },
+        {
+          "id": "length:set-scale",
+          "operation": "measurement.set-scale",
+          "scale": {
+            "paper_points": 72,
+            "real_world_value": 1,
+            "unit": "m",
+            "precision": 2
+          },
+          "expected_milestones": [
+            "measurement-scale-current"
+          ]
+        },
+        {
+          "id": "length:create",
+          "operation": "annotation.length.create",
+          "annotation_id": "comparison:length:1",
+          "start": {
+            "x": 90,
+            "y": 510
+          },
+          "finish": {
+            "x": 306,
+            "y": 510
+          },
+          "expected_label": "3.00 m",
+          "expected_milestones": [
+            "derived-length-exact",
+            "label-layout-current",
+            "gesture-committed-once"
+          ]
+        },
+        {
+          "id": "length:edit-endpoint-history",
+          "operation": "annotation.length.edit-endpoint-history",
+          "annotation_id": "comparison:length:1",
+          "endpoint": "finish",
+          "replacement": {
+            "x": 342,
+            "y": 510
+          },
+          "expected_label": "3.50 m",
+          "sequence": [
+            "select",
+            "edit-endpoint",
+            "undo",
+            "redo"
+          ],
+          "expected_milestones": [
+            "control-point-current",
+            "derived-length-exact",
+            "undo-redo-exact",
+            "thumbnail-current"
+          ]
+        },
+        {
+          "id": "image:create",
+          "operation": "annotation.image.create",
+          "annotation_id": "comparison:image:1",
+          "asset_id": "bp-image-checker-v1",
+          "placement": {
+            "point": {
+              "x": 432,
+              "y": 444
+            },
+            "sizing": "natural-size-page-contained",
+            "max_page_fraction": 0.45,
+            "fixture_page_size_points": {
+              "width": 612,
+              "height": 792
+            }
+          },
+          "expected_milestones": [
+            "bitmap-decoded",
+            "decoded-payload-bytes-exact",
+            "renderer-resource-submission-bytes-exact",
+            "bitmap-presented-from-decoded-payload",
+            "gesture-committed-once"
+          ],
+          "resource_observation": {
+            "decoded_payload_bytes": 786432,
+            "renderer_resource_submission_bytes": 786432,
+            "physical_bus_upload_bytes": null
+          }
+        },
+        {
+          "id": "image:resize-history",
+          "operation": "annotation.image.resize-history",
+          "annotation_id": "comparison:image:1",
+          "replacement_bounds": {
+            "x": 360,
+            "y": 390,
+            "width": 180,
+            "height": 135
+          },
+          "sequence": [
+            "select",
+            "resize",
+            "undo",
+            "redo"
+          ],
+          "expected_milestones": [
+            "aspect-ratio-current",
+            "renderer-resource-submission-bytes-exact",
+            "bitmap-presented-from-decoded-payload",
+            "undo-redo-exact",
+            "thumbnail-current"
+          ],
+          "resource_observation": {
+            "decoded_payload_bytes": 786432,
+            "renderer_resource_submission_bytes": 786432,
+            "physical_bus_upload_bytes": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "persistence-v1",
+      "fixtures": [
+        "bp-annotation-all-v1"
+      ],
+      "commands": [
+        {
+          "id": "unknown:import",
+          "operation": "annotation.unknown.import-untouched",
+          "native_subtype": "Text",
+          "native_name": "unknown-1",
+          "expected_milestones": [
+            "unknown-dictionary-snapshotted",
+            "unknown-appearance-stream-snapshotted"
+          ]
+        },
+        {
+          "id": "unknown:assert-cycle-1",
+          "operation": "annotation.unknown.assert-preserved",
+          "cycle": 1,
+          "comparison": "byte-exact-dictionary-and-appearance-stream",
+          "expected_milestones": [
+            "unknown-dictionary-exact",
+            "unknown-appearance-stream-exact"
+          ]
+        },
+        {
+          "id": "unknown:assert-cycle-2",
+          "operation": "annotation.unknown.assert-preserved",
+          "cycle": 2,
+          "comparison": "byte-exact-dictionary-and-appearance-stream",
+          "expected_milestones": [
+            "unknown-dictionary-exact",
+            "unknown-appearance-stream-exact"
+          ]
+        },
+        {
+          "id": "persistence:apply-fixed-state",
+          "operation": "persistence.apply-canonical-annotation-state",
+          "source_journeys": [
+            "rectangle-v1",
+            "highlight-v1",
+            "text-v1",
+            "length-v1",
+            "image-v1"
+          ],
+          "expected_milestones": [
+            "canonical-state-matched",
+            "dirty-current"
+          ]
+        },
+        {
+          "id": "persistence:save-1",
+          "operation": "persistence.safe-save",
+          "cycle": 1,
+          "output": "cycle-1.pdf",
+          "overwrite_source": false,
+          "expected_milestones": [
+            "safe-publication-complete",
+            "independent-pdf-validation-passed",
+            "native-annotations-valid",
+            "appearance-streams-valid"
+          ]
+        },
+        {
+          "id": "persistence:reopen-1",
+          "operation": "persistence.reopen-and-compare",
+          "cycle": 1,
+          "expected_milestones": [
+            "document-reopened",
+            "canonical-state-matched",
+            "page-content-preserved",
+            "page-boxes-rotation-metadata-preserved",
+            "fixed-crops-matched"
+          ]
+        },
+        {
+          "id": "persistence:save-2",
+          "operation": "persistence.safe-save",
+          "cycle": 2,
+          "output": "cycle-2.pdf",
+          "overwrite_source": false,
+          "expected_milestones": [
+            "safe-publication-complete",
+            "independent-pdf-validation-passed",
+            "native-annotations-valid",
+            "appearance-streams-valid"
+          ]
+        },
+        {
+          "id": "persistence:reopen-2",
+          "operation": "persistence.reopen-and-compare",
+          "cycle": 2,
+          "expected_milestones": [
+            "document-reopened",
+            "canonical-state-matched",
+            "page-content-preserved",
+            "page-boxes-rotation-metadata-preserved",
+            "fixed-crops-matched",
+            "dirty-published"
+          ]
+        }
+      ]
+    }
+  ],
+  "stress_lanes": [
+    {
+      "id": "usgs-large-sheet-stress-v1",
+      "fixture_id": "usgs-usa-geology-sheet-v1",
+      "fixture_sha256": "f058179e193ccbc15ca662feff3554102f64ff2114436a5ce6116d6fa5d2a6e2",
+      "inference_eligible": false,
+      "commands": [
+        {
+          "id": "stress:usgs-open",
+          "operation": "document.open-settle",
+          "expected_milestones": [
+            "document-opened",
+            "preview-current-generation"
+          ]
+        },
+        {
+          "id": "stress:usgs-zoom",
+          "operation": "viewer.zoom-sequence",
+          "percent": [
+            100,
+            200,
+            400,
+            800,
+            1600,
+            400,
+            100
+          ],
+          "expected_milestones": [
+            "visible-tiles-bounded",
+            "stale-generations-presented-zero"
+          ]
+        },
+        {
+          "id": "stress:usgs-pan",
+          "operation": "viewer.pan-path",
+          "zoom_percent": 1600,
+          "expected_milestones": [
+            "visible-tiles-bounded",
+            "stale-generations-presented-zero",
+            "memory-recovery-recorded"
+          ]
+        }
+      ]
+    }
+  ],
+  "supplementary_lanes": [
+    {
+      "id": "private-hibbeler-935-v1",
+      "status": "blocked-not-transferred",
+      "inference_eligible": false,
+      "allowed_lane": "owner-authorized-local-macos"
+    }
+  ],
+  "expected": {
+    "milestone_rules": {
+      "preview_minimum_density": 0.75,
+      "settled_minimum_density": 1,
+      "settled_stability_ms": 250,
+      "visible_raster_readiness_observations_minimum": 1,
+      "missing_raster_observation_count": "diagnostic-only",
+      "visible_raster_readiness_rate": "diagnostic-only",
+      "stale_current_generation_presentations": 0,
+      "minimum_crop_ssim": 0.985,
+      "minimum_annotation_iou": 0.98,
+      "maximum_standard_scale_control_point_error_device_px": 1,
+      "maximum_fractional_scale_control_point_error_device_px": 2,
+      "maximum_reviewed_delta_e": 2
+    },
+    "resource_rules": {
+      "decoded_payload_bytes": "exact-required",
+      "renderer_resource_submission_bytes": "exact-required",
+      "physical_bus_upload_bytes": "optional-nullable"
+    },
+    "final_state": {
+      "schema_version": "bp-comparison-final-state-v1",
+      "selected_annotation_ids": [
+        "comparison:image:1"
+      ],
+      "annotation_ids": [
+        "comparison:rectangle:sparse:1",
+        "comparison:highlight:1",
+        "comparison:text:1",
+        "comparison:length:1",
+        "comparison:image:1",
+        "unknown-1"
+      ],
+      "history": {
+        "one_entry_per_committed_gesture": true,
+        "redo_depth": 0
+      },
+      "document": {
+        "save_cycles": 2,
+        "reopen_cycles": 2,
+        "published_dirty": false
+      },
+      "annotations": [
+        {
+          "id": "comparison:rectangle:sparse:1",
+          "type": "rectangle",
+          "bounds": {
+            "x": 90,
+            "y": 132,
+            "width": 210,
+            "height": 96
+          },
+          "style": {
+            "stroke": "#dc2626ff",
+            "fill": "#dc26261f",
+            "width_pt": 3,
+            "dash": "dashed",
+            "opacity": 0.88
+          },
+          "locked": false
+        },
+        {
+          "id": "comparison:highlight:1",
+          "type": "highlight",
+          "control_points": [
+            [
+              102,
+              324
+            ],
+            [
+              162,
+              331
+            ],
+            [
+              232,
+              323
+            ],
+            [
+              312,
+              328
+            ]
+          ],
+          "style": {
+            "color": "#ffff00ff",
+            "width_pt": 12,
+            "opacity": 0.45,
+            "blend": "multiply"
+          }
+        },
+        {
+          "id": "comparison:text:1",
+          "type": "text",
+          "bounds": {
+            "x": 90,
+            "y": 390,
+            "width": 300,
+            "height": 84
+          },
+          "text": "Beam B-12 / revision 4",
+          "font": {
+            "family": "Helvetica",
+            "size_pt": 14,
+            "weight": 400,
+            "color": "#111827ff",
+            "alignment": "left"
+          }
+        },
+        {
+          "id": "comparison:length:1",
+          "type": "length",
+          "start": {
+            "x": 90,
+            "y": 510
+          },
+          "finish": {
+            "x": 342,
+            "y": 510
+          },
+          "scale": {
+            "paper_points": 72,
+            "real_world_value": 1,
+            "unit": "m",
+            "precision": 2
+          },
+          "label": "3.50 m"
+        },
+        {
+          "id": "comparison:image:1",
+          "type": "image",
+          "asset_id": "bp-image-checker-v1",
+          "bounds": {
+            "x": 360,
+            "y": 390,
+            "width": 180,
+            "height": 135
+          },
+          "source_pixels": {
+            "width": 512,
+            "height": 384
+          }
+        }
+      ],
+      "unknown_annotation": {
+        "native_name": "unknown-1",
+        "native_subtype": "Text",
+        "untouched": true,
+        "dictionary_and_appearance_stream_byte_exact": true
+      }
+    }
+  },
+  "canonical_hashes": {
+    "representative_command_stream_sha256": "e73410f5e765268527df99b26cbee6c72557ca7f584582b5358320eb0731b3b5",
+    "representative_milestone_stream_sha256": "f0079a662d7902f8bf833db6a1475b1a9e305a9d2f0b0c3854c1b51046a83a30",
+    "stress_command_stream_sha256": "a7e63ced8f1379758d42c56f3a608100270f0131393f65ca7841bd9e3fb0f3e6",
+    "expected_state_sha256": "8868578316a2e5fb59fec8f82396fd5793dfd305bf6ca516ea5db3532084c465"
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "schema_version": "bp-fixture-spec-v1",
+  "fixture_id": "bp-engineering-sheet-v1",
+  "source": { "kind": "deterministically-generated", "license": "MIT", "contains_private_material": false },
+  "coordinate_space": "pdf-points-bottom-left",
+  "document": {
+    "page_count": 1,
+    "pages": [
+      { "page_id": "bp-engineering-sheet-v1:page:001", "width": 1584, "height": 1224, "rotation": 0, "crop_box": [0, 0, 1584, 1224] }
+    ]
+  },
+  "commands": [
+    { "command_id": "engineering:assert-open:001", "operation": "assert-document-open", "expected_page_count": 1, "expected_page_size_points": { "width": 1584, "height": 1224 } },
+    { "command_id": "engineering:assert-tiling:001", "operation": "assert-visible-tiled-rendering", "page_id": "bp-engineering-sheet-v1:page:001", "zoom_percent": 1600, "display_scale_factor": 1, "expected_tiled_rendering": true }
+  ],
+  "visual_crops": [
+    { "crop_id": "engineering-drawing-registration", "page_id": "bp-engineering-sheet-v1:page:001", "pdf_rect": { "x": 36, "y": 180, "width": 1512, "height": 1008 }, "expected_annotation_ids": [], "minimum_settled_density": 1 },
+    { "crop_id": "engineering-title-block-registration", "page_id": "bp-engineering-sheet-v1:page:001", "pdf_rect": { "x": 972, "y": 36, "width": 576, "height": 126 }, "expected_annotation_ids": [], "minimum_settled_density": 1 }
+  ],
+  "tiling_oracle": {
+    "page_id": "bp-engineering-sheet-v1:page:001",
+    "zoom_percent": 1600,
+    "display_scale_factor": 1,
+    "tiled_render_threshold_pixels": 4096,
+    "viewport_pixel_width_cap": 4096,
+    "expected_page_pixel_width": 25344,
+    "expected_page_pixel_height": 19584,
+    "expected_viewport_pixel_width": 4096,
+    "expected_tiled_rendering": true,
+    "maximum_pdf_bytes": 16384
+  },
+  "artifact_sha256": {
+    "pdf": "49b417e4652a5fc0efb3b59b1f482b443bf3133f810f652559931a08b68a2b91",
+    "commands": "e52c39a3b17954c06e46c9c75adae16987035692165193889b4cfaa36d3f212d",
+    "expected": "2d664c7a2f497fe56c47c2cd25755b0049f2a034a05bb7e039a2c9898b43238e",
+    "crops": "f929bfe59c255cffea617b2d4442180aff6368adde243ec921faa42bc17ade32"
+  },
+  "canonical_expected": {
+    "sha256": "2d664c7a2f497fe56c47c2cd25755b0049f2a034a05bb7e039a2c9898b43238e",
+    "state": {
+      "schema_version": "bp-canonical-annotation-state-v1",
+      "fixture_id": "bp-engineering-sheet-v1",
+      "document": { "page_count": 1, "page_ids": ["bp-engineering-sheet-v1:page:001"], "pages": [ { "page_id": "bp-engineering-sheet-v1:page:001", "width": 1584, "height": 1224, "rotation": 0, "crop_box": [0, 0, 1584, 1224] } ] },
+      "annotations": [],
+      "selected_annotation_ids": [],
+      "history": { "undo_depth": 0, "redo_depth": 0 },
+      "dirty": false
+    }
+  },
+  "document_generator": { "kind": "moderate-engineering-sheet-v1" }
+}

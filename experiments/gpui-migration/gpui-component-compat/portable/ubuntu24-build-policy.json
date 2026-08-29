@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "baseImage": {
+    "reference": "ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316",
+    "indexDigest": "sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517",
+    "platform": "linux/amd64"
+  },
+  "snapshot": {
+    "timestamp": "20260820T000000Z",
+    "url": "https://snapshot.ubuntu.com/ubuntu/20260820T000000Z",
+    "suites": ["noble", "noble-updates", "noble-security", "noble-backports"],
+    "components": ["main", "universe"],
+    "caCertificatesBootstrap": {
+      "filename": "pool/main/c/ca-certificates/ca-certificates_20240203_all.deb",
+      "sha256": "641de77d8f142cfd62a1a6f964ba67b20754d3337c480efb529d086075a06c9a"
+    },
+    "inReleaseSha256": {
+      "noble": "cdb2f31d809f589719a53c6ad15f255b27569c4059542ada282aaa21b8e164b0",
+      "noble-backports": "835d68e98bf884be2dda56da61d8f17b9ac026dd2165ee12acb8719a365cfcea",
+      "noble-security": "dd26a7efe93a3a3e3125c97e9f27f18a0fc357589f9b346dba72b158bd7e1e41",
+      "noble-updates": "79d2a1c90ce4f14c98867053190c64a9018ac993702fe5146081873f3da526bf"
+    }
+  },
+  "packages": [
+    "build-essential",
+    "ca-certificates",
+    "clang",
+    "git",
+    "libfontconfig-dev",
+    "libvulkan-dev",
+    "libx11-dev",
+    "libxcb1-dev",
+    "libxcb-xkb-dev",
+    "libxkbcommon-dev",
+    "libxkbcommon-x11-dev",
+    "poppler-utils",
+    "pkg-config",
+    "qpdf",
+    "xz-utils"
+  ],
+  "testUtilities": {
+    "qpdf": {
+      "version": "11.9.0-1.1ubuntu0.1",
+      "runtimeArchive": false
+    },
+    "poppler-utils": {
+      "version": "24.02.0-1ubuntu9.9",
+      "runtimeArchive": false
+    }
+  },
+  "rust": {
+    "version": "1.97.1",
+    "hostToolchain": "1.97.1-x86_64-unknown-linux-gnu",
+    "mount": "/opt/rust"
+  },
+  "paths": {
+    "targetRelativeToMigration": ".build-targets/gpui-component-portable-u24",
+    "stateRelativeToProbe": ".prepared/portable-ubuntu24"
+  },
+  "limits": {
+    "preflightFreeKiB": 31457280,
+    "runtimeStopFreeKiB": 20971520,
+    "absoluteMinFreeKiB": 18874368,
+    "maxTargetKiB": 5242880,
+    "memory": "3g",
+    "memorySwap": "3g",
+    "cpus": "2",
+    "pids": 512,
+    "tmpfs": "1g",
+    "cargoJobs": 1,
+    "cargoIncremental": 0,
+    "compileTimeoutSeconds": 2700
+  }
+}

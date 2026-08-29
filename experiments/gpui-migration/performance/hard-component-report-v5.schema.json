@@ -1,0 +1,398 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://butterpaper.invalid/schemas/bp-hard-component-report-v5.json",
+  "title": "Butter Paper v5 hard component report",
+  "type": "object",
+  "required": [
+    "implementation",
+    "protocol_version",
+    "decision_contract_version",
+    "scenario_contract_version",
+    "manifest_id",
+    "scenario",
+    "component",
+    "candidate_artifact_sha256",
+    "workload_artifact_sha256",
+    "fixture_ids",
+    "fixture_sha256_by_id",
+    "launch_binding_v5",
+    "command_receipts",
+    "summary"
+  ],
+  "properties": {
+    "implementation": { "enum": ["electron", "gpui"] },
+    "protocol_version": { "const": "bp-perf-v5" },
+    "decision_contract_version": { "const": "bp-perf-v5-decision-1" },
+    "scenario_contract_version": { "const": "bp-perf-v5-representative-1" },
+    "manifest_id": { "const": "bp-perf-v5-decision-1" },
+    "scenario": {
+      "enum": [
+        "multi-document-session",
+        "dense-mixed-editing",
+        "nasa-long-document"
+      ]
+    },
+    "component": {
+      "enum": [
+        "multi-document-session",
+        "native-property-edit-undo",
+        "native-snap-transform-120hz",
+        "viewer-dynamic-fidelity"
+      ]
+    },
+    "candidate_artifact_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "workload_artifact_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "fixture_ids": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": { "type": "string" }
+    },
+    "fixture_sha256_by_id": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 4,
+      "additionalProperties": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+    },
+    "launch_binding_v5": { "$ref": "#/$defs/launchBinding" },
+    "command_receipts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "required": [
+          "command_id",
+          "live",
+          "passed",
+          "evidence_sha256",
+          "proven_milestones"
+        ],
+        "properties": {
+          "command_id": { "type": "string" },
+          "live": { "type": "boolean" },
+          "passed": { "type": "boolean" },
+          "evidence_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "proven_milestones": {
+            "type": "array",
+            "minItems": 0,
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "summary": { "type": "object" }
+  },
+  "$defs": {
+    "launchBinding": {
+      "type": "object",
+      "required": [
+        "launch_id",
+        "schedule_index",
+        "phase",
+        "pair",
+        "implementation",
+        "component",
+        "component_index",
+        "input_lane",
+        "started_monotonic_ms",
+        "ended_monotonic_ms"
+      ],
+      "properties": {
+        "launch_id": { "type": "string", "minLength": 1 },
+        "schedule_index": { "type": "integer", "minimum": 0 },
+        "phase": { "enum": ["correctness", "calibration", "final"] },
+        "pair": { "type": "integer", "minimum": 0, "maximum": 24 },
+        "implementation": { "enum": ["electron", "gpui"] },
+        "component": { "type": "string", "minLength": 1 },
+        "component_index": { "type": "integer", "minimum": 0 },
+        "input_lane": { "type": "string", "minLength": 1 },
+        "started_monotonic_ms": { "type": "number", "minimum": 0 },
+        "ended_monotonic_ms": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "dimensions": {
+      "type": "object",
+      "required": ["width", "height"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "paintedState": {
+      "type": "object",
+      "required": [
+        "state_sequence",
+        "render_generation",
+        "scroll_offset_css_px",
+        "painted_page_bounds_device_px",
+        "raster_ready"
+      ],
+      "properties": {
+        "state_sequence": { "type": "integer", "minimum": 0 },
+        "render_generation": { "type": "integer", "minimum": 0 },
+        "scroll_offset_css_px": { "type": "number" },
+        "painted_page_bounds_device_px": { "type": "object" },
+        "raster_ready": { "const": true }
+      }
+    },
+    "registeredCropV2": {
+      "type": "object",
+      "required": [
+        "crop_id",
+        "launch_id",
+        "capture_id",
+        "registration_sha256",
+        "screenshot_sha256",
+        "candidate_crop_sha256",
+        "reference_crop_sha256",
+        "registered_reference_crop_sha256",
+        "candidate_dimensions",
+        "reference_original_dimensions",
+        "registered_reference_dimensions",
+        "candidate_resampled",
+        "reference_resampling",
+        "metric",
+        "presentation",
+        "stability"
+      ],
+      "properties": {
+        "launch_id": { "type": "string", "minLength": 1 },
+        "capture_id": { "type": "string", "minLength": 1 },
+        "registration_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "screenshot_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "candidate_crop_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "reference_crop_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "registered_reference_crop_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "candidate_dimensions": { "$ref": "#/$defs/dimensions" },
+        "reference_original_dimensions": { "$ref": "#/$defs/dimensions" },
+        "registered_reference_dimensions": { "$ref": "#/$defs/dimensions" },
+        "candidate_resampled": { "const": false },
+        "reference_resampling": { "const": "downsample-only-lanczos3" },
+        "metric": {
+          "type": "object",
+          "required": [
+            "algorithm",
+            "parameters",
+            "dimensions",
+            "phase_offset_px",
+            "filtered_ssim_luma",
+            "dark_content",
+            "passed"
+          ],
+          "properties": {
+            "algorithm": { "const": "bp-cross-engine-binary-scan-fidelity-v2" },
+            "dimensions": { "$ref": "#/$defs/dimensions" },
+            "filtered_ssim_luma": { "type": "number", "minimum": 0.97 },
+            "dark_content": {
+              "type": "object",
+              "required": ["precision", "recall", "f1"],
+              "properties": {
+                "precision": { "type": "number", "minimum": 0.99 },
+                "recall": { "type": "number", "minimum": 0.99 },
+                "f1": { "type": "number", "minimum": 0.99 }
+              }
+            },
+            "passed": { "const": true }
+          }
+        },
+        "presentation": {
+          "type": "object",
+          "required": [
+            "zoom_mode",
+            "zoom_percent",
+            "client_device_scale",
+            "page_size_points",
+            "painted_page_bounds_device_px",
+            "x_device_pixels_per_pdf_point",
+            "y_device_pixels_per_pdf_point",
+            "presentation_scale_comparable"
+          ],
+          "properties": {
+            "zoom_mode": { "const": "fixed-percent" },
+            "zoom_percent": { "const": 100 },
+            "client_device_scale": { "const": 1 },
+            "presentation_scale_comparable": { "const": true }
+          }
+        },
+        "stability": {
+          "type": "object",
+          "required": [
+            "hold_ms",
+            "zero_input_interval_count",
+            "zero_input_sample_count",
+            "before",
+            "capture_monotonic_interval",
+            "after",
+            "stable"
+          ],
+          "properties": {
+            "hold_ms": { "const": 250 },
+            "zero_input_interval_count": { "const": 30 },
+            "zero_input_sample_count": { "const": 31 },
+            "before": { "$ref": "#/$defs/paintedState" },
+            "capture_monotonic_interval": {
+              "type": "object",
+              "required": ["start_ms", "end_ms"]
+            },
+            "after": { "$ref": "#/$defs/paintedState" },
+            "stable": { "const": true }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "component": { "const": "viewer-dynamic-fidelity" } },
+        "required": ["component"]
+      },
+      "then": {
+        "properties": {
+          "summary": {
+            "required": ["viewer_dynamic_fidelity"],
+            "properties": {
+              "viewer_dynamic_fidelity": {
+                "type": "object",
+                "required": ["registered_crops", "samples"],
+                "properties": {
+                  "registered_crops": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "items": { "$ref": "#/$defs/registeredCropV2" }
+                  },
+                  "samples": {
+                    "type": "array",
+                    "minItems": 1921,
+                    "maxItems": 1921
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "implementation": { "const": "gpui" },
+          "component": { "const": "multi-document-session" }
+        },
+        "required": ["implementation", "component"]
+      },
+      "then": {
+        "properties": {
+          "summary": {
+            "required": [
+              "process_tree",
+              "application_frame_intervals_ms",
+              "native_input_to_application_frame_ack_ms",
+              "gpu_whole_device_baseline_adjusted",
+              "multi_document_session"
+            ],
+            "properties": {
+              "process_tree": {
+                "type": "object",
+                "required": ["cpu_seconds", "cgroup_memory_peak_bytes"],
+                "properties": {
+                  "cpu_seconds": {
+                    "type": "object",
+                    "required": ["median"],
+                    "properties": {
+                      "median": { "type": "number", "exclusiveMinimum": 0 }
+                    }
+                  },
+                  "cgroup_memory_peak_bytes": {
+                    "type": "object",
+                    "required": ["median"],
+                    "properties": {
+                      "median": { "type": "number", "exclusiveMinimum": 0 }
+                    }
+                  }
+                }
+              },
+              "application_frame_intervals_ms": {
+                "type": "object",
+                "required": ["p95"],
+                "properties": {
+                  "p95": { "type": "number", "exclusiveMinimum": 0 }
+                }
+              },
+              "native_input_to_application_frame_ack_ms": {
+                "type": "object",
+                "required": ["p95"],
+                "properties": {
+                  "p95": { "type": "number", "exclusiveMinimum": 0 }
+                }
+              },
+              "gpu_whole_device_baseline_adjusted": {
+                "type": "object",
+                "required": ["memory_used_mib", "utilization_percent"],
+                "properties": {
+                  "memory_used_mib": {
+                    "type": "object",
+                    "required": ["max"],
+                    "properties": { "max": { "type": "number", "minimum": 0 } }
+                  },
+                  "utilization_percent": {
+                    "type": "object",
+                    "required": ["p95"],
+                    "properties": { "p95": { "type": "number", "minimum": 0 } }
+                  }
+                }
+              }
+            },
+            "anyOf": [
+              {
+                "required": ["product_latency_ms"],
+                "properties": {
+                  "product_latency_ms": {
+                    "type": "object",
+                    "required": ["p95"],
+                    "properties": {
+                      "p95": { "type": "number", "exclusiveMinimum": 0 }
+                    }
+                  }
+                }
+              },
+              {
+                "required": ["wall_duration_ms"],
+                "properties": {
+                  "wall_duration_ms": {
+                    "type": "object",
+                    "required": ["median"],
+                    "properties": {
+                      "median": { "type": "number", "exclusiveMinimum": 0 }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

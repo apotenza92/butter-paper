@@ -5,6 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use butter_paper_gpui_gallery::pdf_file_authority::{SaveAsTargetAuthority, SaveTargetErrorKind};
 use butter_paper_gpui_gallery::{
     annotation_adapter::ellipse_resize_handle_point_for_rect,
     annotation_model::{
@@ -13,12 +14,186 @@ use butter_paper_gpui_gallery::{
         DimensionAppearance, EllipseAnnotation, ImageAnnotation, LengthAnnotation,
         LengthCalibration, LineKind, MarkupId, MeasurementPathAnnotation, MeasurementPathKind,
         PageScale, PdfPoint, PdfRect, PenAnnotation, PenAppearance, RectangleAnnotation,
-        RectangleAppearance, RectangleResizeHandle, RedactAnnotation, ScalePrecision,
-        ScaleSource, ScaleUnit, SnapshotAnnotation, StraightLineAnnotation,
-        StraightLineAppearance, StrokeStyle, TextBoxAnnotation, TextBoxStyle, VertexPathKind,
+        RectangleAppearance, RectangleResizeHandle, RedactAnnotation, ScalePrecision, ScaleSource,
+        ScaleUnit, SnapshotAnnotation, StraightLineAnnotation, StraightLineAppearance, StrokeStyle,
+        TextAlignment, TextBoxAnnotation, TextBoxStyle, VertexPathKind,
     },
-    pdf_engine::{PdfPersistenceError, PdfPersistenceSession},
+    pdf_engine::{InPlacePublicationCapability, PdfPersistenceError, PdfPersistenceSession},
 };
+
+trait AuthorizedTestSaveAs {
+    fn save_as(&self, target: &Path) -> Result<(), PdfPersistenceError>;
+}
+
+impl AuthorizedTestSaveAs for PdfPersistenceSession {
+    fn save_as(&self, target: &Path) -> Result<(), PdfPersistenceError> {
+        let authority = SaveAsTargetAuthority::bind(target.to_path_buf(), self.source_path())?;
+        self.prepare_save_authorized(&authority)?
+            .publish()
+            .map(|_| ())
+    }
+}
+
+#[test]
+fn in_place_publication_capability_matches_the_compiled_platform_contract() {
+    #[cfg(unix)]
+    assert_eq!(
+        PdfPersistenceSession::in_place_publication_capability(),
+        InPlacePublicationCapability::VerifiedAtomicReplacement,
+    );
+    #[cfg(not(unix))]
+    assert_eq!(
+        PdfPersistenceSession::in_place_publication_capability(),
+        InPlacePublicationCapability::NewTargetRequired,
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_direct_in_place_prepare_rejects_before_creating_a_stage() {
+    use sha2::{Digest as _, Sha256};
+
+    let scratch = ScratchDirectory::new();
+    let source = scratch.path().join("windows-no-in-place-source.pdf");
+    public_annotation_fixture(&source);
+    let expected: [u8; 32] = Sha256::digest(fs::read(&source).unwrap()).into();
+    let session = PdfPersistenceSession::open_for_update(&source, expected).unwrap();
+
+    let error = session.prepare_save_replacing(&source).unwrap_err();
+
+    assert!(error.to_string().contains("requires a new target"));
+    assert!(
+        fs::read_dir(scratch.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .all(|entry| !entry
+                .file_name()
+                .to_string_lossy()
+                .contains(".butter-paper-")),
+        "unsupported in-place preparation must not create a stage",
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_authorized_save_as_publishes_one_new_pdf_through_retained_authority() {
+    let scratch = ScratchDirectory::new();
+    let source = scratch.path().join("windows-authority-source.pdf");
+    let target = scratch.path().join("windows-authority-target.pdf");
+    public_annotation_fixture(&source);
+    let session = PdfPersistenceSession::open(&source).unwrap();
+    let authority = SaveAsTargetAuthority::bind(target.clone(), &source).unwrap();
+
+    let prepared = session.prepare_save_authorized(&authority).unwrap();
+    assert_ne!(prepared.path(), target);
+    prepared.publish().unwrap();
+
+    assert!(target.is_file());
+    PdfPersistenceSession::open(&target).expect("the authorized Windows save must reopen");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_authorized_save_as_never_overwrites_a_competing_target() {
+    let scratch = ScratchDirectory::new();
+    let source = scratch.path().join("windows-competitor-source.pdf");
+    let target = scratch.path().join("windows-competitor-target.pdf");
+    public_annotation_fixture(&source);
+    let session = PdfPersistenceSession::open(&source).unwrap();
+    let authority = SaveAsTargetAuthority::bind(target.clone(), &source).unwrap();
+    let prepared = session.prepare_save_authorized(&authority).unwrap();
+    let stage = prepared.path().to_path_buf();
+    fs::write(&target, b"competitor wins").unwrap();
+
+    let error = prepared.publish().unwrap_err();
+
+    assert!(matches!(
+        error,
+        PdfPersistenceError::SaveTarget(ref error)
+            if error.kind() == SaveTargetErrorKind::TargetExists
+    ));
+    assert_eq!(fs::read(&target).unwrap(), b"competitor wins");
+    assert!(!stage.exists(), "the exact failed stage must be cleaned");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_authority_is_one_shot_and_drop_cleans_only_the_identical_stage_name() {
+    let scratch = ScratchDirectory::new();
+    let source = scratch.path().join("windows-one-shot-source.pdf");
+    let target = scratch.path().join("windows-one-shot-target.pdf");
+    public_annotation_fixture(&source);
+    let session = PdfPersistenceSession::open(&source).unwrap();
+    let authority = SaveAsTargetAuthority::bind(target, &source).unwrap();
+    let prepared = session.prepare_save_authorized(&authority).unwrap();
+    let stage = prepared.path().to_path_buf();
+    let moved_stage = scratch.path().join("moved-authorized-stage.tmp");
+    fs::rename(&stage, &moved_stage).unwrap();
+    fs::write(&stage, b"unrelated replacement").unwrap();
+
+    let error = match session.prepare_save_authorized(&authority) {
+        Ok(_) => panic!("the Windows save authority must be one-shot"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        PdfPersistenceError::SaveTarget(ref error)
+            if error.kind() == SaveTargetErrorKind::AlreadyConsumed
+    ));
+    drop(prepared);
+
+    assert_eq!(fs::read(&stage).unwrap(), b"unrelated replacement");
+    assert!(
+        moved_stage.exists(),
+        "cleanup must not chase a renamed stage"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_authorized_save_as_locks_the_exact_parent_path_until_authority_drop() {
+    let scratch = ScratchDirectory::new();
+    let source = scratch.path().join("windows-parent-drift-source.pdf");
+    let selected_parent = scratch.path().join("selected-parent");
+    let moved_parent = scratch.path().join("moved-parent");
+    fs::create_dir(&selected_parent).unwrap();
+    public_annotation_fixture(&source);
+    let target = selected_parent.join("target.pdf");
+    let session = PdfPersistenceSession::open(&source).unwrap();
+    let authority = SaveAsTargetAuthority::bind(target.clone(), &source).unwrap();
+    let prepared = session.prepare_save_authorized(&authority).unwrap();
+
+    fs::rename(&selected_parent, &moved_parent)
+        .expect_err("the retained parent handle must deny directory rename/delete access");
+    assert!(selected_parent.is_dir());
+    assert!(!moved_parent.exists());
+
+    drop(prepared);
+    drop(authority);
+    fs::rename(&selected_parent, &moved_parent)
+        .expect("the parent may be renamed after all authority handles close");
+    fs::create_dir(&selected_parent).unwrap();
+    assert!(selected_parent.is_dir());
+    assert!(moved_parent.is_dir());
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "requires Windows symlink privilege; run explicitly on an authorized native lane"]
+fn windows_authority_rejects_a_reparse_parent() {
+    let scratch = ScratchDirectory::new();
+    let source = scratch.path().join("windows-reparse-source.pdf");
+    let real_parent = scratch.path().join("real-parent");
+    let linked_parent = scratch.path().join("linked-parent");
+    public_annotation_fixture(&source);
+    fs::create_dir(&real_parent).unwrap();
+    std::os::windows::fs::symlink_dir(&real_parent, &linked_parent)
+        .expect("the ignored native lane must grant Windows symlink privilege");
+
+    let error = SaveAsTargetAuthority::bind(linked_parent.join("target.pdf"), &source).unwrap_err();
+
+    assert_eq!(error.kind(), SaveTargetErrorKind::UnsafeParent);
+}
 
 #[test]
 fn snapshot_create_edit_delete_reopens_and_preserves_external_stamps_and_owned_resources() {
@@ -306,9 +481,21 @@ fn arc_create_edit_delete_round_trips_circle_arc_identity_appearance_and_ap() {
         RectangleAppearance::new("#ff0000", 1., None::<String>, 0.75).unwrap(),
     )
     .unwrap();
+    let locked_id = MarkupId::new("arc:persistence-locked-edited").unwrap();
+    let mut locked_edited = ArcAnnotation::new(
+        locked_id.clone(),
+        0,
+        point(324., 240.),
+        point(468., 240.),
+        point(396., 312.),
+        RectangleAppearance::new("#0066cc", 2.5, None::<String>, 0.7).unwrap(),
+    )
+    .unwrap();
+    locked_edited.locked = true;
 
     let mut session = PdfPersistenceSession::open(&source).unwrap();
     session.add_arc(created.clone()).unwrap();
+    session.add_arc(locked_edited.clone()).unwrap();
     session.save_as(&created_path).unwrap();
     validate_independently(&created_path);
 
@@ -321,13 +508,32 @@ fn arc_create_edit_delete_round_trips_circle_arc_identity_appearance_and_ap() {
     assert!(raw.get(b"Angle1").unwrap().as_float().unwrap().is_finite());
     assert!(raw.get(b"Angle2").unwrap().as_float().unwrap().is_finite());
     assert!(raw.get(b"AP").is_ok());
+    assert_eq!(
+        raw.get(b"F").unwrap().as_i64().unwrap(),
+        4,
+        "a newly created unlocked Arc must retain the printable annotation flag",
+    );
+    let locked_raw = annotation_dictionary(&document, "bp:arc:persistence-locked-edited");
+    assert_eq!(
+        locked_raw.get(b"F").unwrap().as_i64().unwrap(),
+        132,
+        "a newly persisted locked edited Arc must preserve Print and set Locked",
+    );
 
     let mut created_reopen = PdfPersistenceSession::open(&created_path).unwrap();
-    assert_eq!(created_reopen.arcs().len(), 1);
-    assert!(created_reopen.arcs()[0].same_persisted_state_as(&created));
+    assert_eq!(created_reopen.arcs().len(), 2);
+    assert!(
+        created_reopen
+            .arcs()
+            .iter()
+            .find(|arc| arc.id == id)
+            .unwrap()
+            .same_persisted_state_as(&created)
+    );
     assert!(created_reopen.arc_has_canonical_native_identity(&id));
+    assert!(created_reopen.arc_has_canonical_native_identity(&locked_id));
 
-    let edited = ArcAnnotation::new(
+    let mut edited = ArcAnnotation::new(
         id.clone(),
         0,
         created.start,
@@ -336,17 +542,178 @@ fn arc_create_edit_delete_round_trips_circle_arc_identity_appearance_and_ap() {
         RectangleAppearance::new("#2563eb", 3., None::<String>, 0.5).unwrap(),
     )
     .unwrap();
+    edited.locked = true;
     created_reopen.replace_arc(edited.clone()).unwrap();
     created_reopen.save_as(&edited_path).unwrap();
+    let edited_document = Document::load(&edited_path).unwrap();
+    let edited_raw = annotation_dictionary(&edited_document, "bp:arc:persistence-1");
+    assert_eq!(
+        edited_raw.get(b"F").unwrap().as_i64().unwrap(),
+        132,
+        "locking an edited Arc must preserve Print and set only Locked",
+    );
     let mut edited_reopen = PdfPersistenceSession::open(&edited_path).unwrap();
     assert!(edited_reopen.arcs()[0].same_persisted_state_as(&edited));
     assert!(edited_reopen.arc_has_canonical_native_identity(&id));
 
     edited_reopen.remove_arc(&id).unwrap();
+    edited_reopen.remove_arc(&locked_id).unwrap();
     edited_reopen.save_as(&deleted_path).unwrap();
     let deleted_reopen = PdfPersistenceSession::open(&deleted_path).unwrap();
     assert!(deleted_reopen.arcs().is_empty());
     assert!(!deleted_reopen.has_canonical_raw_annotation_name(&id));
+}
+
+#[test]
+fn combined_arc_cloud_snapshot_visual_properties_survive_two_pdf_persistence_reopens() {
+    let scratch = ScratchDirectory::new();
+    let source = scratch.path().join("engineering-visual-source.pdf");
+    let created_path = scratch.path().join("engineering-visual-created.pdf");
+    let external_path = scratch.path().join("engineering-visual-external-style.pdf");
+    let edited_path = scratch.path().join("engineering-visual-edited.pdf");
+    let repeated_path = scratch.path().join("engineering-visual-repeated.pdf");
+    public_annotation_fixture(&source);
+    let arc = ArcAnnotation::new(
+        MarkupId::new("engineering-visual-arc").unwrap(),
+        0,
+        point(36., 72.),
+        point(144., 72.),
+        point(90., 126.),
+        RectangleAppearance::new("#112233", 1., None::<String>, 0.9)
+            .unwrap()
+            .with_stroke_style(StrokeStyle::Dashed),
+    )
+    .unwrap();
+    let cloud = CloudAnnotation::new(
+        MarkupId::new("engineering-visual-cloud").unwrap(),
+        0,
+        vec![
+            point(180., 72.),
+            point(288., 72.),
+            point(288., 144.),
+            point(180., 144.),
+        ],
+        1.,
+        RectangleAppearance::new("#445566", 1.5, None::<String>, 0.8)
+            .unwrap()
+            .with_stroke_style(StrokeStyle::Dotted),
+    )
+    .unwrap();
+    let asset = DecodedRgbaAsset::new(1, 1, vec![20, 40, 60, 255]).unwrap();
+    let snapshot = SnapshotAnnotation::new(
+        MarkupId::new("engineering-visual-snapshot").unwrap(),
+        0,
+        PdfRect::new(72., 180., 96., 72.).unwrap(),
+        asset.clone(),
+        0.75,
+    )
+    .unwrap();
+
+    let mut created = PdfPersistenceSession::open(&source).unwrap();
+    created.add_arc(arc.clone()).unwrap();
+    created.add_cloud(cloud.clone()).unwrap();
+    created.add_snapshot(snapshot.clone()).unwrap();
+    created.save_as(&created_path).unwrap();
+    validate_independently(&created_path);
+
+    let mut external_document = Document::load(&created_path).unwrap();
+    for object in external_document.objects.values_mut() {
+        let Ok(dictionary) = object.as_dict_mut() else { continue };
+        let is_target = dictionary
+            .get(b"NM")
+            .ok()
+            .and_then(|value| value.as_str().ok())
+            .is_some_and(|name| {
+                name == b"bp:engineering-visual-arc"
+                    || name == b"bp:engineering-visual-cloud"
+            });
+        if is_target {
+            dictionary.remove(b"BPAppearance");
+        }
+    }
+    external_document.save(&external_path).unwrap();
+    validate_independently(&external_path);
+
+    let mut reopened = PdfPersistenceSession::open(&external_path).unwrap();
+    assert!(reopened.arcs()[0].same_persisted_state_as(&arc));
+    assert!(reopened.clouds()[0].same_persisted_state_as(&cloud));
+    assert_eq!(reopened.snapshots()[0], snapshot);
+    let edited_arc = ArcAnnotation::new(
+        arc.id.clone(),
+        arc.page_index,
+        arc.start,
+        arc.end,
+        arc.mid,
+        RectangleAppearance::new("#0088cc", 3.25, None::<String>, 0.55)
+            .unwrap()
+            .with_stroke_style(arc.appearance.stroke_style()),
+    )
+    .unwrap();
+    let edited_cloud = CloudAnnotation::new(
+        cloud.id.clone(),
+        cloud.page_index,
+        cloud.points().to_vec(),
+        2.75,
+        RectangleAppearance::new("#cc5500", 4.5, None::<String>, 0.65)
+            .unwrap()
+            .with_stroke_style(cloud.appearance.stroke_style()),
+    )
+    .unwrap();
+    let edited_snapshot = SnapshotAnnotation::new(
+        snapshot.id.clone(),
+        snapshot.page_index,
+        snapshot.rect,
+        asset,
+        0.45,
+    )
+    .unwrap();
+    reopened.replace_arc(edited_arc.clone()).unwrap();
+    reopened.replace_cloud(edited_cloud.clone()).unwrap();
+    reopened.replace_snapshot(edited_snapshot.clone()).unwrap();
+    reopened.save_as(&edited_path).unwrap();
+    validate_independently(&edited_path);
+
+    let edited_reopen = PdfPersistenceSession::open(&edited_path).unwrap();
+    assert!(edited_reopen.arcs()[0].same_persisted_state_as(&edited_arc));
+    assert!(edited_reopen.clouds()[0].same_persisted_state_as(&edited_cloud));
+    assert_eq!(edited_reopen.snapshots()[0], edited_snapshot);
+    for id in [&edited_arc.id, &edited_cloud.id, &edited_snapshot.id] {
+        assert!(edited_reopen.has_canonical_raw_annotation_name(id));
+    }
+    let edited_document = Document::load(&edited_path).unwrap();
+    for (name, style, dash_operator) in [
+        ("bp:engineering-visual-arc", "dashed", "[13.000000 6.500000] 0 d"),
+        ("bp:engineering-visual-cloud", "dotted", "[4.500000 9.000000] 0 d"),
+    ] {
+        let dictionary = annotation_dictionary(&edited_document, name);
+        let border = dictionary.get(b"BS").unwrap().as_dict().unwrap();
+        assert_eq!(border.get(b"S").unwrap().as_name().unwrap(), b"D");
+        assert!(
+            String::from_utf8_lossy(
+                dictionary.get(b"BPAppearance").unwrap().as_str().unwrap(),
+            )
+            .contains(&format!("\"style\":\"{style}\"")),
+        );
+        assert!(
+            String::from_utf8_lossy(&normal_appearance(&edited_document, dictionary).content)
+                .contains(dash_operator),
+            "{name} AP must paint the modeled {style} dash pattern",
+        );
+    }
+    edited_reopen.save_as(&repeated_path).unwrap();
+    validate_independently(&repeated_path);
+    let repeated_reopen = PdfPersistenceSession::open(&repeated_path).unwrap();
+    assert!(repeated_reopen.arcs()[0].same_persisted_state_as(&edited_arc));
+    assert!(repeated_reopen.clouds()[0].same_persisted_state_as(&edited_cloud));
+    assert_eq!(repeated_reopen.snapshots()[0], edited_snapshot);
+    let repeated_document = Document::load(&repeated_path).unwrap();
+    for name in ["bp:engineering-visual-arc", "bp:engineering-visual-cloud"] {
+        assert_eq!(
+            normal_appearance(&edited_document, annotation_dictionary(&edited_document, name)).content,
+            normal_appearance(&repeated_document, annotation_dictionary(&repeated_document, name)).content,
+            "repeat-save must preserve the exact {name} appearance program",
+        );
+    }
 }
 
 #[test]
@@ -853,7 +1220,10 @@ fn callout_round_trip_keeps_native_composite_identity_and_text_box_geometry() {
     assert_eq!(reopened.callouts()[0].content(), callout.content());
     assert!(reopened.callout_has_canonical_native_identity(&callout.id));
 }
-use lopdf::{Dictionary, Document, Object, Stream, StringFormat, dictionary};
+use lopdf::{
+    Dictionary, Document, Object, Stream, StringFormat, content::Content, dictionary,
+    xref::XrefType,
+};
 
 struct ScratchDirectory(PathBuf);
 
@@ -999,6 +1369,131 @@ fn measurement_paths_keep_native_intent_scale_caption_and_stable_identity_across
     assert_eq!(second_reopen.measurement_paths()[0].id, polylength.id);
     assert_eq!(second_reopen.measurement_paths()[0].caption(), "5.00 ft");
     assert_eq!(second_reopen.measurement_paths()[1].id, area.id);
+}
+
+#[test]
+fn measurement_path_pdf_text_strings_use_pdfdocencoding_or_utf16be() {
+    let scratch = ScratchDirectory::new();
+    let source = scratch.path().join("measurement-text-source.pdf");
+    let output = scratch.path().join("measurement-text-saved.pdf");
+    let legacy_output = scratch.path().join("measurement-text-legacy-utf8.pdf");
+    public_annotation_fixture(&source);
+
+    let ascii = MeasurementPathAnnotation::new(
+        MarkupId::new("measurement-text-ascii").unwrap(),
+        0,
+        vec![point(72., 72.), point(144., 72.)],
+        MeasurementPathKind::Polylength,
+        LengthCalibration::from_scale(72., 2., "ft", 2, false).unwrap(),
+        RectangleAppearance::default(),
+    )
+    .unwrap();
+    let unicode = MeasurementPathAnnotation::new(
+        MarkupId::new("measurement-text-unicode").unwrap(),
+        0,
+        vec![point(216., 216.), point(288., 216.)],
+        MeasurementPathKind::Polylength,
+        LengthCalibration::new(1. / 72., "世界", "世界比例", false).unwrap(),
+        RectangleAppearance::default(),
+    )
+    .unwrap();
+
+    let mut session = PdfPersistenceSession::open(&source).unwrap();
+    session.add_measurement_path(ascii).unwrap();
+    session.add_measurement_path(unicode).unwrap();
+    session.save_as(&output).unwrap();
+
+    let document = Document::load(&output).unwrap();
+    let ascii_dictionary = annotation_dictionary(&document, "bp:measurement-text-ascii");
+    let ascii_measure = ascii_dictionary.get(b"Measure").unwrap().as_dict().unwrap();
+    let ascii_unit = ascii_measure.get(b"X").unwrap().as_array().unwrap()[0]
+        .as_dict()
+        .unwrap()
+        .get(b"U")
+        .unwrap();
+    assert!(matches!(ascii_unit, Object::String(bytes, StringFormat::Literal) if bytes == b"ft"));
+    assert_eq!(lopdf::decode_text_string(ascii_unit).unwrap(), "ft");
+
+    let degree_unit = ascii_measure.get(b"T").unwrap().as_array().unwrap()[0]
+        .as_dict()
+        .unwrap()
+        .get(b"U")
+        .unwrap();
+    assert!(matches!(
+        degree_unit,
+        Object::String(bytes, StringFormat::Hexadecimal)
+            if bytes.as_slice() == [0xfe, 0xff, 0x00, 0xb0]
+    ));
+    assert_eq!(lopdf::decode_text_string(degree_unit).unwrap(), "°");
+
+    let unicode_dictionary = annotation_dictionary(&document, "bp:measurement-text-unicode");
+    let unicode_measure = unicode_dictionary.get(b"Measure").unwrap().as_dict().unwrap();
+    let unicode_unit = unicode_measure.get(b"X").unwrap().as_array().unwrap()[0]
+        .as_dict()
+        .unwrap()
+        .get(b"U")
+        .unwrap();
+    assert!(matches!(
+        unicode_unit,
+        Object::String(bytes, StringFormat::Hexadecimal)
+            if bytes.as_slice() == utf16be_pdf_string_bytes("世界")
+    ));
+    assert_eq!(lopdf::decode_text_string(unicode_unit).unwrap(), "世界");
+    let unicode_label = unicode_dictionary
+        .get(b"BPScale")
+        .unwrap()
+        .as_dict()
+        .unwrap()
+        .get(b"Label")
+        .unwrap();
+    assert!(matches!(unicode_label, Object::String(_, StringFormat::Hexadecimal)));
+    assert_eq!(lopdf::decode_text_string(unicode_label).unwrap(), "世界比例");
+
+    let reopened = PdfPersistenceSession::open(&output).unwrap();
+    let reopened_unicode = reopened
+        .measurement_paths()
+        .iter()
+        .find(|path| path.id.as_str() == "measurement-text-unicode")
+        .unwrap();
+    assert_eq!(reopened_unicode.calibration().unit(), "世界");
+    assert_eq!(reopened_unicode.calibration().label(), "世界比例");
+
+    let legacy_label = "legacy raw UTF-8 世界比例";
+    let mut legacy_document = Document::load(&output).unwrap();
+    let legacy_dictionary = legacy_document
+        .objects
+        .values_mut()
+        .filter_map(|object| object.as_dict_mut().ok())
+        .find(|dictionary| {
+            dictionary
+                .get(b"NM")
+                .ok()
+                .and_then(|value| value.as_str().ok())
+                == Some(b"bp:measurement-text-unicode")
+        })
+        .unwrap();
+    legacy_dictionary
+        .get_mut(b"BPScale")
+        .unwrap()
+        .as_dict_mut()
+        .unwrap()
+        .set(
+            "Label",
+            Object::String(
+                legacy_label.as_bytes().to_vec(),
+                StringFormat::Literal,
+            ),
+        );
+    legacy_document.save(&legacy_output).unwrap();
+
+    let legacy_reopen = PdfPersistenceSession::open(&legacy_output).unwrap();
+    let reopened_legacy = legacy_reopen
+        .measurement_paths()
+        .iter()
+        .find(|path| path.id.as_str() == "measurement-text-unicode")
+        .unwrap();
+    assert_eq!(reopened_legacy.calibration().unit(), "世界");
+    assert_eq!(reopened_legacy.calibration().label(), legacy_label);
 }
 
 #[test]
@@ -1229,9 +1724,18 @@ fn ellipse_property_writes_standard_dash_and_normal_appearance_stream() {
     .as_stream()
     .unwrap();
     let content = String::from_utf8_lossy(&normal.content);
-    assert!(content.contains(" c\n"), "Ellipse appearance must use cubic curves: {content}");
-    assert!(content.contains(" d\n"), "Ellipse appearance must paint the dash: {content}");
-    assert!(content.contains("B\n"), "Ellipse appearance must stroke and fill: {content}");
+    assert!(
+        content.contains(" c\n"),
+        "Ellipse appearance must use cubic curves: {content}"
+    );
+    assert!(
+        content.contains(" d\n"),
+        "Ellipse appearance must paint the dash: {content}"
+    );
+    assert!(
+        content.contains("B\n"),
+        "Ellipse appearance must stroke and fill: {content}"
+    );
     let resources = resolve(&document, normal.dict.get(b"Resources").unwrap())
         .as_dict()
         .unwrap();
@@ -1308,12 +1812,10 @@ fn ellipse_property_rotation_and_stroke_fit_the_normal_appearance_bounds() {
     let radians = ellipse.rotation_degrees.to_radians();
     let radius_x = rect.width * 0.5;
     let radius_y = rect.height * 0.5;
-    let geometric_width = 2.
-        * ((radius_x * radians.cos()).powi(2) + (radius_y * radians.sin()).powi(2))
-            .sqrt();
-    let geometric_height = 2.
-        * ((radius_x * radians.sin()).powi(2) + (radius_y * radians.cos()).powi(2))
-            .sqrt();
+    let geometric_width =
+        2. * ((radius_x * radians.cos()).powi(2) + (radius_y * radians.sin()).powi(2)).sqrt();
+    let geometric_height =
+        2. * ((radius_x * radians.sin()).powi(2) + (radius_y * radians.cos()).powi(2)).sqrt();
     let expected_width = geometric_width + ellipse.appearance.stroke_width_pt();
     let expected_height = geometric_height + ellipse.appearance.stroke_width_pt();
     assert!((annotation_rect[2] - annotation_rect[0] - expected_width).abs() < 0.000_1);
@@ -1348,6 +1850,181 @@ fn ellipse_property_decimal_geometry_uses_pdf_representable_reopen_equivalence()
     assert!(reopened.ellipses()[0].same_persisted_state_as(&ellipse));
 }
 
+#[test]
+fn text_box_decimal_geometry_uses_pdf_representable_reopen_equivalence() {
+    let scratch = ScratchDirectory::new();
+    let source = scratch.path().join("text-box-decimal-source.pdf");
+    let output = scratch.path().join("text-box-decimal-output.pdf");
+    public_annotation_fixture(&source);
+    let expected = TextBoxAnnotation::new(
+        MarkupId::new("workspace:text:1").unwrap(),
+        0,
+        PdfRect::new(66.5, 73.2, 89.2, 31.8).unwrap(),
+        "native text\nlevel 2",
+        TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.)
+            .unwrap()
+            .with_weight_and_alignment(400, TextAlignment::Left)
+            .unwrap(),
+    )
+    .unwrap();
+
+    let mut session = PdfPersistenceSession::open(&source).unwrap();
+    session.add_text_box(expected.clone()).unwrap();
+    session.save_as(&output).unwrap();
+    let reopened = PdfPersistenceSession::open(&output).unwrap();
+    let actual = &reopened.text_boxes()[0];
+
+    assert_ne!(actual, &expected);
+    assert_ne!(actual.layout_rect, expected.layout_rect);
+    assert!(
+        actual
+            .layout_rect
+            .same_pdf_geometry_as(expected.layout_rect)
+    );
+    assert_eq!(actual.id, expected.id);
+    assert_eq!(actual.page_index, expected.page_index);
+    assert_eq!(actual.content(), expected.content());
+    assert_eq!(actual.style(), expected.style());
+    assert_eq!(actual.locked, expected.locked);
+    assert!(actual.same_persisted_state_as(&expected));
+}
+
+#[test]
+fn text_box_multiline_appearance_uses_per_line_win_ansi_alignment_and_reopens_typed_style() {
+    let scratch = ScratchDirectory::new();
+    let source = scratch.path().join("text-box-alignment-source.pdf");
+    let output = scratch.path().join("text-box-alignment-output.pdf");
+    public_annotation_fixture(&source);
+    let content = "iiii\nWWWW\né €\n世界 😀\n";
+    let alignments = [
+        ("align-left", TextAlignment::Left, 0_i64),
+        ("align-center", TextAlignment::Center, 1_i64),
+        ("align-right", TextAlignment::Right, 2_i64),
+    ];
+    let mut session = PdfPersistenceSession::open(&source).unwrap();
+    for (index, (id, alignment, _)) in alignments.iter().enumerate() {
+        session
+            .add_text_box(
+                TextBoxAnnotation::new(
+                    MarkupId::new(*id).unwrap(),
+                    0,
+                    PdfRect::new(72., 360. + index as f64 * 110., 120., 100.).unwrap(),
+                    content,
+                    TextBoxStyle::new("Helvetica", 12., "#111827", 1.)
+                        .unwrap()
+                        .with_weight_and_alignment(400, *alignment)
+                        .unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    session.save_as(&output).unwrap();
+
+    let document = Document::load(&output).unwrap();
+    for (id, alignment, expected_q) in alignments {
+        let dictionary = annotation_dictionary(&document, id);
+        assert_eq!(dictionary.get(b"Q").unwrap().as_i64().unwrap(), expected_q);
+        let contents = dictionary.get(b"Contents").unwrap();
+        let Object::String(contents_bytes, StringFormat::Hexadecimal) = contents else {
+            panic!("Text Box /Contents must use a hexadecimal PDF text string");
+        };
+        let mut expected_contents = vec![0xfe, 0xff];
+        expected_contents.extend(content.encode_utf16().flat_map(u16::to_be_bytes));
+        assert_eq!(contents_bytes, &expected_contents);
+        let appearance = normal_appearance(&document, dictionary);
+        let operations = Content::decode(&appearance.content).unwrap().operations;
+        let matrices = operations
+            .iter()
+            .filter(|operation| operation.operator == "Tm")
+            .collect::<Vec<_>>();
+        let shown = operations
+            .iter()
+            .filter(|operation| operation.operator == "Tj")
+            .collect::<Vec<_>>();
+        assert_eq!((matrices.len(), shown.len()), (5, 5));
+        let expected_widths = [10.656, 45.312, 16.68, 23.352, 0.];
+        let expected_y = [86., 72.2, 58.4, 44.6, 30.8];
+        for (index, matrix) in matrices.iter().enumerate() {
+            let x = matrix.operands[4].as_float().unwrap() as f64;
+            let y = matrix.operands[5].as_float().unwrap() as f64;
+            let available = 116.;
+            let remaining = f64::max(available - expected_widths[index], 0.);
+            let expected_x = 2.
+                + match alignment {
+                    TextAlignment::Left => 0.,
+                    TextAlignment::Center => remaining * 0.5,
+                    TextAlignment::Right => remaining,
+                };
+            assert!((x - expected_x).abs() < 0.000_01, "{id} line {index} x");
+            assert!(
+                (y - expected_y[index]).abs() < 0.000_01,
+                "{id} line {index} y"
+            );
+        }
+        let expected_bytes: [&[u8]; 5] = [b"iiii", b"WWWW", &[0xe9, b' ', 0x80], b"?? ?", b""];
+        for (operation, expected) in shown.iter().zip(expected_bytes) {
+            assert_eq!(operation.operands[0].as_str().unwrap(), expected);
+        }
+    }
+
+    let reopened = PdfPersistenceSession::open(&output).unwrap();
+    for (id, alignment, _) in alignments {
+        let text = reopened
+            .text_boxes()
+            .iter()
+            .find(|text| text.id.as_str() == id)
+            .unwrap();
+        assert_eq!(text.content(), content);
+        assert_eq!(text.style().alignment(), alignment);
+    }
+}
+
+#[test]
+fn text_box_import_accepts_legacy_utf8_and_utf16le_and_rejects_malformed_utf16() {
+    let scratch = ScratchDirectory::new();
+    let legacy_path = scratch.path().join("legacy-utf8-text-box.pdf");
+    let legacy = "legacy raw UTF-8: 世界 😀 é €";
+    text_box_import_fixture(
+        &legacy_path,
+        Object::String(legacy.as_bytes().to_vec(), StringFormat::Literal),
+    );
+    assert_eq!(
+        PdfPersistenceSession::open(&legacy_path)
+            .unwrap()
+            .text_boxes()[0]
+            .content(),
+        legacy,
+    );
+
+    let utf16le_path = scratch.path().join("utf16le-text-box.pdf");
+    let utf16le_value = "little-endian: 世界 😀 é €";
+    let mut utf16le = vec![0xff, 0xfe];
+    utf16le.extend(utf16le_value.encode_utf16().flat_map(u16::to_le_bytes));
+    text_box_import_fixture(
+        &utf16le_path,
+        Object::String(utf16le, StringFormat::Hexadecimal),
+    );
+    assert_eq!(
+        PdfPersistenceSession::open(&utf16le_path)
+            .unwrap()
+            .text_boxes()[0]
+            .content(),
+        utf16le_value,
+    );
+
+    let malformed_path = scratch.path().join("malformed-utf16-text-box.pdf");
+    text_box_import_fixture(
+        &malformed_path,
+        Object::String(vec![0xfe, 0xff, 0x00], StringFormat::Hexadecimal),
+    );
+    let error = match PdfPersistenceSession::open(&malformed_path) {
+        Ok(_) => panic!("malformed UTF-16 Text Box content must fail closed"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("odd-length UTF-16BE payload"));
+}
+
 impl Drop for ScratchDirectory {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.0).ok();
@@ -1356,6 +2033,12 @@ impl Drop for ScratchDirectory {
 
 fn pdf_string(value: &str) -> Object {
     Object::String(value.as_bytes().to_vec(), StringFormat::Literal)
+}
+
+fn utf16be_pdf_string_bytes(value: &str) -> Vec<u8> {
+    let mut bytes = vec![0xfe, 0xff];
+    bytes.extend(value.encode_utf16().flat_map(u16::to_be_bytes));
+    bytes
 }
 
 fn point(x: f64, y: f64) -> PdfPoint {
@@ -1442,6 +2125,33 @@ fn public_annotation_fixture(path: &Path) {
     document
         .save(path)
         .expect("public annotation fixture must save");
+}
+
+fn text_box_import_fixture(path: &Path, contents: Object) {
+    public_annotation_fixture(path);
+    let mut document = Document::load(path).unwrap();
+    let annotation_id = document.add_object(dictionary! {
+        "Type" => "Annot",
+        "Subtype" => "FreeText",
+        "Rect" => vec![72.into(), 360.into(), 252.into(), 432.into()],
+        "NM" => pdf_string("external-text-box"),
+        "Contents" => contents,
+        "DA" => pdf_string("/Helv 12 Tf 0 0 0 rg"),
+        "Q" => 0,
+        "CA" => Object::Real(1.),
+    });
+    let page_id = document.get_pages()[&1];
+    document
+        .get_object_mut(page_id)
+        .unwrap()
+        .as_dict_mut()
+        .unwrap()
+        .get_mut(b"Annots")
+        .unwrap()
+        .as_array_mut()
+        .unwrap()
+        .push(annotation_id.into());
+    document.save(path).unwrap();
 }
 
 fn snapshot_compatibility_fixture(path: &Path) {
@@ -1698,6 +2408,16 @@ fn straight_line_annotation_fixture(path: &Path) {
         "AP" => dictionary! { "N" => line_appearance_id },
         "BPProbe" => pdf_string("line-dictionary-preserve-until-edit"),
     });
+    let arrow_appearance_id = document.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 156.into(), 48.into()],
+            "Resources" => dictionary! {},
+            "BPStreamProbe" => pdf_string("arrow-appearance-delete-on-remove"),
+        },
+        b"q 1 0 0 RG 0.5 w 4 4 m 152 44 l S Q\n".to_vec(),
+    ));
     let arrow_id = document.add_object(dictionary! {
         "Type" => "Annot",
         "Subtype" => "Line",
@@ -1710,6 +2430,7 @@ fn straight_line_annotation_fixture(path: &Path) {
         "Border" => vec![0.into(), 0.into(), Object::Real(0.5)],
         "ca" => Object::Real(0.8),
         "LE" => vec![Object::Name(b"None".to_vec()), Object::Name(b"ClosedArrow".to_vec())],
+        "AP" => dictionary! { "N" => arrow_appearance_id },
     });
     let rect_fallback_id = document.add_object(dictionary! {
         "Type" => "Annot",
@@ -2339,6 +3060,18 @@ fn normal_appearance<'a>(document: &'a Document, annotation: &'a Dictionary) -> 
     .expect("normal appearance must be a stream")
 }
 
+fn normal_appearance_id(annotation: &Dictionary) -> (u32, u16) {
+    annotation
+        .get(b"AP")
+        .unwrap()
+        .as_dict()
+        .unwrap()
+        .get(b"N")
+        .unwrap()
+        .as_reference()
+        .unwrap()
+}
+
 fn image_appearance_graph_ids(document: &Document, annotation: &Dictionary) -> [(u32, u16); 3] {
     let form_id = annotation
         .get(b"AP")
@@ -2409,11 +3142,11 @@ fn assert_native_representative_contracts(path: &Path, edited: bool) {
     );
     assert_eq!(
         text.get(b"Contents").unwrap().as_str().unwrap(),
-        if edited {
-            b"Beam B-12 / revision 5"
+        utf16be_pdf_string_bytes(if edited {
+            "Beam B-12 / revision 5"
         } else {
-            b"Beam B-12 / revision 4"
-        },
+            "Beam B-12 / revision 4"
+        }),
     );
     assert!(
         text.get(b"DA")
@@ -2617,10 +3350,15 @@ fn unchanged_straight_line_preserves_custom_dictionary_and_appearance_graph_exac
     straight_line_annotation_fixture(&source);
     let source_oracle = straight_line_annotation_oracle(&source, "source-line");
 
-    PdfPersistenceSession::open(&source)
+    let mut session = PdfPersistenceSession::open(&source).unwrap();
+    let unchanged = session
+        .straight_lines()
+        .iter()
+        .find(|annotation| annotation.id.as_str() == "source-line")
         .unwrap()
-        .save_as(&output)
-        .unwrap();
+        .clone();
+    session.replace_straight_line(unchanged).unwrap();
+    session.save_as(&output).unwrap();
 
     assert_eq!(
         straight_line_annotation_oracle(&output, "source-line"),
@@ -2635,7 +3373,19 @@ fn edited_created_and_deleted_straight_lines_rebuild_only_the_owned_safe_diction
     let source = scratch.path().join("straight-line-source.pdf");
     let first_output = scratch.path().join("straight-line-edited.pdf");
     let second_output = scratch.path().join("straight-line-reopened.pdf");
+    let cleanup_output = scratch.path().join("straight-line-cleanup.pdf");
+    let shared_source = scratch.path().join("straight-line-shared-source.pdf");
+    let shared_output = scratch.path().join("straight-line-shared-output.pdf");
     straight_line_annotation_fixture(&source);
+    let source_document = Document::load(&source).unwrap();
+    let replaced_source_appearance = normal_appearance_id(annotation_dictionary(
+        &source_document,
+        "source-line",
+    ));
+    let deleted_source_appearance = normal_appearance_id(annotation_dictionary(
+        &source_document,
+        "bp:source-arrow",
+    ));
 
     let mut session = PdfPersistenceSession::open(&source).unwrap();
     let mut edited = session
@@ -2647,7 +3397,7 @@ fn edited_created_and_deleted_straight_lines_rebuild_only_the_owned_safe_diction
     edited.start = point(90., 130.);
     edited.end = point(240., 180.);
     edited.appearance =
-        StraightLineAppearance::new("#16a34a", 3., 0.6, StrokeStyle::Solid).unwrap();
+        StraightLineAppearance::new("#16a34a", 3., 0.6, StrokeStyle::Dashed).unwrap();
     edited.locked = true;
     session.replace_straight_line(edited.clone()).unwrap();
     session
@@ -2659,7 +3409,7 @@ fn edited_created_and_deleted_straight_lines_rebuild_only_the_owned_safe_diction
         point(300., 320.),
         point(420., 380.),
         LineKind::Arrow,
-        StraightLineAppearance::new("#dc2626", 0.5, 0.8, StrokeStyle::Solid).unwrap(),
+        StraightLineAppearance::new("#dc2626", 0.5, 0.8, StrokeStyle::Dotted).unwrap(),
     )
     .unwrap();
     session.add_straight_line(created.clone()).unwrap();
@@ -2674,6 +3424,16 @@ fn edited_created_and_deleted_straight_lines_rebuild_only_the_owned_safe_diction
     .unwrap();
     locked_created.locked = true;
     session.add_straight_line(locked_created.clone()).unwrap();
+    let max_width_arrow = StraightLineAnnotation::new(
+        MarkupId::new("max-width-vertical-arrow").unwrap(),
+        0,
+        point(500., 200.),
+        point(500., 210.),
+        LineKind::Arrow,
+        StraightLineAppearance::new("#0000ff", 24., 1., StrokeStyle::Solid).unwrap(),
+    )
+    .unwrap();
+    session.add_straight_line(max_width_arrow.clone()).unwrap();
     session.save_as(&first_output).unwrap();
     validate_independently(&first_output);
 
@@ -2681,6 +3441,7 @@ fn edited_created_and_deleted_straight_lines_rebuild_only_the_owned_safe_diction
     assert!(reopened.straight_lines().contains(&edited));
     assert!(reopened.straight_lines().contains(&created));
     assert!(reopened.straight_lines().contains(&locked_created));
+    assert!(reopened.straight_lines().contains(&max_width_arrow));
     assert!(
         reopened
             .straight_lines()
@@ -2692,8 +3453,35 @@ fn edited_created_and_deleted_straight_lines_rebuild_only_the_owned_safe_diction
     assert!(reopened.straight_line_has_canonical_native_identity(&locked_created.id));
 
     let saved = Document::load(&first_output).unwrap();
+    assert!(!saved.objects.contains_key(&replaced_source_appearance));
+    assert!(!saved.objects.contains_key(&deleted_source_appearance));
     let saved_line = annotation_dictionary(&saved, "bp:source-line");
-    assert!(saved_line.get(b"AP").is_err());
+    let saved_line_appearance = normal_appearance(&saved, saved_line);
+    assert_eq!(
+        saved_line_appearance.dict.get(b"Matrix").unwrap(),
+        &Object::Array(vec![1.into(), 0.into(), 0.into(), 1.into(), 0.into(), 0.into()]),
+    );
+    let line_resources = saved_line_appearance
+        .dict
+        .get(b"Resources")
+        .unwrap()
+        .as_dict()
+        .unwrap();
+    let line_ext_gstate = line_resources
+        .get(b"ExtGState")
+        .unwrap()
+        .as_dict()
+        .unwrap()
+        .get(b"GS0")
+        .unwrap()
+        .as_dict()
+        .unwrap();
+    assert_eq!(line_ext_gstate.get(b"CA").unwrap().as_float().unwrap(), 0.6);
+    assert_eq!(line_ext_gstate.get(b"ca").unwrap().as_float().unwrap(), 0.6);
+    assert_eq!(
+        String::from_utf8(saved_line_appearance.content.clone()).unwrap(),
+        "q\n/GS0 gs\n1 J 1 j\n0.086275 0.639216 0.290196 RG\n[12.000000 6.000000] 0 d\n3.000000 w\n2.500000 2.500000 m 152.500000 52.500000 l S\nQ\n",
+    );
     assert!(saved_line.get(b"BPProbe").is_err());
     assert!(saved_line.get(b"IT").is_err());
     assert!(saved_line.get(b"LE").is_err());
@@ -2724,7 +3512,20 @@ fn edited_created_and_deleted_straight_lines_rebuild_only_the_owned_safe_diction
             .iter()
             .map(|value| f64::from(value.as_float().unwrap()))
             .collect::<Vec<_>>(),
-        [86., 126., 244., 184.],
+        [87.5, 127.5, 242.5, 182.5],
+    );
+    let saved_line_border_style = saved_line.get(b"BS").unwrap().as_dict().unwrap();
+    assert_eq!(saved_line_border_style.get(b"S").unwrap().as_name().unwrap(), b"D");
+    assert_eq!(
+        saved_line_border_style
+            .get(b"D")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_float().unwrap())
+            .collect::<Vec<_>>(),
+        [12., 6.],
     );
 
     let saved_arrow = annotation_dictionary(&saved, "bp:created-arrow");
@@ -2758,9 +3559,19 @@ fn edited_created_and_deleted_straight_lines_rebuild_only_the_owned_safe_diction
             .unwrap()
             .as_name()
             .unwrap(),
-        b"S"
+        b"D"
     );
-    assert!(saved_arrow_border_style.get(b"D").is_err());
+    assert_eq!(
+        saved_arrow_border_style
+            .get(b"D")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_float().unwrap())
+            .collect::<Vec<_>>(),
+        [0.5, 1.],
+    );
     assert_eq!(
         saved_arrow.get(b"F").unwrap().as_i64().unwrap(),
         4,
@@ -2771,12 +3582,55 @@ fn edited_created_and_deleted_straight_lines_rebuild_only_the_owned_safe_diction
         b"Arrow"
     );
     assert_eq!(saved_arrow.get(b"Contents").unwrap().as_str().unwrap(), b"");
-    assert!(saved_arrow.get(b"AP").is_err());
+    let saved_arrow_appearance = normal_appearance(&saved, saved_arrow);
+    let arrow_content = String::from_utf8(saved_arrow_appearance.content.clone()).unwrap();
+    assert!(arrow_content.starts_with(
+        "q\n/GS0 gs\n1 J 1 j\n0.862745 0.149020 0.149020 RG\n0.862745 0.149020 0.149020 rg\n[0.500000 1.000000] 0 d\n0.500000 w\n"
+    ));
+    assert!(arrow_content.contains(" m "));
+    assert!(arrow_content.contains(" l S\n"));
+    assert!(arrow_content.contains(" l h B\nQ\n"));
     let saved_locked_arrow = annotation_dictionary(&saved, "bp:created-locked-arrow");
     assert_eq!(
         saved_locked_arrow.get(b"F").unwrap().as_i64().unwrap(),
-        128,
-        "a newly created locked Arrow must replace the default Print flag exactly as Electron does",
+        132,
+        "a newly created locked Arrow must preserve Print and add Locked",
+    );
+    let locked_border_style = saved_locked_arrow.get(b"BS").unwrap().as_dict().unwrap();
+    assert_eq!(locked_border_style.get(b"S").unwrap().as_name().unwrap(), b"S");
+    assert!(locked_border_style.get(b"D").is_err());
+    let locked_content =
+        String::from_utf8(normal_appearance(&saved, saved_locked_arrow).content.clone()).unwrap();
+    assert_eq!(locked_content.matches("] 0 d").count(), 1);
+    assert!(locked_content.contains("[] 0 d\n"));
+    let saved_max_arrow = annotation_dictionary(&saved, "bp:max-width-vertical-arrow");
+    assert_eq!(
+        saved_max_arrow
+            .get(b"Rect")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_float().unwrap())
+            .collect::<Vec<_>>(),
+        [427., 5., 573., 223.],
+    );
+    let max_appearance = normal_appearance(&saved, saved_max_arrow);
+    assert_eq!(
+        max_appearance
+            .dict
+            .get(b"BBox")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_float().unwrap())
+            .collect::<Vec<_>>(),
+        [0., 0., 146., 218.],
+    );
+    assert_eq!(
+        String::from_utf8(max_appearance.content.clone()).unwrap(),
+        "q\n/GS0 gs\n1 J 1 j\n0.000000 0.000000 1.000000 RG\n0.000000 0.000000 1.000000 rg\n24.000000 w\n73.000000 195.000000 m 73.000000 205.000000 l S\n[] 0 d\n73.000000 205.000000 m 13.000000 13.000000 l 133.000000 13.000000 l h B\nQ\n",
     );
 
     reopened.save_as(&second_output).unwrap();
@@ -2785,6 +3639,79 @@ fn edited_created_and_deleted_straight_lines_rebuild_only_the_owned_safe_diction
             .unwrap()
             .straight_lines(),
         reopened.straight_lines(),
+    );
+    for name in [
+        "bp:source-line",
+        "bp:created-arrow",
+        "bp:created-locked-arrow",
+        "bp:max-width-vertical-arrow",
+    ] {
+        let first = straight_line_annotation_oracle(&first_output, name);
+        let second = straight_line_annotation_oracle(&second_output, name);
+        assert_eq!(
+            (first.appearance_dictionary, first.appearance_bytes),
+            (second.appearance_dictionary, second.appearance_bytes),
+            "repeat Save As must preserve deterministic {name} appearance semantics and bytes",
+        );
+    }
+
+    let first_created_appearance = normal_appearance_id(annotation_dictionary(
+        &Document::load(&first_output).unwrap(),
+        "bp:created-arrow",
+    ));
+    let first_locked_appearance = normal_appearance_id(annotation_dictionary(
+        &Document::load(&first_output).unwrap(),
+        "bp:created-locked-arrow",
+    ));
+    let mut cleanup_session = PdfPersistenceSession::open(&first_output).unwrap();
+    let mut replaced_created = cleanup_session
+        .straight_lines()
+        .iter()
+        .find(|annotation| annotation.id == created.id)
+        .unwrap()
+        .clone();
+    replaced_created.appearance =
+        StraightLineAppearance::new("#dc2626", 1., 0.8, StrokeStyle::Dotted).unwrap();
+    cleanup_session.replace_straight_line(replaced_created).unwrap();
+    cleanup_session
+        .remove_straight_line(&locked_created.id)
+        .unwrap();
+    cleanup_session.save_as(&cleanup_output).unwrap();
+    let cleaned = Document::load(&cleanup_output).unwrap();
+    assert!(!cleaned.objects.contains_key(&first_created_appearance));
+    assert!(!cleaned.objects.contains_key(&first_locked_appearance));
+
+    straight_line_annotation_fixture(&shared_source);
+    let mut shared_document = Document::load(&shared_source).unwrap();
+    let shared_appearance = normal_appearance_id(annotation_dictionary(
+        &shared_document,
+        "source-line",
+    ));
+    shared_document
+        .trailer
+        .set("BPSharedStraightLineAP", Object::Reference(shared_appearance));
+    shared_document.save(&shared_source).unwrap();
+    let mut shared_session = PdfPersistenceSession::open(&shared_source).unwrap();
+    let mut shared_edit = shared_session
+        .straight_lines()
+        .iter()
+        .find(|annotation| annotation.id.as_str() == "source-line")
+        .unwrap()
+        .clone();
+    shared_edit.appearance =
+        StraightLineAppearance::new("#16a34a", 4., 0.6, StrokeStyle::Solid).unwrap();
+    shared_session.replace_straight_line(shared_edit).unwrap();
+    shared_session.save_as(&shared_output).unwrap();
+    let shared_saved = Document::load(&shared_output).unwrap();
+    assert!(shared_saved.objects.contains_key(&shared_appearance));
+    assert_eq!(
+        shared_saved
+            .trailer
+            .get(b"BPSharedStraightLineAP")
+            .unwrap()
+            .as_reference()
+            .unwrap(),
+        shared_appearance,
     );
 }
 
@@ -2935,6 +3862,61 @@ fn appends_a_created_rectangle_and_reopens_it_twice() {
 }
 
 #[test]
+fn deleting_a_created_rectangle_after_reopen_writes_a_consistent_xref_size() {
+    let scratch = ScratchDirectory::new();
+    let source = scratch.path().join("created-rectangle-delete-source.pdf");
+    let first_output = scratch.path().join("created-rectangle-first-save.pdf");
+    let deleted_output = scratch.path().join("created-rectangle-deleted-save.pdf");
+    public_annotation_fixture(&source);
+    let mut table_source = Document::load(&source).expect("fixture must reload as lopdf");
+    table_source.reference_table.cross_reference_type = XrefType::CrossReferenceTable;
+    table_source
+        .save(&source)
+        .expect("regression fixture must use a cross-reference table");
+    let source_unknown = unknown_annotation_oracle(&source);
+    let source_document = original_document_oracle(&source);
+    let id = MarkupId::new("created-rectangle-delete").unwrap();
+
+    let mut session = PdfPersistenceSession::open(&source).expect("fixture must open");
+    session
+        .add_rectangle(RectangleAnnotation {
+            id: id.clone(),
+            page_index: 0,
+            rect: PdfRect::new(320., 300., 144., 72.).unwrap(),
+            rotation_degrees: 0.,
+            appearance: RectangleAppearance::new("#16a34a", 4., Some("#86efac"), 0.4).unwrap(),
+            locked: false,
+        })
+        .expect("a new stable Rectangle must be appendable");
+    session
+        .save_as(&first_output)
+        .expect("the created Rectangle must save");
+    validate_independently(&first_output);
+
+    let mut reopened =
+        PdfPersistenceSession::open(&first_output).expect("the first save must reopen");
+    reopened
+        .remove_rectangle(&id)
+        .expect("the created Rectangle must delete by stable identity");
+    reopened
+        .save_as(&deleted_output)
+        .expect("the deleted Rectangle state must save");
+    validate_independently(&deleted_output);
+
+    let deleted =
+        PdfPersistenceSession::open(&deleted_output).expect("the deletion save must reopen");
+    assert!(
+        deleted
+            .rectangles()
+            .iter()
+            .all(|rectangle| rectangle.id != id)
+    );
+    assert!(!deleted.has_canonical_raw_annotation_name(&id));
+    assert_eq!(unknown_annotation_oracle(&deleted_output), source_unknown);
+    assert_eq!(original_document_oracle(&deleted_output), source_document);
+}
+
+#[test]
 fn safe_save_refuses_to_replace_an_existing_target_and_removes_its_temporary_file() {
     let scratch = ScratchDirectory::new();
     let source = scratch.path().join("public-annotation-source.pdf");
@@ -2947,11 +3929,10 @@ fn safe_save_refuses_to_replace_an_existing_target_and_removes_its_temporary_fil
         .save_as(&target)
         .expect_err("safe save must not replace an existing target");
 
-    assert!(matches!(
-        error,
-        PdfPersistenceError::Io(ref error)
-            if error.kind() == std::io::ErrorKind::AlreadyExists
-    ));
+    assert_eq!(
+        error.save_target_error().map(|error| error.kind()),
+        Some(SaveTargetErrorKind::TargetExists),
+    );
     assert_eq!(fs::read(&target).unwrap(), b"keep this exact file");
     assert!(
         fs::read_dir(scratch.path()).unwrap().all(|entry| !entry

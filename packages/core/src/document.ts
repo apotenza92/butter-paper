@@ -99,6 +99,7 @@ export interface AnnotationMetadata {
 export interface AnnotationStrokeAppearance {
   readonly color: string;
   readonly widthPt: number;
+  readonly style?: 'solid' | 'dashed' | 'dotted' | 'cloud';
 }
 
 export interface AnnotationFillAppearance {

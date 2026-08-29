@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://butterpaper.invalid/schemas/bp-paired-summary-v5.json",
+  "title": "Butter Paper paired performance summary v5 analyzer contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "protocol_version",
+    "decision_contract_version",
+    "workload_artifact_sha256",
+    "source_analyzer",
+    "hard_component_contracts",
+    "dynamic_fidelity_quality_family",
+    "runner_support",
+    "final_analyzer",
+    "execution_ready",
+    "blocker"
+  ],
+  "properties": {
+    "schema_version": { "const": 5 },
+    "protocol_version": { "const": "bp-perf-v5" },
+    "decision_contract_version": { "const": "bp-perf-v5-decision-1" },
+    "workload_artifact_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_analyzer": {
+      "type": "object",
+      "required": ["protocol_version", "role"],
+      "properties": { "protocol_version": { "const": "bp-perf-v4" } }
+    },
+    "hard_component_contracts": {
+      "type": "object",
+      "required": [
+        "multi-document-session",
+        "native-property-edit-undo",
+        "native-snap-transform-120hz",
+        "viewer-dynamic-fidelity"
+      ]
+    },
+    "dynamic_fidelity_quality_family": {
+      "type": "object",
+      "required": [
+        "metrics",
+        "direction",
+        "ratio",
+        "bootstrap",
+        "samples",
+        "lower_95_thresholds",
+        "registered_crop_algorithm",
+        "registered_crop_absolute_floors_each",
+        "presentation_contract"
+      ],
+      "properties": {
+        "metrics": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "direction": { "const": "higher-is-better" },
+        "ratio": { "const": "gpui/electron" },
+        "samples": { "const": 100000 },
+        "registered_crop_algorithm": {
+          "const": "bp-cross-engine-binary-scan-fidelity-v2"
+        },
+        "registered_crop_absolute_floors_each": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "filtered_ssim_luma",
+            "dark_precision",
+            "dark_recall",
+            "dark_f1"
+          ],
+          "properties": {
+            "filtered_ssim_luma": { "const": 0.97 },
+            "dark_precision": { "const": 0.99 },
+            "dark_recall": { "const": 0.99 },
+            "dark_f1": { "const": 0.99 }
+          }
+        },
+        "presentation_contract": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "zoom_percent",
+            "device_pixels_per_pdf_point",
+            "tolerance",
+            "candidate_resampling",
+            "reference_resampling",
+            "checkpoint_hold_count",
+            "checkpoint_hold_ms_each",
+            "stability"
+          ],
+          "properties": {
+            "zoom_percent": { "const": 100 },
+            "device_pixels_per_pdf_point": { "const": 1 },
+            "tolerance": { "const": 0.01 },
+            "candidate_resampling": { "const": "forbidden" },
+            "reference_resampling": { "const": "downsample-only-lanczos3" },
+            "checkpoint_hold_count": { "const": 3 },
+            "checkpoint_hold_ms_each": { "const": 250 },
+            "stability": { "const": "painted-before-capture-after" }
+          }
+        }
+      }
+    },
+    "runner_support": {
+      "const": "implemented-v5-runner-and-final-analyzer"
+    },
+    "final_analyzer": { "const": "./analyze-paired-v5.mjs" },
+    "execution_ready": { "const": true },
+    "blocker": { "type": "null" }
+  }
+}

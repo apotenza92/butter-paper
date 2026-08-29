@@ -6,6 +6,7 @@ export interface AnnotationContentStyle {
   readonly fill: string;
   readonly strokeWidth: number;
   readonly opacity: number;
+  readonly dashArray?: string;
   readonly blendMode?: 'multiply';
 }
 
@@ -17,8 +18,16 @@ export function getAnnotationContentStyle(markup: Markup): AnnotationContentStyl
     fill: appearance.fill?.color ?? 'none',
     strokeWidth: appearance.stroke?.widthPt ?? 0,
     opacity: appearance.opacity,
+    dashArray: strokeDashArray(appearance.stroke?.style, appearance.stroke?.widthPt),
     blendMode: appearance.blendMode === 'multiply' ? 'multiply' : undefined,
   };
+}
+
+function strokeDashArray(style: string | undefined, widthPt: number | undefined): string | undefined {
+  const width = Math.max(0.25, widthPt ?? 1);
+  if (style === 'dashed') return `${width * 4} ${width * 2}`;
+  if (style === 'dotted') return `${width} ${width * 2}`;
+  return undefined;
 }
 
 export function getAnnotationTextContentStyle(

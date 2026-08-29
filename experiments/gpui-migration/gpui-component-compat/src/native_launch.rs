@@ -1,6 +1,7 @@
 use std::{ffi::OsString, path::PathBuf};
 
 use crate::document_workspace::{DocumentOpenBatchRequest, DocumentOpenOrigin};
+use crate::session_manifest::SessionRestorePlan;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct NativeLaunchConfig {
@@ -11,6 +12,89 @@ pub struct NativeLaunchConfig {
 pub enum NativeLaunchError {
     MissingOpenPath,
     CurrentDirectoryUnavailable(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NativeLaunchAction {
+    None,
+    OpenExplicit(DocumentOpenBatchRequest),
+    Restore(SessionRestorePlan),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NativeLaunchWarning {
+    SessionStateUnavailable(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeLaunchResolution {
+    pub action: NativeLaunchAction,
+    pub checkpoint_enabled: bool,
+    pub warning: Option<NativeLaunchWarning>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NativeLaunchSessionSource {
+    Disabled,
+    Explicit(DocumentOpenBatchRequest),
+    Manifest,
+}
+
+impl NativeLaunchSessionSource {
+    pub fn new(performance: bool, config: &NativeLaunchConfig) -> Self {
+        if performance {
+            Self::Disabled
+        } else if config.open_paths.is_empty() {
+            Self::Manifest
+        } else {
+            Self::Explicit(config.document_open_request())
+        }
+    }
+
+    pub const fn requires_store(&self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    pub const fn requires_manifest_load(&self) -> bool {
+        matches!(self, Self::Manifest)
+    }
+
+    pub fn resolve(
+        self,
+        session_state: Result<Option<SessionRestorePlan>, String>,
+    ) -> NativeLaunchResolution {
+        if matches!(self, Self::Disabled) {
+            return NativeLaunchResolution {
+                action: NativeLaunchAction::None,
+                checkpoint_enabled: false,
+                warning: None,
+            };
+        }
+        match session_state {
+            Err(message) => NativeLaunchResolution {
+                action: match self {
+                    Self::Explicit(request) => NativeLaunchAction::OpenExplicit(request),
+                    Self::Manifest | Self::Disabled => NativeLaunchAction::None,
+                },
+                checkpoint_enabled: false,
+                warning: Some(NativeLaunchWarning::SessionStateUnavailable(message)),
+            },
+            Ok(plan) => NativeLaunchResolution {
+                action: match self {
+                    Self::Explicit(request) => NativeLaunchAction::OpenExplicit(request),
+                    Self::Manifest => match plan {
+                        Some(plan) if plan != SessionRestorePlan::default() => {
+                            NativeLaunchAction::Restore(plan)
+                        }
+                        Some(_) | None => NativeLaunchAction::None,
+                    },
+                    Self::Disabled => NativeLaunchAction::None,
+                },
+                checkpoint_enabled: true,
+                warning: None,
+            },
+        }
+    }
 }
 
 impl std::fmt::Display for NativeLaunchError {

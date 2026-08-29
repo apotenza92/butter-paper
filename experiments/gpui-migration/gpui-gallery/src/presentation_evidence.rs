@@ -57,15 +57,30 @@ pub fn prepare_representative_create_scene(
             })
     };
 
+    let length_calibration = LengthCalibration::from_scale(72.0, 1.0, "m", 2, true)?;
+    adapter.set_length_calibration(length_calibration.clone())?;
+    adapter.load_imported_annotations_with_document_state(
+        document_id,
+        Vec::new(),
+        vec![(0, length_calibration)],
+        Vec::new(),
+    )?;
+
     adapter.set_tool(AnnotationTool::TextBox)?;
     adapter.queue_next_annotation_id(MarkupId::new(TEXT_CREATE_ID)?);
     adapter.pointer_down(document_id, 0, 60_001, PdfPoint::new(90.0, 390.0)?, 4.0)?;
 
-    adapter.set_length_calibration(LengthCalibration::from_scale(72.0, 1.0, "m", 2, true)?)?;
     adapter.set_tool(AnnotationTool::Length)?;
-    adapter.queue_next_annotation_id(MarkupId::new(LENGTH_CREATE_ID)?);
-    adapter.pointer_down(document_id, 0, 60_002, PdfPoint::new(90.0, 510.0)?, 4.0)?;
-    adapter.pointer_up(60_002, PdfPoint::new(306.0, 510.0)?)?;
+    let length_start = PdfPoint::new(90.0, 510.0)?;
+    let length_end = PdfPoint::new(306.0, 510.0)?;
+    adapter.begin_length_placement(
+        document_id,
+        0,
+        MarkupId::new(LENGTH_CREATE_ID)?,
+        length_start,
+    )?;
+    adapter.update_length_placement(length_end, false)?;
+    adapter.commit_length_placement(document_id, 0, length_end, false)?;
 
     adapter.set_image_asset(checker);
     adapter.set_image_placement_page(

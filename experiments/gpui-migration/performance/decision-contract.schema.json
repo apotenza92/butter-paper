@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://butter-paper.invalid/schemas/bp-perf-v3-decision-3.json",
+  "title": "Butter Paper GPUI migration decision contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "evidence_boundary",
+    "execution",
+    "fixtures",
+    "journeys",
+    "phases",
+    "statistics",
+    "decision"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "contract_version": { "const": "bp-perf-v3-decision-3" },
+    "evidence_boundary": { "type": "string", "minLength": 1 },
+    "execution": {
+      "type": "object",
+      "required": ["status", "executable", "unblock_requires"],
+      "properties": {
+        "status": { "const": "blocked-candidate-parity" },
+        "executable": { "const": false },
+        "unblock_requires": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+      }
+    },
+    "fixtures": {
+      "type": "array",
+      "minItems": 6,
+      "items": {
+        "type": "object",
+        "required": ["id", "storage", "purpose"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "storage": { "enum": ["generated", "public"] },
+          "purpose": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "journeys": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "object",
+        "required": ["id", "fixtures", "required_capabilities"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "fixtures": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+          "required_capabilities": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+        }
+      }
+    },
+    "phases": { "type": "object" },
+    "statistics": {
+      "type": "object",
+      "required": ["sampling_unit", "pair_order", "sample_size", "bootstrap"],
+      "properties": {
+        "sampling_unit": { "const": "paired independent application process" },
+        "pair_order": { "type": "string", "minLength": 1 },
+        "sample_size": {
+          "type": "object",
+          "required": ["alpha_two_sided", "power", "minimum_detectable_ratio", "variance_basis", "round_up_to_pair_block"]
+        },
+        "bootstrap": {
+          "type": "object",
+          "required": ["method", "resamples", "confidence_level"],
+          "properties": {
+            "resamples": { "const": 100000 },
+            "confidence_level": { "const": 0.95 }
+          }
+        }
+      }
+    },
+    "decision": { "type": "object" }
+  }
+}

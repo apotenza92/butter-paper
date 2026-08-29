@@ -34,12 +34,7 @@ pub struct PdfRect {
 
 impl PdfRect {
     pub fn new(x: f64, y: f64, width: f64, height: f64) -> Result<Self, GeometryError> {
-        for (name, value) in [
-            ("x", x),
-            ("y", y),
-            ("width", width),
-            ("height", height),
-        ] {
+        for (name, value) in [("x", x), ("y", y), ("width", width), ("height", height)] {
             if !value.is_finite() {
                 return Err(GeometryError::NonFinite(name));
             }
@@ -114,10 +109,15 @@ impl fmt::Display for GeometryError {
         match self {
             Self::NonFinite(name) => write!(formatter, "{name} must be finite"),
             Self::NegativeExtent => write!(formatter, "rectangle extents must be nonnegative"),
-            Self::NonPositivePageBox(name) => write!(formatter, "{name} must have positive extents"),
+            Self::NonPositivePageBox(name) => {
+                write!(formatter, "{name} must have positive extents")
+            }
             Self::InvalidUserUnit => write!(formatter, "/UserUnit must be finite and positive"),
             Self::InvalidRotation(degrees) => {
-                write!(formatter, "page rotation must be a quarter turn, received {degrees} degrees")
+                write!(
+                    formatter,
+                    "page rotation must be a quarter turn, received {degrees} degrees"
+                )
             }
             Self::MissingPageBox(name) => write!(formatter, "page is missing {name}"),
             Self::Pdf(detail) => write!(formatter, "invalid PDF page dictionary: {detail}"),
@@ -276,7 +276,9 @@ impl PageCoordinateSpace {
         let top = self.view_box.top();
         match self.rotation {
             Rotation::Degrees0 => PdfPoint::new(point.x - self.view_box.x, top - point.y),
-            Rotation::Degrees90 => PdfPoint::new(point.y - self.view_box.y, point.x - self.view_box.x),
+            Rotation::Degrees90 => {
+                PdfPoint::new(point.y - self.view_box.y, point.x - self.view_box.x)
+            }
             Rotation::Degrees180 => PdfPoint::new(right - point.x, point.y - self.view_box.y),
             Rotation::Degrees270 => PdfPoint::new(top - point.y, right - point.x),
         }
@@ -287,7 +289,9 @@ impl PageCoordinateSpace {
         let top = self.view_box.top();
         match self.rotation {
             Rotation::Degrees0 => PdfPoint::new(self.view_box.x + point.x, top - point.y),
-            Rotation::Degrees90 => PdfPoint::new(self.view_box.x + point.y, self.view_box.y + point.x),
+            Rotation::Degrees90 => {
+                PdfPoint::new(self.view_box.x + point.y, self.view_box.y + point.x)
+            }
             Rotation::Degrees180 => PdfPoint::new(right - point.x, self.view_box.y + point.y),
             Rotation::Degrees270 => PdfPoint::new(right - point.y, top - point.x),
         }
@@ -295,10 +299,22 @@ impl PageCoordinateSpace {
 }
 
 fn rect_from_points(points: [PdfPoint; 4]) -> PdfRect {
-    let left = points.iter().map(|point| point.x).fold(f64::INFINITY, f64::min);
-    let right = points.iter().map(|point| point.x).fold(f64::NEG_INFINITY, f64::max);
-    let bottom = points.iter().map(|point| point.y).fold(f64::INFINITY, f64::min);
-    let top = points.iter().map(|point| point.y).fold(f64::NEG_INFINITY, f64::max);
+    let left = points
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::INFINITY, f64::min);
+    let right = points
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let bottom = points
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::INFINITY, f64::min);
+    let top = points
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::NEG_INFINITY, f64::max);
     PdfRect {
         x: left,
         y: bottom,
@@ -330,7 +346,10 @@ fn inherited_value<'a>(
     Err(GeometryError::InheritanceDepth)
 }
 
-fn resolve_object<'a>(document: &'a Document, object: &'a Object) -> Result<&'a Object, GeometryError> {
+fn resolve_object<'a>(
+    document: &'a Document,
+    object: &'a Object,
+) -> Result<&'a Object, GeometryError> {
     let mut current = object;
     for _ in 0..64 {
         current = match current {
@@ -348,7 +367,9 @@ fn parse_box(object: &Object, name: &'static str) -> Result<PdfRect, GeometryErr
         .as_array()
         .map_err(|error| GeometryError::Pdf(error.to_string()))?;
     if values.len() != 4 {
-        return Err(GeometryError::Pdf(format!("{name} must contain four numbers")));
+        return Err(GeometryError::Pdf(format!(
+            "{name} must contain four numbers"
+        )));
     }
     let mut numbers = [0.0; 4];
     for (index, value) in values.iter().enumerate() {

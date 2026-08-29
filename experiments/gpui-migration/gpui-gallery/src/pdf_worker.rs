@@ -823,7 +823,44 @@ impl WorkerProcessClient {
         Ok((client, SourceHandleId(WORKER_SOURCE_FD as u64)))
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    pub fn spawn_with_inherited_source(
+        executable: impl AsRef<Path>,
+        surface_root: impl AsRef<Path>,
+        pdfium_library: impl AsRef<Path>,
+        source_path: impl AsRef<Path>,
+    ) -> Result<(Self, SourceHandleId), WorkerError> {
+        let surface_root = surface_root.as_ref();
+        let source = File::open(source_path)?;
+        let owns_surface_root = prepare_surface_root(surface_root)?;
+        let mut command = Command::new(executable.as_ref());
+        configure_worker_command(&mut command, surface_root, pdfium_library.as_ref());
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                remove_owned_surface_root(surface_root, owns_surface_root);
+                return Err(error.into());
+            }
+        };
+        let source_handle_id = match duplicate_source_into_child(&source, &child) {
+            Ok(source_handle_id) => source_handle_id,
+            Err(error) => {
+                stop_child(&mut child);
+                remove_owned_surface_root(surface_root, owns_surface_root);
+                return Err(error);
+            }
+        };
+        drop(source);
+        match Self::from_spawned_child(child, surface_root) {
+            Ok(client) => Ok((client, source_handle_id)),
+            Err(error) => {
+                remove_owned_surface_root(surface_root, owns_surface_root);
+                Err(error)
+            }
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
     pub fn spawn_with_inherited_source(
         _executable: impl AsRef<Path>,
         _surface_root: impl AsRef<Path>,
@@ -837,13 +874,25 @@ impl WorkerProcessClient {
     }
 
     fn spawn_command(mut command: Command, surface_root: &Path) -> Result<Self, WorkerError> {
-        let mut child = command.spawn()?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            WorkerError::with_detail(WorkerErrorCode::WorkerCrashed, "missing worker stdout")
-        })?;
-        let stdin = child.stdin.take().ok_or_else(|| {
-            WorkerError::with_detail(WorkerErrorCode::WorkerCrashed, "missing worker stdin")
-        })?;
+        let child = command.spawn()?;
+        Self::from_spawned_child(child, surface_root)
+    }
+
+    fn from_spawned_child(mut child: Child, surface_root: &Path) -> Result<Self, WorkerError> {
+        let Some(stdout) = child.stdout.take() else {
+            stop_child(&mut child);
+            return Err(WorkerError::with_detail(
+                WorkerErrorCode::WorkerCrashed,
+                "missing worker stdout",
+            ));
+        };
+        let Some(stdin) = child.stdin.take() else {
+            stop_child(&mut child);
+            return Err(WorkerError::with_detail(
+                WorkerErrorCode::WorkerCrashed,
+                "missing worker stdin",
+            ));
+        };
         Ok(Self {
             child,
             sender: JsonLineSender::new(stdin),
@@ -879,6 +928,64 @@ impl WorkerProcessClient {
 
     pub fn child_id(&self) -> u32 {
         self.child.id()
+    }
+}
+
+fn stop_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(windows)]
+fn duplicate_source_into_child(
+    source: &File,
+    child: &Child,
+) -> Result<SourceHandleId, WorkerError> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let mut child_source: HANDLE = std::ptr::null_mut();
+    // SAFETY: both input handles remain valid for the call. `child_source` is
+    // written only on success and is owned by the child process, not this one.
+    let duplicated = unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            source.as_raw_handle(),
+            child.as_raw_handle(),
+            &mut child_source,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
+        )
+    };
+    if duplicated == 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(SourceHandleId(child_source as usize as u64))
+}
+
+#[cfg(windows)]
+fn remove_owned_surface_root(surface_root: &Path, owns_surface_root: bool) {
+    if owns_surface_root {
+        let _ = fs::remove_dir_all(surface_root);
+    }
+}
+
+#[cfg(windows)]
+fn prepare_surface_root(surface_root: &Path) -> Result<bool, WorkerError> {
+    if let Some(parent) = surface_root.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::create_dir(surface_root) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            fs::create_dir_all(surface_root)?;
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
     }
 }
 

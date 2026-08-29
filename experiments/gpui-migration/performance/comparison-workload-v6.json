@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "manifest_id": "bp-perf-v6-decision-2",
+  "protocol_version": "bp-perf-v6",
+  "source_v5": {
+    "manifest_id": "bp-perf-v5-decision-1",
+    "workload_artifact_sha256": "cc4f8b8940556390b8d16a6baae43e8a5a022541fba90beea08869e692ee920e",
+    "workload_byte_sha256": "e7b2540c7d455a30e52ee64a6819745fe0ad49a6512f887df4631aac72054f6d",
+    "decision_contract_sha256": "2acdab1dc3f62c1eed82f5d9af9f50c525617cac49c3c4b60fd885116563cfb1"
+  },
+  "common_benefit_timing_boundary": {
+    "schema_version": 2,
+    "boundary_id": "x11-damage-notify-after-xtest-v1",
+    "observer": "native-x11-damage-observer-v1",
+    "input_clock": "CLOCK_MONOTONIC",
+    "completion_clock": "CLOCK_MONOTONIC",
+    "completion_signal": "X11-DamageNotify",
+    "observation_scope": "x11-server-drawable-damage-not-presentation-completion",
+    "server_observed_drawable_damage": true,
+    "presentation_completion_observed": false,
+    "observer_process_independent": true,
+    "physical_scanout_observed": false
+  },
+  "benefit_eligible_components": [
+    "open-pdf",
+    "continuous-scroll",
+    "viewer-dynamic-fidelity",
+    "annotation-create",
+    "annotation-transform",
+    "editor-create",
+    "native-snap-transform-120hz",
+    "multi-document-session"
+  ],
+  "semantic_correctness_only_components": [
+    "viewer-layout",
+    "page-navigation",
+    "cache-pressure",
+    "close-reopen",
+    "fit-modes",
+    "zoom",
+    "high-zoom-pan",
+    "cache-pressure-recovery",
+    "annotation-properties-history",
+    "editor-workload",
+    "persistence-workload"
+  ],
+  "property_correctness_only_component": "native-property-edit-undo",
+  "schedule": {
+    "calibration_pairs": 6,
+    "final_pairs": 24,
+    "benefit_component_occurrences_per_implementation_pair": 10,
+    "benefit_launches": 600,
+    "semantic_correctness_launches": 22,
+    "property_correctness_launches": 2,
+    "total_launches": 624
+  },
+  "failure_policy": "missing-native-replay-or-common-damage-receipt-blocks-benefit; semantic-components-are-correctness-only"
+}

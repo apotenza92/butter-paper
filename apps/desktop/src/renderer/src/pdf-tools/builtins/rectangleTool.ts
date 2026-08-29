@@ -107,6 +107,7 @@ export const RECTANGLE_TOOL_DEFINITION: PdfToolDefinition<RectangleMarkup, Recta
             stroke: style.stroke,
             fill: style.fill,
             strokeWidth: style.strokeWidth,
+            dashArray: style.dashArray,
             opacity: style.opacity,
           },
           pointerEvents: style.fill === 'none' ? 'visibleStroke' : 'all',

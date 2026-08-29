@@ -158,12 +158,7 @@ impl SemanticSnapIndex {
             if excluded_owner_ids.contains(&length.id) {
                 continue;
             }
-            add_open_segment_candidates(
-                &mut candidates,
-                length.start,
-                length.end,
-                &length.id,
-            );
+            add_open_segment_candidates(&mut candidates, length.start, length.end, &length.id);
         }
         add_intersection_candidates(&mut candidates);
         Self { candidates }
@@ -197,7 +192,9 @@ impl SemanticSnapIndex {
             return None;
         }
         let constraint = orthogonal_anchor.map(|anchor| OrthogonalConstraint::new(anchor, point));
-        let point = constraint.as_ref().map_or(point, |constraint| constraint.point);
+        let point = constraint
+            .as_ref()
+            .map_or(point, |constraint| constraint.point);
         let tolerance_pdf = settings.sensitivity_window_px() / window_pixels_per_pdf_point;
         let tolerance_pdf_squared = tolerance_pdf * tolerance_pdf;
         let mut best: Option<(f64, SemanticSnapDecision)> = None;
@@ -228,10 +225,12 @@ impl SemanticSnapIndex {
                 point: resolved,
                 owner_id: candidate.owner_id.clone(),
                 role: candidate.role,
-                distance_window_px: distance_pdf_squared.sqrt()
-                    * window_pixels_per_pdf_point,
+                distance_window_px: distance_pdf_squared.sqrt() * window_pixels_per_pdf_point,
             };
-            if best.as_ref().is_none_or(|(best_score, _)| score < *best_score) {
+            if best
+                .as_ref()
+                .is_none_or(|(best_score, _)| score < *best_score)
+            {
                 best = Some((score, decision));
             }
         }
@@ -420,8 +419,7 @@ fn project_point_to_segment(point: PdfPoint, start: PdfPoint, end: PdfPoint) -> 
     if length_squared == 0. {
         return start;
     }
-    let t = (((point.x - start.x) * dx + (point.y - start.y) * dy) / length_squared)
-        .clamp(0., 1.);
+    let t = (((point.x - start.x) * dx + (point.y - start.y) * dy) / length_squared).clamp(0., 1.);
     PdfPoint {
         x: start.x + dx * t,
         y: start.y + dy * t,
@@ -444,9 +442,7 @@ fn segment_intersection(
     let start_dy = right.0.y - left.0.y;
     let left_t = (start_dx * right_dy - start_dy * right_dx) / denominator;
     let right_t = (start_dx * left_dy - start_dy * left_dx) / denominator;
-    if !(-0.000_1..=1.000_1).contains(&left_t)
-        || !(-0.000_1..=1.000_1).contains(&right_t)
-    {
+    if !(-0.000_1..=1.000_1).contains(&left_t) || !(-0.000_1..=1.000_1).contains(&right_t) {
         return None;
     }
     let point = PdfPoint {

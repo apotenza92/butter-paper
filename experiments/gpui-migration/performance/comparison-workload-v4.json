@@ -1,0 +1,172 @@
+{
+  "$schema": "./comparison-workload-v4.schema.json",
+  "schema_version": "bp-comparison-workload-v2",
+  "manifest_id": "bp-perf-v4-decision-1",
+  "decision_contract_version": "bp-perf-v4-decision-1",
+  "supersedes": "bp-perf-v3-decision-3",
+  "seed": 20260824,
+  "coordinate_space": "pdf-points-bottom-left",
+  "environment": {
+    "window_css_pixels": { "width": 1200, "height": 800 },
+    "display_scale_factor": 1,
+    "theme": "light",
+    "cache_classes": ["app-cold", "declared-warm"],
+    "input_lanes": ["native-replay", "semantic-correctness"]
+  },
+  "source_manifest": {
+    "id": "bp-perf-v3-decision-3",
+    "file": "./comparison-workload.json",
+    "artifact_sha256": "1926113f60f434b383aed89c34f157197f0b5680a4ad71d14f25c539f14cbd2f"
+  },
+  "fixtures": [
+    { "id": "bp-single-page-v1", "sha256": "f31adeeb3f17ef180012fe707cb2f2650854305dab4b16bba34d73652b6d8fdc", "role": "small-shell-open" },
+    { "id": "nasa-apollo-summary-526-v1", "sha256": "68d0f3bb93fd1c4e4f3adf99d483e9161f14293a311e25aa6c31241bbbb84049", "role": "long-document" },
+    { "id": "bp-engineering-sheet-v1", "sha256": "49b417e4652a5fc0efb3b59b1f482b443bf3133f810f652559931a08b68a2b91", "role": "moderate-engineering-sheet" },
+    { "id": "bp-annotation-density-v1", "sha256": "1dad337b97d573ff971e886eb6509e80e5e1cd07f6ac610ae4f2f9419c666682", "role": "dense-mixed-editing" },
+    { "id": "bp-annotation-all-v1", "sha256": "4a0a94cdbcc08e7ee06504914e5b84d218f2aeb01035b42d62f2275e38d02cbd", "role": "persistence" }
+  ],
+  "assets": [
+    {
+      "id": "bp-image-checker-v1",
+      "kind": "generated-rgba-png",
+      "width_pixels": 512,
+      "height_pixels": 384,
+      "decoded_payload_bytes": 786432,
+      "sha256": "fcc714d1ac60ed4b88abf7297830479c7557cb9d219033e7a5a5ad4d6ec18dda"
+    }
+  ],
+  "representative_journeys": [
+    {
+      "id": "small-shell-open-v1",
+      "fixture_ids": ["bp-single-page-v1"],
+      "command_ids": ["small:launch-cold", "small:open-settle"]
+    },
+    {
+      "id": "nasa-long-document-v1",
+      "fixture_ids": ["nasa-apollo-summary-526-v1"],
+      "command_ids": ["nasa:open-settle", "viewer:layout-single", "viewer:layout-continuous", "viewer:navigate-normalized", "viewer:continuous-scroll", "nasa:cache-pressure", "viewer:close-recover-reopen"]
+    },
+    {
+      "id": "engineering-sheet-v1",
+      "fixture_ids": ["bp-engineering-sheet-v1"],
+      "command_ids": ["engineering:open-settle", "engineering:fit-modes", "engineering:zoom-sequence", "engineering:pan", "engineering:cache-recovery"]
+    },
+    {
+      "id": "dense-mixed-editing-v1",
+      "fixture_ids": ["bp-annotation-density-v1"],
+      "command_ids": ["rectangle:create-sparse", "rectangle:select-move-resize", "rectangle:properties-history", "rectangle:repeat-dense", "highlight:create", "highlight:edit-history", "text:create", "text:edit-resize-history", "length:set-scale", "length:create", "length:edit-endpoint-history", "image:create", "image:resize-history"]
+    },
+    {
+      "id": "persistence-v1",
+      "fixture_ids": ["bp-annotation-all-v1"],
+      "command_ids": ["unknown:import", "unknown:assert-cycle-1", "unknown:assert-cycle-2", "persistence:apply-fixed-state", "persistence:save-1", "persistence:reopen-1", "persistence:save-2", "persistence:reopen-2"]
+    }
+  ],
+  "additional_commands": [
+    {
+      "id": "small:launch-cold",
+      "operation": "app.launch-cold",
+      "cache_class": "app-cold",
+      "expected_milestones": ["process-started", "native-window-presented", "interactive-shell"]
+    },
+    {
+      "id": "small:open-settle",
+      "operation": "document.open-settle",
+      "fixture_id": "bp-single-page-v1",
+      "expected_milestones": ["document-opened", "preview-current-generation", "settled-current-generation-250ms", "fixed-crops-matched"]
+    },
+    {
+      "id": "nasa:open-settle",
+      "operation": "document.open-settle",
+      "fixture_id": "nasa-apollo-summary-526-v1",
+      "expected_milestones": ["document-opened", "preview-current-generation", "settled-current-generation-250ms", "virtual-page-window-bounded"]
+    },
+    {
+      "id": "nasa:cache-pressure",
+      "operation": "viewer.cache-pressure-cycles",
+      "cycles": 5,
+      "expected_milestones": ["declared-cache-byte-limit-held", "decoded-byte-limit-held", "renderer-resource-submission-bytes-exact"]
+    },
+    {
+      "id": "engineering:open-settle",
+      "operation": "document.open-settle",
+      "fixture_id": "bp-engineering-sheet-v1",
+      "expected_milestones": ["document-opened", "preview-current-generation", "settled-current-generation-250ms", "fixed-crops-matched"]
+    },
+    {
+      "id": "engineering:fit-modes",
+      "operation": "viewer.fit-modes",
+      "modes": ["fit-page", "fit-width"],
+      "expected_milestones": ["fit-state-current", "visible-tiles-bounded", "settled-density-at-least-1"]
+    },
+    {
+      "id": "engineering:zoom-sequence",
+      "operation": "viewer.zoom-sequence",
+      "percent": [100, 200, 400, 800, 1600, 400, 100, 800, 200, 100, 1200, 100],
+      "expected_milestones": ["zoom-state-current", "visible-tiles-bounded", "settled-density-at-least-1", "stale-generations-presented-zero"]
+    },
+    {
+      "id": "engineering:pan",
+      "operation": "viewer.pan-path",
+      "zoom_percent": 1600,
+      "duration_ms": 5000,
+      "rate_hz": 120,
+      "normalized_viewport_points": [[0.50, 0.50], [0.75, 0.50], [0.75, 0.75], [0.25, 0.75], [0.25, 0.25], [0.50, 0.50]],
+      "expected_milestones": ["timestamped-input-complete", "visible-tiles-bounded", "stale-generations-presented-zero", "settled-density-at-least-1"]
+    },
+    {
+      "id": "engineering:cache-recovery",
+      "operation": "viewer.cache-pressure-and-recover",
+      "cycles": 5,
+      "expected_milestones": ["declared-cache-byte-limit-held", "decoded-byte-limit-held", "renderer-resource-submission-bytes-exact", "memory-recovery-recorded"]
+    }
+  ],
+  "command_overrides": {
+    "viewer:continuous-scroll": {
+      "expected_milestones": ["timestamped-input-complete", "virtual-page-window-bounded", "finish-page-current", "visible-raster-readiness-observed"]
+    },
+    "image:create": {
+      "expected_milestones": ["bitmap-decoded", "decoded-payload-bytes-exact", "renderer-resource-submission-bytes-exact", "bitmap-presented-from-decoded-payload", "gesture-committed-once"],
+      "resource_observation": { "decoded_payload_bytes": 786432, "renderer_resource_submission_bytes": 786432, "physical_bus_upload_bytes": null }
+    },
+    "image:resize-history": {
+      "expected_milestones": ["aspect-ratio-current", "renderer-resource-submission-bytes-exact", "bitmap-presented-from-decoded-payload", "undo-redo-exact", "thumbnail-current"],
+      "resource_observation": { "decoded_payload_bytes": 786432, "renderer_resource_submission_bytes": 786432, "physical_bus_upload_bytes": null }
+    }
+  },
+  "stress_lanes": [
+    {
+      "id": "usgs-large-sheet-stress-v1",
+      "fixture_id": "usgs-usa-geology-sheet-v1",
+      "fixture_sha256": "f058179e193ccbc15ca662feff3554102f64ff2114436a5ce6116d6fa5d2a6e2",
+      "inference_eligible": false,
+      "commands": [
+        { "id": "stress:usgs-open", "operation": "document.open-settle", "expected_milestones": ["document-opened", "preview-current-generation"] },
+        { "id": "stress:usgs-zoom", "operation": "viewer.zoom-sequence", "percent": [100, 200, 400, 800, 1600, 400, 100], "expected_milestones": ["visible-tiles-bounded", "stale-generations-presented-zero"] },
+        { "id": "stress:usgs-pan", "operation": "viewer.pan-path", "zoom_percent": 1600, "expected_milestones": ["visible-tiles-bounded", "stale-generations-presented-zero", "memory-recovery-recorded"] }
+      ]
+    }
+  ],
+  "supplementary_lanes": [
+    { "id": "private-hibbeler-935-v1", "status": "blocked-not-transferred", "inference_eligible": false, "allowed_lane": "owner-authorized-local-macos" }
+  ],
+  "expected": {
+    "source": "bp-perf-v3-decision-3 expected final state and milestone quality rules",
+    "visible_raster_readiness": {
+      "minimum_observation_count": 1,
+      "missing_raster_observation_count": "diagnostic-only",
+      "readiness_rate": "diagnostic-only"
+    },
+    "resource_rules": {
+      "decoded_payload_bytes": "exact-required",
+      "renderer_resource_submission_bytes": "exact-required",
+      "physical_bus_upload_bytes": "optional-nullable"
+    }
+  },
+  "canonical_hashes": {
+    "representative_command_stream_sha256": "e73410f5e765268527df99b26cbee6c72557ca7f584582b5358320eb0731b3b5",
+    "representative_milestone_stream_sha256": "f0079a662d7902f8bf833db6a1475b1a9e305a9d2f0b0c3854c1b51046a83a30",
+    "stress_command_stream_sha256": "a7e63ced8f1379758d42c56f3a608100270f0131393f65ca7841bd9e3fb0f3e6",
+    "expected_state_sha256": "8868578316a2e5fb59fec8f82396fd5793dfd305bf6ca516ea5db3532084c465"
+  }
+}

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { degrees, PDFDocument, PDFName, PDFNumber } from 'pdf-lib';
+import { degrees, PDFDocument, PDFName, PDFNumber, PDFString } from 'pdf-lib';
 import { identifyStorageSource, loadDocumentPayload, readPdfBytesWithProgress } from './pdfSession';
 import type { PdfOpenProgress } from '../shared/protocol';
 
@@ -38,6 +38,30 @@ describe('PDF session page geometry', () => {
       size: { width: 1_440, height: 1_080 },
       rotation: 270,
     }]);
+  });
+
+  it('loads a maintained calibrated page scale into the document model', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'bp-pdf-session-scale-'));
+    temporaryDirectories.push(directory);
+    const source = join(directory, 'calibrated.pdf');
+    const pdf = await PDFDocument.create();
+    const page = pdf.addPage([612, 792]);
+    const scale = {
+      pageIndex: 0,
+      source: 'calibrated',
+      name: 'Calibrated 1 m',
+      pdfUnits: 'in',
+      realUnits: 'm',
+      scaleX: 1 / 72,
+      scaleY: 1 / 72,
+      precision: { mode: 'decimal', value: 0.01 },
+    } as const;
+    page.node.set(PDFName.of('BPPageScale'), PDFString.of(JSON.stringify(scale)));
+    await writeFile(source, await pdf.save());
+
+    const loaded = await loadDocumentPayload(source);
+
+    expect(loaded.document.pageScales).toEqual([scale]);
   });
 
   it('reports logical size and bytes read while streaming a cloud-backed source', async () => {

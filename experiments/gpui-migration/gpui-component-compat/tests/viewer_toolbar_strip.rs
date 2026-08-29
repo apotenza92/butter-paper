@@ -178,6 +178,20 @@ fn click_target(cx: &mut gpui::VisualTestContext, selector: &'static str) {
     cx.simulate_click(position, Modifiers::default());
 }
 
+#[gpui::test]
+fn fit_control_hover_and_dismissal_do_not_shift_toolbar_layout(cx: &mut TestAppContext) {
+    let (cx, _) = open_harness(cx);
+    let target_before = bounds(cx, FIT_WIDTH_ID);
+    cx.simulate_mouse_move(point(px(1.), px(200.)), None, Modifiers::default());
+    cx.simulate_mouse_move(target_before.center(), None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(bounds(cx, FIT_WIDTH_ID), target_before);
+
+    cx.simulate_mouse_move(point(px(1.), px(200.)), None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(bounds(cx, FIT_WIDTH_ID), target_before);
+}
+
 fn press_button_key(cx: &mut gpui::VisualTestContext, key: &str) {
     let keystroke = Keystroke::parse(key).expect("the test key must parse");
     cx.simulate_event(KeyDownEvent {

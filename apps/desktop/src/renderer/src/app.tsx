@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, DragEvent } from 'react';
 import {
   rotateDocumentPage,
+  translateMarkup,
+  updateMarkupText,
   type DocumentModel,
   type Markup,
   type PageRotationDirection,
@@ -39,6 +41,7 @@ import { UnsavedChangesDialog } from './components/UnsavedChangesDialog';
 import { UpdateDialog } from './components/UpdateDialog';
 import { ViewerToolbar } from './components/ViewerToolbar';
 import { formatWindowTitle, WindowTitleBar } from './components/WindowTitleBar';
+import { updateSelectedMarkupProperty } from './components/ToolPropertiesPanel';
 import { useUpdater } from './hooks/useUpdater';
 import { LocalPdfSession, type DiagnosticsSnapshot } from './services/documentSession';
 import { getPerfSnapshot, initialisePerfTracking, recordComponentRender, recordWindowBounds, resetPerfTracking } from './services/perfTracker';
@@ -56,7 +59,8 @@ import {
 } from './state/viewerStore';
 import { subscribeToThemeMode } from './theme';
 import type { ApplicationMenuCommand, ApplicationMenuState, ApplicationMetadata, BlankPdfCreateRequest, BlankPdfCreateResult, LoadedDocumentPayload, PdfOpenProgress, PdfSaveTargetDescriptor, ScrollMode, ScrollWheelMode, ThemeMode, ToolMode, ViewerDiagnostics, ZoomPreset } from '../../shared/protocol';
-import { PDF_TOOL_REGISTRY } from './pdf-tools/toolRegistry';
+import { getMarkupToolDefinition, PDF_TOOL_REGISTRY } from './pdf-tools/toolRegistry';
+import { buildMarkupSpatialIndex } from './pdf-tools/markupSpatialIndex';
 import { clampViewerZoom } from './utils/renderZoom';
 import { selectDroppedPdfFiles } from './utils/droppedPdfFiles';
 import { resolveMacosFullScreenLayout } from './utils/macosFullScreenLayout';
@@ -710,12 +714,19 @@ export function App({ initialThemeMode }: AppProps) {
       markupCount: documentState?.document.markups.length ?? 0,
       renderCacheEntries: activeDiagnostics.renderCacheEntries,
       renderCacheBytes: activeDiagnostics.renderCacheBytes,
+      pageUrlCacheBytes: activeDiagnostics.pageUrlCacheBytes,
+      decodedRenderCacheBytes: activeDiagnostics.decodedRenderCacheBytes,
+      pageUrlCacheByteLimit: activeDiagnostics.pageUrlCacheByteLimit,
+      decodedRenderCacheByteLimit: activeDiagnostics.decodedRenderCacheByteLimit,
       pageRenderReady: activeDiagnostics.pageRenderReady,
       thumbnailRenderReady: activeDiagnostics.thumbnailRenderReady,
       lastPageRenderError: activeDiagnostics.lastPageRenderError,
       lastThumbnailRenderError: activeDiagnostics.lastThumbnailRenderError,
       thumbnailCacheEntries: activeDiagnostics.thumbnailCacheEntries,
       thumbnailCacheBytes: activeDiagnostics.thumbnailCacheBytes,
+      thumbnailCacheByteLimit: activeDiagnostics.thumbnailCacheByteLimit,
+      queuedPageRenders: activeDiagnostics.queuedPageRenders,
+      inflightPageRenders: activeDiagnostics.inflightPageRenders,
       sessionBackendKind: activeDiagnostics.sessionBackendKind,
       surfaceTransportKind: activeDiagnostics.surfaceTransportKind,
       openStageTimings: activeDiagnostics.openStageTimings,
@@ -765,7 +776,115 @@ export function App({ initialThemeMode }: AppProps) {
         await openDocumentPaths(authorizedPaths);
       },
       createBlankPdf: handleCreateBlankPdf,
-      getActiveDocument: () => documentState?.document ?? null,
+      getActiveDocument: () => useViewerStore.getState().document?.document ?? null,
+      replaceDocumentMarkups: (markups, pageScales, selectedMarkupIds, recordHistory = true) => {
+        const state = useViewerStore.getState();
+        const document = state.document?.document;
+        if (!document) throw new Error('Test document is unavailable.');
+        const pageIndices = new Set(document.pages.map(({ index }) => index));
+        if (markups.some((markup) => !pageIndices.has(markup.pageIndex))) {
+          throw new Error('Test markups contain an unknown page index.');
+        }
+        const markupIds = new Set(markups.map(({ id }) => id));
+        if (markupIds.size !== markups.length
+          || selectedMarkupIds.some((markupId) => !markupIds.has(markupId))) {
+          throw new Error('Test markup replacement contains duplicate IDs or invalid selection.');
+        }
+        state.updateDocument((current) => ({ ...current, markups, pageScales }), recordHistory);
+        state.setSelectedMarkupIds([...selectedMarkupIds]);
+      },
+      queryMarkupSpatialIndex: (pageIndex, point, tolerance) => {
+        const document = useViewerStore.getState().document?.document;
+        const page = document?.pages.find((candidate) => candidate.index === pageIndex);
+        if (!document || !page) throw new Error('Test spatial-index page is unavailable.');
+        const index = buildMarkupSpatialIndex(document.markups, page);
+        const receipt = index.query(point, tolerance);
+        const candidateIds = new Set(receipt.candidateMarkupIds);
+        const hit = [...document.markups].reverse()
+          .filter((markup) => markup.pageIndex === pageIndex && candidateIds.has(markup.id))
+          .map((markup) => getMarkupToolDefinition(markup)?.geometry?.hitTest(
+            markup,
+            point,
+            { page, tolerance },
+          ) ?? null)
+          .find((candidate) => candidate !== null) ?? null;
+        return {
+          ...receipt,
+          pageIndex,
+          generation: index.generation,
+          hitMarkupId: hit?.markupId ?? null,
+        };
+      },
+      selectMarkupAtPoint: (pageIndex, point, tolerance) => {
+        const state = useViewerStore.getState();
+        const document = state.document?.document;
+        const page = document?.pages.find((candidate) => candidate.index === pageIndex);
+        if (!document || !page) {
+          state.setSelectedMarkupIds([]);
+          return null;
+        }
+        const hit = [...document.markups]
+          .reverse()
+          .filter((markup) => markup.pageIndex === pageIndex)
+          .map((markup) => getMarkupToolDefinition(markup)?.geometry?.hitTest(
+            markup,
+            point,
+            { page, tolerance },
+          ) ?? null)
+          .find((candidate) => candidate !== null) ?? null;
+        state.setSelectedMarkupIds(hit ? [hit.markupId] : []);
+        return hit?.markupId ?? null;
+      },
+      applyMarkupMutation: (mutation) => {
+        const state = useViewerStore.getState();
+        const target = state.document?.document.markups.find((markup) => markup.id === mutation.markupId);
+        if (!target) throw new Error(`Test markup is missing: ${mutation.markupId}`);
+        state.setSelectedMarkupIds([mutation.markupId]);
+        state.updateDocument((document) => {
+          if (mutation.kind === 'replace-text') {
+            return updateMarkupText(document, mutation.markupId, mutation.text);
+          }
+          return {
+            ...document,
+            markups: document.markups.map((markup) => {
+              if (markup.id !== mutation.markupId) return markup;
+              if (mutation.kind === 'translate') {
+                return translateMarkup(markup, mutation.delta);
+              }
+              if (mutation.kind === 'set-properties') {
+                return Object.entries(mutation.values).reduce(
+                  (current, [key, value]) => updateSelectedMarkupProperty(
+                    current,
+                    key as 'x' | 'y' | 'width' | 'height' | 'opacity',
+                    value,
+                  ),
+                  markup,
+                );
+              }
+              const transform = getMarkupToolDefinition(markup)?.interaction?.transformMarkup;
+              if (!transform) throw new Error(`Markup does not support a tool transform: ${markup.id}`);
+              const page = document.pages.find((candidate) => candidate.index === markup.pageIndex);
+              if (!page) throw new Error(`Markup page is missing: ${markup.pageIndex}`);
+              return transform(markup, mutation, {
+                page,
+                pageScale: document.pageScales?.find((scale) => scale.pageIndex === markup.pageIndex),
+                markups: document.markups,
+              });
+            }),
+          };
+        });
+      },
+      undoDocument: () => handleUndo(),
+      redoDocument: () => handleRedo(),
+      getDocumentHistory: () => {
+        const history = useViewerStore.getState().documentHistory;
+        return {
+          past: history.past.length,
+          future: history.future.length,
+          currentRevision: history.currentRevision,
+          savedRevision: history.savedRevision,
+        };
+      },
       openFixturePdf: async (fixtureName: string) => { const filePath = await window.butterPaper.test?.resolveFixturePath(fixtureName.endsWith('.pdf') ? fixtureName : `${fixtureName}.pdf`); if (!filePath) throw new Error(`Fixture not found: ${fixtureName}`); await loadDocumentFromPath(filePath); },
       switchToTab: async (indexOrPath: number | string) => { const tab = typeof indexOrPath === 'number' ? tabs[indexOrPath] : tabs.find((candidate) => candidate.normalizedPath === normalizeDocumentPath(indexOrPath)); if (tab) activateTab(tab.id); },
       closeTab: async (indexOrPath: number | string) => { const tab = typeof indexOrPath === 'number' ? tabs[indexOrPath] : tabs.find((candidate) => candidate.normalizedPath === normalizeDocumentPath(indexOrPath)); if (tab) requestCloseTab(tab.id); },

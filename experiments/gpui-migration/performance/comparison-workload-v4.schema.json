@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://butterpaper.app/schemas/bp-comparison-workload-v2.json",
+  "title": "Butter Paper comparison workload v4 overlay",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema_version", "manifest_id", "decision_contract_version", "supersedes", "seed", "coordinate_space", "environment", "source_manifest", "fixtures", "assets", "representative_journeys", "additional_commands", "command_overrides", "stress_lanes", "supplementary_lanes", "expected", "canonical_hashes"],
+  "properties": {
+    "$schema": { "const": "./comparison-workload-v4.schema.json" },
+    "schema_version": { "const": "bp-comparison-workload-v2" },
+    "manifest_id": { "const": "bp-perf-v4-decision-1" },
+    "decision_contract_version": { "const": "bp-perf-v4-decision-1" },
+    "supersedes": { "const": "bp-perf-v3-decision-3" },
+    "seed": { "type": "integer" },
+    "coordinate_space": { "const": "pdf-points-bottom-left" },
+    "environment": { "type": "object" },
+    "source_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "file", "artifact_sha256"],
+      "properties": {
+        "id": { "const": "bp-perf-v3-decision-3" },
+        "file": { "const": "./comparison-workload.json" },
+        "artifact_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "fixtures": { "type": "array", "minItems": 5, "maxItems": 5 },
+    "assets": { "type": "array", "minItems": 1 },
+    "representative_journeys": { "type": "array", "minItems": 5, "maxItems": 5 },
+    "additional_commands": { "type": "array", "minItems": 1 },
+    "command_overrides": { "type": "object" },
+    "stress_lanes": { "type": "array", "minItems": 1 },
+    "supplementary_lanes": { "type": "array", "minItems": 1 },
+    "expected": { "type": "object" },
+    "canonical_hashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["representative_command_stream_sha256", "representative_milestone_stream_sha256", "stress_command_stream_sha256", "expected_state_sha256"],
+      "properties": {
+        "representative_command_stream_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "representative_milestone_stream_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "stress_command_stream_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "expected_state_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

@@ -3,7 +3,7 @@
   "preflightFreeKiB": 31457280,
   "runtimeStopFreeKiB": 20971520,
   "absoluteMinFreeKiB": 18874368,
-  "maxTargetKiB": 4194304,
+  "maxTargetKiB": 5242880,
   "minMemoryKiB": 350000,
   "wallSeconds": 1800,
   "cargoBuildJobs": 1,

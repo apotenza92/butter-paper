@@ -14,10 +14,10 @@ use std::{
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
+use crate::page_geometry::{PageCoordinateSpace, Rotation as CoordinateRotation};
 use crate::selection_geometry::{
     SelectionMarquee, SelectionPath, SelectionPoint, geometry_selected, selection_after,
 };
-use crate::page_geometry::{PageCoordinateSpace, Rotation as CoordinateRotation};
 
 pub const DEFAULT_HISTORY_LIMIT: usize = 100;
 pub const MIN_RECT_SIZE_PT: f64 = 1.0;
@@ -156,12 +156,8 @@ impl PageTransform {
             CoordinateRotation::Degrees180 => PageRotation::Degrees180,
             CoordinateRotation::Degrees270 => PageRotation::Degrees270,
         };
-        let mut transform = Self::new_rotated(
-            view_box.width,
-            view_box.height,
-            pixels_per_point,
-            rotation,
-        )?;
+        let mut transform =
+            Self::new_rotated(view_box.width, view_box.height, pixels_per_point, rotation)?;
         transform.view_box_x = view_box.x;
         transform.view_box_y = view_box.y;
         transform.user_unit = space.user_unit();
@@ -1362,6 +1358,68 @@ impl StraightLineAnnotation {
     }
 }
 
+pub fn straight_line_arrowhead_points(
+    start: PdfPoint,
+    end: PdfPoint,
+    stroke_width_pt: f64,
+) -> Option<[PdfPoint; 3]> {
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+    let distance = dx.hypot(dy);
+    if !distance.is_finite() || distance <= f64::EPSILON || !stroke_width_pt.is_finite() {
+        return None;
+    }
+    let direction_x = dx / distance;
+    let direction_y = dy / distance;
+    let length = (stroke_width_pt * 8.).max(7.);
+    let width = (stroke_width_pt * 5.).max(4.);
+    let base_x = end.x - direction_x * length;
+    let base_y = end.y - direction_y * length;
+    let half_width = width / 2.;
+    Some([
+        end,
+        PdfPoint::new(
+            base_x - direction_y * half_width,
+            base_y + direction_x * half_width,
+        )
+        .ok()?,
+        PdfPoint::new(
+            base_x + direction_y * half_width,
+            base_y - direction_x * half_width,
+        )
+        .ok()?,
+    ])
+}
+
+pub fn straight_line_painted_bounds(
+    annotation: &StraightLineAnnotation,
+    antialias_allowance_pt: f64,
+) -> Option<PdfRect> {
+    if !antialias_allowance_pt.is_finite() || antialias_allowance_pt < 0. {
+        return None;
+    }
+    let mut points = vec![annotation.start, annotation.end];
+    if annotation.kind == LineKind::Arrow {
+        points.extend(straight_line_arrowhead_points(
+            annotation.start,
+            annotation.end,
+            annotation.appearance.stroke_width_pt(),
+        )?);
+    }
+    let min_x = points.iter().map(|point| point.x).fold(f64::INFINITY, f64::min);
+    let max_x = points.iter().map(|point| point.x).fold(f64::NEG_INFINITY, f64::max);
+    let min_y = points.iter().map(|point| point.y).fold(f64::INFINITY, f64::min);
+    let max_y = points.iter().map(|point| point.y).fold(f64::NEG_INFINITY, f64::max);
+    let padding = annotation.appearance.stroke_width_pt() * 0.5 + antialias_allowance_pt;
+    PdfRect::new(
+        min_x - padding,
+        min_y - padding,
+        max_x - min_x + padding * 2.,
+        max_y - min_y + padding * 2.,
+    )
+    .ok()
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PenAppearance {
     color: String,
@@ -1737,6 +1795,28 @@ pub struct CalloutAnnotation {
     pub locked: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CalloutDiskGeometry {
+    pub outer_rect: PdfRect,
+    pub rect_differences: [f32; 4],
+    pub text_box: PdfRect,
+}
+
+impl CalloutDiskGeometry {
+    pub fn reconstruct_text_box(
+        outer_rect: PdfRect,
+        rect_differences: [f32; 4],
+    ) -> Result<PdfRect, AnnotationError> {
+        let [left, bottom, right, top] = rect_differences.map(f64::from);
+        PdfRect::new(
+            outer_rect.x + left,
+            outer_rect.y + bottom,
+            outer_rect.width - left - right,
+            outer_rect.height - bottom - top,
+        )
+    }
+}
+
 impl CalloutAnnotation {
     pub fn new(
         id: MarkupId,
@@ -1765,7 +1845,7 @@ impl CalloutAnnotation {
         validate_layout_rect(text_box, "callout text box")?;
         let content = content.into();
         validate_text(&content, "callout content", MAX_TEXT_BOX_BYTES)?;
-        Ok(Self {
+        Self {
             id,
             page_index,
             leader_points,
@@ -1773,7 +1853,8 @@ impl CalloutAnnotation {
             content,
             appearance,
             locked: false,
-        })
+        }
+        .canonicalized_for_disk()
     }
 
     pub fn leader_points(&self) -> &[PdfPoint] {
@@ -1782,6 +1863,77 @@ impl CalloutAnnotation {
 
     pub fn content(&self) -> &str {
         &self.content
+    }
+
+    pub fn disk_geometry(&self) -> Result<CalloutDiskGeometry, AnnotationError> {
+        const PADDING_PT: f64 = 5.5;
+        let connection = *self
+            .leader_points
+            .last()
+            .expect("validated Callout has a connection point");
+        let tip = self.leader_points[0];
+        let leader = if self.leader_points.len() <= 2 {
+            vec![tip, connection]
+        } else {
+            let knee_index = (self.leader_points.len() - 1)
+                .saturating_div(2)
+                .min(self.leader_points.len() - 2)
+                .max(1);
+            vec![tip, self.leader_points[knee_index], connection]
+        };
+        let mut min_x = self.text_box.x;
+        let mut min_y = self.text_box.y;
+        let mut max_x = self.text_box.x + self.text_box.width;
+        let mut max_y = self.text_box.y + self.text_box.height;
+        for point in leader {
+            min_x = min_x.min(point.x);
+            min_y = min_y.min(point.y);
+            max_x = max_x.max(point.x);
+            max_y = max_y.max(point.y);
+        }
+        let raw_outer = PdfRect::new(
+            min_x - PADDING_PT,
+            min_y - PADDING_PT,
+            max_x - min_x + PADDING_PT * 2.,
+            max_y - min_y + PADDING_PT * 2.,
+        )?;
+        let left = raw_outer.x as f32;
+        let bottom = raw_outer.y as f32;
+        let right = (raw_outer.x + raw_outer.width) as f32;
+        let top = (raw_outer.y + raw_outer.height) as f32;
+        let outer_rect = PdfRect::new(
+            f64::from(left),
+            f64::from(bottom),
+            f64::from(right) - f64::from(left),
+            f64::from(top) - f64::from(bottom),
+        )?;
+        let rect_differences = [
+            (self.text_box.x - outer_rect.x) as f32,
+            (self.text_box.y - outer_rect.y) as f32,
+            (outer_rect.x + outer_rect.width - self.text_box.x - self.text_box.width) as f32,
+            (outer_rect.y + outer_rect.height - self.text_box.y - self.text_box.height) as f32,
+        ];
+        let text_box = CalloutDiskGeometry::reconstruct_text_box(outer_rect, rect_differences)?;
+        Ok(CalloutDiskGeometry {
+            outer_rect,
+            rect_differences,
+            text_box,
+        })
+    }
+
+    pub fn canonicalized_for_disk(&self) -> Result<Self, AnnotationError> {
+        const MAX_PASSES: usize = 8;
+        let mut canonical = self.clone();
+        for _ in 0..MAX_PASSES {
+            let text_box = canonical.disk_geometry()?.text_box;
+            if canonical.text_box == text_box {
+                return Ok(canonical);
+            }
+            canonical.text_box = text_box;
+        }
+        Err(AnnotationError::InvalidGeometry(
+            "Callout PDF /Rect and /RD geometry did not converge".into(),
+        ))
     }
 
     pub fn same_persisted_state_as(&self, other: &Self) -> bool {
@@ -1805,6 +1957,15 @@ impl CalloutAnnotation {
 }
 
 impl TextBoxAnnotation {
+    pub fn same_persisted_state_as(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.page_index == other.page_index
+            && self.layout_rect.same_pdf_geometry_as(other.layout_rect)
+            && self.content == other.content
+            && self.style == other.style
+            && self.locked == other.locked
+    }
+
     pub fn new(
         id: MarkupId,
         page_index: u32,
@@ -2340,6 +2501,11 @@ impl LengthCalibration {
 
     pub fn show_caption(&self) -> bool {
         self.show_caption
+    }
+
+    pub fn with_show_caption(mut self, show_caption: bool) -> Self {
+        self.show_caption = show_caption;
+        self
     }
 
     pub fn with_label(mut self, label: impl Into<String>) -> Result<Self, AnnotationError> {
@@ -3268,6 +3434,7 @@ pub enum AnnotationEdit {
     SetInkAppearance(PenAppearance),
     SetTextBoxContent(String),
     SetTextBoxLayoutRect(PdfRect),
+    SetTextBoxStyle(TextBoxStyle),
     SetDimensionEndpoint {
         endpoint: LineEndpoint,
         point: PdfPoint,
@@ -3308,6 +3475,8 @@ pub enum AnnotationEdit {
         delta_x: f64,
         delta_y: f64,
     },
+    SetCloudAppearance(RectangleAppearance),
+    SetCloudIntensity(f64),
     SetCloudPlusCloudPoint {
         vertex_index: usize,
         point: PdfPoint,
@@ -3342,6 +3511,7 @@ pub enum AnnotationEdit {
         delta_x: f64,
         delta_y: f64,
     },
+    SetMeasurementPathCalibration(LengthCalibration),
     SetMeasurementPathPoint {
         vertex_index: usize,
         point: PdfPoint,
@@ -3351,6 +3521,7 @@ pub enum AnnotationEdit {
         delta_y: f64,
     },
     SetStraightLineAppearance(StraightLineAppearance),
+    SetVertexPathAppearance(RectangleAppearance),
     TranslateLength {
         delta_x: f64,
         delta_y: f64,
@@ -7317,6 +7488,25 @@ impl AnnotationDocument {
                 });
                 Ok((AnnotationKind::TextBox, true))
             }
+            AnnotationEdit::SetTextBoxStyle(style) => {
+                let annotation = self.text_box(id).ok_or(AnnotationError::NoSelection)?;
+                if annotation.locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                if annotation.style == style {
+                    return Ok((AnnotationKind::TextBox, false));
+                }
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    state
+                        .text_boxes
+                        .iter_mut()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a validated text style edit must retain its target")
+                        .style = style;
+                });
+                Ok((AnnotationKind::TextBox, true))
+            }
             AnnotationEdit::SetArcControlPoint {
                 control,
                 point,
@@ -7654,6 +7844,26 @@ impl AnnotationDocument {
                 });
                 Ok((line_annotation_kind(kind), true))
             }
+            AnnotationEdit::SetVertexPathAppearance(appearance) => {
+                let annotation = self.vertex_path(id).ok_or(AnnotationError::NoSelection)?;
+                if annotation.locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                if annotation.appearance == appearance {
+                    return Ok((annotation.kind.into(), false));
+                }
+                let kind = annotation.kind;
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    state
+                        .vertex_paths
+                        .iter_mut()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a validated vertex-path appearance edit must retain its target")
+                        .appearance = appearance;
+                });
+                Ok((kind.into(), true))
+            }
             AnnotationEdit::SetVertexPathPoint {
                 vertex_index,
                 point,
@@ -7769,6 +7979,60 @@ impl AnnotationDocument {
                         .find(|annotation| annotation.id == id)
                         .expect("a validated cloud move must retain its target")
                         .points = points;
+                });
+                Ok((AnnotationKind::Cloud, true))
+            }
+            AnnotationEdit::SetCloudAppearance(appearance) => {
+                let annotation = self.cloud(id).ok_or(AnnotationError::NoSelection)?;
+                if annotation.locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                if annotation.appearance == appearance {
+                    return Ok((AnnotationKind::Cloud, false));
+                }
+                let mut replacement = CloudAnnotation::new(
+                    annotation.id.clone(),
+                    annotation.page_index,
+                    annotation.points.clone(),
+                    annotation.border_effect_intensity,
+                    appearance,
+                )?;
+                replacement.locked = annotation.locked;
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    *state
+                        .clouds
+                        .iter_mut()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a validated Cloud appearance edit must retain its target") =
+                        replacement;
+                });
+                Ok((AnnotationKind::Cloud, true))
+            }
+            AnnotationEdit::SetCloudIntensity(border_effect_intensity) => {
+                let annotation = self.cloud(id).ok_or(AnnotationError::NoSelection)?;
+                if annotation.locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                if annotation.border_effect_intensity == border_effect_intensity {
+                    return Ok((AnnotationKind::Cloud, false));
+                }
+                let mut replacement = CloudAnnotation::new(
+                    annotation.id.clone(),
+                    annotation.page_index,
+                    annotation.points.clone(),
+                    border_effect_intensity,
+                    annotation.appearance.clone(),
+                )?;
+                replacement.locked = annotation.locked;
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    *state
+                        .clouds
+                        .iter_mut()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a validated Cloud intensity edit must retain its target") =
+                        replacement;
                 });
                 Ok((AnnotationKind::Cloud, true))
             }
@@ -8008,7 +8272,8 @@ impl AnnotationDocument {
                 }
                 let mut replacement = annotation.clone();
                 replacement.leader_points[point_index] = point;
-                CalloutAnnotation::new(
+                let locked = replacement.locked;
+                replacement = CalloutAnnotation::new(
                     replacement.id.clone(),
                     replacement.page_index,
                     replacement.leader_points.clone(),
@@ -8016,6 +8281,7 @@ impl AnnotationDocument {
                     replacement.content.clone(),
                     replacement.appearance.clone(),
                 )?;
+                replacement.locked = locked;
                 let id = id.clone();
                 self.commit_state_change(move |state| {
                     *state
@@ -8049,6 +8315,7 @@ impl AnnotationDocument {
                     .last_mut()
                     .expect("validated callout has a connection");
                 *connection = PdfPoint::new(connection.x + delta_x, connection.y + delta_y)?;
+                replacement = replacement.canonicalized_for_disk()?;
                 let id = id.clone();
                 self.commit_state_change(move |state| {
                     *state
@@ -8082,6 +8349,7 @@ impl AnnotationDocument {
                     .iter()
                     .map(|point| PdfPoint::new(point.x + delta_x, point.y + delta_y))
                     .collect::<Result<Vec<_>, _>>()?;
+                replacement = replacement.canonicalized_for_disk()?;
                 let id = id.clone();
                 self.commit_state_change(move |state| {
                     *state
@@ -8092,6 +8360,28 @@ impl AnnotationDocument {
                         replacement;
                 });
                 Ok((AnnotationKind::Callout, true))
+            }
+            AnnotationEdit::SetMeasurementPathCalibration(calibration) => {
+                let annotation = self
+                    .measurement_path(id)
+                    .ok_or(AnnotationError::NoSelection)?;
+                if annotation.locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                if annotation.calibration == calibration {
+                    return Ok((annotation.kind.into(), false));
+                }
+                let kind = annotation.kind;
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    state
+                        .measurement_paths
+                        .iter_mut()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a validated measurement-path edit must retain its target")
+                        .calibration = calibration;
+                });
+                Ok((kind.into(), true))
             }
             AnnotationEdit::SetMeasurementPathPoint {
                 vertex_index,
@@ -11016,6 +11306,86 @@ mod tests {
     }
 
     #[test]
+    fn measurement_caption_visibility_is_one_atomic_edit_with_exact_undo_redo() {
+        let calibration = LengthCalibration::from_scale(72., 1., "m", 2, true).unwrap();
+        let length = LengthAnnotation::new(
+            id("measurement-caption:length"),
+            0,
+            point(0., 0.),
+            point(72., 0.),
+            calibration.clone(),
+        )
+        .unwrap();
+        let path = MeasurementPathAnnotation::new(
+            id("measurement-caption:path"),
+            0,
+            vec![point(0., 0.), point(72., 0.)],
+            MeasurementPathKind::Polylength,
+            calibration,
+            RectangleAppearance::default(),
+        )
+        .unwrap();
+        let mut document = AnnotationDocument::default();
+        document
+            .load_imported_annotations(
+                vec![
+                    Annotation::Length(length),
+                    Annotation::MeasurementPath(path),
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+
+        let hidden = document.snapshot().lengths[0]
+            .calibration()
+            .clone()
+            .with_show_caption(false);
+        document
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id: id("measurement-caption:length"),
+                edit: AnnotationEdit::SetLengthCalibration(hidden),
+            })
+            .unwrap();
+        let after_length = document.snapshot();
+        assert_eq!((after_length.revision, after_length.undo_depth), (1, 1));
+        assert!(!after_length.lengths[0].calibration().show_caption());
+        assert!(
+            after_length.measurement_paths[0]
+                .calibration()
+                .show_caption()
+        );
+
+        let hidden = after_length.measurement_paths[0]
+            .calibration()
+            .clone()
+            .with_show_caption(false);
+        document
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id: id("measurement-caption:path"),
+                edit: AnnotationEdit::SetMeasurementPathCalibration(hidden),
+            })
+            .unwrap();
+        let after_path = document.snapshot();
+        assert_eq!((after_path.revision, after_path.undo_depth), (2, 2));
+        assert!(!after_path.lengths[0].calibration().show_caption());
+        assert!(!after_path.measurement_paths[0].calibration().show_caption());
+
+        document.undo().unwrap();
+        assert!(
+            document.snapshot().measurement_paths[0]
+                .calibration()
+                .show_caption()
+        );
+        document.undo().unwrap();
+        assert!(document.snapshot().lengths[0].calibration().show_caption());
+        document.redo().unwrap();
+        document.redo().unwrap();
+        let redone = document.snapshot();
+        assert!(!redone.lengths[0].calibration().show_caption());
+        assert!(!redone.measurement_paths[0].calibration().show_caption());
+    }
+
+    #[test]
     fn cloud_annotation_contract_preserves_intensity_identity_and_vertex_edits() {
         let cloud = CloudAnnotation::new(
             id("cloud:contract"),
@@ -11149,6 +11519,40 @@ mod tests {
         assert_eq!(snapshot.annotation_order, vec![id("callout:contract")]);
         assert_eq!(snapshot.revision, 3);
         assert_eq!(snapshot.undo_depth, 3);
+    }
+
+    #[test]
+    fn callout_disk_geometry_canonicalization_is_an_exact_idempotent_fixed_point() {
+        let appearance = CalloutAppearance::new(
+            StraightLineAppearance::new("#ff0000", 1., 1., StrokeStyle::Solid).unwrap(),
+            TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+        )
+        .unwrap();
+        let original_leader = vec![
+            point(107.99997729745478, 312.0000086485887),
+            point(174.0000095494833, 426.0000308105971),
+            point(251.999947, 407.999988),
+        ];
+        let raw = CalloutAnnotation {
+            id: id("callout:fractional-disk-fixed-point"),
+            page_index: 0,
+            leader_points: original_leader.clone(),
+            text_box: PdfRect::new(251.999947, 385.999988, 150., 44.).unwrap(),
+            content: "field\nnote".into(),
+            appearance,
+            locked: true,
+        };
+
+        let canonical = raw.canonicalized_for_disk().unwrap();
+        let second = canonical.canonicalized_for_disk().unwrap();
+        let imported_geometry = canonical.disk_geometry().unwrap();
+
+        assert_eq!(canonical, second);
+        assert_eq!(canonical.text_box, imported_geometry.text_box);
+        assert!(canonical.text_box.same_pdf_geometry_as(imported_geometry.text_box));
+        assert_eq!(canonical.leader_points(), original_leader);
+        assert_eq!(canonical.content(), "field\nnote");
+        assert!(canonical.locked);
     }
 
     #[test]

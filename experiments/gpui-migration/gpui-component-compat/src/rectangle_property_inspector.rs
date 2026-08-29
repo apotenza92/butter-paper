@@ -64,8 +64,7 @@ pub const ELLIPSE_INSPECTOR_SCROLL_ID: &str = "ellipse-property-inspector-scroll
 pub const ELLIPSE_INSPECTOR_EMPTY_ID: &str = "ellipse-property-inspector-empty";
 pub const ELLIPSE_INSPECTOR_ACCORDION_ID: &str = "ellipse-property-inspector-sections";
 pub const ELLIPSE_INSPECTOR_DETAILS_SECTION_ID: &str = "ellipse-property-inspector-details";
-pub const ELLIPSE_INSPECTOR_APPEARANCE_SECTION_ID: &str =
-    "ellipse-property-inspector-appearance";
+pub const ELLIPSE_INSPECTOR_APPEARANCE_SECTION_ID: &str = "ellipse-property-inspector-appearance";
 pub const ELLIPSE_INSPECTOR_LAYOUT_SECTION_ID: &str = "ellipse-property-inspector-layout";
 pub const ELLIPSE_INSPECTOR_LOCKED_ID: &str = "ellipse-property-inspector-locked";
 pub const ELLIPSE_INSPECTOR_STROKE_COLOR_ID: &str = "ellipse-property-inspector-stroke-color";
@@ -715,20 +714,18 @@ impl Render for RectanglePropertyInspector {
                                     "ellipse-property-inspector-locked-switch"
                                 }
                             })
-                                .label("Locked")
-                                .checked(snapshot.locked)
-                                .disabled(mutation_disabled)
-                                .w(px(36.))
-                                .h(px(20.))
-                                .overflow_hidden()
-                                .on_click(move |locked, _, cx| {
-                                    let _ = lock_control.update(cx, |inspector, cx| {
-                                        inspector.emit_patch(
-                                            RectanglePropertyPatch::Locked(*locked),
-                                            cx,
-                                        );
-                                    });
-                                }),
+                            .label("Locked")
+                            .checked(snapshot.locked)
+                            .disabled(mutation_disabled)
+                            .w(px(36.))
+                            .h(px(20.))
+                            .overflow_hidden()
+                            .on_click(move |locked, _, cx| {
+                                let _ = lock_control.update(cx, |inspector, cx| {
+                                    inspector
+                                        .emit_patch(RectanglePropertyPatch::Locked(*locked), cx);
+                                });
+                            }),
                         ),
                 ),
             );
@@ -781,25 +778,24 @@ impl Render for RectanglePropertyInspector {
                                     "ellipse-property-inspector-fill-enabled-switch"
                                 }
                             })
-                                .label("Fill")
-                                .checked(fill_enabled)
-                                .disabled(property_disabled)
-                                .w(px(36.))
-                                .h(px(20.))
-                                .overflow_hidden()
-                                .on_click(move |enabled, _, cx| {
-                                    let color = fill_color
-                                        .read(cx)
-                                        .value()
-                                        .map(opaque_hex)
-                                        .unwrap_or_else(|| "#ffffff".into());
-                                    let patch = RectanglePropertyPatch::FillColor(
-                                        (*enabled).then_some(color),
-                                    );
-                                    let _ = fill_control.update(cx, |inspector, cx| {
-                                        inspector.emit_patch(patch, cx);
-                                    });
-                                }),
+                            .label("Fill")
+                            .checked(fill_enabled)
+                            .disabled(property_disabled)
+                            .w(px(36.))
+                            .h(px(20.))
+                            .overflow_hidden()
+                            .on_click(move |enabled, _, cx| {
+                                let color = fill_color
+                                    .read(cx)
+                                    .value()
+                                    .map(opaque_hex)
+                                    .unwrap_or_else(|| "#ffffff".into());
+                                let patch =
+                                    RectanglePropertyPatch::FillColor((*enabled).then_some(color));
+                                let _ = fill_control.update(cx, |inspector, cx| {
+                                    inspector.emit_patch(patch, cx);
+                                });
+                            }),
                         ),
                 ),
             )
@@ -821,20 +817,8 @@ impl Render for RectanglePropertyInspector {
             .id(ids.layout)
             .debug_selector(move || ids.layout.into())
             .gap_3()
-            .child(number_field(
-                ids.x,
-                "X",
-                &self.x,
-                "pt",
-                property_disabled,
-            ))
-            .child(number_field(
-                ids.y,
-                "Y",
-                &self.y,
-                "pt",
-                property_disabled,
-            ))
+            .child(number_field(ids.x, "X", &self.x, "pt", property_disabled))
+            .child(number_field(ids.y, "Y", &self.y, "pt", property_disabled))
             .child(number_field(
                 ids.width,
                 "Width",

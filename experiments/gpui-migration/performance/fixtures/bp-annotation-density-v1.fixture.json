@@ -1,0 +1,57 @@
+{
+  "schema_version": "bp-fixture-spec-v1",
+  "fixture_id": "bp-annotation-density-v1",
+  "source": {
+    "kind": "deterministically-generated",
+    "license": "MIT",
+    "contains_private_material": false
+  },
+  "coordinate_space": "pdf-points-bottom-left",
+  "document": {
+    "page_count": 100,
+    "page_width": 612,
+    "page_height": 792
+  },
+  "annotation_generator": {
+    "schema_version": "bp-rectangle-density-recipe-v1",
+    "annotation_type": "rectangle",
+    "empty_interaction_page": 1,
+    "dense_interaction_page": 2,
+    "dense_page_annotation_count": 100,
+    "pages_3_through_20_annotation_count": 10,
+    "pages_21_through_100_annotation_count": 9,
+    "total_annotation_count": 1000
+  },
+  "visual_crops": [
+    {
+      "crop_id": "density-empty-interaction-page",
+      "page_id": "bp-annotation-density-v1:page:001",
+      "pdf_rect": { "x": 36, "y": 72, "width": 540, "height": 648 },
+      "expected_annotation_count": 0,
+      "minimum_settled_density": 1
+    },
+    {
+      "crop_id": "density-100-annotation-page",
+      "page_id": "bp-annotation-density-v1:page:002",
+      "pdf_rect": { "x": 36, "y": 72, "width": 540, "height": 648 },
+      "expected_annotation_count": 100,
+      "minimum_settled_density": 1
+    },
+    {
+      "crop_id": "density-typical-page",
+      "page_id": "bp-annotation-density-v1:page:100",
+      "pdf_rect": { "x": 72, "y": 120, "width": 468, "height": 576 },
+      "expected_annotation_count": 9,
+      "minimum_settled_density": 1
+    }
+  ],
+  "artifact_sha256": {
+    "pdf": "1dad337b97d573ff971e886eb6509e80e5e1cd07f6ac610ae4f2f9419c666682",
+    "commands": "ab901d472b7b0ae90a621f928392397b3a53f93273d88a11bb5be08bf132586e",
+    "expected": "8a55a278b1e68cd8397aebbeed964772d56f4324efdcb5c4a3197782e4f3c999",
+    "crops": "5c9ef8cdf8fd3a4a5ba660a3faaaecba2ddcf8f688c1609372f2c77ad6dfbf51"
+  },
+  "canonical_expected": {
+    "sha256": "8a55a278b1e68cd8397aebbeed964772d56f4324efdcb5c4a3197782e4f3c999"
+  }
+}

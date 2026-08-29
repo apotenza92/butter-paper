@@ -1,7 +1,5 @@
-use butter_paper_gpui_gallery::page_geometry::{
-    PageCoordinateSpace, PdfPoint, PdfRect, Rotation,
-};
 use butter_paper_gpui_gallery::annotation_model::PageTransform;
+use butter_paper_gpui_gallery::page_geometry::{PageCoordinateSpace, PdfPoint, PdfRect, Rotation};
 use lopdf::{Document, Object, dictionary};
 
 fn crop_space(rotation: Rotation) -> PageCoordinateSpace {
@@ -23,7 +21,10 @@ fn crop_box_origin_and_all_rotations_match_electron_oracle() {
         (Rotation::Degrees270, PdfPoint::new(684.0, 504.0)),
     ];
     for (rotation, expected) in cases {
-        assert_eq!(crop_space(rotation).pdf_to_viewport(PdfPoint::new(72.0, 108.0)), expected);
+        assert_eq!(
+            crop_space(rotation).pdf_to_viewport(PdfPoint::new(72.0, 108.0)),
+            expected
+        );
     }
 }
 
@@ -60,20 +61,24 @@ fn rectangles_round_trip_through_each_rotation() {
 
 #[test]
 fn invalid_boxes_units_and_rotations_are_rejected() {
-    assert!(PageCoordinateSpace::new(
-        PdfRect::new(0.0, 0.0, 10.0, 10.0).unwrap(),
-        PdfRect::new(0.0, 0.0, 0.0, 10.0).unwrap(),
-        Rotation::Degrees0,
-        1.0,
-    )
-    .is_err());
-    assert!(PageCoordinateSpace::new(
-        PdfRect::new(0.0, 0.0, 10.0, 10.0).unwrap(),
-        PdfRect::new(0.0, 0.0, 10.0, 10.0).unwrap(),
-        Rotation::Degrees0,
-        0.0,
-    )
-    .is_err());
+    assert!(
+        PageCoordinateSpace::new(
+            PdfRect::new(0.0, 0.0, 10.0, 10.0).unwrap(),
+            PdfRect::new(0.0, 0.0, 0.0, 10.0).unwrap(),
+            Rotation::Degrees0,
+            1.0,
+        )
+        .is_err()
+    );
+    assert!(
+        PageCoordinateSpace::new(
+            PdfRect::new(0.0, 0.0, 10.0, 10.0).unwrap(),
+            PdfRect::new(0.0, 0.0, 10.0, 10.0).unwrap(),
+            Rotation::Degrees0,
+            0.0,
+        )
+        .is_err()
+    );
     assert!(Rotation::from_degrees(45).is_err());
 }
 
@@ -105,8 +110,14 @@ fn inherited_page_dictionary_values_are_resolved_once_at_the_page_boundary() {
     );
 
     let space = PageCoordinateSpace::from_lopdf_page(&document, page_id).unwrap();
-    assert_eq!(space.media_box(), PdfRect::new(0.0, 0.0, 612.0, 792.0).unwrap());
-    assert_eq!(space.view_box(), PdfRect::new(36.0, 72.0, 540.0, 720.0).unwrap());
+    assert_eq!(
+        space.media_box(),
+        PdfRect::new(0.0, 0.0, 612.0, 792.0).unwrap()
+    );
+    assert_eq!(
+        space.view_box(),
+        PdfRect::new(36.0, 72.0, 540.0, 720.0).unwrap()
+    );
     assert_eq!(space.rotation(), Rotation::Degrees270);
     assert_eq!(space.user_unit(), 2.0);
 }
@@ -160,8 +171,10 @@ fn annotation_transform_consumes_the_same_crop_origin_and_user_unit() {
     let local = transform.point_to_local_pixels(point);
     assert_eq!(local.x, 36.0);
     assert_eq!(local.y, 36.0);
-    assert_eq!(transform.point_from_local_pixels(local.x, local.y).unwrap(),
-        butter_paper_gpui_gallery::annotation_model::PdfPoint::new(72.0, 108.0).unwrap());
+    assert_eq!(
+        transform.point_from_local_pixels(local.x, local.y).unwrap(),
+        butter_paper_gpui_gallery::annotation_model::PdfPoint::new(72.0, 108.0).unwrap()
+    );
     assert_eq!(transform.tolerance_points(8.0).unwrap(), 8.0);
 }
 

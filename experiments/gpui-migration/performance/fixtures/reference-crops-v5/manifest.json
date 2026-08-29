@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "fixture_id": "nasa-apollo-summary-526-v1",
+  "fixture_sha256": "68d0f3bb93fd1c4e4f3adf99d483e9161f14293a311e25aa6c31241bbbb84049",
+  "generator": "Poppler pdftoppm with locked v5 PDF-point registrations",
+  "generator_version": "pdftoppm version 26.01.0",
+  "receipts": [
+    {
+      "crop_id": "nasa-scroll-start-page-1-header",
+      "file": "nasa-scroll-start-page-1-header.png",
+      "registration_sha256": "0bb76493a0dbe1ce881c8e8aae6ed2d15b7365fb4b7218ead31501019a4b4b11",
+      "reference_crop_sha256": "9618896b1558e6e92b1b0d10fec4f1480bd74b7e36d749dde07505eabfad8b5a",
+      "page_number": 1,
+      "page_size_points": {
+        "width": 610,
+        "height": 792
+      },
+      "dpi": 144,
+      "dimensions": {
+        "width": 1076,
+        "height": 252
+      }
+    },
+    {
+      "crop_id": "nasa-scroll-middle-page-15-body",
+      "file": "nasa-scroll-middle-page-15-body.png",
+      "registration_sha256": "071e4d5da297007166108ced9b111030e9189684e2ce817aaf1f1c114d3099ce",
+      "reference_crop_sha256": "d0145b0e6e2240098477f7b029d3d52dc912e1633a7cf7dd338b35c50c465a03",
+      "page_number": 15,
+      "page_size_points": {
+        "width": 610,
+        "height": 792
+      },
+      "dpi": 144,
+      "dimensions": {
+        "width": 1000,
+        "height": 576
+      }
+    },
+    {
+      "crop_id": "nasa-scroll-forward-apex-page-29-footer",
+      "file": "nasa-scroll-forward-apex-page-29-footer.png",
+      "registration_sha256": "de43049aa72f0769716781350dcbc1ad35fc3e76ad8ee6af35bc328c54f1d659",
+      "reference_crop_sha256": "c72c0763c9522e475f205ac7b570b8e0cbee1071497bd163aa2c1ae51f099c77",
+      "page_number": 29,
+      "page_size_points": {
+        "width": 610,
+        "height": 792
+      },
+      "dpi": 144,
+      "dimensions": {
+        "width": 1000,
+        "height": 252
+      }
+    }
+  ]
+}

@@ -25,6 +25,23 @@
 - Keep disposable output under ignored directories such as `test-results/`, `playwright-report/`, package `dist/` folders, `.vite/`, `release/`, and native `target/` folders.
 - Do not add machine-specific absolute paths to tracked files.
 
+## Agent skills
+
+### Issue tracker
+
+Specs and implementation tickets live in this repository's GitHub Issues. See
+`docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default five-role triage vocabulary. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This monorepo uses a multi-context domain-document layout. See
+`docs/agents/domain.md`.
+
 ## Required workflow
 
 1. Inspect `git status` before editing and preserve unrelated user changes.

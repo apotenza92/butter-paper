@@ -41,6 +41,21 @@ version evidence above closes the earlier unversioned notice gap for this
 experiment. A future packaged candidate must include the corresponding Lucide
 license text and verify the final embedded asset inventory.
 
+## Electron product icon geometry
+
+- Name: `lucide-react`
+- Version: `1.8.0`
+- Repository lock integrity:
+  `sha512-WuvlsjngSk7TnTBJ1hsCy3ql9V9VOdcPkd3PKcSmM34vJD8KG6molxz7m7zbYFgICwsanQWmJ13JlYs4Zp7Arw==`
+- License: ISC
+- Installed reviewed license SHA-256:
+  `b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57`
+
+The experiment-owned canvas paths for MoveHorizontal, Expand,
+RectangleVertical, ZoomIn, and ZoomOut reproduce the 24 px geometry used by the
+shipping Electron toolbar. This product dependency is separate from the
+Longbridge Lucide 0.546.0 component-asset evidence above.
+
 ## Butter Paper GPUI gallery library seam
 
 - Source: `../gpui-gallery` in this isolated experiment

@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "calibration_id": "bp-cross-engine-binary-scan-fidelity-v2-nasa-1",
+  "purpose": "Cross-engine invariance calibration only. These PDFium crops are not acceptance references and do not replace the independent Poppler reference crops.",
+  "acceptance_reference": false,
+  "independent_reference_manifest": "../reference-crops-v5/manifest.json",
+  "source_pdf": {
+    "fixture_id": "nasa-apollo-summary-526-v1",
+    "sha256": "68d0f3bb93fd1c4e4f3adf99d483e9161f14293a311e25aa6c31241bbbb84049",
+    "page_encoding": "2544x3300 one-bit grayscale CCITT scan at 300 DPI"
+  },
+  "source_report": {
+    "path": "performance/results/dynamic-fidelity-v4/report.json",
+    "sha256": "49c05082ec7c60fe599f8c362dee460a811362b2934e3b3c689793fb2e4cdaae",
+    "note": "The report failed the superseded raw cross-engine SSIM gate; its retained current-generation backing rasters remain the source evidence for this calibration."
+  },
+  "source_binary": {
+    "path": "gpui-gallery/target/release/butter-paper-gpui-gallery",
+    "sha256": "572a064cf89201ef5b88592366d42681eb43d39c40aaa054cd45ebf7b58dceb9"
+  },
+  "candidate_renderer": {
+    "engine": "PDFium",
+    "api_build": 7881,
+    "wrapper": "pdfium-render 0.9.4",
+    "wrapper_revision": "6cee8b9a3951832ac0ff62ce4c32800278001cb8",
+    "linux_x86_64_library_sha256": "f728930966f503652b92acc89b9374a2eeca00ce42e26dccd3e4b5c5161b2d64"
+  },
+  "reference_renderer": {
+    "engine": "Poppler pdftoppm",
+    "version": "26.01.0",
+    "dpi": 144
+  },
+  "metric": {
+    "algorithm": "bp-cross-engine-binary-scan-fidelity-v2",
+    "maximum_phase_offset_px": 1,
+    "gaussian_sigma_px": 2,
+    "gaussian_radius_px": 6,
+    "dark_luma_max": 192,
+    "dark_match_radius_px": 1,
+    "minimum_filtered_ssim": 0.97,
+    "minimum_dark_precision": 0.99,
+    "minimum_dark_recall": 0.99,
+    "minimum_dark_f1": 0.99
+  },
+  "receipts": [
+    {
+      "crop_id": "nasa-scroll-start-page-1-header",
+      "page_number": 1,
+      "render_generation": 1,
+      "file": "nasa-scroll-start-page-1-header-pdfium.png",
+      "candidate_crop_sha256": "6e56c55e32a50839b833966b5dd2bce825f51c161cb27edb5eba93e7f36dbdbe",
+      "source_backing_raster_sha256": "34bd4d21d89e7b53cae55d303ba6a4a6f5142d5374e89cdc785f8fc68bc4e63a",
+      "reference_crop_sha256": "9618896b1558e6e92b1b0d10fec4f1480bd74b7e36d749dde07505eabfad8b5a",
+      "dimensions": {
+        "width": 1076,
+        "height": 252
+      },
+      "phase_offset_px": {
+        "dx": 1,
+        "dy": 0
+      },
+      "filtered_ssim_luma": 0.997262347833718,
+      "dark_precision": 0.9999719746650972,
+      "dark_recall": 0.9999447498549684,
+      "dark_f1": 0.9999583620747277
+    },
+    {
+      "crop_id": "nasa-scroll-middle-page-15-body",
+      "page_number": 15,
+      "render_generation": 47,
+      "file": "nasa-scroll-middle-page-15-body-pdfium.png",
+      "candidate_crop_sha256": "f0a57a28d85af6ae35184048d696d64150d072a91797681281dcbbd09490ef29",
+      "source_backing_raster_sha256": "050a69aa953f60fe599f8c362dee460a811362b2934e3b3c689793fb2e4cdaae",
+      "reference_crop_sha256": "d0145b0e6e2240098477f7b029d3d52dc912e1633a7cf7dd338b35c50c465a03",
+      "dimensions": {
+        "width": 1000,
+        "height": 576
+      },
+      "phase_offset_px": {
+        "dx": 1,
+        "dy": 1
+      },
+      "filtered_ssim_luma": 0.994213076942878,
+      "dark_precision": 1,
+      "dark_recall": 0.999836103189432,
+      "dark_f1": 0.9999180448786246
+    },
+    {
+      "crop_id": "nasa-scroll-forward-apex-page-29-footer",
+      "page_number": 29,
+      "render_generation": 102,
+      "file": "nasa-scroll-forward-apex-page-29-footer-pdfium.png",
+      "candidate_crop_sha256": "2d0ad18edba94c294682187be3d57863ba379899c7165d91c0361b877fbc3b46",
+      "source_backing_raster_sha256": "89f48689ba7641a2ff72543c60343d344ed86e11eaf6719c05b5a9497a2a4bdd",
+      "reference_crop_sha256": "c72c0763c9522e475f205ac7b570b8e0cbee1071497bd163aa2c1ae51f099c77",
+      "dimensions": {
+        "width": 1000,
+        "height": 252
+      },
+      "phase_offset_px": {
+        "dx": 1,
+        "dy": 1
+      },
+      "filtered_ssim_luma": 0.9751306591666944,
+      "dark_precision": 1,
+      "dark_recall": 0.9954401519949335,
+      "dark_f1": 0.9977148660657611
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "schema_version": "bp-fixture-spec-v1",
+  "fixture_id": "bp-coordinate-space-v1",
+  "source": { "kind": "deterministically-generated", "license": "MIT", "contains_private_material": false },
+  "coordinate_space": "pdf-points-bottom-left",
+  "document": {
+    "page_count": 1,
+    "pages": [
+      { "page_id": "bp-coordinate-space-v1:page:001", "width": 360, "height": 240, "rotation": 90, "crop_box": [18, 24, 342, 216], "user_unit": 2 }
+    ]
+  },
+  "native_annotations": [],
+  "commands": [],
+  "visual_crops": [
+    { "crop_id": "coordinate-space-center", "page_id": "bp-coordinate-space-v1:page:001", "pdf_rect": { "x": 126, "y": 84, "width": 108, "height": 72 }, "expected_annotation_ids": [], "minimum_settled_density": 1, "minimum_ssim": 0.985 }
+  ],
+  "artifact_sha256": {
+    "pdf": "dc450b09b502f23518ed361986d9a939ed6b9c2dc1fdb6890af30fae4b253a7d",
+    "commands": "0c9d7ea26ca5eaee978e3e5febf0ba7a2a2ec1172eac2ad45e6b9361ab5ca14a",
+    "expected": "016c4ee8214de2640eb57e0b6bafea69ac3247b505f1941aa3564e2e4bf498ad",
+    "crops": "db0dfe3d4f7463f9ad526d8fb1f74a951f977caffed5edecb107d85601b755b2",
+    "native": "e498f1937b10960cbfc11581b99b191fa14299668300611212712bbbd17ed454"
+  },
+  "asset_sha256": { "bp-image-checker-v1": "fcc714d1ac60ed4b88abf7297830479c7557cb9d219033e7a5a5ad4d6ec18dda" },
+  "canonical_expected": {
+    "sha256": "016c4ee8214de2640eb57e0b6bafea69ac3247b505f1941aa3564e2e4bf498ad",
+    "state": {
+      "schema_version": "bp-canonical-annotation-state-v1",
+      "fixture_id": "bp-coordinate-space-v1",
+      "document": {
+        "page_count": 1,
+        "page_ids": ["bp-coordinate-space-v1:page:001"],
+        "pages": [
+          { "page_id": "bp-coordinate-space-v1:page:001", "width": 360, "height": 240, "rotation": 90, "crop_box": [18, 24, 342, 216], "user_unit": 2 }
+        ]
+      },
+      "annotations": [],
+      "selected_annotation_ids": [],
+      "history": { "undo_depth": 0, "redo_depth": 0 },
+      "dirty": false
+    }
+  },
+  "native_annotation_generator": { "copy_annotations_to_canonical_state": true }
+}

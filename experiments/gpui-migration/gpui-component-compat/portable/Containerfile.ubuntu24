@@ -1,0 +1,42 @@
+FROM ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+COPY ca-certificates_20240203_all.deb /tmp/
+
+RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources \
+    && mkdir -p /tmp/ca-root /etc/ssl/certs \
+    && dpkg-deb -x /tmp/ca-certificates_20240203_all.deb /tmp/ca-root \
+    && find /tmp/ca-root/usr/share/ca-certificates -type f -name '*.crt' -exec cat {} + > /etc/ssl/certs/ca-certificates.crt \
+    && printf '%s\n' \
+      'deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://snapshot.ubuntu.com/ubuntu/20260820T000000Z noble main universe' \
+      'deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://snapshot.ubuntu.com/ubuntu/20260820T000000Z noble-updates main universe' \
+      'deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://snapshot.ubuntu.com/ubuntu/20260820T000000Z noble-security main universe' \
+      'deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://snapshot.ubuntu.com/ubuntu/20260820T000000Z noble-backports main universe' \
+      > /etc/apt/sources.list.d/ubuntu-snapshot.list \
+    && apt-get -o Acquire::Check-Valid-Until=false update \
+    && printf '%s  %s\n' \
+      cdb2f31d809f589719a53c6ad15f255b27569c4059542ada282aaa21b8e164b0 /var/lib/apt/lists/snapshot.ubuntu.com_ubuntu_20260820T000000Z_dists_noble_InRelease \
+      79d2a1c90ce4f14c98867053190c64a9018ac993702fe5146081873f3da526bf /var/lib/apt/lists/snapshot.ubuntu.com_ubuntu_20260820T000000Z_dists_noble-updates_InRelease \
+      dd26a7efe93a3a3e3125c97e9f27f18a0fc357589f9b346dba72b158bd7e1e41 /var/lib/apt/lists/snapshot.ubuntu.com_ubuntu_20260820T000000Z_dists_noble-security_InRelease \
+      835d68e98bf884be2dda56da61d8f17b9ac026dd2165ee12acb8719a365cfcea /var/lib/apt/lists/snapshot.ubuntu.com_ubuntu_20260820T000000Z_dists_noble-backports_InRelease \
+      | sha256sum --check --strict \
+    && apt-get install -y --no-install-recommends \
+      build-essential \
+      ca-certificates \
+      clang \
+      git \
+      libfontconfig-dev \
+      libvulkan-dev \
+      libx11-dev \
+      libxcb1-dev \
+      libxcb-xkb-dev \
+      libxkbcommon-dev \
+      libxkbcommon-x11-dev \
+      poppler-utils=24.02.0-1ubuntu9.9 \
+      pkg-config \
+      qpdf=11.9.0-1.1ubuntu0.1 \
+      xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /source/gpui-component-compat

@@ -9,6 +9,8 @@ use gpui_component::{
     menu::PopupMenuItem,
 };
 
+use crate::accessible_button::accessible_icon_button;
+
 pub const CONTINUOUS_SPLIT_ID: &str = "continuous-view-split";
 pub const CONTINUOUS_PRIMARY_ID: &str = "continuous-view-primary";
 pub const SINGLE_PAGE_SPLIT_ID: &str = "single-page-view-split";
@@ -166,8 +168,8 @@ impl PageViewControl {
 
     fn label(&self) -> &'static str {
         match self.mode {
-            PageViewMode::Continuous => "Continuous",
-            PageViewMode::SinglePage => "Single page",
+            PageViewMode::Continuous => "Continuous View",
+            PageViewMode::SinglePage => "Single Page View",
         }
     }
 }
@@ -192,6 +194,10 @@ impl Render for PageViewControl {
             PageViewMode::SinglePage => "single-page-view-split-probe",
         };
         let label = self.label();
+        let icon = match self.mode {
+            PageViewMode::Continuous => crate::viewer_icons::continuous_icon().into_any_element(),
+            PageViewMode::SinglePage => crate::viewer_icons::single_page_icon().into_any_element(),
+        };
         let zoom_control = cx.entity().clone();
         let scroll_control = cx.entity().clone();
 
@@ -201,11 +207,12 @@ impl Render for PageViewControl {
             .child(
                 DropdownButton::new(split_id)
                     .small()
-                    .button(
+                    .button(accessible_icon_button(
                         Button::new(primary_id)
                             .debug_selector(move || primary_id.into())
                             .accessibility_id(primary_id)
-                            .label(label)
+                            .tooltip(label)
+                            .child(icon)
                             .selected(selected)
                             .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
                                 if event.click_count() == 2 {
@@ -219,7 +226,8 @@ impl Render for PageViewControl {
                                 }
                                 cx.notify();
                             })),
-                    )
+                        label,
+                    ))
                     .selected(selected)
                     .disabled(disabled)
                     .dropdown_menu(move |menu, _, _| {

@@ -2,27 +2,127 @@ use butter_paper_gpui_gallery::{
     annotation_adapter::{
         AnnotationAdapter, AnnotationTool, ELLIPSE_ROTATION_HANDLE_ID, HighlightPaintCapability,
         LENGTH_SCALE_REQUIRED_MESSAGE, PointerInputModifiers, PointerPhaseOutcome,
-        RectangleSnapSettings, StraightLinePropertyEdit, ellipse_resize_handle_id,
+        RectangleSnapSettings, StraightLinePropertyEdit, VertexPathPropertyEdit, ellipse_resize_handle_id,
         ellipse_resize_handle_point, ellipse_rotation_handle_point, redact_resize_handle_id,
         redact_resize_handle_point, snapshot_resize_handle_id, snapshot_resize_handle_point,
     },
     annotation_model::{
         Annotation, AnnotationCommand, AnnotationDocument, AnnotationEdit, AnnotationKind,
-        BlendMode, DecodedRgbaAsset, DimensionAnnotation, EllipseAnnotation, HitTarget,
+        ArcAnnotation, ArcControlPoint, BlendMode, CloudAnnotation, DecodedRgbaAsset, DimensionAnnotation,
+        EllipseAnnotation, HitTarget,
         ImageAnnotation, InkTool, LengthAnnotation, LengthCalibration, LineEndpoint, LineKind,
-        MarkupId, MeasurementPathKind, PageScale, PdfPoint, PdfRect, PenAnnotation, PenAppearance,
-        PointerCancelReason, RectangleAnnotation, RectangleAppearance, RectangleResizeHandle,
-        RedactAnnotation, ScalePrecision, ScaleSource, ScaleUnit, SnapshotAnnotation,
-        StraightLineAnnotation, StraightLineAppearance, TextBoxAnnotation, TextBoxStyle,
+        MarkupId, MeasurementPathAnnotation, MeasurementPathKind, PageRotation, PageScale,
+        PageTransform, PdfPoint, PdfRect, PenAnnotation, PenAppearance, PointerCancelReason,
+        RectangleAnnotation, RectangleAppearance, RectangleResizeHandle, RedactAnnotation,
+        ScalePrecision, ScaleSource, ScaleUnit, SnapshotAnnotation, StraightLineAnnotation,
+        StraightLineAppearance, StrokeStyle, TextAlignment, TextBoxAnnotation, TextBoxStyle,
         VertexPathAnnotation, VertexPathKind,
     },
     native_editing_v5::NativeEditingV5Plan,
-    semantic_snapping::{SemanticSnapRole, SemanticSnapSettings},
     selection_geometry::SelectionPoint,
+    semantic_snapping::{SemanticSnapRole, SemanticSnapSettings},
 };
 
 fn point(x: f64, y: f64) -> PdfPoint {
     PdfPoint::new(x, y).unwrap()
+}
+
+#[test]
+fn exact_engineering_visual_edits_are_atomic_history_safe_and_selection_bound() {
+    let mut adapter = AnnotationAdapter::default();
+    let arc_id = MarkupId::new("arc:visual").unwrap();
+    let cloud_id = MarkupId::new("cloud:visual").unwrap();
+    let snapshot_id = MarkupId::new("snapshot:visual").unwrap();
+    let arc = ArcAnnotation::new(
+        arc_id.clone(),
+        0,
+        point(10., 10.),
+        point(110., 10.),
+        point(60., 60.),
+        RectangleAppearance::default().with_stroke_style(StrokeStyle::Dashed),
+    )
+    .unwrap();
+    let cloud = CloudAnnotation::new(
+        cloud_id.clone(),
+        0,
+        vec![point(140., 20.), point(220., 20.), point(180., 90.)],
+        2.,
+        RectangleAppearance::default().with_stroke_style(StrokeStyle::Dotted),
+    )
+    .unwrap();
+    let snapshot_asset = DecodedRgbaAsset::new(2, 2, vec![0x80; 16]).unwrap();
+    let snapshot = SnapshotAnnotation::new(
+        snapshot_id.clone(),
+        0,
+        PdfRect::new(250., 20., 80., 60.).unwrap(),
+        snapshot_asset.clone(),
+        1.,
+    )
+    .unwrap()
+    .with_rotation_degrees(33.)
+    .unwrap();
+    adapter
+        .load_imported_annotations(
+            122,
+            vec![Annotation::Arc(arc), Annotation::Cloud(cloud), Annotation::Snapshot(snapshot)],
+        )
+        .unwrap();
+
+    assert!(adapter.select_id(122, &arc_id));
+    let arc_before = adapter.exact_selected_arc(122).unwrap().clone();
+    let arc_appearance = RectangleAppearance::new("#2563eb", 4., None::<String>, 0.5)
+        .unwrap()
+        .with_stroke_style(arc_before.appearance.stroke_style());
+    adapter
+        .set_exact_selected_arc_appearance(122, arc_appearance.clone())
+        .unwrap();
+    assert_eq!(adapter.history_depths(122), (1, 0));
+    let arc_after = adapter.exact_selected_arc(122).unwrap();
+    assert_eq!(arc_after.appearance, arc_appearance);
+    assert_eq!((arc_after.start, arc_after.mid, arc_after.end), (arc_before.start, arc_before.mid, arc_before.end));
+    adapter
+        .set_exact_selected_arc_appearance(122, arc_after.appearance.clone())
+        .unwrap();
+    assert_eq!(adapter.history_depths(122), (1, 0), "exact no-op must not add history");
+
+    assert!(adapter.select_id(122, &cloud_id));
+    let cloud_before = adapter.exact_selected_cloud(122).unwrap().clone();
+    let cloud_appearance = RectangleAppearance::new("#16a34a", 3., None::<String>, 0.65)
+        .unwrap()
+        .with_stroke_style(cloud_before.appearance.stroke_style());
+    adapter
+        .set_exact_selected_cloud_appearance(122, cloud_appearance.clone())
+        .unwrap();
+    adapter.set_exact_selected_cloud_intensity(122, 3.5).unwrap();
+    let cloud_after = adapter.exact_selected_cloud(122).unwrap();
+    assert_eq!(cloud_after.appearance, cloud_appearance);
+    assert_eq!(cloud_after.border_effect_intensity(), 3.5);
+    assert_eq!(cloud_after.points(), cloud_before.points());
+    assert!(adapter.set_exact_selected_cloud_intensity(122, 4.01).is_err());
+    assert_eq!(adapter.history_depths(122), (3, 0));
+
+    assert!(adapter.select_id(122, &snapshot_id));
+    adapter.set_exact_selected_snapshot_opacity(122, 0.4).unwrap();
+    let snapshot_after = adapter.exact_selected_snapshot(122).unwrap();
+    assert_eq!(snapshot_after.opacity(), 0.4);
+    assert_eq!(snapshot_after.asset(), &snapshot_asset);
+    assert_eq!(snapshot_after.rotation_degrees(), 33.);
+    assert_eq!(snapshot_after.rect, PdfRect::new(250., 20., 80., 60.).unwrap());
+    assert_eq!(adapter.history_depths(122), (4, 0));
+
+    adapter.undo(122).unwrap();
+    assert_eq!(adapter.exact_selected_snapshot(122).unwrap().opacity(), 1.);
+    adapter.redo(122).unwrap();
+    assert_eq!(adapter.exact_selected_snapshot(122).unwrap().opacity(), 0.4);
+
+    adapter.set_selected_locked(122, true).unwrap();
+    assert!(adapter.set_exact_selected_snapshot_opacity(122, 0.2).is_err());
+    adapter.set_selected_locked(122, false).unwrap();
+    adapter.select_all_on_page(122, 0);
+    assert!(adapter.exact_selected_arc(122).is_none());
+    assert!(adapter.exact_selected_cloud(122).is_none());
+    assert!(adapter.exact_selected_snapshot(122).is_none());
+    assert!(adapter.set_exact_selected_cloud_intensity(122, 1.).is_err());
 }
 
 #[test]
@@ -575,6 +675,222 @@ fn arc_three_click_creation_snaps_the_bulge_and_retains_stable_control_points() 
 }
 
 #[test]
+fn arc_pointer_preview_is_coherent_css_scaled_and_revalidated_at_release() {
+    let document_id = 193;
+    let arc_id = MarkupId::new("arc:adapter:manipulation").unwrap();
+    let rectangle_id = MarkupId::new("rectangle:adapter:other").unwrap();
+    let appearance = RectangleAppearance::new("#2563eb", 2., None::<String>, 0.65).unwrap();
+    let arc = ArcAnnotation::new(
+        arc_id.clone(),
+        0,
+        point(0., 0.),
+        point(100., 0.),
+        point(50., 50.),
+        appearance.clone(),
+    )
+    .unwrap();
+    let rectangle = RectangleAnnotation {
+        id: rectangle_id.clone(),
+        page_index: 0,
+        rect: PdfRect::new(200., 200., 40., 30.).unwrap(),
+        rotation_degrees: 0.,
+        appearance: RectangleAppearance::default(),
+        locked: false,
+    };
+    let mut adapter = AnnotationAdapter::default();
+    adapter
+        .load_imported_annotations(
+            document_id,
+            vec![Annotation::Arc(arc.clone()), Annotation::Rectangle(rectangle)],
+        )
+        .unwrap();
+    adapter.set_observed_pixels_per_point(2.).unwrap();
+    adapter.set_tool(AnnotationTool::Select).unwrap();
+    assert!(adapter.select_id(document_id, &arc_id));
+
+    assert_eq!(
+        adapter.pointer_down(document_id, 0, 31, point(4., 0.), 2.).unwrap(),
+        PointerPhaseOutcome::GestureStarted,
+        "a point eight CSS pixels from Start must hit the handle at 2 px/pt",
+    );
+    adapter.pointer_move(31, point(-10., 12.)).unwrap();
+    let start_preview = &adapter.document_scene(document_id, 0).arcs[0];
+    assert!(start_preview.draft);
+    assert_eq!(start_preview.start, point(-10., 12.));
+    assert_eq!(start_preview.mid, point(50., 50.));
+    assert_eq!(start_preview.end, point(100., 0.));
+    adapter.cancel(PointerCancelReason::AdapterError).unwrap();
+
+    let body_point = arc.sampled_path(64)[4];
+    assert!(body_point.x.hypot(body_point.y) * 2. > 9.);
+    adapter
+        .pointer_down(document_id, 0, 32, body_point, 2.)
+        .unwrap();
+    adapter
+        .pointer_move(32, point(body_point.x + 10., body_point.y + 6.))
+        .unwrap();
+    let body_preview = &adapter.document_scene(document_id, 0).arcs[0];
+    assert_eq!(body_preview.start, point(10., 6.));
+    assert_eq!(body_preview.mid, point(60., 56.));
+    assert_eq!(body_preview.end, point(110., 6.));
+    adapter.cancel(PointerCancelReason::AdapterError).unwrap();
+
+    adapter
+        .pointer_down(document_id, 0, 33, point(50., 50.), 2.)
+        .unwrap();
+    adapter
+        .pointer_move_with_constraint(33, point(70., 30.), false)
+        .unwrap();
+    let free_preview = &adapter.document_scene(document_id, 0).arcs[0];
+    assert!(free_preview.draft);
+    assert_eq!(free_preview.mid, point(70., 30.), "unshifted Mid follows the raw pointer");
+    assert_eq!(free_preview.start, point(0., 0.));
+    assert_eq!(free_preview.end, point(100., 0.));
+    assert_eq!(
+        adapter
+            .pointer_up_with_constraint(33, point(70., 30.), true)
+            .unwrap(),
+        PointerPhaseOutcome::AnnotationEdited(arc_id.clone()),
+    );
+    let shifted_release = &adapter.snapshot(document_id).unwrap().arcs[0];
+    assert_eq!(shifted_release.start, point(0., 0.));
+    assert_eq!(shifted_release.mid, point(50., 20.710_678));
+    assert_eq!(shifted_release.end, point(100., 0.));
+    assert!((shifted_release.sweep_degrees().abs() - 90.).abs() < 0.000_01);
+
+    adapter.undo(document_id).unwrap();
+    assert!(adapter.select_id(document_id, &arc_id));
+    adapter
+        .pointer_down(document_id, 0, 34, point(0., 0.), 2.)
+        .unwrap();
+    adapter.pointer_move(34, point(100., 0.)).unwrap();
+    let invalid_preview = &adapter.document_scene(document_id, 0).arcs[0];
+    assert_eq!((invalid_preview.start, invalid_preview.mid, invalid_preview.end), (arc.start, arc.mid, arc.end));
+    assert_eq!(invalid_preview.sampled_path, arc.sampled_path(64));
+    assert!(!invalid_preview.draft, "invalid controls must not pair with the old path");
+    adapter.cancel(PointerCancelReason::AdapterError).unwrap();
+
+    let body_point = arc.sampled_path(64)[16];
+    adapter
+        .pointer_down(document_id, 0, 35, body_point, 2.)
+        .unwrap();
+    adapter
+        .pointer_move(35, point(body_point.x + 12., body_point.y + 8.))
+        .unwrap();
+    assert!(adapter.select_id(document_id, &rectangle_id));
+    let selection_changed = &adapter.document_scene(document_id, 0).arcs[0];
+    assert_eq!((selection_changed.start, selection_changed.mid, selection_changed.end), (arc.start, arc.mid, arc.end));
+    assert!(!selection_changed.selected);
+    assert!(!selection_changed.draft);
+    adapter.cancel(PointerCancelReason::AdapterError).unwrap();
+
+    assert!(adapter.select_id(document_id, &arc_id));
+    adapter
+        .pointer_down(document_id, 0, 36, body_point, 2.)
+        .unwrap();
+    adapter
+        .pointer_move(36, point(body_point.x + 12., body_point.y + 8.))
+        .unwrap();
+    adapter
+        .set_selected_arc_control_point(document_id, ArcControlPoint::Mid, point(50., 60.), false)
+        .unwrap();
+    let geometry_changed = &adapter.document_scene(document_id, 0).arcs[0];
+    assert_eq!(geometry_changed.mid, point(50., 60.));
+    assert_eq!(geometry_changed.start, point(0., 0.));
+    assert_eq!(geometry_changed.end, point(100., 0.));
+    assert!(!geometry_changed.draft);
+    adapter.cancel(PointerCancelReason::AdapterError).unwrap();
+
+    adapter
+        .pointer_down(document_id, 0, 37, point(50., 60.), 2.)
+        .unwrap();
+    adapter.pointer_move(37, point(60., 75.)).unwrap();
+    adapter.set_selected_locked(document_id, true).unwrap();
+    let locked = &adapter.document_scene(document_id, 0).arcs[0];
+    assert_eq!(locked.mid, point(50., 60.));
+    assert!(locked.locked);
+    assert!(!locked.draft);
+}
+
+#[test]
+fn arc_midpoint_direct_edit_is_free_until_quarter_turn_snap_is_requested() {
+    let document_id = 194;
+    let arc_id = MarkupId::new("arc:adapter:direct-free-mid").unwrap();
+    let arc = ArcAnnotation::new(
+        arc_id.clone(),
+        0,
+        point(0., 0.),
+        point(100., 0.),
+        point(50., 50.),
+        RectangleAppearance::default(),
+    )
+    .unwrap();
+    let mut adapter = AnnotationAdapter::default();
+    adapter
+        .load_imported_annotations(document_id, vec![Annotation::Arc(arc)])
+        .unwrap();
+    assert!(adapter.select_id(document_id, &arc_id));
+
+    adapter
+        .set_selected_arc_control_point(
+            document_id,
+            ArcControlPoint::Mid,
+            point(70., 30.),
+            false,
+        )
+        .unwrap();
+
+    let edited = adapter.snapshot(document_id).unwrap();
+    assert_eq!(edited.arcs[0].mid, point(70., 30.));
+    assert_eq!((edited.revision, edited.undo_depth), (1, 1));
+}
+
+#[test]
+fn arc_control_hit_radius_stays_nine_css_pixels_at_high_zoom() {
+    let document_id = 195;
+    let arc_id = MarkupId::new("arc:adapter:css-handle-radius").unwrap();
+    let arc = ArcAnnotation::new(
+        arc_id.clone(),
+        0,
+        point(0., 0.),
+        point(100., 0.),
+        point(50., 50.),
+        RectangleAppearance::default(),
+    )
+    .unwrap();
+    let body_point = arc.sampled_path(64)[3];
+    let distance_from_start_css = body_point.x.hypot(body_point.y) * 2.;
+    assert!((10. ..=17.).contains(&distance_from_start_css));
+    let mut adapter = AnnotationAdapter::default();
+    adapter
+        .load_imported_annotations(document_id, vec![Annotation::Arc(arc)])
+        .unwrap();
+    adapter.set_observed_pixels_per_point(2.).unwrap();
+    adapter.set_tool(AnnotationTool::Select).unwrap();
+    assert!(adapter.select_id(document_id, &arc_id));
+
+    assert_eq!(
+        adapter
+            .pointer_down(document_id, 0, 41, body_point, 2.)
+            .unwrap(),
+        PointerPhaseOutcome::GestureStarted,
+    );
+    adapter
+        .pointer_move(41, point(body_point.x + 10., body_point.y + 6.))
+        .unwrap();
+
+    let preview = &adapter.document_scene(document_id, 0).arcs[0];
+    for (actual, expected) in [
+        (preview.start, point(10., 6.)),
+        (preview.mid, point(60., 56.)),
+        (preview.end, point(110., 6.)),
+    ] {
+        assert!((actual.x - expected.x).abs() < 1e-9);
+        assert!((actual.y - expected.y).abs() < 1e-9);
+    }
+}
+
+#[test]
 fn straight_line_model_shares_history_scene_edit_and_segment_hit_contracts() {
     let line_id = MarkupId::new("line:model-contract").unwrap();
     let arrow_id = MarkupId::new("arrow:model-contract").unwrap();
@@ -904,7 +1220,10 @@ fn semantic_snapping_line_creation_uses_retained_markup_and_one_history_entry() 
         .iter()
         .find(|line| line.id == created_id)
         .unwrap();
-    assert_eq!((created.start, created.end), (point(30., 10.), point(50., 10.)));
+    assert_eq!(
+        (created.start, created.end),
+        (point(30., 10.), point(50., 10.))
+    );
     assert_eq!(adapter.history_depths(170), (1, 0));
 }
 
@@ -979,7 +1298,10 @@ fn semantic_snapping_length_creation_uses_the_shared_engine_and_one_history_entr
         .iter()
         .find(|length| length.id == created_id)
         .unwrap();
-    assert_eq!((created.start, created.end), (point(30., 10.), point(50., 10.)));
+    assert_eq!(
+        (created.start, created.end),
+        (point(30., 10.), point(50., 10.))
+    );
     assert_eq!(adapter.history_depths(171), (history_before.0 + 1, 0));
 }
 
@@ -1067,6 +1389,30 @@ fn dimension_two_click_creation_keeps_caption_geometry_and_history_coherent() {
         DimensionAnnotation::default_offset(point(120., 50.), point(20., 50.)),
         -24.
     );
+}
+
+#[test]
+fn dimension_pointer_selection_hits_offset_line() {
+    let mut adapter = AnnotationAdapter::default();
+    adapter.set_tool(AnnotationTool::Dimension).unwrap();
+    let id = MarkupId::new("dimension:offset-line-selection").unwrap();
+    adapter
+        .begin_dimension_placement(118, 0, id.clone(), point(20., 50.))
+        .unwrap();
+    adapter
+        .commit_dimension_placement(118, 0, point(120., 50.), false)
+        .unwrap();
+    adapter.set_tool(AnnotationTool::Select).unwrap();
+    adapter.clear_selection(118);
+    assert_eq!(adapter.snapshot(118).unwrap().selected_id, None);
+
+    assert_eq!(
+        adapter
+            .pointer_down(118, 0, 41, point(70., 74.), 4.)
+            .unwrap(),
+        PointerPhaseOutcome::SelectionChanged(Some(id.clone()))
+    );
+    assert_eq!(adapter.snapshot(118).unwrap().selected_id, Some(id));
 }
 
 #[test]
@@ -1287,6 +1633,59 @@ fn selected_straight_line_properties_are_controlled_independent_and_lock_aware()
             .opacity(),
         0.5,
     );
+}
+
+#[test]
+fn selected_vertex_path_properties_preserve_hidden_appearance_and_are_exact() {
+    let polyline_id = MarkupId::new("polyline:properties").unwrap();
+    let polygon_id = MarkupId::new("polygon:properties").unwrap();
+    let hidden = RectangleAppearance::new("#112233", 2., Some("#445566"), 0.8)
+        .unwrap().with_fill_opacity(0.35).unwrap().with_stroke_style(StrokeStyle::Dashed);
+    let polyline = VertexPathAnnotation::new(polyline_id.clone(), 0, vec![point(0., 0.), point(20., 20.)], VertexPathKind::Polyline, hidden.clone()).unwrap();
+    let polygon = VertexPathAnnotation::new(polygon_id.clone(), 0, vec![point(0., 0.), point(20., 0.), point(10., 20.)], VertexPathKind::Polygon, hidden.clone()).unwrap();
+    let mut adapter = AnnotationAdapter::default();
+    adapter.load_imported_annotations(174, vec![Annotation::VertexPath(polyline), Annotation::VertexPath(polygon)]).unwrap();
+    assert!(adapter.select_id(174, &polygon_id));
+    assert_eq!(adapter.selected_vertex_path(174).unwrap().id, polygon_id);
+    adapter.edit_selected_vertex_path_property(174, VertexPathPropertyEdit::StrokeColor("#abcdef80".into())).unwrap();
+    adapter.edit_selected_vertex_path_property(174, VertexPathPropertyEdit::StrokeWidthPt(4.25)).unwrap();
+    adapter.edit_selected_vertex_path_property(174, VertexPathPropertyEdit::Opacity(0.5)).unwrap();
+    adapter.edit_selected_vertex_path_property(174, VertexPathPropertyEdit::FillColor(None)).unwrap();
+    let appearance = &adapter.selected_vertex_path(174).unwrap().appearance;
+    assert_eq!(appearance.stroke_color(), "#abcdef");
+    assert_eq!(appearance.stroke_width_pt(), 4.25);
+    assert_eq!(appearance.opacity(), 0.5);
+    assert_eq!(appearance.fill_color(), None);
+    assert_eq!(appearance.fill_opacity(), 0.35);
+    assert_eq!(appearance.stroke_style(), StrokeStyle::Dashed);
+    assert_eq!(adapter.history_depths(174), (4, 0));
+    for width in [0.25, 24.0] {
+        adapter.edit_selected_vertex_path_property(174, VertexPathPropertyEdit::StrokeWidthPt(width)).unwrap();
+    }
+    for opacity in [0.0, 1.0] {
+        adapter.edit_selected_vertex_path_property(174, VertexPathPropertyEdit::Opacity(opacity)).unwrap();
+    }
+    let accepted_depth = adapter.history_depths(174);
+    for edit in [
+        VertexPathPropertyEdit::StrokeWidthPt(0.249),
+        VertexPathPropertyEdit::StrokeWidthPt(24.001),
+        VertexPathPropertyEdit::StrokeWidthPt(f64::NAN),
+        VertexPathPropertyEdit::Opacity(-0.001),
+        VertexPathPropertyEdit::Opacity(1.001),
+        VertexPathPropertyEdit::Opacity(f64::INFINITY),
+        VertexPathPropertyEdit::StrokeColor("#abcdefzz".into()),
+        VertexPathPropertyEdit::FillColor(Some("#123456g0".into())),
+    ] {
+        assert!(adapter.edit_selected_vertex_path_property(174, edit).is_err());
+        assert_eq!(adapter.history_depths(174), accepted_depth);
+    }
+    adapter.edit_selected_vertex_path_property(174, VertexPathPropertyEdit::FillColor(None)).unwrap();
+    assert_eq!(adapter.history_depths(174), accepted_depth);
+    adapter.set_selected_locked(174, true).unwrap();
+    assert!(adapter.edit_selected_vertex_path_property(174, VertexPathPropertyEdit::Opacity(0.4)).is_err());
+    assert!(adapter.select_id(174, &polyline_id));
+    assert_eq!(adapter.selected_vertex_path(174).unwrap().appearance, hidden);
+    assert!(adapter.edit_selected_vertex_path_property(174, VertexPathPropertyEdit::FillColor(Some("#ffffff80".into()))).is_err());
 }
 
 #[test]
@@ -1645,6 +2044,157 @@ fn shift_click_and_group_move_cover_every_maintained_annotation_family() {
     assert_eq!(adapter.snapshot(75).unwrap().rectangles, before.rectangles);
     adapter.redo(75).unwrap();
     assert_eq!(adapter.snapshot(75).unwrap(), moved);
+}
+
+#[test]
+fn selected_text_box_body_move_and_resize_handles_commit_once_and_respect_lock() {
+    let id = MarkupId::new("text-box:pointer-edit").unwrap();
+    let original = PdfRect::new(100., 120., 80., 32.).unwrap();
+    let mut adapter = AnnotationAdapter::default();
+    adapter
+        .load_imported_annotations(
+            751,
+            vec![Annotation::TextBox(
+                TextBoxAnnotation::new(
+                    id.clone(),
+                    0,
+                    original,
+                    "Existing text",
+                    TextBoxStyle::new("Helvetica", 12., "#000000", 1.).unwrap(),
+                )
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+
+    assert_eq!(
+        adapter
+            .pointer_down_with_input(751, 0, 1, 0, point(120., 130.), 2., false)
+            .unwrap(),
+        PointerPhaseOutcome::GestureStarted,
+    );
+    adapter.pointer_move(1, point(132., 138.)).unwrap();
+    assert_eq!(
+        adapter.document_scene(751, 0).text_boxes[0].layout_rect,
+        PdfRect::new(112., 128., 80., 32.).unwrap(),
+    );
+    assert_eq!(
+        adapter.pointer_up(1, point(132., 138.)).unwrap(),
+        PointerPhaseOutcome::AnnotationEdited(id.clone()),
+    );
+    assert_eq!(
+        (
+            adapter.snapshot(751).unwrap().revision,
+            adapter.snapshot(751).unwrap().undo_depth
+        ),
+        (1, 1),
+    );
+
+    let south_east = point(192., 128.);
+    assert_eq!(
+        adapter
+            .pointer_down_with_input(751, 0, 2, 0, south_east, 2., false)
+            .unwrap(),
+        PointerPhaseOutcome::GestureStarted,
+    );
+    adapter.pointer_move(2, point(216., 112.)).unwrap();
+    assert_eq!(
+        adapter.document_scene(751, 0).text_boxes[0].layout_rect,
+        PdfRect::new(112., 112., 104., 48.).unwrap(),
+    );
+    assert_eq!(
+        adapter.pointer_up(2, point(216., 112.)).unwrap(),
+        PointerPhaseOutcome::AnnotationEdited(id.clone()),
+    );
+    assert_eq!(
+        (
+            adapter.snapshot(751).unwrap().revision,
+            adapter.snapshot(751).unwrap().undo_depth
+        ),
+        (2, 2),
+    );
+
+    assert_eq!(
+        adapter
+            .pointer_double_click(751, 0, point(130., 140.), 2.)
+            .unwrap(),
+        PointerPhaseOutcome::SelectionChanged(Some(id.clone())),
+        "double-click identifies the selected unlocked Text Box without mutating it",
+    );
+    assert_eq!(adapter.snapshot(751).unwrap().undo_depth, 2);
+
+    adapter.set_selected_locked(751, true).unwrap();
+    let locked = adapter.snapshot(751).unwrap();
+    assert_eq!(
+        adapter
+            .pointer_down_with_input(751, 0, 3, 0, point(130., 140.), 2., false)
+            .unwrap(),
+        PointerPhaseOutcome::SelectionChanged(Some(id)),
+    );
+    assert_eq!(adapter.snapshot(751).unwrap(), locked);
+}
+
+#[test]
+fn text_box_all_eight_resize_handles_clamp_through_rotated_zoomed_page_two_transform() {
+    let transform = PageTransform::new_rotated(612., 792., 1.75, PageRotation::Degrees90).unwrap();
+    let original = PdfRect::new(100., 120., 80., 40.).unwrap();
+    for (ix, handle) in RectangleResizeHandle::ALL.into_iter().enumerate() {
+        let id = MarkupId::new(format!("text-box:all-handles:{ix}")).unwrap();
+        let mut adapter = AnnotationAdapter::default();
+        adapter
+            .load_imported_annotations(
+                752,
+                vec![Annotation::TextBox(
+                    TextBoxAnnotation::new(
+                        id.clone(),
+                        2,
+                        original,
+                        "handle table",
+                        TextBoxStyle::new("Helvetica", 12., "#000000", 1.).unwrap(),
+                    )
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+        assert!(adapter.select_id(752, &id));
+        let start_pixels = transform.point_to_local_pixels(handle.point(original));
+        let start = transform
+            .point_from_local_pixels(start_pixels.x, start_pixels.y)
+            .unwrap();
+        let collapse = match handle {
+            RectangleResizeHandle::NorthWest => point(230., 40.),
+            RectangleResizeHandle::North => point(140., 40.),
+            RectangleResizeHandle::NorthEast => point(50., 40.),
+            RectangleResizeHandle::East => point(50., 140.),
+            RectangleResizeHandle::SouthEast => point(50., 220.),
+            RectangleResizeHandle::South => point(140., 220.),
+            RectangleResizeHandle::SouthWest => point(230., 220.),
+            RectangleResizeHandle::West => point(230., 140.),
+        };
+        let collapse_pixels = transform.point_to_local_pixels(collapse);
+        let collapse = transform
+            .point_from_local_pixels(collapse_pixels.x, collapse_pixels.y)
+            .unwrap();
+        assert_eq!(
+            adapter
+                .pointer_down_with_input(752, 2, 100 + ix as u64, 0, start, 1.75, false)
+                .unwrap(),
+            PointerPhaseOutcome::GestureStarted,
+        );
+        adapter.pointer_move(100 + ix as u64, collapse).unwrap();
+        let preview = adapter.document_scene(752, 2).text_boxes[0].layout_rect;
+        assert!(
+            preview.width >= 2. && preview.height >= 2.,
+            "{handle:?} must clamp"
+        );
+        assert_eq!(
+            adapter.pointer_up(100 + ix as u64, collapse).unwrap(),
+            PointerPhaseOutcome::AnnotationEdited(id),
+        );
+        let snapshot = adapter.snapshot(752).unwrap();
+        assert_eq!((snapshot.revision, snapshot.undo_depth), (1, 1));
+        assert_eq!(snapshot.text_boxes[0].page_index, 2);
+    }
 }
 
 #[test]
@@ -2243,6 +2793,176 @@ fn text_length_and_image_workflows_use_frozen_comparison_defaults_and_shared_his
 }
 
 #[test]
+fn exact_selected_measurement_caption_edit_handles_length_path_noop_lock_and_multi_selection() {
+    let calibration = LengthCalibration::from_scale(72., 1., "m", 2, true).unwrap();
+    let length_id = MarkupId::new("measurement-caption:length").unwrap();
+    let path_id = MarkupId::new("measurement-caption:path").unwrap();
+    let length = LengthAnnotation::new(
+        length_id.clone(),
+        0,
+        point(0., 0.),
+        point(72., 0.),
+        calibration.clone(),
+    )
+    .unwrap();
+    let path = MeasurementPathAnnotation::new(
+        path_id.clone(),
+        0,
+        vec![point(0., 0.), point(72., 0.)],
+        MeasurementPathKind::Polylength,
+        calibration,
+        RectangleAppearance::default(),
+    )
+    .unwrap();
+    let mut adapter = AnnotationAdapter::default();
+    adapter
+        .load_imported_annotations(
+            1091,
+            vec![
+                Annotation::Length(length),
+                Annotation::MeasurementPath(path),
+            ],
+        )
+        .unwrap();
+
+    assert!(adapter.select_id(1091, &length_id));
+    adapter
+        .set_exact_selected_measurement_show_caption(1091, false)
+        .unwrap();
+    let after_length = adapter.snapshot(1091).unwrap();
+    assert_eq!((after_length.revision, after_length.undo_depth), (1, 1));
+    assert!(!after_length.lengths[0].calibration().show_caption());
+    adapter
+        .set_exact_selected_measurement_show_caption(1091, false)
+        .unwrap();
+    assert_eq!(adapter.history_depths(1091), (1, 0));
+
+    assert!(adapter.select_id(1091, &path_id));
+    adapter
+        .set_exact_selected_measurement_show_caption(1091, false)
+        .unwrap();
+    let after_path = adapter.snapshot(1091).unwrap();
+    assert_eq!((after_path.revision, after_path.undo_depth), (2, 2));
+    assert!(!after_path.measurement_paths[0].calibration().show_caption());
+
+    adapter.set_selected_locked(1091, true).unwrap();
+    let locked_history = adapter.history_depths(1091);
+    assert!(
+        adapter
+            .set_exact_selected_measurement_show_caption(1091, true)
+            .is_err()
+    );
+    assert_eq!(adapter.history_depths(1091), locked_history);
+
+    adapter.set_selected_locked(1091, false).unwrap();
+    assert!(adapter.select_id(1091, &length_id));
+    assert!(adapter.toggle_selection(1091, &path_id));
+    let multi_history = adapter.history_depths(1091);
+    assert!(
+        adapter
+            .set_exact_selected_measurement_show_caption(1091, true)
+            .is_err()
+    );
+    assert_eq!(adapter.history_depths(1091), multi_history);
+}
+
+#[test]
+fn exact_selected_text_box_style_is_atomic_noop_safe_locked_and_undoable() {
+    let mut adapter = AnnotationAdapter::default();
+    adapter.set_tool(AnnotationTool::TextBox).unwrap();
+    adapter
+        .pointer_down(1090, 0, 1, point(90., 390.), 4.)
+        .unwrap();
+    let original = adapter.exact_selected_text_box(1090).unwrap().clone();
+    let edited = TextBoxStyle::new(original.style().font_family(), 18., "#2563eb", 0.6)
+        .unwrap()
+        .with_weight_and_alignment(original.style().weight(), TextAlignment::Center)
+        .unwrap();
+
+    let before = adapter.history_depths(1090);
+    adapter
+        .set_exact_selected_text_box_style(1090, edited.clone())
+        .unwrap();
+    assert_eq!(adapter.history_depths(1090), (before.0 + 1, 0));
+    let current = adapter.exact_selected_text_box(1090).unwrap();
+    assert_eq!(current.style(), &edited);
+    assert_eq!(current.content(), original.content());
+    assert_eq!(current.layout_rect, original.layout_rect);
+    assert_eq!(current.id, original.id);
+
+    adapter
+        .set_exact_selected_text_box_style(1090, edited)
+        .unwrap();
+    assert_eq!(adapter.history_depths(1090), (before.0 + 1, 0));
+    adapter.undo(1090).unwrap();
+    assert_eq!(adapter.exact_selected_text_box(1090).unwrap(), &original);
+    adapter.redo(1090).unwrap();
+
+    adapter.set_selected_locked(1090, true).unwrap();
+    let locked_history = adapter.history_depths(1090);
+    let rejected = TextBoxStyle::new("Helvetica", 20., "#ff0000", 1.).unwrap();
+    assert!(
+        adapter
+            .set_exact_selected_text_box_style(1090, rejected)
+            .is_err()
+    );
+    assert_eq!(adapter.history_depths(1090), locked_history);
+}
+
+#[test]
+fn length_endpoint_drag_previews_without_committing_history() {
+    let mut adapter = AnnotationAdapter::default();
+    adapter
+        .set_document_page_length_calibration(
+            109,
+            0,
+            LengthCalibration::from_scale(72., 2., "m", 3, true).unwrap(),
+        )
+        .unwrap();
+    let length_id = MarkupId::new("length:endpoint-preview").unwrap();
+    adapter
+        .begin_length_placement(109, 0, length_id.clone(), point(72., 192.))
+        .unwrap();
+    adapter
+        .commit_length_placement(109, 0, point(216., 192.), false)
+        .unwrap();
+    adapter.set_tool(AnnotationTool::Select).unwrap();
+
+    assert_eq!(
+        adapter
+            .pointer_down(109, 0, 37, point(216., 192.), 4.)
+            .unwrap(),
+        PointerPhaseOutcome::GestureStarted
+    );
+    let retained_before = adapter.snapshot(109).unwrap();
+    let history_before = adapter.history_depths(109);
+    assert_eq!(retained_before.selected_id.as_ref(), Some(&length_id));
+    assert_eq!(retained_before.lengths[0].end, point(216., 192.));
+
+    assert_eq!(
+        adapter.pointer_move(37, point(180., 192.)).unwrap(),
+        PointerPhaseOutcome::GestureStarted
+    );
+    let preview = &adapter.document_scene(109, 0).lengths[0];
+    assert_eq!(preview.end, point(180., 192.));
+    assert_eq!(preview.caption, "3.000 m");
+    let retained_during_preview = adapter.snapshot(109).unwrap();
+    assert_eq!(retained_during_preview.revision, retained_before.revision);
+    assert_eq!(retained_during_preview.lengths[0].end, point(216., 192.));
+    assert_eq!(adapter.history_depths(109), history_before);
+
+    assert_eq!(
+        adapter.pointer_up(37, point(180., 192.)).unwrap(),
+        PointerPhaseOutcome::AnnotationEdited(length_id)
+    );
+    let committed = adapter.snapshot(109).unwrap();
+    assert_eq!(committed.lengths[0].end, point(180., 192.));
+    assert_eq!(committed.lengths[0].caption(), "3.000 m");
+    assert_eq!(committed.revision, retained_before.revision + 1);
+    assert_eq!(adapter.history_depths(109), (history_before.0 + 1, 0));
+}
+
+#[test]
 fn image_placement_preserves_natural_aspect_ratio_centers_and_clamps_to_the_page() {
     let mut adapter = AnnotationAdapter::default();
     adapter.set_image_asset(DecodedRgbaAsset::new(512, 384, vec![0x80; 512 * 384 * 4]).unwrap());
@@ -2471,6 +3191,80 @@ fn typed_rectangle_and_streamed_highlight_tools_commit_real_document_gestures() 
     assert_eq!(adapter.history_depths(7), (2, 0));
     assert!(adapter.is_dirty(7));
     assert_eq!(adapter.thumbnail_scene(7, 0).pens.len(), 1);
+}
+
+#[test]
+fn exact_single_selected_ink_appearance_edit_preserves_ink_identity_and_history() {
+    let pen_id = MarkupId::new("ink-properties:pen").unwrap();
+    let highlight_id = MarkupId::new("ink-properties:highlight").unwrap();
+    let pen = PenAnnotation::new_paths(
+        pen_id.clone(),
+        0,
+        vec![
+            vec![point(10., 10.), point(20., 20.)],
+            vec![point(30., 30.), point(40., 40.)],
+        ],
+        PenAppearance::new("#ff0000", 1., 1.).unwrap(),
+        false,
+    )
+    .unwrap();
+    let highlight = PenAnnotation::new_highlight(
+        highlight_id.clone(),
+        0,
+        vec![point(50., 50.), point(80., 55.)],
+        PenAppearance::new("#ffff00", 12., 1.).unwrap(),
+    )
+    .unwrap();
+    let pen_paths = pen.paths().map(<[_]>::to_vec).collect::<Vec<_>>();
+
+    let mut adapter = AnnotationAdapter::default();
+    adapter
+        .load_imported_annotations(91, vec![Annotation::Pen(pen), Annotation::Pen(highlight)])
+        .unwrap();
+    assert!(adapter.select_id(91, &pen_id));
+    let selected = adapter
+        .exact_selected_ink(91)
+        .expect("one selected Pen must be exposed");
+    assert_eq!(
+        (selected.id.clone(), selected.tool()),
+        (pen_id.clone(), InkTool::Pen)
+    );
+
+    let edited = PenAppearance::new("#ABCDEF", 3.25, 0.4).unwrap();
+    adapter
+        .set_exact_selected_ink_appearance(91, edited.clone())
+        .unwrap();
+    let snapshot = adapter.snapshot(91).unwrap();
+    let pen = snapshot.pens.iter().find(|pen| pen.id == pen_id).unwrap();
+    assert_eq!(pen.appearance, edited);
+    assert_eq!(
+        pen.paths().map(<[_]>::to_vec).collect::<Vec<_>>(),
+        pen_paths
+    );
+    assert!(!pen.smooth_curves);
+    assert_eq!(
+        (pen.tool(), pen.blend_mode(), pen.locked),
+        (InkTool::Pen, BlendMode::Normal, false)
+    );
+    assert_eq!((snapshot.revision, snapshot.undo_depth), (1, 1));
+
+    adapter
+        .set_exact_selected_ink_appearance(91, pen.appearance.clone())
+        .unwrap();
+    assert_eq!(
+        adapter.history_depths(91),
+        (1, 0),
+        "a no-op must not add history"
+    );
+
+    assert!(adapter.toggle_selection(91, &highlight_id));
+    assert!(adapter.exact_selected_ink(91).is_none());
+    assert!(
+        adapter
+            .set_exact_selected_ink_appearance(91, PenAppearance::new("#000000", 2., 0.5).unwrap(),)
+            .is_err()
+    );
+    assert_eq!(adapter.history_depths(91), (1, 0));
 }
 
 #[test]

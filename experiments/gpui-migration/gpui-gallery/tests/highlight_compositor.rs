@@ -146,15 +146,7 @@ fn crop_rotation_and_user_unit_share_the_canonical_page_transform() {
         &mut surface,
         384,
         648,
-        HighlightRasterMapping::from_coordinate_space(
-            0,
-            coordinate_space,
-            1.,
-            1.,
-            0.,
-            0.,
-        )
-        .unwrap(),
+        HighlightRasterMapping::from_coordinate_space(0, coordinate_space, 1., 1., 0., 0.).unwrap(),
         &[highlight],
     )
     .unwrap();

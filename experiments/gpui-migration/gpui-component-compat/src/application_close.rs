@@ -104,6 +104,7 @@ pub enum ApplicationCloseContractError {
     EmptyDocumentIdentity,
     DuplicateDocumentIdentity(String),
     UnknownActiveDocument(String),
+    DraftCommitBlocked(String),
 }
 
 impl fmt::Display for ApplicationCloseContractError {
@@ -119,6 +120,7 @@ impl fmt::Display for ApplicationCloseContractError {
                     "active document {id} is not in the close snapshot"
                 )
             }
+            Self::DraftCommitBlocked(message) => write!(formatter, "{message}"),
         }
     }
 }
@@ -161,6 +163,10 @@ pub enum ApplicationCloseCommand {
         document_id: String,
         destination: SaveDestination,
     },
+    PublishSessionCheckpoint {
+        transaction_id: u64,
+        completion_kind: ApplicationCloseCompletionKind,
+    },
     ReleaseDocument {
         token: ApplicationCloseToken,
         document_id: String,
@@ -179,6 +185,10 @@ pub enum ApplicationCloseCommand {
     ReportSaveWarning {
         transaction_id: u64,
         document_id: String,
+        message: String,
+    },
+    ReportSessionCheckpointFailure {
+        transaction_id: u64,
         message: String,
     },
     ReportReleaseFailure {
@@ -211,6 +221,13 @@ pub enum ApplicationCloseResult {
     },
     SavePublishedWithWarning {
         token: ApplicationCloseToken,
+        message: String,
+    },
+    SessionCheckpointPublished {
+        transaction_id: u64,
+    },
+    SessionCheckpointFailed {
+        transaction_id: u64,
         message: String,
     },
     DocumentReleased {
@@ -258,6 +275,7 @@ pub enum ApplicationCloseInterruptionReason {
     SaveAsCancelled,
     SaveFailed,
     SavePublishedWithWarning,
+    SessionCheckpointFailed,
     ReleaseFailed,
 }
 
@@ -316,10 +334,19 @@ struct ReleasingState {
 }
 
 #[derive(Clone, Debug)]
+struct CheckpointingState {
+    transaction: CloseTransaction,
+    pending_tokens: Vec<ApplicationCloseToken>,
+    completed_save_document_ids: Vec<String>,
+    completion_kind: ApplicationCloseCompletionKind,
+}
+
+#[derive(Clone, Debug)]
 enum CoordinatorState {
     Idle,
     AwaitingDecision(CloseTransaction),
     Saving(SavingState),
+    Checkpointing(CheckpointingState),
     Releasing(ReleasingState),
 }
 
@@ -340,6 +367,7 @@ pub struct ApplicationCloseCoordinator {
     next_request_sequence: u64,
     last_interruption: Option<ApplicationCloseInterruption>,
     last_completion: Option<ApplicationCloseCompletion>,
+    recoverable_checkpoint: Option<CheckpointingState>,
 }
 
 impl ApplicationCloseCoordinator {
@@ -358,12 +386,13 @@ impl ApplicationCloseCoordinator {
         let transaction_id = self.next_transaction_id;
         self.last_interruption = None;
         self.last_completion = None;
+        self.recoverable_checkpoint = None;
         let transaction = CloseTransaction {
             id: transaction_id,
             snapshot,
         };
         if transaction.snapshot.dirty_document_count() == 0 {
-            return Ok(self.start_release(
+            return Ok(self.start_checkpoint(
                 transaction,
                 ApplicationCloseCompletionKind::NoDirtyDocuments,
                 Vec::new(),
@@ -378,6 +407,7 @@ impl ApplicationCloseCoordinator {
         let (transaction, busy) = match &self.state {
             CoordinatorState::AwaitingDecision(transaction) => (transaction, false),
             CoordinatorState::Saving(state) => (&state.transaction, true),
+            CoordinatorState::Checkpointing(state) => (&state.transaction, true),
             CoordinatorState::Releasing(state) => (&state.transaction, true),
             CoordinatorState::Idle => return None,
         };
@@ -419,7 +449,9 @@ impl ApplicationCloseCoordinator {
             other => {
                 let busy = matches!(
                     &other,
-                    CoordinatorState::Saving(_) | CoordinatorState::Releasing(_)
+                    CoordinatorState::Saving(_)
+                        | CoordinatorState::Checkpointing(_)
+                        | CoordinatorState::Releasing(_)
                 );
                 self.state = other;
                 return ApplicationCloseTransition::status(if busy {
@@ -455,6 +487,9 @@ impl ApplicationCloseCoordinator {
         let state = std::mem::take(&mut self.state);
         match state {
             CoordinatorState::Saving(saving) => self.handle_save_result(saving, result),
+            CoordinatorState::Checkpointing(checkpointing) => {
+                self.handle_checkpoint_result(checkpointing, result)
+            }
             CoordinatorState::Releasing(releasing) => self.handle_release_result(releasing, result),
             other => {
                 self.state = other;
@@ -463,6 +498,34 @@ impl ApplicationCloseCoordinator {
                 )
             }
         }
+    }
+
+    pub fn retry_session_checkpoint(&mut self, transaction_id: u64) -> ApplicationCloseTransition {
+        if !matches!(self.state, CoordinatorState::Idle) {
+            return ApplicationCloseTransition::status(
+                ApplicationCloseTransitionStatus::IgnoredPending,
+            );
+        }
+        let Some(checkpointing) = self.recoverable_checkpoint.take() else {
+            return ApplicationCloseTransition::status(
+                ApplicationCloseTransitionStatus::StaleResultRejected,
+            );
+        };
+        if checkpointing.transaction.id != transaction_id {
+            self.recoverable_checkpoint = Some(checkpointing);
+            return ApplicationCloseTransition::status(
+                ApplicationCloseTransitionStatus::StaleResultRejected,
+            );
+        }
+        let completion_kind = checkpointing.completion_kind;
+        self.last_interruption = None;
+        self.state = CoordinatorState::Checkpointing(checkpointing);
+        ApplicationCloseTransition::applied(vec![
+            ApplicationCloseCommand::PublishSessionCheckpoint {
+                transaction_id,
+                completion_kind,
+            },
+        ])
     }
 
     fn start_save_all(&mut self, transaction: CloseTransaction) -> ApplicationCloseTransition {
@@ -483,14 +546,14 @@ impl ApplicationCloseCoordinator {
     }
 
     fn start_discard_all(&mut self, transaction: CloseTransaction) -> ApplicationCloseTransition {
-        self.start_release(
+        self.start_checkpoint(
             transaction,
             ApplicationCloseCompletionKind::DiscardedAll,
             Vec::new(),
         )
     }
 
-    fn start_release(
+    fn start_checkpoint(
         &mut self,
         transaction: CloseTransaction,
         completion_kind: ApplicationCloseCompletionKind,
@@ -505,30 +568,19 @@ impl ApplicationCloseCoordinator {
             );
             pending_tokens.push(token);
         }
-        if pending_tokens.is_empty() {
-            self.last_completion = Some(ApplicationCloseCompletion {
-                transaction_id: transaction.id,
-                kind: completion_kind,
-                document_ids: completed_save_document_ids,
-            });
-            return ApplicationCloseTransition::applied(vec![
-                ApplicationCloseCommand::ConfirmApplicationClose {
-                    transaction_id: transaction.id,
-                },
-            ]);
-        }
-        self.state = CoordinatorState::Releasing(ReleasingState {
+        let transaction_id = transaction.id;
+        self.state = CoordinatorState::Checkpointing(CheckpointingState {
             transaction,
             pending_tokens,
-            completed_release_document_ids: Vec::new(),
             completed_save_document_ids,
             completion_kind,
         });
-        let first = self
-            .state
-            .first_release()
-            .expect("a non-empty close transaction has a first release");
-        ApplicationCloseTransition::applied(vec![first])
+        ApplicationCloseTransition::applied(vec![
+            ApplicationCloseCommand::PublishSessionCheckpoint {
+                transaction_id,
+                completion_kind,
+            },
+        ])
     }
 
     fn handle_save_result(
@@ -537,8 +589,7 @@ impl ApplicationCloseCoordinator {
         result: ApplicationCloseResult,
     ) -> ApplicationCloseTransition {
         let expected = saving.pending.token.clone();
-        let result_token = result.token();
-        if result_token != &expected {
+        if result.token() != Some(&expected) {
             self.state = CoordinatorState::Saving(saving);
             return ApplicationCloseTransition::status(
                 ApplicationCloseTransitionStatus::StaleResultRejected,
@@ -591,7 +642,7 @@ impl ApplicationCloseCoordinator {
                 saving.completed_document_ids.push(token.document_id);
                 saving.next_document_index += 1;
                 if saving.next_document_index == saving.dirty_documents.len() {
-                    return self.start_release(
+                    return self.start_checkpoint(
                         saving.transaction,
                         ApplicationCloseCompletionKind::SavedAll,
                         saving.completed_document_ids,
@@ -672,6 +723,73 @@ impl ApplicationCloseCoordinator {
             );
         }
         ApplicationCloseTransition::applied(commands)
+    }
+
+    fn handle_checkpoint_result(
+        &mut self,
+        checkpointing: CheckpointingState,
+        result: ApplicationCloseResult,
+    ) -> ApplicationCloseTransition {
+        let (transaction_id, failure) = match result {
+            ApplicationCloseResult::SessionCheckpointPublished { transaction_id } => {
+                (transaction_id, None)
+            }
+            ApplicationCloseResult::SessionCheckpointFailed {
+                transaction_id,
+                message,
+            } => (transaction_id, Some(message)),
+            _ => {
+                self.state = CoordinatorState::Checkpointing(checkpointing);
+                return ApplicationCloseTransition::status(
+                    ApplicationCloseTransitionStatus::StaleResultRejected,
+                );
+            }
+        };
+        if checkpointing.transaction.id != transaction_id {
+            self.state = CoordinatorState::Checkpointing(checkpointing);
+            return ApplicationCloseTransition::status(
+                ApplicationCloseTransitionStatus::StaleResultRejected,
+            );
+        }
+        if let Some(message) = failure {
+            self.last_interruption = Some(ApplicationCloseInterruption {
+                transaction_id,
+                reason: ApplicationCloseInterruptionReason::SessionCheckpointFailed,
+                snapshot: checkpointing.transaction.snapshot.clone(),
+                completed_save_document_ids: checkpointing.completed_save_document_ids.clone(),
+                completed_release_document_ids: Vec::new(),
+                target_document_id: None,
+                message: Some(message.clone()),
+            });
+            self.recoverable_checkpoint = Some(checkpointing);
+            return ApplicationCloseTransition::applied(vec![
+                ApplicationCloseCommand::CancelApplicationClose { transaction_id },
+                ApplicationCloseCommand::ReportSessionCheckpointFailure {
+                    transaction_id,
+                    message,
+                },
+            ]);
+        }
+
+        if checkpointing.pending_tokens.is_empty() {
+            self.last_completion = Some(ApplicationCloseCompletion {
+                transaction_id,
+                kind: checkpointing.completion_kind,
+                document_ids: checkpointing.completed_save_document_ids,
+            });
+            return ApplicationCloseTransition::applied(vec![
+                ApplicationCloseCommand::ConfirmApplicationClose { transaction_id },
+            ]);
+        }
+        let first = release_command(&checkpointing.pending_tokens[0]);
+        self.state = CoordinatorState::Releasing(ReleasingState {
+            transaction: checkpointing.transaction,
+            pending_tokens: checkpointing.pending_tokens,
+            completed_release_document_ids: Vec::new(),
+            completed_save_document_ids: checkpointing.completed_save_document_ids,
+            completion_kind: checkpointing.completion_kind,
+        });
+        ApplicationCloseTransition::applied(vec![first])
     }
 
     fn handle_release_result(
@@ -808,7 +926,7 @@ impl ApplicationCloseCoordinator {
 }
 
 impl ApplicationCloseResult {
-    fn token(&self) -> &ApplicationCloseToken {
+    fn token(&self) -> Option<&ApplicationCloseToken> {
         match self {
             Self::SaveAsSelected { token, .. }
             | Self::SaveAsCancelled { token }
@@ -817,17 +935,9 @@ impl ApplicationCloseResult {
             | Self::SaveFailed { token, .. }
             | Self::SavePublishedWithWarning { token, .. }
             | Self::DocumentReleased { token }
-            | Self::DocumentReleaseFailed { token, .. } => token,
+            | Self::DocumentReleaseFailed { token, .. } => Some(token),
+            Self::SessionCheckpointPublished { .. } | Self::SessionCheckpointFailed { .. } => None,
         }
-    }
-}
-
-impl CoordinatorState {
-    fn first_release(&self) -> Option<ApplicationCloseCommand> {
-        let Self::Releasing(releasing) = self else {
-            return None;
-        };
-        releasing.pending_tokens.first().map(release_command)
     }
 }
 

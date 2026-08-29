@@ -6,8 +6,10 @@ use gpui_component::{GlobalState, menu::AppMenuBar};
 use crate::{
     application_close_workspace::RequestApplicationClose,
     document_workspace::{
-        DocumentOpenBatchRequest, DocumentOpenOrigin, NewFromTemplate, OpenPdf, Save, SaveAs,
-        SaveDocumentAsTemplate,
+        ActualSize, CloseDocument, ContinuousView, DocumentOpenBatchRequest, DocumentOpenOrigin,
+        FitPage, FitWidth, NavigateNextPage, NavigatePreviousPage, NewFromTemplate, OpenPdf,
+        RotatePageLeft, RotatePageRight, Save, SaveAs, SaveDocumentAsTemplate, SinglePageView,
+        ZoomIn, ZoomOut,
     },
 };
 
@@ -15,10 +17,30 @@ use crate::{
 pub struct NativeApplicationMenuState {
     pub has_active_document: bool,
     pub save_busy: bool,
+    pub has_focused_input: bool,
+    pub can_undo: bool,
+    pub can_redo: bool,
+    pub can_cut: bool,
+    pub can_copy: bool,
+    pub can_paste: bool,
+    pub can_select_all: bool,
+    pub can_delete: bool,
+    pub can_close_document: bool,
+    pub document_ready: bool,
+    pub can_previous_page: bool,
+    pub can_next_page: bool,
+    pub rotation_busy: bool,
+    pub can_zoom_out: bool,
+    pub can_zoom_in: bool,
+    pub actual_size_checked: bool,
+    pub fit_width_checked: bool,
+    pub fit_page_checked: bool,
+    pub continuous_view_checked: bool,
+    pub single_page_view_checked: bool,
 }
 
 pub fn build_native_application_menus(state: NativeApplicationMenuState) -> Vec<Menu> {
-    let save_disabled = !state.has_active_document || state.save_busy;
+    let save_disabled = !state.has_active_document || !state.document_ready || state.save_busy;
     vec![
         Menu::new("Butter Paper").items([MenuItem::action(
             "Quit Butter Paper",
@@ -34,14 +56,59 @@ pub fn build_native_application_menus(state: NativeApplicationMenuState) -> Vec<
             MenuItem::action("Save", Save).disabled(save_disabled),
             MenuItem::action("Save As…", SaveAs).disabled(save_disabled),
             MenuItem::separator(),
-            MenuItem::action("Close Window", RequestApplicationClose),
+            MenuItem::action("Close Document", CloseDocument).disabled(!state.can_close_document),
         ]),
         Menu::new("Edit").items([
-            MenuItem::action("Cut", gpui_component::input::Cut),
-            MenuItem::action("Copy", gpui_component::input::Copy),
-            MenuItem::action("Paste", gpui_component::input::Paste),
+            MenuItem::action("Undo", gpui_component::input::Undo)
+                .disabled(!state.has_focused_input && !state.can_undo),
+            MenuItem::action("Redo", gpui_component::input::Redo)
+                .disabled(!state.has_focused_input && !state.can_redo),
             MenuItem::separator(),
-            MenuItem::action("Select All", gpui_component::input::SelectAll),
+            MenuItem::action("Cut", gpui_component::input::Cut)
+                .disabled(!state.has_focused_input && !state.can_cut),
+            MenuItem::action("Copy", gpui_component::input::Copy)
+                .disabled(!state.has_focused_input && !state.can_copy),
+            MenuItem::action("Paste", gpui_component::input::Paste)
+                .disabled(!state.has_focused_input && !state.can_paste),
+            MenuItem::action("Delete", gpui_component::input::Delete)
+                .disabled(!state.has_focused_input && !state.can_delete),
+            MenuItem::separator(),
+            MenuItem::action("Select All", gpui_component::input::SelectAll)
+                .disabled(!state.has_focused_input && !state.can_select_all),
+        ]),
+        Menu::new("Document").items([
+            MenuItem::action("Previous Page", NavigatePreviousPage)
+                .disabled(!state.document_ready || !state.can_previous_page),
+            MenuItem::action("Next Page", NavigateNextPage)
+                .disabled(!state.document_ready || !state.can_next_page),
+            MenuItem::separator(),
+            MenuItem::action("Rotate Left", RotatePageLeft)
+                .disabled(!state.document_ready || state.save_busy || state.rotation_busy),
+            MenuItem::action("Rotate Right", RotatePageRight)
+                .disabled(!state.document_ready || state.save_busy || state.rotation_busy),
+        ]),
+        Menu::new("View").items([
+            MenuItem::action("Zoom In", ZoomIn)
+                .disabled(!state.document_ready || !state.can_zoom_in),
+            MenuItem::action("Zoom Out", ZoomOut)
+                .disabled(!state.document_ready || !state.can_zoom_out),
+            MenuItem::action("Actual Size", ActualSize)
+                .checked(state.actual_size_checked)
+                .disabled(!state.document_ready),
+            MenuItem::separator(),
+            MenuItem::action("Fit Width", FitWidth)
+                .checked(state.fit_width_checked)
+                .disabled(!state.document_ready),
+            MenuItem::action("Fit Page", FitPage)
+                .checked(state.fit_page_checked)
+                .disabled(!state.document_ready),
+            MenuItem::separator(),
+            MenuItem::action("Continuous View", ContinuousView)
+                .checked(state.continuous_view_checked)
+                .disabled(!state.document_ready),
+            MenuItem::action("Single Page View", SinglePageView)
+                .checked(state.single_page_view_checked)
+                .disabled(!state.document_ready),
         ]),
         Menu::new("Window").items([MenuItem::action("Close Window", RequestApplicationClose)]),
     ]

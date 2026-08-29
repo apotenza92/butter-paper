@@ -12,7 +12,10 @@ fn page_geometry_protocol_carries_user_unit_without_pdfium_types() {
     };
     let encoded = serde_json::to_string(&geometry).unwrap();
     assert!(encoded.contains("\"user_unit\":2.0"));
-    assert_eq!(serde_json::from_str::<PageGeometry>(&encoded).unwrap(), geometry);
+    assert_eq!(
+        serde_json::from_str::<PageGeometry>(&encoded).unwrap(),
+        geometry
+    );
 }
 
 #[test]
@@ -24,5 +27,10 @@ fn older_geometry_payloads_default_to_one_user_unit() {
         "display_width_points":612.0,
         "display_height_points":792.0
     }"#;
-    assert_eq!(serde_json::from_str::<PageGeometry>(encoded).unwrap().user_unit, 1.0);
+    assert_eq!(
+        serde_json::from_str::<PageGeometry>(encoded)
+            .unwrap()
+            .user_unit,
+        1.0
+    );
 }

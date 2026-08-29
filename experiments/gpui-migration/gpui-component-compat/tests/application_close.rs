@@ -48,6 +48,61 @@ fn save_token(command: &ApplicationCloseCommand) -> application_close::Applicati
     }
 }
 
+fn publish_checkpoint(
+    close: &mut ApplicationCloseCoordinator,
+    transition: application_close::ApplicationCloseTransition,
+) -> application_close::ApplicationCloseTransition {
+    let transaction_id = match only_command(&transition) {
+        ApplicationCloseCommand::PublishSessionCheckpoint { transaction_id, .. } => *transaction_id,
+        other => panic!("expected session checkpoint publication, got {other:?}"),
+    };
+    close.handle_result(ApplicationCloseResult::SessionCheckpointPublished { transaction_id })
+}
+
+#[test]
+fn application_close_checkpoint_is_transactional_and_rejects_stale_acknowledgements() {
+    let mut close = ApplicationCloseCoordinator::default();
+    close
+        .request_close(snapshot(
+            Some("one"),
+            vec![document("one", "one.pdf", Some(1), false)],
+        ))
+        .unwrap();
+
+    let checkpoint = close.choose(ApplicationCloseAction::DiscardAll);
+    let transaction_id = match only_command(&checkpoint) {
+        ApplicationCloseCommand::PublishSessionCheckpoint {
+            transaction_id,
+            completion_kind,
+        } => {
+            assert_eq!(
+                *completion_kind,
+                application_close::ApplicationCloseCompletionKind::DiscardedAll
+            );
+            *transaction_id
+        }
+        other => panic!("discard must checkpoint before release, got {other:?}"),
+    };
+    let stale = close.handle_result(ApplicationCloseResult::SessionCheckpointPublished {
+        transaction_id: transaction_id + 1,
+    });
+    assert_eq!(
+        stale.status,
+        ApplicationCloseTransitionStatus::StaleResultRejected
+    );
+    assert!(stale.commands.is_empty());
+
+    let release =
+        close.handle_result(ApplicationCloseResult::SessionCheckpointPublished { transaction_id });
+    assert!(matches!(
+        only_command(&release),
+        ApplicationCloseCommand::ReleaseDocument {
+            document_id,
+            ..
+        } if document_id == "one"
+    ));
+}
+
 #[test]
 fn application_close_dialog_freezes_the_electron_copy_order_roles_and_busy_state() {
     let mut close = ApplicationCloseCoordinator::default();
@@ -205,8 +260,9 @@ fn application_close_save_all_runs_in_tab_order_with_only_one_save_in_flight() {
     let three_token = save_token(only_command(&three));
     assert_eq!(three_token.document_id, "three");
 
-    let mut release =
+    let checkpoint =
         close.handle_result(ApplicationCloseResult::SaveSucceeded { token: three_token });
+    let mut release = publish_checkpoint(&mut close, checkpoint);
     for expected_document_id in ["clean", "one", "two", "three"] {
         let token = match only_command(&release) {
             ApplicationCloseCommand::ReleaseDocument { token, document_id } => {
@@ -440,7 +496,8 @@ fn application_close_discard_all_releases_documents_serially_before_confirming()
         ))
         .expect("the frozen snapshot is valid");
 
-    let first = close.choose(ApplicationCloseAction::DiscardAll);
+    let checkpoint = close.choose(ApplicationCloseAction::DiscardAll);
+    let first = publish_checkpoint(&mut close, checkpoint);
     let first_token = match only_command(&first) {
         ApplicationCloseCommand::ReleaseDocument { token, document_id } => {
             assert_eq!(document_id, "one");
@@ -493,7 +550,8 @@ fn application_close_release_failure_cancels_and_allows_a_fresh_retry() {
         ],
     );
     close.request_close(frozen.clone()).unwrap();
-    let releases = close.choose(ApplicationCloseAction::DiscardAll);
+    let checkpoint = close.choose(ApplicationCloseAction::DiscardAll);
+    let releases = publish_checkpoint(&mut close, checkpoint);
     let first_token = match only_command(&releases) {
         ApplicationCloseCommand::ReleaseDocument { token, .. } => token.clone(),
         other => panic!("expected first release command, got {other:?}"),
@@ -585,9 +643,10 @@ fn application_close_rejects_stale_save_and_release_results_without_advancing_st
             .busy
     );
 
-    let releasing = close.handle_result(ApplicationCloseResult::SaveSucceeded {
+    let checkpoint = close.handle_result(ApplicationCloseResult::SaveSucceeded {
         token: stale_save_token.clone(),
     });
+    let releasing = publish_checkpoint(&mut close, checkpoint);
     let release_token = match only_command(&releasing) {
         ApplicationCloseCommand::ReleaseDocument { token, document_id } => {
             assert_eq!(document_id, "one");
@@ -609,7 +668,8 @@ fn application_close_rejects_stale_save_and_release_results_without_advancing_st
             vec![document("one", "one.pdf", Some(2), false)],
         ))
         .expect("the next close transaction is valid");
-    let release = close.choose(ApplicationCloseAction::DiscardAll);
+    let checkpoint = close.choose(ApplicationCloseAction::DiscardAll);
+    let release = publish_checkpoint(&mut close, checkpoint);
     let release_token = match only_command(&release) {
         ApplicationCloseCommand::ReleaseDocument { token, .. } => token.clone(),
         other => panic!("expected a release intent, got {other:?}"),
@@ -637,7 +697,8 @@ fn application_close_without_dirty_documents_releases_before_confirming_without_
         ))
         .expect("the frozen snapshot is valid");
 
-    let release_token = match only_command(&transition) {
+    let release = publish_checkpoint(&mut close, transition);
+    let release_token = match only_command(&release) {
         ApplicationCloseCommand::ReleaseDocument { token, document_id } => {
             assert_eq!(document_id, "one");
             token.clone()
@@ -652,4 +713,52 @@ fn application_close_without_dirty_documents_releases_before_confirming_without_
         ApplicationCloseCommand::ConfirmApplicationClose { .. }
     ));
     assert!(close.dialog().is_none());
+}
+
+#[test]
+fn application_close_empty_workspace_checkpoints_and_failed_publication_retries_frozen_completion()
+{
+    let mut close = ApplicationCloseCoordinator::default();
+    let checkpoint = close.request_close(snapshot(None, Vec::new())).unwrap();
+    let transaction_id = match only_command(&checkpoint) {
+        ApplicationCloseCommand::PublishSessionCheckpoint {
+            transaction_id,
+            completion_kind,
+        } => {
+            assert_eq!(
+                *completion_kind,
+                application_close::ApplicationCloseCompletionKind::NoDirtyDocuments
+            );
+            *transaction_id
+        }
+        other => panic!("empty workspace must checkpoint before quit, got {other:?}"),
+    };
+    let failed = close.handle_result(ApplicationCloseResult::SessionCheckpointFailed {
+        transaction_id,
+        message: "checkpoint unavailable".into(),
+    });
+    assert_eq!(failed.commands.len(), 2);
+    assert!(failed.commands.iter().all(|command| !matches!(
+        command,
+        ApplicationCloseCommand::ReleaseDocument { .. }
+            | ApplicationCloseCommand::ConfirmApplicationClose { .. }
+    )));
+    assert_eq!(
+        close.retry_session_checkpoint(transaction_id + 1).status,
+        ApplicationCloseTransitionStatus::StaleResultRejected
+    );
+    let retry = close.retry_session_checkpoint(transaction_id);
+    assert!(matches!(
+        only_command(&retry),
+        ApplicationCloseCommand::PublishSessionCheckpoint {
+            completion_kind: application_close::ApplicationCloseCompletionKind::NoDirtyDocuments,
+            ..
+        }
+    ));
+    let confirmed =
+        close.handle_result(ApplicationCloseResult::SessionCheckpointPublished { transaction_id });
+    assert!(matches!(
+        only_command(&confirmed),
+        ApplicationCloseCommand::ConfirmApplicationClose { .. }
+    ));
 }

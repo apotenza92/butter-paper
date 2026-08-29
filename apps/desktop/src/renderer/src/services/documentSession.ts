@@ -164,8 +164,13 @@ export interface DiagnosticsSnapshot {
   cadRenderExperiment: string | null;
   renderCacheEntries: number;
   renderCacheBytes: number;
+  pageUrlCacheBytes?: number;
+  decodedRenderCacheBytes?: number;
+  pageUrlCacheByteLimit?: number;
+  decodedRenderCacheByteLimit?: number;
   thumbnailCacheEntries: number;
   thumbnailCacheBytes: number;
+  thumbnailCacheByteLimit?: number;
   pageRenderReady: boolean;
   thumbnailRenderReady: boolean;
   firstVisiblePageIndex: number | null;
@@ -1211,8 +1216,13 @@ export class LocalPdfSession {
       cadRenderExperiment: window.butterPaper?.environment.cadRenderExperiment ?? null,
       renderCacheEntries: this.pageUrlCache.size + this.renderCache.size + this.retiredPageRenderCache.size,
       renderCacheBytes: this.pageCacheBytes(),
+      pageUrlCacheBytes: this.cacheBytes(this.pageUrlCache),
+      decodedRenderCacheBytes: this.bitmapPageCacheBytes(),
+      pageUrlCacheByteLimit: this.maxRenderCacheBytes,
+      decodedRenderCacheByteLimit: this.maxBitmapRenderCacheBytes,
       thumbnailCacheEntries: this.thumbnailCache.size,
       thumbnailCacheBytes: this.cacheBytes(this.thumbnailCache),
+      thumbnailCacheByteLimit: this.maxThumbnailCacheBytes,
       pageRenderReady: this.pageRenderReady,
       thumbnailRenderReady: this.thumbnailRenderReady,
       firstVisiblePageIndex: this.firstVisiblePageIndex,

@@ -76,6 +76,23 @@ pub enum PageScalePagesMode {
     Custom,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct PageScaleInputSnapshot {
+    mode: PageScaleMode,
+    pdf_units: ScaleUnit,
+    real_units: ScaleUnit,
+    separate_y: bool,
+    precision_mode: ScalePrecisionMode,
+    precision_value: f64,
+    selected_preset_id: String,
+    pdf_length: String,
+    known_length: String,
+    y_pdf_length: String,
+    y_real_length: String,
+    start: Option<PdfPoint>,
+    end: Option<PdfPoint>,
+}
+
 /// Application-owned transient state for the calibration journey. GPUI
 /// Component owns only the dialog, buttons, and numeric-input presentation.
 pub struct PageScaleControl {
@@ -106,6 +123,8 @@ pub struct PageScaleControl {
     real_units_select: gpui::Entity<SelectState<Vec<SharedString>>>,
     precision_mode_select: gpui::Entity<SelectState<Vec<SharedString>>>,
     precision_value_select: gpui::Entity<SelectState<Vec<SharedString>>>,
+    original_scale: Option<PageScale>,
+    opened_scale_inputs: Option<PageScaleInputSnapshot>,
     error: Option<String>,
     applied_count: usize,
 }
@@ -313,6 +332,8 @@ impl PageScaleControl {
             real_units_select,
             precision_mode_select,
             precision_value_select,
+            original_scale: None,
+            opened_scale_inputs: None,
             error: None,
             applied_count: 0,
         }
@@ -423,8 +444,30 @@ impl PageScaleControl {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let current_scale = self
+            .owner
+            .read_with(cx, |workspace, cx| {
+                workspace.page_scale(document_id, page_index, cx)
+            })
+            .ok()
+            .flatten();
+        let presets = self.available_presets(document_id, cx);
+        self.open_for_state(document_id, page_index, current_scale, presets, window, cx);
+    }
+
+    pub fn open_for_state(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        current_scale: Option<PageScale>,
+        presets: Vec<ScalePreset>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.target = Some((document_id, page_index));
         self.pick_document_id = Some(document_id);
+        self.original_scale = current_scale.clone();
+        self.opened_scale_inputs = None;
         self.start = None;
         self.end = None;
         self.picking = false;
@@ -448,11 +491,53 @@ impl PageScaleControl {
             .update(cx, |input, cx| input.set_value("1", window, cx));
         self.custom_range
             .update(cx, |input, cx| input.set_value("", window, cx));
-        let presets = self.available_presets(document_id, cx);
-        self.selected_preset_id = presets
-            .first()
-            .map(|preset| preset.id.clone())
-            .unwrap_or_else(|| "one-to-1".into());
+        if let Some(scale) = current_scale {
+            let matching_preset_id = presets
+                .iter()
+                .find(|preset| {
+                    preset.source == ScaleSource::Preset
+                        && preset.pdf_units == scale.pdf_units
+                        && preset.real_units == scale.real_units
+                        && preset.scale_x == scale.scale_x
+                        && preset.scale_y == scale.scale_y
+                })
+                .map(|preset| preset.id.clone());
+            self.mode = if scale.source == ScaleSource::Preset && matching_preset_id.is_some() {
+                PageScaleMode::Preset
+            } else {
+                PageScaleMode::Custom
+            };
+            self.pdf_units = scale.pdf_units;
+            self.real_units = scale.real_units;
+            self.separate_y = (scale.scale_x - scale.scale_y).abs() > 0.000_000_1;
+            self.precision_mode = scale.precision.mode;
+            self.precision_value = scale.precision.value;
+            let points = pdf_unit_points(scale.pdf_units);
+            self.pdf_length
+                .update(cx, |input, cx| input.set_value("1", window, cx));
+            self.known_length.update(cx, |input, cx| {
+                input.set_value(
+                    format_scale_number(scale.scale_x * points),
+                    window,
+                    cx,
+                )
+            });
+            self.y_pdf_length
+                .update(cx, |input, cx| input.set_value("1", window, cx));
+            self.y_real_length.update(cx, |input, cx| {
+                input.set_value(
+                    format_scale_number(scale.scale_y * points),
+                    window,
+                    cx,
+                )
+            });
+            self.selected_preset_id = matching_preset_id.unwrap_or_else(|| "one-to-1".into());
+        } else {
+            self.selected_preset_id = presets
+                .first()
+                .map(|preset| preset.id.clone())
+                .unwrap_or_else(|| "one-to-1".into());
+        }
         let preset_labels = presets
             .iter()
             .map(preset_label)
@@ -460,7 +545,11 @@ impl PageScaleControl {
             .collect::<Vec<_>>();
         self.preset_select.update(cx, |select, cx| {
             select.set_items(preset_labels, window, cx);
-            select.set_selected_index(Some(IndexPath::default()), window, cx);
+            let selected = presets
+                .iter()
+                .position(|preset| preset.id == self.selected_preset_id)
+                .unwrap_or(0);
+            select.set_selected_index(Some(IndexPath::default().row(selected)), window, cx);
         });
         self.pages_select.update(cx, |select, cx| {
             select.set_items(
@@ -474,6 +563,54 @@ impl PageScaleControl {
             );
             select.set_selected_index(Some(IndexPath::default()), window, cx);
         });
+        let unit_index = |unit: ScaleUnit| match unit {
+            ScaleUnit::In => 0,
+            ScaleUnit::Ft => 1,
+            ScaleUnit::Mm => 2,
+            ScaleUnit::Cm => 3,
+            ScaleUnit::M => 4,
+        };
+        self.pdf_units_select.update(cx, |select, cx| {
+            select.set_selected_index(
+                Some(IndexPath::default().row(unit_index(self.pdf_units))),
+                window,
+                cx,
+            )
+        });
+        self.real_units_select.update(cx, |select, cx| {
+            select.set_selected_index(
+                Some(IndexPath::default().row(unit_index(self.real_units))),
+                window,
+                cx,
+            )
+        });
+        self.precision_mode_select.update(cx, |select, cx| {
+            select.set_selected_index(
+                Some(IndexPath::default().row(usize::from(
+                    self.precision_mode == ScalePrecisionMode::Fraction,
+                ))),
+                window,
+                cx,
+            )
+        });
+        let precision_labels = if self.precision_mode == ScalePrecisionMode::Fraction {
+            fraction_precision_labels()
+        } else {
+            decimal_precision_labels()
+        };
+        let selected_precision = precision_labels
+            .iter()
+            .position(|label| precision_label(self.precision_mode, self.precision_value) == *label)
+            .unwrap_or(0);
+        self.precision_value_select.update(cx, |select, cx| {
+            select.set_items(precision_labels, window, cx);
+            select.set_selected_index(
+                Some(IndexPath::default().row(selected_precision)),
+                window,
+                cx,
+            );
+        });
+        self.opened_scale_inputs = Some(self.scale_input_snapshot(cx));
         self.open_dialog(window, cx);
     }
 
@@ -572,6 +709,18 @@ impl PageScaleControl {
         cx.notify();
     }
 
+    pub fn configure_pages_for_test(
+        &mut self,
+        pages_mode: PageScalePagesMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pages_mode = pages_mode;
+        self.sync_selects(window, cx);
+        self.error = None;
+        cx.notify();
+    }
+
     pub fn apply(&mut self, cx: &mut Context<Self>) -> bool {
         let Some((document_id, page_index)) = self.target else {
             self.error = Some("Choose a document page before applying scale.".into());
@@ -584,7 +733,7 @@ impl PageScaleControl {
             .ok()
             .flatten()
             .unwrap_or(0);
-        let scale = match self.build_scale(document_id, page_index, cx) {
+        let scale = match self.scale_for_apply(document_id, page_index, cx) {
             Ok(scale) => scale,
             Err(error) => {
                 self.error = Some(error);
@@ -787,6 +936,44 @@ impl PageScaleControl {
         }
     }
 
+    fn scale_for_apply(
+        &self,
+        document_id: DocumentId,
+        page_index: u32,
+        cx: &App,
+    ) -> Result<PageScale, String> {
+        if self.scale_inputs_unchanged(cx) {
+            if let Some(scale) = &self.original_scale {
+                return Ok(scale.clone());
+            }
+        }
+        self.build_scale(document_id, page_index, cx)
+    }
+
+    fn scale_inputs_unchanged(&self, cx: &App) -> bool {
+        self.opened_scale_inputs
+            .as_ref()
+            .is_some_and(|opened| *opened == self.scale_input_snapshot(cx))
+    }
+
+    fn scale_input_snapshot(&self, cx: &App) -> PageScaleInputSnapshot {
+        PageScaleInputSnapshot {
+            mode: self.mode,
+            pdf_units: self.pdf_units,
+            real_units: self.real_units,
+            separate_y: self.separate_y,
+            precision_mode: self.precision_mode,
+            precision_value: self.precision_value,
+            selected_preset_id: self.selected_preset_id.clone(),
+            pdf_length: self.pdf_length.read(cx).value().to_string(),
+            known_length: self.known_length.read(cx).value().to_string(),
+            y_pdf_length: self.y_pdf_length.read(cx).value().to_string(),
+            y_real_length: self.y_real_length.read(cx).value().to_string(),
+            start: self.start,
+            end: self.end,
+        }
+    }
+
     fn build_target(
         &self,
         page_index: u32,
@@ -854,6 +1041,8 @@ impl PageScaleControl {
         self.start = None;
         self.end = None;
         self.picking = false;
+        self.original_scale = None;
+        self.opened_scale_inputs = None;
         self.error = None;
         cx.notify();
         true
@@ -1279,6 +1468,16 @@ fn format_scale_number(value: f64) -> String {
         format!("{value:.0}")
     } else {
         value.to_string()
+    }
+}
+
+fn pdf_unit_points(unit: ScaleUnit) -> f64 {
+    match unit {
+        ScaleUnit::In => 72.,
+        ScaleUnit::Ft => 864.,
+        ScaleUnit::Mm => 72. / 25.4,
+        ScaleUnit::Cm => 72. / 2.54,
+        ScaleUnit::M => 72. / 0.0254,
     }
 }
 

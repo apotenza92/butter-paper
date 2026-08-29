@@ -6,14 +6,81 @@ use std::{
 use butter_paper_gpui_component_compat::continuous_view_control::{
     CONTINUOUS_PRIMARY_ID, CONTINUOUS_SPLIT_ID, ContinuousViewControl, WheelBehavior,
 };
+use butter_paper_gpui_component_compat::system_theme::apply_window_appearance;
 use gpui::{
     AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, Modifiers, Render,
-    TestAppContext, Window, point, px,
+    TestAppContext, Window, WindowAppearance, point, px,
 };
 use gpui_component::{
-    Root, Selectable as _,
+    Root, Selectable as _, Theme, ThemeMode,
     button::{Button, ButtonGroup},
 };
+
+#[gpui::test]
+fn window_appearance_changes_project_complete_component_and_base_themes(cx: &mut TestAppContext) {
+    let pinned_theme_source =
+        include_str!("../.prepared/gpui-component-c27f5d5c/crates/ui/src/theme/mod.rs");
+    for projection in [
+        "cx.set_global(base_theme);",
+        "tokens: self.semantic_tokens(),",
+        ".with_mode(self.scrollbar_mode)",
+        "handle: self.border,",
+        "active_handle: self.drag_border,",
+    ] {
+        assert!(
+            pinned_theme_source.contains(projection),
+            "the pinned GPUI Component Base projection must retain {projection:?}"
+        );
+    }
+    cx.update(gpui_component::init);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|_| CompatibilityView {
+            clicks: Rc::new(Cell::new(0)),
+        });
+        Root::new(view, window, cx)
+    });
+
+    let mut projections = Vec::new();
+    for appearance in [
+        WindowAppearance::Light,
+        WindowAppearance::VibrantLight,
+        WindowAppearance::Dark,
+        WindowAppearance::VibrantDark,
+    ] {
+        projections.push(cx.update(|window, cx| {
+            apply_window_appearance(appearance, window, cx);
+            let theme = Theme::global(cx);
+            (
+                theme.mode,
+                theme.semantic_tokens(),
+                theme.scrollbar_mode,
+                theme.border,
+                theme.drag_border,
+            )
+        }));
+    }
+
+    assert_eq!(projections[0].0, ThemeMode::Light);
+    assert_eq!(projections[1].0, ThemeMode::Light);
+    assert_eq!(projections[2].0, ThemeMode::Dark);
+    assert_eq!(projections[3].0, ThemeMode::Dark);
+    assert_eq!(projections[0].1, projections[1].1);
+    assert_eq!(projections[2].1, projections[3].1);
+    assert_ne!(projections[0].1, projections[2].1);
+
+    let roundtrip = cx.update(|window, cx| {
+        apply_window_appearance(WindowAppearance::Light, window, cx);
+        let theme = Theme::global(cx);
+        (
+            theme.mode,
+            theme.semantic_tokens(),
+            theme.scrollbar_mode,
+            theme.border,
+            theme.drag_border,
+        )
+    });
+    assert_eq!(roundtrip, projections[0]);
+}
 
 struct CompatibilityView {
     clicks: Rc<Cell<usize>>,

@@ -93,6 +93,7 @@ import {
 } from '../pdf-tools/selectionMarquee';
 import type { RenderPrimitive, SelectionChromeDescriptor, ToolHandleDescriptor, ToolHit, ToolInteractionContext } from '../pdf-tools/types';
 import { applyToolPropertyValues, type ToolPropertyValues, type ToolPropertyValuesByTool } from '../pdf-tools/toolPropertyDefaults';
+import { recordComponentRender } from '../services/perfTracker';
 
 type PageTransform = ReturnType<typeof createPageTransform>;
 const IMPORTED_MARKUP_MIN_RENDER_ZOOM = 0.35;
@@ -289,6 +290,7 @@ export function ReadOnlyAnnotationLayer({
   transform,
   testId,
 }: ReadOnlyAnnotationLayerProps) {
+  recordComponentRender('ReadOnlyAnnotationLayer', page.index);
   return (
     <svg
       className="pointer-events-none absolute inset-0 h-full w-full overflow-visible"
@@ -333,6 +335,7 @@ export function AnnotationLayer({
   calibrationStartPoint = null,
   onCalibrationPoint,
 }: AnnotationLayerProps) {
+  recordComponentRender('AnnotationLayer', page.index);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const toolCursorIconRef = useRef<HTMLDivElement | null>(null);
   const toolCursorPointRef = useRef<ViewportPoint | null>(null);

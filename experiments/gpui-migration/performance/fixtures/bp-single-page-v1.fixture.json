@@ -1,0 +1,26 @@
+{
+  "schema_version": "bp-fixture-spec-v1",
+  "fixture_id": "bp-single-page-v1",
+  "source": { "kind": "deterministically-generated", "license": "MIT", "contains_private_material": false },
+  "coordinate_space": "pdf-points-bottom-left",
+  "document": { "page_count": 1, "page_width": 612, "page_height": 792 },
+  "commands": [
+    { "command_id": "single:assert-open:001", "operation": "assert-document-open", "expected_page_count": 1 }
+  ],
+  "visual_crops": [
+    { "crop_id": "single-registration", "page_id": "bp-single-page-v1:page:001", "pdf_rect": { "x": 36, "y": 36, "width": 540, "height": 720 }, "expected_annotation_ids": [], "minimum_settled_density": 1 }
+  ],
+  "artifact_sha256": { "pdf": "f31adeeb3f17ef180012fe707cb2f2650854305dab4b16bba34d73652b6d8fdc", "commands": "e779d36e30034a6b452a87c91a76379bfe18a39e2fb4e28882d4c1d6ba63cced", "expected": "f39bdf7d0ead8b4385dbc547122326eb65f98b29cce387987c41af77efb7a2fb", "crops": "cc231d7d5da2ef403509e58565a19fb1855fea3da6aca1436d56dbc38ce218ef" },
+  "canonical_expected": {
+    "sha256": "f39bdf7d0ead8b4385dbc547122326eb65f98b29cce387987c41af77efb7a2fb",
+    "state": {
+      "schema_version": "bp-canonical-annotation-state-v1",
+      "fixture_id": "bp-single-page-v1",
+      "document": { "page_count": 1, "page_ids": ["bp-single-page-v1:page:001"] },
+      "annotations": [],
+      "selected_annotation_ids": [],
+      "history": { "undo_depth": 0, "redo_depth": 0 },
+      "dirty": false
+    }
+  }
+}

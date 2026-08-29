@@ -97,6 +97,7 @@ export async function loadDocumentPayload(
         },
         pages,
         markups,
+        pageScales: inspection.pageScales,
       }),
       openStageTimings,
     };

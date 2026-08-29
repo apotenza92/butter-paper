@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://butter-paper.invalid/schemas/bp-perf-v4-decision-1.json",
+  "title": "Butter Paper GPUI migration decision contract v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract_version", "supersedes", "evidence_boundary", "execution", "fixtures", "journeys", "stress_lanes", "supplementary_lanes", "resource_observation", "phases", "statistics", "decision"],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "contract_version": { "const": "bp-perf-v4-decision-1" },
+    "supersedes": { "const": "bp-perf-v3-decision-3" },
+    "evidence_boundary": { "type": "string", "minLength": 1 },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["readiness_model", "static_capability_declarations_are_evidence", "required_live_gate_ids", "required_implementations", "required_representative_journey_ids"],
+      "properties": {
+        "readiness_model": { "const": "derived-from-live-evidence" },
+        "static_capability_declarations_are_evidence": { "const": false },
+        "required_live_gate_ids": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "required_implementations": { "const": ["electron", "gpui"] },
+        "required_representative_journey_ids": { "type": "array", "minItems": 5, "items": { "type": "string" } }
+      }
+    },
+    "fixtures": { "type": "array", "minItems": 5 },
+    "journeys": { "type": "array", "minItems": 5, "maxItems": 5 },
+    "stress_lanes": { "type": "array", "minItems": 1 },
+    "supplementary_lanes": { "type": "array", "minItems": 1 },
+    "resource_observation": {
+      "type": "object",
+      "required": ["decoded_payload_bytes", "renderer_resource_submission_bytes", "physical_bus_upload_bytes"],
+      "properties": {
+        "decoded_payload_bytes": { "const": "exact-required" },
+        "renderer_resource_submission_bytes": { "const": "exact-required" },
+        "physical_bus_upload_bytes": { "const": "optional-nullable" }
+      }
+    },
+    "phases": { "type": "object" },
+    "statistics": {
+      "type": "object",
+      "required": ["sampling_unit", "component_process_model", "pair_order", "component_aggregation", "bootstrap"],
+      "properties": {
+        "sampling_unit": { "const": "paired isolated journey execution bundle" },
+        "component_process_model": { "type": "string", "minLength": 1 },
+        "component_aggregation": {
+          "type": "object",
+          "required": ["order_source", "benefit_metric_method", "non_inferiority_method", "compensating_regressions_allowed"],
+          "properties": {
+            "compensating_regressions_allowed": { "const": false }
+          }
+        }
+      }
+    },
+    "decision": { "type": "object" }
+  }
+}

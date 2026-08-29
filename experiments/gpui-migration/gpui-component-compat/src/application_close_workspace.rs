@@ -30,6 +30,7 @@ use crate::{
         ApplyDisposition, DocumentId, DocumentOpenBatchRequest, DocumentOpenOrigin,
         DocumentWorkspace, NativeDocumentSaver, SaveDocumentRequest, SavedNativeDocument,
     },
+    session_manifest::{SessionManifestError, SessionManifestStore, SessionSnapshot},
 };
 
 gpui::actions!(application_close_shell, [RequestApplicationClose]);
@@ -60,7 +61,59 @@ pub enum ApplicationCloseRecoveryKind {
     TargetRejected,
     SaveFailed,
     PublishedWithWarning,
+    SessionCheckpointFailed,
     ReleaseFailed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ApplicationCloseCheckpointPublication {
+    Published {
+        document_count: Option<usize>,
+    },
+    PublishedWithDurabilityWarning {
+        document_count: Option<usize>,
+        message: String,
+    },
+}
+
+pub trait ApplicationCloseCheckpointPublisher: Send + Sync {
+    fn publish(
+        &self,
+        snapshot: &SessionSnapshot,
+    ) -> Result<ApplicationCloseCheckpointPublication, String>;
+}
+
+struct NoStoreCheckpointPublisher;
+
+impl ApplicationCloseCheckpointPublisher for NoStoreCheckpointPublisher {
+    fn publish(
+        &self,
+        _snapshot: &SessionSnapshot,
+    ) -> Result<ApplicationCloseCheckpointPublication, String> {
+        Ok(ApplicationCloseCheckpointPublication::Published {
+            document_count: None,
+        })
+    }
+}
+
+impl ApplicationCloseCheckpointPublisher for SessionManifestStore {
+    fn publish(
+        &self,
+        snapshot: &SessionSnapshot,
+    ) -> Result<ApplicationCloseCheckpointPublication, String> {
+        match self.replace(snapshot) {
+            Ok(()) => Ok(ApplicationCloseCheckpointPublication::Published {
+                document_count: self.load().ok().map(|plan| plan.into_parts().0.len()),
+            }),
+            Err(SessionManifestError::PublishedButDirectorySyncFailed { kind }) => Ok(
+                ApplicationCloseCheckpointPublication::PublishedWithDurabilityWarning {
+                    document_count: self.load().ok().map(|plan| plan.into_parts().0.len()),
+                    message: format!("session checkpoint directory sync failed: {kind}"),
+                },
+            ),
+            Err(error) => Err(format!("session checkpoint publication failed: {error:?}")),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -109,6 +162,18 @@ pub enum ApplicationCloseEffect {
         document_id: String,
         message: String,
     },
+    SessionCheckpointPublished {
+        transaction_id: u64,
+        document_count: usize,
+    },
+    SessionCheckpointFailed {
+        transaction_id: u64,
+        message: String,
+    },
+    SessionCheckpointDurabilityWarning {
+        transaction_id: u64,
+        message: String,
+    },
     ReleaseFailureReported {
         transaction_id: u64,
         document_id: String,
@@ -153,6 +218,7 @@ impl ApplicationCloseEffect {
 pub struct ApplicationCloseWorkspace {
     workspace: Entity<DocumentWorkspace>,
     saver: Arc<dyn NativeDocumentSaver>,
+    checkpoint_publisher: Arc<dyn ApplicationCloseCheckpointPublisher>,
     coordinator: ApplicationCloseCoordinator,
     close_snapshot: Option<ApplicationCloseSnapshot>,
     document_ids: HashMap<String, DocumentId>,
@@ -167,9 +233,26 @@ pub struct ApplicationCloseWorkspace {
 
 impl ApplicationCloseWorkspace {
     pub fn new(workspace: Entity<DocumentWorkspace>, saver: Arc<dyn NativeDocumentSaver>) -> Self {
+        Self::with_checkpoint_publisher(workspace, saver, Arc::new(NoStoreCheckpointPublisher))
+    }
+
+    pub fn with_session_manifest_store(
+        workspace: Entity<DocumentWorkspace>,
+        saver: Arc<dyn NativeDocumentSaver>,
+        store: SessionManifestStore,
+    ) -> Self {
+        Self::with_checkpoint_publisher(workspace, saver, Arc::new(store))
+    }
+
+    pub fn with_checkpoint_publisher(
+        workspace: Entity<DocumentWorkspace>,
+        saver: Arc<dyn NativeDocumentSaver>,
+        checkpoint_publisher: Arc<dyn ApplicationCloseCheckpointPublisher>,
+    ) -> Self {
         Self {
             workspace,
             saver,
+            checkpoint_publisher,
             coordinator: ApplicationCloseCoordinator::default(),
             close_snapshot: None,
             document_ids: HashMap::new(),
@@ -222,6 +305,14 @@ impl ApplicationCloseWorkspace {
         let Some(recovery) = self.recovery.take() else {
             return Ok(ApplicationCloseTransitionStatus::StaleResultRejected);
         };
+        if recovery.kind == ApplicationCloseRecoveryKind::SessionCheckpointFailed {
+            let transition = self
+                .coordinator
+                .retry_session_checkpoint(recovery.transaction_id);
+            let status = self.apply_transition(transition, cx);
+            cx.notify();
+            return Ok(status);
+        }
         let status = self.request_close(cx)?;
         if recovery.kind != ApplicationCloseRecoveryKind::ReleaseFailed && self.dialog().is_some() {
             self.choose(ApplicationCloseAction::SaveAll, cx);
@@ -250,6 +341,11 @@ impl ApplicationCloseWorkspace {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Result<ApplicationCloseTransitionStatus, ApplicationCloseContractError> {
+        self.workspace
+            .update(cx, |workspace, cx| {
+                workspace.commit_pending_text_editor_before_application_close(cx)
+            })
+            .map_err(ApplicationCloseContractError::DraftCommitBlocked)?;
         let (snapshot, document_ids) = self.capture_snapshot(cx);
         let transition = self.coordinator.request_close(snapshot.clone())?;
         if transition.status == ApplicationCloseTransitionStatus::Applied {
@@ -752,6 +848,68 @@ impl ApplicationCloseWorkspace {
                     document_id,
                     destination,
                 } => self.prepare_save(token, document_id, destination, &mut commands, cx),
+                ApplicationCloseCommand::PublishSessionCheckpoint {
+                    transaction_id,
+                    completion_kind: _,
+                } => {
+                    let snapshot = self
+                        .workspace
+                        .read_with(cx, |workspace, cx| workspace.session_snapshot(cx));
+                    let fallback_document_count = self
+                        .close_snapshot
+                        .as_ref()
+                        .map_or(0, |snapshot| snapshot.documents.len());
+                    match self.checkpoint_publisher.publish(&snapshot) {
+                        Ok(ApplicationCloseCheckpointPublication::Published { document_count }) => {
+                            self.effects
+                                .push(ApplicationCloseEffect::SessionCheckpointPublished {
+                                    transaction_id,
+                                    document_count: document_count
+                                        .unwrap_or(fallback_document_count),
+                                });
+                            let transition = self.coordinator.handle_result(
+                                ApplicationCloseResult::SessionCheckpointPublished {
+                                    transaction_id,
+                                },
+                            );
+                            commands.extend(transition.commands);
+                        }
+                        Ok(
+                            ApplicationCloseCheckpointPublication::PublishedWithDurabilityWarning {
+                                document_count,
+                                message,
+                            },
+                        ) => {
+                            self.effects.push(
+                                ApplicationCloseEffect::SessionCheckpointDurabilityWarning {
+                                    transaction_id,
+                                    message,
+                                },
+                            );
+                            self.effects
+                                .push(ApplicationCloseEffect::SessionCheckpointPublished {
+                                    transaction_id,
+                                    document_count: document_count
+                                        .unwrap_or(fallback_document_count),
+                                });
+                            let transition = self.coordinator.handle_result(
+                                ApplicationCloseResult::SessionCheckpointPublished {
+                                    transaction_id,
+                                },
+                            );
+                            commands.extend(transition.commands);
+                        }
+                        Err(message) => {
+                            let transition = self.coordinator.handle_result(
+                                ApplicationCloseResult::SessionCheckpointFailed {
+                                    transaction_id,
+                                    message,
+                                },
+                            );
+                            commands.extend(transition.commands);
+                        }
+                    }
+                }
                 ApplicationCloseCommand::ReleaseDocument { token, document_id } => {
                     self.release_document(token, document_id, &mut commands, cx)
                 }
@@ -821,6 +979,22 @@ impl ApplicationCloseWorkspace {
                             message,
                         });
                 }
+                ApplicationCloseCommand::ReportSessionCheckpointFailure {
+                    transaction_id,
+                    message,
+                } => {
+                    self.set_recovery(
+                        ApplicationCloseRecoveryKind::SessionCheckpointFailed,
+                        transaction_id,
+                        "session-checkpoint",
+                        message.clone(),
+                    );
+                    self.effects
+                        .push(ApplicationCloseEffect::SessionCheckpointFailed {
+                            transaction_id,
+                            message,
+                        });
+                }
                 ApplicationCloseCommand::ReportReleaseFailure {
                     transaction_id,
                     document_id,
@@ -886,6 +1060,11 @@ impl ApplicationCloseWorkspace {
                     "The file will not be written again. Closing stopped because durability could not be confirmed. {detail}"
                 ),
                 "Continue closing",
+            ),
+            ApplicationCloseRecoveryKind::SessionCheckpointFailed => (
+                "Couldn’t save the workspace session".to_owned(),
+                format!("The application will stay open. {detail}"),
+                "Try again",
             ),
             ApplicationCloseRecoveryKind::ReleaseFailed => (
                 format!("Couldn’t close “{document_name}”"),

@@ -1,0 +1,502 @@
+{
+  "$schema": "./comparison-workload-v5.schema.json",
+  "schema_version": "bp-comparison-workload-v3",
+  "manifest_id": "bp-perf-v5-decision-1",
+  "decision_contract_version": "bp-perf-v5-decision-1",
+  "supersedes": "bp-perf-v4-decision-1",
+  "seed": 20260825,
+  "source_manifest": {
+    "id": "bp-perf-v4-decision-1",
+    "file": "./comparison-workload-v4.materialized.json",
+    "artifact_sha256": "4a826bd3c19f3c7693128961f43064e5b7414e799a0f791b7f3381ed59e897b1",
+    "byte_sha256": "8828be7c4c7c05a19007bd315c4fc1844a93278c967d49614387c2ae6cfeff52"
+  },
+  "journey_extensions": [
+    {
+      "journey_id": "nasa-long-document-v1",
+      "append_command_ids": ["viewer:dynamic-fidelity-scroll"]
+    },
+    {
+      "journey_id": "dense-mixed-editing-v1",
+      "append_command_ids": [
+        "annotation:native-property-edit-undo",
+        "annotation:native-snap-transform-120hz"
+      ]
+    }
+  ],
+  "additional_journeys": [
+    {
+      "id": "multi-document-session-v1",
+      "fixture_ids": [
+        "bp-single-page-v1",
+        "nasa-apollo-summary-526-v1",
+        "bp-engineering-sheet-v1",
+        "bp-annotation-density-v1"
+      ],
+      "command_ids": [
+        "session:open-four-fixtures",
+        "session:switch-four-fixtures",
+        "session:edit-dense-rectangle",
+        "session:close-three-and-recover"
+      ]
+    }
+  ],
+  "additional_commands": [
+    {
+      "id": "viewer:dynamic-fidelity-scroll",
+      "operation": "viewer.dynamic-fidelity-scroll-path",
+      "fixture_id": "nasa-apollo-summary-526-v1",
+      "layout": "continuous",
+      "input_lane": "native-replay",
+      "input_rate_hz": 120,
+      "duration_ms": 32000,
+      "expected_trajectory_sample_count": 3841,
+      "presentation": {
+        "zoom_mode": "fixed-percent",
+        "zoom_percent": 100,
+        "required_x_device_pixels_per_pdf_point": 1,
+        "required_y_device_pixels_per_pdf_point": 1,
+        "pixels_per_point_tolerance": 0.01,
+        "paired_candidate_scale_tolerance": 0.01,
+        "client_device_scale": 1,
+        "screenshot_source": "presented-client-drawable",
+        "page_bounds_source": "painted-page-bounds",
+        "stability_receipt": "painted-before-capture-after",
+        "candidate_resampling": "forbidden",
+        "reference_resampling": "downsample-only-lanczos3"
+      },
+      "path": {
+        "forward_duration_ms": 20000,
+        "forward_motion_duration_ms": 19250,
+        "forward_viewport_heights": 50,
+        "pause_duration_ms": 2000,
+        "reverse_duration_ms": 10000,
+        "start_page": 1,
+        "finish_page": 1,
+        "checkpoint_hold_ms": 250,
+        "checkpoint_hold_count": 3,
+        "checkpoint_hold_interval_count_each": 30,
+        "checkpoint_hold_sample_count_each": 31
+      },
+      "observer": {
+        "rate_hz": 60,
+        "expected_sample_count": 1921,
+        "clock": "monotonic-independent-fixed-cadence"
+      },
+      "registered_crops": [
+        {
+          "crop_id": "nasa-scroll-start-page-1-header",
+          "fixture_id": "nasa-apollo-summary-526-v1",
+          "page_number": 1,
+          "pdf_rect": { "x": 36, "y": 612, "width": 538, "height": 126 },
+          "checkpoint": {
+            "path_fraction": 0,
+            "selection": "nearest-full-crop-visibility",
+            "hold_index": 0,
+            "hold_ms": 250,
+            "zero_input_interval_count": 30,
+            "zero_input_sample_count": 31
+          },
+          "reference_raster": {
+            "source": "locked-fixture-pdf",
+            "dpi": 144,
+            "comparison_dpi": 144,
+            "color_space": "srgb",
+            "comparison": "bp-cross-engine-binary-scan-fidelity-v2",
+            "source_scan_dpi": 300,
+            "maximum_phase_offset_px": 1,
+            "gaussian_sigma_px": 2,
+            "gaussian_radius_px": 6,
+            "dark_luma_max": 192,
+            "dark_match_radius_px": 1,
+            "minimum_filtered_ssim": 0.97,
+            "minimum_dark_precision": 0.99,
+            "minimum_dark_recall": 0.99,
+            "minimum_dark_f1": 0.99,
+            "candidate_resampling": "none",
+            "reference_resampling": "downsample-only-lanczos3",
+            "reference_crop_sha256": "9618896b1558e6e92b1b0d10fec4f1480bd74b7e36d749dde07505eabfad8b5a"
+          },
+          "registration_sha256": "dd76c737bf0dcd52448505eaf0a176c548259fc1b5d87e422994ab4cfdc15d9e"
+        },
+        {
+          "crop_id": "nasa-scroll-middle-page-15-body",
+          "fixture_id": "nasa-apollo-summary-526-v1",
+          "page_number": 15,
+          "pdf_rect": { "x": 55, "y": 252, "width": 500, "height": 288 },
+          "checkpoint": {
+            "path_fraction": 0.3125,
+            "phase": "forward",
+            "selection": "nearest-full-crop-visibility",
+            "hold_index": 1,
+            "hold_ms": 250,
+            "zero_input_interval_count": 30,
+            "zero_input_sample_count": 31
+          },
+          "reference_raster": {
+            "source": "locked-fixture-pdf",
+            "dpi": 144,
+            "comparison_dpi": 144,
+            "color_space": "srgb",
+            "comparison": "bp-cross-engine-binary-scan-fidelity-v2",
+            "source_scan_dpi": 300,
+            "maximum_phase_offset_px": 1,
+            "gaussian_sigma_px": 2,
+            "gaussian_radius_px": 6,
+            "dark_luma_max": 192,
+            "dark_match_radius_px": 1,
+            "minimum_filtered_ssim": 0.97,
+            "minimum_dark_precision": 0.99,
+            "minimum_dark_recall": 0.99,
+            "minimum_dark_f1": 0.99,
+            "candidate_resampling": "none",
+            "reference_resampling": "downsample-only-lanczos3",
+            "reference_crop_sha256": "d0145b0e6e2240098477f7b029d3d52dc912e1633a7cf7dd338b35c50c465a03"
+          },
+          "registration_sha256": "93148387a5f5ee13a5fd84c5734032046ae267f0e326c6b341b08e919ac2d302"
+        },
+        {
+          "crop_id": "nasa-scroll-forward-apex-page-29-footer",
+          "fixture_id": "nasa-apollo-summary-526-v1",
+          "page_number": 29,
+          "pdf_rect": { "x": 55, "y": 54, "width": 500, "height": 126 },
+          "checkpoint": {
+            "path_fraction": 0.625,
+            "phase": "forward-apex",
+            "selection": "nearest-full-crop-visibility",
+            "hold_index": 2,
+            "hold_ms": 250,
+            "zero_input_interval_count": 30,
+            "zero_input_sample_count": 31
+          },
+          "reference_raster": {
+            "source": "locked-fixture-pdf",
+            "dpi": 144,
+            "comparison_dpi": 144,
+            "color_space": "srgb",
+            "comparison": "bp-cross-engine-binary-scan-fidelity-v2",
+            "source_scan_dpi": 300,
+            "maximum_phase_offset_px": 1,
+            "gaussian_sigma_px": 2,
+            "gaussian_radius_px": 6,
+            "dark_luma_max": 192,
+            "dark_match_radius_px": 1,
+            "minimum_filtered_ssim": 0.97,
+            "minimum_dark_precision": 0.99,
+            "minimum_dark_recall": 0.99,
+            "minimum_dark_f1": 0.99,
+            "candidate_resampling": "none",
+            "reference_resampling": "downsample-only-lanczos3",
+            "reference_crop_sha256": "c72c0763c9522e475f205ac7b570b8e0cbee1071497bd163aa2c1ae51f099c77"
+          },
+          "registration_sha256": "fd170a635e058da4932abe35aa870abfb955955e4be17bb92a98e0033b143963"
+        }
+      ],
+      "required_sample_fields": [
+        "visible_page_ready_fraction",
+        "visible_raster_ready_area_fraction",
+        "visible_raster_pixel_density"
+      ],
+      "expected_milestones": [
+        "timestamped-native-input-complete",
+        "fixed-cadence-fidelity-samples-exact",
+        "presented-screenshot-crops-three-matched",
+        "presented-scale-comparability-proven",
+        "checkpoint-holds-stable",
+        "visible-page-ready-fraction-recorded",
+        "visible-raster-ready-area-fraction-recorded",
+        "visible-raster-pixel-density-recorded",
+        "virtual-page-window-bounded",
+        "finish-page-current"
+      ]
+    },
+    {
+      "id": "annotation:native-property-edit-undo",
+      "operation": "annotation.property-edit-undo-native",
+      "fixture_id": "bp-annotation-density-v1",
+      "input_lane": "native-replay",
+      "setup": {
+        "annotation_id": "comparison:rectangle:property-native:1",
+        "page_role": "empty-interaction-page",
+        "rectangle": { "x1": 72, "y1": 144, "x2": 252, "y2": 360 },
+        "stroke_width_points": 1.5
+      },
+      "property_edit": {
+        "property": "stroke_width_points",
+        "from": 1.5,
+        "to": 4,
+        "native_action_sequence": [
+          "focus-properties-trigger",
+          "open-properties",
+          "focus-stroke-width",
+          "select-4pt",
+          "commit",
+          "shortcut-undo"
+        ]
+      },
+      "candidate_policy": {
+        "effective_history_revision_delta": 1,
+        "application_undo_count": 1,
+        "canonical_state_restored": true
+      },
+      "electron_baseline_policy": {
+        "allowed_known_defect_id": "electron-numeric-property-input-blur-duplicate-history-v1",
+        "effective_history_revision_delta": 2,
+        "application_undo_count": 1,
+        "final_stroke_width_points": 4
+      },
+      "expected_milestones": [
+        "trusted-native-input-complete",
+        "property-user-gesture-complete",
+        "property-state-current-before-undo",
+        "native-property-presentation-acknowledged",
+        "application-undo-applied-once",
+        "implementation-history-outcome-recorded",
+        "thumbnail-current"
+      ]
+    },
+    {
+      "id": "annotation:native-snap-transform-120hz",
+      "operation": "annotation.snap-transform-native",
+      "fixture_id": "bp-annotation-density-v1",
+      "input_lane": "native-replay",
+      "rate_hz": 120,
+      "duration_ms": 3000,
+      "expected_sample_count": 361,
+      "setup": {
+        "annotation_id": "comparison:rectangle:snap-native:1",
+        "page_role": "empty-interaction-page",
+        "rectangle": { "x1": 72, "y1": 144, "x2": 252, "y2": 360 }
+      },
+      "snap": {
+        "enabled": true,
+        "grid_spacing_points": 18,
+        "sensitivity": {
+          "value": 8,
+          "unit": "css-px",
+          "threshold_norm": "per-axis-l-infinity",
+          "inclusive": true
+        },
+        "mode": "translate-nearest-grid"
+      },
+      "pointer_path": {
+        "coordinate_space": "pdf-points-bottom-left",
+        "start": { "x": 162, "y": 252 },
+        "unsnapped_end": { "x": 259, "y": 335 },
+        "expected_snapped_delta": { "x": 90, "y": 90 }
+      },
+      "expected_final_rectangle": {
+        "x1": 162,
+        "y1": 234,
+        "x2": 342,
+        "y2": 450
+      },
+      "expected_milestones": [
+        "timestamped-native-input-complete",
+        "snap-target-acquired",
+        "snap-guide-presented",
+        "snapped-geometry-exact",
+        "gesture-committed-once",
+        "undo-redo-exact",
+        "thumbnail-current"
+      ]
+    },
+    {
+      "id": "session:open-four-fixtures",
+      "operation": "session.open-fixture-sequence-same-process",
+      "fixture_ids": [
+        "bp-single-page-v1",
+        "nasa-apollo-summary-526-v1",
+        "bp-engineering-sheet-v1",
+        "bp-annotation-density-v1"
+      ],
+      "expected_milestones": [
+        "application-process-id-recorded",
+        "four-documents-opened",
+        "tab-order-exact",
+        "document-identities-distinct",
+        "current-raster-after-each-open",
+        "aggregate-resource-observations-complete"
+      ]
+    },
+    {
+      "id": "session:switch-four-fixtures",
+      "operation": "session.switch-fixture-sequence-native",
+      "fixture_ids": [
+        "bp-single-page-v1",
+        "nasa-apollo-summary-526-v1",
+        "bp-engineering-sheet-v1",
+        "bp-annotation-density-v1"
+      ],
+      "input_lane": "native-replay",
+      "switch_sequence": [
+        "nasa-apollo-summary-526-v1",
+        "bp-single-page-v1",
+        "bp-engineering-sheet-v1",
+        "bp-annotation-density-v1"
+      ],
+      "expected_milestones": [
+        "application-process-id-stable",
+        "trusted-native-input-complete",
+        "switch-sequence-exact",
+        "per-document-state-isolated",
+        "current-raster-after-each-switch",
+        "aggregate-resource-observations-complete"
+      ]
+    },
+    {
+      "id": "session:edit-dense-rectangle",
+      "operation": "session.edit-dense-rectangle-property-native",
+      "fixture_id": "bp-annotation-density-v1",
+      "input_lane": "native-replay",
+      "annotation_id": "comparison:rectangle:session:1",
+      "setup_rectangle": {
+        "x1": 72,
+        "y1": 144,
+        "x2": 252,
+        "y2": 360,
+        "stroke_width_points": 1.5
+      },
+      "property_edit": {
+        "property": "stroke_width_points",
+        "from": 1.5,
+        "to": 4
+      },
+      "expected_milestones": [
+        "application-process-id-stable",
+        "trusted-native-input-complete",
+        "dense-rectangle-created-once",
+        "dense-rectangle-property-gesture-observed",
+        "dense-document-dirty",
+        "other-document-states-unchanged",
+        "thumbnail-current"
+      ]
+    },
+    {
+      "id": "session:close-three-and-recover",
+      "operation": "session.close-three-and-recover-same-process",
+      "fixture_ids": [
+        "bp-single-page-v1",
+        "nasa-apollo-summary-526-v1",
+        "bp-engineering-sheet-v1"
+      ],
+      "close_sequence": [
+        "bp-single-page-v1",
+        "bp-engineering-sheet-v1",
+        "nasa-apollo-summary-526-v1"
+      ],
+      "remaining_fixture_id": "bp-annotation-density-v1",
+      "expected_milestones": [
+        "application-process-id-stable",
+        "close-three-sequence-exact",
+        "closed-document-resources-released",
+        "memory-recovery-recorded",
+        "one-document-remains",
+        "dense-document-active",
+        "dense-rectangle-property-current",
+        "interactive-document-shell"
+      ]
+    }
+  ],
+  "expected_extensions": {
+    "hard_component_failure_policy": "gpui-candidate-hard-components-must-pass; exact-live-electron-property-history-defect-is-retained-but-does-not-block-benefit-inference",
+    "gpui_multi_document_absolute_safety_budgets": {
+      "applicability": "every-live-gpui-multi-document-session-report; mandatory-when-electron-benefit-metrics-ineligible",
+      "aggregation": "maximum-across-retained-final-gpui-multi-document-reports",
+      "conjunction": "all-seven",
+      "outcomes": {
+        "exceeded_finite_valid": "measured-no",
+        "missing_nonfinite_or_structurally_invalid": "blocked-not-decision-ready"
+      },
+      "metrics": {
+        "cpu_seconds": {
+          "maximum": 120,
+          "unit": "process-cpu-seconds",
+          "provenance": "new-v5-safety-cap-no-v4-absolute"
+        },
+        "cgroup_peak_memory_bytes": {
+          "maximum": 1610612736,
+          "unit": "bytes",
+          "provenance": "summarize-paired-v4 process_memory absoluteBudgetFor"
+        },
+        "product_wall_or_latency_ms": {
+          "maximum": 60000,
+          "unit": "milliseconds",
+          "allowed_source": ["product-latency", "component-wall"],
+          "provenance": "new-v5-safety-cap-no-v4-multi-document-map"
+        },
+        "application_frame_interval_p95_ms": {
+          "maximum": 25,
+          "unit": "milliseconds",
+          "provenance": "v4 native frame absoluteBudgetFor"
+        },
+        "native_input_to_application_frame_ack_p95_ms": {
+          "maximum": 33.333333333333336,
+          "unit": "milliseconds",
+          "provenance": "v4 1000/30 native ack absoluteBudgetFor"
+        },
+        "baseline_adjusted_gpu_peak_memory_mib": {
+          "maximum": 2048,
+          "unit": "MiB",
+          "provenance": "v4 GPU memory absoluteBudgetFor"
+        },
+        "baseline_adjusted_gpu_utilization_p95_percent": {
+          "maximum": 100,
+          "unit": "percent",
+          "provenance": "new-v5 physical percentage ceiling"
+        }
+      }
+    },
+    "dynamic_fidelity": {
+      "registered_crop_count": 3,
+      "comparison_algorithm": "bp-cross-engine-binary-scan-fidelity-v2",
+      "minimum_filtered_ssim_each": 0.97,
+      "minimum_dark_precision_each": 0.99,
+      "minimum_dark_recall_each": 0.99,
+      "minimum_dark_f1_each": 0.99,
+      "zoom_percent": 100,
+      "device_pixels_per_pdf_point": 1,
+      "pixels_per_point_tolerance": 0.01,
+      "paired_candidate_scale_tolerance": 0.01,
+      "checkpoint_hold_count": 3,
+      "checkpoint_hold_ms_each": 250,
+      "candidate_resampling": "forbidden",
+      "reference_resampling": "downsample-only-lanczos3",
+      "presented_screenshot_stability": "painted-before-capture-after",
+      "observer_sample_count": 1921,
+      "visible_page_ready_fraction": "ready-visible-page-count / visible-page-count",
+      "visible_raster_ready_area_fraction": "ready-visible-page-intersection-area-css-px2 / visible-page-intersection-area-css-px2",
+      "visible_raster_pixel_density": "area-weighted ready raster device pixels per visible CSS device pixel with missing raster area contributing zero",
+      "missing_or_nonfinite_sample": "hard-failure",
+      "higher_is_better_lower_95_ratio_threshold": 0.95
+    },
+    "native_property_edit_undo": {
+      "candidate_effective_history_revision_delta": 1,
+      "application_undo_count": 1,
+      "candidate_canonical_state_restored": true,
+      "allowed_electron_baseline_defect_id": "electron-numeric-property-input-blur-duplicate-history-v1",
+      "electron_effective_history_revision_delta": 2
+    },
+    "native_snap_transform_120hz": {
+      "sample_count": 361,
+      "snap_enabled": true,
+      "sensitivity_css_px": 8,
+      "geometry_tolerance_points": 0.01
+    },
+    "multi_document_session": {
+      "same_process_required": true,
+      "fixture_count": 4,
+      "dense_rectangle_property_edit_required": true,
+      "closed_fixture_count": 3,
+      "remaining_fixture_id": "bp-annotation-density-v1",
+      "process_restart_count": 0
+    }
+  },
+  "canonical_hashes": {
+    "representative_command_stream_sha256": "99ea727689bf4bf725cae92a7d0d86383cf7e85aa0e8252228eed346866e10cd",
+    "representative_milestone_stream_sha256": "91b25071a024ae00c2a96ebb0b6c06849650a04abd2118770dcbfe894247d244",
+    "representative_fixture_command_mapping_sha256": "3b8622cd2cbec09f1e3740240e996764ca30e15f6a6fa5d664fccc592ff2dad4",
+    "stress_command_stream_sha256": "a7e63ced8f1379758d42c56f3a608100270f0131393f65ca7841bd9e3fb0f3e6",
+    "expected_state_sha256": "e2e0b1e812545355cbb76c0e653576f8cff21f2c37c7018dcc9cd86c36e38a8b"
+  }
+}

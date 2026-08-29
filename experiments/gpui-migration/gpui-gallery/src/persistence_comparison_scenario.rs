@@ -248,7 +248,7 @@ impl PersistenceComparisonScenario {
             first.add_image(image)?;
         }
         let expected_typed_state = TypedStateProbe::from_session(&first);
-        first.save_as(cycle_1)?;
+        first.save_as_ambient_for_development(cycle_1)?;
         let mut validator_outputs = validate_independently(cycle_1, 1)?;
         let cycle_1_sha256 = file_sha256(cycle_1)?;
         let cycle_1_unknown = unknown_probes(cycle_1, &untouched_annotations)? == source_unknown;
@@ -260,7 +260,7 @@ impl PersistenceComparisonScenario {
 
         let reopened_1 = PdfPersistenceSession::open(cycle_1)?;
         require_exact_typed_state(&reopened_1, &expected_typed_state, 1)?;
-        reopened_1.save_as(cycle_2)?;
+        reopened_1.save_as_ambient_for_development(cycle_2)?;
         validator_outputs.extend(validate_independently(cycle_2, 2)?);
         let cycle_2_sha256 = file_sha256(cycle_2)?;
         let cycle_2_unknown = unknown_probes(cycle_2, &untouched_annotations)? == source_unknown;

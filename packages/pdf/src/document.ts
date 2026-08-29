@@ -32,6 +32,7 @@ const bluebeamTextBoxFontSizePt = 12;
 const bluebeamTextBoxInsetPt = 5;
 const bluebeamTextBoxLineHeightRatio = 1.15;
 const bluebeamTextBoxFirstBaselineOffsetRatio = 14.3146 / 12;
+const pageScaleDictionaryKey = 'BPPageScale';
 
 type EmbeddedAnnotationFontId = Exclude<CompatibleAnnotationFontId, 'Helvetica'>;
 
@@ -252,6 +253,7 @@ export async function inspectPdfDocumentBytes(sourceBytes: Uint8Array): Promise<
   readonly metadata: PdfDocumentMetadata;
   readonly pages: readonly PdfPageInfo[];
   readonly annotationsByPage: readonly (readonly ImportedPdfMarkup[])[];
+  readonly pageScales: readonly PageScale[];
 }> {
   const bytes = new Uint8Array(sourceBytes);
   const document = await PDFDocument.load(bytes);
@@ -278,6 +280,10 @@ export async function inspectPdfDocumentBytes(sourceBytes: Uint8Array): Promise<
   const annotationsByPage = document.getPages().map((_page, pageIndex) => (
     readPageAnnotationMarkups(document, pageIndex)
   ));
+  const pageScales = document.getPages().flatMap((page, pageIndex) => {
+    const pageScale = readPageScale(page, pageIndex);
+    return pageScale ? [pageScale] : [];
+  });
   return {
     metadata: {
       pageCount: pages.length,
@@ -289,7 +295,40 @@ export async function inspectPdfDocumentBytes(sourceBytes: Uint8Array): Promise<
     },
     pages,
     annotationsByPage,
+    pageScales,
   };
+}
+
+function readPageScale(page: PDFPage, pageIndex: number): PageScale | undefined {
+  const serialized = readText(page.node.get(PDFName.of(pageScaleDictionaryKey)));
+  if (!serialized) return undefined;
+  try {
+    const value = JSON.parse(serialized) as Partial<PageScale>;
+    const units = new Set(['in', 'ft', 'mm', 'cm', 'm']);
+    const sources = new Set(['preset', 'custom', 'calibrated']);
+    if (!sources.has(value.source ?? '')
+      || typeof value.name !== 'string' || value.name.length === 0
+      || !units.has(value.pdfUnits ?? '') || !units.has(value.realUnits ?? '')
+      || typeof value.scaleX !== 'number' || !Number.isFinite(value.scaleX) || value.scaleX <= 0
+      || typeof value.scaleY !== 'number' || !Number.isFinite(value.scaleY) || value.scaleY <= 0
+      || (value.precision?.mode !== 'decimal' && value.precision?.mode !== 'fraction')
+      || typeof value.precision.value !== 'number'
+      || !Number.isFinite(value.precision.value) || value.precision.value <= 0) {
+      return undefined;
+    }
+    return {
+      pageIndex,
+      source: value.source,
+      name: value.name,
+      pdfUnits: value.pdfUnits,
+      realUnits: value.realUnits,
+      scaleX: value.scaleX,
+      scaleY: value.scaleY,
+      precision: value.precision,
+    } as PageScale;
+  } catch {
+    return undefined;
+  }
 }
 
 export class PdfAnnotationAdapter {
@@ -346,6 +385,12 @@ export class PdfAnnotationWriter {
       const rotation = rotationsByIndex.get(pageIndex);
       if (rotation !== undefined) {
         page.setRotation(degrees(rotation));
+      }
+      const pageScale = pageScales.find((scale) => scale.pageIndex === pageIndex);
+      if (pageScale) {
+        page.node.set(PDFName.of(pageScaleDictionaryKey), PDFString.of(JSON.stringify(pageScale)));
+      } else {
+        page.node.delete(PDFName.of(pageScaleDictionaryKey));
       }
       const pageMarkups = pagesByIndex.get(pageIndex) ?? [];
       const reconciliation = reconcileSourceAnnotations(pdfDoc, page, pageIndex, pageMarkups);
@@ -956,12 +1001,21 @@ async function addMarkupAnnotationInternal(
       return;
     }
     case 'rectangle': {
+      const appearance = createRectangleAppearance(pdfDoc, markup);
+      const borderStyle = stroke?.style === 'dashed' || stroke?.style === 'dotted'
+        ? {
+            S: PDFName.of('D'),
+            D: stroke.style === 'dotted'
+              ? [Math.max(0.25, stroke.widthPt), Math.max(0.5, stroke.widthPt * 2)]
+              : [Math.max(1, stroke.widthPt * 4), Math.max(0.5, stroke.widthPt * 2)],
+          }
+        : { S: PDFName.of('S') };
       const annot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('Square'),
         Rect: [markup.rect.x, markup.rect.y, markup.rect.x + markup.rect.width, markup.rect.y + markup.rect.height],
         Border: [0, 0, stroke?.widthPt ?? 0],
-        BS: pdfDoc.context.obj({ W: PDFNumber.of(stroke?.widthPt ?? 0), S: PDFName.of('S'), Type: PDFName.of('Border') }),
+        BS: pdfDoc.context.obj({ W: PDFNumber.of(stroke?.widthPt ?? 0), ...borderStyle, Type: PDFName.of('Border') }),
         C: pdfColorArray(stroke?.color),
         ...(fill?.color ? { IC: pdfColorArray(fill.color) } : {}),
         ...opacityFields,
@@ -969,6 +1023,7 @@ async function addMarkupAnnotationInternal(
         Subj: PDFString.of('Rectangle'),
         Contents: PDFString.of(''),
         F: PDFNumber.of(4),
+        AP: pdfDoc.context.obj({ N: appearance.ref }),
       });
       if (markup.rotation) {
         annot.set(PDFName.of('Rotation'), PDFNumber.of(normalizeFreeRotation(markup.rotation)));
@@ -1383,6 +1438,9 @@ async function addMarkupAnnotationInternal(
     case 'highlight': {
       const isHighlight = markup.kind === 'highlight';
       const strokeWidth = stroke?.widthPt ?? 0;
+      const appearance = isHighlight
+        ? createInkAppearance(pdfDoc, markup.paths, resolvedAppearance)
+        : undefined;
       const annot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('Ink'),
@@ -1400,6 +1458,7 @@ async function addMarkupAnnotationInternal(
         Subj: PDFString.of(isHighlight ? 'Highlight' : 'Pen'),
         Contents: PDFString.of(''),
         F: PDFNumber.of(4),
+        ...(appearance ? { AP: pdfDoc.context.obj({ N: appearance.ref }) } : {}),
         ...(resolvedAppearance.blendMode === 'multiply' ? { BM: PDFName.of('Multiply') } : {}),
         ...(markup.kind === 'pen' ? {
           BPSmoothCurves: markup.smoothCurves ? PDFBool.True : PDFBool.False,
@@ -1754,6 +1813,92 @@ function measurementLabel(markup: Extract<Markup, { kind: 'length' | 'polylength
 
 function createLengthAppearance(pdfDoc: PDFDocument, markup: Extract<Markup, { kind: 'length' }>, label: string, fonts: PdfExportFonts): { ref: PDFRef } {
   return createPathMeasurementAppearance(pdfDoc, markup, false, label, fonts);
+}
+
+function pdfDashCommand(stroke: NonNullable<ResolvedMarkupAppearance['stroke']>): string {
+  if (stroke.style === 'dotted') {
+    return `[${formatPdfNumber(Math.max(0.25, stroke.widthPt))} ${formatPdfNumber(Math.max(0.5, stroke.widthPt * 2))}] 0 d`;
+  }
+  if (stroke.style === 'dashed') {
+    return `[${formatPdfNumber(Math.max(1, stroke.widthPt * 4))} ${formatPdfNumber(Math.max(0.5, stroke.widthPt * 2))}] 0 d`;
+  }
+  return '[] 0 d';
+}
+
+function createRectangleAppearance(
+  pdfDoc: PDFDocument,
+  markup: Extract<Markup, { kind: 'rectangle' }>,
+): { ref: PDFRef } {
+  const appearance = resolveMarkupAppearance(markup);
+  const strokeAppearance = appearance.stroke!;
+  const stroke = colorToRgb(strokeAppearance.color);
+  const fill = appearance.fill?.color ? colorToRgb(appearance.fill.color) : undefined;
+  const inset = strokeAppearance.widthPt * 0.5;
+  const rect = insetRect(markup.rect, inset);
+  const commands = [
+    'q /GS0 gs',
+    `${formatPdfNumber(stroke.red)} ${formatPdfNumber(stroke.green)} ${formatPdfNumber(stroke.blue)} RG`,
+    ...(fill ? [`${formatPdfNumber(fill.red)} ${formatPdfNumber(fill.green)} ${formatPdfNumber(fill.blue)} rg`] : []),
+    `${formatPdfNumber(strokeAppearance.widthPt)} w ${pdfDashCommand(strokeAppearance)}`,
+    `${formatPdfNumber(rect.x)} ${formatPdfNumber(rect.y)} ${formatPdfNumber(rect.width)} ${formatPdfNumber(rect.height)} re`,
+    fill ? 'B' : 'S',
+    'Q',
+  ];
+  const stream = pdfDoc.context.flateStream(`${commands.join(' ')} `, {
+    Type: PDFName.of('XObject'),
+    Subtype: PDFName.of('Form'),
+    FormType: PDFNumber.of(1),
+    BBox: rectToPdfArray(markup.rect),
+    Resources: pdfDoc.context.obj({
+      ExtGState: {
+        GS0: pdfDoc.context.obj({
+          Type: PDFName.of('ExtGState'),
+          CA: PDFNumber.of(appearance.opacity * stroke.alpha),
+          ca: PDFNumber.of(appearance.opacity * (fill?.alpha ?? 1)),
+        }),
+      },
+    } as any),
+  });
+  return { ref: pdfDoc.context.register(stream) as PDFRef };
+}
+
+function createInkAppearance(
+  pdfDoc: PDFDocument,
+  paths: readonly (readonly PdfPoint[])[],
+  appearance: ResolvedMarkupAppearance,
+): { ref: PDFRef } {
+  const strokeAppearance = appearance.stroke!;
+  const stroke = colorToRgb(strokeAppearance.color);
+  const points = paths.flat();
+  const pathCommands = paths.flatMap((path) => path.length === 0 ? [] : [
+    `${formatPdfNumber(path[0]!.x)} ${formatPdfNumber(path[0]!.y)} m`,
+    ...path.slice(1).map((point) => `${formatPdfNumber(point.x)} ${formatPdfNumber(point.y)} l`),
+    'S',
+  ]);
+  const commands = [
+    'q /GS0 gs',
+    `${formatPdfNumber(stroke.red)} ${formatPdfNumber(stroke.green)} ${formatPdfNumber(stroke.blue)} RG`,
+    `${formatPdfNumber(strokeAppearance.widthPt)} w 1 J 1 j`,
+    ...pathCommands,
+    'Q',
+  ];
+  const stream = pdfDoc.context.flateStream(`${commands.join(' ')} `, {
+    Type: PDFName.of('XObject'),
+    Subtype: PDFName.of('Form'),
+    FormType: PDFNumber.of(1),
+    BBox: paddedPointBounds(points, Math.max(1, strokeAppearance.widthPt * 0.5)),
+    Resources: pdfDoc.context.obj({
+      ExtGState: {
+        GS0: pdfDoc.context.obj({
+          Type: PDFName.of('ExtGState'),
+          CA: PDFNumber.of(appearance.opacity * stroke.alpha),
+          ca: PDFNumber.of(appearance.opacity * stroke.alpha),
+          ...(appearance.blendMode === 'multiply' ? { BM: PDFName.of('Multiply') } : {}),
+        }),
+      },
+    } as any),
+  });
+  return { ref: pdfDoc.context.register(stream) as PDFRef };
 }
 
 function createSimplePathAppearance(
@@ -3464,14 +3609,14 @@ function escapePdfLiteralString(text: string): string {
 }
 
 function colorToRgb(color: string): { red: number; green: number; blue: number; alpha: number } {
-  const match = color.trim().match(/^#?([0-9a-f]{6})$/i);
+  const match = color.trim().match(/^#?([0-9a-f]{6})([0-9a-f]{2})?$/i);
   if (match) {
     const value = match[1];
     return {
       red: Number.parseInt(value.slice(0, 2), 16) / 255,
       green: Number.parseInt(value.slice(2, 4), 16) / 255,
       blue: Number.parseInt(value.slice(4, 6), 16) / 255,
-      alpha: 1,
+      alpha: match[2] ? Number.parseInt(match[2], 16) / 255 : 1,
     };
   }
   const rgbMatch = color.trim().match(/^rgba?\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)(?:\s*,\s*([0-9.]+))?\s*\)$/i);

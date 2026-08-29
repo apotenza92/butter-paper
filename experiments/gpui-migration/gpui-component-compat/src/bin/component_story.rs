@@ -1,17 +1,22 @@
 use butter_paper_gpui_component_compat::application_close_workspace::{
-    ApplicationCloseShell, ApplicationCloseWorkspace, register_application_close_action,
+    ApplicationCloseCheckpointPublisher, ApplicationCloseShell, ApplicationCloseWorkspace,
+    register_application_close_action,
 };
 use butter_paper_gpui_component_compat::document_tab_bar::TemplateCatalogItem;
 use butter_paper_gpui_component_compat::document_workspace::{
     DocumentId, DocumentWorkspace, DocumentWorkspaceEvidenceSnapshot,
-    DocumentWorkspaceTemplateCommand, NativeDocumentSaveStatus, PaintedPageEvidence,
-    PdfDocumentSaver, PdfiumWorkerBackend, init_document_workspace_actions,
-    register_document_workspace_global_actions,
+    DocumentWorkspaceTemplateCommand, PaintedPageEvidence, PdfDocumentSaver, PdfiumWorkerBackend,
+    init_document_workspace_actions, register_document_workspace_global_actions,
 };
 use butter_paper_gpui_component_compat::native_application::{
     NativeApplicationMenuState, NativeDocumentIngress, install_native_application_menus,
 };
-use butter_paper_gpui_component_compat::native_launch::NativeLaunchConfig;
+use butter_paper_gpui_component_compat::native_launch::{
+    NativeLaunchAction, NativeLaunchConfig, NativeLaunchSessionSource, NativeLaunchWarning,
+};
+use butter_paper_gpui_component_compat::native_runtime_layout::{
+    NativeRuntimeLayout, NativeRuntimeMode, require_explicit_development_authority,
+};
 use butter_paper_gpui_component_compat::perf_capture_signal::{
     CaptureSignalError, CaptureSignalGuard,
 };
@@ -22,6 +27,8 @@ use butter_paper_gpui_component_compat::perf_scenario::{
     PresentedCropEvidenceInput, PresentedCropSignalDisposition, QualificationError,
     map_presented_crop_evidence, merge_presented_crop_open_events,
 };
+use butter_paper_gpui_component_compat::session_manifest::SessionManifestStore;
+use butter_paper_gpui_component_compat::system_theme::follow_window_appearance;
 use butter_paper_gpui_component_compat::template_manager::{
     TemplateManagerView, legacy_blank_request_from_json, route_workspace_template_command,
 };
@@ -31,7 +38,7 @@ use gpui::{
     ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
     WindowBounds, WindowOptions, div, px, size,
 };
-use gpui_component::{ActiveTheme as _, Root, menu::AppMenuBar, v_flex};
+use gpui_component::{ActiveTheme as _, Root, WindowExt as _, menu::AppMenuBar, v_flex};
 use serde_json::json;
 use std::{
     path::Path,
@@ -129,7 +136,9 @@ struct ComponentStory {
     app_menu_bar: Entity<AppMenuBar>,
     template_manager: Option<Entity<TemplateManagerView>>,
     _template_command_subscription: Option<Subscription>,
+    _system_theme_subscription: Subscription,
     last_native_menu_state: Option<NativeApplicationMenuState>,
+    has_focused_input: bool,
     perf: Option<PerfStoryRuntime>,
 }
 
@@ -139,6 +148,7 @@ impl ComponentStory {
         app_menu_bar: Entity<AppMenuBar>,
         template_manager: Option<Entity<TemplateManagerView>>,
         perf: Option<PerfStoryRuntime>,
+        system_theme_subscription: Subscription,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -173,7 +183,9 @@ impl ComponentStory {
             app_menu_bar,
             template_manager,
             _template_command_subscription: template_command_subscription,
+            _system_theme_subscription: system_theme_subscription,
             last_native_menu_state: None,
+            has_focused_input: false,
             perf,
         };
         story.sync_native_application_menu(cx);
@@ -908,17 +920,31 @@ impl ComponentStory {
         let state = {
             let workspace = self.document_workspace.read(cx);
             let active_document = workspace.active_document_id();
-            let save_busy = active_document
-                .and_then(|document_id| workspace.session(document_id, cx))
-                .is_some_and(|session| {
-                    matches!(
-                        session.read(cx).save_status(),
-                        NativeDocumentSaveStatus::Saving
-                    )
-                });
+            let edit = workspace.document_edit_capabilities(cx);
+            let commands = workspace.document_command_state(cx);
             NativeApplicationMenuState {
                 has_active_document: active_document.is_some(),
-                save_busy,
+                save_busy: commands.save_busy,
+                has_focused_input: self.has_focused_input,
+                can_undo: edit.can_undo,
+                can_redo: edit.can_redo,
+                can_cut: edit.can_cut,
+                can_copy: edit.can_copy,
+                can_paste: edit.can_paste,
+                can_select_all: edit.can_select_all,
+                can_delete: edit.can_delete,
+                can_close_document: commands.can_close_document,
+                document_ready: commands.document_ready,
+                can_previous_page: commands.can_previous_page,
+                can_next_page: commands.can_next_page,
+                rotation_busy: commands.rotation_busy,
+                can_zoom_out: commands.can_zoom_out,
+                can_zoom_in: commands.can_zoom_in,
+                actual_size_checked: commands.actual_size_checked,
+                fit_width_checked: commands.fit_width_checked,
+                fit_page_checked: commands.fit_page_checked,
+                continuous_view_checked: commands.continuous_view_checked,
+                single_page_view_checked: commands.single_page_view_checked,
             }
         };
         if self.last_native_menu_state == Some(state) {
@@ -926,6 +952,25 @@ impl ComponentStory {
         }
         self.last_native_menu_state = Some(state);
         install_native_application_menus(state, &self.app_menu_bar, cx);
+    }
+
+    fn observe_root_focus(
+        &mut self,
+        root: &Entity<Root>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.has_focused_input = window.has_focused_input(cx);
+        cx.observe_in(root, window, |story, _, window, cx| {
+            let has_focused_input = window.has_focused_input(cx);
+            if story.has_focused_input == has_focused_input {
+                return;
+            }
+            story.has_focused_input = has_focused_input;
+            story.sync_native_application_menu(cx);
+        })
+        .detach();
+        self.sync_native_application_menu(cx);
     }
 }
 
@@ -1016,8 +1061,34 @@ fn directory_is_absent_or_empty(path: &Path) -> bool {
     }
 }
 
+fn native_runtime_mode_from_environment() -> Result<NativeRuntimeMode, String> {
+    let development = std::env::var_os("BP_NATIVE_DEVELOPMENT");
+    let pdfium_library = std::env::var_os("BP_PDFIUM_LIBRARY");
+    match development.as_deref() {
+        None if pdfium_library.is_none() => Ok(NativeRuntimeMode::Bundled),
+        None => Err("BP_PDFIUM_LIBRARY is allowed only when BP_NATIVE_DEVELOPMENT=1".to_owned()),
+        Some(value) if value == "1" => {
+            let pdfium_library = pdfium_library
+                .ok_or_else(|| "BP_NATIVE_DEVELOPMENT=1 requires BP_PDFIUM_LIBRARY".to_owned())?;
+            Ok(NativeRuntimeMode::Development {
+                pdfium_library: pdfium_library.into(),
+            })
+        }
+        Some(_) => Err("BP_NATIVE_DEVELOPMENT must be exactly 1 when set".to_owned()),
+    }
+}
+
+fn authorized_perf_run_config_from_process() -> Result<Option<PerfRunConfig>, String> {
+    if std::env::var_os("BP_GPUI_PERF_SCENARIO").is_none() {
+        return Ok(None);
+    }
+    require_explicit_development_authority(std::env::var_os("BP_NATIVE_DEVELOPMENT").as_deref())
+        .map_err(|error| error.to_string())?;
+    PerfRunConfig::from_process().map_err(|error| format!("{error:?}"))
+}
+
 fn main() {
-    let perf = match PerfRunConfig::from_process() {
+    let perf = match authorized_perf_run_config_from_process() {
         Ok(Some(config)) => match PerfStoryRuntime::new(config) {
             Ok(perf) => Some(perf),
             Err(error) => {
@@ -1027,7 +1098,7 @@ fn main() {
         },
         Ok(None) => None,
         Err(error) => {
-            eprintln!("invalid GPUI performance configuration: {error:?}");
+            eprintln!("invalid GPUI performance configuration: {error}");
             std::process::exit(2);
         }
     };
@@ -1042,10 +1113,20 @@ fn main() {
     } else {
         NativeLaunchConfig::default()
     };
+    let native_runtime_layout = if perf.is_none() {
+        let mode = native_runtime_mode_from_environment().unwrap_or_else(|error| {
+            eprintln!("invalid Butter Paper native runtime mode: {error}");
+            std::process::exit(2);
+        });
+        Some(NativeRuntimeLayout::discover(mode).unwrap_or_else(|error| {
+            eprintln!("invalid Butter Paper native runtime layout: {error}");
+            std::process::exit(2);
+        }))
+    } else {
+        None
+    };
+    let session_source = NativeLaunchSessionSource::new(perf.is_some(), &native_launch);
     let native_ingress = NativeDocumentIngress::default();
-    if perf.is_none() && !native_launch.open_paths().is_empty() {
-        native_ingress.enqueue_request(native_launch.document_open_request());
-    }
     let application = gpui_platform::application();
     application.on_open_urls({
         let native_ingress = native_ingress.clone();
@@ -1076,28 +1157,25 @@ fn main() {
                 } else {
                     "Butter Paper"
                 });
+                let system_theme_subscription = follow_window_appearance(window, cx);
                 let app_menu_bar = AppMenuBar::new(cx);
                 let worker_executable = perf.as_ref().map_or_else(
                     || {
-                        std::env::current_exe()
-                            .expect("the story executable path must be available")
-                            .with_file_name(if cfg!(windows) {
-                                "butter-paper-pdf-worker.exe"
-                            } else {
-                                "butter-paper-pdf-worker"
-                            })
+                        native_runtime_layout
+                            .as_ref()
+                            .expect("normal launch resolved the native runtime layout")
+                            .worker_executable()
+                            .to_owned()
                     },
                     |perf| perf.config.worker_executable.clone(),
                 );
                 let pdfium_library = perf.as_ref().map_or_else(
                     || {
-                        std::env::var_os("BP_PDFIUM_LIBRARY")
-                            .map(std::path::PathBuf::from)
-                            .unwrap_or_else(|| {
-                                std::path::PathBuf::from(
-                                    "../gpui-gallery/target/pdfium-development/x86_64-unknown-linux-gnu/lib/libpdfium.so",
-                                )
-                            })
+                        native_runtime_layout
+                            .as_ref()
+                            .expect("normal launch resolved the native runtime layout")
+                            .pdfium_library()
+                            .to_owned()
                     },
                     |perf| perf.config.pdfium_library.clone(),
                 );
@@ -1105,11 +1183,38 @@ fn main() {
                     || std::env::temp_dir().join("butter-paper-document-workspace"),
                     |perf| perf.config.cache_directory.join("document-workspace"),
                 );
-                let generated_store = GeneratedDocumentStore::new(
-                    surface_root.join("generated-documents"),
-                )
-                .expect("the experiment-owned generated-document store must initialize");
+                let generated_store =
+                    GeneratedDocumentStore::new(surface_root.join("generated-documents"))
+                        .expect("the experiment-owned generated-document store must initialize");
                 let template_manager_root = surface_root.join("template-library");
+                let session_state_root = surface_root.join("session-state");
+                let (session_store, launch_resolution) = if session_source.requires_store() {
+                    let opened = std::fs::create_dir_all(&session_state_root)
+                        .map_err(|error| error.to_string())
+                        .and_then(|()| {
+                            SessionManifestStore::open(session_state_root)
+                                .map_err(|error| format!("{error:?}"))
+                        });
+                    match opened {
+                        Ok(store) => {
+                            let store = std::sync::Arc::new(store);
+                            let loaded = if session_source.requires_manifest_load() {
+                                store.load().map(Some).map_err(|error| format!("{error:?}"))
+                            } else {
+                                Ok(None)
+                            };
+                            (Some(store), session_source.clone().resolve(loaded))
+                        }
+                        Err(error) => (None, session_source.clone().resolve(Err(error))),
+                    }
+                } else {
+                    (None, session_source.clone().resolve(Ok(None)))
+                };
+                if let Some(NativeLaunchWarning::SessionStateUnavailable(message)) =
+                    launch_resolution.warning.as_ref()
+                {
+                    eprintln!("Butter Paper session state is unavailable: {message}");
+                }
                 let opener = std::sync::Arc::new(PdfiumWorkerBackend::new(
                     worker_executable,
                     pdfium_library,
@@ -1122,6 +1227,35 @@ fn main() {
                         generated_store.clone(),
                         cx,
                     )
+                });
+                match launch_resolution.action.clone() {
+                    NativeLaunchAction::None => {}
+                    NativeLaunchAction::OpenExplicit(request) => {
+                        document_workspace.update(cx, |workspace, cx| {
+                            workspace.open_documents(request, cx);
+                        });
+                    }
+                    NativeLaunchAction::Restore(plan) => {
+                        document_workspace.update(cx, |workspace, cx| {
+                            workspace.restore_session(plan, cx);
+                        });
+                    }
+                }
+                let application_close = cx.new(|_| {
+                    if launch_resolution.checkpoint_enabled {
+                        let checkpoint_publisher: std::sync::Arc<
+                            dyn ApplicationCloseCheckpointPublisher,
+                        > = session_store
+                            .clone()
+                            .expect("enabled checkpointing has an open session store");
+                        ApplicationCloseWorkspace::with_checkpoint_publisher(
+                            document_workspace.clone(),
+                            saver,
+                            checkpoint_publisher,
+                        )
+                    } else {
+                        ApplicationCloseWorkspace::new(document_workspace.clone(), saver)
+                    }
                 });
                 let template_manager = perf.is_none().then(|| {
                     cx.new(|cx| {
@@ -1166,12 +1300,10 @@ fn main() {
                         app_menu_bar,
                         template_manager,
                         perf,
+                        system_theme_subscription,
                         window,
                         cx,
                     )
-                });
-                let application_close = cx.new(|_| {
-                    ApplicationCloseWorkspace::new(document_workspace.clone(), saver)
                 });
                 register_document_workspace_global_actions(&document_workspace, cx);
                 register_application_close_action(&application_close, cx);
@@ -1198,7 +1330,7 @@ fn main() {
                     })
                     .detach();
                 }
-                let story_view = gpui::AnyView::from(story);
+                let story_view = gpui::AnyView::from(story.clone());
                 let shell = cx.new(|cx| {
                     ApplicationCloseShell::new_for_native_window_with_content(
                         application_close,
@@ -1207,7 +1339,11 @@ fn main() {
                         cx,
                     )
                 });
-                cx.new(|cx| Root::new(shell, window, cx))
+                let root = cx.new(|cx| Root::new(shell, window, cx));
+                story.update(cx, |story, cx| {
+                    story.observe_root_focus(&root, window, cx);
+                });
+                root
             })
             .expect("failed to open GPUI Component proof window");
         })

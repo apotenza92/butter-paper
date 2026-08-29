@@ -4,6 +4,7 @@ use butter_paper_gpui_gallery::{
     annotation_adapter::AnnotationAdapter,
     annotation_model::DecodedRgbaAsset,
     editor_comparison_scenario::{EditorComparisonScenario, RecordingEditorObserver},
+    pdf_engine::{PdfPersistenceSession, UntouchedAnnotation},
     persistence_comparison_scenario::PersistenceComparisonScenario,
 };
 
@@ -36,6 +37,15 @@ fn representative_state_saves_and_reopens_twice_without_changing_unknown_probes(
             &mut RecordingEditorObserver::default(),
         )
         .unwrap();
+    let source = PdfPersistenceSession::open(&fixtures.join("bp-annotation-all-v1.pdf")).unwrap();
+    assert_eq!(
+        source.untouched_annotations(),
+        &[UntouchedAnnotation {
+            name: "unknown-1".into(),
+            subtype: "Text".into(),
+        }],
+        "Highlight is now a typed Ink annotation; only the proprietary Text probe remains untouched"
+    );
     let report = PersistenceComparisonScenario::execute(
         &fixtures.join("bp-annotation-all-v1.pdf"),
         &scratch.path().join("cycle-1.pdf"),
@@ -52,7 +62,7 @@ fn representative_state_saves_and_reopens_twice_without_changing_unknown_probes(
     assert!(report.unknown_probe_exact_after_cycle_2);
     assert!(report.typed_state_exact_after_cycle_1);
     assert!(report.typed_state_exact_after_cycle_2);
-    assert_eq!(report.untouched_annotation_count, 2);
+    assert_eq!(report.untouched_annotation_count, 1);
     assert!(report.independent_validation_passed);
     assert!(report.independent_visual_validation_passed);
     assert_ne!(

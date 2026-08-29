@@ -1,9 +1,9 @@
+use butter_paper_gpui_gallery::page_geometry::{PageCoordinateSpace, PdfMetadataDocument};
 use butter_paper_gpui_gallery::pdf_worker::{
     CancellationRegistry, DocumentInfo, FileSurfaceStore, PageGeometry, PdfBackend, RenderRequest,
     Rotation, SourceHandleId, SurfaceLimits, WorkerError, WorkerErrorCode, WorkerState,
     run_worker_protocol,
 };
-use butter_paper_gpui_gallery::page_geometry::{PageCoordinateSpace, PdfMetadataDocument};
 use pdfium_render::prelude::*;
 use std::env;
 use std::fs::File;
@@ -39,11 +39,12 @@ impl PdfBackend for PdfiumBackend {
         password: Option<&str>,
     ) -> Result<(Self::Document, DocumentInfo), WorkerError> {
         let mut source = duplicate_inherited_source(source)?;
+        source.seek(SeekFrom::Start(0)).map_err(WorkerError::from)?;
         let mut metadata_bytes = Vec::new();
-        source.read_to_end(&mut metadata_bytes).map_err(WorkerError::from)?;
         source
-            .seek(SeekFrom::Start(0))
+            .read_to_end(&mut metadata_bytes)
             .map_err(WorkerError::from)?;
+        source.seek(SeekFrom::Start(0)).map_err(WorkerError::from)?;
         let metadata = PdfMetadataDocument::load_mem(&metadata_bytes).map_err(|error| {
             WorkerError::with_detail(
                 WorkerErrorCode::MalformedDocument,
@@ -101,8 +102,8 @@ impl PdfBackend for PdfiumBackend {
                     format!("PDF metadata has no page {page_number}"),
                 )
             })?;
-        let canonical = PageCoordinateSpace::from_lopdf_page(&document.metadata, page_id)
-            .map_err(|error| {
+        let canonical =
+            PageCoordinateSpace::from_lopdf_page(&document.metadata, page_id).map_err(|error| {
                 WorkerError::with_detail(WorkerErrorCode::MalformedDocument, error.to_string())
             })?;
         let page = document
@@ -199,7 +200,10 @@ fn map_rotation(rotation: butter_paper_gpui_gallery::page_geometry::Rotation) ->
     }
 }
 
-fn rectangles_match(pdfium: [f32; 4], canonical: butter_paper_gpui_gallery::page_geometry::PdfRect) -> bool {
+fn rectangles_match(
+    pdfium: [f32; 4],
+    canonical: butter_paper_gpui_gallery::page_geometry::PdfRect,
+) -> bool {
     let expected = [
         canonical.x as f32,
         canonical.y as f32,
@@ -241,7 +245,55 @@ fn duplicate_inherited_source(source: SourceHandleId) -> Result<File, WorkerErro
     Ok(unsafe { File::from_raw_fd(duplicate) })
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn duplicate_inherited_source(source: SourceHandleId) -> Result<File, WorkerError> {
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::{
+        DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let raw = usize::try_from(source.0).map_err(|_| {
+        WorkerError::with_detail(
+            WorkerErrorCode::InvalidRequest,
+            "invalid inherited Windows source handle",
+        )
+    })?;
+    let inherited = raw as HANDLE;
+    if inherited.is_null() || inherited == INVALID_HANDLE_VALUE {
+        return Err(WorkerError::with_detail(
+            WorkerErrorCode::InvalidRequest,
+            "invalid inherited Windows source handle",
+        ));
+    }
+    let mut duplicate: HANDLE = std::ptr::null_mut();
+    // SAFETY: `inherited` names a handle in this worker process. On success,
+    // `duplicate` is a distinct owned handle for the same open file object.
+    let duplicated = unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            inherited,
+            GetCurrentProcess(),
+            &mut duplicate,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
+        )
+    };
+    if duplicated == 0 {
+        return Err(WorkerError::with_detail(
+            WorkerErrorCode::InvalidRequest,
+            format!(
+                "invalid inherited Windows source handle: {}",
+                std::io::Error::last_os_error()
+            ),
+        ));
+    }
+    // SAFETY: `duplicate` is a fresh owned handle returned by DuplicateHandle.
+    Ok(unsafe { File::from_raw_handle(duplicate) })
+}
+
+#[cfg(not(any(unix, windows)))]
 fn duplicate_inherited_source(_source: SourceHandleId) -> Result<File, WorkerError> {
     Err(WorkerError::with_detail(
         WorkerErrorCode::BackendUnavailable,

@@ -15,12 +15,12 @@ use crate::annotation_model::{
     DimensionAppearance, EllipseAnnotation, GestureKind, ImageAnnotation, InkTool,
     LengthAnnotation, LengthCalibration, LengthEndpoint, LineEndpoint, LineKind, MarkupId,
     MeasurementPathAnnotation, MeasurementPathKind, PageRotation, PageRotationDirection, PageScale,
-    PdfPoint, PdfRect, PenAppearance, PointerCancelReason, PointerTool, RectangleAnnotation,
-    RectangleAppearance, RectangleResizeHandle, RedactAnnotation, ScalePreset, SceneArc,
-    SceneCallout, SceneCloud, SceneCloudPlus, SceneDimension, SceneLength, SceneMeasurementPath,
-    SceneRedact, SceneSnapshot, SceneStraightLine, SceneVertexPath, SnapshotAnnotation,
-    SpatialQueryWork, StraightLineAnnotation, StraightLineAppearance, StrokeStyle,
-    TextBoxAnnotation, TextBoxStyle, VertexPathAnnotation, VertexPathKind,
+    PdfPoint, PdfRect, PenAnnotation, PenAppearance, PointerCancelReason, PointerTool,
+    RectangleAnnotation, RectangleAppearance, RectangleResizeHandle, RedactAnnotation, ScalePreset,
+    SceneArc, SceneCallout, SceneCloud, SceneCloudPlus, SceneDimension, SceneLength,
+    SceneMeasurementPath, SceneRedact, SceneSnapshot, SceneStraightLine, SceneVertexPath,
+    SnapshotAnnotation, SpatialQueryWork, StraightLineAnnotation, StraightLineAppearance,
+    StrokeStyle, TextBoxAnnotation, TextBoxStyle, VertexPathAnnotation, VertexPathKind,
 };
 use crate::cloud_plus_routing::{
     CloudPlusRoutingContext, place_initial_cloud_plus_text_box, route_cloud_plus_leader,
@@ -33,9 +33,7 @@ use crate::native_editing_v5::{
 use crate::selection_geometry::{
     SelectionMarquee, SelectionOperation, SelectionPoint, SelectionShape,
 };
-use crate::semantic_snapping::{
-    SemanticSnapDecision, SemanticSnapIndex, SemanticSnapSettings,
-};
+use crate::semantic_snapping::{SemanticSnapDecision, SemanticSnapIndex, SemanticSnapSettings};
 
 pub const FROZEN_TEXT_CREATE: &str = "Beam B-12 / revision 3";
 pub const NATURAL_IMAGE_MAX_PAGE_FRACTION: f64 = 0.45;
@@ -58,6 +56,13 @@ pub const ARC_END_HANDLE_ID: &str = "arc.point.end";
 pub const ARC_BODY_ID: &str = "arc.body";
 pub const REDACT_BODY_ID: &str = "redact.body";
 pub const SNAPSHOT_BODY_ID: &str = "snapshot.body";
+pub const DIMENSION_START_HANDLE_ID: &str = "dimension.endpoint.start";
+pub const DIMENSION_END_HANDLE_ID: &str = "dimension.endpoint.end";
+pub const DIMENSION_OFFSET_HANDLE_ID: &str = "dimension.offset";
+pub const DIMENSION_BODY_ID: &str = "dimension.body";
+pub const CALLOUT_TEXT_BOX_ID: &str = "callout.text-box";
+pub const CALLOUT_BODY_ID: &str = "callout.body";
+pub const CLOUD_BODY_ID: &str = "cloud.body";
 pub const PENDING_REDACTION_STATUS: &str = "Pending redaction mark — saving keeps the underlying PDF content; this mark does not securely remove text or graphics.";
 
 pub const fn redact_resize_handle_id(handle: RectangleResizeHandle) -> &'static str {
@@ -91,6 +96,17 @@ pub fn snapshot_resize_handle_point(
     handle: RectangleResizeHandle,
 ) -> PdfPoint {
     handle.world_point(annotation.rect, annotation.rotation_degrees())
+}
+
+pub fn snapshot_rotation_handle_point(
+    annotation: &SnapshotAnnotation,
+    observed_pixels_per_point: f64,
+) -> Result<PdfPoint, AnnotationError> {
+    ellipse_rotation_handle_point_for_rect(
+        annotation.rect,
+        annotation.rotation_degrees(),
+        observed_pixels_per_point,
+    )
 }
 
 pub fn redact_resize_handle_point(
@@ -288,6 +304,12 @@ struct ImagePlacementPage {
     max_fraction: f64,
 }
 
+#[derive(Clone)]
+struct PendingImageAsset {
+    asset: DecodedRgbaAsset,
+    aspect_locked: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum AnnotationTool {
     #[default]
@@ -471,6 +493,25 @@ pub enum StraightLinePropertyEdit {
     Opacity(f64),
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum VertexPathPropertyEdit {
+    StrokeColor(String),
+    StrokeWidthPt(f64),
+    Opacity(f64),
+    FillColor(Option<String>),
+}
+
+fn vertex_path_property_rgb(color: String) -> String {
+    if color.len() == 9
+        && color.starts_with('#')
+        && color[1..].chars().all(|digit| digit.is_ascii_hexdigit())
+    {
+        color[..7].to_owned()
+    } else {
+        color
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PointerInputModifiers {
     pub shift: bool,
@@ -577,20 +618,21 @@ enum ActivePointer {
         page_index: u32,
         pointer_id: u64,
         id: MarkupId,
+        expected_revision: u64,
         start: PdfPoint,
         current: PdfPoint,
-        original_start: PdfPoint,
-        original_end: PdfPoint,
-        original_mid: PdfPoint,
+        original: ArcAnnotation,
     },
     ArcControlPoint {
         document_id: u64,
         page_index: u32,
         pointer_id: u64,
         id: MarkupId,
+        expected_revision: u64,
         control: ArcControlPoint,
         start: PdfPoint,
         current: PdfPoint,
+        original: ArcAnnotation,
         snap_quarter_turn: bool,
     },
     StraightLineCreate {
@@ -667,6 +709,25 @@ enum ActivePointer {
         current: PdfPoint,
         original_paths: Vec<Vec<PdfPoint>>,
     },
+    TextBoxMove {
+        document_id: u64,
+        page_index: u32,
+        pointer_id: u64,
+        id: MarkupId,
+        start: PdfPoint,
+        current: PdfPoint,
+        original_rect: PdfRect,
+    },
+    TextBoxResize {
+        document_id: u64,
+        page_index: u32,
+        pointer_id: u64,
+        id: MarkupId,
+        handle: RectangleResizeHandle,
+        start: PdfPoint,
+        current: PdfPoint,
+        original_rect: PdfRect,
+    },
     ImageMove {
         document_id: u64,
         page_index: u32,
@@ -706,6 +767,16 @@ enum ActivePointer {
         original_rect: PdfRect,
         original_rotation_degrees: f64,
     },
+    SnapshotRotate {
+        document_id: u64,
+        page_index: u32,
+        pointer_id: u64,
+        id: MarkupId,
+        start: PdfPoint,
+        current: PdfPoint,
+        original_rect: PdfRect,
+        original_rotation_degrees: f64,
+    },
     LengthCreate {
         document_id: u64,
         page_index: u32,
@@ -722,6 +793,39 @@ enum ActivePointer {
         start: PdfPoint,
         current: PdfPoint,
     },
+    DimensionEdit {
+        document_id: u64,
+        page_index: u32,
+        pointer_id: u64,
+        id: MarkupId,
+        expected_revision: u64,
+        kind: DimensionPointerEditKind,
+        start: PdfPoint,
+        current: PdfPoint,
+        original: DimensionAnnotation,
+    },
+    CalloutEdit {
+        document_id: u64,
+        page_index: u32,
+        pointer_id: u64,
+        id: MarkupId,
+        expected_revision: u64,
+        kind: CalloutPointerEditKind,
+        start: PdfPoint,
+        current: PdfPoint,
+        original: CalloutAnnotation,
+    },
+    CloudEdit {
+        document_id: u64,
+        page_index: u32,
+        pointer_id: u64,
+        id: MarkupId,
+        expected_revision: u64,
+        kind: CloudPointerEditKind,
+        start: PdfPoint,
+        current: PdfPoint,
+        original: CloudAnnotation,
+    },
     LengthEndpoint {
         document_id: u64,
         pointer_id: u64,
@@ -729,6 +833,27 @@ enum ActivePointer {
         endpoint: LengthEndpoint,
         current: PdfPoint,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DimensionPointerEditKind {
+    Start,
+    End,
+    Offset,
+    Body,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CalloutPointerEditKind {
+    LeaderPoint(usize),
+    TextBox,
+    Body,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CloudPointerEditKind {
+    Vertex(usize),
+    Body,
 }
 
 #[derive(Clone, Debug)]
@@ -824,7 +949,7 @@ pub struct AnnotationAdapter {
     queued_rectangle_appearance: Option<RectangleAppearance>,
     highlight_appearance: Option<PenAppearance>,
     queued_text_content: Option<String>,
-    image_asset: Option<DecodedRgbaAsset>,
+    image_asset: Option<PendingImageAsset>,
     snapshot_capture_asset: Option<DecodedRgbaAsset>,
     image_placement_page: Option<ImagePlacementPage>,
     native_v5_property_receipt: Option<(u64, PropertyEditCommit)>,
@@ -842,6 +967,8 @@ impl AnnotationAdapter {
         document_id: u64,
         annotations: Vec<Annotation>,
     ) -> Result<(), AnnotationError> {
+        self.image_asset = None;
+        self.image_placement_page = None;
         let imported_length_calibrations = annotations
             .iter()
             .filter_map(|annotation| match annotation {
@@ -1419,10 +1546,7 @@ impl AnnotationAdapter {
                 start,
                 ..
             }) if (*active_document_id, *active_page_index) == (document_id, page_index) => {
-                (
-                    vec![id.clone()],
-                    constrain_orthogonal.then_some(*start),
-                )
+                (vec![id.clone()], constrain_orthogonal.then_some(*start))
             }
             _ => (Vec::new(), None),
         };
@@ -1459,13 +1583,27 @@ impl AnnotationAdapter {
     pub fn set_tool(&mut self, tool: AnnotationTool) -> Result<(), AnnotationError> {
         if self.tool != tool {
             self.cancel(PointerCancelReason::ToolChanged)?;
+            if self.tool == AnnotationTool::Image && tool != AnnotationTool::Image {
+                self.image_asset = None;
+                self.image_placement_page = None;
+            }
             self.tool = tool;
         }
         Ok(())
     }
 
     pub fn set_image_asset(&mut self, asset: DecodedRgbaAsset) {
-        self.image_asset = Some(asset);
+        self.image_asset = Some(PendingImageAsset {
+            asset,
+            aspect_locked: false,
+        });
+    }
+
+    pub fn set_signature_asset(&mut self, asset: DecodedRgbaAsset) {
+        self.image_asset = Some(PendingImageAsset {
+            asset,
+            aspect_locked: true,
+        });
     }
 
     /// Supplies the synchronous page capture used by the pending Snapshot's
@@ -1549,7 +1687,7 @@ impl AnnotationAdapter {
     }
 
     pub fn image_asset(&self) -> Option<&DecodedRgbaAsset> {
-        self.image_asset.as_ref()
+        self.image_asset.as_ref().map(|pending| &pending.asset)
     }
 
     pub fn set_length_calibration(
@@ -2261,22 +2399,18 @@ impl AnnotationAdapter {
             .selected_id()
             .cloned()
             .ok_or(AnnotationError::NoSelection)?;
-        let resolved = if control == ArcControlPoint::Mid {
-            let annotation = document
-                .arcs()
-                .iter()
-                .find(|annotation| annotation.id == id)
-                .ok_or(AnnotationError::NoSelection)?;
-            ArcAnnotation::constrained_midpoint(
-                annotation.start,
-                annotation.end,
-                point,
-                ARC_MINIMUM_BULGE_CSS_PX / self.observed_pixels_per_point.0,
-                snap_quarter_turn,
-            )?
-        } else {
-            point
-        };
+        let annotation = document
+            .arcs()
+            .iter()
+            .find(|annotation| annotation.id == id)
+            .ok_or(AnnotationError::NoSelection)?;
+        let resolved = resolve_arc_control_point(
+            annotation,
+            control,
+            point,
+            ARC_MINIMUM_BULGE_CSS_PX / self.observed_pixels_per_point.0,
+            snap_quarter_turn,
+        )?;
         document.apply_command(AnnotationCommand::EditAnnotation {
             id,
             edit: AnnotationEdit::SetArcControlPoint {
@@ -2446,6 +2580,43 @@ impl AnnotationAdapter {
             .get_mut(&document_id)
             .ok_or(AnnotationError::NoSelection)?
             .replace_dimension_content_in_create_transaction(id, content)?;
+        Ok(())
+    }
+
+    pub fn replace_selected_dimension_content(
+        &mut self,
+        document_id: u64,
+        content: impl Into<String>,
+    ) -> Result<(), AnnotationError> {
+        let document = self
+            .documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        let id = document.selected_id().cloned().ok_or(AnnotationError::NoSelection)?;
+        document.apply_command(AnnotationCommand::EditAnnotation {
+            id,
+            edit: AnnotationEdit::SetDimensionContent(content.into()),
+        })?;
+        Ok(())
+    }
+
+    pub fn set_exact_selected_dimension_appearance(
+        &mut self,
+        document_id: u64,
+        appearance: DimensionAppearance,
+    ) -> Result<(), AnnotationError> {
+        let document = self
+            .documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        let selected = document.selected_annotations_in_document_order();
+        let [Annotation::Dimension(annotation)] = selected.as_slice() else {
+            return Err(AnnotationError::NoSelection);
+        };
+        document.apply_command(AnnotationCommand::EditAnnotation {
+            id: annotation.id.clone(),
+            edit: AnnotationEdit::SetDimensionAppearance(appearance),
+        })?;
         Ok(())
     }
 
@@ -2682,7 +2853,32 @@ impl AnnotationAdapter {
                 page_index,
                 ..
             }
+            | ActivePointer::DimensionEdit {
+                document_id,
+                page_index,
+                ..
+            }
+            | ActivePointer::CalloutEdit {
+                document_id,
+                page_index,
+                ..
+            }
+            | ActivePointer::CloudEdit {
+                document_id,
+                page_index,
+                ..
+            }
             | ActivePointer::InkMove {
+                document_id,
+                page_index,
+                ..
+            }
+            | ActivePointer::TextBoxMove {
+                document_id,
+                page_index,
+                ..
+            }
+            | ActivePointer::TextBoxResize {
                 document_id,
                 page_index,
                 ..
@@ -2703,6 +2899,11 @@ impl AnnotationAdapter {
                 ..
             }
             | ActivePointer::SnapshotResize {
+                document_id,
+                page_index,
+                ..
+            }
+            | ActivePointer::SnapshotRotate {
                 document_id,
                 page_index,
                 ..
@@ -2928,6 +3129,115 @@ impl AnnotationAdapter {
             .map(|annotation| &annotation.appearance)
     }
 
+    /// Returns Ink only when the current selection contains exactly one Pen
+    /// or Highlight. Property inspectors must not silently target the first
+    /// item in a mixed or multi-selection.
+    pub fn exact_selected_ink(&self, document_id: u64) -> Option<&PenAnnotation> {
+        let document = self.documents.get(&document_id)?;
+        let selected = document.selected_annotations_in_document_order();
+        let [Annotation::Pen(selected)] = selected.as_slice() else {
+            return None;
+        };
+        document.pens().iter().find(|pen| pen.id == selected.id)
+    }
+
+    /// Returns a Text Box only when the current selection contains exactly one.
+    pub fn exact_selected_text_box(&self, document_id: u64) -> Option<&TextBoxAnnotation> {
+        let document = self.documents.get(&document_id)?;
+        let selected = document.selected_annotations_in_document_order();
+        let [Annotation::TextBox(selected)] = selected.as_slice() else {
+            return None;
+        };
+        document
+            .text_boxes()
+            .iter()
+            .find(|text_box| text_box.id == selected.id)
+    }
+
+    /// Returns a Dimension only when the current selection contains exactly one.
+    pub fn exact_selected_dimension(&self, document_id: u64) -> Option<&DimensionAnnotation> {
+        let document = self.documents.get(&document_id)?;
+        let selected = document.selected_annotations_in_document_order();
+        let [Annotation::Dimension(selected)] = selected.as_slice() else {
+            return None;
+        };
+        document
+            .dimensions()
+            .iter()
+            .find(|dimension| dimension.id == selected.id)
+    }
+
+    /// Returns an Arc only when the current selection contains exactly one.
+    pub fn exact_selected_arc(&self, document_id: u64) -> Option<&ArcAnnotation> {
+        let document = self.documents.get(&document_id)?;
+        let selected = document.selected_annotations_in_document_order();
+        let [Annotation::Arc(selected)] = selected.as_slice() else {
+            return None;
+        };
+        document.arcs().iter().find(|arc| arc.id == selected.id)
+    }
+
+    /// Returns a Cloud only when the current selection contains exactly one.
+    pub fn exact_selected_cloud(&self, document_id: u64) -> Option<&CloudAnnotation> {
+        let document = self.documents.get(&document_id)?;
+        let selected = document.selected_annotations_in_document_order();
+        let [Annotation::Cloud(selected)] = selected.as_slice() else {
+            return None;
+        };
+        document.clouds().iter().find(|cloud| cloud.id == selected.id)
+    }
+
+    /// Returns a Snapshot only when the current selection contains exactly one.
+    pub fn exact_selected_snapshot(&self, document_id: u64) -> Option<&SnapshotAnnotation> {
+        let document = self.documents.get(&document_id)?;
+        let selected = document.selected_annotations_in_document_order();
+        let [Annotation::Snapshot(selected)] = selected.as_slice() else {
+            return None;
+        };
+        document
+            .snapshots()
+            .iter()
+            .find(|snapshot| snapshot.id == selected.id)
+    }
+
+    /// Changes caption visibility only when the selection is exactly one
+    /// Length, Polylength, or Area. The annotation model remains the sole
+    /// owner of calibration state and history.
+    pub fn set_exact_selected_measurement_show_caption(
+        &mut self,
+        document_id: u64,
+        show_caption: bool,
+    ) -> Result<(), AnnotationError> {
+        let document = self
+            .documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        let selected = document.selected_annotations_in_document_order();
+        let (id, edit) = match selected.as_slice() {
+            [Annotation::Length(annotation)] => (
+                annotation.id.clone(),
+                AnnotationEdit::SetLengthCalibration(
+                    annotation
+                        .calibration()
+                        .clone()
+                        .with_show_caption(show_caption),
+                ),
+            ),
+            [Annotation::MeasurementPath(annotation)] => (
+                annotation.id.clone(),
+                AnnotationEdit::SetMeasurementPathCalibration(
+                    annotation
+                        .calibration()
+                        .clone()
+                        .with_show_caption(show_caption),
+                ),
+            ),
+            _ => return Err(AnnotationError::NoSelection),
+        };
+        document.apply_command(AnnotationCommand::EditAnnotation { id, edit })?;
+        Ok(())
+    }
+
     pub fn selected_straight_line_appearance(
         &self,
         document_id: u64,
@@ -2939,6 +3249,18 @@ impl AnnotationAdapter {
             .iter()
             .find(|annotation| &annotation.id == id)
             .map(|annotation| &annotation.appearance)
+    }
+
+    pub fn selected_vertex_path(&self, document_id: u64) -> Option<&VertexPathAnnotation> {
+        let document = self.documents.get(&document_id)?;
+        let selected = document.selected_annotations_in_document_order();
+        let [Annotation::VertexPath(annotation)] = selected.as_slice() else {
+            return None;
+        };
+        document
+            .vertex_paths()
+            .iter()
+            .find(|candidate| candidate.id == annotation.id)
     }
 
     /// Commits the ordinary rectangle-properties command. Benchmark input
@@ -3432,14 +3754,13 @@ impl AnnotationAdapter {
                     .as_ref()
                     .map(|hit| hit.markup_id().clone())
                     .or_else(|| hit_non_rectangle(document, page_index, point, tolerance_pt));
-                if constrain_orthogonal && let Some(id) = selectable_hit_id.clone() {
-                    document.toggle_selection(&id);
-                    return Ok(PointerPhaseOutcome::SelectionChanged(
-                        document.selected_id().cloned(),
-                    ));
-                }
-                if let Some((id, control)) =
-                    hit_selected_arc_control_point(document, page_index, point, tolerance_pt)
+                if let Some((id, control)) = hit_selected_arc_control_point(
+                    document,
+                    page_index,
+                    point,
+                    tolerance_pt,
+                    self.observed_pixels_per_point.0,
+                )
                 {
                     document.select(&id);
                     let annotation = document
@@ -3455,12 +3776,20 @@ impl AnnotationAdapter {
                         page_index,
                         pointer_id,
                         id,
+                        expected_revision: document.snapshot().revision,
                         control,
                         start: point,
                         current: point,
+                        original: annotation.clone(),
                         snap_quarter_turn: constrain_orthogonal,
                     });
                     return Ok(PointerPhaseOutcome::GestureStarted);
+                }
+                if constrain_orthogonal && let Some(id) = selectable_hit_id.clone() {
+                    document.toggle_selection(&id);
+                    return Ok(PointerPhaseOutcome::SelectionChanged(
+                        document.selected_id().cloned(),
+                    ));
                 }
                 if let Some((id, handle)) = hit_selected_ellipse_handle(
                     document,
@@ -3546,6 +3875,105 @@ impl AnnotationAdapter {
                     });
                     return Ok(PointerPhaseOutcome::GestureStarted);
                 }
+                if let Some((id, kind)) =
+                    hit_selected_dimension_control(
+                        document,
+                        page_index,
+                        point,
+                        tolerance_pt,
+                        self.observed_pixels_per_point.0,
+                    )
+                {
+                    document.select(&id);
+                    let expected_revision = document.snapshot().revision;
+                    let original = document
+                        .dimensions()
+                        .iter()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a Dimension control hit must retain its annotation")
+                        .clone();
+                    if original.locked {
+                        return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                    }
+                    self.active = Some(ActivePointer::DimensionEdit {
+                        document_id,
+                        page_index,
+                        pointer_id,
+                        id,
+                        expected_revision,
+                        kind,
+                        start: point,
+                        current: point,
+                        original,
+                    });
+                    return Ok(PointerPhaseOutcome::GestureStarted);
+                }
+                if let Some((id, kind)) =
+                    hit_selected_callout_control(
+                        document,
+                        page_index,
+                        point,
+                        tolerance_pt,
+                        self.observed_pixels_per_point.0,
+                    )
+                {
+                    document.select(&id);
+                    let expected_revision = document.snapshot().revision;
+                    let original = document
+                        .callouts()
+                        .iter()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a Callout control hit must retain its annotation")
+                        .clone();
+                    if original.locked {
+                        return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                    }
+                    self.active = Some(ActivePointer::CalloutEdit {
+                        document_id,
+                        page_index,
+                        pointer_id,
+                        id,
+                        expected_revision,
+                        kind,
+                        start: point,
+                        current: point,
+                        original,
+                    });
+                    return Ok(PointerPhaseOutcome::GestureStarted);
+                }
+                if let Some((id, kind)) =
+                    hit_selected_cloud_control(
+                        document,
+                        page_index,
+                        point,
+                        tolerance_pt,
+                        self.observed_pixels_per_point.0,
+                    )
+                {
+                    document.select(&id);
+                    let expected_revision = document.snapshot().revision;
+                    let original = document
+                        .clouds()
+                        .iter()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a Cloud control hit must retain its annotation")
+                        .clone();
+                    if original.locked {
+                        return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                    }
+                    self.active = Some(ActivePointer::CloudEdit {
+                        document_id,
+                        page_index,
+                        pointer_id,
+                        id,
+                        expected_revision,
+                        kind,
+                        start: point,
+                        current: point,
+                        original,
+                    });
+                    return Ok(PointerPhaseOutcome::GestureStarted);
+                }
                 if let Some((id, endpoint)) =
                     hit_straight_line_endpoint(document, page_index, point, tolerance_pt)
                 {
@@ -3628,6 +4056,34 @@ impl AnnotationAdapter {
                     });
                     return Ok(PointerPhaseOutcome::GestureStarted);
                 }
+                if let Some((id, handle)) = hit_selected_text_box_resize_handle(
+                    document,
+                    page_index,
+                    point,
+                    tolerance_pt,
+                    self.observed_pixels_per_point.0,
+                ) {
+                    document.select(&id);
+                    let annotation = document
+                        .text_boxes()
+                        .iter()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a resize-handle hit must retain its Text Box");
+                    if annotation.locked {
+                        return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                    }
+                    self.active = Some(ActivePointer::TextBoxResize {
+                        document_id,
+                        page_index,
+                        pointer_id,
+                        id,
+                        handle,
+                        start: point,
+                        current: point,
+                        original_rect: annotation.layout_rect,
+                    });
+                    return Ok(PointerPhaseOutcome::GestureStarted);
+                }
                 if let Some((id, handle)) =
                     hit_selected_image_resize_handle(document, page_index, point, tolerance_pt)
                 {
@@ -3674,6 +4130,34 @@ impl AnnotationAdapter {
                         pointer_id,
                         id,
                         handle,
+                        start: point,
+                        current: point,
+                        original_rect: annotation.rect,
+                        original_rotation_degrees: annotation.rotation_degrees(),
+                    });
+                    return Ok(PointerPhaseOutcome::GestureStarted);
+                }
+                if let Some(id) = hit_selected_snapshot_rotation_handle(
+                    document,
+                    page_index,
+                    point,
+                    tolerance_pt,
+                    self.observed_pixels_per_point.0,
+                ) {
+                    document.select(&id);
+                    let annotation = document
+                        .snapshots()
+                        .iter()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a rotation-handle hit must retain its Snapshot");
+                    if annotation.locked {
+                        return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                    }
+                    self.active = Some(ActivePointer::SnapshotRotate {
+                        document_id,
+                        page_index,
+                        pointer_id,
+                        id,
                         start: point,
                         current: point,
                         original_rect: annotation.rect,
@@ -3737,11 +4221,10 @@ impl AnnotationAdapter {
                             page_index,
                             pointer_id,
                             id,
+                            expected_revision: document.snapshot().revision,
                             start: point,
-                            current: point,
-                            original_start: annotation.start,
-                            original_end: annotation.end,
-                            original_mid: annotation.mid,
+                        current: point,
+                        original: annotation.clone(),
                         });
                         return Ok(PointerPhaseOutcome::GestureStarted);
                     }
@@ -3777,6 +4260,22 @@ impl AnnotationAdapter {
                             start: point,
                             current: point,
                             original_paths: annotation.paths().map(|path| path.to_vec()).collect(),
+                        });
+                        return Ok(PointerPhaseOutcome::GestureStarted);
+                    }
+                    if let Some(annotation) = document
+                        .text_boxes()
+                        .iter()
+                        .find(|annotation| annotation.id == id && !annotation.locked)
+                    {
+                        self.active = Some(ActivePointer::TextBoxMove {
+                            document_id,
+                            page_index,
+                            pointer_id,
+                            id,
+                            start: point,
+                            current: point,
+                            original_rect: annotation.layout_rect,
                         });
                         return Ok(PointerPhaseOutcome::GestureStarted);
                     }
@@ -3841,6 +4340,77 @@ impl AnnotationAdapter {
                             start: point,
                             current: point,
                             original_rect: annotation.rect,
+                        });
+                        return Ok(PointerPhaseOutcome::GestureStarted);
+                    }
+                    if let Some(annotation) = document
+                        .dimensions()
+                        .iter()
+                        .find(|annotation| annotation.id == id)
+                        .cloned()
+                    {
+                        if annotation.locked {
+                            return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                        }
+                        self.active = Some(ActivePointer::DimensionEdit {
+                            document_id,
+                            page_index,
+                            pointer_id,
+                            id,
+                            expected_revision: document.snapshot().revision,
+                            kind: DimensionPointerEditKind::Body,
+                            start: point,
+                            current: point,
+                            original: annotation,
+                        });
+                        return Ok(PointerPhaseOutcome::GestureStarted);
+                    }
+                    if let Some(annotation) = document
+                        .callouts()
+                        .iter()
+                        .find(|annotation| annotation.id == id)
+                        .cloned()
+                    {
+                        if annotation.locked {
+                            return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                        }
+                        let kind = if rect_contains(annotation.text_box, point, tolerance_pt) {
+                            CalloutPointerEditKind::TextBox
+                        } else {
+                            CalloutPointerEditKind::Body
+                        };
+                        self.active = Some(ActivePointer::CalloutEdit {
+                            document_id,
+                            page_index,
+                            pointer_id,
+                            id,
+                            expected_revision: document.snapshot().revision,
+                            kind,
+                            start: point,
+                            current: point,
+                            original: annotation,
+                        });
+                        return Ok(PointerPhaseOutcome::GestureStarted);
+                    }
+                    if let Some(annotation) = document
+                        .clouds()
+                        .iter()
+                        .find(|annotation| annotation.id == id)
+                        .cloned()
+                    {
+                        if annotation.locked {
+                            return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                        }
+                        self.active = Some(ActivePointer::CloudEdit {
+                            document_id,
+                            page_index,
+                            pointer_id,
+                            id,
+                            expected_revision: document.snapshot().revision,
+                            kind: CloudPointerEditKind::Body,
+                            start: point,
+                            current: point,
+                            original: annotation,
                         });
                         return Ok(PointerPhaseOutcome::GestureStarted);
                     }
@@ -4088,23 +4658,34 @@ impl AnnotationAdapter {
             )),
             AnnotationTool::Image => {
                 let id = id.expect("drawing tools allocate an annotation ID");
-                let asset = self.image_asset.clone().ok_or_else(|| {
+                let pending = self.image_asset.clone().ok_or_else(|| {
                     AnnotationError::InvalidFixture(
                         "image tool requires a decoded bounded PNG or JPEG asset".into(),
                     )
                 })?;
+                if pending.aspect_locked {
+                    self.image_asset = None;
+                }
                 let placement_page = self.image_placement_page.ok_or_else(|| {
                     AnnotationError::InvalidGeometry(
                         "image tool requires the current page dimensions".into(),
                     )
                 })?;
-                let source_width = f64::from(asset.width_px());
-                let source_height = f64::from(asset.height_px());
+                let source_width = f64::from(pending.asset.width_px());
+                let source_height = f64::from(pending.asset.height_px());
+                let aspect_ratio = (source_width / source_height).max(0.01);
+                let natural_width = source_width.max(24.0);
+                let natural_height = natural_width / aspect_ratio;
                 let scale = 1.0_f64
-                    .min(placement_page.width_pt * placement_page.max_fraction / source_width)
-                    .min(placement_page.height_pt * placement_page.max_fraction / source_height);
-                let width = source_width * scale;
-                let height = source_height * scale;
+                    .min(placement_page.width_pt * placement_page.max_fraction / natural_width)
+                    .min(placement_page.height_pt * placement_page.max_fraction / natural_height);
+                let (width, height) = if pending.aspect_locked {
+                    (natural_width * scale, natural_height * scale)
+                } else {
+                    let width = (natural_width * scale).max(24.0);
+                    let height = (width / aspect_ratio).max(24.0);
+                    (width, height)
+                };
                 let x =
                     (point.x - width / 2.0).clamp(0.0, (placement_page.width_pt - width).max(0.0));
                 let y = (point.y - height / 2.0)
@@ -4113,8 +4694,8 @@ impl AnnotationAdapter {
                     id.clone(),
                     page_index,
                     PdfRect::new(x, y, width, height)?,
-                    asset,
-                    false,
+                    pending.asset,
+                    pending.aspect_locked,
                 )?;
                 document.apply_command(AnnotationCommand::CreateAnnotation(Annotation::Image(
                     annotation,
@@ -4171,6 +4752,57 @@ impl AnnotationAdapter {
             .documents
             .get_mut(&document_id)
             .ok_or(AnnotationError::NoSelection)?;
+        if let Some(selected) = document.selected_id().cloned()
+            && document.text_boxes().iter().any(|annotation| {
+                annotation.id == selected
+                    && annotation.page_index == page_index
+                    && !annotation.locked
+                    && point.x >= annotation.layout_rect.x - tolerance_pt
+                    && point.x
+                        <= annotation.layout_rect.x + annotation.layout_rect.width + tolerance_pt
+                    && point.y >= annotation.layout_rect.y - tolerance_pt
+                    && point.y
+                        <= annotation.layout_rect.y + annotation.layout_rect.height + tolerance_pt
+            })
+        {
+            return Ok(PointerPhaseOutcome::SelectionChanged(Some(selected)));
+        }
+        if let Some(selected) = document.selected_id().cloned()
+            && document.dimensions().iter().any(|annotation| {
+                if annotation.id != selected
+                    || annotation.page_index != page_index
+                    || annotation.locked
+                {
+                    return false;
+                }
+                let (start, end) = annotation.dimension_line_points();
+                point_segment_distance(point, start, end)
+                    <= tolerance_pt.max(annotation.appearance.line().stroke_width_pt() / 2.)
+            })
+        {
+            return Ok(PointerPhaseOutcome::SelectionChanged(Some(selected)));
+        }
+        if let Some(id) = hit_selected_snapshot_rotation_handle(
+            document,
+            page_index,
+            point,
+            tolerance_pt,
+            self.observed_pixels_per_point.0,
+        ) {
+            let annotation = document
+                .snapshots()
+                .iter()
+                .find(|annotation| annotation.id == id)
+                .expect("a Snapshot rotation-handle hit must retain its annotation");
+            if annotation.locked {
+                return Ok(PointerPhaseOutcome::Ignored);
+            }
+            document.apply_command(AnnotationCommand::EditAnnotation {
+                id: id.clone(),
+                edit: AnnotationEdit::SetSnapshotRotation(0.),
+            })?;
+            return Ok(PointerPhaseOutcome::AnnotationEdited(id));
+        }
         let Some((id, EllipseHandleKind::Rotate)) = hit_selected_ellipse_handle(
             document,
             page_index,
@@ -4391,6 +5023,25 @@ impl AnnotationAdapter {
                 *current = point;
                 Ok(PointerPhaseOutcome::GestureStarted)
             }
+            ActivePointer::DimensionEdit {
+                pointer_id: active_pointer,
+                current,
+                ..
+            }
+            | ActivePointer::CalloutEdit {
+                pointer_id: active_pointer,
+                current,
+                ..
+            }
+            | ActivePointer::CloudEdit {
+                pointer_id: active_pointer,
+                current,
+                ..
+            } => {
+                require_pointer(*active_pointer, pointer_id)?;
+                *current = point;
+                Ok(PointerPhaseOutcome::GestureStarted)
+            }
             ActivePointer::StraightLineCreate {
                 pointer_id: active_pointer,
                 start,
@@ -4453,6 +5104,20 @@ impl AnnotationAdapter {
                 *current = point;
                 Ok(PointerPhaseOutcome::GestureStarted)
             }
+            ActivePointer::TextBoxMove {
+                pointer_id: active_pointer,
+                current,
+                ..
+            }
+            | ActivePointer::TextBoxResize {
+                pointer_id: active_pointer,
+                current,
+                ..
+            } => {
+                require_pointer(*active_pointer, pointer_id)?;
+                *current = point;
+                Ok(PointerPhaseOutcome::GestureStarted)
+            }
             ActivePointer::ImageMove {
                 pointer_id: active_pointer,
                 current,
@@ -4469,6 +5134,11 @@ impl AnnotationAdapter {
                 ..
             }
             | ActivePointer::SnapshotResize {
+                pointer_id: active_pointer,
+                current,
+                ..
+            }
+            | ActivePointer::SnapshotRotate {
                 pointer_id: active_pointer,
                 current,
                 ..
@@ -4925,9 +5595,12 @@ impl AnnotationAdapter {
             }
             ActivePointer::ArcMove {
                 document_id,
+                page_index,
                 pointer_id: active_pointer,
                 id,
+                expected_revision,
                 start,
+                original,
                 ..
             } => {
                 require_pointer(active_pointer, pointer_id)?;
@@ -4936,10 +5609,18 @@ impl AnnotationAdapter {
                 {
                     return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
                 }
-                self.documents
+                let document = self
+                    .documents
                     .get_mut(&document_id)
-                    .ok_or(AnnotationError::NoActiveGesture)?
-                    .apply_command(AnnotationCommand::EditAnnotation {
+                    .ok_or(AnnotationError::NoActiveGesture)?;
+                validate_arc_pointer_target(
+                    document,
+                    page_index,
+                    &id,
+                    expected_revision,
+                    &original,
+                )?;
+                document.apply_command(AnnotationCommand::EditAnnotation {
                         id: id.clone(),
                         edit: AnnotationEdit::TranslateArc {
                             delta_x: point.x - start.x,
@@ -4950,11 +5631,14 @@ impl AnnotationAdapter {
             }
             ActivePointer::ArcControlPoint {
                 document_id,
+                page_index,
                 pointer_id: active_pointer,
                 id,
+                expected_revision,
                 control,
                 start,
-                snap_quarter_turn,
+                original,
+                snap_quarter_turn: _,
                 ..
             } => {
                 require_pointer(active_pointer, pointer_id)?;
@@ -4963,30 +5647,26 @@ impl AnnotationAdapter {
                 {
                     return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
                 }
-                let resolved = if control == ArcControlPoint::Mid {
-                    let document = self
-                        .documents
-                        .get(&document_id)
-                        .ok_or(AnnotationError::NoActiveGesture)?;
-                    let annotation = document
-                        .arcs()
-                        .iter()
-                        .find(|annotation| annotation.id == id)
-                        .ok_or(AnnotationError::NoSelection)?;
-                    ArcAnnotation::constrained_midpoint(
-                        annotation.start,
-                        annotation.end,
-                        point,
-                        ARC_MINIMUM_BULGE_CSS_PX / self.observed_pixels_per_point.0,
-                        snap_quarter_turn,
-                    )?
-                } else {
-                    point
-                };
-                self.documents
+                let document = self
+                    .documents
                     .get_mut(&document_id)
-                    .ok_or(AnnotationError::NoActiveGesture)?
-                    .apply_command(AnnotationCommand::EditAnnotation {
+                    .ok_or(AnnotationError::NoActiveGesture)?;
+                validate_arc_pointer_target(
+                    document,
+                    page_index,
+                    &id,
+                    expected_revision,
+                    &original,
+                )?;
+                let snap_quarter_turn = constrain_orthogonal;
+                let resolved = resolve_arc_control_point(
+                    &original,
+                    control,
+                    point,
+                    ARC_MINIMUM_BULGE_CSS_PX / self.observed_pixels_per_point.0,
+                    snap_quarter_turn,
+                )?;
+                document.apply_command(AnnotationCommand::EditAnnotation {
                         id: id.clone(),
                         edit: AnnotationEdit::SetArcControlPoint {
                             control,
@@ -5258,6 +5938,157 @@ impl AnnotationAdapter {
                 require_pointer(active_pointer, pointer_id)?;
                 Ok(PointerPhaseOutcome::PlacementPending)
             }
+            ActivePointer::DimensionEdit {
+                document_id,
+                page_index,
+                pointer_id: active_pointer,
+                id,
+                expected_revision,
+                kind,
+                start,
+                original,
+                ..
+            } => {
+                require_pointer(active_pointer, pointer_id)?;
+                if point_distance_css_px(start, point, self.observed_pixels_per_point.0)
+                    < POINTER_DRAG_THRESHOLD_CSS_PX
+                {
+                    return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                }
+                let document = self
+                    .documents
+                    .get_mut(&document_id)
+                    .ok_or(AnnotationError::NoActiveGesture)?;
+                validate_dimension_pointer_target(
+                    document,
+                    page_index,
+                    &id,
+                    expected_revision,
+                    &original,
+                )?;
+                let edit = match kind {
+                    DimensionPointerEditKind::Start => AnnotationEdit::SetDimensionEndpoint {
+                        endpoint: LineEndpoint::Start,
+                        point,
+                    },
+                    DimensionPointerEditKind::End => AnnotationEdit::SetDimensionEndpoint {
+                        endpoint: LineEndpoint::End,
+                        point,
+                    },
+                    DimensionPointerEditKind::Offset => {
+                        let delta_x = original.end.x - original.start.x;
+                        let delta_y = original.end.y - original.start.y;
+                        let length = delta_x.hypot(delta_y);
+                        let projected_delta = (point.x - start.x) * (-delta_y / length)
+                            + (point.y - start.y) * (delta_x / length);
+                        AnnotationEdit::SetDimensionOffset(
+                            original.dimension_line_offset() + projected_delta,
+                        )
+                    }
+                    DimensionPointerEditKind::Body => AnnotationEdit::TranslateDimension {
+                        delta_x: point.x - start.x,
+                        delta_y: point.y - start.y,
+                    },
+                };
+                document.apply_command(AnnotationCommand::EditAnnotation {
+                    id: id.clone(),
+                    edit,
+                })?;
+                Ok(PointerPhaseOutcome::AnnotationEdited(id))
+            }
+            ActivePointer::CalloutEdit {
+                document_id,
+                page_index,
+                pointer_id: active_pointer,
+                id,
+                expected_revision,
+                kind,
+                start,
+                original,
+                ..
+            } => {
+                require_pointer(active_pointer, pointer_id)?;
+                if point_distance_css_px(start, point, self.observed_pixels_per_point.0)
+                    < POINTER_DRAG_THRESHOLD_CSS_PX
+                {
+                    return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                }
+                let document = self
+                    .documents
+                    .get_mut(&document_id)
+                    .ok_or(AnnotationError::NoActiveGesture)?;
+                validate_callout_pointer_target(
+                    document,
+                    page_index,
+                    &id,
+                    expected_revision,
+                    &original,
+                )?;
+                let edit = match kind {
+                    CalloutPointerEditKind::LeaderPoint(point_index) => {
+                        AnnotationEdit::SetCalloutLeaderPoint { point_index, point }
+                    }
+                    CalloutPointerEditKind::TextBox => AnnotationEdit::TranslateCalloutTextBox {
+                        delta_x: point.x - start.x,
+                        delta_y: point.y - start.y,
+                    },
+                    CalloutPointerEditKind::Body => AnnotationEdit::TranslateCalloutGroup {
+                        delta_x: point.x - start.x,
+                        delta_y: point.y - start.y,
+                    },
+                };
+                document.apply_command(AnnotationCommand::EditAnnotation {
+                    id: id.clone(),
+                    edit,
+                })?;
+                Ok(PointerPhaseOutcome::AnnotationEdited(id))
+            }
+            ActivePointer::CloudEdit {
+                document_id,
+                page_index,
+                pointer_id: active_pointer,
+                id,
+                expected_revision,
+                kind,
+                start,
+                original,
+                ..
+            } => {
+                require_pointer(active_pointer, pointer_id)?;
+                if point_distance_css_px(start, point, self.observed_pixels_per_point.0)
+                    < POINTER_DRAG_THRESHOLD_CSS_PX
+                {
+                    return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                }
+                let document = self
+                    .documents
+                    .get_mut(&document_id)
+                    .ok_or(AnnotationError::NoActiveGesture)?;
+                validate_cloud_pointer_target(
+                    document,
+                    page_index,
+                    &id,
+                    expected_revision,
+                    &original,
+                )?;
+                let edit = match kind {
+                    CloudPointerEditKind::Vertex(vertex_index) => {
+                        AnnotationEdit::SetCloudPoint {
+                            vertex_index,
+                            point,
+                        }
+                    }
+                    CloudPointerEditKind::Body => AnnotationEdit::TranslateCloud {
+                        delta_x: point.x - start.x,
+                        delta_y: point.y - start.y,
+                    },
+                };
+                document.apply_command(AnnotationCommand::EditAnnotation {
+                    id: id.clone(),
+                    edit,
+                })?;
+                Ok(PointerPhaseOutcome::AnnotationEdited(id))
+            }
             ActivePointer::LengthEndpoint {
                 document_id,
                 pointer_id: active_pointer,
@@ -5303,6 +6134,60 @@ impl AnnotationAdapter {
                     .apply_command(AnnotationCommand::EditAnnotation {
                         id: id.clone(),
                         edit: AnnotationEdit::ReplacePenPaths(paths),
+                    })?;
+                Ok(PointerPhaseOutcome::AnnotationEdited(id))
+            }
+            ActivePointer::TextBoxMove {
+                document_id,
+                pointer_id: active_pointer,
+                id,
+                start,
+                original_rect,
+                ..
+            } => {
+                require_pointer(active_pointer, pointer_id)?;
+                if point_distance_css_px(start, point, self.observed_pixels_per_point.0)
+                    < POINTER_DRAG_THRESHOLD_CSS_PX
+                {
+                    return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                }
+                let rect = PdfRect::new(
+                    original_rect.x + point.x - start.x,
+                    original_rect.y + point.y - start.y,
+                    original_rect.width,
+                    original_rect.height,
+                )?;
+                self.documents
+                    .get_mut(&document_id)
+                    .ok_or(AnnotationError::NoActiveGesture)?
+                    .apply_command(AnnotationCommand::EditAnnotation {
+                        id: id.clone(),
+                        edit: AnnotationEdit::SetTextBoxLayoutRect(rect),
+                    })?;
+                Ok(PointerPhaseOutcome::AnnotationEdited(id))
+            }
+            ActivePointer::TextBoxResize {
+                document_id,
+                pointer_id: active_pointer,
+                id,
+                handle,
+                start,
+                original_rect,
+                ..
+            } => {
+                require_pointer(active_pointer, pointer_id)?;
+                if point_distance_css_px(start, point, self.observed_pixels_per_point.0)
+                    < POINTER_DRAG_THRESHOLD_CSS_PX
+                {
+                    return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                }
+                let rect = original_rect.rotated_resize_from_handle(0., handle, point);
+                self.documents
+                    .get_mut(&document_id)
+                    .ok_or(AnnotationError::NoActiveGesture)?
+                    .apply_command(AnnotationCommand::EditAnnotation {
+                        id: id.clone(),
+                        edit: AnnotationEdit::SetTextBoxLayoutRect(rect),
                     })?;
                 Ok(PointerPhaseOutcome::AnnotationEdited(id))
             }
@@ -5416,6 +6301,35 @@ impl AnnotationAdapter {
                     .apply_command(AnnotationCommand::EditAnnotation {
                         id: id.clone(),
                         edit: AnnotationEdit::SetSnapshotRect(rect),
+                    })?;
+                Ok(PointerPhaseOutcome::AnnotationEdited(id))
+            }
+            ActivePointer::SnapshotRotate {
+                document_id,
+                pointer_id: active_pointer,
+                id,
+                start,
+                original_rect,
+                original_rotation_degrees,
+                ..
+            } => {
+                require_pointer(active_pointer, pointer_id)?;
+                if point_distance_css_px(start, point, self.observed_pixels_per_point.0)
+                    < POINTER_DRAG_THRESHOLD_CSS_PX
+                {
+                    return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                }
+                self.documents
+                    .get_mut(&document_id)
+                    .ok_or(AnnotationError::NoActiveGesture)?
+                    .apply_command(AnnotationCommand::EditAnnotation {
+                        id: id.clone(),
+                        edit: AnnotationEdit::SetSnapshotRotation(ellipse_rotation_from_drag(
+                            original_rect,
+                            original_rotation_degrees,
+                            start,
+                            point,
+                        )),
                     })?;
                 Ok(PointerPhaseOutcome::AnnotationEdited(id))
             }
@@ -6065,6 +6979,160 @@ impl AnnotationAdapter {
         Ok(())
     }
 
+    pub fn edit_selected_vertex_path_property(
+        &mut self,
+        document_id: u64,
+        edit: VertexPathPropertyEdit,
+    ) -> Result<(), AnnotationError> {
+        let document = self
+            .documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        let selected = document.selected_annotations_in_document_order();
+        let [Annotation::VertexPath(annotation)] = selected.as_slice() else {
+            return Err(AnnotationError::NoSelection);
+        };
+        let id = annotation.id.clone();
+        let current = annotation.appearance.clone();
+        match &edit {
+            VertexPathPropertyEdit::StrokeWidthPt(value)
+                if !value.is_finite() || !(0.25..=24.).contains(value) =>
+            {
+                return Err(AnnotationError::InvalidAppearance(
+                    "vertex-path stroke width must be between 0.25 and 24 points".into(),
+                ));
+            }
+            VertexPathPropertyEdit::Opacity(value)
+                if !value.is_finite() || !(0.0..=1.0).contains(value) =>
+            {
+                return Err(AnnotationError::InvalidAppearance(
+                    "vertex-path opacity must be between 0 and 1".into(),
+                ));
+            }
+            VertexPathPropertyEdit::FillColor(_) if annotation.kind == VertexPathKind::Polyline => {
+                return Err(AnnotationError::InvalidAppearance(
+                    "polyline annotations do not support fill property edits".into(),
+                ));
+            }
+            _ => {}
+        }
+        let (stroke_color, stroke_width, fill_color, opacity) = match edit {
+            VertexPathPropertyEdit::StrokeColor(value) => (
+                vertex_path_property_rgb(value),
+                current.stroke_width_pt(),
+                current.fill_color().map(str::to_owned),
+                current.opacity(),
+            ),
+            VertexPathPropertyEdit::StrokeWidthPt(value) => (
+                current.stroke_color().to_owned(),
+                value,
+                current.fill_color().map(str::to_owned),
+                current.opacity(),
+            ),
+            VertexPathPropertyEdit::Opacity(value) => (
+                current.stroke_color().to_owned(),
+                current.stroke_width_pt(),
+                current.fill_color().map(str::to_owned),
+                value,
+            ),
+            VertexPathPropertyEdit::FillColor(value) => (
+                current.stroke_color().to_owned(),
+                current.stroke_width_pt(),
+                value.map(vertex_path_property_rgb),
+                current.opacity(),
+            ),
+        };
+        let appearance = RectangleAppearance::new(
+            stroke_color,
+            stroke_width,
+            fill_color,
+            opacity,
+        )?
+        .with_fill_opacity(current.fill_opacity())?
+        .with_stroke_style(current.stroke_style());
+        document.apply_command(AnnotationCommand::EditAnnotation {
+            id,
+            edit: AnnotationEdit::SetVertexPathAppearance(appearance),
+        })?;
+        Ok(())
+    }
+
+    pub fn edit_selected_measurement_path_property(
+        &mut self,
+        document_id: u64,
+        edit: VertexPathPropertyEdit,
+    ) -> Result<(), AnnotationError> {
+        let document = self
+            .documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        let selected = document.selected_annotations_in_document_order();
+        let [Annotation::MeasurementPath(annotation)] = selected.as_slice() else {
+            return Err(AnnotationError::NoSelection);
+        };
+        let current = annotation.appearance.clone();
+        match &edit {
+            VertexPathPropertyEdit::StrokeWidthPt(value)
+                if !value.is_finite() || !(0.25..=24.).contains(value) =>
+            {
+                return Err(AnnotationError::InvalidAppearance(
+                    "measurement-path stroke width must be between 0.25 and 24 points".into(),
+                ));
+            }
+            VertexPathPropertyEdit::Opacity(value)
+                if !value.is_finite() || !(0.0..=1.0).contains(value) =>
+            {
+                return Err(AnnotationError::InvalidAppearance(
+                    "measurement-path opacity must be between 0 and 1".into(),
+                ));
+            }
+            VertexPathPropertyEdit::FillColor(_)
+                if annotation.kind == MeasurementPathKind::Polylength =>
+            {
+                return Err(AnnotationError::InvalidAppearance(
+                    "polylength annotations do not support fill property edits".into(),
+                ));
+            }
+            _ => {}
+        }
+        let (stroke_color, stroke_width, fill_color, opacity) = match edit {
+            VertexPathPropertyEdit::StrokeColor(value) => (
+                vertex_path_property_rgb(value),
+                current.stroke_width_pt(),
+                current.fill_color().map(str::to_owned),
+                current.opacity(),
+            ),
+            VertexPathPropertyEdit::StrokeWidthPt(value) => (
+                current.stroke_color().to_owned(),
+                value,
+                current.fill_color().map(str::to_owned),
+                current.opacity(),
+            ),
+            VertexPathPropertyEdit::Opacity(value) => (
+                current.stroke_color().to_owned(),
+                current.stroke_width_pt(),
+                current.fill_color().map(str::to_owned),
+                value,
+            ),
+            VertexPathPropertyEdit::FillColor(value) => (
+                current.stroke_color().to_owned(),
+                current.stroke_width_pt(),
+                value.map(vertex_path_property_rgb),
+                current.opacity(),
+            ),
+        };
+        let appearance = RectangleAppearance::new(
+            stroke_color,
+            stroke_width,
+            fill_color,
+            opacity,
+        )?
+        .with_fill_opacity(current.fill_opacity())?
+        .with_stroke_style(current.stroke_style());
+        document.apply_command(AnnotationCommand::SetSelectedAppearance(appearance))?;
+        Ok(())
+    }
+
     pub fn move_selected_ink(
         &mut self,
         document_id: u64,
@@ -6122,6 +7190,123 @@ impl AnnotationAdapter {
             id,
             edit: AnnotationEdit::SetInkAppearance(appearance),
         })?;
+        Ok(())
+    }
+
+    /// Replaces only the appearance of exactly one selected Pen or Highlight.
+    /// The model command retains every path plus tool, smoothing, blend, and
+    /// lock state, and records at most one history entry.
+    pub fn set_exact_selected_ink_appearance(
+        &mut self,
+        document_id: u64,
+        appearance: PenAppearance,
+    ) -> Result<(), AnnotationError> {
+        let id = self
+            .exact_selected_ink(document_id)
+            .map(|pen| pen.id.clone())
+            .ok_or(AnnotationError::NoSelection)?;
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id,
+                edit: AnnotationEdit::SetInkAppearance(appearance),
+            })?;
+        Ok(())
+    }
+
+    /// Replaces the complete style of exactly one selected Text Box.
+    pub fn set_exact_selected_text_box_style(
+        &mut self,
+        document_id: u64,
+        style: TextBoxStyle,
+    ) -> Result<(), AnnotationError> {
+        let id = self
+            .exact_selected_text_box(document_id)
+            .map(|text_box| text_box.id.clone())
+            .ok_or(AnnotationError::NoSelection)?;
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id,
+                edit: AnnotationEdit::SetTextBoxStyle(style),
+            })?;
+        Ok(())
+    }
+
+    /// Replaces the complete appearance of exactly one selected Arc.
+    pub fn set_exact_selected_arc_appearance(
+        &mut self,
+        document_id: u64,
+        appearance: RectangleAppearance,
+    ) -> Result<(), AnnotationError> {
+        self.exact_selected_arc(document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .apply_command(AnnotationCommand::SetSelectedAppearance(appearance))?;
+        Ok(())
+    }
+
+    /// Replaces the complete appearance of exactly one selected Cloud.
+    pub fn set_exact_selected_cloud_appearance(
+        &mut self,
+        document_id: u64,
+        appearance: RectangleAppearance,
+    ) -> Result<(), AnnotationError> {
+        let id = self
+            .exact_selected_cloud(document_id)
+            .map(|cloud| cloud.id.clone())
+            .ok_or(AnnotationError::NoSelection)?;
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id,
+                edit: AnnotationEdit::SetCloudAppearance(appearance),
+            })?;
+        Ok(())
+    }
+
+    /// Replaces intensity on exactly one selected Cloud.
+    pub fn set_exact_selected_cloud_intensity(
+        &mut self,
+        document_id: u64,
+        intensity: f64,
+    ) -> Result<(), AnnotationError> {
+        let id = self
+            .exact_selected_cloud(document_id)
+            .map(|cloud| cloud.id.clone())
+            .ok_or(AnnotationError::NoSelection)?;
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id,
+                edit: AnnotationEdit::SetCloudIntensity(intensity),
+            })?;
+        Ok(())
+    }
+
+    /// Replaces opacity on exactly one selected Snapshot.
+    pub fn set_exact_selected_snapshot_opacity(
+        &mut self,
+        document_id: u64,
+        opacity: f64,
+    ) -> Result<(), AnnotationError> {
+        let id = self
+            .exact_selected_snapshot(document_id)
+            .map(|snapshot| snapshot.id.clone())
+            .ok_or(AnnotationError::NoSelection)?;
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id,
+                edit: AnnotationEdit::SetSnapshotOpacity(opacity),
+            })?;
         Ok(())
     }
 
@@ -6764,14 +7949,23 @@ impl AnnotationAdapter {
             document_id: active_document_id,
             page_index: active_page_index,
             id,
+            expected_revision,
             start,
             current,
-            original_start,
-            original_end,
-            original_mid,
+            original,
             ..
         }) = &self.active
             && (*active_document_id, *active_page_index) == (document_id, page_index)
+            && self.documents.get(&document_id).is_some_and(|document| {
+                validate_arc_pointer_target(
+                    document,
+                    page_index,
+                    id,
+                    *expected_revision,
+                    original,
+                )
+                .is_ok()
+            })
             && let Some(annotation) = scene
                 .arcs
                 .iter_mut()
@@ -6780,11 +7974,11 @@ impl AnnotationAdapter {
             let delta_x = current.x - start.x;
             let delta_y = current.y - start.y;
             annotation.start =
-                PdfPoint::new(original_start.x + delta_x, original_start.y + delta_y)
+                PdfPoint::new(original.start.x + delta_x, original.start.y + delta_y)
                     .expect("validated pointer points produce a finite Arc preview");
-            annotation.end = PdfPoint::new(original_end.x + delta_x, original_end.y + delta_y)
+            annotation.end = PdfPoint::new(original.end.x + delta_x, original.end.y + delta_y)
                 .expect("validated pointer points produce a finite Arc preview");
-            annotation.mid = PdfPoint::new(original_mid.x + delta_x, original_mid.y + delta_y)
+            annotation.mid = PdfPoint::new(original.mid.x + delta_x, original.mid.y + delta_y)
                 .expect("validated pointer points produce a finite Arc preview");
             annotation.sampled_path = ArcAnnotation::new(
                 annotation.id.clone(),
@@ -6802,42 +7996,54 @@ impl AnnotationAdapter {
             document_id: active_document_id,
             page_index: active_page_index,
             id,
+            expected_revision,
             control,
             current,
+            original,
             snap_quarter_turn,
             ..
         }) = &self.active
             && (*active_document_id, *active_page_index) == (document_id, page_index)
+            && self.documents.get(&document_id).is_some_and(|document| {
+                validate_arc_pointer_target(
+                    document,
+                    page_index,
+                    id,
+                    *expected_revision,
+                    original,
+                )
+                .is_ok()
+            })
             && let Some(annotation) = scene
                 .arcs
                 .iter_mut()
                 .find(|annotation| annotation.id == *id)
         {
-            let resolved = if *control == ArcControlPoint::Mid {
-                ArcAnnotation::constrained_midpoint(
-                    annotation.start,
-                    annotation.end,
-                    *current,
-                    ARC_MINIMUM_BULGE_CSS_PX / self.observed_pixels_per_point.0,
-                    *snap_quarter_turn,
-                )
-                .unwrap_or(*current)
-            } else {
-                *current
+            let resolved = resolve_arc_control_point(
+                original,
+                *control,
+                *current,
+                ARC_MINIMUM_BULGE_CSS_PX / self.observed_pixels_per_point.0,
+                *snap_quarter_turn,
+            )
+            .unwrap_or(*current);
+            let (start, end, mid) = match *control {
+                ArcControlPoint::Start => (resolved, original.end, original.mid),
+                ArcControlPoint::Mid => (original.start, original.end, resolved),
+                ArcControlPoint::End => (original.start, resolved, original.mid),
             };
-            match *control {
-                ArcControlPoint::Start => annotation.start = resolved,
-                ArcControlPoint::Mid => annotation.mid = resolved,
-                ArcControlPoint::End => annotation.end = resolved,
-            }
-            if let Ok(preview) = ArcAnnotation::new(
+            if let Ok(mut preview) = ArcAnnotation::new(
                 annotation.id.clone(),
                 page_index,
-                annotation.start,
-                annotation.end,
-                annotation.mid,
-                annotation.appearance.clone(),
+                start,
+                end,
+                mid,
+                original.appearance.clone(),
             ) {
+                preview.locked = original.locked;
+                annotation.start = preview.start;
+                annotation.end = preview.end;
+                annotation.mid = preview.mid;
                 annotation.sampled_path = preview.sampled_path(64);
                 annotation.draft = true;
             }
@@ -7215,6 +8421,47 @@ impl AnnotationAdapter {
                 .collect();
             annotation.points = annotation.paths.first().cloned().unwrap_or_default();
         }
+        if let Some(ActivePointer::TextBoxMove {
+            document_id: active_document_id,
+            page_index: active_page_index,
+            id,
+            start,
+            current,
+            original_rect,
+            ..
+        }) = &self.active
+            && (*active_document_id, *active_page_index) == (document_id, page_index)
+            && let Some(annotation) = scene
+                .text_boxes
+                .iter_mut()
+                .find(|annotation| annotation.id == *id)
+        {
+            annotation.layout_rect = PdfRect::new(
+                original_rect.x + current.x - start.x,
+                original_rect.y + current.y - start.y,
+                original_rect.width,
+                original_rect.height,
+            )
+            .expect("validated pointer points produce a finite Text Box preview");
+        }
+        if let Some(ActivePointer::TextBoxResize {
+            document_id: active_document_id,
+            page_index: active_page_index,
+            id,
+            handle,
+            current,
+            original_rect,
+            ..
+        }) = &self.active
+            && (*active_document_id, *active_page_index) == (document_id, page_index)
+            && let Some(annotation) = scene
+                .text_boxes
+                .iter_mut()
+                .find(|annotation| annotation.id == *id)
+        {
+            annotation.layout_rect =
+                original_rect.rotated_resize_from_handle(0., *handle, *current);
+        }
         if let Some(ActivePointer::ImageMove {
             document_id: active_document_id,
             page_index: active_page_index,
@@ -7299,6 +8546,187 @@ impl AnnotationAdapter {
             );
             annotation.draft = true;
         }
+        if let Some(ActivePointer::SnapshotRotate {
+            document_id: active_document_id,
+            page_index: active_page_index,
+            id,
+            start,
+            current,
+            original_rect,
+            original_rotation_degrees,
+            ..
+        }) = &self.active
+            && (*active_document_id, *active_page_index) == (document_id, page_index)
+            && let Some(annotation) = scene
+                .snapshots
+                .iter_mut()
+                .find(|annotation| annotation.id == *id)
+        {
+            annotation.rotation_degrees = ellipse_rotation_from_drag(
+                *original_rect,
+                *original_rotation_degrees,
+                *start,
+                *current,
+            );
+            annotation.draft = true;
+        }
+        if let Some(ActivePointer::DimensionEdit {
+            document_id: active_document_id,
+            page_index: active_page_index,
+            id,
+            kind,
+            start,
+            current,
+            original,
+            ..
+        }) = &self.active
+            && (*active_document_id, *active_page_index) == (document_id, page_index)
+            && let Some(annotation) = scene
+                .dimensions
+                .iter_mut()
+                .find(|annotation| annotation.id == *id)
+        {
+            let mut preview_start = original.start;
+            let mut preview_end = original.end;
+            let mut preview_offset = original.dimension_line_offset();
+            match kind {
+                DimensionPointerEditKind::Start => preview_start = *current,
+                DimensionPointerEditKind::End => preview_end = *current,
+                DimensionPointerEditKind::Offset => {
+                    let delta_x = original.end.x - original.start.x;
+                    let delta_y = original.end.y - original.start.y;
+                    let length = delta_x.hypot(delta_y);
+                    preview_offset += (current.x - start.x) * (-delta_y / length)
+                        + (current.y - start.y) * (delta_x / length);
+                }
+                DimensionPointerEditKind::Body => {
+                    let delta_x = current.x - start.x;
+                    let delta_y = current.y - start.y;
+                    preview_start.x += delta_x;
+                    preview_start.y += delta_y;
+                    preview_end.x += delta_x;
+                    preview_end.y += delta_y;
+                }
+            }
+            if DimensionAnnotation::new(
+                original.id.clone(),
+                original.page_index,
+                preview_start,
+                preview_end,
+                preview_offset,
+                original.content(),
+                original.appearance.clone(),
+            )
+            .is_ok()
+            {
+                annotation.start = preview_start;
+                annotation.end = preview_end;
+                annotation.dimension_line_offset = preview_offset;
+                annotation.draft = true;
+            }
+        }
+        if let Some(ActivePointer::CalloutEdit {
+            document_id: active_document_id,
+            page_index: active_page_index,
+            id,
+            kind,
+            start,
+            current,
+            original,
+            ..
+        }) = &self.active
+            && (*active_document_id, *active_page_index) == (document_id, page_index)
+            && let Some(annotation) = scene
+                .callouts
+                .iter_mut()
+                .find(|annotation| annotation.id == *id)
+        {
+            let delta_x = current.x - start.x;
+            let delta_y = current.y - start.y;
+            let mut leader_points = original.leader_points().to_vec();
+            let mut text_box = original.text_box;
+            match kind {
+                CalloutPointerEditKind::LeaderPoint(index) => {
+                    if let Some(point) = leader_points.get_mut(*index) {
+                        *point = *current;
+                    }
+                }
+                CalloutPointerEditKind::TextBox => {
+                    text_box.x += delta_x;
+                    text_box.y += delta_y;
+                    if let Some(connection) = leader_points.last_mut() {
+                        connection.x += delta_x;
+                        connection.y += delta_y;
+                    }
+                }
+                CalloutPointerEditKind::Body => {
+                    text_box.x += delta_x;
+                    text_box.y += delta_y;
+                    for point in &mut leader_points {
+                        point.x += delta_x;
+                        point.y += delta_y;
+                    }
+                }
+            }
+            if CalloutAnnotation::new(
+                original.id.clone(),
+                original.page_index,
+                leader_points.clone(),
+                text_box,
+                original.content(),
+                original.appearance.clone(),
+            )
+            .is_ok()
+            {
+                annotation.leader_points = leader_points;
+                annotation.text_box = text_box;
+                annotation.draft = true;
+            }
+        }
+        if let Some(ActivePointer::CloudEdit {
+            document_id: active_document_id,
+            page_index: active_page_index,
+            id,
+            kind,
+            start,
+            current,
+            original,
+            ..
+        }) = &self.active
+            && (*active_document_id, *active_page_index) == (document_id, page_index)
+            && let Some(annotation) = scene
+                .clouds
+                .iter_mut()
+                .find(|annotation| annotation.id == *id)
+        {
+            let mut points = original.points().to_vec();
+            match kind {
+                CloudPointerEditKind::Vertex(index) => {
+                    if let Some(point) = points.get_mut(*index) {
+                        *point = *current;
+                    }
+                }
+                CloudPointerEditKind::Body => {
+                    let delta_x = current.x - start.x;
+                    let delta_y = current.y - start.y;
+                    for point in &mut points {
+                        point.x += delta_x;
+                        point.y += delta_y;
+                    }
+                }
+            }
+            if let Ok(preview) = CloudAnnotation::new(
+                original.id.clone(),
+                original.page_index,
+                points,
+                original.border_effect_intensity(),
+                original.appearance.clone(),
+            ) {
+                annotation.points = preview.points().to_vec();
+                annotation.scallop_path = preview.scallop_path();
+                annotation.draft = true;
+            }
+        }
         if let Some(ActivePointer::DimensionCreate {
             document_id: active_document_id,
             page_index: active_page_index,
@@ -7359,7 +8787,50 @@ impl AnnotationAdapter {
                 locked: false,
             });
         }
+        if let Some(ActivePointer::LengthEndpoint {
+            document_id: active_document_id,
+            id,
+            endpoint,
+            current,
+            ..
+        }) = &self.active
+            && *active_document_id == document_id
+            && let Some(retained) = self.documents.get(&document_id).and_then(|document| {
+                document
+                    .lengths()
+                    .iter()
+                    .find(|annotation| annotation.id == *id && annotation.page_index == page_index)
+            })
+            && let Some(annotation) = scene
+                .lengths
+                .iter_mut()
+                .find(|annotation| annotation.id == *id)
+        {
+            let (start, end) = match endpoint {
+                LengthEndpoint::Start => (*current, retained.end),
+                LengthEndpoint::End => (retained.start, *current),
+            };
+            if let Ok(preview) = LengthAnnotation::new(
+                id.clone(),
+                page_index,
+                start,
+                end,
+                retained.calibration().clone(),
+            ) {
+                annotation.start = preview.start;
+                annotation.end = preview.end;
+                annotation.caption = preview.caption();
+                annotation.show_caption = preview.calibration().show_caption();
+            }
+        }
         scene
+    }
+
+    pub fn canonical_document_scene(&self, document_id: u64, page_index: u32) -> AnnotationScene {
+        self.documents
+            .get(&document_id)
+            .map(|document| document.document_scene(page_index))
+            .unwrap_or_else(|| empty_scene(page_index))
     }
 
     pub fn thumbnail_scene(&self, document_id: u64, page_index: u32) -> AnnotationScene {
@@ -7691,6 +9162,11 @@ fn hit_selected_snapshot_resize_handle(
         .iter()
         .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
     let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
+    if snapshot_rotation_handle_point(annotation, observed_pixels_per_point)
+        .is_ok_and(|handle| distance(handle, point) <= handle_tolerance)
+    {
+        return None;
+    }
     RectangleResizeHandle::ALL
         .into_iter()
         .rev()
@@ -7698,6 +9174,24 @@ fn hit_selected_snapshot_resize_handle(
             distance(snapshot_resize_handle_point(annotation, *handle), point) <= handle_tolerance
         })
         .map(|handle| (annotation.id.clone(), handle))
+}
+
+fn hit_selected_snapshot_rotation_handle(
+    document: &AnnotationDocument,
+    page_index: u32,
+    point: PdfPoint,
+    tolerance: f64,
+    observed_pixels_per_point: f64,
+) -> Option<MarkupId> {
+    let selected = document.selected_id()?;
+    let annotation = document
+        .snapshots()
+        .iter()
+        .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
+    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
+    snapshot_rotation_handle_point(annotation, observed_pixels_per_point)
+        .is_ok_and(|handle| distance(handle, point) <= handle_tolerance)
+        .then(|| annotation.id.clone())
 }
 
 fn resized_image_rect(
@@ -7855,6 +9349,35 @@ fn hit_non_rectangle(
         })
         .or_else(|| {
             document
+                .dimensions()
+                .iter()
+                .rev()
+                .find(|annotation| {
+                    if annotation.page_index != page_index {
+                        return false;
+                    }
+                    let (start, end) = annotation.dimension_line_points();
+                    point_segment_distance(point, start, end)
+                        <= tolerance.max(annotation.appearance.line().stroke_width_pt() / 2.)
+                })
+                .map(|annotation| annotation.id.clone())
+        })
+        .or_else(|| {
+            document
+                .callouts()
+                .iter()
+                .rev()
+                .find(|annotation| {
+                    annotation.page_index == page_index
+                        && (rect_contains(annotation.text_box, point, tolerance)
+                            || annotation.leader_points().windows(2).any(|segment| {
+                                point_segment_distance(point, segment[0], segment[1]) <= tolerance
+                            }))
+                })
+                .map(|annotation| annotation.id.clone())
+        })
+        .or_else(|| {
+            document
                 .lengths()
                 .iter()
                 .rev()
@@ -7881,6 +9404,211 @@ fn hit_non_rectangle(
                 })
                 .map(|annotation| annotation.id.clone())
         })
+}
+
+fn hit_selected_dimension_control(
+    document: &AnnotationDocument,
+    page_index: u32,
+    point: PdfPoint,
+    tolerance: f64,
+    observed_pixels_per_point: f64,
+) -> Option<(MarkupId, DimensionPointerEditKind)> {
+    let selected = document.selected_id()?;
+    let annotation = document
+        .dimensions()
+        .iter()
+        .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
+    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
+    for (handle, handle_point) in [
+        (DimensionPointerEditKind::Start, annotation.start),
+        (DimensionPointerEditKind::End, annotation.end),
+        (DimensionPointerEditKind::Offset, annotation.caption_center()),
+    ] {
+        if distance(handle_point, point) <= handle_tolerance {
+            return Some((annotation.id.clone(), handle));
+        }
+    }
+    let (offset_start, offset_end) = annotation.dimension_line_points();
+    (point_segment_distance(point, offset_start, offset_end) <= tolerance
+        || point_segment_distance(point, annotation.start, annotation.end) <= tolerance)
+        .then(|| (annotation.id.clone(), DimensionPointerEditKind::Body))
+}
+
+fn hit_selected_callout_control(
+    document: &AnnotationDocument,
+    page_index: u32,
+    point: PdfPoint,
+    tolerance: f64,
+    observed_pixels_per_point: f64,
+) -> Option<(MarkupId, CalloutPointerEditKind)> {
+    let selected = document.selected_id()?;
+    let annotation = document
+        .callouts()
+        .iter()
+        .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
+    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
+    if let Some((index, _)) = annotation
+        .leader_points()
+        .iter()
+        .enumerate()
+        .find(|(_, candidate)| distance(**candidate, point) <= handle_tolerance)
+    {
+        return Some((annotation.id.clone(), CalloutPointerEditKind::LeaderPoint(index)));
+    }
+    if rect_contains(annotation.text_box, point, tolerance) {
+        return Some((annotation.id.clone(), CalloutPointerEditKind::TextBox));
+    }
+    annotation
+        .leader_points()
+        .windows(2)
+        .any(|segment| point_segment_distance(point, segment[0], segment[1]) <= tolerance)
+        .then(|| (annotation.id.clone(), CalloutPointerEditKind::Body))
+}
+
+fn hit_selected_cloud_control(
+    document: &AnnotationDocument,
+    page_index: u32,
+    point: PdfPoint,
+    tolerance: f64,
+    observed_pixels_per_point: f64,
+) -> Option<(MarkupId, CloudPointerEditKind)> {
+    let selected = document.selected_id()?;
+    let annotation = document
+        .clouds()
+        .iter()
+        .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
+    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
+    if let Some((index, _)) = annotation
+        .points()
+        .iter()
+        .enumerate()
+        .find(|(_, candidate)| distance(**candidate, point) <= handle_tolerance)
+    {
+        return Some((annotation.id.clone(), CloudPointerEditKind::Vertex(index)));
+    }
+    cloud_hit(annotation, point, tolerance)
+        .then(|| (annotation.id.clone(), CloudPointerEditKind::Body))
+}
+
+fn validate_pointer_identity(
+    document: &AnnotationDocument,
+    id: &MarkupId,
+    expected_revision: u64,
+) -> Result<(), AnnotationError> {
+    if document.snapshot().revision != expected_revision
+        || document.selected_ids() != std::slice::from_ref(id)
+    {
+        return Err(AnnotationError::NoActiveGesture);
+    }
+    Ok(())
+}
+
+fn resolve_arc_control_point(
+    original: &ArcAnnotation,
+    control: ArcControlPoint,
+    point: PdfPoint,
+    minimum_bulge_pt: f64,
+    snap_quarter_turn: bool,
+) -> Result<PdfPoint, AnnotationError> {
+    if control == ArcControlPoint::Mid && snap_quarter_turn {
+        ArcAnnotation::constrained_midpoint(
+            original.start,
+            original.end,
+            point,
+            minimum_bulge_pt,
+            true,
+        )
+    } else {
+        Ok(point)
+    }
+}
+
+fn validate_dimension_pointer_target(
+    document: &AnnotationDocument,
+    page_index: u32,
+    id: &MarkupId,
+    expected_revision: u64,
+    original: &DimensionAnnotation,
+) -> Result<(), AnnotationError> {
+    validate_pointer_identity(document, id, expected_revision)?;
+    let retained = document
+        .dimensions()
+        .iter()
+        .find(|annotation| &annotation.id == id && annotation.page_index == page_index)
+        .ok_or(AnnotationError::NoSelection)?;
+    if retained.locked {
+        return Err(AnnotationError::LockedMarkup(id.clone()));
+    }
+    if !retained.same_persisted_state_as(original) {
+        return Err(AnnotationError::NoActiveGesture);
+    }
+    Ok(())
+}
+
+fn validate_arc_pointer_target(
+    document: &AnnotationDocument,
+    page_index: u32,
+    id: &MarkupId,
+    expected_revision: u64,
+    original: &ArcAnnotation,
+) -> Result<(), AnnotationError> {
+    validate_pointer_identity(document, id, expected_revision)?;
+    let retained = document
+        .arcs()
+        .iter()
+        .find(|annotation| &annotation.id == id && annotation.page_index == page_index)
+        .ok_or(AnnotationError::NoSelection)?;
+    if retained.locked {
+        return Err(AnnotationError::LockedMarkup(id.clone()));
+    }
+    if !retained.same_persisted_state_as(original) {
+        return Err(AnnotationError::NoActiveGesture);
+    }
+    Ok(())
+}
+
+fn validate_callout_pointer_target(
+    document: &AnnotationDocument,
+    page_index: u32,
+    id: &MarkupId,
+    expected_revision: u64,
+    original: &CalloutAnnotation,
+) -> Result<(), AnnotationError> {
+    validate_pointer_identity(document, id, expected_revision)?;
+    let retained = document
+        .callouts()
+        .iter()
+        .find(|annotation| &annotation.id == id && annotation.page_index == page_index)
+        .ok_or(AnnotationError::NoSelection)?;
+    if retained.locked {
+        return Err(AnnotationError::LockedMarkup(id.clone()));
+    }
+    if !retained.same_persisted_state_as(original) {
+        return Err(AnnotationError::NoActiveGesture);
+    }
+    Ok(())
+}
+
+fn validate_cloud_pointer_target(
+    document: &AnnotationDocument,
+    page_index: u32,
+    id: &MarkupId,
+    expected_revision: u64,
+    original: &CloudAnnotation,
+) -> Result<(), AnnotationError> {
+    validate_pointer_identity(document, id, expected_revision)?;
+    let retained = document
+        .clouds()
+        .iter()
+        .find(|annotation| &annotation.id == id && annotation.page_index == page_index)
+        .ok_or(AnnotationError::NoSelection)?;
+    if retained.locked {
+        return Err(AnnotationError::LockedMarkup(id.clone()));
+    }
+    if !retained.same_persisted_state_as(original) {
+        return Err(AnnotationError::NoActiveGesture);
+    }
+    Ok(())
 }
 
 fn point_in_rect(point: PdfPoint, rect: PdfRect, tolerance: f64) -> bool {
@@ -7982,6 +9710,7 @@ fn hit_selected_arc_control_point(
     page_index: u32,
     point: PdfPoint,
     tolerance: f64,
+    observed_pixels_per_point: f64,
 ) -> Option<(MarkupId, ArcControlPoint)> {
     let selected = document.selected_id()?;
     let annotation = document
@@ -7994,7 +9723,10 @@ fn hit_selected_arc_control_point(
         (ArcControlPoint::End, annotation.end),
     ]
     .into_iter()
-    .find(|(_, control_point)| distance(*control_point, point) <= tolerance.max(9.))
+    .find(|(_, control_point)| {
+        distance(*control_point, point)
+            <= tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON))
+    })
     .map(|(control, _)| (annotation.id.clone(), control))
 }
 
@@ -8100,6 +9832,31 @@ fn hit_selected_ellipse_handle(
             distance(ellipse_resize_handle_point(annotation, *handle), point) <= handle_tolerance
         })
         .map(|handle| (annotation.id.clone(), EllipseHandleKind::Resize(handle)))
+}
+
+fn hit_selected_text_box_resize_handle(
+    document: &AnnotationDocument,
+    page_index: u32,
+    point: PdfPoint,
+    tolerance: f64,
+    observed_pixels_per_point: f64,
+) -> Option<(MarkupId, RectangleResizeHandle)> {
+    let selected = document.selected_id()?;
+    let annotation = document
+        .text_boxes()
+        .iter()
+        .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
+    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
+    RectangleResizeHandle::ALL
+        .into_iter()
+        .rev()
+        .find(|handle| {
+            distance(
+                axis_aligned_resize_handle_point(annotation.layout_rect, *handle),
+                point,
+            ) <= handle_tolerance
+        })
+        .map(|handle| (annotation.id.clone(), handle))
 }
 
 fn ellipse_resize_point_from_handle(
@@ -8343,6 +10100,86 @@ fn empty_scene(page_index: u32) -> AnnotationScene {
 mod tests {
     use super::*;
 
+    fn point(x: f64, y: f64) -> PdfPoint {
+        PdfPoint::new(x, y).unwrap()
+    }
+
+    fn seed_dimension(adapter: &mut AnnotationAdapter) -> MarkupId {
+        let id = MarkupId::new("dimension:pointer-edit").unwrap();
+        let annotation = DimensionAnnotation::new(
+            id.clone(),
+            0,
+            point(20., 40.),
+            point(120., 40.),
+            24.,
+            "100 mm",
+            default_dimension_appearance().unwrap(),
+        )
+        .unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Dimension(
+                annotation,
+            )))
+            .unwrap();
+        id
+    }
+
+    fn seed_callout(adapter: &mut AnnotationAdapter) -> MarkupId {
+        let id = MarkupId::new("callout:pointer-edit").unwrap();
+        let appearance = CalloutAppearance::new(
+            StraightLineAppearance::new("#ff0000", 1., 1., StrokeStyle::Solid).unwrap(),
+            TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+        )
+        .unwrap();
+        let annotation = CalloutAnnotation::new(
+            id.clone(),
+            0,
+            vec![point(20., 20.), point(60., 40.), point(100., 40.)],
+            PdfRect::new(100., 20., 80., 40.).unwrap(),
+            "Note",
+            appearance,
+        )
+        .unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Callout(
+                annotation,
+            )))
+            .unwrap();
+        id
+    }
+
+    fn seed_cloud(adapter: &mut AnnotationAdapter) -> MarkupId {
+        let id = MarkupId::new("cloud:pointer-edit").unwrap();
+        let annotation = CloudAnnotation::new(
+            id.clone(),
+            0,
+            vec![
+                point(20., 20.),
+                point(100., 20.),
+                point(100., 80.),
+                point(20., 80.),
+            ],
+            3.,
+            RectangleAppearance::new("#ff0000", 2., None::<String>, 0.8).unwrap(),
+        )
+        .unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Cloud(
+                annotation,
+            )))
+            .unwrap();
+        id
+    }
+
     #[test]
     fn ordinary_rectangle_property_command_commits_once_and_preserves_other_appearance() {
         let mut adapter = AnnotationAdapter::default();
@@ -8370,5 +10207,147 @@ mod tests {
         assert_eq!(after.opacity(), before.opacity());
         assert_eq!(receipt.history_before, history_before);
         assert_eq!(receipt.history_after, (history_before.0 + 1, 0));
+    }
+
+    #[test]
+    fn dimension_pointer_edits_preview_then_commit_once_and_reject_stale_or_invalid_release() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_dimension(&mut adapter);
+        let before = adapter.snapshot(7).unwrap();
+        let original = before.dimensions[0].clone();
+
+        assert_eq!(
+            adapter.pointer_down(7, 0, 1, original.start, 4.).unwrap(),
+            PointerPhaseOutcome::GestureStarted
+        );
+        adapter.pointer_move(1, point(30., 50.)).unwrap();
+        let preview = adapter.document_scene(7, 0).dimensions.remove(0);
+        assert_eq!(preview.start, point(30., 50.));
+        assert!(preview.draft);
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+        adapter.cancel(PointerCancelReason::FocusLost).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+
+        adapter.pointer_down(7, 0, 2, original.end, 4.).unwrap();
+        assert_eq!(
+            adapter.pointer_up(2, point(140., 50.)).unwrap(),
+            PointerPhaseOutcome::AnnotationEdited(id.clone())
+        );
+        let committed = adapter.snapshot(7).unwrap();
+        assert_eq!(committed.revision, before.revision + 1);
+        assert_eq!(committed.dimensions[0].end, point(140., 50.));
+        assert_eq!(committed.dimensions[0].content(), original.content());
+        assert_eq!(committed.dimensions[0].appearance, original.appearance);
+        adapter.undo(7).unwrap();
+
+        let offset_handle = original.caption_center();
+        adapter.pointer_down(7, 0, 3, offset_handle, 4.).unwrap();
+        adapter.set_selected_dimension_offset(7, 30.).unwrap();
+        let stale_revision = adapter.snapshot(7).unwrap().revision;
+        assert_eq!(
+            adapter.pointer_up(3, point(offset_handle.x, offset_handle.y + 20.)),
+            Err(AnnotationError::NoActiveGesture)
+        );
+        assert_eq!(adapter.snapshot(7).unwrap().revision, stale_revision);
+        adapter.undo(7).unwrap();
+
+        let revision_before_invalid = adapter.snapshot(7).unwrap().revision;
+        adapter.pointer_down(7, 0, 4, original.start, 4.).unwrap();
+        assert!(matches!(
+            adapter.pointer_up(4, original.end),
+            Err(AnnotationError::InvalidGeometry(_))
+        ));
+        assert_eq!(adapter.snapshot(7).unwrap().revision, revision_before_invalid);
+    }
+
+    #[test]
+    fn callout_pointer_edits_keep_leader_order_and_distinguish_text_box_from_group() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_callout(&mut adapter);
+        let original = adapter.snapshot(7).unwrap().callouts[0].clone();
+        let base_revision = adapter.snapshot(7).unwrap().revision;
+
+        adapter
+            .pointer_down(7, 0, 1, original.leader_points()[1], 4.)
+            .unwrap();
+        adapter.pointer_move(1, point(64., 52.)).unwrap();
+        assert_eq!(
+            adapter.document_scene(7, 0).callouts[0].leader_points[1],
+            point(64., 52.)
+        );
+        assert_eq!(adapter.snapshot(7).unwrap().revision, base_revision);
+        assert_eq!(
+            adapter.pointer_up(1, point(64., 52.)).unwrap(),
+            PointerPhaseOutcome::AnnotationEdited(id.clone())
+        );
+        assert_eq!(adapter.snapshot(7).unwrap().revision, base_revision + 1);
+        adapter.undo(7).unwrap();
+
+        let text_center = point(
+            original.text_box.x + original.text_box.width * 0.5,
+            original.text_box.y + original.text_box.height * 0.5,
+        );
+        adapter.pointer_down(7, 0, 2, text_center, 4.).unwrap();
+        adapter.pointer_up(2, point(text_center.x + 10., text_center.y + 5.)).unwrap();
+        let text_moved = adapter.snapshot(7).unwrap().callouts[0].clone();
+        assert_eq!(text_moved.leader_points()[0], original.leader_points()[0]);
+        assert_eq!(text_moved.leader_points()[1], original.leader_points()[1]);
+        assert_eq!(text_moved.leader_points()[2], point(110., 45.));
+        adapter.undo(7).unwrap();
+
+        let leader_body = point(40., 30.);
+        adapter.pointer_down(7, 0, 3, leader_body, 4.).unwrap();
+        adapter.pointer_up(3, point(50., 40.)).unwrap();
+        let group_moved = adapter.snapshot(7).unwrap().callouts[0].clone();
+        assert_eq!(group_moved.leader_points()[0], point(30., 30.));
+        assert_eq!(group_moved.text_box.x, original.text_box.x + 10.);
+        assert_eq!(group_moved.content(), original.content());
+        assert_eq!(group_moved.appearance, original.appearance);
+
+        let tip = group_moved.leader_points()[0];
+        adapter.pointer_down(7, 0, 4, tip, 4.).unwrap();
+        adapter
+            .set_selected_callout_leader_point(7, 1, point(75., 55.))
+            .unwrap();
+        let stale_revision = adapter.snapshot(7).unwrap().revision;
+        assert_eq!(
+            adapter.pointer_up(4, point(tip.x + 12., tip.y + 8.)),
+            Err(AnnotationError::NoActiveGesture)
+        );
+        assert_eq!(adapter.snapshot(7).unwrap().revision, stale_revision);
+    }
+
+    #[test]
+    fn cloud_pointer_vertex_and_body_edits_preserve_scallop_authority_and_cancel_exactly() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_cloud(&mut adapter);
+        let before = adapter.snapshot(7).unwrap();
+        let original = before.clouds[0].clone();
+
+        adapter
+            .pointer_down(7, 0, 1, original.points()[0], 4.)
+            .unwrap();
+        adapter.pointer_move(1, point(25., 30.)).unwrap();
+        let preview = adapter.document_scene(7, 0).clouds.remove(0);
+        assert_eq!(preview.points[0], point(25., 30.));
+        assert_ne!(preview.scallop_path, original.scallop_path());
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+
+        let body = original.scallop_path()[0];
+        adapter.pointer_down(7, 0, 2, body, 4.).unwrap();
+        assert_eq!(
+            adapter.pointer_up(2, point(body.x + 10., body.y + 8.)).unwrap(),
+            PointerPhaseOutcome::AnnotationEdited(id)
+        );
+        let moved = adapter.snapshot(7).unwrap();
+        assert_eq!(moved.revision, before.revision + 1);
+        assert_eq!(moved.clouds[0].points()[0], point(30., 28.));
+        assert_eq!(
+            moved.clouds[0].border_effect_intensity(),
+            original.border_effect_intensity()
+        );
+        assert_eq!(moved.clouds[0].appearance, original.appearance);
     }
 }

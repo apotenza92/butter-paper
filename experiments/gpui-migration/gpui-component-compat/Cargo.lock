@@ -806,6 +806,7 @@ dependencies = [
  "gpui_platform",
  "image",
  "libc",
+ "lopdf",
  "pdfium-render",
  "serde_json",
  "sha2 0.10.9",
@@ -824,6 +825,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

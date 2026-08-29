@@ -6,12 +6,15 @@ use gpui::{
     Window,
 };
 use gpui_component::{
-    Disableable as _, IconName, Sizable as _,
+    Disableable as _, Sizable as _,
     button::Button,
     h_flex,
     menu::{PopupMenu, PopupMenuItem},
     popover::Popover,
 };
+
+use crate::accessible_button::accessible_icon_button;
+use crate::viewer_icons::{zoom_in_icon, zoom_out_icon};
 
 pub const ZOOM_GROUP_ID: &str = "viewer-zoom-controls";
 pub const ZOOM_OUT_ID: &str = "viewer-zoom-out";
@@ -173,23 +176,29 @@ impl Render for ZoomControl {
             ZoomMenuCache::default()
         });
 
-        let zoom_out = Button::new(ZOOM_OUT_ID)
-            .small()
-            .debug_selector(|| ZOOM_OUT_ID.into())
-            .accessibility_id(ZOOM_OUT_ID)
-            .icon(IconName::Minus)
-            .tooltip("Zoom Out")
-            .disabled(disabled)
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.zoom_out(cx)));
+        let zoom_out = accessible_icon_button(
+            Button::new(ZOOM_OUT_ID)
+                .small()
+                .debug_selector(|| ZOOM_OUT_ID.into())
+                .accessibility_id(ZOOM_OUT_ID)
+                .child(zoom_out_icon())
+                .tooltip("Zoom Out")
+                .disabled(disabled)
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.zoom_out(cx))),
+            "Zoom Out",
+        );
 
-        let zoom_in = Button::new(ZOOM_IN_ID)
-            .small()
-            .debug_selector(|| ZOOM_IN_ID.into())
-            .accessibility_id(ZOOM_IN_ID)
-            .icon(IconName::Plus)
-            .tooltip("Zoom In")
-            .disabled(disabled)
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.zoom_in(cx)));
+        let zoom_in = accessible_icon_button(
+            Button::new(ZOOM_IN_ID)
+                .small()
+                .debug_selector(|| ZOOM_IN_ID.into())
+                .accessibility_id(ZOOM_IN_ID)
+                .child(zoom_in_icon())
+                .tooltip("Zoom In")
+                .disabled(disabled)
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.zoom_in(cx))),
+            "Zoom In",
+        );
 
         let percentage = Button::new(ZOOM_MENU_ID)
             .small()

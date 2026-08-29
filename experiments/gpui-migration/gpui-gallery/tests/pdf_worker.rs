@@ -2,12 +2,16 @@ use butter_paper_gpui_gallery::pdf_worker::{
     CancellationRegistry, ClipRect, DocumentInfo, FileSurfaceStore, JobId, JsonLineReceiver,
     JsonLineSender, PageGeometry, PdfBackend, RenderRequest, RequestId, Rotation, SessionId,
     SourceHandleId, SurfaceDescriptor, SurfaceFormat, SurfaceId, SurfaceLimits, WorkerError,
-    WorkerErrorCode, WorkerRequest, WorkerResponse, WorkerState, run_worker_protocol,
+    WorkerErrorCode, WorkerProcessClient, WorkerRequest, WorkerResponse, WorkerState,
+    run_worker_protocol,
 };
 use std::fs;
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 #[derive(Default)]
 struct FakeBackend;
@@ -344,4 +348,115 @@ fn protocol_control_thread_cancels_an_in_flight_render() {
 
     shutdown.shutdown(Shutdown::Write).unwrap();
     server.join().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn inherited_source_transport_keeps_open_file_identity_for_repeated_opens_and_reaps_the_worker() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("selected.pdf");
+    let displaced = temp.path().join("selected-before-replacement.pdf");
+    let surface_root = temp.path().join("surfaces");
+    let helper = temp.path().join("source-handle-worker.py");
+    let original = b"original bytes retained by the inherited descriptor\n";
+    fs::write(&source, original).unwrap();
+    fs::write(
+        &helper,
+        r#"#!/usr/bin/env python3
+import json
+import os
+import sys
+
+for line in sys.stdin:
+    request = json.loads(line)
+    try:
+        duplicate = os.dup(request["source_handle_id"])
+        try:
+            os.lseek(duplicate, 0, os.SEEK_SET)
+            byte_count = 0
+            while chunk := os.read(duplicate, 8192):
+                byte_count += len(chunk)
+        finally:
+            os.close(duplicate)
+        response = {
+            "type": "opened",
+            "request_id": request["request_id"],
+            "session_id": request["session_id"],
+            "document": {"page_count": byte_count, "repaired": False},
+        }
+    except (KeyError, OSError, OverflowError):
+        response = {
+            "type": "failed",
+            "request_id": request.get("request_id", 0),
+            "error": {
+                "code": "invalid_request",
+                "detail": "invalid inherited source handle",
+            },
+        }
+    print(json.dumps(response, separators=(",", ":")), flush=True)
+"#,
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&helper).unwrap().permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&helper, permissions).unwrap();
+
+    let (mut client, source_handle_id) = WorkerProcessClient::spawn_with_inherited_source(
+        &helper,
+        &surface_root,
+        temp.path().join("unused-pdfium-library"),
+        &source,
+    )
+    .unwrap();
+    let child_id = client.child_id();
+
+    fs::rename(&source, &displaced).unwrap();
+    fs::write(&source, b"replacement path bytes").unwrap();
+
+    for (request_id, session_id) in [(41, 7), (42, 8)] {
+        let request = WorkerRequest::Open {
+            request_id: RequestId(request_id),
+            session_id: SessionId(session_id),
+            source_handle_id,
+            password: None,
+        };
+        let encoded = serde_json::to_string(&request).unwrap();
+        assert!(!encoded.contains(source.to_string_lossy().as_ref()));
+        assert!(matches!(
+            client.exchange(&request).unwrap(),
+            WorkerResponse::Opened {
+                request_id: RequestId(actual_request_id),
+                session_id: SessionId(actual_session_id),
+                document: DocumentInfo { page_count, repaired: false },
+            } if actual_request_id == request_id
+                && actual_session_id == session_id
+                && page_count == original.len() as u32
+        ));
+    }
+
+    let invalid = WorkerRequest::Open {
+        request_id: RequestId(43),
+        session_id: SessionId(9),
+        source_handle_id: SourceHandleId(u64::MAX),
+        password: None,
+    };
+    assert!(matches!(
+        client.exchange(&invalid).unwrap(),
+        WorkerResponse::Failed {
+            request_id: RequestId(43),
+            error: WorkerError {
+                code: WorkerErrorCode::InvalidRequest,
+                ..
+            },
+            ..
+        }
+    ));
+
+    drop(client);
+    // `Drop` kills and waits for the child, so the process must no longer exist.
+    assert_eq!(unsafe { libc::kill(child_id as i32, 0) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
 }

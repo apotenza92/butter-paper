@@ -1,7 +1,7 @@
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, ScrollHandle, StatefulInteractiveElement as _, Styled as _, Window,
-    prelude::FluentBuilder as _,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     Disableable as _, Selectable as _, Sizable as _,
@@ -9,16 +9,20 @@ use gpui_component::{
     h_flex,
 };
 
+use crate::accessible_button::accessible_icon_button;
 use crate::cad_view_control::{CadViewControl, CadViewControlEvent};
 use crate::continuous_view_control::ContinuousViewControl;
 use crate::page_view_control::{
     PageViewControl, PageViewControlEvent, PageViewMode, WheelBehavior,
 };
+use crate::viewer_icons::{fit_page_icon, fit_width_icon};
 use crate::zoom_control::ZoomControl;
 
 pub const VIEWER_TOOLBAR_ID: &str = "viewer-toolbar";
 pub const VIEWER_TOOLBAR_SCROLL_ID: &str = "viewer-toolbar-scroll";
 pub const VIEWER_TOOLBAR_CONTENT_ID: &str = "viewer-toolbar-content";
+pub const VIEWER_TOOLBAR_REQUIRED_WIDTH_PX: f32 = 607.;
+pub const VIEWER_TOOLBAR_WITH_CAD_REQUIRED_WIDTH_PX: f32 = 667.;
 pub const FIT_BUTTON_GROUP_ID: &str = "viewer-fit-controls";
 pub const FIT_WIDTH_ID: &str = "viewer-fit-width";
 pub const FIT_PAGE_ID: &str = "viewer-fit-page";
@@ -188,7 +192,10 @@ impl ViewerToolbarStrip {
         let single_page_for_cad = single_page_control.clone();
         cx.subscribe(
             &cad_view_control,
-            move |toolbar, _, _: &CadViewControlEvent, cx| {
+            move |toolbar, _, event: &CadViewControlEvent, cx| {
+                if *event != CadViewControlEvent::Activated {
+                    return;
+                }
                 toolbar.page_view_mode = PageViewMode::Continuous;
                 continuous_for_cad.update(cx, |control, cx| {
                     control.set_selected(false, cx);
@@ -322,6 +329,21 @@ impl ViewerToolbarStrip {
             cx.notify();
         }
     }
+
+    pub fn sync_cad_document_state(
+        &mut self,
+        active: bool,
+        organisation: crate::cad_view_control::CadViewOrganisation,
+        pages_per_lane: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(control) = &self.cad_view_control {
+            control.update(cx, |control, cx| {
+                control.sync_retained_state(active, organisation, pages_per_lane, cx);
+            });
+        }
+        cx.notify();
+    }
 }
 
 impl EventEmitter<ViewerToolbarStripEvent> for ViewerToolbarStrip {}
@@ -331,6 +353,11 @@ impl Render for ViewerToolbarStrip {
         let selected = self.fit_preset;
         let fit_selected = self.fit_selected;
         let disabled = self.disabled;
+        let required_width = if self.cad_view_control.is_some() {
+            VIEWER_TOOLBAR_WITH_CAD_REQUIRED_WIDTH_PX
+        } else {
+            VIEWER_TOOLBAR_REQUIRED_WIDTH_PX
+        };
         let toolbar = cx.entity().downgrade();
 
         let fit_controls = ButtonGroup::new(FIT_BUTTON_GROUP_ID)
@@ -338,20 +365,24 @@ impl Render for ViewerToolbarStrip {
             // This revision propagates disabled state only to children added
             // after `disabled`, so the order is part of the compatibility seam.
             .disabled(disabled)
-            .child(
+            .child(accessible_icon_button(
                 Button::new(FIT_WIDTH_ID)
                     .debug_selector(|| FIT_WIDTH_ID.into())
                     .accessibility_id(FIT_WIDTH_ID)
-                    .label("Fit width")
+                    .tooltip("Fit Width")
+                    .child(fit_width_icon())
                     .selected(fit_selected && selected == FitPreset::Width),
-            )
-            .child(
+                "Fit Width",
+            ))
+            .child(accessible_icon_button(
                 Button::new(FIT_PAGE_ID)
                     .debug_selector(|| FIT_PAGE_ID.into())
                     .accessibility_id(FIT_PAGE_ID)
-                    .label("Fit page")
+                    .tooltip("Fit Page")
+                    .child(fit_page_icon())
                     .selected(fit_selected && selected == FitPreset::Page),
-            )
+                "Fit Page",
+            ))
             .on_click(move |selected, _, cx| {
                 let Some(selected_ix) = selected.first().copied() else {
                     return;
@@ -390,11 +421,11 @@ impl Render for ViewerToolbarStrip {
                         h_flex()
                             .id(VIEWER_TOOLBAR_CONTENT_ID)
                             .debug_selector(|| VIEWER_TOOLBAR_CONTENT_ID.into())
-                            .w_auto()
+                            .w(px(required_width))
                             .min_w_full()
                             .flex_shrink_0()
                             .items_center()
-                            .justify_center()
+                            .justify_between()
                             .gap_2()
                             .px_2()
                             .py_1()

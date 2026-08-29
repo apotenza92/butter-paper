@@ -95,7 +95,7 @@
     },
     {
       "path": "../gpui-gallery/src/annotation_model.rs",
-      "sha256": "29026764323ea1a11701e403ad2c84eaa7965caa6ced5ccd7e110820475fc220"
+      "sha256": "5979c105af42bda13d3f372f5d8f57900efb8f3d0cfabd4e3480c8e5f9d41e58"
     },
     {
       "path": "../gpui-gallery/src/highlight_compositor.rs",
@@ -103,15 +103,15 @@
     },
     {
       "path": "../gpui-gallery/src/image_asset_decode.rs",
-      "sha256": "aa11c325291bec6a0b91ac58bd658a4f3cf30ace0e509240e2aba8f57ca9eafd"
+      "sha256": "cedd34b88d424f6a968f53b44b13b6bdf4e5df40c1318a0f76216d64ee49c9b1"
     },
     {
       "path": "../gpui-gallery/src/annotation_adapter.rs",
-      "sha256": "efbbba8b7ce9bdf148d8ddb46d8b7859abce599114fa681b58e1d44608386767"
+      "sha256": "e3a0070918d87401b852b0aca75ff2cf88e10b0cbab2eb9f8e00517f0c522ff3"
     },
     {
       "path": "../gpui-gallery/src/semantic_snapping.rs",
-      "sha256": "f8cb13ef5046426ffb7117ead2ddc1256d6ff08f7bdff3363e5981446e340431"
+      "sha256": "405f43714285cd220ecee6245e693393740abe0c79c4917ceb0545a365d63436"
     },
     {
       "path": "../gpui-gallery/src/cloud_plus_routing.rs",
@@ -131,7 +131,7 @@
     },
     {
       "path": "../gpui-gallery/src/pdf_engine.rs",
-      "sha256": "7915bd949a9035db48ddfc67c47a631856f3654b836ad5663e5481d94a727fe4"
+      "sha256": "5032a47037d34a197915f637abf6fd6796f60c684a46bcc2f748751fb8936caf"
     },
     {
       "path": "../gpui-gallery/src/pdf_file_authority.rs",
@@ -139,11 +139,11 @@
     },
     {
       "path": "../gpui-gallery/src/viewer.rs",
-      "sha256": "c21f55f7f60e9f05d41022422e4ccc1cdb058d844923f90b3fd83011350fe167"
+      "sha256": "b2d3b308e355f271cf4357c44b275e93c30975ca9e94e8c38e8189a8f1c56479"
     },
     {
       "path": "../gpui-gallery/src/bin/butter-paper-pdf-worker.rs",
-      "sha256": "ab16be4d6bf7ac30145610e443a6a6a2a8797259fe966a9d4ad42dbf620be4d8"
+      "sha256": "70bfec67d3599328ee709ed4bdf961e804963367a137a0f433c0388332542142"
     },
     {
       "path": "../gpui-gallery/pdfium-development-binaries.json",
@@ -156,6 +156,14 @@
     "license": "ISC",
     "evidence": "reviewed Longbridge website/bun.lock",
     "integrity": "sha512-Z94u6fKT43lKeYHiVyvyR8fT7pwCzDu7RyMPpTvh054+xahSgj4HFQ+NmflvzdXsoAjYGdCguGaFKYuvq0ThCQ=="
+  },
+  "productIconProvenance": {
+    "name": "lucide-react",
+    "version": "1.8.0",
+    "license": "ISC",
+    "evidence": "repository pnpm-lock.yaml and installed license used only to review Electron icon geometry",
+    "integrity": "sha512-WuvlsjngSk7TnTBJ1hsCy3ql9V9VOdcPkd3PKcSmM34vJD8KG6molxz7m7zbYFgICwsanQWmJ13JlYs4Zp7Arw==",
+    "licenseSha256": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57"
   },
   "developmentFixtures": [
     {

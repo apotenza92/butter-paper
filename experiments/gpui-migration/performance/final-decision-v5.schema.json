@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://butterpaper.invalid/schemas/bp-final-decision-v5.json",
+  "title": "Butter Paper GPUI migration funding decision v5",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "decision",
+    "worth_funding_migration",
+    "comparison",
+    "checks",
+    "rule",
+    "evidence"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "status": { "enum": ["blocked", "decision-ready"] },
+    "decision": { "enum": ["YES", "NO", null] },
+    "worth_funding_migration": { "type": ["boolean", "null"] },
+    "comparison": {
+      "const": "Electron/PDF.js versus GPUI/PDFium whole application stacks"
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "failed", "blocked", "not_run"],
+      "properties": {
+        "passed": { "type": "array", "items": { "type": "string" } },
+        "failed": { "type": "array", "items": { "type": "string" } },
+        "blocked": { "type": "array", "items": { "type": "string" } },
+        "not_run": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "rule": { "type": "string", "minLength": 1 },
+    "evidence": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "blocked" } } },
+      "then": {
+        "properties": {
+          "decision": { "type": "null" },
+          "worth_funding_migration": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "decision-ready" } } },
+      "then": {
+        "properties": {
+          "decision": { "enum": ["YES", "NO"] },
+          "worth_funding_migration": { "type": "boolean" }
+        }
+      }
+    }
+  ]
+}

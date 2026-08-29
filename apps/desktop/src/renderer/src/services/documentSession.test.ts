@@ -142,6 +142,13 @@ describe('LocalPdfSession', () => {
     expect(mockedOpenPdfDocumentFromBytes).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
     expect(window.butterPaper.pdf.readDocumentBytes).not.toHaveBeenCalled();
     expect(session.diagnostics().openStageTimings?.rendererFileReadMs).toBe(0);
+    expect(session.diagnostics()).toMatchObject({
+      pageUrlCacheBytes: 0,
+      decodedRenderCacheBytes: 0,
+      pageUrlCacheByteLimit: 120 * 1024 * 1024,
+      decodedRenderCacheByteLimit: 32 * 1024 * 1024,
+      thumbnailCacheByteLimit: 64 * 1024 * 1024,
+    });
   });
 
   it('ignores stale page render completions after dispose', async () => {
@@ -1621,6 +1628,7 @@ describe('LocalPdfSession', () => {
     expect(bitmaps[2].close).not.toHaveBeenCalled();
     expect(session.diagnostics()).toMatchObject({
       renderCacheEntries: 2,
+      decodedRenderCacheBytes: (512 * 768 + 640 * 960) * 4,
     });
   });
 

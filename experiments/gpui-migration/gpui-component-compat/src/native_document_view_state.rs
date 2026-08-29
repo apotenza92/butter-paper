@@ -10,6 +10,114 @@ pub enum ViewerZoomPreset {
     FitPage,
 }
 
+/// The durable zoom intent restored after a PDF opens.
+///
+/// Manual percentages must be finite in a persisted manifest and are clamped
+/// to the reader's supported zoom range when applied.
+#[derive(Clone, Copy, Debug)]
+pub enum RestartZoom {
+    FitWidth,
+    FitPage,
+    Manual(f32),
+}
+
+impl PartialEq for RestartZoom {
+    fn eq(&self, other: &Self) -> bool {
+        match (*self, *other) {
+            (Self::FitWidth, Self::FitWidth) | (Self::FitPage, Self::FitPage) => true,
+            (Self::Manual(left), Self::Manual(right)) => left.to_bits() == right.to_bits(),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for RestartZoom {}
+
+/// The core reader view persisted for one durable PDF path.
+///
+/// Page indices are zero-based. Page, zoom, and scroll values are clamped
+/// against the successfully opened document before they become live state.
+#[derive(Clone, Copy, Debug)]
+pub struct RestartView {
+    current_page: u32,
+    mode: PageViewMode,
+    zoom: RestartZoom,
+    scroll_x: f32,
+    scroll_y: f32,
+}
+
+impl PartialEq for RestartView {
+    fn eq(&self, other: &Self) -> bool {
+        self.current_page == other.current_page
+            && self.mode == other.mode
+            && self.zoom == other.zoom
+            && self.scroll_x.to_bits() == other.scroll_x.to_bits()
+            && self.scroll_y.to_bits() == other.scroll_y.to_bits()
+    }
+}
+
+impl Eq for RestartView {}
+
+impl Default for RestartView {
+    fn default() -> Self {
+        Self {
+            current_page: 0,
+            mode: PageViewMode::Continuous,
+            zoom: RestartZoom::FitWidth,
+            scroll_x: 0.,
+            scroll_y: 0.,
+        }
+    }
+}
+
+impl RestartView {
+    pub const fn new(
+        current_page: u32,
+        mode: PageViewMode,
+        zoom: RestartZoom,
+        scroll_x: f32,
+        scroll_y: f32,
+    ) -> Self {
+        Self {
+            current_page,
+            mode,
+            zoom,
+            scroll_x,
+            scroll_y,
+        }
+    }
+
+    pub const fn current_page(self) -> u32 {
+        self.current_page
+    }
+
+    pub const fn mode(self) -> PageViewMode {
+        self.mode
+    }
+
+    pub const fn zoom(self) -> RestartZoom {
+        self.zoom
+    }
+
+    pub const fn scroll(self) -> (f32, f32) {
+        (self.scroll_x, self.scroll_y)
+    }
+
+    pub fn is_finite(self) -> bool {
+        let zoom_is_finite = match self.zoom {
+            RestartZoom::FitWidth | RestartZoom::FitPage => true,
+            RestartZoom::Manual(percent) => percent.is_finite(),
+        };
+        zoom_is_finite && self.scroll_x.is_finite() && self.scroll_y.is_finite()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CadViewOrganisation {
+    Columns,
+    Rows,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DocumentNavigationAction {
     Home,
@@ -49,6 +157,9 @@ pub struct NativeDocumentViewState {
     viewport_size: Option<(f32, f32)>,
     scroll: (f32, f32),
     single_page_wheel_delta: f32,
+    cad_view_active: bool,
+    cad_organisation: CadViewOrganisation,
+    pages_per_lane: usize,
 }
 
 impl Default for NativeDocumentViewState {
@@ -62,6 +173,9 @@ impl Default for NativeDocumentViewState {
             viewport_size: None,
             scroll: (0., 0.),
             single_page_wheel_delta: 0.,
+            cad_view_active: false,
+            cad_organisation: CadViewOrganisation::Columns,
+            pages_per_lane: 10,
         }
     }
 }
@@ -83,6 +197,58 @@ impl NativeDocumentViewState {
         self.scroll
     }
 
+    pub fn restart_view(&self, current_page: u32) -> RestartView {
+        let zoom = match self.zoom_preset {
+            ViewerZoomPreset::Manual => RestartZoom::Manual(self.zoom_percent),
+            ViewerZoomPreset::FitWidth => RestartZoom::FitWidth,
+            ViewerZoomPreset::FitPage => RestartZoom::FitPage,
+        };
+        RestartView::new(current_page, self.mode, zoom, self.scroll.0, self.scroll.1)
+    }
+
+    pub fn apply_restart_view(&mut self, view: RestartView, page_count: usize) -> u32 {
+        self.set_mode(view.mode());
+        match view.zoom() {
+            RestartZoom::FitWidth => self.set_fit_preset(ViewerFitPreset::Width),
+            RestartZoom::FitPage => self.set_fit_preset(ViewerFitPreset::Page),
+            RestartZoom::Manual(percent) => self.set_manual_zoom(percent),
+        }
+        let (scroll_x, scroll_y) = view.scroll();
+        self.set_scroll(scroll_x, scroll_y);
+        view.current_page().min(page_count.saturating_sub(1) as u32)
+    }
+
+    pub const fn cad_view_active(&self) -> bool {
+        self.cad_view_active
+    }
+
+    pub const fn cad_organisation(&self) -> CadViewOrganisation {
+        self.cad_organisation
+    }
+
+    pub const fn pages_per_lane(&self) -> usize {
+        self.pages_per_lane
+    }
+
+    pub fn activate_cad_view(&mut self) {
+        self.mode = PageViewMode::Continuous;
+        self.zoom_preset = ViewerZoomPreset::Manual;
+        self.cad_view_active = true;
+        self.single_page_wheel_delta = 0.;
+    }
+
+    pub fn set_cad_organisation(&mut self, organisation: CadViewOrganisation) {
+        self.cad_organisation = organisation;
+    }
+
+    pub fn set_pages_per_lane(&mut self, count: f64) {
+        self.pages_per_lane = if count.is_finite() {
+            (count.round() as isize).clamp(1, 100) as usize
+        } else {
+            10
+        };
+    }
+
     pub const fn wheel_behavior(&self, mode: PageViewMode) -> WheelBehavior {
         match mode {
             PageViewMode::Continuous => self.continuous_wheel,
@@ -94,6 +260,9 @@ impl NativeDocumentViewState {
         if self.mode != mode {
             self.mode = mode;
             self.single_page_wheel_delta = 0.;
+        }
+        if mode != PageViewMode::Continuous {
+            self.cad_view_active = false;
         }
     }
 
@@ -141,10 +310,11 @@ impl NativeDocumentViewState {
         control: bool,
     ) -> WheelOutcome {
         let behavior = self.wheel_behavior(self.mode);
-        let should_scroll = match behavior {
-            WheelBehavior::Scroll => !control,
-            WheelBehavior::Zoom => control,
-        };
+        let should_scroll = !self.cad_view_active
+            && match behavior {
+                WheelBehavior::Scroll => !control,
+                WheelBehavior::Zoom => control,
+            };
         if should_scroll {
             if self.mode == PageViewMode::Continuous {
                 self.single_page_wheel_delta = 0.;
@@ -313,5 +483,29 @@ mod tests {
             view.keyboard(DocumentNavigationAction::PageDown, 4, 2, 600.),
             DocumentNavigationOutcome::Scroll { x: 0., y: 540. }
         );
+    }
+
+    #[test]
+    fn cad_view_state_is_document_owned_clamped_and_forces_continuous_manual_zoom() {
+        let mut view = NativeDocumentViewState::default();
+        view.set_mode(PageViewMode::SinglePage);
+        view.set_fit_preset(ViewerFitPreset::Page);
+
+        view.activate_cad_view();
+        assert!(view.cad_view_active());
+        assert_eq!(view.mode(), PageViewMode::Continuous);
+        assert_eq!(view.zoom_preset(), ViewerZoomPreset::Manual);
+        assert_eq!(view.cad_organisation(), CadViewOrganisation::Columns);
+        assert_eq!(view.pages_per_lane(), 10);
+
+        view.set_cad_organisation(CadViewOrganisation::Rows);
+        view.set_pages_per_lane(0.);
+        assert_eq!(view.cad_organisation(), CadViewOrganisation::Rows);
+        assert_eq!(view.pages_per_lane(), 1);
+        view.set_pages_per_lane(101.);
+        assert_eq!(view.pages_per_lane(), 100);
+
+        view.set_mode(PageViewMode::SinglePage);
+        assert!(!view.cad_view_active());
     }
 }

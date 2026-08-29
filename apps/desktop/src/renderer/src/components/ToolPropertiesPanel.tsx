@@ -333,9 +333,11 @@ export function prototypeValuesForMarkup(markup: Markup): PrototypeValues {
     ...DEFAULT_VALUES,
     locked: markup.locked ?? metadataHasLockedFlag(metadata?.flags),
     strokeColor: appearance.stroke?.color ?? appearance.text?.color ?? DEFAULT_VALUES.strokeColor,
-    fillColor: appearance.fill?.color ?? 'transparent',
+    fillColor: colorWithoutAlpha(appearance.fill?.color) ?? 'transparent',
     opacity: appearance.opacity * 100,
+    fillOpacity: colorAlpha(appearance.fill?.color) * 100,
     lineWidth: appearance.stroke?.widthPt ?? DEFAULT_VALUES.lineWidth,
+    lineStyle: appearance.stroke?.style ?? DEFAULT_VALUES.lineStyle,
     typography: text
       ? {
           ...DEFAULT_VALUES.typography,
@@ -410,13 +412,34 @@ export function updateSelectedMarkupProperty<K extends keyof PrototypeValues>(ma
       : { ...markup, appearance: { ...markup.appearance, stroke: { ...markup.appearance?.stroke, color: value } } } as Markup;
   }
   if (key === 'fillColor' && typeof value === 'string') {
-    return { ...markup, appearance: { ...markup.appearance, fill: { ...markup.appearance?.fill, color: value === 'transparent' ? null : value } } } as Markup;
+    const alpha = colorAlpha(markup.appearance?.fill?.color);
+    return {
+      ...markup,
+      appearance: {
+        ...markup.appearance,
+        fill: { ...markup.appearance?.fill, color: value === 'transparent' ? null : colorWithAlpha(value, alpha) },
+      },
+    } as Markup;
+  }
+  if (key === 'fillOpacity' && typeof value === 'number') {
+    const fillColor = markup.appearance?.fill?.color;
+    if (!fillColor) return markup;
+    return {
+      ...markup,
+      appearance: {
+        ...markup.appearance,
+        fill: { ...markup.appearance.fill, color: colorWithAlpha(fillColor, Math.min(1, Math.max(0, value / 100))) },
+      },
+    } as Markup;
   }
   if (key === 'opacity' && typeof value === 'number') {
     return { ...markup, appearance: { ...markup.appearance, opacity: Math.min(1, Math.max(0, value / 100)) } } as Markup;
   }
   if (key === 'lineWidth' && typeof value === 'number') {
     return { ...markup, appearance: { ...markup.appearance, stroke: { ...markup.appearance?.stroke, widthPt: Math.max(0, value) } } } as Markup;
+  }
+  if (key === 'lineStyle' && typeof value === 'string') {
+    return { ...markup, appearance: { ...markup.appearance, stroke: { ...markup.appearance?.stroke, style: value } } } as Markup;
   }
   if (key === 'typography' && typeof value === 'object' && value && appearance.text) {
     return {
@@ -446,6 +469,24 @@ export function updateSelectedMarkupProperty<K extends keyof PrototypeValues>(ma
     return transformMarkupToBounds(markup, target);
   }
   return markup;
+}
+
+function colorWithoutAlpha(color: string | null | undefined): string | null {
+  const normalized = color?.trim();
+  const match = normalized?.match(/^(#[0-9a-f]{6})[0-9a-f]{2}$/i);
+  return match?.[1]?.toLowerCase() ?? color ?? null;
+}
+
+function colorAlpha(color: string | null | undefined): number {
+  const match = color?.trim().match(/^#[0-9a-f]{6}([0-9a-f]{2})$/i);
+  return match ? Number.parseInt(match[1], 16) / 255 : 1;
+}
+
+function colorWithAlpha(color: string, alpha: number): string {
+  const base = colorWithoutAlpha(color) ?? color;
+  if (!/^#[0-9a-f]{6}$/i.test(base)) return color;
+  const channel = Math.round(Math.min(1, Math.max(0, alpha)) * 255);
+  return channel === 255 ? base.toLowerCase() : `${base.toLowerCase()}${channel.toString(16).padStart(2, '0')}`;
 }
 
 function metadataHasLockedFlag(flags: number | undefined): boolean {

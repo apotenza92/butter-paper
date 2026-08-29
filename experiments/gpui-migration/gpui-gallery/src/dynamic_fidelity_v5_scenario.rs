@@ -88,6 +88,8 @@ mod tests {
             logical_rect: Rect::new(12.0, y, 100.0, 200.0),
             device_width: 200,
             device_height: 400,
+            column_index: 0,
+            row_index: page,
         }
     }
 

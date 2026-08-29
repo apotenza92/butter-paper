@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createArcMarkup, createAreaMarkup, createCalloutMarkup, createCloudPlusMarkup, createCustomPageScale, createDimensionMarkup, createImageMarkup, createImportedAnnotationMarkup, createLengthMarkup, createPageTransform, createPolylengthMarkup, createSnapshotMarkup, pdfPoint, rect } from '@butter-paper/core';
+import { createArcMarkup, createAreaMarkup, createCalloutMarkup, createCloudPlusMarkup, createCustomPageScale, createDimensionMarkup, createImageMarkup, createImportedAnnotationMarkup, createLengthMarkup, createPageTransform, createPolylengthMarkup, createRectangleMarkup, createSnapshotMarkup, pdfPoint, rect } from '@butter-paper/core';
 import type { PdfPoint, Rect } from '@butter-paper/core';
 import type { ToolMode } from '../../../shared/protocol';
 import { snapArcBulgePoint } from './builtins/arcTool';
@@ -15,6 +15,27 @@ import { DEFAULT_CLOUD_LINE_OPTIONS, CLOUD_LINE_TYPE_RENDERER, generateCloudScal
 import { getMarkupToolDefinition, getToolDefinition, PDF_TOOL_RAIL_GROUPS, PDF_TOOL_REGISTRY } from './toolRegistry';
 
 describe('PDF tool registry', () => {
+  it('renders maintained rectangle dash style and fill alpha', () => {
+    const markup = createRectangleMarkup({
+      id: 'styled-rectangle',
+      pageIndex: 0,
+      rect: rect(10, 10, 30, 20),
+      appearance: {
+        stroke: { color: '#dc2626', widthPt: 3, style: 'dashed' },
+        fill: { color: '#dc26261f' },
+        opacity: 0.88,
+      },
+    });
+
+    expect(getMarkupToolDefinition(markup)?.render?.getContentPrimitives(markup, {
+      page: pageStub(),
+      phase: 'idle',
+    })[0]).toMatchObject({
+      kind: 'rect',
+      style: { stroke: '#dc2626', fill: '#dc26261f', strokeWidth: 3, dashArray: '12 6', opacity: 0.88 },
+    });
+  });
+
   it('exposes only the implemented reset tools', () => {
     expect(PDF_TOOL_REGISTRY.map((tool) => tool.id)).toEqual(['select', 'pan', 'text-box', 'rectangle', 'ellipse', 'arc', 'line', 'arrow', 'dimension', 'length', 'polylength', 'area', 'polyline', 'polygon', 'pen', 'highlight', 'cloud', 'cloud-plus', 'callout', 'redact', 'image', 'snapshot']);
     expect(getToolDefinition('text-box')).toMatchObject({ label: 'Text Box', shortcut: 'T', cursor: 'default' });

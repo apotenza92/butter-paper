@@ -1,10 +1,9 @@
 use butter_paper_gpui_gallery::{
+    annotation_adapter::AnnotationAdapter,
     annotation_model::{
         Annotation, LengthAnnotation, LengthCalibration, LineKind, MarkupId, PdfPoint, PdfRect,
-        RectangleAnnotation, RectangleAppearance, StraightLineAnnotation,
-        StraightLineAppearance,
+        RectangleAnnotation, RectangleAppearance, StraightLineAnnotation, StraightLineAppearance,
     },
-    annotation_adapter::AnnotationAdapter,
     semantic_snapping::{
         SemanticSnapIndex, SemanticSnapRole, SemanticSnapSettings, SemanticSnapTarget,
     },

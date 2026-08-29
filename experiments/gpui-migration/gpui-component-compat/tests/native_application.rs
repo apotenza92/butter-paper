@@ -12,10 +12,12 @@ use butter_paper_gpui_component_compat::{
         register_application_close_action,
     },
     document_workspace::{
-        DocumentOpenBatchRequest, DocumentOpenOrigin, DocumentWorkspace, NativeDocumentOpener,
-        NativeDocumentResource, NativeDocumentSaver, NewFromTemplate, OpenDocumentRequest, OpenPdf,
-        OpenedNativeDocument, RasterSurface, Save, SaveAs, SaveDocumentAsTemplate,
-        SaveDocumentRequest, SavedNativeDocument, ThumbnailSurface,
+        ActualSize, CloseDocument, ContinuousView, DocumentOpenBatchRequest, DocumentOpenOrigin,
+        DocumentWorkspace, FitPage, FitWidth, NativeDocumentOpener, NativeDocumentResource,
+        NativeDocumentSaver, NavigateNextPage, NavigatePreviousPage, NewFromTemplate,
+        OpenDocumentRequest, OpenPdf, OpenedNativeDocument, RasterSurface, RotatePageLeft,
+        RotatePageRight, Save, SaveAs, SaveDocumentAsTemplate, SaveDocumentRequest,
+        SavedNativeDocument, SinglePageView, ThumbnailSurface, ZoomIn, ZoomOut,
     },
     native_application::{
         NativeApplicationMenuState, NativeDocumentIngress, build_native_application_menus,
@@ -30,17 +32,38 @@ use gpui::{
     px,
 };
 use gpui_component::Root;
+use gpui_component::input::{Copy, Cut, Delete, Paste, Redo, SelectAll, Undo};
 
 #[test]
 fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
     let menus = build_native_application_menus(NativeApplicationMenuState {
         has_active_document: true,
         save_busy: false,
+        has_focused_input: false,
+        can_undo: true,
+        can_redo: false,
+        can_cut: true,
+        can_copy: false,
+        can_paste: true,
+        can_select_all: false,
+        can_delete: true,
+        can_close_document: true,
+        document_ready: true,
+        can_previous_page: false,
+        can_next_page: true,
+        rotation_busy: false,
+        can_zoom_out: true,
+        can_zoom_in: true,
+        actual_size_checked: false,
+        fit_width_checked: true,
+        fit_page_checked: false,
+        continuous_view_checked: true,
+        single_page_view_checked: false,
     });
 
     assert_eq!(
         menu_names(&menus),
-        ["Butter Paper", "File", "Edit", "Window"]
+        ["Butter Paper", "File", "Edit", "Document", "View", "Window"]
     );
     let app = menu(&menus, "Butter Paper");
     assert_action(item(app, "Quit Butter Paper"), |action| {
@@ -60,27 +83,208 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
     assert_action(item(file, "Save As…"), |action| {
         action.as_any().is::<SaveAs>()
     });
-    assert_action(item(file, "Close Window"), |action| {
-        action.as_any().is::<RequestApplicationClose>()
+    assert_action(item(file, "Close Document"), |action| {
+        action.as_any().is::<CloseDocument>()
     });
+    assert!(!item(file, "Close Document").is_disabled());
     assert!(!item(file, "Save").is_disabled());
     assert!(!item(file, "Save As…").is_disabled());
     assert!(!item(file, "Save Document as Template…").is_disabled());
+
+    let edit = menu(&menus, "Edit");
+    assert_eq!(
+        menu_item_names(edit),
+        [
+            "Undo",
+            "Redo",
+            "<separator>",
+            "Cut",
+            "Copy",
+            "Paste",
+            "Delete",
+            "<separator>",
+            "Select All",
+        ]
+    );
+    assert_action(item(edit, "Undo"), |action| action.as_any().is::<Undo>());
+    assert_action(item(edit, "Redo"), |action| action.as_any().is::<Redo>());
+    assert_action(item(edit, "Cut"), |action| action.as_any().is::<Cut>());
+    assert_action(item(edit, "Copy"), |action| action.as_any().is::<Copy>());
+    assert_action(item(edit, "Paste"), |action| action.as_any().is::<Paste>());
+    assert_action(item(edit, "Delete"), |action| {
+        action.as_any().is::<Delete>()
+    });
+    assert_action(item(edit, "Select All"), |action| {
+        action.as_any().is::<SelectAll>()
+    });
+    assert!(!item(edit, "Undo").is_disabled());
+    assert!(item(edit, "Redo").is_disabled());
+    assert!(!item(edit, "Cut").is_disabled());
+    assert!(item(edit, "Copy").is_disabled());
+    assert!(!item(edit, "Paste").is_disabled());
+    assert!(!item(edit, "Delete").is_disabled());
+    assert!(item(edit, "Select All").is_disabled());
+
+    let document = menu(&menus, "Document");
+    assert_eq!(
+        menu_item_names(document),
+        [
+            "Previous Page",
+            "Next Page",
+            "<separator>",
+            "Rotate Left",
+            "Rotate Right",
+        ]
+    );
+    assert_action(item(document, "Previous Page"), |action| {
+        action.as_any().is::<NavigatePreviousPage>()
+    });
+    assert_action(item(document, "Next Page"), |action| {
+        action.as_any().is::<NavigateNextPage>()
+    });
+    assert_action(item(document, "Rotate Left"), |action| {
+        action.as_any().is::<RotatePageLeft>()
+    });
+    assert_action(item(document, "Rotate Right"), |action| {
+        action.as_any().is::<RotatePageRight>()
+    });
+    assert!(item(document, "Previous Page").is_disabled());
+    assert!(!item(document, "Next Page").is_disabled());
+    assert!(!item(document, "Rotate Left").is_disabled());
+    assert!(!item(document, "Rotate Right").is_disabled());
+
+    let view = menu(&menus, "View");
+    assert_eq!(
+        menu_item_names(view),
+        [
+            "Zoom In",
+            "Zoom Out",
+            "Actual Size",
+            "<separator>",
+            "Fit Width",
+            "Fit Page",
+            "<separator>",
+            "Continuous View",
+            "Single Page View",
+        ]
+    );
+    assert_action(item(view, "Zoom In"), |action| {
+        action.as_any().is::<ZoomIn>()
+    });
+    assert_action(item(view, "Zoom Out"), |action| {
+        action.as_any().is::<ZoomOut>()
+    });
+    assert_action(item(view, "Actual Size"), |action| {
+        action.as_any().is::<ActualSize>()
+    });
+    assert_action(item(view, "Fit Width"), |action| {
+        action.as_any().is::<FitWidth>()
+    });
+    assert_action(item(view, "Fit Page"), |action| {
+        action.as_any().is::<FitPage>()
+    });
+    assert_action(item(view, "Continuous View"), |action| {
+        action.as_any().is::<ContinuousView>()
+    });
+    assert_action(item(view, "Single Page View"), |action| {
+        action.as_any().is::<SinglePageView>()
+    });
+    assert!(item(view, "Fit Width").is_checked());
+    assert!(!item(view, "Fit Page").is_checked());
+    assert!(item(view, "Continuous View").is_checked());
+    assert!(!item(view, "Single Page View").is_checked());
 
     let disabled = build_native_application_menus(NativeApplicationMenuState::default());
     let file = menu(&disabled, "File");
     assert!(item(file, "Save").is_disabled());
     assert!(item(file, "Save As…").is_disabled());
     assert!(item(file, "Save Document as Template…").is_disabled());
+    assert!(item(file, "Close Document").is_disabled());
+    let edit = menu(&disabled, "Edit");
+    for name in [
+        "Undo",
+        "Redo",
+        "Cut",
+        "Copy",
+        "Paste",
+        "Delete",
+        "Select All",
+    ] {
+        assert!(item(edit, name).is_disabled(), "{name} must be disabled");
+    }
+    for name in ["Previous Page", "Next Page", "Rotate Left", "Rotate Right"] {
+        assert!(
+            item(menu(&disabled, "Document"), name).is_disabled(),
+            "{name} must be disabled"
+        );
+    }
+    for name in [
+        "Zoom In",
+        "Zoom Out",
+        "Actual Size",
+        "Fit Width",
+        "Fit Page",
+        "Continuous View",
+        "Single Page View",
+    ] {
+        assert!(
+            item(menu(&disabled, "View"), name).is_disabled(),
+            "{name} must be disabled"
+        );
+    }
+
+    let focused_input = build_native_application_menus(NativeApplicationMenuState {
+        has_focused_input: true,
+        ..Default::default()
+    });
+    let edit = menu(&focused_input, "Edit");
+    for name in [
+        "Undo",
+        "Redo",
+        "Cut",
+        "Copy",
+        "Paste",
+        "Delete",
+        "Select All",
+    ] {
+        assert!(!item(edit, name).is_disabled(), "{name} must be enabled");
+    }
 
     let busy = build_native_application_menus(NativeApplicationMenuState {
         has_active_document: true,
         save_busy: true,
+        ..Default::default()
     });
     let file = menu(&busy, "File");
     assert!(item(file, "Save").is_disabled());
     assert!(item(file, "Save As…").is_disabled());
     assert!(item(file, "Save Document as Template…").is_disabled());
+    assert!(item(menu(&busy, "Document"), "Rotate Left").is_disabled());
+    assert!(item(menu(&busy, "Document"), "Rotate Right").is_disabled());
+
+    let window = menu(&menus, "Window");
+    assert_action(item(window, "Close Window"), |action| {
+        action.as_any().is::<RequestApplicationClose>()
+    });
+}
+
+#[test]
+fn native_application_menu_disables_save_commands_until_the_active_document_is_ready() {
+    let menus = build_native_application_menus(NativeApplicationMenuState {
+        has_active_document: true,
+        can_close_document: true,
+        document_ready: false,
+        ..Default::default()
+    });
+    let file = menu(&menus, "File");
+
+    assert!(item(file, "Save").is_disabled());
+    assert!(item(file, "Save As…").is_disabled());
+    assert!(item(file, "Save Document as Template…").is_disabled());
+    assert!(
+        !item(file, "Close Document").is_disabled(),
+        "a loading or failed document must remain independently closable"
+    );
 }
 
 #[test]
@@ -339,6 +543,17 @@ fn menu_names(menus: &[Menu]) -> Vec<&str> {
 
 fn menu<'a>(menus: &'a [Menu], name: &str) -> &'a Menu {
     menus.iter().find(|menu| menu.name == name).unwrap()
+}
+
+fn menu_item_names(menu: &Menu) -> Vec<&str> {
+    menu.items
+        .iter()
+        .map(|item| match item {
+            MenuItem::Action { name, .. } => name.as_ref(),
+            MenuItem::Separator => "<separator>",
+            _ => "<other>",
+        })
+        .collect()
 }
 
 fn item<'a>(menu: &'a Menu, name: &str) -> &'a MenuItem {

@@ -8,7 +8,7 @@ import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { describe, expect, it } from 'vitest';
 import { beginMarkedContent, decodePDFRawStream, endMarkedContent, PDFArray, PDFBool, PDFDict, PDFDocument, PDFName, PDFNumber, PDFRawStream, PDFString, StandardFonts, rgb, type PDFRef } from 'pdf-lib';
 import { extractPdfPageGeometryIndex, inspectPdfDocumentBytes, openPdfDocument, PdfAnnotationWriter, PdfRenderCache } from './index.js';
-import { createArcMarkup, createAreaMarkup, createArrowMarkup, createCalloutMarkup, createCloudMarkup, createCloudPlusMarkup, createCustomPageScale, createDimensionMarkup, createEllipseMarkup, createHighlightMarkup, createImageMarkup, createLengthMarkup, createLineMarkup, createPenMarkup, createPolygonMarkup, createPolylengthMarkup, createPolylineMarkup, createRectangleMarkup, createRedactMarkup, createSnapshotMarkup, createTextBoxMarkup, pdfPoint } from '@butter-paper/core';
+import { calibratePageScale, createArcMarkup, createAreaMarkup, createArrowMarkup, createCalloutMarkup, createCloudMarkup, createCloudPlusMarkup, createCustomPageScale, createDimensionMarkup, createEllipseMarkup, createHighlightMarkup, createImageMarkup, createLengthMarkup, createLineMarkup, createPenMarkup, createPolygonMarkup, createPolylengthMarkup, createPolylineMarkup, createRectangleMarkup, createRedactMarkup, createSnapshotMarkup, createTextBoxMarkup, pdfPoint } from '@butter-paper/core';
 
 const testImageDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAAAoCAYAAABOzvzpAAAABHNCSVQICAgIfAhkiAAAAAFzUkdCAK7OHOkAAAIpSURBVGiB7Zi/TxNhHMafO0vvWiBBlIC2ooi1xkT5MZFAHEwMJCwMpotuDqZx4R9QEyWyOJkuYhxcTAcHEkYSEjc3fqXByo9AyJUCRh3s3XE1d06uvO8dtd8v6T3z8z7vk8/dffO+p6QeHXpoYKnUBagVAqAuQK0QAHUBaoUAqAtQKwRAXYBaSumXF54EG1khAOoC1IpQF5CR67n48nsFBWsT36wdFO1tKFCQjl3Gdf0KbsauYqjlNlTF//NkPwRLziFeGm+xaq4f67sVT+Fp4jEuRjt85QsBxO7f8xUokvVpXto79/Mz3pQ/wnJtKX9M1THZ9QDjZ+9I78H2E5j9sYDXex98rbFcG9Ol96h6fzDRfldqDcshaDgHyO3nA6/P7edhOAdSXnYAXHiYMmZgu0eBM2z3CFPGDFyIxxs7AGvWlnDgyWjVXMeatSX0sQNQMDfqmsUOwGLla82yCtam0MMOgExp6SzzFAKopRyvKvSwA5DSu+uaxQ7AtRoCkMliB6Dh34CR1gH06skT5/RoCYy0Dgp97ADoqoZniSyalODXlCYlgheXnkBXo0IvOwAA0Ksnke3MBF6f7cygR0tIedneBjPnRqGpUeTKeenrcMuZOCa7HmKsbVh6H/Y/RPaq3/HKeCc8IQ4038DzZBbnI22+8tkD+Kddp4ylShFLZhHLlSI8eOhvTqMvnkZ/PI1u7UKg3FMD4H+J5RCsp0IA1AWoFQKgLkCtv9cipgMsRDYAAAAAAElFTkSuQmCC';
 
@@ -1027,7 +1027,7 @@ describe('pdf package', () => {
       hasAppearance: true,
     });
     expect(rawContracts).toEqual(expect.arrayContaining([
-      { name: 'bp:rect-1', subtype: '/Square', subject: 'Rectangle', intent: '', intentEx: '', hasAppearance: false },
+      { name: 'bp:rect-1', subtype: '/Square', subject: 'Rectangle', intent: '', intentEx: '', hasAppearance: true },
       { name: 'bp:ellipse-1', subtype: '/Circle', subject: 'Ellipse', intent: '', intentEx: '', hasAppearance: false },
       { name: 'bp:arc-1', subtype: '/Circle', subject: 'Arc', intent: '/CircleArc', intentEx: '', hasAppearance: true },
       { name: 'bp:line-1', subtype: '/Line', subject: 'Line', intent: '', intentEx: '', hasAppearance: false },
@@ -1039,7 +1039,7 @@ describe('pdf package', () => {
       { name: 'bp:polyline-1', subtype: '/PolyLine', subject: 'PolyLine', intent: '', intentEx: '', hasAppearance: true },
       { name: 'bp:polygon-1', subtype: '/Polygon', subject: 'Polygon', intent: '', intentEx: '', hasAppearance: true },
       { name: 'bp:pen-1', subtype: '/Ink', subject: 'Pen', intent: '', intentEx: '', hasAppearance: false },
-      { name: 'bp:highlight-1', subtype: '/Ink', subject: 'Highlight', intent: '', intentEx: '', hasAppearance: false },
+      { name: 'bp:highlight-1', subtype: '/Ink', subject: 'Highlight', intent: '', intentEx: '', hasAppearance: true },
       { name: 'bp:cloud-1', subtype: '/Polygon', subject: 'Cloud', intent: '/PolygonCloud', intentEx: '', hasAppearance: true },
       { name: 'bp:cloud-plus-1:cloud', subtype: '/Polygon', subject: 'Cloud+', intent: '/PolygonCloud', intentEx: '/PolyText', hasAppearance: true },
       { name: 'bp:cloud-plus-1:text', subtype: '/FreeText', subject: 'Cloud+', intent: '/FreeTextCallout', intentEx: '/PolyText', hasAppearance: true },
@@ -1093,6 +1093,42 @@ describe('pdf package', () => {
     await handle.close();
     await reopened.close();
     await secondReopened.close();
+  });
+
+  it('round-trips an exact calibrated page scale through two PDF inspections', async () => {
+    const file = await createFixturePdf();
+    const firstOutput = file.replace(/\.pdf$/i, '.calibrated-scale-1.pdf');
+    const secondOutput = file.replace(/\.pdf$/i, '.calibrated-scale-2.pdf');
+    const scale = calibratePageScale({
+      pageIndex: 0,
+      start: pdfPoint(0, 0),
+      end: pdfPoint(72, 0),
+      realLength: 1,
+      realUnits: 'm',
+      pdfUnits: 'in',
+      name: 'Calibrated 1 m',
+      precision: { mode: 'decimal', value: 0.01 },
+    });
+    const length = createLengthMarkup({
+      id: 'calibrated-length',
+      pageIndex: 0,
+      start: pdfPoint(90, 510),
+      end: pdfPoint(342, 510),
+    });
+    const source = await openPdfDocument(file);
+    await source.writer.save(source, [length], 'saveAs', firstOutput, [scale]);
+
+    const firstInspection = await inspectPdfDocumentBytes(await readFile(firstOutput));
+    expect(firstInspection.pageScales).toEqual([scale]);
+    const reopened = await openPdfDocument(firstOutput);
+    const reopenedMarkups = await reopened.annotations.readPageAnnotations(0);
+    await reopened.writer.save(reopened, reopenedMarkups, 'saveAs', secondOutput, firstInspection.pageScales);
+
+    const secondInspection = await inspectPdfDocumentBytes(await readFile(secondOutput));
+    expect(secondInspection.pageScales).toEqual([scale]);
+
+    await source.close();
+    await reopened.close();
   });
 
   it('preserves untouched Bluebeam annotations and replaces complete logical objects on edit or delete', async () => {
@@ -1612,8 +1648,8 @@ describe('pdf package', () => {
       pageIndex: 0,
       rect: { x: 20, y: 20, width: 80, height: 40 },
       appearance: {
-        stroke: { color: '#123456', widthPt: 3.25 },
-        fill: { color: '#abcdef' },
+        stroke: { color: '#123456', widthPt: 3.25, style: 'dashed' },
+        fill: { color: '#abcdef1f' },
         opacity: 0.35,
       },
     });
@@ -1646,6 +1682,11 @@ describe('pdf package', () => {
     expect(readPdfNumberArray(rawRectangle?.get(PDFName.of('C')))).toEqual([0x12 / 255, 0x34 / 255, 0x56 / 255]);
     expect(readPdfNumberArray(rawRectangle?.get(PDFName.of('IC')))).toEqual([0xab / 255, 0xcd / 255, 0xef / 255]);
     expect(Number(rawRectangle?.get(PDFName.of('CA')))).toBe(0.35);
+    expect(Number(rawRectangle?.get(PDFName.of('ca')))).toBeCloseTo(0.35 * 31 / 255);
+    const rawBorderStyle = rawRectangle?.context.lookup(rawRectangle.get(PDFName.of('BS')));
+    expect(rawBorderStyle).toBeInstanceOf(PDFDict);
+    expect(String((rawBorderStyle as PDFDict).get(PDFName.of('S')))).toBe('/D');
+    expect(readPdfNumberArray((rawBorderStyle as PDFDict).get(PDFName.of('D')))).toEqual([13, 6.5]);
     expect(readPdfText(rawTextBox?.get(PDFName.of('DA')))).toBe('0.3961 0.2627 0.1294 rg /Helv 20 Tf');
     expect(readPdfText(rawTextBox?.get(PDFName.of('DS')))).toContain('text-align:right; margin:9pt; line-height:25pt; color:#654321');
 

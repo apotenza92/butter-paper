@@ -100,8 +100,10 @@ Run dependency policy with the exact configured `cargo-deny` command recorded
 in the compatibility README. Run every Rust compile through both the
 host-storage guard and `scripts/run-bounded-button-probe.sh`. The wrapper keeps
 one Cargo job, disables incremental compilation, checks the 30 GiB preflight
-and 20 GiB runtime floors, caps its owned target at 4 GiB, and retains a valid
-target after ordinary test failures.
+and 20 GiB runtime floors, caps its owned target at 5 GiB, enters the
+compatibility crate so its Rust 1.97.1 toolchain pin applies, rejects inherited
+`RUSTUP_TOOLCHAIN` overrides, and retains a valid target after ordinary test
+failures.
 
 The historical gallery commands remain useful only when a change directly
 affects that historical graph:

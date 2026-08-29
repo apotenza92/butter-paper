@@ -54,6 +54,43 @@ describe('ToolPropertiesPanel', () => {
     expect(prototypeValuesForMarkup(locked).locked).toBe(true);
   });
 
+  it('writes and reads the selected markup line style', () => {
+    const markup: RectangleMarkup = {
+      id: 'dashed-rectangle',
+      kind: 'rectangle',
+      pageIndex: 0,
+      rect: rect(0, 0, 20, 20),
+      appearance: {
+        stroke: { color: '#dc2626', widthPt: 3, style: 'solid' },
+      },
+    };
+
+    const dashed = updateSelectedMarkupProperty(markup, 'lineStyle', 'dashed');
+
+    expect(resolveMarkupAppearance(dashed).stroke?.style).toBe('dashed');
+    expect(prototypeValuesForMarkup(dashed).lineStyle).toBe('dashed');
+  });
+
+  it('writes and reads selected markup fill opacity independently', () => {
+    const markup: RectangleMarkup = {
+      id: 'transparent-fill-rectangle',
+      kind: 'rectangle',
+      pageIndex: 0,
+      rect: rect(0, 0, 20, 20),
+      appearance: {
+        fill: { color: '#dc262680' },
+        opacity: 0.88,
+      },
+    };
+
+    const translucent = updateSelectedMarkupProperty(markup, 'fillOpacity', 12);
+
+    expect(resolveMarkupAppearance(translucent).fill?.color).toBe('#dc26261f');
+    expect(prototypeValuesForMarkup(translucent).fillColor).toBe('#dc2626');
+    expect(prototypeValuesForMarkup(translucent).fillOpacity).toBeCloseTo(12, 0);
+    expect(resolveMarkupAppearance(translucent).opacity).toBe(0.88);
+  });
+
   it('uses the selected line bounds for layout values', () => {
     const values = prototypeValuesForMarkup({
       id: 'line-1',
