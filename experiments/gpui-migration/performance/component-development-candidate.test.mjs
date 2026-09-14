@@ -26,13 +26,13 @@ test("seals a development-only Longbridge candidate and rejects artifact drift",
     resolve(root, "component-development-candidate-"),
   );
   try {
-    const binary = resolve(directory, "component_story");
+    const binary = resolve(directory, "gpui-migration");
     const worker = resolve(directory, "pdf-worker");
     const pdfium = resolve(directory, "libpdfium.so");
     const policy = resolve(directory, "source-preparation-policy.json");
     const lock = resolve(directory, "Cargo.lock");
     const buildSummary = resolve(directory, "build-summary.json");
-    const sourceFile = resolve(directory, "component_story.rs");
+    const sourceFile = resolve(directory, "gpui-migration.rs");
     await Promise.all([
       writeFile(binary, "component story"),
       writeFile(worker, "worker"),
@@ -90,14 +90,14 @@ test("seals an optimized release candidate only from the fixed guarded release m
     resolve(root, "component-optimized-candidate-"),
   );
   try {
-    const binary = resolve(directory, "component_story");
+    const binary = resolve(directory, "gpui-migration");
     const worker = resolve(directory, "pdf-worker");
     const pdfium = resolve(directory, "libpdfium.so");
     const policy = resolve(directory, "source-preparation-policy.json");
     const lock = resolve(directory, "Cargo.lock");
     const toolchain = resolve(directory, "rust-toolchain.toml");
     const buildSummary = resolve(directory, "build-summary.json");
-    const sourceFile = resolve(directory, "component_story.rs");
+    const sourceFile = resolve(directory, "gpui-migration.rs");
     await Promise.all([
       writeFile(binary, "optimized component story"),
       writeFile(worker, "optimized worker"),
@@ -116,7 +116,7 @@ test("seals an optimized release candidate only from the fixed guarded release m
             "--features",
             "benchmark-evidence",
             "--bin",
-            "component_story",
+            "gpui-migration",
             "--bin",
             "butter-paper-pdf-worker",
           ],
@@ -198,7 +198,7 @@ test("seals an optimized release candidate only from the fixed guarded release m
           "--features",
           "benchmark-evidence",
           "--bin",
-          "component_story",
+          "gpui-migration",
           "--bin",
           "butter-paper-pdf-worker",
         ],
@@ -232,7 +232,7 @@ test("rejects a moving or mixed GPUI graph before sealing", async () => {
   const source = await readFile(
     resolve(
       repositoryDirectory,
-      "experiments/gpui-migration/gpui-component-compat/source-preparation-policy.json",
+      "experiments/gpui-migration/gpui-migration/source-preparation-policy.json",
     ),
     "utf8",
   );
@@ -258,7 +258,7 @@ test("measured component binaries keep GPUI test support out of normal dependenc
   const manifest = await readFile(
     resolve(
       repositoryDirectory,
-      "experiments/gpui-migration/gpui-component-compat/Cargo.toml",
+      "experiments/gpui-migration/gpui-migration/Cargo.toml",
     ),
     "utf8",
   );

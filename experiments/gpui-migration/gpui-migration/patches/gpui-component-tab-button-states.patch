@@ -1,0 +1,170 @@
+diff --git a/crates/ui/src/button/button.rs b/crates/ui/src/button/button.rs
+index 72fd304f..05408997 100644
+--- a/crates/ui/src/button/button.rs
++++ b/crates/ui/src/button/button.rs
+@@ -745,10 +745,10 @@ impl RenderOnce for Button {
+     }
+ }
+ 
+-struct ButtonVariantStyle {
+-    bg: Background,
+-    border: Hsla,
+-    fg: Hsla,
++pub(crate) struct ButtonVariantStyle {
++    pub(crate) bg: Background,
++    pub(crate) border: Hsla,
++    pub(crate) fg: Hsla,
+     underline: bool,
+     shadow: bool,
+ }
+@@ -961,7 +961,7 @@ impl ButtonVariant {
+         }
+     }
+ 
+-    fn normal(&self, outline: bool, cx: &mut App) -> ButtonVariantStyle {
++    pub(crate) fn normal(&self, outline: bool, cx: &mut App) -> ButtonVariantStyle {
+         let bg = self.bg_color(outline, cx);
+         let border = self.border_color(outline, cx);
+         let fg = self.text_color(outline, cx);
+@@ -977,7 +977,7 @@ impl ButtonVariant {
+         }
+     }
+ 
+-    fn hovered(&self, outline: bool, cx: &mut App) -> ButtonVariantStyle {
++    pub(crate) fn hovered(&self, outline: bool, cx: &mut App) -> ButtonVariantStyle {
+         let bg: Background = match self {
+             Self::Default => {
+                 if outline {
+@@ -1058,7 +1058,7 @@ impl ButtonVariant {
+         }
+     }
+ 
+-    fn active(&self, outline: bool, cx: &mut App) -> ButtonVariantStyle {
++    pub(crate) fn active(&self, outline: bool, cx: &mut App) -> ButtonVariantStyle {
+         let bg = match self {
+             Self::Default => {
+                 if outline {
+@@ -1137,7 +1137,7 @@ impl ButtonVariant {
+         }
+     }
+ 
+-    fn selected(&self, outline: bool, cx: &mut App) -> ButtonVariantStyle {
++    pub(crate) fn selected(&self, outline: bool, cx: &mut App) -> ButtonVariantStyle {
+         if outline {
+             let active_style = self.active(outline, cx);
+ 
+@@ -1179,7 +1179,7 @@ impl ButtonVariant {
+         }
+     }
+ 
+-    fn disabled(&self, outline: bool, cx: &mut App) -> ButtonVariantStyle {
++    pub(crate) fn disabled(&self, outline: bool, cx: &mut App) -> ButtonVariantStyle {
+         let bg = match self {
+             Self::Default | Self::Link | Self::Ghost | Self::Text => cx.theme().transparent.into(),
+             Self::Primary => cx.theme().tokens.button_primary.background.opacity(0.15),
+diff --git a/crates/ui/src/tab/tab.rs b/crates/ui/src/tab/tab.rs
+index 6be6f604..ae38d933 100644
+--- a/crates/ui/src/tab/tab.rs
++++ b/crates/ui/src/tab/tab.rs
+@@ -1,6 +1,7 @@
+ use std::{rc::Rc, time::Duration};
+ 
+ use crate::animation::{Lerp, ease_in_out_cubic};
++use crate::button::{ButtonVariant, ButtonVariantStyle};
+ use crate::{ActiveTheme, Icon, IconName, Selectable, Sizable, Size, StyledExt, h_flex};
+ use gpui::prelude::FluentBuilder as _;
+ use gpui::{
+@@ -379,6 +380,15 @@ struct TabStyle {
+     inner_bg: Background,
+ }
+ 
++impl TabStyle {
++    fn with_button_colors(mut self, colors: ButtonVariantStyle) -> Self {
++        self.bg = colors.bg;
++        self.fg = colors.fg;
++        self.border_color = colors.border;
++        self
++    }
++}
++
+ impl Default for TabStyle {
+     fn default() -> Self {
+         TabStyle {
+@@ -405,6 +415,7 @@ pub struct Tab {
+     suffix: Option<AnyElement>,
+     children: Vec<AnyElement>,
+     variant: TabVariant,
++    button_states: bool,
+     size: Size,
+     pub(super) disabled: bool,
+     pub(super) selected: bool,
+@@ -466,6 +477,7 @@ impl Default for Tab {
+             prefix: None,
+             suffix: None,
+             variant: TabVariant::default(),
++            button_states: false,
+             size: Size::default(),
+             max_width: None,
+             on_click: None,
+@@ -474,6 +486,13 @@ impl Default for Tab {
+ }
+ 
+ impl Tab {
++    /// Opt into Ghost Button state fills with Outline borders for Outline tabs only.
++    /// Off by default; preserves tab geometry, semantics and focus behaviour.
++    pub fn button_states(mut self, enabled: bool) -> Self {
++        self.button_states = enabled;
++        self
++    }
++
+     /// Create a new tab with a label.
+     pub fn new() -> Self {
+         Self::default()
+@@ -622,8 +641,20 @@ impl RenderOnce for Tab {
+         let mut selected_style = self.variant.selected(cx);
+         let mut disabled_style = self.variant.disabled(self.selected, cx);
+         let mut hover_style = self.variant.hovered(self.selected, cx);
++        let button_states = self.button_states && self.variant == TabVariant::Outline;
++        let pressed_colors = button_states.then(|| ButtonVariant::Ghost.active(false, cx));
++        if button_states {
++            normal_style = normal_style.with_button_colors(ButtonVariant::Default.normal(true, cx));
++            selected_style = selected_style.with_button_colors(ButtonVariant::Default.selected(true, cx)); selected_style.bg = ButtonVariant::Ghost.selected(false, cx).bg; selected_style.border_color = cx.theme().transparent;
++            disabled_style = disabled_style.with_button_colors(ButtonVariant::Default.disabled(true, cx));
++            hover_style.bg = ButtonVariant::Ghost.hovered(false, cx).bg;
++        }
+         if self.disabled {
+-            hover_style = self.variant.disabled(self.selected, cx);
++            hover_style = if button_states {
++                self.variant.disabled(self.selected, cx).with_button_colors(ButtonVariant::Default.disabled(true, cx))
++            } else {
++                self.variant.disabled(self.selected, cx)
++            };
+         }
+         let tab_bar_prefix = self.tab_bar_prefix.unwrap_or_default();
+         if !tab_bar_prefix {
+@@ -641,8 +672,8 @@ impl RenderOnce for Tab {
+         } else {
+             &normal_style
+         };
+-        let radius = self.variant.radius(self.size, cx);
+-        let inner_radius = self.variant.inner_radius(self.size, cx);
++        let radius = if button_states { cx.theme().radius } else { self.variant.radius(self.size, cx) };
++        let inner_radius = if button_states { cx.theme().radius } else { self.variant.inner_radius(self.size, cx) };
+         let inner_paddings = self.variant.inner_paddings(self.size);
+         let inner_margins = self.variant.inner_margins(self.size);
+         let inner_height = self.variant.inner_height(self.size);
+@@ -829,6 +860,14 @@ impl RenderOnce for Tab {
+                     .border_color(hover_style.border_color)
+                     .rounded(radius)
+             })
++            .when_some(pressed_colors, |this, colors| {
++                this.active(|style| {
++                    if self.selected || self.disabled {
++                        return style;
++                    }
++                    style.bg(colors.bg).text_color(colors.fg)
++                })
++            })
+             .when(has_inline_inner_bg, |this| {
+                 this.child(
+                     div()

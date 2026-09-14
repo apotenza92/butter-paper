@@ -20,7 +20,7 @@ export const reviewedZedRevision = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc";
 
 const compatDirectory = resolve(
   repositoryDirectory,
-  "experiments/gpui-migration/gpui-component-compat",
+  "experiments/gpui-migration/gpui-migration",
 );
 
 function canonicalize(value) {
@@ -171,7 +171,7 @@ async function buildComponentCandidate(
           "--features",
           "benchmark-evidence",
           "--bin",
-          "component_story",
+          "gpui-migration",
           "--bin",
           "butter-paper-pdf-worker",
         ]) ||

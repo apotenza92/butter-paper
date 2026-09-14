@@ -15,7 +15,7 @@
     "note": "The report failed the superseded raw cross-engine SSIM gate; its retained current-generation backing rasters remain the source evidence for this calibration."
   },
   "source_binary": {
-    "path": "gpui-gallery/target/release/butter-paper-gpui-gallery",
+    "path": "gpui-migration/target/release/butter-paper-gpui-migration",
     "sha256": "572a064cf89201ef5b88592366d42681eb43d39c40aaa054cd45ebf7b58dceb9"
   },
   "candidate_renderer": {

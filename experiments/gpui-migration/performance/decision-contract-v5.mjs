@@ -145,7 +145,7 @@ export const decisionContractV5 = Object.freeze({
     artifact_sha256: sourceDecisionContractArtifactSha256V5,
   },
   evidence_boundary:
-    "fund-or-stop decision for completing the Butter Paper GPUI migration with multi-document, native editing, snapping, and dynamic viewer fidelity; not packaged release qualification",
+    "fund-or-stop decision for completing the GPUI Migration migration with multi-document, native editing, snapping, and dynamic viewer fidelity; not packaged release qualification",
   execution: {
     ...structuredClone(decisionContractV4.execution),
     required_live_gate_ids: [...requiredLiveEvidenceGateIdsV5],

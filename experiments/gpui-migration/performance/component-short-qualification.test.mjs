@@ -110,7 +110,7 @@ test("constructs one fixed native Electron-then-component pair without V6 accept
   const gpui = plan.launches[1];
   assert.deepEqual(gpui.argv.slice(-8), [
     "--binary",
-    "/bundle/experiments/gpui-migration/.build-targets/gpui-component-portable-u24/debug/component_story",
+    "/bundle/experiments/gpui-migration/.build-targets/gpui-component-portable-u24/debug/gpui-migration",
     "--v4-scenario",
     "small-shell-open",
     "--v6-scenario",

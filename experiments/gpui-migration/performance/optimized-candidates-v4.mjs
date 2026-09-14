@@ -22,7 +22,7 @@ import {
   fetchDevelopmentPdfium,
   hostTarget as pdfiumHostTarget,
   validateManifest as validatePdfiumDevelopmentManifest,
-} from "../gpui-gallery/scripts/fetch-pdfium-development.mjs";
+} from "../gpui-migration/scripts/fetch-pdfium-development.mjs";
 
 const execFileAsync = promisify(execFile);
 const performanceDirectory = dirname(fileURLToPath(import.meta.url));
@@ -30,7 +30,7 @@ export const repositoryDirectoryV4 = resolve(performanceDirectory, "../../..");
 const desktopDirectory = resolve(repositoryDirectoryV4, "apps/desktop");
 const galleryDirectory = resolve(
   repositoryDirectoryV4,
-  "experiments/gpui-migration/gpui-gallery",
+  "experiments/gpui-migration/gpui-migration",
 );
 const pdfiumDevelopmentManifestPath = resolve(
   galleryDirectory,
@@ -65,7 +65,7 @@ function gpuiReleaseBuildArgumentsV4() {
     "--jobs",
     String(gpuiReleaseBuildJobsV4),
     "--bin",
-    "butter-paper-gpui-gallery",
+    "butter-paper-gpui-migration",
     "--bin",
     "butter-paper-pdf-worker",
   ];
@@ -112,7 +112,7 @@ export function optimizedCandidatePathsV4() {
     ),
     gpui_binary: resolve(
       releaseDirectory,
-      executableName("butter-paper-gpui-gallery"),
+      executableName("butter-paper-gpui-migration"),
     ),
     pdf_worker: resolve(
       releaseDirectory,
@@ -408,7 +408,7 @@ async function pdfiumCandidateEvidenceV4(
   const testLibrary = testOnlyCandidateRoot
     ? resolve(
         testOnlyCandidateRoot,
-        "gpui-gallery/target/pdfium-development",
+        "gpui-migration/target/pdfium-development",
         paths.pdfium_target,
         asset.library,
       )

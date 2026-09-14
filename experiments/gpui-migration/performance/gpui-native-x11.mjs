@@ -34,7 +34,7 @@ let directHelperPromise;
 
 export const nativeX11InputLane = "native-x11-xtest";
 export const semanticDiagnosticInputLane = "semantic-diagnostic";
-export const nativeX11WindowTitle = "Butter Paper GPUI comparison";
+export const nativeX11WindowTitle = "GPUI Migration comparison";
 export const fixedWindowSize = Object.freeze({ width: 1200, height: 800 });
 // Rust-facing protocol: install a SIGUSR1 handler before emitting the open
 // receipt. The handler owns no driver paths or expected values. It schedules

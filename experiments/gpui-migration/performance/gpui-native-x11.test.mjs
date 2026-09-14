@@ -1397,7 +1397,7 @@ test("routes open-pdf through server-side XDamage observation without a syntheti
       locateWindow: async () => ({
         window_id: "4194305",
         pid: 321,
-        title: "Butter Paper GPUI comparison",
+        title: "GPUI Migration comparison",
         geometry: {
           x: 40,
           y: 84,
@@ -1473,7 +1473,7 @@ test("returns the compatibility crop as driver evidence without forging applicat
       locateWindow: async () => ({
         window_id: "4194305",
         pid: 321,
-        title: "Butter Paper GPUI comparison",
+        title: "GPUI Migration comparison",
         geometry: {
           x: 40,
           y: 84,
@@ -1780,14 +1780,14 @@ test("rejects ambiguous, foreign, mistitled, hidden, or resized X11 targets", ()
     ids: ["4194307"],
     expectedPid: 8123,
     actualPid: 8123,
-    expectedTitle: "Butter Paper GPUI comparison",
-    actualTitle: "Butter Paper GPUI comparison",
+    expectedTitle: "GPUI Migration comparison",
+    actualTitle: "GPUI Migration comparison",
     geometry: { width: 1200, height: 800, visible: true },
   };
   assert.deepEqual(validateWindowTarget(target), {
     window_id: "4194307",
     pid: 8123,
-    title: "Butter Paper GPUI comparison",
+    title: "GPUI Migration comparison",
     geometry: {
       width: 1200,
       height: 800,
@@ -1831,7 +1831,7 @@ test("accepts only frame-extents-proven decorated GPUI client geometry", () => {
     ids: ["4194307"],
     expectedPid: 8123,
     actualPid: 8123,
-    actualTitle: "Butter Paper GPUI comparison",
+    actualTitle: "GPUI Migration comparison",
     geometry: {
       width: 1198,
       height: 777,
@@ -1862,7 +1862,7 @@ test("accepts only frame-extents-proven decorated GPUI client geometry", () => {
         ids: ["4194307"],
         expectedPid: 8123,
         actualPid: 8123,
-        actualTitle: "Butter Paper GPUI comparison",
+        actualTitle: "GPUI Migration comparison",
         geometry: {
           width: 1198,
           height: 777,
@@ -1897,7 +1897,7 @@ test("parses the machine-readable xdotool geometry without accepting missing fie
 
 test("parses the decorated X11 client origin used by direct XTEST replay", () => {
   const output = `
-xwininfo: Window id: 0x400001 "Butter Paper GPUI comparison"
+xwininfo: Window id: 0x400001 "GPUI Migration comparison"
 
   Absolute upper-left X:  360
   Absolute upper-left Y:  145

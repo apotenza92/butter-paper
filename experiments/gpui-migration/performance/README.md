@@ -234,7 +234,7 @@ change or corrupt cache fails closed. Never transfer the private Hibbeler file
 to the paid Linux lane.
 
 `gpui-runner.mjs` measures a deterministic scenario emitted by the standalone
-Butter Paper GPUI application. It does not alter production sources or use the
+GPUI Migration application. It does not alter production sources or use the
 Electron application.
 
 The GPUI runner implements open, single/continuous layout, page navigation,
@@ -369,7 +369,7 @@ Options:
 - `--output` defaults to `gpui-<scenario>.json` beside the runner.
 - `--timeout-ms` defaults to 120000 for each iteration.
 - `--binary` can override the expected executable in
-  `../gpui-gallery/target/Butter Paper GPUI.app/Contents/MacOS/ButterPaperGPUI`.
+  `../gpui-migration/target/GPUI Migration.app/Contents/MacOS/gpui-migration`.
 
 For each process, the runner sets `BP_GPUI_PERF_SCENARIO` and
 `BP_GPUI_PERF_ITERATION`. It samples the root process and all descendants with
@@ -552,7 +552,7 @@ text shaping, overlay paint, image decode, atlas upload, and platform-draw
 receipts:
 
 ```sh
-cd ../gpui-gallery
+cd ../gpui-migration
 cargo build --features benchmark-evidence --bins
 cd ../performance
 
@@ -562,7 +562,7 @@ GPUI_X11_SCALE_FACTOR=1 DISPLAY=:98 node gpui-runner.mjs \
   --pdf "$PWD/results/public-fixtures-v1/bp-annotation-density-v1.pdf" \
   --iterations 1 \
   --timeout-ms 120000 \
-  --binary "$PWD/../gpui-gallery/target/debug/butter-paper-gpui-gallery" \
+  --binary "$PWD/../gpui-migration/target/debug/butter-paper-gpui-migration" \
   --output "$PWD/results/gpui-editor-create-native-xorg-hardware.json"
 
 GPUI_X11_SCALE_FACTOR=1 DISPLAY=:98 node gpui-runner.mjs \
@@ -570,7 +570,7 @@ GPUI_X11_SCALE_FACTOR=1 DISPLAY=:98 node gpui-runner.mjs \
   --pdf "$PWD/results/public-fixtures-v1/bp-annotation-density-v1.pdf" \
   --iterations 1 \
   --timeout-ms 120000 \
-  --binary "$PWD/../gpui-gallery/target/debug/butter-paper-gpui-gallery" \
+  --binary "$PWD/../gpui-migration/target/debug/butter-paper-gpui-migration" \
   --output "$PWD/results/gpui-editor-workload-xorg-hardware.json"
 ```
 
@@ -697,7 +697,7 @@ The command builds the shared packages, removes only the disposable
 bundles with `NODE_ENV=production`. The Electron manifest records this reset
 provenance, and validation rejects older manifests that omit it. This prevents
 obsolete hashed chunks from an earlier Vite build from entering a candidate.
-It also builds `butter-paper-gpui-gallery` and
+It also builds `butter-paper-gpui-migration` and
 `butter-paper-pdf-worker` with Cargo's `release` profile, default features
 disabled, the exact `gallery,benchmark-evidence,pdfium-worker` feature set, and
 one Cargo build job. The benchmark feature enables GPUI's input-latency

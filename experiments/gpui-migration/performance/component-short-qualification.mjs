@@ -295,7 +295,7 @@ export function buildComponentShortQualificationPlan({ root, output }) {
           "--binary",
           path.resolve(
             root,
-            "experiments/gpui-migration/.build-targets/gpui-component-portable-u24/debug/component_story",
+            "experiments/gpui-migration/.build-targets/gpui-component-portable-u24/debug/gpui-migration",
           ),
           "--v4-scenario",
           "small-shell-open",

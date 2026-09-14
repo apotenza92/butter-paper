@@ -1,27 +1,5 @@
-# Issue tracker: GitHub
+# Planning persistence
 
-Issues and specifications for this repository live in GitHub Issues at
-`apotenza92/butter-paper`. Use the `gh` CLI from this clone so it resolves the
-repository from `origin`.
+Use local Markdown under `docs/planning/` for specifications, region briefs, decisions, dependencies and progress. Read `docs/planning/README.md` first. Update the existing relevant file; no separate ticket-generation or GitHub publishing step is required.
 
-## Operations
-
-- Create, read, edit, label, comment on, and close work with `gh issue`.
-- Publish one implementation ticket per issue.
-- Apply `ready-for-agent` to fully specified tickets.
-- Express blocking edges with GitHub issue dependencies. If the dependency API
-  is unavailable, add a `Blocked by: #<issue>` line to the ticket body.
-- A ticket is on the execution frontier when all its blockers are closed.
-- Pull requests are not an incoming request or triage surface.
-
-## Migration execution
-
-The Electron-to-GPUI migration uses one parent specification and independent
-tracer-bullet tickets. An implementation agent claims an unblocked ticket,
-works it through deterministic tests and review, records evidence, and closes
-it only when every acceptance criterion passes. Routine reversible choices
-inside an approved ticket do not require another user decision.
-
-Stop for user direction only when work needs new authority or an irreversible
-licensing, security, product-scope, destructive-data, paid-infrastructure, or
-production-promotion decision.
+Adapt skill instructions that request an issue, map or ticket to the local roadmap or active region brief. GitHub issues are historical reference. Do not create, claim, label or update remote tracking during routine work unless the user requests it. Preserve actual user approval requirements for region boundaries and final review.

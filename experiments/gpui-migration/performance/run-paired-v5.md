@@ -26,7 +26,7 @@ node experiments/gpui-migration/performance/run-paired-v5.mjs \
   --fixture bp-annotation-all-v1=/absolute/fixtures/annotation-all.pdf \
   --reference-crop-directory /absolute/fixtures/reference-crops-v5 \
   --electron /absolute/repo/node_modules/electron/dist/electron \
-  --gpui-binary /absolute/repo/experiments/gpui-migration/gpui-gallery/target/release/butter-paper-gpui-gallery \
+  --gpui-binary /absolute/repo/experiments/gpui-migration/gpui-migration/target/release/butter-paper-gpui-migration \
   --electron-candidate-artifact /absolute/candidates/electron-optimized-candidate-v4.json \
   --gpui-candidate-artifact /absolute/candidates/gpui-optimized-candidate-v4.json \
   --electron-candidate-sha256 <exact-manifest-sha256> \
@@ -80,7 +80,7 @@ node experiments/gpui-migration/performance/run-paired-v5.mjs \
   --fixture bp-annotation-all-v1=/absolute/fixtures/annotation-all.pdf \
   --reference-crop-directory /absolute/fixtures/reference-crops-v5 \
   --electron /absolute/repo/node_modules/electron/dist/electron \
-  --gpui-binary /absolute/repo/experiments/gpui-migration/gpui-gallery/target/release/butter-paper-gpui-gallery \
+  --gpui-binary /absolute/repo/experiments/gpui-migration/gpui-migration/target/release/butter-paper-gpui-migration \
   --electron-candidate-artifact /absolute/candidates/electron-optimized-candidate-v4.json \
   --gpui-candidate-artifact /absolute/candidates/gpui-optimized-candidate-v4.json \
   --electron-candidate-sha256 <exact-manifest-sha256> \

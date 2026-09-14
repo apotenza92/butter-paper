@@ -43,7 +43,7 @@ import {
   startNvidiaBaselineRunSampler,
   summarizeNvidiaIterations,
 } from "./nvidia-sampler.mjs";
-import { fetchDevelopmentPdfium } from "../gpui-gallery/scripts/fetch-pdfium-development.mjs";
+import { fetchDevelopmentPdfium } from "../gpui-migration/scripts/fetch-pdfium-development.mjs";
 import {
   loadComparisonWorkload,
   runnerComparisonMetadata,
@@ -98,8 +98,8 @@ const repositoryDirectory = resolve(performanceDirectory, "../../..");
 const defaultBinary = resolve(
   migrationDirectory,
   platform() === "darwin"
-    ? "gpui-gallery/target/Butter Paper GPUI.app/Contents/MacOS/ButterPaperGPUI"
-    : "gpui-gallery/target/debug/butter-paper-gpui-gallery",
+    ? "gpui-migration/target/GPUI Migration.app/Contents/MacOS/gpui-migration"
+    : "gpui-migration/target/debug/butter-paper-gpui-migration",
 );
 const sampleIntervalMs = 100;
 const defaultTimeoutMs = 120_000;

@@ -21,20 +21,23 @@
 ## Sources of truth
 
 - Keep durable repository conventions in this file.
-- Keep changing work state in GitHub issues and pull requests, not tracked plans, handoffs, memory files, worklogs, or agent transcripts.
+- Keep plans, region briefs, decisions and current work state in local Markdown under `docs/planning/`. Start at `docs/planning/README.md`; update existing files in place. Do not create duplicate GitHub plans, chronological worklogs or agent transcripts.
 - Keep disposable output under ignored directories such as `test-results/`, `playwright-report/`, package `dist/` folders, `.vite/`, `release/`, and native `target/` folders.
 - Do not add machine-specific absolute paths to tracked files.
 
 ## Agent skills
 
-### Issue tracker
+### GPUI migration UX review
 
-Specs and implementation tickets live in this repository's GitHub Issues. See
-`docs/agents/issue-tracker.md`.
+For Electron-to-GPUI migration UI changes and acceptance reviews, use the gpui-migration-ux-review skill alongside gpui-component. Always read docs/planning/ux-review.md and the relevant region brief, including if skill discovery is unavailable. Perform its contradiction-seeking review on the actual final screenshots before handoff. Maintain reusable lessons in that checklist and current defects in the region brief; do not duplicate plans or treat build success as visual acceptance.
 
-### Triage labels
+GPUI properties use the application toolkit in `experiments/gpui-migration/gpui-migration/src/property_controls.rs`, composed from stock GPUI Component controls. Reuse its panel, header, stepper-free numeric and slider/input layouts for new property families. Keep applicability/ranges in `tool_properties.rs`, defaults in the session adapter and selected-object mutations in identity-checked workspace/domain paths. New controls require a real rendering/persistence path and per-family tests; adding a field or hiding a missing capability does not complete a migration.
 
-Use the default five-role triage vocabulary. See
+### Local planning
+
+Read `docs/planning/README.md` and update the relevant local plan. Skill requests
+to publish issues or tickets are adapted to local Markdown; see
+`docs/agents/issue-tracker.md`. Use the local states in
 `docs/agents/triage-labels.md`.
 
 ### Domain docs

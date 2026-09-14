@@ -18,7 +18,7 @@ The macOS crash report identifies:
 - the smallest plain AppKit command-line probe succeeds, while a minimal
   AppKit `.app` bundle reproduces the same registration abort;
 - the disposable bundle now rebuilds from a clean directory, contains one
-  conventional no-space executable (`ButterPaperGPUI`), and passes
+  conventional no-space executable (`gpui-migration`), and passes
   `codesign --verify --deep --strict`;
 - the runner passes `-ApplePersistenceIgnoreState YES` and the gallery filters
   those two launch arguments before opening the PDF, so stale crash dialogs do

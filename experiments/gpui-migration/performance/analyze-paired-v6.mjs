@@ -476,7 +476,7 @@ export async function analyzeV6Manifest(
     manifest_id: workload.manifest_id,
     workload_byte_sha256: expectedWorkloadByteSha256V6,
     outcome_scope:
-      "whether measured Linux GPU-host benefit and maintained correctness justify continuing the Butter Paper GPUI migration; not release qualification",
+      "whether measured Linux GPU-host benefit and maintained correctness justify continuing the GPUI Migration migration; not release qualification",
     authenticated_artifacts: authenticateArtifacts,
     schedule: {
       expected_launches: totalLaunchCountV6,

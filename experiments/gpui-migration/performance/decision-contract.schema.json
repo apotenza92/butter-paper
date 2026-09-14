@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://butter-paper.invalid/schemas/bp-perf-v3-decision-3.json",
-  "title": "Butter Paper GPUI migration decision contract",
+  "title": "GPUI Migration migration decision contract",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -10,7 +10,7 @@ toolchain](https://github.com/apotenza92/butter-paper/issues/56)
 This is historical direct-Zed investigation. The active foundation decision
 now pins GPUI-CE; see
 [`gpui-adoption-source-strategies.md`](gpui-adoption-source-strategies.md) and
-[`FOUNDATION.md`](../gpui-gallery/FOUNDATION.md). The earlier local compatibility
+[`FOUNDATION.md`](../gpui-migration/FOUNDATION.md). The earlier local compatibility
 patch was removed after GPUI-CE passed the independent foundation gate.
 
 The exact patched GPUI candidate still contains `paste 1.0.15`,
@@ -43,8 +43,8 @@ advisory subgraph was identical before and after that license fix.
 
 | Input | Audited value |
 | --- | --- |
-| Manifest | [`gpui-gallery/Cargo.toml`](../gpui-gallery/Cargo.toml), SHA-256 `2536f9bab32fb552f6f88cb6be3051f3a82a11ce3f81cebd9151de96e2cf0e25` |
-| Lockfile | [`gpui-gallery/Cargo.lock`](../gpui-gallery/Cargo.lock), SHA-256 `8c27e8a3104b13d5598b4f9556b863b1d3350beb377abaaa0f99d361ed943d4c` |
+| Manifest | [`gpui-migration/Cargo.toml`](../gpui-migration/Cargo.toml), SHA-256 `2536f9bab32fb552f6f88cb6be3051f3a82a11ce3f81cebd9151de96e2cf0e25` |
+| Lockfile | [`gpui-migration/Cargo.lock`](../gpui-migration/Cargo.lock), SHA-256 `8c27e8a3104b13d5598b4f9556b863b1d3350beb377abaaa0f99d361ed943d4c` |
 | Zed source | [`f4178619acd0d47ea1f76a2025c42962c6d6638c`](https://github.com/zed-industries/zed/commit/f4178619acd0d47ea1f76a2025c42962c6d6638c) |
 | Toolchain | Rust `1.97.1` |
 | Newer Zed checked | `main` at [`91bf967e279fba3b326c096aeb66053cb2373547`](https://github.com/zed-industries/zed/commit/91bf967e279fba3b326c096aeb66053cb2373547) |

@@ -33,7 +33,7 @@ export const decisionContractV4 = Object.freeze({
   contract_version: decisionContractVersionV4,
   supersedes: "bp-perf-v3-decision-3",
   evidence_boundary:
-    "fund-or-stop decision for completing the Butter Paper GPUI migration; not packaged release qualification",
+    "fund-or-stop decision for completing the GPUI Migration migration; not packaged release qualification",
   execution: {
     readiness_model: "derived-from-live-evidence",
     static_capability_declarations_are_evidence: false,

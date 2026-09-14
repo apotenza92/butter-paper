@@ -80,14 +80,14 @@ async function fakeCandidateTree() {
   await mkdir(temporaryParent, { recursive: true });
   const directory = await mkdtemp(resolve(temporaryParent, "optimized-v4-"));
   const bundle = resolve(directory, "apps/desktop/.vite");
-  const release = resolve(directory, "gpui-gallery/target/release");
+  const release = resolve(directory, "gpui-migration/target/release");
   const electron = resolve(directory, "electron");
-  const gpui = resolve(release, "butter-paper-gpui-gallery");
+  const gpui = resolve(release, "butter-paper-gpui-migration");
   const worker = resolve(release, "butter-paper-pdf-worker");
   const productionPaths = optimizedCandidatePathsV4();
   const pdfium = resolve(
     directory,
-    "gpui-gallery/target/pdfium-development",
+    "gpui-migration/target/pdfium-development",
     productionPaths.pdfium_target,
     process.platform === "win32"
       ? "bin/pdfium.dll"
@@ -368,7 +368,7 @@ test("rejects development-server Electron assets and a debug GPUI path", async (
         electronExecutable: fixture.electron,
         gpuiBinary: resolve(
           fixture.directory,
-          "gpui-gallery/target/debug/butter-paper-gpui-gallery",
+          "gpui-migration/target/debug/butter-paper-gpui-migration",
         ),
         candidatePaths: fixture.candidatePaths,
         testOnlyCandidateRoot: fixture.directory,

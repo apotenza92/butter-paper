@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://butterpaper.invalid/schemas/bp-final-decision-v5.json",
-  "title": "Butter Paper GPUI migration funding decision v5",
+  "title": "GPUI Migration migration funding decision v5",
   "type": "object",
   "additionalProperties": false,
   "required": [

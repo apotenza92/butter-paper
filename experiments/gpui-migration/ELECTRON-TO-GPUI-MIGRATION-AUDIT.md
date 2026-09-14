@@ -69,7 +69,7 @@ The review inspected these current sources:
 - `apps/desktop/electron-builder.config.cjs`: stable/beta product identities,
   signing, file associations, platform packages, and update metadata.
 - deterministic tests and the Playwright Electron workflows.
-- `experiments/gpui-migration/gpui-gallery/src`: the current native spike.
+- `experiments/gpui-migration/gpui-migration/src`: the current native spike.
 
 The maintained core, PDF, and desktop source set contains 305 files, including
 106 focused test files. The repository gate currently reports 1,081 primary

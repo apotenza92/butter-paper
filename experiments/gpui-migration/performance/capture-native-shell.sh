@@ -8,8 +8,8 @@ fi
 
 BP_PDF_PATH=$1
 BP_MIGRATION_DIR=${0:A:h:h}
-BP_GALLERY_DIR="$BP_MIGRATION_DIR/gpui-gallery"
-BP_BINARY="$BP_GALLERY_DIR/target/Butter Paper GPUI.app/Contents/MacOS/ButterPaperGPUI"
+BP_GALLERY_DIR="$BP_MIGRATION_DIR/gpui-migration"
+BP_BINARY="$BP_GALLERY_DIR/target/GPUI Migration.app/Contents/MacOS/gpui-migration"
 BP_CAPTURE_PREFIX=${2:-"$BP_MIGRATION_DIR/captures/gpui-native-current"}
 BP_LOG_PATH="$BP_MIGRATION_DIR/performance/results/gpui-native-capture.log"
 BP_CACHE_DIR="$BP_MIGRATION_DIR/performance/results/.native-capture-cache"

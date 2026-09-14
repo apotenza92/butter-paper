@@ -170,7 +170,7 @@ accepted portable component candidate, the frozen Electron candidate closure,
 the reviewed V6 short-pair scripts, fixtures, an Ubuntu-24-compatible Node
 runtime, and deterministic SHA-256 file seals.
 
-The old Ubuntu 26 archive was not portable. Its component_story required
+The old Ubuntu 26 archive was not portable. Its gpui-migration required
 GLIBC_2.43 and it omitted Electron and Node dependencies. This bundle replaces
 that story binary with SHA-256
 \`c1f28ef31f3f6da6ce8373d7e78edca34abef15212fbee7c51504b4cb382e26a\`
@@ -273,11 +273,11 @@ async function assemble(outputDirectory, portableNodePath) {
   );
 
   for (const relativePath of [
-    "experiments/gpui-migration/.build-targets/gpui-component-portable-u24/debug/component_story",
+    "experiments/gpui-migration/.build-targets/gpui-component-portable-u24/debug/gpui-migration",
     "experiments/gpui-migration/.build-targets/gpui-component-portable-u24/debug/butter-paper-pdf-worker",
     "experiments/gpui-migration/.build-targets/gpui-component-portable-u24/portable-ubuntu24-build-summary.json",
     "experiments/gpui-migration/.build-targets/gpui-component-portable-u24/portable-ubuntu24-receipt.txt",
-    "experiments/gpui-migration/gpui-gallery/target/pdfium-development/x86_64-unknown-linux-gnu/lib/libpdfium.so",
+    "experiments/gpui-migration/gpui-migration/target/pdfium-development/x86_64-unknown-linux-gnu/lib/libpdfium.so",
   ]) {
     await copyRegular(
       path.resolve(repositoryDirectory, relativePath),

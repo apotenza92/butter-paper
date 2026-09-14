@@ -1,4 +1,4 @@
-# Butter Paper GPUI investment decision protocol v4
+# GPUI Migration investment decision protocol v4
 
 Contract: `bp-perf-v4-decision-1`
 

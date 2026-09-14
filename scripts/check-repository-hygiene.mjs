@@ -35,8 +35,9 @@ function collectFiles(directory) {
 for (const filePath of repositoryFiles) {
   const fileName = basename(filePath);
 
-  if (forbiddenStatePath.test(filePath) || forbiddenStateName.test(fileName) || forbiddenPlanName.test(fileName)) {
-    violations.push(`${filePath}: changing work state belongs in GitHub issues or pull requests`);
+  const localPlanningDocument = filePath.startsWith('docs/planning/') && extname(filePath).toLowerCase() === '.md';
+  if (!localPlanningDocument && (forbiddenStatePath.test(filePath) || forbiddenStateName.test(fileName) || forbiddenPlanName.test(fileName))) {
+    violations.push(`${filePath}: keep changing work state in local Markdown under docs/planning/`);
   }
 
   if (forbiddenGeneratedPath.test(filePath) || trackedBuildMetadata.test(filePath)) {

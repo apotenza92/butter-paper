@@ -1,4 +1,4 @@
-# Butter Paper GPUI investment decision plan
+# GPUI Migration investment decision plan
 
 Status: predeclared plan. The current GPUI candidate is not ready for the final
 paired run.

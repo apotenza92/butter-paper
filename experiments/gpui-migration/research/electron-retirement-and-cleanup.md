@@ -139,8 +139,8 @@ create a reviewed annotated final-Electron tag that identifies the last public
 release, source commit, public asset checksums, toolchain, and recovery notes.
 
 Do not duplicate this history in an archive directory on the default branch.
-Do not delete old public GitHub releases or rewrite their assets. The Wayfinder
-map and closed decisions remain the durable rationale. Throwaway migration HTML,
+Do not delete old public GitHub releases or rewrite their assets. The local
+Markdown plans and decisions under docs/planning remain the durable rationale. Throwaway migration HTML,
 stale screenshots, raw performance output, and local machine captures do not
 move into production documentation.
 

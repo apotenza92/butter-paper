@@ -9,7 +9,7 @@ Issue: [#44 — Choose the maintained GPUI foundation and platform support bound
 This is the historical direct-Zed platform baseline. Its source decision is
 superseded by the accepted exact GPUI-CE candidate documented in
 [`gpui-adoption-source-strategies.md`](gpui-adoption-source-strategies.md) and
-[`FOUNDATION.md`](../gpui-gallery/FOUNDATION.md). The native qualification
+[`FOUNDATION.md`](../gpui-migration/FOUNDATION.md). The native qualification
 matrix below remains applicable until it is rerun against GPUI-CE.
 
 Do **not** approve the current GPUI pin for a distributed Butter Paper build yet.
@@ -27,8 +27,8 @@ The current candidate is Zed commit
 [`f4178619acd0d47ea1f76a2025c42962c6d6638c`](https://github.com/zed-industries/zed/commit/f4178619acd0d47ea1f76a2025c42962c6d6638c),
 committed on 2026-08-20. The local experiment pins that full revision for both
 `gpui` and `gpui_platform`, and its lockfile resolves both packages to the same
-revision ([manifest](../gpui-gallery/Cargo.toml),
-[lockfile](../gpui-gallery/Cargo.lock)). Do not replace the revision with a
+revision ([manifest](../gpui-migration/Cargo.toml),
+[lockfile](../gpui-migration/Cargo.lock)). Do not replace the revision with a
 branch, tag, wildcard, or crates.io `*` requirement.
 
 If the two prerequisites pass, use this conditional baseline:
@@ -117,7 +117,7 @@ allowed to use the internal facade.
 - Remove `rfd` from the planned foundation. The local gallery uses `rfd 0.17.2`
   for its prototype picker, but GPUI now supplies the required public API. A
   second dialog stack adds modality, parenting, portal, and upgrade risk
-  ([local use](../gpui-gallery/src/main.rs)).
+  ([local use](../gpui-migration/src/main.rs)).
 - Do not add a direct `accesskit` dependency for production. GPUI re-exports
   the exact compatible AccessKit API. A direct dev-only dependency is acceptable
   only if a test tool cannot use the re-export.
@@ -226,7 +226,7 @@ locked runtime graph is not Apache-only:
 Reproduce the runtime graph from the local experiment with:
 
 ```sh
-cd experiments/gpui-migration/gpui-gallery
+cd experiments/gpui-migration/gpui-migration
 cargo tree --locked --offline --features gallery -i ztracing
 cargo tree --locked --offline --features gallery -i zlog
 ```
@@ -335,7 +335,7 @@ accessibility platform.
   `ztracing -> zlog` runtime path.
 - **Failed:** The candidate fails the current MIT license acceptance gate. A
   focused `cargo check -j 1 --locked --features gallery --bin
-  butter-paper-gpui-gallery` also fails on this host's Rust `1.93.1`: the
+  butter-paper-gpui-migration` also fails on this host's Rust `1.93.1`: the
   experiment enables `gpui/profiler`, and that pinned source uses
   `std::hint::cold_path`, which this compiler still reports as unstable. This
   confirms that the host's older compiler is not evidence for the pinned

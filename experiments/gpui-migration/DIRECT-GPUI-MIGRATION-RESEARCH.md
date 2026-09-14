@@ -149,7 +149,7 @@ Other critical sources include:
   `apps/desktop/src/shared/protocol.ts`: the Electron privilege and platform
   boundary.
 
-The existing pure-GPUI `experiments/gpui-migration/gpui-gallery` is useful
+The existing pure-GPUI `experiments/gpui-migration/gpui-migration` is useful
 evidence and should not be confused with the generic 0.5.2 shell. It already:
 
 - translates reviewed Nova shell tokens in `src/nova_theme.rs`;
@@ -260,7 +260,7 @@ supported platforms.
 
 ## Recommendation
 
-Resume the direct `gpui-gallery` route, but refactor it into an owned
+Resume the direct `gpui-migration` route, but refactor it into an owned
 `butter_ui` component hierarchy before adding more features. Use the current
 Electron/Nova app as the visual and behavioral specification. Do not select a
 new shell direction. Do not import the styled `gpui-component` appearance.

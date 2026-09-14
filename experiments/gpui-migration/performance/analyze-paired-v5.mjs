@@ -2525,7 +2525,7 @@ export async function analyzePairedV5(inputPath, options = {}) {
 export function renderDecisionMarkdownV5(result) {
   const headline = result.decision ?? "BLOCKED";
   const sections = [
-    "# Butter Paper GPUI migration funding decision",
+    "# GPUI Migration migration funding decision",
     "",
     `Decision: **${headline}**`,
     "",

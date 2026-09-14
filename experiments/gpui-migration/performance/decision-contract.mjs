@@ -19,7 +19,7 @@ export const decisionContract = Object.freeze({
   schema_version: 1,
   contract_version: decisionContractVersion,
   evidence_boundary:
-    "fund-or-stop decision for completing the Butter Paper GPUI migration; not release qualification",
+    "fund-or-stop decision for completing the GPUI Migration migration; not release qualification",
   execution: {
     status: "blocked-candidate-parity",
     executable: false,

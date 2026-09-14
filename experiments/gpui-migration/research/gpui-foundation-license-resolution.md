@@ -10,7 +10,7 @@ toolchain](https://github.com/apotenza92/butter-paper/issues/56)
 This is historical direct-Zed investigation. Its fork recommendation is
 superseded by the accepted exact GPUI-CE candidate documented in
 [`gpui-adoption-source-strategies.md`](gpui-adoption-source-strategies.md) and
-[`FOUNDATION.md`](../gpui-gallery/FOUNDATION.md).
+[`FOUNDATION.md`](../gpui-migration/FOUNDATION.md).
 
 The current foundation still fails the distribution gate. The exact pinned
 graph includes `ztracing` and `zlog` as normal dependencies on all six target
@@ -57,8 +57,8 @@ was re-audited after the concurrent feature cleanup:
 
 | Input | Audited value |
 | --- | --- |
-| Gallery manifest | [`gpui-gallery/Cargo.toml`](../gpui-gallery/Cargo.toml), SHA-256 `2536f9bab32fb552f6f88cb6be3051f3a82a11ce3f81cebd9151de96e2cf0e25` |
-| Gallery lockfile | [`gpui-gallery/Cargo.lock`](../gpui-gallery/Cargo.lock), SHA-256 `8c27e8a3104b13d5598b4f9556b863b1d3350beb377abaaa0f99d361ed943d4c` |
+| Gallery manifest | [`gpui-migration/Cargo.toml`](../gpui-migration/Cargo.toml), SHA-256 `2536f9bab32fb552f6f88cb6be3051f3a82a11ce3f81cebd9151de96e2cf0e25` |
+| Gallery lockfile | [`gpui-migration/Cargo.lock`](../gpui-migration/Cargo.lock), SHA-256 `8c27e8a3104b13d5598b4f9556b863b1d3350beb377abaaa0f99d361ed943d4c` |
 | Lockfile packages | 710 total; 23 from the Zed Git source |
 | Zed/GPUI revision | [`f4178619acd0d47ea1f76a2025c42962c6d6638c`](https://github.com/zed-industries/zed/commit/f4178619acd0d47ea1f76a2025c42962c6d6638c) |
 | GPUI packages | `gpui 0.2.2`; `gpui_platform 0.1.0` |
@@ -82,7 +82,7 @@ The audit used Cargo's locked, target-filtered normal dependency graph:
 
 ```sh
 cargo tree --locked --offline \
-  --manifest-path experiments/gpui-migration/gpui-gallery/Cargo.toml \
+  --manifest-path experiments/gpui-migration/gpui-migration/Cargo.toml \
   --target TARGET \
   -e normal \
   --format '{p}|{l}|{r}'
