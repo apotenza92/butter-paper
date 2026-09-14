@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$repository_root"
+
+step() {
+  printf '\n[orb-setup] %s\n' "$1"
+}
+
+step "Installing missing Debian build and desktop packages"
+packages=(
+  binutils
+  build-essential
+  ca-certificates
+  clang
+  cmake
+  cpio
+  curl
+  desktop-file-utils
+  elfutils
+  fakeroot
+  file
+  gcc
+  g++
+  gettext-base
+  git
+  jq
+  libasound2
+  libasound2-dev
+  libatk-bridge2.0-0
+  libdrm2
+  libfontconfig-dev
+  libgbm1
+  libgit2-dev
+  libglib2.0-dev
+  libgtk-3-0
+  libnss3
+  libsqlite3-dev
+  libssl-dev
+  libstdc++-12-dev
+  libva-dev
+  libvulkan-dev
+  libvulkan1
+  libwayland-dev
+  libx11-dev
+  libx11-xcb-dev
+  libxcb-xkb-dev
+  libxcb1-dev
+  libxcomposite1
+  libxdamage1
+  libxkbcommon-dev
+  libxkbcommon-x11-dev
+  libxkbcommon0
+  libxrandr2
+  libxss1
+  libzstd-dev
+  lld
+  llvm
+  make
+  mesa-vulkan-drivers
+  musl-dev
+  musl-tools
+  pipewire
+  pkg-config
+  poppler-utils
+  qpdf
+  rpm
+  squashfs-tools
+  unzip
+  vulkan-tools
+  xauth
+  xdg-desktop-portal
+  xz-utils
+  xvfb
+)
+missing_packages=()
+for package in "${packages[@]}"; do
+  if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -Fqx 'install ok installed'; then
+    missing_packages+=("$package")
+  fi
+done
+if ((${#missing_packages[@]})); then
+  sudo apt-get update
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing_packages[@]}"
+else
+  echo "All Debian packages are already installed."
+fi
+
+node_version=$(<.node-version)
+case "$(uname -m)" in
+  x86_64) node_arch=x64 ;;
+  aarch64|arm64) node_arch=arm64 ;;
+  *) echo "Unsupported Node architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+node_distribution="node-v${node_version}-linux-${node_arch}"
+node_prefix="/opt/${node_distribution}"
+if [[ ! -x "$node_prefix/bin/node" ]] || [[ "$($node_prefix/bin/node --version)" != "v${node_version}" ]]; then
+  step "Installing Node.js ${node_version}"
+  temporary_directory=$(mktemp -d)
+  trap 'rm -rf "$temporary_directory"' EXIT
+  curl --fail --location --silent --show-error \
+    "https://nodejs.org/dist/v${node_version}/SHASUMS256.txt" \
+    --output "$temporary_directory/SHASUMS256.txt"
+  curl --fail --location --silent --show-error \
+    "https://nodejs.org/dist/v${node_version}/${node_distribution}.tar.xz" \
+    --output "$temporary_directory/${node_distribution}.tar.xz"
+  (
+    cd "$temporary_directory"
+    grep " ${node_distribution}\.tar\.xz$" SHASUMS256.txt | sha256sum --check --strict
+  )
+  sudo rm -rf "$node_prefix"
+  sudo tar -xJf "$temporary_directory/${node_distribution}.tar.xz" -C /opt
+  rm -rf "$temporary_directory"
+  trap - EXIT
+fi
+for executable in node npm npx corepack; do
+  if [[ -x "$node_prefix/bin/$executable" ]]; then
+    sudo ln -sfn "$node_prefix/bin/$executable" "/usr/local/bin/$executable"
+  fi
+done
+
+pnpm_version=$(node -p "require('./package.json').packageManager.split('@').at(-1)")
+if ! command -v pnpm >/dev/null 2>&1 || [[ "$(pnpm --version)" != "$pnpm_version" ]]; then
+  step "Installing pnpm ${pnpm_version}"
+  sudo "$node_prefix/bin/npm" install --global --prefix /usr/local "pnpm@${pnpm_version}"
+fi
+
+step "Installing locked JavaScript dependencies"
+pnpm install --frozen-lockfile
+
+step "Generating deterministic public PDF fixtures"
+pnpm generate:fixtures
+
+gpui_root="$repository_root/experiments/gpui-migration/gpui-migration"
+if [[ -f "$gpui_root/rust-toolchain.toml" ]]; then
+  if [[ ! -x "$HOME/.cargo/bin/rustup" ]]; then
+    step "Installing rustup"
+    curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+      https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+  fi
+  # shellcheck disable=SC1091
+  source "$HOME/.cargo/env"
+  rust_toolchain=$(sed -n 's/^channel = "\([^"]*\)"/\1/p' "$gpui_root/rust-toolchain.toml")
+  step "Installing Rust ${rust_toolchain}"
+  rustup toolchain install "$rust_toolchain" --profile minimal \
+    --component clippy --component rustfmt
+
+  cargo_profile_marker="# Butter Paper Rust toolchain"
+  if ! grep -Fqx "$cargo_profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+    cat >> "$HOME/.bash_profile" <<'EOF'
+
+# Butter Paper Rust toolchain
+if [[ -f "$HOME/.cargo/env" ]]; then
+  . "$HOME/.cargo/env"
+fi
+EOF
+  fi
+
+  step "Preparing checksum-bound GPUI Component source"
+  node "$gpui_root/scripts/prepare.mjs" prepare
+
+  step "Preparing checksum-bound development PDFium"
+  node "$gpui_root/scripts/fetch-pdfium-development.mjs"
+fi
+
+step "Orb setup complete"

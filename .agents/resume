@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Butter Paper has no service, database, or authentication repair work that
+# must run when an existing orb wakes.
+exit 0
