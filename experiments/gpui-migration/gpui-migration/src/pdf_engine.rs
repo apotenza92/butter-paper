@@ -5342,6 +5342,7 @@ fn add_measurement_path_appearance(
 ) -> Result<ObjectId, PdfPersistenceError> {
     let bounds = measurement_path_bounds(annotation);
     let appearance = &annotation.appearance;
+    let text = annotation.text_style();
     let font_id = add_standard_font(document);
     let (stroke_red, stroke_green, stroke_blue) = color_components(appearance.stroke_color());
     let fill = (annotation.kind == MeasurementPathKind::Area)
@@ -5375,6 +5376,7 @@ fn add_measurement_path_appearance(
         (MeasurementPathKind::Area, false) => "h S\nQ\n",
     });
     if annotation.calibration().show_caption() {
+        let (text_red, text_green, text_blue) = color_components(text.color());
         let caption_x = annotation.points().iter().map(|point| point.x).sum::<f64>()
             / annotation.points().len() as f64
             - bounds.x;
@@ -5383,7 +5385,8 @@ fn add_measurement_path_appearance(
             - bounds.y;
         let escaped = escape_pdf_literal(&annotation.caption());
         content.push_str(&format!(
-            "q\n/GSText gs\nBT {stroke_red:.6} {stroke_green:.6} {stroke_blue:.6} rg /Helv 12 Tf 1 0 0 1 {caption_x:.6} {caption_y:.6} Tm ({escaped}) Tj ET\nQ\n"
+            "q\n/GSText gs\nBT {text_red:.6} {text_green:.6} {text_blue:.6} rg /Helv {:.6} Tf 1 0 0 1 {caption_x:.6} {caption_y:.6} Tm ({escaped}) Tj ET\nQ\n",
+            text.font_size_pt(),
         ));
     }
     Ok(document.add_object(Stream::new(
@@ -5403,8 +5406,8 @@ fn add_measurement_path_appearance(
                     },
                     "GSText" => dictionary! {
                         "Type" => "ExtGState",
-                        "CA" => Object::Real(appearance.opacity() as f32),
-                        "ca" => Object::Real(appearance.opacity() as f32),
+                        "CA" => Object::Real(text.opacity() as f32),
+                        "ca" => Object::Real(text.opacity() as f32),
                     },
                 },
             },
@@ -5419,6 +5422,7 @@ fn measurement_path_dictionary(
     original: &Dictionary,
 ) -> Result<Dictionary, PdfPersistenceError> {
     let appearance = &annotation.appearance;
+    let text = annotation.text_style();
     let calibration = annotation.calibration();
     let caption = annotation.caption();
     let conversion = calibration.units_per_point() as f32;
@@ -5497,8 +5501,8 @@ fn measurement_path_dictionary(
         "Contents" => pdf_literal(&caption),
         "RC" => pdf_literal(&format!("<p>{}</p>", escape_xml_text(&caption))),
         "Label" => pdf_literal(""),
-        "DA" => pdf_literal("1 0 0 rg /Helv 12 Tf"),
-        "DS" => pdf_literal("font: Helvetica 12pt; text-align:center; line-height:13.8pt; color:#FF0000"),
+        "DA" => pdf_literal(&format!("{} /Helv {:.6} Tf", rgb_to_pdf_operator(text.color()), text.font_size_pt())),
+        "DS" => pdf_literal(&format!("font: {} {:.6}pt; text-align:center; line-height:{:.6}pt; color:{}", text.font_family(), text.font_size_pt(), text.font_size_pt() * (13. / 12.), text.color().to_ascii_uppercase())),
         "CA" => Object::Real(appearance.opacity() as f32),
         "ca" => Object::Real((appearance.opacity() * appearance.fill_opacity()) as f32),
         "F" => 4,
@@ -5511,6 +5515,10 @@ fn measurement_path_dictionary(
             "ShowCaption" => Object::Boolean(calibration.show_caption()),
         },
         "BPFillAlpha" => Object::Real(appearance.fill_opacity() as f32),
+        "BPTextFontFamily" => pdf_literal(text.font_family()),
+        "BPTextFontSize" => Object::Real(text.font_size_pt() as f32),
+        "BPTextColor" => pdf_literal(text.color()),
+        "BPTextOpacity" => Object::Real(text.opacity() as f32),
         "AP" => dictionary! { "N" => appearance_id },
     };
     if annotation.kind == MeasurementPathKind::Area
@@ -5537,17 +5545,25 @@ fn measurement_path_dictionary(
 
 fn add_length_appearance(document: &mut Document, annotation: &LengthAnnotation) -> ObjectId {
     let bounds = length_bounds(annotation);
+    let line = annotation.appearance.line();
+    let text = annotation.appearance.text();
     let font_id = add_standard_font(document);
     let start_x = annotation.start.x - bounds.x;
     let start_y = annotation.start.y - bounds.y;
     let end_x = annotation.end.x - bounds.x;
     let end_y = annotation.end.y - bounds.y;
-    let mut content =
-        format!("q\n1 0 0 RG 1 w\n{start_x:.6} {start_y:.6} m {end_x:.6} {end_y:.6} l S\n");
+    let (stroke_red, stroke_green, stroke_blue) = color_components(line.stroke_color());
+    let (text_red, text_green, text_blue) = color_components(text.color());
+    let dash_operation = rectangle_dash_pattern(line.stroke_style(), line.stroke_width_pt())
+        .map_or_else(String::new, |(dash, gap)| {
+            format!("[{dash:.6} {gap:.6}] 0 d\n")
+        });
+    let mut content = format!("q\n/GS0 gs\n{stroke_red:.6} {stroke_green:.6} {stroke_blue:.6} RG {dash_operation}{:.6} w\n{start_x:.6} {start_y:.6} m {end_x:.6} {end_y:.6} l S\n", line.stroke_width_pt());
     if annotation.calibration().show_caption() {
         let escaped = escape_pdf_literal(&annotation.caption());
         content.push_str(&format!(
-            "BT 1 0 0 rg /Helv 12 Tf {:.6} {:.6} Td ({escaped}) Tj ET\n",
+            "BT {text_red:.6} {text_green:.6} {text_blue:.6} rg /Helv {:.6} Tf {:.6} {:.6} Td ({escaped}) Tj ET\n",
+            text.font_size_pt(),
             (start_x + end_x) / 2.0,
             (start_y + end_y) / 2.0 + 3.0,
         ));
@@ -5559,7 +5575,10 @@ fn add_length_appearance(document: &mut Document, annotation: &LengthAnnotation)
             "Subtype" => "Form",
             "FormType" => 1,
             "BBox" => rect_bbox(bounds),
-            "Resources" => dictionary! { "Font" => dictionary! { "Helv" => font_id } },
+            "Resources" => dictionary! {
+                "Font" => dictionary! { "Helv" => font_id },
+                "ExtGState" => dictionary! { "GS0" => dictionary! { "Type" => "ExtGState", "CA" => Object::Real(line.opacity() as f32), "ca" => Object::Real(text.opacity() as f32) } },
+            },
         },
         content.into_bytes(),
     ))
@@ -5571,6 +5590,8 @@ fn length_dictionary(
     original: &Dictionary,
 ) -> Dictionary {
     let calibration = annotation.calibration();
+    let line = annotation.appearance.line();
+    let text = annotation.appearance.text();
     let ratio = format!(
         "{} {} = {} pt",
         calibration.real_world_value(),
@@ -5602,9 +5623,9 @@ fn length_dictionary(
             Object::Real(annotation.end.x as f32),
             Object::Real(annotation.end.y as f32),
         ],
-        "Border" => vec![0.into(), 0.into(), 1.into()],
-        "BS" => dictionary! { "Type" => "Border", "W" => 1, "S" => "S" },
-        "C" => vec![Object::Real(1.), Object::Real(0.), Object::Real(0.)],
+        "Border" => vec![0.into(), 0.into(), Object::Real(line.stroke_width_pt() as f32)],
+        "BS" => dictionary! { "Type" => "Border", "W" => Object::Real(line.stroke_width_pt() as f32), "S" => "S" },
+        "C" => color_array(line.stroke_color()),
         "LE" => vec![Object::Name(b"ClosedArrow".to_vec()), Object::Name(b"ClosedArrow".to_vec())],
         "LL" => 10,
         "LLE" => 2,
@@ -5623,11 +5644,11 @@ fn length_dictionary(
             "TargetUnitConversion" => Object::Real(conversion),
         },
         "Label" => pdf_literal(calibration.label()),
-        "DA" => pdf_literal("1 0 0 rg /Helv 12 Tf"),
-        "DS" => pdf_literal("font: Helvetica 12pt; text-align:center; line-height:13.8pt; color:#FF0000"),
+        "DA" => pdf_literal(&format!("{} /Helv {:.6} Tf", rgb_to_pdf_operator(text.color()), text.font_size_pt())),
+        "DS" => pdf_literal(&format!("font: {} {:.6}pt; text-align:center; line-height:{:.6}pt; color:{}", text.font_family(), text.font_size_pt(), text.font_size_pt() * (13. / 12.), text.color().to_ascii_uppercase())),
         "RC" => pdf_literal(&format!("<p>{}</p>", escape_xml_text(&caption))),
-        "CA" => Object::Real(1.),
-        "ca" => Object::Real(1.),
+        "CA" => Object::Real(line.opacity() as f32),
+        "ca" => Object::Real(text.opacity() as f32),
         "F" => 4,
         "BPScale" => dictionary! {
             "PaperPoints" => Object::Real(calibration.paper_points() as f32),
@@ -5637,8 +5658,22 @@ fn length_dictionary(
             "Label" => pdf_literal(calibration.label()),
             "ShowCaption" => Object::Boolean(calibration.show_caption()),
         },
+        "BPTextFontFamily" => pdf_literal(text.font_family()),
+        "BPTextFontSize" => Object::Real(text.font_size_pt() as f32),
+        "BPTextColor" => pdf_literal(text.color()),
         "AP" => dictionary! { "N" => appearance_id },
     };
+    if let Some((dash, gap)) = rectangle_dash_pattern(line.stroke_style(), line.stroke_width_pt()) {
+        dictionary.set(
+            "BS",
+            dictionary! {
+                "Type" => "Border",
+                "W" => Object::Real(line.stroke_width_pt() as f32),
+                "S" => "D",
+                "D" => vec![Object::Real(dash as f32), Object::Real(gap as f32)],
+            },
+        );
+    }
     preserve_annotation_metadata(&mut dictionary, original, annotation.locked);
     dictionary
 }
@@ -5946,7 +5981,7 @@ fn add_image_appearance(document: &mut Document, annotation: &ImageAnnotation) -
         rgb,
     ));
     let content = format!(
-        "q\n{:.6} 0 0 {:.6} 0 0 cm\n/Im0 Do\nQ\n",
+        "q\n/GS0 gs\n{:.6} 0 0 {:.6} 0 0 cm\n/Im0 Do\nQ\n",
         annotation.rect.width, annotation.rect.height
     );
     document.add_object(Stream::new(
@@ -5955,7 +5990,10 @@ fn add_image_appearance(document: &mut Document, annotation: &ImageAnnotation) -
             "Subtype" => "Form",
             "FormType" => 1,
             "BBox" => rect_bbox(annotation.rect),
-            "Resources" => dictionary! { "XObject" => dictionary! { "Im0" => image_id } },
+            "Resources" => dictionary! {
+                "XObject" => dictionary! { "Im0" => image_id },
+                "ExtGState" => dictionary! { "GS0" => dictionary! { "Type" => "ExtGState", "CA" => Object::Real(annotation.opacity() as f32), "ca" => Object::Real(annotation.opacity() as f32) } },
+            },
         },
         content.into_bytes(),
     ))
@@ -5975,6 +6013,7 @@ fn image_dictionary(
         "NM" => pdf_literal(&canonical_native_annotation_name(&annotation.id)),
         "BPAssetId" => pdf_literal(annotation.asset().id().as_str()),
         "BPAspectLocked" => Object::Boolean(annotation.aspect_locked),
+        "CA" => Object::Real(annotation.opacity() as f32),
         "AP" => dictionary! { "N" => appearance_id },
     };
     preserve_annotation_metadata(&mut dictionary, original, annotation.locked);
@@ -6538,6 +6577,11 @@ fn color_components(color: &str) -> (f32, f32, f32) {
             / 255.0
     };
     (component(1..3), component(3..5), component(5..7))
+}
+
+fn rgb_to_pdf_operator(color: &str) -> String {
+    let (red, green, blue) = color_components(color);
+    format!("{red:.6} {green:.6} {blue:.6} rg")
 }
 
 struct ImportedAnnotations {
@@ -8196,7 +8240,41 @@ fn import_length(
         import_standard_length_calibration(annotation)?
             .with_label(dictionary_string(annotation, b"Label").unwrap_or_default())?
     };
-    let mut imported = LengthAnnotation::new(
+    let opacity = dictionary_float(annotation, b"CA").unwrap_or(1.);
+    let stroke_width = annotation
+        .get(b"BS")
+        .ok()
+        .and_then(|value| value.as_dict().ok())
+        .and_then(|border| dictionary_float(border, b"W"))
+        .unwrap_or(1.);
+    let stroke_style = annotation
+        .get(b"BS")
+        .ok()
+        .and_then(|value| value.as_dict().ok())
+        .filter(|border| dictionary_name(border, b"S").as_deref() == Some("D"))
+        .map_or(StrokeStyle::Solid, |border| {
+            let first_dash = border
+                .get(b"D")
+                .ok()
+                .and_then(|value| value.as_array().ok())
+                .and_then(|values| values.first())
+                .and_then(|value| value.as_float().ok())
+                .map(f64::from);
+            if stroke_width > f64::EPSILON
+                && first_dash.is_some_and(|dash| dash / stroke_width <= 1.5)
+            {
+                StrokeStyle::Dotted
+            } else {
+                StrokeStyle::Dashed
+            }
+        });
+    let line = StraightLineAppearance::new(
+        dictionary_color(annotation, b"C").unwrap_or_else(|| "#ff0000".into()),
+        stroke_width,
+        opacity,
+        stroke_style,
+    )?;
+    let mut imported = LengthAnnotation::new_with_appearance(
         MarkupId::new(name)?,
         page_index,
         PdfPoint::new(
@@ -8205,6 +8283,7 @@ fn import_length(
         )?,
         PdfPoint::new(f64::from(end_x.as_float()?), f64::from(end_y.as_float()?))?,
         calibration,
+        DimensionAppearance::new(line, import_measurement_text_style(annotation, opacity)?)?,
     )?;
     imported.locked = annotation_locked(annotation);
     Ok(imported)
@@ -8572,16 +8651,33 @@ fn import_measurement_path(
         },
     )?;
     let calibration = import_measurement_path_calibration(annotation, page_calibration)?;
-    let mut imported = MeasurementPathAnnotation::new(
+    let text_opacity = vertex.appearance.opacity();
+    let mut imported = MeasurementPathAnnotation::new_with_text_style(
         MarkupId::new(name)?,
         page_index,
         vertex.points().to_vec(),
         kind,
         calibration,
         vertex.appearance,
+        import_measurement_text_style(annotation, text_opacity)?,
     )?;
     imported.locked = annotation_locked(annotation);
     Ok(imported)
+}
+
+fn import_measurement_text_style(
+    annotation: &Dictionary,
+    opacity: f64,
+) -> Result<TextBoxStyle, PdfPersistenceError> {
+    Ok(TextBoxStyle::new(
+        dictionary_string(annotation, b"BPTextFontFamily")
+            .unwrap_or_else(|| "Helvetica".into()),
+        dictionary_float(annotation, b"BPTextFontSize").unwrap_or(12.),
+        dictionary_string(annotation, b"BPTextColor")
+            .or_else(|| dictionary_color(annotation, b"C"))
+            .unwrap_or_else(|| "#ff0000".into()),
+        opacity,
+    )?)
 }
 
 fn import_measurement_path_calibration(
@@ -8691,7 +8787,7 @@ fn import_image(
     page_index: u32,
 ) -> Result<ImageAnnotation, PdfPersistenceError> {
     let asset = import_media_appearance_asset(document, annotation)?;
-    let mut imported = ImageAnnotation::new(
+    let mut imported = ImageAnnotation::new_with_opacity(
         MarkupId::new(name)?,
         page_index,
         import_pdf_rect(annotation, b"Rect")?,
@@ -8701,6 +8797,7 @@ fn import_image(
             .ok()
             .and_then(|value| value.as_bool().ok())
             .unwrap_or(false),
+        dictionary_float(annotation, b"CA").unwrap_or(1.),
     )?;
     imported.locked = annotation_locked(annotation);
     Ok(imported)

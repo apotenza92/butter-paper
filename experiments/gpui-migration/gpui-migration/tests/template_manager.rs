@@ -2,6 +2,10 @@ use butter_paper_gpui_migration::document_workspace::{
     CloseRequestDisposition, DirtyCloseResolution, DocumentId, DocumentWorkspace,
     DocumentWorkspaceTemplateCommand,
 };
+use butter_paper_gpui_migration::generated_document::{
+    GeneratedDocumentRequest, GeneratedDocumentStore, GeneratedPattern,
+};
+use butter_paper_gpui_migration::pdf_engine::PdfPersistenceSession;
 use butter_paper_gpui_migration::template_manager::{
     PersistentTemplateManager, TEMPLATE_MANAGER_BROWSE_PAGE_ID, TEMPLATE_MANAGER_CANCEL_ID,
     TEMPLATE_MANAGER_COLOR_IDS, TEMPLATE_MANAGER_COLOR_INPUT_ID,
@@ -17,10 +21,6 @@ use butter_paper_gpui_migration::template_manager::{
     next_custom_template_id, next_imported_template_id, route_workspace_template_command,
     template_manager_dialog_width, template_manager_uses_stacked_layout,
 };
-use butter_paper_gpui_migration::generated_document::{
-    GeneratedDocumentRequest, GeneratedDocumentStore, GeneratedPattern,
-};
-use butter_paper_gpui_migration::pdf_engine::PdfPersistenceSession;
 use gpui::{
     AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, Modifiers,
     Render, ScrollDelta, ScrollWheelEvent, Styled as _, TestAppContext, Window, div, point, px,
@@ -31,7 +31,7 @@ use std::{cell::RefCell, rc::Rc};
 use std::{
     fs,
     path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 fn square_grid_request() -> GeneratedDocumentRequest {
@@ -196,7 +196,7 @@ fn rendered_browse_and_create_layouts_stay_horizontally_bounded_and_scrollable(
         }
     };
 
-    for (width, height) in [(1200., 800.), (720., 720.), (320., 480.)] {
+    for (width, height) in [(1200., 800.), (736., 816.), (720., 720.), (320., 480.)] {
         cx.simulate_resize(size(px(width), px(height)));
         cx.update(|window, cx| window.draw(cx).clear(cx));
         assert_bounded(
@@ -501,7 +501,9 @@ fn generated_sources_canonicalise_aliased_ancestors_and_preserve_ownership() {
     fs::create_dir_all(root.join("real")).unwrap();
     std::os::unix::fs::symlink(root.join("real"), root.join("alias")).unwrap();
     let store = GeneratedDocumentStore::new(root.join("alias/store")).unwrap();
-    let source = store.create_from_pdf_bytes("document", b"test owned bytes").unwrap();
+    let source = store
+        .create_from_pdf_bytes("document", b"test owned bytes")
+        .unwrap();
     assert_eq!(source.path(), fs::canonicalize(source.path()).unwrap());
     store.release(&source).unwrap();
     assert!(!source.path().exists());
@@ -1000,6 +1002,80 @@ fn real_manager_primary_action_creates_an_independent_dirty_workspace_session(
     );
     store.remove_if_empty().unwrap();
     fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn removable_template_requires_confirmation_before_library_mutation(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let manager_slot = Rc::new(RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let manager_slot = manager_slot.clone();
+        move |window, cx| {
+            let manager = cx.new(|cx| {
+                TemplateManagerView::new(
+                    TemplateManagerModel::new(
+                        vec![
+                            TemplateManagerRecord::built_in(
+                                "built-in-blank",
+                                "Blank Paper",
+                                "A3 · Landscape",
+                            ),
+                            TemplateManagerRecord::generated(
+                                "custom-grid",
+                                "Site Grid",
+                                "A3 · Landscape · Square grid",
+                                square_grid_request(),
+                            ),
+                        ],
+                        "custom-grid",
+                    )
+                    .unwrap(),
+                    window,
+                    cx,
+                )
+            });
+            manager_slot.replace(Some(manager.clone()));
+            Root::new(manager, window, cx)
+        }
+    });
+    let manager = manager_slot.borrow().clone().unwrap();
+    let remove_id = "template-manager-remove-custom-grid";
+
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let remove = cx
+        .debug_bounds(remove_id)
+        .expect("remove shortcut must render");
+    cx.simulate_click(remove.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(manager.read_with(cx, |manager, _| {
+        manager
+            .model()
+            .records()
+            .iter()
+            .any(|record| record.id() == "custom-grid")
+    }));
+
+    if let Some(tree) = cx.update(|window, _| window.debug_a11y_tree_json()) {
+        assert!(tree.contains("Remove “Site Grid”?"));
+        assert!(tree.contains("This cannot be undone."));
+    }
+    cx.update(|window, cx| window.close_dialog(cx));
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(manager.read_with(cx, |manager, _| {
+        manager
+            .model()
+            .records()
+            .iter()
+            .any(|record| record.id() == "custom-grid")
+    }));
 }
 
 #[gpui::test]

@@ -20,7 +20,9 @@ use gpui_component::{
     StyledExt as _, WindowExt as _,
     alert::Alert,
     button::{Button, ButtonGroup, ButtonVariants as _},
-    dialog::{DialogClose, DialogDescription, DialogFooter, DialogHeader, DialogTitle},
+    dialog::{
+        DialogAction, DialogClose, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+    },
     form::Field,
     input::{Input, InputEvent, InputState},
     list::{List, ListDelegate, ListItem, ListState},
@@ -92,6 +94,8 @@ pub const TEMPLATE_MANAGER_WIDTH_INPUT_ID: &str = "template-manager-width-input"
 pub const TEMPLATE_MANAGER_HEIGHT_INPUT_ID: &str = "template-manager-height-input";
 pub const TEMPLATE_MANAGER_SPACING_INPUT_ID: &str = "template-manager-spacing-input";
 pub const TEMPLATE_MANAGER_COLOR_INPUT_ID: &str = "template-manager-color-input";
+pub const TEMPLATE_MANAGER_REMOVE_CANCEL_ID: &str = "template-manager-remove-cancel";
+pub const TEMPLATE_MANAGER_REMOVE_CONFIRM_ID: &str = "template-manager-remove-confirm";
 
 pub fn template_manager_dialog_width(viewport_width: f32) -> f32 {
     (viewport_width - 32.).clamp(288., 880.)
@@ -155,6 +159,7 @@ impl ListDelegate for TemplateListDelegate {
         let stable_id = format!("template-manager-item-{}", record.id());
         let removable = record.removable();
         let remove_id = record.id().to_owned();
+        let remove_name = record.name().to_owned();
         let remove_owner = self.owner.clone();
         let storage_busy = self.storage_busy;
         let group_id = format!("template-manager-row-{}", record.id());
@@ -178,6 +183,7 @@ impl ListDelegate for TemplateListDelegate {
                     let button_id = format!("template-manager-remove-{remove_id}");
                     row.suffix(move |_, _| {
                         let remove_id = remove_id.clone();
+                        let remove_name = remove_name.clone();
                         let remove_owner = remove_owner.clone();
                         Button::new(button_id.clone())
                             .debug_selector({
@@ -192,10 +198,13 @@ impl ListDelegate for TemplateListDelegate {
                             .focus(|style| style.opacity(1.))
                             .on_click(move |_, window, cx| {
                                 cx.stop_propagation();
-                                let _ = remove_owner.update(cx, |manager, cx| {
-                                    manager.remove_template(&remove_id, window, cx);
-                                    cx.notify();
-                                });
+                                TemplateManagerView::confirm_remove_template(
+                                    remove_owner.clone(),
+                                    remove_id.clone(),
+                                    remove_name.clone(),
+                                    window,
+                                    cx,
+                                );
                             })
                     })
                 }),
@@ -1418,6 +1427,52 @@ impl TemplateManagerView {
         self.sync_template_list(window, cx);
     }
 
+    fn confirm_remove_template(
+        owner: WeakEntity<Self>,
+        template_id: String,
+        template_name: String,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let owner = owner.clone();
+            let template_id = template_id.clone();
+            alert
+                .close_button(false)
+                .title(format!("Remove “{template_name}”?"))
+                .description("This removes the template from your library. This cannot be undone.")
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            DialogClose::new().child(
+                                Button::new(TEMPLATE_MANAGER_REMOVE_CANCEL_ID)
+                                    .debug_selector(|| TEMPLATE_MANAGER_REMOVE_CANCEL_ID.into())
+                                    .accessibility_id(TEMPLATE_MANAGER_REMOVE_CANCEL_ID)
+                                    .outline()
+                                    .label("Cancel"),
+                            ),
+                        )
+                        .child(
+                            DialogAction::new().child(
+                                Button::new(TEMPLATE_MANAGER_REMOVE_CONFIRM_ID)
+                                    .debug_selector(|| TEMPLATE_MANAGER_REMOVE_CONFIRM_ID.into())
+                                    .accessibility_id(TEMPLATE_MANAGER_REMOVE_CONFIRM_ID)
+                                    .danger()
+                                    .label("Remove"),
+                            ),
+                        ),
+                )
+                .on_ok(move |_, window, cx| {
+                    owner
+                        .update(cx, |manager, cx| {
+                            manager.remove_template(&template_id, window, cx);
+                            cx.notify();
+                        })
+                        .is_ok()
+                })
+        });
+    }
+
     fn create_selected_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.storage_busy() {
             return;
@@ -1804,8 +1859,9 @@ pub fn route_workspace_template_command(
 
 impl Render for TemplateManagerView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let constrained =
-            template_manager_uses_stacked_layout(f32::from(window.viewport_size().width));
+        let viewport_width = f32::from(window.viewport_size().width);
+        let constrained = template_manager_uses_stacked_layout(viewport_width);
+        let compact_browse_footer = viewport_width < 752.;
         let owner = cx.entity().downgrade();
         let selected_id = self.model.selected_id.clone();
         let selected = self
@@ -1939,6 +1995,7 @@ impl Render for TemplateManagerView {
                             .debug_selector(|| TEMPLATE_MANAGER_CREATE_DOCUMENT_ID.into())
                             .label("Create document")
                             .primary()
+                            .when(compact_browse_footer, |button| button.compact())
                             .disabled(
                                 self.document_workspace.is_none()
                                     || self.generated_store.is_none()
@@ -1955,6 +2012,7 @@ impl Render for TemplateManagerView {
                             .debug_selector(|| TEMPLATE_MANAGER_CREATE_ID.into())
                             .label("Create paper template…")
                             .outline()
+                            .when(compact_browse_footer, |button| button.compact())
                             .disabled(self.storage_busy())
                             .on_click(move |_, window, cx| {
                                 let _ = create_owner.update(cx, |manager, cx| {
@@ -1967,6 +2025,7 @@ impl Render for TemplateManagerView {
                             .debug_selector(|| TEMPLATE_MANAGER_IMPORT_ID.into())
                             .label("Import PDF as template…")
                             .outline()
+                            .when(compact_browse_footer, |button| button.compact())
                             .disabled(self.storage_busy())
                             .on_click(move |_, window, cx| {
                                 let _ = import_owner.update(cx, |manager, cx| {
@@ -1979,6 +2038,7 @@ impl Render for TemplateManagerView {
                             .debug_selector(|| TEMPLATE_MANAGER_DONE_ID.into())
                             .label("Done")
                             .outline()
+                            .when(compact_browse_footer, |button| button.compact())
                             .on_click(|_, window, cx| window.close_dialog(cx)),
                     );
 

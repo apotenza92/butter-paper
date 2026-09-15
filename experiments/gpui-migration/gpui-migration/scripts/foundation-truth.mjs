@@ -9,7 +9,7 @@ const migrationDirectory = resolve(probeDirectory, "..");
 export const CANONICAL_FOUNDATION = Object.freeze({
   componentRevision: "c27f5d5c8f70d534978c2f0739ad9e10d4e41eb4",
   zedRevision: "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc",
-  preparedDigest: "911330d721c582c4c9ef0b409b0d3d5b17cf59f89deae75b0df21301a02d2a73",
+  preparedDigest: "35254d5f899bb03514766c834996cc9025f16e06ad19ffd4fcfb3e32c105dd69",
   componentLicenseSha256: "d1b0449e5478c574ba4f686c2656df7fe77d66821a61f8b6ed3378a58ed9a811",
   zedLicenseSha256: "752daf2fb234ca4a1fa372c073fe127f44b7b90fd2529ae44273a64f9d53da7a",
 });

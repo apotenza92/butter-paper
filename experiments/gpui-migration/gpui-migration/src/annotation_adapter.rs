@@ -40,7 +40,10 @@ use crate::native_editing_v5::{
 use crate::selection_geometry::{
     SelectionMarquee, SelectionOperation, SelectionPoint, SelectionShape,
 };
-use crate::semantic_snapping::{SemanticSnapDecision, SemanticSnapIndex, SemanticSnapSettings};
+use crate::semantic_snapping::{
+    SemanticSnapDecision, SemanticSnapIndex, SemanticSnapSettings,
+    quantize_pdf_distance_to_mm_increment, resolve_construction_grid_point,
+};
 
 pub const FROZEN_TEXT_CREATE: &str = "Beam B-12 / revision 3";
 pub const NATURAL_IMAGE_MAX_PAGE_FRACTION: f64 = 0.45;
@@ -965,6 +968,7 @@ pub struct AnnotationAdapter {
     rectangle_snap_settings: RectangleSnapSettings,
     semantic_snap_settings: SemanticSnapSettings,
     semantic_snap_decision: Option<SemanticSnapDecision>,
+    semantic_snap_page_sizes: HashMap<(u64, u32), (f64, f64)>,
     observed_pixels_per_point: ObservedPixelsPerPoint,
 }
 
@@ -1534,6 +1538,19 @@ impl AnnotationAdapter {
         self.semantic_snap_decision = None;
     }
 
+    pub fn set_semantic_snap_page_size(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        width_pdf_points: f64,
+        height_pdf_points: f64,
+    ) {
+        self.semantic_snap_page_sizes.insert(
+            (document_id, page_index),
+            (width_pdf_points, height_pdf_points),
+        );
+    }
+
     fn resolve_semantic_creation_point(
         &mut self,
         document_id: u64,
@@ -1551,7 +1568,7 @@ impl AnnotationAdapter {
             self.semantic_snap_decision = None;
             return point;
         }
-        let (excluded_ids, orthogonal_anchor) = match self.active.as_ref() {
+        let (excluded_ids, creation_anchor) = match self.active.as_ref() {
             Some(ActivePointer::StraightLineCreate {
                 document_id: active_document_id,
                 page_index: active_page_index,
@@ -1573,19 +1590,63 @@ impl AnnotationAdapter {
                 start,
                 ..
             }) if (*active_document_id, *active_page_index) == (document_id, page_index) => {
-                (vec![id.clone()], constrain_orthogonal.then_some(*start))
+                (vec![id.clone()], Some(*start))
             }
             _ => (Vec::new(), None),
         };
         let scene = self.document_scene(document_id, page_index);
-        let decision = SemanticSnapIndex::from_annotation_scene(&scene, &excluded_ids)
+        let annotation_decision = SemanticSnapIndex::from_annotation_scene(&scene, &excluded_ids)
             .resolve_point_with_orthogonal_anchor(
                 point,
                 &self.semantic_snap_settings,
                 self.observed_pixels_per_point.0,
-                orthogonal_anchor,
+                constrain_orthogonal.then_some(creation_anchor).flatten(),
             );
-        let resolved = decision.as_ref().map_or(point, |decision| decision.point);
+        let construction_grid_decision = self
+            .semantic_snap_page_sizes
+            .get(&(document_id, page_index))
+            .and_then(|(width, height)| {
+                resolve_construction_grid_point(
+                    point,
+                    *width,
+                    *height,
+                    &self.semantic_snap_settings,
+                    self.observed_pixels_per_point.0,
+                )
+            });
+        let decision = match (annotation_decision, construction_grid_decision) {
+            (Some(annotation), Some(grid)) => Some(
+                if annotation.distance_window_px <= grid.distance_window_px {
+                    annotation
+                } else {
+                    grid
+                },
+            ),
+            (annotation @ Some(_), None) => annotation,
+            (None, grid) => grid,
+        };
+        let mut resolved = decision.as_ref().map_or(point, |decision| decision.point);
+        if decision.is_none()
+            && self.tool == AnnotationTool::Dimension
+            && self.semantic_snap_settings.dimension_increment_enabled()
+            && let Some(anchor) = creation_anchor
+        {
+            let delta_x = resolved.x - anchor.x;
+            let delta_y = resolved.y - anchor.y;
+            let distance = delta_x.hypot(delta_y);
+            if distance > 0.
+                && let Ok(quantized) = quantize_pdf_distance_to_mm_increment(
+                    distance,
+                    self.semantic_snap_settings.dimension_increment_mm(),
+                )
+            {
+                let scale = quantized / distance;
+                resolved = PdfPoint {
+                    x: anchor.x + delta_x * scale,
+                    y: anchor.y + delta_y * scale,
+                };
+            }
+        }
         self.semantic_snap_decision = decision;
         resolved
     }
@@ -2314,13 +2375,14 @@ impl AnnotationAdapter {
             .entry(document_id)
             .or_default()
             .apply_command(AnnotationCommand::CreateAnnotation(
-                Annotation::MeasurementPath(MeasurementPathAnnotation::new(
+                Annotation::MeasurementPath(MeasurementPathAnnotation::new_with_text_style(
                     draft.id,
                     draft.page_index,
                     draft.points,
                     draft.kind,
                     draft.calibration,
                     rectangle_tool_appearance(&properties, false)?,
+                    text_box_tool_style(&properties)?,
                 )?),
             ))?;
         Ok(PointerPhaseOutcome::AnnotationCreated(id))
@@ -2764,7 +2826,15 @@ impl AnnotationAdapter {
             .ok_or_else(|| {
                 AnnotationError::InvalidGeometry(LENGTH_SCALE_REQUIRED_MESSAGE.into())
             })?;
-        let annotation = LengthAnnotation::new(id.clone(), page_index, start, end, calibration)?;
+        let properties = self.tool_properties(AnnotationTool::Length);
+        let annotation = LengthAnnotation::new_with_appearance(
+            id.clone(),
+            page_index,
+            start,
+            end,
+            calibration,
+            dimension_tool_appearance(&properties)?,
+        )?;
         self.documents
             .get_mut(&document_id)
             .ok_or(AnnotationError::NoActiveGesture)?
@@ -4739,12 +4809,13 @@ impl AnnotationAdapter {
                     (point.x - width / 2.0).clamp(0.0, (placement_page.width_pt - width).max(0.0));
                 let y = (point.y - height / 2.0)
                     .clamp(0.0, (placement_page.height_pt - height).max(0.0));
-                let annotation = ImageAnnotation::new(
+                let annotation = ImageAnnotation::new_with_opacity(
                     id.clone(),
                     page_index,
                     PdfRect::new(x, y, width, height)?,
                     pending.asset,
                     pending.aspect_locked,
+                    tool_properties.opacity,
                 )?;
                 document.apply_command(AnnotationCommand::CreateAnnotation(Annotation::Image(
                     annotation,
@@ -8395,6 +8466,8 @@ impl AnnotationAdapter {
             };
             let appearance = rectangle_tool_appearance(&self.tool_properties(tool), false)
                 .expect("stored measurement-path tool properties are validated");
+            let text_style = text_box_tool_style(&self.tool_properties(tool))
+                .expect("stored measurement-path tool properties are validated");
             let mut points = draft.points.clone();
             let last = *points
                 .last()
@@ -8402,13 +8475,14 @@ impl AnnotationAdapter {
             if (draft.hover.x - last.x).hypot(draft.hover.y - last.y) >= 0.5 {
                 points.push(draft.hover);
             }
-            let measured = MeasurementPathAnnotation::new(
+            let measured = MeasurementPathAnnotation::new_with_text_style(
                 draft.id.clone(),
                 draft.page_index,
                 points.clone(),
                 draft.kind,
                 draft.calibration.clone(),
                 appearance.clone(),
+                text_style.clone(),
             )
             .ok();
             scene.measurement_paths.push(SceneMeasurementPath {
@@ -8416,6 +8490,7 @@ impl AnnotationAdapter {
                 points,
                 kind: draft.kind,
                 appearance,
+                text_style,
                 caption: measured.map_or_else(String::new, |annotation| annotation.caption()),
                 show_caption: draft.calibration.show_caption(),
                 selected: true,
@@ -8860,8 +8935,15 @@ impl AnnotationAdapter {
             && let Some(calibration) = self
                 .document_page_length_calibration(document_id, page_index)
                 .cloned()
-            && let Ok(annotation) =
-                LengthAnnotation::new(id.clone(), page_index, *start, *current, calibration)
+            && let Ok(annotation) = LengthAnnotation::new_with_appearance(
+                id.clone(),
+                page_index,
+                *start,
+                *current,
+                calibration,
+                dimension_tool_appearance(&self.tool_properties(AnnotationTool::Length))
+                    .expect("stored Length tool properties are validated"),
+            )
         {
             let caption = annotation.caption();
             let show_caption = annotation.calibration().show_caption();
@@ -8871,6 +8953,7 @@ impl AnnotationAdapter {
                 end: annotation.end,
                 caption,
                 show_caption,
+                appearance: annotation.appearance,
                 selected: true,
                 locked: false,
             });
@@ -8898,12 +8981,13 @@ impl AnnotationAdapter {
                 LengthEndpoint::Start => (*current, retained.end),
                 LengthEndpoint::End => (retained.start, *current),
             };
-            if let Ok(preview) = LengthAnnotation::new(
+            if let Ok(preview) = LengthAnnotation::new_with_appearance(
                 id.clone(),
                 page_index,
                 start,
                 end,
                 retained.calibration().clone(),
+                retained.appearance.clone(),
             ) {
                 annotation.start = preview.start;
                 annotation.end = preview.end;
@@ -11134,5 +11218,62 @@ mod tests {
         assert_eq!(adapter.selected_ids(7), selection_before);
         assert_eq!(locked.annotation_order, order_before);
         assert_eq!(adapter.history_depths(7), (history_before.0 + 2, 0));
+    }
+
+    #[test]
+    fn construction_grid_and_dimension_increment_change_creation_geometry() {
+        use crate::semantic_snapping::{SemanticSnapRole, SemanticSnapSource};
+
+        let points_per_mm = 72. / 25.4;
+        let base_settings = SemanticSnapSettings::default()
+            .with_source(SemanticSnapSource::Annotation, false)
+            .with_source(SemanticSnapSource::Content, false)
+            .with_source(SemanticSnapSource::PageGrid, false);
+
+        let mut grid = AnnotationAdapter::default();
+        grid.set_tool(AnnotationTool::Line).unwrap();
+        grid.set_semantic_snap_settings(
+            base_settings
+                .with_source(SemanticSnapSource::ConstructionGrid, true)
+                .with_construction_grid_spacing_mm(10.),
+        )
+        .unwrap();
+        grid.set_semantic_snap_page_size(7, 0, 300., 200.);
+        grid.pointer_down(7, 0, 1, point(3. * points_per_mm, 3. * points_per_mm), 4.)
+            .unwrap();
+        grid.pointer_move(1, point(10.4 * points_per_mm, 20.3 * points_per_mm))
+            .unwrap();
+        let line = grid.document_scene(7, 0).straight_lines.remove(0);
+        assert!((line.end.x - 10. * points_per_mm).abs() < 0.000_001);
+        assert!((line.end.y - 20. * points_per_mm).abs() < 0.000_001);
+        assert_eq!(
+            grid.semantic_snap_decision().map(|decision| decision.role),
+            Some(SemanticSnapRole::Intersection)
+        );
+
+        let mut dimension = AnnotationAdapter::default();
+        dimension.set_tool(AnnotationTool::Dimension).unwrap();
+        dimension
+            .set_semantic_snap_settings(
+                base_settings
+                    .with_source(SemanticSnapSource::ConstructionGrid, false)
+                    .with_dimension_increment_enabled(true)
+                    .with_dimension_increment_mm(5.),
+            )
+            .unwrap();
+        dimension
+            .begin_dimension_placement(
+                9,
+                0,
+                MarkupId::new("dimension:increment").unwrap(),
+                point(0., 0.),
+            )
+            .unwrap();
+        dimension
+            .update_dimension_placement(point(13.2 * points_per_mm, 0.), false)
+            .unwrap();
+        let draft = dimension.document_scene(9, 0).dimensions.remove(0);
+        assert!((draft.end.x - 15. * points_per_mm).abs() < 0.000_001);
+        assert_eq!(draft.end.y, 0.);
     }
 }

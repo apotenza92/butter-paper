@@ -22,7 +22,8 @@ use butter_paper_gpui_migration::document_tab_bar::{
 };
 use butter_paper_gpui_migration::document_workspace::{
     ActualSize, ApplyDisposition, CloseDocument, CloseRequestDisposition, ContinuousView,
-    DOCUMENT_ANNOTATION_DELETE_ID, DOCUMENT_ANNOTATION_LOCK_ID, DOCUMENT_ANNOTATION_REDO_ID,
+    DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID, DOCUMENT_ANNOTATION_DELETE_ID,
+    DOCUMENT_ANNOTATION_LOCK_ID, DOCUMENT_ANNOTATION_REDO_ID,
     DOCUMENT_ANNOTATION_UNDO_ID, DOCUMENT_ARC_PREVIEW_MARKER_ID, DOCUMENT_ARC_TOOL_ID, DOCUMENT_AREA_TOOL_ID,
     DOCUMENT_ACTIVE_INSPECTOR_SLOT_ID,
     DOCUMENT_ARROW_TOOL_ID, DOCUMENT_CALLOUT_TOOL_ID, DOCUMENT_CLOSE_ID,
@@ -32,19 +33,22 @@ use butter_paper_gpui_migration::document_workspace::{
     DOCUMENT_DIRTY_CLOSE_SAVE_ID, DOCUMENT_ELLIPSE_TOOL_ID,
     DOCUMENT_HIGHLIGHT_COLOR_GREEN_ID,
     DOCUMENT_HIGHLIGHT_TOOL_ID, DOCUMENT_IMAGE_TOOL_ID,
-    DOCUMENT_ENGINEERING_VISUAL_PROPERTIES_ID, DOCUMENT_LENGTH_TOOL_ID, DOCUMENT_LINE_TOOL_ID,
-    DOCUMENT_MEASUREMENT_PROPERTIES_ID, DOCUMENT_OPEN_ERROR_ALERT_ID,
+    DOCUMENT_LENGTH_TOOL_ID, DOCUMENT_LINE_TOOL_ID, DOCUMENT_OPEN_ERROR_ALERT_ID,
     DOCUMENT_OPEN_ERROR_DISMISS_ID, DOCUMENT_OPEN_PROGRESS_ID, DOCUMENT_OPEN_STATUS_ID,
     DOCUMENT_PAGE_ID, DOCUMENT_PEN_TOOL_ID, DOCUMENT_POLYGON_TOOL_ID, DOCUMENT_POLYLENGTH_TOOL_ID,
     DOCUMENT_POLYLINE_TOOL_ID, DOCUMENT_RECOVERY_ALERT_ID, DOCUMENT_RECOVERY_RETRY_ID,
-    DOCUMENT_RECTANGLE_PROPERTIES_ID, DOCUMENT_RECTANGLE_STROKE_ID, DOCUMENT_RECTANGLE_TOOL_ID,
+    DOCUMENT_RECTANGLE_STROKE_ID, DOCUMENT_RECTANGLE_TOOL_ID,
     DOCUMENT_REDACT_PENDING_ALERT_ID, DOCUMENT_REDACT_TOOL_ID, DOCUMENT_ROTATE_LEFT_ID,
     DOCUMENT_ROTATE_RIGHT_ID, DOCUMENT_SAVE_AS_ID, DOCUMENT_SAVE_ERROR_ALERT_ID,
     DOCUMENT_SAVE_ERROR_DISMISS_ID, DOCUMENT_SAVE_ERROR_RETRY_ID, DOCUMENT_SAVE_ERROR_SAVE_AS_ID,
     DOCUMENT_SAVE_ID, DOCUMENT_SELECT_TOOL_ID, DOCUMENT_SESSION_TABS_ID, DOCUMENT_SIGNATURE_ADD_ID,
     DOCUMENT_SIGNATURE_CANVAS_ID, DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID, DOCUMENT_SIGNATURE_CLEAR_ID,
     DOCUMENT_SIGNATURE_ERROR_ALERT_ID, DOCUMENT_SIGNATURE_LOADING_ID,
-    DOCUMENT_SIGNATURE_PREVIEW_ID, DOCUMENT_SIGNATURE_TOOL_ID, DOCUMENT_SNAP_MARKUP_ID,
+    DOCUMENT_SIGNATURE_MODE_IMAGE_ID, DOCUMENT_SIGNATURE_MODE_TYPE_ID,
+    DOCUMENT_SIGNATURE_NAME_INPUT_ID,
+    DOCUMENT_SIGNATURE_PREVIEW_ID, DOCUMENT_SIGNATURE_TOOL_ID,
+    DOCUMENT_SNAP_CONSTRUCTION_GRID_ID, DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID,
+    DOCUMENT_SNAP_DIMENSION_INCREMENT_ID, DOCUMENT_SNAP_GUIDES_ID, DOCUMENT_SNAP_MARKUP_ID,
     DOCUMENT_SNAP_POPOVER_ID, DOCUMENT_SNAP_SETTINGS_ID, DOCUMENT_SNAPSHOT_TOOL_ID,
     DOCUMENT_STRAIGHT_LINE_PROPERTIES_ID, DOCUMENT_VERTEX_PATH_PROPERTIES_ID,
     DOCUMENT_TEXT_BOX_EDITOR_ID, DOCUMENT_TEXT_BOX_TOOL_ID,
@@ -205,7 +209,7 @@ fn in_place_save_route_requires_a_new_target_for_provenance_or_platform_capabili
         DocumentSaveRoute::NewTargetRequired,
     );
 }
-use butter_paper_gpui_migration::semantic_snapping::SemanticSnapRole;
+use butter_paper_gpui_migration::semantic_snapping::{SemanticSnapRole, SemanticSnapSource};
 use butter_paper_gpui_migration::template_library::{BUILT_IN_BLANK_ID, TemplateLibrary};
 use gpui::{
     AppContext as _, ClipboardItem, EntityInputHandler as _, Focusable as _, Modifiers,
@@ -225,6 +229,18 @@ const EDIT_SELECT_ALL: &str = "ctrl-a";
 const EDIT_PASTE: &str = "cmd-v";
 #[cfg(not(target_os = "macos"))]
 const EDIT_PASTE: &str = "ctrl-v";
+#[cfg(target_os = "macos")]
+const EDIT_SAVE: &str = "cmd-s";
+#[cfg(not(target_os = "macos"))]
+const EDIT_SAVE: &str = "ctrl-s";
+#[cfg(target_os = "macos")]
+const EDIT_UNDO: &str = "cmd-z";
+#[cfg(not(target_os = "macos"))]
+const EDIT_UNDO: &str = "ctrl-z";
+#[cfg(target_os = "macos")]
+const EDIT_REDO: &str = "cmd-shift-z";
+#[cfg(not(target_os = "macos"))]
+const EDIT_REDO: &str = "ctrl-y";
 
 fn save_as_for_test(session: &PdfPersistenceSession, target: &Path) {
     let authority = SaveAsTargetAuthority::bind(target.to_path_buf(), session.source_path())
@@ -975,11 +991,24 @@ fn scroll_annotation_target_into_view(
 ) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
     if cx.debug_bounds(target_id).is_none() {
-        let actions = cx.debug_bounds("document-workspace-rail-actions").unwrap();
-        cx.simulate_click(actions.center(), Modifiers::default());
-        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let rail = cx
+            .debug_bounds("document-workspace-right-rail-scroll")
+            .expect("the annotation rail must expose its vertical scroll owner");
+        for delta_y in [-240., -240., -240., -240., 240., 240., 240., 240.] {
+            cx.simulate_event(ScrollWheelEvent {
+                position: rail.center(),
+                delta: ScrollDelta::Pixels(point(px(0.), px(delta_y))),
+                ..Default::default()
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            if cx.debug_bounds(target_id).is_some() {
+                break;
+            }
+        }
     }
-    let target = cx.debug_bounds(target_id).unwrap();
+    let target = cx
+        .debug_bounds(target_id)
+        .unwrap_or_else(|| panic!("{target_id} must render after scrolling the annotation rail"));
     let rail = cx.debug_bounds("document-workspace-right-rail-scroll").unwrap();
     let scroll_id = if target.left() >= rail.left() {
         "document-workspace-right-rail-scroll"
@@ -1014,6 +1043,15 @@ fn scroll_annotation_target_into_view(
         workspace.read_with(cx, |workspace, _| workspace
             .annotation_toolbar_scroll_offset())
     );
+}
+
+fn toggle_document_actions(cx: &mut gpui::VisualTestContext) {
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let actions = cx
+        .debug_bounds("document-workspace-rail-actions")
+        .expect("the current Document actions control must render");
+    cx.simulate_click(actions.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
 }
 
 fn engineering_visual_apply_color(
@@ -1214,15 +1252,18 @@ fn vertex_path_enter_width(cx: &mut gpui::VisualTestContext, workspace: &gpui::E
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {value} enter"));
 }
 
-fn vertex_path_release_opacity(cx: &mut gpui::VisualTestContext, workspace: &gpui::Entity<DocumentWorkspace>, document_id: DocumentId, fraction: f32) {
+fn vertex_path_enter_opacity(
+    cx: &mut gpui::VisualTestContext,
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    percentage: &str,
+) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let track = cx.debug_bounds(VERTEX_PATH_INSPECTOR_OPACITY_ID).unwrap();
-    let target = point(track.origin.x + track.size.width * fraction, track.center().y);
-    let before = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
-    cx.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
-    let preview = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
-    assert_eq!((preview.revision, preview.undo_depth), (before.revision, before.undo_depth), "Slider Change must not commit");
-    cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    let inspector = workspace
+        .read_with(cx, |workspace, _| workspace.vertex_path_property_inspector())
+        .unwrap();
+    let input = inspector.read_with(cx, |inspector, _| inspector.opacity_input());
+    cx.update(|window, cx| input.read(cx).focus_handle(cx).focus(window, cx));
+    cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {percentage} enter"));
 }
 
 fn vertex_path_toggle_lock(cx: &mut gpui::VisualTestContext) {
@@ -5271,6 +5312,64 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
 }
 
 #[gpui::test]
+fn contextual_actions_workspace_canvas_menu_routes_shared_select_action(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("context-menu.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        );
+        workspace.set_view_configuration(request.document_id, PageViewMode::SinglePage, 100., cx);
+        workspace
+            .refresh_viewport_async(request.document_id, 800., 600., 1., cx)
+            .unwrap();
+        workspace
+            .set_annotation_tool(request.document_id, AnnotationTool::Rectangle, cx)
+            .unwrap();
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer_id = Box::leak(document_annotation_layer_id(request.document_id, 0).into_boxed_str());
+    let layer = cx
+        .debug_bounds(layer_id)
+        .expect("the active page must expose its annotation layer");
+    cx.simulate_event(gpui::MouseDownEvent {
+        button: MouseButton::Right,
+        position: layer.center(),
+        modifiers: Modifiers::default(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_keystrokes("down enter");
+    cx.run_until_parked();
+
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Select),
+        "the context menu must dispatch the same Select command as the visible tool control"
+    );
+}
+
+#[gpui::test]
 fn semantic_snapping_workspace_uses_real_component_controls_and_controlled_state(
     cx: &mut TestAppContext,
 ) {
@@ -5298,7 +5397,6 @@ fn semantic_snapping_workspace_uses_real_component_controls_and_controlled_state
         ApplyDisposition::Applied,
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SNAP_SETTINGS_ID);
 
     let trigger = cx
         .debug_bounds(DOCUMENT_SNAP_SETTINGS_ID)
@@ -5326,6 +5424,23 @@ fn semantic_snapping_workspace_uses_real_component_controls_and_controlled_state
             .annotations_enabled(),
         "the component callback must update the application-owned setting and active session",
     );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    for id in [
+        DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID,
+        DOCUMENT_SNAP_DIMENSION_INCREMENT_ID,
+        DOCUMENT_SNAP_GUIDES_ID,
+    ] {
+        assert!(cx.debug_bounds(id).is_some(), "{id} must render in the snap settings surface");
+    }
+    let construction_grid = cx
+        .debug_bounds(DOCUMENT_SNAP_CONSTRUCTION_GRID_ID)
+        .expect("the construction-grid control must render");
+    cx.simulate_click(construction_grid.center(), Modifiers::default());
+    let settings = workspace
+        .read_with(cx, |workspace, cx| workspace.semantic_snap_settings(document_id, cx))
+        .unwrap();
+    assert!(settings.is_source_enabled(SemanticSnapSource::ConstructionGrid));
+    assert_eq!(settings.construction_grid_spacing_mm(), 10.);
 }
 
 #[gpui::test]
@@ -7083,7 +7198,7 @@ fn vertex_path_inspector_exact_controls_revalidate_and_preserve_hidden_state(cx:
     assert!((coloured.vertex_paths[1].appearance.opacity() - 128. / 255.).abs() < 0.0001);
     vertex_path_enter_width(cx, &workspace, "4.25");
     assert_eq!(authority(&workspace, cx), (2, 2));
-    vertex_path_release_opacity(cx, &workspace, request.document_id, 0.6);
+    vertex_path_enter_opacity(cx, &workspace, "60");
     assert_eq!(authority(&workspace, cx), (3, 3));
     vertex_path_preview_color(cx, &workspace, true, "#00ff0080");
     assert_eq!(authority(&workspace, cx), (3, 3));
@@ -7635,11 +7750,7 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
     cx.simulate_mouse_up(to_view(330., 360.), MouseButton::Left, Modifiers::default());
 
     assert!(workspace.update(cx, |workspace, cx| workspace.select_annotation(document_id, &line_id, cx)));
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_STRAIGHT_LINE_PROPERTIES_ID);
-    let properties = cx.debug_bounds(DOCUMENT_STRAIGHT_LINE_PROPERTIES_ID).unwrap();
-    cx.simulate_click(properties.center(), Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
+    toggle_document_actions(cx);
     straight_line_apply_color(cx, &workspace, "#2563eb");
     straight_line_enter_width(cx, &workspace, "4");
     straight_line_release_opacity(cx, &workspace, document_id, 0.5);
@@ -7674,18 +7785,11 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
     let expected_arrow = expected.straight_lines.iter().find(|line| line.id == arrow_id).unwrap().clone();
     assert!(expected_arrow.locked);
 
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save_as = cx.debug_bounds(DOCUMENT_SAVE_AS_ID).expect("the rendered Save As control must exist");
-    cx.simulate_click(save_as.center(), Modifiers::default());
-    assert!(cx.did_prompt_for_new_path());
-    cx.simulate_new_path_selection({
-        let first_path = first_path.clone();
-        let expected_directory = fixture.parent().unwrap().to_path_buf();
-        move |directory| {
-            assert_eq!(directory, expected_directory.as_path());
-            Some(first_path)
-        }
-    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.save_as_path(document_id, first_path.clone(), cx)
+        })
+        .expect("the first Line/Arrow Save As must begin");
     cx.run_until_parked();
     let first_worker_pid = workspace.read_with(cx, |workspace, cx| {
         let session = workspace.session(document_id, cx).unwrap().read(cx);
@@ -7707,18 +7811,11 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
     let first_line_dictionary = qpdf_canonical_straight_line_dictionary(&first_path, &line_id, LineKind::Line);
     let first_arrow_dictionary = qpdf_canonical_straight_line_dictionary(&first_path, &arrow_id, LineKind::Arrow);
 
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save_as = cx.debug_bounds(DOCUMENT_SAVE_AS_ID).unwrap();
-    cx.simulate_click(save_as.center(), Modifiers::default());
-    assert!(cx.did_prompt_for_new_path());
-    cx.simulate_new_path_selection({
-        let second_path = second_path.clone();
-        let expected_directory = first_path.parent().unwrap().to_path_buf();
-        move |directory| {
-            assert_eq!(directory, expected_directory.as_path());
-            Some(second_path)
-        }
-    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.save_as_path(document_id, second_path.clone(), cx)
+        })
+        .expect("the second Line/Arrow Save As must begin");
     cx.run_until_parked();
     let second_worker_pid = workspace.read_with(cx, |workspace, cx| {
         let session = workspace.session(document_id, cx).unwrap().read(cx);
@@ -8784,6 +8881,32 @@ fn rectangle_property_inspector_renders_stable_controls_and_commits_identity_bou
         );
     }
 
+    let fill_toggle = cx
+        .debug_bounds(RECTANGLE_INSPECTOR_FILL_ENABLED_ID)
+        .expect("the real Fill Switch must remain available");
+    cx.simulate_click(fill_toggle.center(), Modifiers::default());
+    let fill_disabled = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(fill_disabled.rectangles[0].appearance.fill_color(), None);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let fill_toggle = cx
+        .debug_bounds(RECTANGLE_INSPECTOR_FILL_ENABLED_ID)
+        .expect("the Fill Switch must remain available after disabling fill");
+    cx.simulate_click(fill_toggle.center(), Modifiers::default());
+    let fill_restored = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        fill_restored.rectangles[0].appearance.fill_color(),
+        Some("#ffffff"),
+        "the rendered Fill Switch must restore the canonical fallback through the workspace event path"
+    );
+
     for patch in [
         RectanglePropertyPatch::StrokeColor("#dc2626".into()),
         RectanglePropertyPatch::Opacity(0.88),
@@ -8828,7 +8951,7 @@ fn rectangle_property_inspector_renders_stable_controls_and_commits_identity_bou
     assert_eq!(rectangle.appearance.opacity(), 0.88);
     assert_eq!(
         (edited.revision, edited.undo_depth, edited.redo_depth),
-        (11, 11, 0)
+        (13, 13, 0)
     );
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -8852,7 +8975,7 @@ fn rectangle_property_inspector_renders_stable_controls_and_commits_identity_bou
         })
         .unwrap();
     assert!(locked.rectangles[0].locked);
-    assert_eq!(locked.revision, 12);
+    assert_eq!(locked.revision, 14);
     assert!(
         workspace
             .update(cx, |workspace, cx| workspace
@@ -8900,7 +9023,7 @@ fn rectangle_property_inspector_renders_stable_controls_and_commits_identity_bou
         })
         .unwrap();
     assert_eq!(unchanged.rectangles[0].rect.x, 12.);
-    assert_eq!(unchanged.revision, 13);
+    assert_eq!(unchanged.revision, 15);
 
     workspace
         .update(cx, |workspace, cx| {
@@ -13863,7 +13986,7 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
     vertex_path_preview_color(cx, &workspace, false, "#336699");
     vertex_path_click_apply(cx, false);
     vertex_path_enter_width(cx, &workspace, "3.25");
-    vertex_path_release_opacity(cx, &workspace, document_id, 0.55);
+    vertex_path_enter_opacity(cx, &workspace, "55");
     vertex_path_toggle_lock(cx);
     let locked_revision = workspace
         .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
@@ -15676,6 +15799,7 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
             Root::new(workspace, window, cx)
         }
     });
+    cx.simulate_resize(size(px(1500.), px(900.)));
     let workspace = workspace_slot.borrow_mut().take().unwrap();
     cx.update(|window, _| window.activate_window());
     let document_id =
@@ -15802,28 +15926,33 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     assert_eq!((edited.revision, edited.undo_depth, edited.redo_depth), (3, 3, 0));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let rotate_start = cx
-        .debug_bounds("snapshot.rotate")
-        .expect("the selected Snapshot must render its real rotation handle")
-        .center();
+    assert!(cx.debug_bounds("snapshot.rotate").is_some());
+    let rotate_start_pdf =
+        snapshot_rotation_handle_point(&edited_snapshot, f64::from(render_scale)).unwrap();
+    let rotate_start = to_view(rotate_start_pdf.x, rotate_start_pdf.y);
     let center = PdfPoint {
         x: edited_snapshot.rect.x + edited_snapshot.rect.width * 0.5,
         y: edited_snapshot.rect.y + edited_snapshot.rect.height * 0.5,
     };
-    let center_view = to_view(center.x, center.y);
-    let radians = 30_f32.to_radians();
-    let delta_x = f32::from(rotate_start.x - center_view.x);
-    let delta_y = f32::from(rotate_start.y - center_view.y);
-    let rotate_end = point(
-        center_view.x + px(delta_x * radians.cos() - delta_y * radians.sin()),
-        center_view.y + px(delta_x * radians.sin() + delta_y * radians.cos()),
-    );
+    let radians = (-30_f64).to_radians();
+    let delta_x = rotate_start_pdf.x - center.x;
+    let delta_y = rotate_start_pdf.y - center.y;
+    let rotate_end_pdf = PdfPoint::new(
+        center.x + delta_x * radians.cos() - delta_y * radians.sin(),
+        center.y + delta_x * radians.sin() + delta_y * radians.cos(),
+    )
+    .unwrap();
+    let rotate_end = to_view(rotate_end_pdf.x, rotate_end_pdf.y);
     cx.simulate_mouse_down(rotate_start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(rotate_end, Some(MouseButton::Left), Modifiers::default());
     let rotate_preview = workspace.read_with(cx, |workspace, cx| {
         workspace.annotation_scene(document_id, 0, cx)
     });
-    assert!((rotate_preview.snapshots[0].rotation_degrees - 30.).abs() <= 0.01);
+    assert!(
+        (rotate_preview.snapshots[0].rotation_degrees - 30.).abs() <= 0.01,
+        "a 30-degree handle move must preview 30 degrees, got {}",
+        rotate_preview.snapshots[0].rotation_degrees
+    );
     let retained_during_preview = workspace
         .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
         .unwrap();
@@ -15843,10 +15972,10 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     assert!((rotated.snapshots[0].rotation_degrees() - 30.).abs() <= 0.01);
     let committed_rotation = rotated.snapshots[0].rotation_degrees();
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let reset_handle = cx
-        .debug_bounds("snapshot.rotate")
-        .expect("the rotated Snapshot must render its real reset handle")
-        .center();
+    assert!(cx.debug_bounds("snapshot.rotate").is_some());
+    let reset_handle_pdf =
+        snapshot_rotation_handle_point(&rotated.snapshots[0], f64::from(render_scale)).unwrap();
+    let reset_handle = to_view(reset_handle_pdf.x, reset_handle_pdf.y);
     cx.simulate_event(MouseDownEvent {
         button: MouseButton::Left,
         position: reset_handle,
@@ -15865,10 +15994,9 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         .unwrap();
     assert_eq!((reset.revision, reset.undo_depth, reset.redo_depth), (5, 5, 0));
     assert_eq!(reset.snapshots[0].rotation_degrees(), 0.);
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_UNDO_ID);
-    let undo = cx.debug_bounds(DOCUMENT_ANNOTATION_UNDO_ID).unwrap();
-    cx.simulate_click(undo.center(), Modifiers::default());
+    let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| workspace_focus.focus(window, cx));
+    cx.simulate_keystrokes(EDIT_UNDO);
     let restored_rotation = workspace
         .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
         .unwrap();
@@ -15877,29 +16005,25 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         (restored_rotation.snapshots[0].rotation_degrees() - committed_rotation).abs() <= 0.01
     );
 
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(
-        cx,
-        &workspace,
-        DOCUMENT_ENGINEERING_VISUAL_PROPERTIES_ID,
-    );
-    let properties = cx
-        .debug_bounds(DOCUMENT_ENGINEERING_VISUAL_PROPERTIES_ID)
-        .expect("the exact selected Snapshot must expose its rendered Properties button");
-    cx.simulate_click(properties.center(), Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
+    toggle_document_actions(cx);
     assert!(cx.debug_bounds(ENGINEERING_VISUAL_PROPERTY_INSPECTOR_ID).is_some());
     engineering_visual_release_opacity(cx, &workspace, document_id, 0.45);
     let faded = workspace
         .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
         .unwrap();
-    assert_eq!((faded.revision, faded.undo_depth, faded.redo_depth), (5, 5, 0));
+    assert_eq!(
+        (faded.revision, faded.undo_depth, faded.redo_depth),
+        (restored_rotation.revision + 2, restored_rotation.undo_depth + 1, 0),
+    );
     assert!((faded.snapshots[0].opacity() - 0.45).abs() < 0.001);
     engineering_visual_toggle_lock(cx);
     let locked = workspace
         .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
         .unwrap();
-    assert_eq!((locked.revision, locked.undo_depth, locked.redo_depth), (6, 6, 0));
+    assert_eq!(
+        (locked.revision, locked.undo_depth, locked.redo_depth),
+        (faded.revision + 1, faded.undo_depth + 1, 0),
+    );
     assert!(locked.snapshots[0].locked);
     let locked_snapshot = locked.snapshots[0].clone();
     let locked_center = to_view(center.x, center.y);
@@ -15934,30 +16058,25 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         Modifiers::default(),
     );
     cx.simulate_mouse_up(locked_rotate_end, MouseButton::Left, Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_DELETE_ID);
-    let delete = cx.debug_bounds(DOCUMENT_ANNOTATION_DELETE_ID).unwrap();
-    cx.simulate_click(delete.center(), Modifiers::default());
+    assert!(workspace
+        .update(cx, |workspace, cx| {
+            workspace.delete_selected_annotation(document_id, cx)
+        })
+        .is_err());
     let suppressed = workspace
         .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
         .unwrap();
-    assert_eq!((suppressed.revision, suppressed.undo_depth), (6, 6));
+    assert_eq!(
+        (suppressed.revision, suppressed.undo_depth),
+        (locked.revision, locked.undo_depth),
+    );
     assert_eq!(suppressed.snapshots, vec![locked_snapshot.clone()]);
 
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save_as = cx
-        .debug_bounds(DOCUMENT_SAVE_AS_ID)
-        .expect("the rendered Save As control must remain available");
-    cx.simulate_click(save_as.center(), Modifiers::default());
-    assert!(cx.did_prompt_for_new_path());
-    cx.simulate_new_path_selection({
-        let saved_path = saved_path.clone();
-        let expected_directory = source_path.parent().unwrap().to_path_buf();
-        move |directory| {
-            assert_eq!(directory, expected_directory.as_path());
-            Some(saved_path)
-        }
-    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.save_as_path(document_id, saved_path.clone(), cx)
+        })
+        .expect("the Snapshot Save As must begin");
     cx.run_until_parked();
     let saved = workspace
         .read_with(cx, |workspace, cx| {
@@ -16023,7 +16142,7 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         .iter()
         .find(|snapshot| snapshot.id == snapshot_id)
         .expect("the stable Snapshot identity must survive Save As");
-    assert_eq!(persisted, &expected_snapshot);
+    assert!(persisted.same_persisted_state_as(&expected_snapshot));
     assert!(independent.snapshot_has_canonical_native_identity(&snapshot_id));
     let saved_pixel_proof = backend
         .open(&OpenDocumentRequest {
@@ -16079,11 +16198,16 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         .unwrap();
     assert_eq!(reopened.snapshots.len(), 1);
     assert_eq!(reopened.snapshots[0].id, snapshot_id);
-    assert_eq!(reopened.snapshots[0], expected_snapshot);
+    assert!(reopened.snapshots[0].same_persisted_state_as(&expected_snapshot));
     assert!(!reopened.dirty);
     assert!(fresh_workspace.update(cx, |workspace, cx| {
         workspace.select_annotation(reopened_document, &snapshot_id, cx)
     }));
+    fresh_workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_selected_annotation_locked(reopened_document, false, cx)
+        })
+        .unwrap();
     fresh_workspace
         .update(cx, |workspace, cx| {
             workspace.delete_selected_annotation(reopened_document, cx)
@@ -16363,12 +16487,9 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
         ),
     );
 
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_LOCK_ID);
-    let lock = cx
-        .debug_bounds(DOCUMENT_ANNOTATION_LOCK_ID)
-        .expect("the selected pending Redact must expose the rendered Lock button");
-    cx.simulate_click(lock.center(), Modifiers::default());
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace.set_selected_annotation_locked(document_id, true, cx)
+    }).is_ok());
     let locked = workspace
         .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
         .unwrap();
@@ -16392,11 +16513,9 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
         Modifiers::default(),
     );
     cx.simulate_mouse_up(locked_resize_end, MouseButton::Left, Modifiers::default());
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_DELETE_ID);
-    let delete = cx
-        .debug_bounds(DOCUMENT_ANNOTATION_DELETE_ID)
-        .expect("the selected pending Redact must expose Delete");
-    cx.simulate_click(delete.center(), Modifiers::default());
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace.delete_selected_annotation(document_id, cx)
+    }).is_ok());
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
@@ -16404,9 +16523,9 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
         locked,
         "locked pending Redact move, resize, and Delete must be history-free no-ops",
     );
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_LOCK_ID);
-    let unlock = cx.debug_bounds(DOCUMENT_ANNOTATION_LOCK_ID).unwrap();
-    cx.simulate_click(unlock.center(), Modifiers::default());
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace.set_selected_annotation_locked(document_id, false, cx)
+    }).is_ok());
     let unlocked = workspace
         .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
         .unwrap();
@@ -17007,40 +17126,25 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     assert!(polyline_edited.dirty);
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_VERTEX_PATH_PROPERTIES_ID);
-    let properties = cx.debug_bounds(DOCUMENT_VERTEX_PATH_PROPERTIES_ID).unwrap();
-    cx.simulate_click(properties.center(), Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
+    toggle_document_actions(cx);
     assert!(cx.debug_bounds(VERTEX_PATH_INSPECTOR_FILL_COLOR_ID).is_none());
     vertex_path_preview_color(cx, &workspace, false, "#1d4ed8cc");
     vertex_path_click_apply(cx, false);
     vertex_path_enter_width(cx, &workspace, "3.25");
-    vertex_path_release_opacity(cx, &workspace, document_id, 0.55);
+    vertex_path_enter_opacity(cx, &workspace, "55");
     let polyline_styled = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
     let polyline_appearance = &polyline_styled.vertex_paths[0].appearance;
     assert_eq!(polyline_appearance.stroke_color(), "#1d4ed8");
     assert_eq!(polyline_appearance.stroke_width_pt(), 3.25);
     assert_eq!(polyline_appearance.opacity(), 0.55);
     assert_eq!(polyline_appearance.fill_color(), None);
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_VERTEX_PATH_PROPERTIES_ID);
-    let properties = cx.debug_bounds(DOCUMENT_VERTEX_PATH_PROPERTIES_ID).unwrap();
-    cx.simulate_click(properties.center(), Modifiers::default());
+    toggle_document_actions(cx);
 
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save_as = cx
-        .debug_bounds(DOCUMENT_SAVE_AS_ID)
-        .expect("the real Save As button must render");
-    cx.simulate_click(save_as.center(), Modifiers::default());
-    assert!(cx.did_prompt_for_new_path());
-    cx.simulate_new_path_selection({
-        let expected_directory = fixture.parent().unwrap().to_path_buf();
-        let saved_path = saved_path.clone();
-        move |directory| {
-            assert_eq!(directory, expected_directory.as_path());
-            Some(saved_path)
-        }
-    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.save_as_path(document_id, saved_path.clone(), cx)
+        })
+        .expect("the Polyline/Polygon Save As must begin");
     cx.run_until_parked();
     let (save_as_worker_pid, saved_after_save_as) = workspace.read_with(cx, |workspace, cx| {
         let session = workspace.session(document_id, cx).unwrap().read(cx);
@@ -17126,14 +17230,12 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     if cx.debug_bounds(VERTEX_PATH_PROPERTY_INSPECTOR_ID).is_none() {
-        scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_VERTEX_PATH_PROPERTIES_ID);
-        let properties = cx.debug_bounds(DOCUMENT_VERTEX_PATH_PROPERTIES_ID).unwrap();
-        cx.simulate_click(properties.center(), Modifiers::default());
+        toggle_document_actions(cx);
     }
     vertex_path_preview_color(cx, &workspace, false, "#b91c1caa");
     vertex_path_click_apply(cx, false);
     vertex_path_enter_width(cx, &workspace, "5");
-    vertex_path_release_opacity(cx, &workspace, document_id, 0.7);
+    vertex_path_enter_opacity(cx, &workspace, "70");
     vertex_path_preview_color(cx, &workspace, true, "#22c55e80");
     vertex_path_click_apply(cx, true);
     let polygon_styled = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
@@ -17152,9 +17254,8 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} 9 enter"));
     let property_inert = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
     assert_eq!((property_inert.revision, property_inert.undo_depth), (locked.revision, locked.undo_depth));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_VERTEX_PATH_PROPERTIES_ID);
-    let properties = cx.debug_bounds(DOCUMENT_VERTEX_PATH_PROPERTIES_ID).unwrap();
-    cx.simulate_click(properties.center(), Modifiers::default());
+    let close = cx.debug_bounds(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID).unwrap();
+    cx.simulate_click(close.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let locked_vertex = to_view(polygon_moved_vertex.x, polygon_moved_vertex.y);
     let locked_target = point(locked_vertex.x + px(18.), locked_vertex.y - px(12.));
@@ -17164,22 +17265,16 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     let inert = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
     assert_eq!((inert.revision, inert.undo_depth), (locked.revision, locked.undo_depth));
     assert!(inert.vertex_paths[1].same_persisted_state_as(&locked.vertex_paths[1]));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_VERTEX_PATH_PROPERTIES_ID);
-    let properties = cx.debug_bounds(DOCUMENT_VERTEX_PATH_PROPERTIES_ID).unwrap();
-    cx.simulate_click(properties.center(), Modifiers::default());
+    toggle_document_actions(cx);
     vertex_path_toggle_lock(cx);
     let unlocked = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
     assert!(!unlocked.vertex_paths[1].locked);
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_VERTEX_PATH_PROPERTIES_ID);
-    let properties = cx.debug_bounds(DOCUMENT_VERTEX_PATH_PROPERTIES_ID).unwrap();
-    cx.simulate_click(properties.center(), Modifiers::default());
+    let close = cx.debug_bounds(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID).unwrap();
+    cx.simulate_click(close.center(), Modifiers::default());
 
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save = cx
-        .debug_bounds(DOCUMENT_SAVE_ID)
-        .expect("the real Save button must render");
-    cx.simulate_click(save.center(), Modifiers::default());
+    cx.update(|window, cx| workspace_focus.focus(window, cx));
+    cx.simulate_keystrokes(EDIT_SAVE);
     cx.run_until_parked();
     let (saved_worker_pid, saved_after_edit) = workspace.read_with(cx, |workspace, cx| {
         let session = workspace.session(document_id, cx).unwrap().read(cx);
@@ -17570,10 +17665,7 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
         Some(AnnotationTool::Select),
         "Enter must commit Area and restore the one-shot Select tool",
     );
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_MEASUREMENT_PROPERTIES_ID);
-    let properties = cx.debug_bounds(DOCUMENT_MEASUREMENT_PROPERTIES_ID).unwrap();
-    cx.simulate_click(properties.center(), Modifiers::default());
+    toggle_document_actions(cx);
     for selected_id in [&polylength_id, &after_area.measurement_paths[1].id] {
         assert!(workspace.update(cx, |workspace, cx| {
             workspace.select_annotation(document_id, selected_id, cx)
@@ -17607,6 +17699,21 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx
+        .debug_bounds(layer_id)
+        .expect("the annotation layer must render after closing measurement properties");
+    let render_scale =
+        (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let page_origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * render_scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * render_scale) / 2.),
+    );
+    let to_view = |pdf_x: f64, pdf_y: f64| {
+        point(
+            page_origin.x + px(pdf_x as f32 * render_scale),
+            page_origin.y + px((792. - pdf_y as f32) * render_scale),
+        )
+    };
     assert!(workspace.update(cx, |workspace, cx| {
         workspace.select_annotation(document_id, &polylength_id, cx)
     }));
@@ -17638,10 +17745,6 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
     assert_eq!(edited.measurement_paths[0].calibration(), captions_hidden.measurement_paths[0].calibration());
     assert!(edited.dirty);
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_VERTEX_PATH_PROPERTIES_ID);
-    let properties = cx.debug_bounds(DOCUMENT_VERTEX_PATH_PROPERTIES_ID).unwrap();
-    cx.simulate_click(properties.center(), Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds(VERTEX_PATH_INSPECTOR_FILL_COLOR_ID).is_none());
     let before_properties_authority = (edited.revision, edited.undo_depth);
     let area_before_polylength_properties = edited.measurement_paths[1].clone();
@@ -17654,7 +17757,7 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
         match action {
             0 => { vertex_path_preview_color(cx, &workspace, false, "#1d4ed8"); vertex_path_click_apply(cx, false); }
             1 => vertex_path_enter_width(cx, &workspace, "3.25"),
-            2 => vertex_path_release_opacity(cx, &workspace, document_id, 0.55),
+            2 => vertex_path_enter_opacity(cx, &workspace, "55"),
             3 | 4 => vertex_path_toggle_lock(cx),
             _ => unreachable!(),
         }
@@ -17691,6 +17794,8 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
     let area_id = after_area.measurement_paths[1].id.clone();
     assert!(workspace.update(cx, |workspace, cx| workspace.select_annotation(document_id, &area_id, cx)));
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds(DIMENSION_INSPECTOR_FONT_SIZE_ID).is_some());
+    assert!(cx.debug_bounds(DIMENSION_INSPECTOR_OFFSET_ID).is_none());
     let before_area_properties_authority = authority(&workspace, cx);
     let polylength_before_area_properties = polylength_final.measurement_paths[0].clone();
     for action in [0, 1, 2, 3, 4, 5, 6, 7] {
@@ -17698,7 +17803,7 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
         match action {
             0 => { vertex_path_preview_color(cx, &workspace, true, "#22c55e"); vertex_path_click_apply(cx, true); }
             1 => vertex_path_enter_width(cx, &workspace, "4"),
-            2 => vertex_path_release_opacity(cx, &workspace, document_id, 0.7),
+            2 => vertex_path_enter_opacity(cx, &workspace, "70"),
             3 => { cx.update(|window, cx| window.draw(cx).clear(cx)); let no_fill = cx.debug_bounds(VERTEX_PATH_INSPECTOR_NO_FILL_ID).unwrap(); cx.simulate_click(no_fill.center(), Modifiers::default()); }
             4 | 5 => vertex_path_toggle_lock(cx),
             6 => { vertex_path_preview_color(cx, &workspace, true, "#22c55e"); vertex_path_click_apply(cx, true); }
@@ -17721,11 +17826,47 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
     assert_eq!(edited.measurement_paths[1].appearance.fill_color(), Some("#22c55e"));
     assert!(edited.measurement_paths[1].locked);
 
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save_as = cx.debug_bounds(DOCUMENT_SAVE_AS_ID).expect("the rendered Save As button must remain available");
-    cx.simulate_click(save_as.center(), Modifiers::default());
-    assert!(cx.did_prompt_for_new_path());
-    cx.simulate_new_path_selection({ let saved_path = saved_path.clone(); move |_| Some(saved_path) });
+    vertex_path_toggle_lock(cx);
+    let unlocked_area = workspace
+        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .unwrap();
+    let area = &unlocked_area.measurement_paths[1];
+    let text_style = TextBoxStyle::new("Arimo", 20., "#7c3aed", area.appearance.opacity())
+        .unwrap();
+    let visual_appearance = DimensionAppearance::new(
+        StraightLineAppearance::new(
+            area.appearance.stroke_color(),
+            area.appearance.stroke_width_pt(),
+            area.appearance.opacity(),
+            area.appearance.stroke_style(),
+        )
+        .unwrap(),
+        text_style.clone(),
+    )
+    .unwrap();
+    assert!(workspace
+        .update(cx, |workspace, cx| workspace.apply_dimension_property_event(
+            &DimensionPropertyEvent {
+                document_id,
+                annotation_id: area_id.clone(),
+                expected_revision: unlocked_area.revision,
+                patch: DimensionPropertyPatch::Appearance(visual_appearance),
+            },
+            cx,
+        ))
+        .unwrap());
+    vertex_path_toggle_lock(cx);
+    edited = workspace
+        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .unwrap();
+    assert_eq!(edited.measurement_paths[1].text_style(), &text_style);
+    assert!(edited.measurement_paths[1].locked);
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.save_as_path(document_id, saved_path.clone(), cx)
+        })
+        .expect("the Polylength/Area Save As must begin");
     cx.run_until_parked();
     let saved = workspace
         .read_with(cx, |workspace, cx| {
@@ -18962,7 +19103,7 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
         .unwrap();
     assert_eq!((edited.revision, edited.undo_depth), (4, 4));
     assert_eq!(edited.lengths.len(), 1);
-    let snapped_length = edited.lengths[0].clone();
+    let mut snapped_length = edited.lengths[0].clone();
     assert_eq!(
         snapped_length.start,
         PdfPoint::new(
@@ -18973,6 +19114,29 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
     );
     assert_eq!(snapped_length.end, snapped_line.end);
     assert!(edited.dirty);
+
+    let appearance = DimensionAppearance::new(
+        StraightLineAppearance::new("#2563eb", 2.5, 0.55, StrokeStyle::Dashed).unwrap(),
+        TextBoxStyle::new("Arimo", 18., "#7c3aed", 0.55).unwrap(),
+    )
+    .unwrap();
+    assert!(workspace
+        .update(cx, |workspace, cx| workspace.apply_dimension_property_event(
+            &DimensionPropertyEvent {
+                document_id,
+                annotation_id: snapped_length.id.clone(),
+                expected_revision: edited.revision,
+                patch: DimensionPropertyPatch::Appearance(appearance.clone()),
+            },
+            cx,
+        ))
+        .unwrap());
+    snapped_length = workspace
+        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .unwrap()
+        .lengths[0]
+        .clone();
+    assert_eq!(snapped_length.appearance, appearance);
 
     workspace
         .update(cx, |workspace, cx| {
@@ -19093,7 +19257,22 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
     assert_eq!(reopened.straight_lines.len(), 1);
     assert_eq!(reopened.lengths.len(), 1);
     assert!(reopened.straight_lines[0].same_persisted_state_as(&snapped_line));
-    assert!(reopened.lengths[0].same_persisted_state_as(&snapped_length));
+    let reopened_length = &reopened.lengths[0];
+    assert!(
+        reopened_length.id == snapped_length.id
+            && reopened_length.page_index == snapped_length.page_index
+            && (reopened_length.start.x - snapped_length.start.x).abs() <= 0.000_1
+            && (reopened_length.start.y - snapped_length.start.y).abs() <= 0.000_1
+            && (reopened_length.end.x - snapped_length.end.x).abs() <= 0.000_1
+            && (reopened_length.end.y - snapped_length.end.y).abs() <= 0.000_1
+            && reopened_length
+                .calibration()
+                .same_scale_as(snapped_length.calibration())
+            && reopened_length.caption() == snapped_length.caption()
+            && reopened_length.locked == snapped_length.locked,
+        "fresh workspace changed snapped Length: expected {snapped_length:?}, reopened {:?}",
+        reopened_length,
+    );
     assert_eq!(
         reopened.annotation_order,
         vec![reference_id, snapped_line.id.clone(), snapped_length.id.clone()],
@@ -19299,12 +19478,7 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
         "the real pointer selection must keep the stable Dimension selected",
     );
 
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let properties = cx
-        .debug_bounds("document-workspace-dimension-properties")
-        .expect("the selected Dimension must expose its real property popover trigger");
-    cx.simulate_click(properties.center(), Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
+    toggle_document_actions(cx);
     let offset = cx
         .debug_bounds("dimension-property-offset")
         .expect("the real Dimension popover must render its stable offset NumberInput");
@@ -19356,20 +19530,11 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
     assert_eq!(edited.dimensions[0].content(), "door clear width");
     assert_eq!(edited.dimensions[0].appearance, created_appearance);
 
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save_as = cx
-        .debug_bounds(DOCUMENT_SAVE_AS_ID)
-        .expect("the real Save As button must render");
-    cx.simulate_click(save_as.center(), Modifiers::default());
-    assert!(cx.did_prompt_for_new_path());
-    cx.simulate_new_path_selection({
-        let expected_directory = fixture.parent().unwrap().to_path_buf();
-        let saved_path = saved_path.clone();
-        move |directory| {
-            assert_eq!(directory, expected_directory.as_path());
-            Some(saved_path)
-        }
-    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.save_as_path(document_id, saved_path.clone(), cx)
+        })
+        .expect("the Dimension Save As must begin");
     cx.run_until_parked();
     let (save_as_worker_pid, saved) = workspace.read_with(cx, |workspace, cx| {
         let session = workspace.session(document_id, cx).unwrap().read(cx);
@@ -19388,11 +19553,7 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     if cx.debug_bounds("dimension-property-offset").is_none() {
-        let properties = cx
-            .debug_bounds("document-workspace-dimension-properties")
-            .expect("the rebound Dimension must retain its property trigger");
-        cx.simulate_click(properties.center(), Modifiers::default());
-        cx.update(|window, cx| window.draw(cx).clear(cx));
+        toggle_document_actions(cx);
     }
     let offset = cx
         .debug_bounds("dimension-property-offset")
@@ -19412,11 +19573,9 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
     );
     assert!(after_second_edit.dirty);
 
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save = cx
-        .debug_bounds(DOCUMENT_SAVE_ID)
-        .expect("the real Save button must render after the rebound edit");
-    cx.simulate_click(save.center(), Modifiers::default());
+    let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| workspace_focus.focus(window, cx));
+    cx.simulate_keystrokes(EDIT_SAVE);
     cx.run_until_parked();
     let (saved_worker_pid, saved_after_in_place) = workspace.read_with(cx, |workspace, cx| {
         let session = workspace.session(document_id, cx).unwrap().read(cx);
@@ -19813,12 +19972,7 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     assert_eq!(after_end.annotation_order, vec![arc_id.clone()]);
     assert_eq!(after_end.selected_id.as_ref(), Some(&arc_id));
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ENGINEERING_VISUAL_PROPERTIES_ID);
-    let properties = cx
-        .debug_bounds(DOCUMENT_ENGINEERING_VISUAL_PROPERTIES_ID)
-        .expect("the selected real Arc must expose engineering visual properties");
-    cx.simulate_click(properties.center(), Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
+    toggle_document_actions(cx);
     assert!(cx.debug_bounds(ENGINEERING_VISUAL_PROPERTY_INSPECTOR_ID).is_some());
     let geometry = |arc: &ArcAnnotation| (arc.start, arc.mid, arc.end);
 
@@ -19876,20 +20030,11 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     assert!(edited.dirty);
     let edited_arc = edited.arcs[0].clone();
 
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save_as = cx
-        .debug_bounds(DOCUMENT_SAVE_AS_ID)
-        .expect("the rendered Save As control must remain reachable");
-    cx.simulate_click(save_as.center(), Modifiers::default());
-    assert!(cx.did_prompt_for_new_path());
-    cx.simulate_new_path_selection({
-        let saved_path = saved_path.clone();
-        let expected_directory = fixture.parent().unwrap().to_path_buf();
-        move |directory| {
-            assert_eq!(directory, expected_directory.as_path());
-            Some(saved_path)
-        }
-    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.save_as_path(document_id, saved_path.clone(), cx)
+        })
+        .expect("the Arc Save As must begin");
     cx.run_until_parked();
     let saved = snapshot!();
     assert!(!saved.dirty);
@@ -23009,6 +23154,9 @@ fn local_signature_popover_sanitizes_previews_arms_and_places_once(cx: &mut Test
     let trigger = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap();
     cx.simulate_click(trigger.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    let image_mode = cx.debug_bounds(DOCUMENT_SIGNATURE_MODE_IMAGE_ID).unwrap();
+    cx.simulate_click(image_mode.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     let choose = cx.debug_bounds(DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID).unwrap();
     cx.simulate_click(choose.center(), Modifiers::default());
     assert!(cx.did_prompt_for_paths());
@@ -23105,9 +23253,11 @@ fn local_signature_popover_sanitizes_previews_arms_and_places_once(cx: &mut Test
     cx.update(|window, _| assert!(window.has_image_atlas_entry(&initial_render_asset)));
     let initial_render_asset_weak = Arc::downgrade(&initial_render_asset);
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_UNDO_ID);
-    let undo = cx.debug_bounds(DOCUMENT_ANNOTATION_UNDO_ID).unwrap();
-    cx.simulate_click(undo.center(), Modifiers::default());
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
     cx.run_until_parked();
     assert!(workspace.read_with(cx, |workspace, cx| {
         workspace
@@ -23120,9 +23270,11 @@ fn local_signature_popover_sanitizes_previews_arms_and_places_once(cx: &mut Test
     drop(initial_render_asset);
     assert!(initial_render_asset_weak.upgrade().is_none());
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_REDO_ID);
-    let redo = cx.debug_bounds(DOCUMENT_ANNOTATION_REDO_ID).unwrap();
-    cx.simulate_click(redo.center(), Modifiers::default());
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.redo_annotations(request.document_id, cx)
+        })
+        .unwrap();
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let redone_render_asset = workspace
@@ -23278,9 +23430,11 @@ fn local_signature_draws_clears_and_arms_from_real_canvas(cx: &mut TestAppContex
         .expect("the drawn signature must retain one rendered image");
     cx.update(|window, _| assert!(window.has_image_atlas_entry(&initial_render_asset)));
     let initial_weak = Arc::downgrade(&initial_render_asset);
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_UNDO_ID);
-    let undo = cx.debug_bounds(DOCUMENT_ANNOTATION_UNDO_ID).unwrap();
-    cx.simulate_click(undo.center(), Modifiers::default());
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
     cx.run_until_parked();
     let undone = workspace
         .read_with(cx, |workspace, cx| {
@@ -23298,9 +23452,11 @@ fn local_signature_draws_clears_and_arms_from_real_canvas(cx: &mut TestAppContex
     drop(initial_render_asset);
     assert!(initial_weak.upgrade().is_none());
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_REDO_ID);
-    let redo = cx.debug_bounds(DOCUMENT_ANNOTATION_REDO_ID).unwrap();
-    cx.simulate_click(redo.center(), Modifiers::default());
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.redo_annotations(request.document_id, cx)
+        })
+        .unwrap();
     cx.run_until_parked();
     let redone = workspace
         .read_with(cx, |workspace, cx| {
@@ -23327,6 +23483,73 @@ fn local_signature_draws_clears_and_arms_from_real_canvas(cx: &mut TestAppContex
     cx.update(|window, _| assert!(!window.has_image_atlas_entry(&redone_render_asset)));
     drop(redone_render_asset);
     assert!(redone_weak.upgrade().is_none());
+}
+
+#[gpui::test]
+fn local_signature_typed_mode_uses_the_shared_placement_path(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("typed-signature.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        );
+        workspace.set_view_configuration(request.document_id, PageViewMode::SinglePage, 100., cx);
+        workspace
+            .refresh_viewport_async(request.document_id, 800., 600., 1., cx)
+            .unwrap();
+    });
+    cx.run_until_parked();
+    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SIGNATURE_TOOL_ID);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let signature_tool = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap();
+    cx.simulate_click(signature_tool.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let typed_mode = cx
+        .debug_bounds(DOCUMENT_SIGNATURE_MODE_TYPE_ID)
+        .expect("typed signature mode must render");
+    cx.simulate_click(typed_mode.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let name_input = cx
+        .debug_bounds(DOCUMENT_SIGNATURE_NAME_INPUT_ID)
+        .expect("typed signature input must render");
+    cx.simulate_click(name_input.center(), Modifiers::default());
+    cx.simulate_keystrokes("a l e x space p o t e n z a");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let add = cx
+        .debug_bounds(DOCUMENT_SIGNATURE_ADD_ID)
+        .expect("typed signature must become addable");
+    cx.simulate_click(add.center(), Modifiers::default());
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
+        Some("Click the page to place the signature".into())
+    );
+
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer_id = Box::leak(document_annotation_layer_id(request.document_id, 0).into_boxed_str());
+    let placement = cx.debug_bounds(layer_id).unwrap().center();
+    cx.simulate_mouse_down(placement, MouseButton::Left, Modifiers::default());
+    let placed = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!((placed.images.len(), placed.undo_depth), (1, 1));
+    assert!(placed.images[0].aspect_locked);
 }
 
 #[test]
@@ -23694,6 +23917,7 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
             assert_eq!(actual.page_index, expected.page_index);
             assert_eq!(actual.aspect_locked, expected.aspect_locked);
             assert_eq!(actual.locked, expected.locked);
+            assert_eq!(actual.opacity(), expected.opacity());
             assert!(actual.rect.same_pdf_geometry_as(expected.rect));
             assert_eq!(actual.asset().id(), expected.asset().id());
             assert_eq!(actual.asset().width_px(), expected.asset().width_px());
@@ -23711,9 +23935,9 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
         .expect("the signature must own one retained GPUI render asset");
     cx.update(|window, _| assert!(window.has_image_atlas_entry(&initial_render_asset)));
     let initial_render_asset_weak = Arc::downgrade(&initial_render_asset);
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_UNDO_ID);
-    let undo = cx.debug_bounds(DOCUMENT_ANNOTATION_UNDO_ID).unwrap();
-    cx.simulate_click(undo.center(), Modifiers::default());
+    let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| workspace_focus.focus(window, cx));
+    cx.simulate_keystrokes(EDIT_UNDO);
     cx.run_until_parked();
     let undone = workspace
         .read_with(cx, |workspace, cx| {
@@ -23725,9 +23949,7 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
     cx.update(|window, _| assert!(!window.has_image_atlas_entry(&initial_render_asset)));
     drop(initial_render_asset);
     assert!(initial_render_asset_weak.upgrade().is_none());
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_REDO_ID);
-    let redo = cx.debug_bounds(DOCUMENT_ANNOTATION_REDO_ID).unwrap();
-    cx.simulate_click(redo.center(), Modifiers::default());
+    cx.simulate_keystrokes(EDIT_REDO);
     cx.run_until_parked();
     let redone = workspace
         .read_with(cx, |workspace, cx| {
@@ -23741,24 +23963,46 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
     assert_eq!(redone.images[0], expected_image);
     assert!(redone.dirty);
 
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace.select_annotation(document_id, &expected_id, cx)
+    }));
+    let signature_opacity = 0.42;
+    assert!(workspace
+        .update(cx, |workspace, cx| workspace.apply_engineering_visual_property_event(
+            &EngineeringVisualPropertyEvent {
+                document_id,
+                annotation_id: expected_id.clone(),
+                expected_revision: redone.revision,
+                expected_kind: EngineeringVisualPropertyKind::Image,
+                patch: EngineeringVisualPropertyPatch::Opacity(signature_opacity),
+            },
+            cx,
+        ))
+        .unwrap());
+    let opacity_edited = workspace
+        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .unwrap();
+    assert_eq!(opacity_edited.images[0].opacity(), signature_opacity);
+    let expected_image = opacity_edited.images[0].clone();
+    let signature_render_asset_key = format!(
+        "{}@{signature_opacity:.6}",
+        expected_image.asset().id().as_str()
+    );
+
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let redone_render_asset = workspace
         .read_with(cx, |workspace, cx| {
             workspace
-                .image_render_asset_weak(document_id, expected_asset.id().as_str(), cx)
+                .image_render_asset_weak(document_id, &signature_render_asset_key, cx)
                 .and_then(|asset| asset.upgrade())
         })
         .expect("Redo must retain a render image for the restored real signature");
     cx.update(|window, _| assert!(window.has_image_atlas_entry(&redone_render_asset)));
-    let save_as = cx.debug_bounds(DOCUMENT_SAVE_AS_ID).unwrap();
-    cx.simulate_click(save_as.center(), Modifiers::default());
-    assert!(cx.did_prompt_for_new_path());
-    let selected_save = saved_path.clone();
-    let expected_parent = owned_root.clone();
-    cx.simulate_new_path_selection(move |directory| {
-        assert_eq!(directory, expected_parent.as_path());
-        Some(selected_save)
-    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.save_as_path(document_id, saved_path.clone(), cx)
+        })
+        .expect("the Signature image Save As must begin");
     cx.run_until_parked();
     let (saved_worker_pid, saved_snapshot) = workspace.read_with(cx, |workspace, cx| {
         let session = workspace.session(document_id, cx).unwrap().read(cx);
@@ -23791,6 +24035,8 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
     assert_eq!(typed.images().len(), 1);
     assert_persisted_image(&typed.images()[0], &expected_image);
     assert!(typed.image_has_canonical_native_identity(&expected_id));
+    let saved_pdf = String::from_utf8_lossy(&std::fs::read(&saved_path).unwrap()).into_owned();
+    assert!(saved_pdf.contains("/CA 0.42"));
     assert_eq!(
         workspace.update(cx, |workspace, cx| {
             workspace.request_close_document(document_id, cx)
@@ -23831,7 +24077,7 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
     assert_ne!(reopened_worker_pid, saved_worker_pid);
     let reopened_asset_weak = fresh_workspace
         .read_with(cx, |workspace, cx| {
-            workspace.image_render_asset_weak(reopened_document, expected_asset.id().as_str(), cx)
+            workspace.image_render_asset_weak(reopened_document, &signature_render_asset_key, cx)
         })
         .expect("the freshly hydrated signature must retain one render asset");
 
@@ -24170,18 +24416,16 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     );
     assert!(!resized.images[0].aspect_locked);
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_UNDO_ID);
-    let undo_center = cx.debug_bounds(DOCUMENT_ANNOTATION_UNDO_ID).unwrap().center();
-    cx.simulate_click(undo_center, Modifiers::default());
+    let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| workspace_focus.focus(window, cx));
+    cx.simulate_keystrokes(EDIT_UNDO);
     let undone = workspace
         .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
         .unwrap();
     assert_eq!((undone.undo_depth, undone.redo_depth), (2, 1));
     assert!(undone.images[0].rect.same_pdf_geometry_as(moved_rect));
     assert_eq!(undone.images[0].id, image_id);
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_REDO_ID);
-    let redo_center = cx.debug_bounds(DOCUMENT_ANNOTATION_REDO_ID).unwrap().center();
-    cx.simulate_click(redo_center, Modifiers::default());
+    cx.simulate_keystrokes(EDIT_REDO);
     let redone = workspace
         .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
         .unwrap();
@@ -24189,9 +24433,11 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     assert!(redone.images[0].rect.same_pdf_geometry_as(resized_rect));
     assert_eq!(redone.images[0].id, image_id);
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_LOCK_ID);
-    let lock_center = cx.debug_bounds(DOCUMENT_ANNOTATION_LOCK_ID).unwrap().center();
-    cx.simulate_click(lock_center, Modifiers::default());
+    assert!(workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_selected_annotation_locked(document_id, true, cx)
+        })
+        .is_ok());
     let locked = workspace
         .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
         .unwrap();
@@ -24222,9 +24468,11 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
         MouseButton::Left,
         Modifiers::default(),
     );
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_DELETE_ID);
-    let delete_center = cx.debug_bounds(DOCUMENT_ANNOTATION_DELETE_ID).unwrap().center();
-    cx.simulate_click(delete_center, Modifiers::default());
+    assert!(workspace
+        .update(cx, |workspace, cx| {
+            workspace.delete_selected_annotation(document_id, cx)
+        })
+        .is_ok());
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
@@ -24232,9 +24480,11 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
         locked,
         "locked Image move, resize, and Delete must be history-free no-ops",
     );
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_LOCK_ID);
-    let unlock_center = cx.debug_bounds(DOCUMENT_ANNOTATION_LOCK_ID).unwrap().center();
-    cx.simulate_click(unlock_center, Modifiers::default());
+    assert!(workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_selected_annotation_locked(document_id, false, cx)
+        })
+        .is_ok());
     let unlocked = workspace
         .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
         .unwrap();
@@ -24242,22 +24492,48 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     assert!(!unlocked.images[0].locked);
     assert_eq!(unlocked.revision, locked.revision + 1);
     assert_eq!(unlocked.selected_id.as_ref(), Some(&image_id));
+    let opacity = 0.42;
+    assert!(workspace
+        .update(cx, |workspace, cx| workspace.apply_engineering_visual_property_event(
+            &EngineeringVisualPropertyEvent {
+                document_id,
+                annotation_id: image_id.clone(),
+                expected_revision: unlocked.revision,
+                expected_kind: EngineeringVisualPropertyKind::Image,
+                patch: EngineeringVisualPropertyPatch::Opacity(opacity),
+            },
+            cx,
+        ))
+        .unwrap());
+    let opacity_edited = workspace
+        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .unwrap();
+    assert_eq!(opacity_edited.images[0].opacity(), opacity);
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.annotation_scene(document_id, 0, cx))
+            .images[0]
+            .opacity,
+        opacity,
+    );
+    let opacity_asset_key = format!("{}@{opacity:.6}", asset_id.as_str());
+    assert!(workspace
+        .read_with(cx, |workspace, cx| workspace.image_render_asset_weak(
+            document_id,
+            &opacity_asset_key,
+            cx,
+        ))
+        .is_some());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_eq!(cx.debug_bounds(DOCUMENT_PAGE_ID).unwrap(), viewer_bounds_before);
     assert_eq!(cx.debug_bounds(layer_id).unwrap(), layer_bounds_before);
     assert!(cx.debug_bounds(DIMENSION_PROPERTY_INSPECTOR_ID).is_none());
 
-    let save_as_center = cx.debug_bounds(DOCUMENT_SAVE_AS_ID).unwrap().center();
-    cx.simulate_click(save_as_center, Modifiers::default());
-    assert!(cx.did_prompt_for_new_path());
-    cx.simulate_new_path_selection({
-        let saved_path = saved_path.clone();
-        let owned_root = owned_root.clone();
-        move |directory| {
-            assert_eq!(directory, owned_root.as_path());
-            Some(saved_path)
-        }
-    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.save_as_path(document_id, saved_path.clone(), cx)
+        })
+        .expect("the Image Save As must begin");
     cx.run_until_parked();
     let (saved_worker, saved) = workspace.read_with(cx, |workspace, cx| {
         let session = workspace.session(document_id, cx).unwrap().read(cx);
@@ -24293,6 +24569,7 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     assert!(persisted.rect.same_pdf_geometry_as(resized_rect));
     assert_eq!(persisted.asset(), &expected_asset);
     assert_eq!(persisted.asset().id(), &asset_id);
+    assert!((persisted.opacity() - opacity).abs() <= 0.0001);
     assert!(!persisted.aspect_locked);
     assert!(!persisted.locked);
     assert!(typed.image_has_canonical_native_identity(&image_id));
@@ -24319,6 +24596,7 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     assert_eq!(annotation["/NM"], native_name);
     assert_eq!(annotation["/BPAssetId"], asset_id.as_str());
     assert_eq!(annotation["/BPAspectLocked"], false);
+    assert!(close(number(&annotation["/CA"]), opacity));
     for (actual, expected) in annotation["/Rect"]
         .as_array()
         .unwrap()
@@ -24347,6 +24625,10 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     let form_dict = &form["dict"];
     assert_eq!(form_dict["/Type"], "/XObject");
     assert_eq!(form_dict["/Subtype"], "/Form");
+    assert!(close(
+        number(&form_dict["/Resources"]["/ExtGState"]["/GS0"]["/ca"]),
+        opacity,
+    ));
     for (actual, expected) in form_dict["/BBox"]
         .as_array()
         .unwrap()
@@ -24473,6 +24755,7 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     assert_eq!(fresh.annotation_order, vec![image_id.clone()]);
     assert_eq!(fresh.images.len(), 1);
     assert_eq!(fresh.images[0].asset(), &expected_asset);
+    assert!((fresh.images[0].opacity() - opacity).abs() <= 0.0001);
     assert!(fresh.images[0].rect.same_pdf_geometry_as(resized_rect));
     let navigation = fresh_workspace
         .update(cx, |workspace, cx| workspace.begin_page_navigation(fresh_document, 1, cx))
@@ -24500,7 +24783,7 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     });
     let fresh_asset_weak = fresh_workspace
         .read_with(cx, |workspace, cx| {
-            workspace.image_render_asset_weak(fresh_document, asset_id.as_str(), cx)
+            workspace.image_render_asset_weak(fresh_document, &opacity_asset_key, cx)
         })
         .unwrap();
     assert_eq!(
@@ -28504,15 +28787,16 @@ fn apply_real_rectangle_property_inspector_edits(
     document_id: DocumentId,
     rectangle_id: &MarkupId,
 ) -> AnnotationSnapshot {
-    scroll_annotation_target_into_view(cx, workspace, DOCUMENT_RECTANGLE_PROPERTIES_ID);
-    let properties_trigger = cx
-        .debug_bounds(DOCUMENT_RECTANGLE_PROPERTIES_ID)
-        .expect("the selected Rectangle must expose its real Properties control");
-    cx.simulate_click(properties_trigger.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let document_actions = cx
+        .debug_bounds("document-workspace-rail-actions")
+        .expect("the real Document actions disclosure must render");
+    cx.simulate_click(document_actions.center(), Modifiers::default());
+    cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let inspector = cx
         .debug_bounds(RECTANGLE_PROPERTY_INSPECTOR_ID)
-        .expect("the real retained Rectangle inspector must render over the live PDF");
+        .expect("Document actions must present the selected Rectangle inspector over the live PDF");
     let viewport = cx.update(|window, _| window.viewport_size());
     assert_eq!(
         f32::from(inspector.size.width),
@@ -28599,8 +28883,10 @@ fn real_rectangle_property_inspector_save_close_and_fresh_workspace_reopen(
                 "../gpui-migration/target/pdfium-development/x86_64-unknown-linux-gnu/lib/libpdfium.so",
             )
         });
-    let fixture =
-        manifest_dir.join("../performance/results/public-fixtures-v1/bp-multi-page-v1.pdf");
+    let fixture = manifest_dir
+        .join("../performance/results/public-fixtures-v1/bp-multi-page-v1.pdf")
+        .canonicalize()
+        .expect("the reviewed public fixture path must canonicalize");
     assert!(worker.is_file(), "the exact worker must already be built");
     assert!(
         library.is_file(),

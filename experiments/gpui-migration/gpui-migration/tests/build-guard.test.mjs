@@ -46,7 +46,6 @@ const saveAsPersistenceSourceHashes = [
   "../gpui-migration/src/annotation_model.rs",
   "../gpui-migration/src/pdf_engine.rs",
   "../gpui-migration/src/pdf_engine/straight_line_pdf.rs",
-  "../gpui-migration/tests/pdf_persistence.rs",
   "tests/document_workspace.rs",
   "scripts/build-guard.mjs",
   "scripts/run-bounded-button-probe.sh",
@@ -421,13 +420,43 @@ test("runner modes expose only fixed reviewed Cargo argument arrays", () => {
   });
   assert.deepEqual(resolveRunnerMode("document-spine"), {
     name: "document-spine",
-    cargoArgs: ["--test", "document_workspace"],
+    cargoArgs: ["--test", "document_workspace", "--", "--test-threads=1"],
     controlledFailureStatus: null,
     sourceHashRelatives: saveAsPersistenceSourceHashes,
   });
   assert.deepEqual(resolveRunnerMode("compat-signature"), {
     name: "compat-signature",
-    cargoArgs: ["--test", "document_workspace", "local_signature_"],
+    cargoArgs: [
+      "--test",
+      "document_workspace",
+      "local_signature_",
+      "--",
+      "--test-threads=1",
+    ],
+    controlledFailureStatus: null,
+  });
+  assert.deepEqual(resolveRunnerMode("recent-signature-store"), {
+    name: "recent-signature-store",
+    cargoArgs: ["--lib", "recent_signature_store::tests"],
+    controlledFailureStatus: null,
+    sourceHashRelatives: [
+      "Cargo.toml",
+      "Cargo.lock",
+      "src/lib.rs",
+      "src/recent_signature_store.rs",
+      "../gpui-migration/src/annotation_model.rs",
+      "tests/build-guard.test.mjs",
+      "scripts/build-guard.mjs",
+      "scripts/run-bounded-button-probe.sh",
+    ],
+  });
+  assert.deepEqual(resolveRunnerMode("contextual-actions-workspace"), {
+    name: "contextual-actions-workspace",
+    cargoArgs: [
+      "--test",
+      "document_workspace",
+      "contextual_actions_workspace_",
+    ],
     controlledFailureStatus: null,
   });
   assert.deepEqual(resolveRunnerMode("signature-real"), {
@@ -441,6 +470,32 @@ test("runner modes expose only fixed reviewed Cargo argument arrays", () => {
       "real_signature_image_save_close_and_fresh_workspace_reopen",
     ],
     controlledFailureStatus: null,
+    sourceHashRelatives: [
+      "Cargo.toml",
+      "Cargo.lock",
+      "src/lib.rs",
+      "src/document_resource.rs",
+      "src/document_session.rs",
+      "src/document_workspace.rs",
+      "src/native_application.rs",
+      "src/bin/butter-paper-pdf-worker.rs",
+      "../gpui-migration/Cargo.toml",
+      "../gpui-migration/Cargo.lock",
+      "../gpui-migration/src/annotation_model.rs",
+      "../gpui-migration/src/annotation_adapter.rs",
+      "../gpui-migration/src/image_asset_decode.rs",
+      "../gpui-migration/src/local_signature.rs",
+      "../gpui-migration/src/pdf_engine.rs",
+      "../gpui-migration/src/pdf_file_authority.rs",
+      "../gpui-migration/src/pdf_worker.rs",
+      "../gpui-migration/src/bin/butter-paper-pdf-worker.rs",
+      "tests/document_workspace.rs",
+      "tests/build-guard.test.mjs",
+      "scripts/build-guard.mjs",
+      "scripts/run-bounded-button-probe.sh",
+      "../performance/results/public-fixtures-v1/fixture-index.json",
+      "../performance/results/public-fixtures-v1/bp-multi-page-v1.pdf",
+    ],
   });
   assert.deepEqual(resolveRunnerMode("document-image-real"), {
     name: "document-image-real",
@@ -784,6 +839,24 @@ test("runner modes expose only fixed reviewed Cargo argument arrays", () => {
       "real_rectangle_property_inspector_save_close_and_fresh_workspace_reopen",
     ],
     controlledFailureStatus: null,
+    sourceHashRelatives: [
+      "src/lib.rs",
+      "src/document_resource.rs",
+      "src/document_session.rs",
+      "src/document_workspace.rs",
+      "src/rectangle_property_inspector.rs",
+      "../gpui-migration/src/annotation_adapter.rs",
+      "../gpui-migration/src/annotation_model.rs",
+      "../gpui-migration/src/bin/butter-paper-pdf-worker.rs",
+      "../gpui-migration/src/pdf_engine.rs",
+      "../gpui-migration/src/pdf_file_authority.rs",
+      "../gpui-migration/src/pdf_worker.rs",
+      "tests/document_workspace.rs",
+      "scripts/build-guard.mjs",
+      "scripts/run-bounded-button-probe.sh",
+      "../performance/results/public-fixtures-v1/fixture-index.json",
+      "../performance/results/public-fixtures-v1/bp-multi-page-v1.pdf",
+    ],
   });
 
   assert.deepEqual(resolveRunnerMode("vertex-path-cutover-real"), {
@@ -1019,7 +1092,6 @@ test("runner modes expose only fixed reviewed Cargo argument arrays", () => {
       "../gpui-migration/src/annotation_adapter.rs",
       "../gpui-migration/src/annotation_model.rs",
       "../gpui-migration/src/pdf_engine.rs",
-      "../gpui-migration/tests/pdf_persistence.rs",
       "tests/document_workspace.rs",
       "scripts/build-guard.mjs",
       "scripts/run-bounded-button-probe.sh",
@@ -1357,6 +1429,24 @@ test("runner modes expose only fixed reviewed Cargo argument arrays", () => {
       "real_rectangle_property_inspector_save_close_and_fresh_workspace_reopen",
     ],
     controlledFailureStatus: null,
+    sourceHashRelatives: [
+      "src/lib.rs",
+      "src/document_resource.rs",
+      "src/document_session.rs",
+      "src/document_workspace.rs",
+      "src/rectangle_property_inspector.rs",
+      "../gpui-migration/src/annotation_adapter.rs",
+      "../gpui-migration/src/annotation_model.rs",
+      "../gpui-migration/src/bin/butter-paper-pdf-worker.rs",
+      "../gpui-migration/src/pdf_engine.rs",
+      "../gpui-migration/src/pdf_file_authority.rs",
+      "../gpui-migration/src/pdf_worker.rs",
+      "tests/document_workspace.rs",
+      "scripts/build-guard.mjs",
+      "scripts/run-bounded-button-probe.sh",
+      "../performance/results/public-fixtures-v1/fixture-index.json",
+      "../performance/results/public-fixtures-v1/bp-multi-page-v1.pdf",
+    ],
   });
   assert.deepEqual(resolveRunnerMode("shared-shape-inspector"), {
     name: "shared-shape-inspector",

@@ -9,8 +9,9 @@ into this crate. The production Electron app remains unchanged.
 
 - Longbridge GPUI Component: `c27f5d5c8f70d534978c2f0739ad9e10d4e41eb4`
 - Zed GPUI: `8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc`
-- Prepared source digest: `911330d721c582c4c9ef0b409b0d3d5b17cf59f89deae75b0df21301a02d2a73`
+- Prepared source digest: `35254d5f899bb03514766c834996cc9025f16e06ad19ffd4fcfb3e32c105dd69`
 - Reviewed local exception: `patches/gpui-component-tab-button-states.patch` adds opt-in Button colours to Outline tabs without changing default tab styles or geometry. It is separate from upstream backports.
+- Reviewed local exception: `patches/gpui-component-menu-accessibility.patch` projects disabled and checked state from stock popup-menu rows into AccessKit without changing their styling or interaction handlers. It is separate from upstream backports.
 - Rust: `1.97.1`
 
 The preparation policy and third-party notice pin the source trees, patch,

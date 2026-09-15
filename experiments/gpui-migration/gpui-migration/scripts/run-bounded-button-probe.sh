@@ -31,7 +31,7 @@ fi
 mode_json=$(node "$guard" runner-mode "$requested_mode") || exit 2
 runner_mode=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).name)' "$mode_json")
 case "$runner_mode" in
-  native-shell-rectangle-real|native-shell-pen-highlight-real|native-shell-text-box-real|native-shell-core-editor-real|native-shell-focused-real|engineering-visual-properties-real|line-arrow-save-reopen-real-exact|vertex-path-cutover-real|callout-cutover-real|cloud-plus-cutover-real|dimension-cutover-real|arc-cutover-real|measurement-path-cutover-real|two-document-save-failure-real|document-image-real|snapshot-cutover-real|semantic-snapping-cutover-real|redact-cutover-real|viewer-state-real)
+  native-shell-rectangle-real|native-shell-pen-highlight-real|native-shell-text-box-real|native-shell-core-editor-real|native-shell-focused-real|rectangle-cutover-real|rectangle-inspector-real|engineering-visual-properties-real|line-arrow-save-reopen-real-exact|vertex-path-cutover-real|callout-cutover-real|cloud-plus-cutover-real|dimension-cutover-real|arc-cutover-real|measurement-path-cutover-real|two-document-save-failure-real|document-image-real|signature-real|snapshot-cutover-real|semantic-snapping-cutover-real|redact-cutover-real|viewer-state-real)
     focused_real_pdf_mode=true
     ;;
 esac
@@ -93,6 +93,7 @@ const allowed = new Set([
   "src/measurement_property_inspector.rs",
   "src/page_scale_control.rs",
   "src/page_view_control.rs",
+  "src/rectangle_property_inspector.rs",
   "src/straight_line_property_inspector.rs",
   "src/text_box_property_inspector.rs",
   "src/vertex_path_property_inspector.rs",
@@ -110,6 +111,8 @@ const allowed = new Set([
   "../gpui-migration/src/semantic_snapping.rs",
   "../gpui-migration/src/page_geometry.rs",
   "../gpui-migration/src/image_asset_decode.rs",
+  "../gpui-migration/src/local_signature.rs",
+  "src/recent_signature_store.rs",
   "../gpui-migration/src/highlight_compositor.rs",
   "../gpui-migration/src/pdf_worker.rs",
   "../gpui-migration/src/bin/butter-paper-pdf-worker.rs",

@@ -47,6 +47,7 @@ pub mod perf_capture_signal;
 pub mod perf_protocol;
 pub mod perf_scenario;
 pub mod rectangle_property_inspector;
+pub mod recent_signature_store;
 pub mod selection_geometry;
 pub mod semantic_snapping;
 pub mod session_manifest;

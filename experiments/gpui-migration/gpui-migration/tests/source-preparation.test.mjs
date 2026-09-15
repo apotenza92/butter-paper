@@ -36,6 +36,23 @@ test("tab button-state exception is separate, opt-in, and delegates to stock But
   assert.doesNotMatch(patch.split("\n").filter(line => line.startsWith("+")).join("\n"), /rgb\(|hsla\(|\.h\(|\.rounded\(|\.on_click\(/);
 });
 
+test("menu accessibility exception is limited to AccessKit state projection", async () => {
+  const policy = JSON.parse(await readFile(new URL("../source-preparation-policy.json", import.meta.url), "utf8"));
+  const patchUrl = new URL(`../${policy.menuAccessibilityPatch.path}`, import.meta.url);
+  const patch = await readFile(patchUrl, "utf8");
+  assert.equal(await fileSha256(patchUrl), policy.menuAccessibilityPatch.sha256);
+  assert.deepEqual(patch.split("diff --git ").slice(1).map(diff => diff.split("\n")[0]), [
+    "a/crates/ui/src/menu/menu_item.rs b/crates/ui/src/menu/menu_item.rs",
+    "a/crates/ui/src/menu/popup_menu.rs b/crates/ui/src/menu/popup_menu.rs",
+  ]);
+  assert.match(patch, /node\.set_disabled\(\)/);
+  assert.match(patch, /node\.set_toggled\(gpui::accesskit::Toggled::True\)/);
+  assert.match(patch, /\.checked\(item\.is_checked\(\)\)/);
+  assert.match(patch, /fn accessibility_exposes_disabled_and_checked_state/);
+  assert.match(patch, /fn accessibility_omits_inapplicable_menu_item_state/);
+  assert.doesNotMatch(patch.split("\n").filter(line => line.startsWith("+")).join("\n"), /rgb\(|hsla\(|\.bg\(|\.text_color\(|\.on_click\(/);
+});
+
 test("descender backport contains exactly the upstream Button and Tab corrections", async () => {
   // longbridge/gpui-kit#2921, commit 20f8a4502b001fca85a9d7e6718b37cb78053238.
   // Compare all changed source lines, not merely the presence of an ellipsis:

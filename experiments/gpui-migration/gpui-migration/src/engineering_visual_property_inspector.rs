@@ -49,6 +49,7 @@ const ENGINEERING_VISUAL_INSPECTOR_OPACITY_INPUT_ID: &str =
 pub enum EngineeringVisualPropertyKind {
     Arc,
     Cloud,
+    Image,
     Snapshot,
 }
 
@@ -57,6 +58,7 @@ impl EngineeringVisualPropertyKind {
         match self {
             Self::Arc => "Arc",
             Self::Cloud => "Cloud",
+            Self::Image => "Image",
             Self::Snapshot => "Snapshot",
         }
     }
@@ -74,6 +76,9 @@ pub enum EngineeringVisualPropertyValues {
     Snapshot {
         opacity: f64,
     },
+    Image {
+        opacity: f64,
+    },
 }
 
 impl EngineeringVisualPropertyValues {
@@ -81,6 +86,7 @@ impl EngineeringVisualPropertyValues {
         match self {
             Self::Arc { .. } => EngineeringVisualPropertyKind::Arc,
             Self::Cloud { .. } => EngineeringVisualPropertyKind::Cloud,
+            Self::Image { .. } => EngineeringVisualPropertyKind::Image,
             Self::Snapshot { .. } => EngineeringVisualPropertyKind::Snapshot,
         }
     }
@@ -88,14 +94,14 @@ impl EngineeringVisualPropertyValues {
     fn appearance(&self) -> Option<&RectangleAppearance> {
         match self {
             Self::Arc { appearance } | Self::Cloud { appearance, .. } => Some(appearance),
-            Self::Snapshot { .. } => None,
+            Self::Image { .. } | Self::Snapshot { .. } => None,
         }
     }
 
     fn opacity(&self) -> f64 {
         match self {
             Self::Arc { appearance } | Self::Cloud { appearance, .. } => appearance.opacity(),
-            Self::Snapshot { opacity } => *opacity,
+            Self::Image { opacity } | Self::Snapshot { opacity } => *opacity,
         }
     }
 }

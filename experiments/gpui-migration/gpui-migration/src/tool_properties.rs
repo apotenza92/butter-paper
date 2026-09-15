@@ -150,21 +150,21 @@ impl ToolProperties {
             AnnotationTool::Arc
             | AnnotationTool::Line
             | AnnotationTool::Arrow
-            | AnnotationTool::Polyline
-            | AnnotationTool::Polylength
-            | AnnotationTool::Area => LINE_FIELDS,
+            | AnnotationTool::Polyline => LINE_FIELDS,
             AnnotationTool::Pen => PEN_FIELDS,
             AnnotationTool::Highlight => HIGHLIGHT_FIELDS,
             AnnotationTool::Cloud => CLOUD_FIELDS,
             AnnotationTool::CloudPlus => CLOUD_PLUS_FIELDS,
             AnnotationTool::Callout => CALLOUT_FIELDS,
             AnnotationTool::Dimension => DIMENSION_FIELDS,
+            AnnotationTool::Length | AnnotationTool::Polylength | AnnotationTool::Area => {
+                DIMENSION_FIELDS
+            }
             AnnotationTool::TextBox => TEXT_BOX_FIELDS,
-            AnnotationTool::Snapshot => OPACITY_FIELDS,
+            AnnotationTool::Snapshot | AnnotationTool::Image => OPACITY_FIELDS,
             AnnotationTool::Select
             | AnnotationTool::Redact
-            | AnnotationTool::Length
-            | AnnotationTool::Image => NO_FIELDS,
+            => NO_FIELDS,
         }
     }
 
@@ -362,6 +362,20 @@ mod tests {
             ToolProperties::applicable_fields(AnnotationTool::Dimension),
             DIMENSION_FIELDS
         );
+        for measurement in [
+            AnnotationTool::Length,
+            AnnotationTool::Polylength,
+            AnnotationTool::Area,
+        ] {
+            assert_eq!(
+                ToolProperties::applicable_fields(measurement),
+                DIMENSION_FIELDS
+            );
+        }
+        assert_eq!(
+            ToolProperties::applicable_fields(AnnotationTool::Image),
+            OPACITY_FIELDS
+        );
         assert_eq!(
             ToolProperties::applicable_fields(AnnotationTool::TextBox),
             TEXT_BOX_FIELDS
@@ -369,8 +383,6 @@ mod tests {
         for unsupported in [
             AnnotationTool::Select,
             AnnotationTool::Redact,
-            AnnotationTool::Length,
-            AnnotationTool::Image,
         ] {
             assert!(ToolProperties::applicable_fields(unsupported).is_empty());
         }

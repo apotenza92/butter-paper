@@ -1149,14 +1149,15 @@ mod tests {
             )
             .is_none()
         );
-        assert!(
+        assert_eq!(
             properties_with_displayed_number(
                 Some(AnnotationTool::Image),
                 &ToolProperties::for_tool(AnnotationTool::Image),
                 ToolPropertyField::Opacity,
                 "50",
             )
-            .is_none()
+            .map(|properties| properties.opacity),
+            Some(0.5),
         );
     }
 

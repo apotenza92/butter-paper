@@ -43,6 +43,14 @@ use gpui::RenderImage;
 use image::{Frame, ImageBuffer, Rgba};
 use smallvec::smallvec;
 
+pub(crate) fn annotation_image_cache_key(asset_id: &str, opacity: f64) -> String {
+    if opacity == 1. {
+        asset_id.to_owned()
+    } else {
+        format!("{asset_id}@{opacity:.6}")
+    }
+}
+
 #[derive(Debug)]
 pub struct SaveDocumentRequest {
     pub document_id: DocumentId,
@@ -540,19 +548,19 @@ impl NativeDocumentSession {
                 snapshot
                     .images
                     .iter()
-                    .map(|image| image.asset().clone())
+                    .map(|image| (image.asset().clone(), image.opacity()))
                     .chain(
                         snapshot
                             .snapshots
                             .iter()
-                            .map(|annotation| annotation.asset().clone()),
+                            .map(|annotation| (annotation.asset().clone(), annotation.opacity())),
                     )
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
         let retained_ids = assets
             .iter()
-            .map(|asset| asset.id().as_str().to_owned())
+            .map(|(asset, opacity)| annotation_image_cache_key(asset.id().as_str(), *opacity))
             .collect::<std::collections::HashSet<_>>();
         let removed_ids = self
             .image_assets
@@ -564,18 +572,25 @@ impl NativeDocumentSession {
             .into_iter()
             .filter_map(|asset_id| self.image_assets.remove(&asset_id))
             .collect::<Vec<_>>();
-        for asset in assets {
-            if self.image_assets.contains_key(asset.id().as_str()) {
+        for (asset, opacity) in assets {
+            let cache_key = annotation_image_cache_key(asset.id().as_str(), opacity);
+            if self.image_assets.contains_key(&cache_key) {
                 continue;
+            }
+            let mut rgba = asset.rgba().to_vec();
+            if opacity != 1. {
+                for alpha in rgba.iter_mut().skip(3).step_by(4) {
+                    *alpha = (f64::from(*alpha) * opacity).round() as u8;
+                }
             }
             let pixels = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(
                 asset.width_px(),
                 asset.height_px(),
-                asset.rgba().to_vec(),
+                rgba,
             )
             .ok_or_else(|| "GPUI rejected the decoded annotation image".to_owned())?;
             self.image_assets.insert(
-                asset.id().as_str().to_owned(),
+                cache_key,
                 Arc::new(RenderImage::new(smallvec![Frame::new(pixels)])),
             );
         }

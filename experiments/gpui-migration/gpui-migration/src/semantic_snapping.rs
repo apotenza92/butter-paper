@@ -7,6 +7,37 @@
 use crate::annotation_model::{AnnotationScene, MarkupId, PdfPoint};
 
 const DEFAULT_SENSITIVITY_WINDOW_PX: f64 = 8.;
+const POINTS_PER_INCH: f64 = 72.;
+const MILLIMETRES_PER_INCH: f64 = 25.4;
+const MIN_CONSTRUCTION_GRID_SPACING_MM: f64 = 1.;
+const MAX_CONSTRUCTION_GRID_SPACING_MM: f64 = 500.;
+const MIN_DIMENSION_INCREMENT_MM: f64 = 0.1;
+const MAX_DIMENSION_INCREMENT_MM: f64 = 500.;
+pub const MAX_CONSTRUCTION_GRID_POINTS: usize = 100_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SemanticSnapSource {
+    Content,
+    Annotation,
+    PageGrid,
+    ConstructionGrid,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SemanticSnapGuideType {
+    Alignment,
+    EqualSize,
+    EqualSpacing,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SemanticSnapError {
+    InvalidPageDimensions,
+    InvalidConstructionGridSpacing,
+    ConstructionGridPointLimitExceeded,
+    InvalidDimensionIncrement,
+    InvalidMeasuredDistance,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SemanticSnapRole {
@@ -28,7 +59,18 @@ pub enum SemanticSnapTarget {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SemanticSnapSettings {
+    content_enabled: bool,
     annotations_enabled: bool,
+    page_grid_enabled: bool,
+    construction_grid_enabled: bool,
+    construction_grid_visible: bool,
+    construction_grid_spacing_mm: f64,
+    dimension_increment_enabled: bool,
+    dimension_increment_mm: f64,
+    guides_enabled: bool,
+    alignment_guides: bool,
+    equal_size_guides: bool,
+    equal_spacing_guides: bool,
     sensitivity_window_px: f64,
     endpoint: bool,
     midpoint: bool,
@@ -38,6 +80,25 @@ pub struct SemanticSnapSettings {
 }
 
 impl SemanticSnapSettings {
+    pub fn is_source_enabled(self, source: SemanticSnapSource) -> bool {
+        match source {
+            SemanticSnapSource::Content => self.content_enabled,
+            SemanticSnapSource::Annotation => self.annotations_enabled,
+            SemanticSnapSource::PageGrid => self.page_grid_enabled,
+            SemanticSnapSource::ConstructionGrid => self.construction_grid_enabled,
+        }
+    }
+
+    pub fn with_source(mut self, source: SemanticSnapSource, enabled: bool) -> Self {
+        match source {
+            SemanticSnapSource::Content => self.content_enabled = enabled,
+            SemanticSnapSource::Annotation => self.annotations_enabled = enabled,
+            SemanticSnapSource::PageGrid => self.page_grid_enabled = enabled,
+            SemanticSnapSource::ConstructionGrid => self.construction_grid_enabled = enabled,
+        }
+        self
+    }
+
     pub fn annotations_enabled(self) -> bool {
         self.annotations_enabled
     }
@@ -45,6 +106,95 @@ impl SemanticSnapSettings {
     pub fn with_annotation_source(mut self, enabled: bool) -> Self {
         self.annotations_enabled = enabled;
         self
+    }
+
+    pub fn construction_grid_visible(self) -> bool {
+        self.construction_grid_visible
+    }
+
+    pub fn with_construction_grid_visible(mut self, visible: bool) -> Self {
+        self.construction_grid_visible = visible;
+        self
+    }
+
+    pub fn construction_grid_spacing_mm(self) -> f64 {
+        self.construction_grid_spacing_mm
+    }
+
+    pub fn with_construction_grid_spacing_mm(mut self, spacing_mm: f64) -> Self {
+        self.construction_grid_spacing_mm = if spacing_mm.is_finite() {
+            spacing_mm.clamp(
+                MIN_CONSTRUCTION_GRID_SPACING_MM,
+                MAX_CONSTRUCTION_GRID_SPACING_MM,
+            )
+        } else {
+            10.
+        };
+        self
+    }
+
+    pub fn dimension_increment_enabled(self) -> bool {
+        self.dimension_increment_enabled
+    }
+
+    pub fn with_dimension_increment_enabled(mut self, enabled: bool) -> Self {
+        self.dimension_increment_enabled = enabled;
+        self
+    }
+
+    pub fn dimension_increment_mm(self) -> f64 {
+        self.dimension_increment_mm
+    }
+
+    pub fn with_dimension_increment_mm(mut self, increment_mm: f64) -> Self {
+        self.dimension_increment_mm = if increment_mm.is_finite() {
+            increment_mm.clamp(MIN_DIMENSION_INCREMENT_MM, MAX_DIMENSION_INCREMENT_MM)
+        } else {
+            5.
+        };
+        self
+    }
+
+    pub fn guides_enabled(self) -> bool {
+        self.guides_enabled
+    }
+
+    pub fn with_guides_enabled(mut self, enabled: bool) -> Self {
+        self.guides_enabled = enabled;
+        self
+    }
+
+    pub fn is_guide_enabled(self, guide: SemanticSnapGuideType) -> bool {
+        match guide {
+            SemanticSnapGuideType::Alignment => self.alignment_guides,
+            SemanticSnapGuideType::EqualSize => self.equal_size_guides,
+            SemanticSnapGuideType::EqualSpacing => self.equal_spacing_guides,
+        }
+    }
+
+    pub fn with_guide(mut self, guide: SemanticSnapGuideType, enabled: bool) -> Self {
+        match guide {
+            SemanticSnapGuideType::Alignment => self.alignment_guides = enabled,
+            SemanticSnapGuideType::EqualSize => self.equal_size_guides = enabled,
+            SemanticSnapGuideType::EqualSpacing => self.equal_spacing_guides = enabled,
+        }
+        self
+    }
+
+    pub fn validate(self) -> Result<(), SemanticSnapError> {
+        if !self.construction_grid_spacing_mm.is_finite()
+            || !(MIN_CONSTRUCTION_GRID_SPACING_MM..=MAX_CONSTRUCTION_GRID_SPACING_MM)
+                .contains(&self.construction_grid_spacing_mm)
+        {
+            return Err(SemanticSnapError::InvalidConstructionGridSpacing);
+        }
+        if !self.dimension_increment_mm.is_finite()
+            || !(MIN_DIMENSION_INCREMENT_MM..=MAX_DIMENSION_INCREMENT_MM)
+                .contains(&self.dimension_increment_mm)
+        {
+            return Err(SemanticSnapError::InvalidDimensionIncrement);
+        }
+        Ok(())
     }
 
     pub fn sensitivity_window_px(self) -> f64 {
@@ -86,7 +236,18 @@ impl SemanticSnapSettings {
 impl Default for SemanticSnapSettings {
     fn default() -> Self {
         Self {
+            content_enabled: true,
             annotations_enabled: true,
+            page_grid_enabled: true,
+            construction_grid_enabled: false,
+            construction_grid_visible: true,
+            construction_grid_spacing_mm: 10.,
+            dimension_increment_enabled: false,
+            dimension_increment_mm: 5.,
+            guides_enabled: true,
+            alignment_guides: true,
+            equal_size_guides: true,
+            equal_spacing_guides: true,
             sensitivity_window_px: DEFAULT_SENSITIVITY_WINDOW_PX,
             endpoint: true,
             midpoint: true,
@@ -95,6 +256,107 @@ impl Default for SemanticSnapSettings {
             nearest: false,
         }
     }
+}
+
+pub fn construction_grid_points(
+    page_width_pdf_points: f64,
+    page_height_pdf_points: f64,
+    spacing_mm: f64,
+) -> Result<Vec<PdfPoint>, SemanticSnapError> {
+    if !page_width_pdf_points.is_finite()
+        || !page_height_pdf_points.is_finite()
+        || page_width_pdf_points < 0.
+        || page_height_pdf_points < 0.
+    {
+        return Err(SemanticSnapError::InvalidPageDimensions);
+    }
+    if !spacing_mm.is_finite()
+        || !(MIN_CONSTRUCTION_GRID_SPACING_MM..=MAX_CONSTRUCTION_GRID_SPACING_MM)
+            .contains(&spacing_mm)
+    {
+        return Err(SemanticSnapError::InvalidConstructionGridSpacing);
+    }
+    let spacing_pdf_points = spacing_mm * POINTS_PER_INCH / MILLIMETRES_PER_INCH;
+    let columns_f64 = (page_width_pdf_points / spacing_pdf_points).floor() + 1.;
+    let rows_f64 = (page_height_pdf_points / spacing_pdf_points).floor() + 1.;
+    if columns_f64 > MAX_CONSTRUCTION_GRID_POINTS as f64
+        || rows_f64 > MAX_CONSTRUCTION_GRID_POINTS as f64
+    {
+        return Err(SemanticSnapError::ConstructionGridPointLimitExceeded);
+    }
+    let columns = columns_f64 as usize;
+    let rows = rows_f64 as usize;
+    let point_count = columns
+        .checked_mul(rows)
+        .ok_or(SemanticSnapError::ConstructionGridPointLimitExceeded)?;
+    if point_count > MAX_CONSTRUCTION_GRID_POINTS {
+        return Err(SemanticSnapError::ConstructionGridPointLimitExceeded);
+    }
+
+    let mut points = Vec::with_capacity(point_count);
+    for column in 0..columns {
+        for row in 0..rows {
+            points.push(PdfPoint {
+                x: column as f64 * spacing_pdf_points,
+                y: row as f64 * spacing_pdf_points,
+            });
+        }
+    }
+    Ok(points)
+}
+
+pub fn quantize_pdf_distance_to_mm_increment(
+    distance_pdf_points: f64,
+    increment_mm: f64,
+) -> Result<f64, SemanticSnapError> {
+    if !distance_pdf_points.is_finite() || distance_pdf_points < 0. {
+        return Err(SemanticSnapError::InvalidMeasuredDistance);
+    }
+    if !increment_mm.is_finite()
+        || !(MIN_DIMENSION_INCREMENT_MM..=MAX_DIMENSION_INCREMENT_MM).contains(&increment_mm)
+    {
+        return Err(SemanticSnapError::InvalidDimensionIncrement);
+    }
+    if distance_pdf_points == 0. {
+        return Ok(0.);
+    }
+    let distance_mm = distance_pdf_points * MILLIMETRES_PER_INCH / POINTS_PER_INCH;
+    let quantized_mm = (distance_mm / increment_mm).round().max(1.) * increment_mm;
+    Ok(quantized_mm * POINTS_PER_INCH / MILLIMETRES_PER_INCH)
+}
+
+pub fn resolve_construction_grid_point(
+    point: PdfPoint,
+    page_width_pdf_points: f64,
+    page_height_pdf_points: f64,
+    settings: &SemanticSnapSettings,
+    window_pixels_per_pdf_point: f64,
+) -> Option<SemanticSnapDecision> {
+    if !settings.is_source_enabled(SemanticSnapSource::ConstructionGrid)
+        || !settings.is_target_enabled(SemanticSnapRole::Intersection)
+        || !page_width_pdf_points.is_finite()
+        || !page_height_pdf_points.is_finite()
+        || page_width_pdf_points < 0.
+        || page_height_pdf_points < 0.
+        || !window_pixels_per_pdf_point.is_finite()
+        || window_pixels_per_pdf_point <= 0.
+    {
+        return None;
+    }
+    let spacing = settings.construction_grid_spacing_mm() * POINTS_PER_INCH / MILLIMETRES_PER_INCH;
+    let max_column = (page_width_pdf_points / spacing).floor();
+    let max_row = (page_height_pdf_points / spacing).floor();
+    let snapped = PdfPoint {
+        x: (point.x / spacing).round().clamp(0., max_column) * spacing,
+        y: (point.y / spacing).round().clamp(0., max_row) * spacing,
+    };
+    let distance_window_px = squared_distance(point, snapped).sqrt() * window_pixels_per_pdf_point;
+    (distance_window_px <= settings.sensitivity_window_px()).then_some(SemanticSnapDecision {
+        point: snapped,
+        owner_id: None,
+        role: SemanticSnapRole::Intersection,
+        distance_window_px,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -116,6 +378,7 @@ struct Candidate {
     geometry: CandidateGeometry,
     owner_id: Option<MarkupId>,
     role: SemanticSnapRole,
+    source: SemanticSnapSource,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -164,6 +427,25 @@ impl SemanticSnapIndex {
         Self { candidates }
     }
 
+    pub fn with_construction_grid(
+        mut self,
+        page_width_pdf_points: f64,
+        page_height_pdf_points: f64,
+        spacing_mm: f64,
+    ) -> Result<Self, SemanticSnapError> {
+        self.candidates.extend(
+            construction_grid_points(page_width_pdf_points, page_height_pdf_points, spacing_mm)?
+                .into_iter()
+                .map(|point| Candidate {
+                    geometry: CandidateGeometry::Point(point),
+                    owner_id: None,
+                    role: SemanticSnapRole::Intersection,
+                    source: SemanticSnapSource::ConstructionGrid,
+                }),
+        );
+        Ok(self)
+    }
+
     pub fn resolve_point(
         &self,
         point: PdfPoint,
@@ -185,9 +467,6 @@ impl SemanticSnapIndex {
         window_pixels_per_pdf_point: f64,
         orthogonal_anchor: Option<PdfPoint>,
     ) -> Option<SemanticSnapDecision> {
-        if !settings.annotations_enabled() {
-            return None;
-        }
         if !window_pixels_per_pdf_point.is_finite() || window_pixels_per_pdf_point <= 0. {
             return None;
         }
@@ -200,6 +479,9 @@ impl SemanticSnapIndex {
         let mut best: Option<(f64, SemanticSnapDecision)> = None;
 
         for candidate in &self.candidates {
+            if !settings.is_source_enabled(candidate.source) {
+                continue;
+            }
             if !settings.is_target_enabled(candidate.role) {
                 continue;
             }
@@ -316,6 +598,7 @@ fn add_intersection_candidates(candidates: &mut Vec<Candidate>) {
                     geometry: CandidateGeometry::Point(point),
                     owner_id: None,
                     role: SemanticSnapRole::Intersection,
+                    source: SemanticSnapSource::Annotation,
                 });
             }
         }
@@ -357,12 +640,14 @@ fn add_rectangle_candidates(
         geometry: CandidateGeometry::Point(center),
         owner_id: Some(owner_id.clone()),
         role: SemanticSnapRole::Center,
+        source: SemanticSnapSource::Annotation,
     });
     for corner in corners {
         candidates.push(Candidate {
             geometry: CandidateGeometry::Point(corner),
             owner_id: Some(owner_id.clone()),
             role: SemanticSnapRole::Endpoint,
+            source: SemanticSnapSource::Annotation,
         });
     }
     for index in 0..corners.len() {
@@ -375,11 +660,13 @@ fn add_rectangle_candidates(
             }),
             owner_id: Some(owner_id.clone()),
             role: SemanticSnapRole::Midpoint,
+            source: SemanticSnapSource::Annotation,
         });
         candidates.push(Candidate {
             geometry: CandidateGeometry::Segment { start, end },
             owner_id: Some(owner_id.clone()),
             role: SemanticSnapRole::Nearest,
+            source: SemanticSnapSource::Annotation,
         });
     }
 }
@@ -395,6 +682,7 @@ fn add_open_segment_candidates(
             geometry: CandidateGeometry::Point(point),
             owner_id: Some(owner_id.clone()),
             role: SemanticSnapRole::Endpoint,
+            source: SemanticSnapSource::Annotation,
         });
     }
     candidates.push(Candidate {
@@ -404,11 +692,13 @@ fn add_open_segment_candidates(
         }),
         owner_id: Some(owner_id.clone()),
         role: SemanticSnapRole::Midpoint,
+        source: SemanticSnapSource::Annotation,
     });
     candidates.push(Candidate {
         geometry: CandidateGeometry::Segment { start, end },
         owner_id: Some(owner_id.clone()),
         role: SemanticSnapRole::Nearest,
+        source: SemanticSnapSource::Annotation,
     });
 }
 
@@ -486,5 +776,180 @@ fn role_priority(role: SemanticSnapRole) -> f64 {
         SemanticSnapRole::Midpoint => 2.,
         SemanticSnapRole::Center => 3.,
         SemanticSnapRole::Nearest => 8.,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pdf_points_for_mm(millimetres: f64) -> f64 {
+        millimetres * POINTS_PER_INCH / MILLIMETRES_PER_INCH
+    }
+
+    #[test]
+    fn electron_defaults_and_toggles_are_independent() {
+        let defaults = SemanticSnapSettings::default();
+        assert!(defaults.is_source_enabled(SemanticSnapSource::Content));
+        assert!(defaults.is_source_enabled(SemanticSnapSource::Annotation));
+        assert!(defaults.is_source_enabled(SemanticSnapSource::PageGrid));
+        assert!(!defaults.is_source_enabled(SemanticSnapSource::ConstructionGrid));
+        assert!(defaults.construction_grid_visible());
+        assert_eq!(defaults.construction_grid_spacing_mm(), 10.);
+        assert!(!defaults.dimension_increment_enabled());
+        assert_eq!(defaults.dimension_increment_mm(), 5.);
+        assert!(defaults.guides_enabled());
+        for guide in [
+            SemanticSnapGuideType::Alignment,
+            SemanticSnapGuideType::EqualSize,
+            SemanticSnapGuideType::EqualSpacing,
+        ] {
+            assert!(defaults.is_guide_enabled(guide));
+        }
+
+        let changed = defaults
+            .with_source(SemanticSnapSource::Content, false)
+            .with_source(SemanticSnapSource::ConstructionGrid, true)
+            .with_guide(SemanticSnapGuideType::EqualSize, false);
+        assert!(!changed.is_source_enabled(SemanticSnapSource::Content));
+        assert!(changed.is_source_enabled(SemanticSnapSource::Annotation));
+        assert!(changed.is_source_enabled(SemanticSnapSource::PageGrid));
+        assert!(changed.is_source_enabled(SemanticSnapSource::ConstructionGrid));
+        assert!(changed.is_guide_enabled(SemanticSnapGuideType::Alignment));
+        assert!(!changed.is_guide_enabled(SemanticSnapGuideType::EqualSize));
+        assert!(changed.is_guide_enabled(SemanticSnapGuideType::EqualSpacing));
+    }
+
+    #[test]
+    fn numeric_settings_clamp_and_validate_boundaries() {
+        let low = SemanticSnapSettings::default()
+            .with_construction_grid_spacing_mm(-4.)
+            .with_dimension_increment_mm(0.01);
+        assert_eq!(low.construction_grid_spacing_mm(), 1.);
+        assert_eq!(low.dimension_increment_mm(), 0.1);
+        assert_eq!(low.validate(), Ok(()));
+
+        let high = SemanticSnapSettings::default()
+            .with_construction_grid_spacing_mm(501.)
+            .with_dimension_increment_mm(5_000.);
+        assert_eq!(high.construction_grid_spacing_mm(), 500.);
+        assert_eq!(high.dimension_increment_mm(), 500.);
+        assert_eq!(high.validate(), Ok(()));
+
+        let mut invalid = SemanticSnapSettings::default();
+        invalid.construction_grid_spacing_mm = f64::NAN;
+        assert_eq!(
+            invalid.validate(),
+            Err(SemanticSnapError::InvalidConstructionGridSpacing)
+        );
+        invalid.construction_grid_spacing_mm = 10.;
+        invalid.dimension_increment_mm = f64::INFINITY;
+        assert_eq!(
+            invalid.validate(),
+            Err(SemanticSnapError::InvalidDimensionIncrement)
+        );
+    }
+
+    #[test]
+    fn construction_grid_is_bounded_to_asymmetric_page_dimensions() {
+        let points = construction_grid_points(pdf_points_for_mm(25.), pdf_points_for_mm(12.), 10.)
+            .expect("valid grid");
+        assert_eq!(points.len(), 6);
+        assert_eq!(points[0], PdfPoint { x: 0., y: 0. });
+        assert_eq!(
+            points[1],
+            PdfPoint {
+                x: 0.,
+                y: pdf_points_for_mm(10.)
+            }
+        );
+        assert_eq!(
+            points[5],
+            PdfPoint {
+                x: pdf_points_for_mm(20.),
+                y: pdf_points_for_mm(10.)
+            }
+        );
+        assert!(points.iter().all(|point| {
+            point.x <= pdf_points_for_mm(25.) && point.y <= pdf_points_for_mm(12.)
+        }));
+    }
+
+    #[test]
+    fn construction_grid_rejects_invalid_inputs_and_excessive_candidates() {
+        assert_eq!(
+            construction_grid_points(100., -1., 10.),
+            Err(SemanticSnapError::InvalidPageDimensions)
+        );
+        assert_eq!(
+            construction_grid_points(100., 100., 0.99),
+            Err(SemanticSnapError::InvalidConstructionGridSpacing)
+        );
+
+        let spacing = pdf_points_for_mm(1.);
+        assert_eq!(
+            construction_grid_points(399. * spacing, 250. * spacing, 1.),
+            Err(SemanticSnapError::ConstructionGridPointLimitExceeded)
+        );
+        assert_eq!(
+            construction_grid_points(f64::MAX, 100., 1.),
+            Err(SemanticSnapError::ConstructionGridPointLimitExceeded)
+        );
+    }
+
+    #[test]
+    fn construction_grid_resolves_without_materializing_large_grids() {
+        let settings = SemanticSnapSettings::default()
+            .with_source(SemanticSnapSource::Annotation, false)
+            .with_source(SemanticSnapSource::ConstructionGrid, true)
+            .with_construction_grid_spacing_mm(1.);
+        let decision = resolve_construction_grid_point(
+            PdfPoint {
+                x: pdf_points_for_mm(838.2),
+                y: pdf_points_for_mm(1187.1),
+            },
+            pdf_points_for_mm(841.),
+            pdf_points_for_mm(1189.),
+            &settings,
+            1.,
+        )
+        .expect("nearby A0 grid intersection");
+        assert!((decision.point.x - pdf_points_for_mm(838.)).abs() < 0.000_001);
+        assert!((decision.point.y - pdf_points_for_mm(1187.)).abs() < 0.000_001);
+        assert_eq!(decision.role, SemanticSnapRole::Intersection);
+
+        let disabled = settings.with_source(SemanticSnapSource::ConstructionGrid, false);
+        assert!(resolve_construction_grid_point(
+            PdfPoint { x: 0.2, y: 0.2 },
+            100.,
+            100.,
+            &disabled,
+            1.,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn distance_quantization_uses_pdf_units_and_increment_boundaries() {
+        let quantized = quantize_pdf_distance_to_mm_increment(pdf_points_for_mm(13.2), 5.)
+            .expect("valid increment");
+        assert!((quantized - pdf_points_for_mm(15.)).abs() < 0.000_001);
+        assert_eq!(quantize_pdf_distance_to_mm_increment(0., 0.1), Ok(0.));
+        assert_eq!(
+            quantize_pdf_distance_to_mm_increment(pdf_points_for_mm(0.2), 5.),
+            Ok(pdf_points_for_mm(5.))
+        );
+        assert_eq!(
+            quantize_pdf_distance_to_mm_increment(pdf_points_for_mm(749.), 500.),
+            Ok(pdf_points_for_mm(500.))
+        );
+        assert_eq!(
+            quantize_pdf_distance_to_mm_increment(72., 0.09),
+            Err(SemanticSnapError::InvalidDimensionIncrement)
+        );
+        assert_eq!(
+            quantize_pdf_distance_to_mm_increment(-1., 5.),
+            Err(SemanticSnapError::InvalidMeasuredDistance)
+        );
     }
 }

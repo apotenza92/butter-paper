@@ -22,12 +22,17 @@
   },
   "prepared": {
     "directory": ".prepared/gpui-component-c27f5d5c",
-    "treeSha256": "911330d721c582c4c9ef0b409b0d3d5b17cf59f89deae75b0df21301a02d2a73"
+    "treeSha256": "35254d5f899bb03514766c834996cc9025f16e06ad19ffd4fcfb3e32c105dd69"
   },
   "tabStatePatch": {
     "path": "patches/gpui-component-tab-button-states.patch",
     "sha256": "567ab0e1e83eecb15e468e7866f6477bb37d8fce3c0711ecf33263e6122b8517",
     "purpose": "Reviewed opt-in default Button state colours for Outline tabs; not an upstream backport"
+  },
+  "menuAccessibilityPatch": {
+    "path": "patches/gpui-component-menu-accessibility.patch",
+    "sha256": "edb528d89356bf30a6c7cb831d1166a68d4e6f1d663c0b42445685be132f89af",
+    "purpose": "Reviewed menu-row AccessKit disabled and checked state exposure; not an upstream backport"
   },
   "forbiddenFeatures": [
     "profiler",
@@ -80,15 +85,19 @@
   "sharedExperimentSources": [
     {
       "path": "../gpui-migration/Cargo.toml",
-      "sha256": "055cc8d99d742fbb491933fa7de3d9c072be04623dcd8a1a0331286152f99836"
+      "sha256": "407c0b07efc4ee19a80f2473cf8f402181fcace99aa51415efa04602f420d0e0"
     },
     {
       "path": "../gpui-migration/src/lib.rs",
-      "sha256": "2213001a6011f0708dc844164a6067950452a4aa43c5b53b999a0d0ca5a384e7"
+      "sha256": "efb13a9ed28fe6d1669420b63436bb39273b14d623752846bd90f78ab9bc8f6f"
+    },
+    {
+      "path": "../gpui-migration/src/recent_signature_store.rs",
+      "sha256": "650d4cb9dc4709d1f1be1b98242c7da6e8c53c318c7e65baeb4e0f9bdbff583d"
     },
     {
       "path": "../gpui-migration/src/generated_document.rs",
-      "sha256": "683f9c35ebfd870f5ef70686e84d1940b52ed8a8c198b161e6c6bf2fd6ef8e64"
+      "sha256": "058b0c08680aa7eb605a2482b40538b7108b2711ddc79b63f73fb143845c6303"
     },
     {
       "path": "../gpui-migration/src/template_library.rs",
@@ -100,7 +109,7 @@
     },
     {
       "path": "../gpui-migration/src/annotation_model.rs",
-      "sha256": "07764179af95d54bb8fa7a98373fd8c4fc12c65eeda316c31e30a4f89ea0c605"
+      "sha256": "d9c428c6e980f961766d7f7a2cd879515c731a25a22892d3c6bb97667d7828a6"
     },
     {
       "path": "../gpui-migration/src/highlight_compositor.rs",
@@ -112,11 +121,11 @@
     },
     {
       "path": "../gpui-migration/src/annotation_adapter.rs",
-      "sha256": "10c9aaa87d59d31141c8cd99542a6741b75449c9654b57a48efc0b65a07ea11a"
+      "sha256": "be4cd02a9d726f3cee1d431bbacc1c1550086f1f99fa126ede7b876f688487bb"
     },
     {
       "path": "../gpui-migration/src/semantic_snapping.rs",
-      "sha256": "405f43714285cd220ecee6245e693393740abe0c79c4917ceb0545a365d63436"
+      "sha256": "3809f3a217060ea8cff33820b7d31c4a806a8e741f78474c53f512f76e03eeb5"
     },
     {
       "path": "../gpui-migration/src/cloud_plus_routing.rs",
@@ -136,7 +145,7 @@
     },
     {
       "path": "../gpui-migration/src/pdf_engine.rs",
-      "sha256": "1a2c1b544d5ae29e7de44775c1e54d866826eba3b739d0acb4d5f35b126c7932"
+      "sha256": "d702dc2a7015b8befdca22bb50f5668b5401354212e956c54e1d422ae8001255"
     },
     {
       "path": "../gpui-migration/src/pdf_file_authority.rs",

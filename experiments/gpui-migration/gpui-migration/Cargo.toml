@@ -11,11 +11,15 @@ benchmark-evidence = ["gpui/profiler"]
 
 [dependencies]
 async-channel = "2.5.0"
+base64 = "0.22.1"
+chacha20poly1305 = { version = "0.11.0", features = ["zeroize"] }
+cosmic-text = "0.19.0"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["wayland", "x11", "windows-manifest"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["font-kit", "wayland", "x11"] }
 gpui-component = { path = ".prepared/gpui-component-c27f5d5c/crates/ui" }
 gpui-component-assets = { path = ".prepared/gpui-component-c27f5d5c/crates/assets" }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+keyring = { version = "=3.6.3", features = ["apple-native", "crypto-rust", "sync-secret-service", "windows-native"] }
 libc = "0.2"
 lopdf = { version = "=0.44.0", default-features = false }
 memmap2 = "0.9.8"
@@ -24,6 +28,7 @@ serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"
 serde_json = "1.0"
 smallvec = "1.15.1"
+zeroize = "1.9.0"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.4", features = ["fs"] }

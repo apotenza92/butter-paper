@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 pub use crate::document_resource::{
@@ -32,7 +32,7 @@ use crate::{
         DimensionPropertyEvent, DimensionPropertyInspector, DimensionPropertyPatch,
         DimensionPropertySnapshot,
     },
-    document_session::ThumbnailPresentation,
+    document_session::{ThumbnailPresentation, annotation_image_cache_key},
     document_tab_bar::{
         DOCUMENT_TAB_OPEN_ID, DOCUMENT_TAB_POINTER_DRAG_THRESHOLD,
         DOCUMENT_TAB_REORDER_DESCRIPTION, DOCUMENT_TAB_REORDER_KEYSHORTCUTS,
@@ -50,7 +50,7 @@ use crate::{
     ink_property_inspector::{
         InkPropertyEvent, InkPropertyInspector, InkPropertyPatch, InkPropertySnapshot,
     },
-    local_signature::{DrawnSignature, NormalizedSignaturePoint},
+    local_signature::{DrawnSignature, NormalizedSignaturePoint, TypedSignature},
     measurement_property_inspector::{
         MeasurementPropertyAction, MeasurementPropertyEvent, MeasurementPropertyInspector,
         MeasurementPropertySnapshot,
@@ -98,12 +98,12 @@ use crate::{
     },
     annotation_model::{
         Annotation, AnnotationEdit, AnnotationError, AnnotationKind, AnnotationScene, AnnotationSnapshot,
-        ArcControlPoint, DimensionAnnotation, InkTool, LengthCalibration, LengthEndpoint, LineKind,
+        ArcControlPoint, DimensionAppearance, InkTool, LengthCalibration, LengthEndpoint, LineKind,
         MarkupId, MeasurementPathKind, PENDING_REDACTION_STATUS, PageRotation,
         PageRotationDirection, PageScale, PageScaleApplyTarget, PageTransform, PdfPoint, PdfRect,
         PenAppearance, PointerCancelReason, RectangleAppearance, RectangleResizeHandle,
         ScalePreset, SceneArc, SceneCloudPlus, SceneDimension, SceneRectangle, SceneRedact,
-        StrokeStyle, TextAlignment, TextBoxAnnotation, TextBoxStyle, built_in_scale_presets,
+        StraightLineAppearance, StrokeStyle, TextAlignment, TextBoxAnnotation, TextBoxStyle, built_in_scale_presets,
         ellipse_cubic_bezier_points, rectangle_world_corners,
     },
     annotation_paint_path::{InkPaintPathSegment, build_ink_paint_path},
@@ -118,7 +118,11 @@ use crate::{
     pdf_file_authority::{SaveAsTargetAuthority, SaveTargetErrorKind},
     selection_geometry::{SelectionMarquee, SelectionPoint, SelectionShape},
     semantic_snapping::{
-        SemanticSnapDecision, SemanticSnapRole, SemanticSnapSettings, SemanticSnapTarget,
+        SemanticSnapDecision, SemanticSnapGuideType, SemanticSnapRole, SemanticSnapSettings,
+        SemanticSnapSource, SemanticSnapTarget,
+    },
+    recent_signature_store::{
+        RecentSignature, RecentSignatureSource, RecentSignatureStore, RecentSignaturesSnapshot,
     },
     viewer::{PageLayout, TileRequest},
 };
@@ -138,13 +142,14 @@ use gpui_component::{
     alert::Alert,
     button::{Button, ButtonGroup, ButtonVariants as _},
     checkbox::Checkbox,
+    dialog::{DialogAction, DialogClose, DialogFooter},
     h_flex,
     input::{
-        Copy, Cut, Delete, Escape, InputEvent, Paste, Redo, SelectAll, Textarea, TextareaState,
-        Undo,
+        Copy, Cut, Delete, Escape, Input, InputEvent, InputState, NumberInput, Paste, Redo,
+        SelectAll, Textarea, TextareaState, Undo,
     },
     popover::Popover,
-    menu::{DropdownMenu as _, PopupMenuItem},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     progress::Progress,
     resizable::{ResizableState, h_resizable, resizable_panel},
     scroll::ScrollableElement as _,
@@ -182,6 +187,9 @@ gpui::actions!(
         FitPage,
         ContinuousView,
         SinglePageView,
+        SelectTool,
+        PanTool,
+        SetPageScale,
         SelectLineTool,
         SelectArcTool,
         SelectArrowTool,
@@ -434,10 +442,30 @@ pub const DOCUMENT_SIGNATURE_PREVIEW_ID: &str = "document-workspace-signature-pr
 pub const DOCUMENT_SIGNATURE_ADD_ID: &str = "document-workspace-signature-add";
 pub const DOCUMENT_SIGNATURE_ERROR_ALERT_ID: &str = "document-workspace-signature-error-alert";
 pub const DOCUMENT_SIGNATURE_LOADING_ID: &str = "document-workspace-signature-loading";
+pub const DOCUMENT_SIGNATURE_MODE_DRAW_ID: &str = "document-workspace-signature-mode-draw";
+pub const DOCUMENT_SIGNATURE_MODE_TYPE_ID: &str = "document-workspace-signature-mode-type";
+pub const DOCUMENT_SIGNATURE_MODE_IMAGE_ID: &str = "document-workspace-signature-mode-image";
+pub const DOCUMENT_SIGNATURE_NAME_INPUT_ID: &str = "document-workspace-signature-name-input";
+pub const DOCUMENT_SIGNATURE_RECENT_ID: &str = "document-workspace-signature-recent";
+pub const DOCUMENT_SIGNATURE_RECENT_STATUS_ID: &str = "document-workspace-signature-recent-status";
+pub const DOCUMENT_SIGNATURE_RECENT_REMOVE_CANCEL_ID: &str =
+    "document-workspace-signature-recent-remove-cancel";
+pub const DOCUMENT_SIGNATURE_RECENT_REMOVE_CONFIRM_ID: &str =
+    "document-workspace-signature-recent-remove-confirm";
 pub const DOCUMENT_SNAPSHOT_TOOL_ID: &str = "tool-snapshot";
 pub const DOCUMENT_SNAP_SETTINGS_ID: &str = "viewer-snap-target-menu";
 pub const DOCUMENT_SNAP_POPOVER_ID: &str = "viewer-snap-popover";
 pub const DOCUMENT_SNAP_MARKUP_ID: &str = "viewer-snap-markup";
+pub const DOCUMENT_SNAP_CONSTRUCTION_GRID_ID: &str = "viewer-snap-construction-grid";
+pub const DOCUMENT_SNAP_CONSTRUCTION_GRID_VISIBLE_ID: &str = "viewer-snap-construction-grid-visible";
+pub const DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID: &str = "viewer-snap-construction-grid-spacing";
+pub const DOCUMENT_SNAP_DIMENSION_INCREMENT_ID: &str = "viewer-snap-dimension-increment";
+pub const DOCUMENT_SNAP_DIMENSION_INCREMENT_VALUE_ID: &str =
+    "viewer-snap-dimension-increment-value";
+pub const DOCUMENT_SNAP_GUIDES_ID: &str = "viewer-snap-guides";
+pub const DOCUMENT_SNAP_GUIDE_ALIGNMENT_ID: &str = "viewer-snap-guide-alignment";
+pub const DOCUMENT_SNAP_GUIDE_EQUAL_SIZE_ID: &str = "viewer-snap-guide-equal-size";
+pub const DOCUMENT_SNAP_GUIDE_EQUAL_SPACING_ID: &str = "viewer-snap-guide-equal-spacing";
 pub const DOCUMENT_SNAP_ENDPOINT_ID: &str = "viewer-snap-target-endpoint";
 pub const DOCUMENT_SNAP_MIDPOINT_ID: &str = "viewer-snap-target-midpoint";
 pub const DOCUMENT_SNAP_CENTER_ID: &str = "viewer-snap-target-center";
@@ -1804,8 +1832,8 @@ impl NativeDocumentSaver for PdfDocumentSaver {
             }
             if !actual.same_persisted_state_as(expected) {
                 return Err(format!(
-                    "saved PDF measurement path {} failed typed reopen validation",
-                    expected.id
+                    "saved PDF measurement path {} failed typed reopen validation: expected {expected:?}, reopened {actual:?}",
+                    expected.id,
                 ));
             }
         }
@@ -1941,21 +1969,7 @@ impl NativeDocumentSaver for PdfDocumentSaver {
             else {
                 return Err(format!("saved PDF is missing Snapshot {}", expected.id));
             };
-            let geometry_matches = [
-                (actual.rect.x, expected.rect.x),
-                (actual.rect.y, expected.rect.y),
-                (actual.rect.width, expected.rect.width),
-                (actual.rect.height, expected.rect.height),
-                (actual.rotation_degrees(), expected.rotation_degrees()),
-                (actual.opacity(), expected.opacity()),
-            ]
-            .into_iter()
-            .all(|(actual, expected)| (actual - expected).abs() <= 0.000_1);
-            if actual.id != expected.id
-                || actual.page_index != expected.page_index
-                || !geometry_matches
-                || actual.asset() != expected.asset()
-                || actual.locked != expected.locked
+            if !actual.same_persisted_state_as(expected)
                 || !reopened.snapshot_has_canonical_native_identity(&expected.id)
             {
                 return Err(format!(
@@ -2155,6 +2169,9 @@ pub struct DocumentWorkspace {
     annotation_highlight_settings_open: bool,
     semantic_snap_settings_open: bool,
     semantic_snap_settings: SemanticSnapSettings,
+    semantic_snap_grid_spacing_input: Option<Entity<InputState>>,
+    semantic_snap_dimension_increment_input: Option<Entity<InputState>>,
+    semantic_snap_input_subscriptions: Vec<Subscription>,
     toolbar_scroll: ScrollHandle,
     right_rail_actions_open: bool,
     right_rail_columns: usize,
@@ -2174,6 +2191,13 @@ pub struct DocumentWorkspace {
     signature_popover_open: bool,
     signature_prepare_state: SignaturePrepareState,
     drawn_signature: DrawnSignature,
+    signature_input_mode: SignatureInputMode,
+    signature_name_input: Option<Entity<InputState>>,
+    recent_signature_store: Option<Arc<RecentSignatureStore>>,
+    recent_signatures: Vec<RecentSignaturePreview>,
+    recent_signatures_loading: bool,
+    recent_signature_storage_issue: Option<String>,
+    recent_signature_request: u64,
     pending_save_prompt: Option<SavePromptAuthority>,
     rejected_stale_save_prompts: u64,
     page_scale_control: Option<Entity<PageScaleControl>>,
@@ -2287,6 +2311,12 @@ struct SignaturePreview {
     image: Arc<RenderImage>,
 }
 
+#[derive(Clone)]
+struct RecentSignaturePreview {
+    signature: RecentSignature,
+    image: Arc<RenderImage>,
+}
+
 #[derive(Clone, Default)]
 enum SignaturePrepareState {
     #[default]
@@ -2294,6 +2324,14 @@ enum SignaturePrepareState {
     Loading,
     Preview(SignaturePreview),
     Error(String),
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum SignatureInputMode {
+    #[default]
+    Draw,
+    Type,
+    Image,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2534,6 +2572,9 @@ impl DocumentWorkspace {
             annotation_highlight_settings_open: false,
             semantic_snap_settings_open: false,
             semantic_snap_settings: SemanticSnapSettings::default(),
+            semantic_snap_grid_spacing_input: None,
+            semantic_snap_dimension_increment_input: None,
+            semantic_snap_input_subscriptions: Vec::new(),
             toolbar_scroll: ScrollHandle::new(),
             right_rail_actions_open: false,
             right_rail_columns: 2,
@@ -2553,6 +2594,13 @@ impl DocumentWorkspace {
             signature_popover_open: false,
             signature_prepare_state: SignaturePrepareState::Idle,
             drawn_signature: DrawnSignature::default(),
+            signature_input_mode: SignatureInputMode::Draw,
+            signature_name_input: None,
+            recent_signature_store: None,
+            recent_signatures: Vec::new(),
+            recent_signatures_loading: false,
+            recent_signature_storage_issue: None,
+            recent_signature_request: 0,
             pending_save_prompt: None,
             rejected_stale_save_prompts: 0,
             page_scale_control: None,
@@ -2623,6 +2671,10 @@ impl DocumentWorkspace {
         let mut workspace = Self::with_opener(opener, cx);
         workspace.generated_document_store = Some(store);
         workspace
+    }
+
+    pub fn bind_recent_signature_store(&mut self, store: Arc<RecentSignatureStore>) {
+        self.recent_signature_store = Some(store);
     }
 
     pub fn sessions(&self) -> &[Entity<NativeDocumentSession>] {
@@ -3562,6 +3614,13 @@ impl DocumentWorkspace {
                 None,
                 value.locked,
             )),
+            (EngineeringVisualPropertyKind::Image, Some(Annotation::Image(value))) => Some((
+                value.id.clone(),
+                RectangleAppearance::new("#000000", 0., None::<String>, value.opacity())
+                    .expect("validated image opacity must form a transient appearance"),
+                None,
+                value.locked,
+            )),
             _ => None,
         };
         let Some((current_id, current_appearance, current_intensity, locked)) = current else {
@@ -3670,9 +3729,18 @@ impl DocumentWorkspace {
                 )?;
             }
             EngineeringVisualPropertyPatch::Opacity(opacity) if (0.0..=1.).contains(opacity) => {
-                if event.expected_kind == EngineeringVisualPropertyKind::Snapshot {
+                if matches!(
+                    event.expected_kind,
+                    EngineeringVisualPropertyKind::Image
+                        | EngineeringVisualPropertyKind::Snapshot
+                ) {
                     let annotation_id = event.annotation_id.clone();
                     let opacity = *opacity;
+                    let edit = if event.expected_kind == EngineeringVisualPropertyKind::Image {
+                        AnnotationEdit::SetImageOpacity(opacity)
+                    } else {
+                        AnnotationEdit::SetSnapshotOpacity(opacity)
+                    };
                     self.update_annotation_history(
                         event.document_id,
                         cx,
@@ -3680,7 +3748,7 @@ impl DocumentWorkspace {
                             annotations.edit_primary_selected_annotation(
                                 id,
                                 &annotation_id,
-                                AnnotationEdit::SetSnapshotOpacity(opacity),
+                                edit,
                             )
                         },
                     )?;
@@ -3730,7 +3798,9 @@ impl DocumentWorkspace {
                 &annotation_id,
                 AnnotationEdit::SetCloudAppearance(appearance),
             ),
-            EngineeringVisualPropertyKind::Snapshot => Err(AnnotationError::NoSelection),
+            EngineeringVisualPropertyKind::Image | EngineeringVisualPropertyKind::Snapshot => {
+                Err(AnnotationError::NoSelection)
+            }
         })
     }
 
@@ -3996,21 +4066,21 @@ impl DocumentWorkspace {
         else {
             return Ok(false);
         };
-        let (current_id, current_kind, appearance, locked, measurement_path) =
+        let (current_id, current_kind, appearance, locked, measurement_text_style) =
             match primary {
                 Annotation::VertexPath(current) => (
                     current.id,
                     PathPropertyKind::from(current.kind),
                     current.appearance,
                     current.locked,
-                    false,
+                    None,
                 ),
                 Annotation::MeasurementPath(current) => (
-                    current.id,
+                    current.id.clone(),
                     PathPropertyKind::from(current.kind),
-                    current.appearance,
+                    current.appearance.clone(),
                     current.locked,
-                    true,
+                    Some(current.text_style().clone()),
                 ),
                 _ => return Ok(false),
         };
@@ -4085,17 +4155,15 @@ impl DocumentWorkspace {
                             event.document_id,
                             cx,
                             move |annotations, id| {
-                                if measurement_path {
-                                    let Some(Annotation::MeasurementPath(current)) =
-                                        annotations.primary_selected_annotation(id)
-                                    else {
-                                        return Err(AnnotationError::NoSelection);
-                                    };
-                                    if current.id != annotation_id {
-                                        return Err(AnnotationError::NoSelection);
-                                    }
-                                    annotations
-                                        .set_selected_rectangle_appearance(id, next_appearance)
+                                if let Some(text_style) = measurement_text_style {
+                                    annotations.edit_primary_selected_annotation(
+                                        id,
+                                        &annotation_id,
+                                        AnnotationEdit::SetMeasurementPathAppearance {
+                                            appearance: next_appearance,
+                                            text_style,
+                                        },
+                                    )
                                 } else {
                                     annotations.edit_primary_selected_annotation(
                                         id,
@@ -4150,18 +4218,32 @@ impl DocumentWorkspace {
                 .and_then(|value| value.with_fill_opacity(appearance.fill_opacity()))
                 .map(|value| value.with_stroke_style(appearance.stroke_style()))
                 .map_err(|error| error.to_string())?;
+                let measurement_text_style = measurement_text_style
+                    .as_ref()
+                    .map(|text| {
+                        TextBoxStyle::new(
+                            text.font_family(),
+                            text.font_size_pt(),
+                            text.color(),
+                            next_appearance.opacity(),
+                        )
+                        .and_then(|style| {
+                            style.with_weight_and_alignment(text.weight(), text.alignment())
+                        })
+                    })
+                    .transpose()
+                    .map_err(|error| error.to_string())?;
                 let annotation_id = event.annotation_id.clone();
                 self.update_annotation_history(event.document_id, cx, move |annotations, id| {
-                    if measurement_path {
-                        let Some(Annotation::MeasurementPath(current)) =
-                            annotations.primary_selected_annotation(id)
-                        else {
-                            return Err(AnnotationError::NoSelection);
-                        };
-                        if current.id != annotation_id {
-                            return Err(AnnotationError::NoSelection);
-                        }
-                        annotations.set_selected_rectangle_appearance(id, next_appearance)
+                    if let Some(text_style) = measurement_text_style {
+                        annotations.edit_primary_selected_annotation(
+                            id,
+                            &annotation_id,
+                            AnnotationEdit::SetMeasurementPathAppearance {
+                                appearance: next_appearance,
+                                text_style,
+                            },
+                        )
                     } else {
                         annotations.edit_primary_selected_annotation(
                             id,
@@ -5651,6 +5733,57 @@ impl DocumentWorkspace {
         );
     }
 
+    fn set_semantic_snap_source(
+        &mut self,
+        source: SemanticSnapSource,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_semantic_snap_settings(
+            self.semantic_snap_settings.with_source(source, enabled),
+            cx,
+        );
+    }
+
+    fn set_semantic_snap_grid_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        self.apply_semantic_snap_settings(
+            self.semantic_snap_settings
+                .with_construction_grid_visible(visible),
+            cx,
+        );
+    }
+
+    fn set_semantic_snap_dimension_increment_enabled(
+        &mut self,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_semantic_snap_settings(
+            self.semantic_snap_settings
+                .with_dimension_increment_enabled(enabled),
+            cx,
+        );
+    }
+
+    fn set_semantic_snap_guides_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.apply_semantic_snap_settings(
+            self.semantic_snap_settings.with_guides_enabled(enabled),
+            cx,
+        );
+    }
+
+    fn set_semantic_snap_guide(
+        &mut self,
+        guide: SemanticSnapGuideType,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_semantic_snap_settings(
+            self.semantic_snap_settings.with_guide(guide, enabled),
+            cx,
+        );
+    }
+
     fn set_semantic_snap_target(
         &mut self,
         target: SemanticSnapTarget,
@@ -6474,6 +6607,16 @@ impl DocumentWorkspace {
                     session.source_page_sizes = opened.page_sizes;
                     session.source_page_rotations = page_rotations;
                     session.source_page_coordinate_spaces = page_coordinate_spaces;
+                    for (page_index, (width, height)) in
+                        session.source_page_sizes.iter().copied().enumerate()
+                    {
+                        session.annotations.set_semantic_snap_page_size(
+                            session.id.value(),
+                            page_index as u32,
+                            f64::from(width),
+                            f64::from(height),
+                        );
+                    }
                     session.sync_rotation_geometry();
                     session.presentation_error = None;
                     session.current_page = 0;
@@ -10172,19 +10315,70 @@ impl DocumentWorkspace {
         let Some(snapshot) = state.annotations.snapshot(event.document_id.value()) else {
             return Ok(false);
         };
-        let Some(Annotation::Dimension(current)) = state
+        let Some(current) = state
             .annotations
             .primary_selected_annotation(event.document_id.value())
         else {
             return Ok(false);
         };
+        let (current_id, current_appearance, current_locked, is_dimension) = match &current {
+            Annotation::Dimension(annotation) => (
+                &annotation.id,
+                &annotation.appearance,
+                annotation.locked,
+                true,
+            ),
+            Annotation::Length(annotation) => (
+                &annotation.id,
+                &annotation.appearance,
+                annotation.locked,
+                false,
+            ),
+            Annotation::MeasurementPath(annotation) => {
+                let appearance = DimensionAppearance::new(
+                    StraightLineAppearance::new(
+                        annotation.appearance.stroke_color(),
+                        annotation.appearance.stroke_width_pt(),
+                        annotation.appearance.opacity(),
+                        annotation.appearance.stroke_style(),
+                    )
+                    .map_err(|error| error.to_string())?,
+                    annotation.text_style().clone(),
+                )
+                .map_err(|error| error.to_string())?;
+                if snapshot.revision != event.expected_revision
+                    || annotation.id != event.annotation_id
+                    || match &event.patch {
+                        DimensionPropertyPatch::Locked(value) => *value == annotation.locked,
+                        DimensionPropertyPatch::OffsetPt(_) => true,
+                        DimensionPropertyPatch::Appearance(value) => value == &appearance,
+                    }
+                {
+                    return Ok(false);
+                }
+                if annotation.locked
+                    && !matches!(event.patch, DimensionPropertyPatch::Locked(_))
+                {
+                    return Ok(false);
+                }
+                return self.apply_measurement_path_visual_patch(event, annotation.clone(), cx);
+            }
+            _ => return Ok(false),
+        };
         if snapshot.revision != event.expected_revision
-            || current.id != event.annotation_id
-            || dimension_property_patch_matches(&event.patch, &current)
+            || *current_id != event.annotation_id
+            || match &event.patch {
+                DimensionPropertyPatch::Locked(value) => *value == current_locked,
+                DimensionPropertyPatch::OffsetPt(value) => {
+                    !is_dimension
+                        || matches!(&current, Annotation::Dimension(annotation) if *value == annotation.dimension_line_offset())
+                }
+                DimensionPropertyPatch::Appearance(value) => value == current_appearance,
+            }
         {
             return Ok(false);
         }
-        if current.locked && !matches!(event.patch, DimensionPropertyPatch::Locked(_)) {
+        if current_locked && !matches!(event.patch, DimensionPropertyPatch::Locked(_)) {
             return Ok(false);
         }
         match &event.patch {
@@ -10198,7 +10392,7 @@ impl DocumentWorkspace {
                     },
                 )?;
             }
-            DimensionPropertyPatch::OffsetPt(value) if value.is_finite() => {
+            DimensionPropertyPatch::OffsetPt(value) if is_dimension && value.is_finite() => {
                 let annotation_id = event.annotation_id.clone();
                 let value = *value;
                 self.update_annotation_history(event.document_id, cx, move |annotations, id| {
@@ -10212,15 +10406,59 @@ impl DocumentWorkspace {
             DimensionPropertyPatch::Appearance(appearance) => {
                 let annotation_id = event.annotation_id.clone();
                 let appearance = appearance.clone();
+                let edit = if is_dimension {
+                    AnnotationEdit::SetDimensionAppearance(appearance)
+                } else {
+                    AnnotationEdit::SetLengthAppearance(appearance)
+                };
+                self.update_annotation_history(event.document_id, cx, move |annotations, id| {
+                    annotations.edit_primary_selected_annotation(id, &annotation_id, edit)
+                })?;
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    fn apply_measurement_path_visual_patch(
+        &mut self,
+        event: &DimensionPropertyEvent,
+        current: crate::annotation_model::MeasurementPathAnnotation,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, String> {
+        match &event.patch {
+            DimensionPropertyPatch::Locked(value) => {
+                let annotation_id = event.annotation_id.clone();
+                self.update_annotation_history(event.document_id, cx, move |annotations, id| {
+                    annotations.set_primary_selected_locked(id, &annotation_id, *value)
+                })?;
+            }
+            DimensionPropertyPatch::Appearance(appearance) => {
+                let line = appearance.line();
+                let path_appearance = RectangleAppearance::new(
+                    line.stroke_color(),
+                    line.stroke_width_pt(),
+                    current.appearance.fill_color().map(str::to_owned),
+                    line.opacity(),
+                )
+                .map_err(|error| error.to_string())?
+                .with_fill_opacity(current.appearance.fill_opacity())
+                .map_err(|error| error.to_string())?
+                .with_stroke_style(line.stroke_style());
+                let annotation_id = event.annotation_id.clone();
+                let text_style = appearance.text().clone();
                 self.update_annotation_history(event.document_id, cx, move |annotations, id| {
                     annotations.edit_primary_selected_annotation(
                         id,
                         &annotation_id,
-                        AnnotationEdit::SetDimensionAppearance(appearance),
+                        AnnotationEdit::SetMeasurementPathAppearance {
+                            appearance: path_appearance,
+                            text_style,
+                        },
                     )
                 })?;
             }
-            _ => return Ok(false),
+            DimensionPropertyPatch::OffsetPt(_) => return Ok(false),
         }
         Ok(true)
     }
@@ -10604,6 +10842,167 @@ impl DocumentWorkspace {
         cx.notify();
     }
 
+    fn load_recent_signatures(&mut self, cx: &mut Context<Self>) {
+        let Some(store) = self.recent_signature_store.clone() else {
+            return;
+        };
+        self.recent_signature_request = self.recent_signature_request.saturating_add(1);
+        let request = self.recent_signature_request;
+        self.recent_signatures_loading = true;
+        self.recent_signature_storage_issue = None;
+        cx.notify();
+        let background = cx.background_executor().clone();
+        cx.spawn(async move |entity, cx| {
+            let result = background.spawn(async move { store.list() }).await;
+            let _ = entity.update(cx, |workspace, cx| {
+                if workspace.recent_signature_request != request {
+                    return;
+                }
+                workspace.recent_signatures_loading = false;
+                workspace.apply_recent_signature_snapshot(
+                    result,
+                    "Recent signatures could not be loaded.",
+                );
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn apply_recent_signature_snapshot(
+        &mut self,
+        result: Result<RecentSignaturesSnapshot, crate::recent_signature_store::RecentSignatureStoreError>,
+        failure_message: &'static str,
+    ) {
+        match result {
+            Ok(snapshot) if snapshot.available => {
+                self.recent_signatures = snapshot
+                    .signatures
+                    .into_iter()
+                    .filter_map(recent_signature_preview)
+                    .collect();
+                self.recent_signature_storage_issue = None;
+            }
+            Ok(_) => {
+                self.recent_signatures.clear();
+                self.recent_signature_storage_issue =
+                    Some("Recent signatures need secure system storage.".into());
+            }
+            Err(_) => {
+                self.recent_signatures.clear();
+                self.recent_signature_storage_issue = Some(failure_message.into());
+            }
+        }
+    }
+
+    fn remember_recent_signature(
+        &mut self,
+        asset: crate::annotation_model::DecodedRgbaAsset,
+        source: RecentSignatureSource,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(store) = self.recent_signature_store.clone() else {
+            return;
+        };
+        self.recent_signature_request = self.recent_signature_request.saturating_add(1);
+        let request = self.recent_signature_request;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        let background = cx.background_executor().clone();
+        cx.spawn(async move |entity, cx| {
+            let result = background
+                .spawn(async move { store.remember(asset, source, now_ms) })
+                .await;
+            let _ = entity.update(cx, |workspace, cx| {
+                if workspace.recent_signature_request != request {
+                    return;
+                }
+                workspace.apply_recent_signature_snapshot(
+                    result,
+                    "This signature could not be saved to Recent.",
+                );
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn remove_recent_signature(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some(store) = self.recent_signature_store.clone() else {
+            return;
+        };
+        self.recent_signature_request = self.recent_signature_request.saturating_add(1);
+        let request = self.recent_signature_request;
+        self.recent_signatures_loading = true;
+        cx.notify();
+        let background = cx.background_executor().clone();
+        cx.spawn(async move |entity, cx| {
+            let result = background.spawn(async move { store.remove(&id) }).await;
+            let _ = entity.update(cx, |workspace, cx| {
+                if workspace.recent_signature_request != request {
+                    return;
+                }
+                workspace.recent_signatures_loading = false;
+                workspace.apply_recent_signature_snapshot(
+                    result,
+                    "Recent signatures could not be changed.",
+                );
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn confirm_remove_recent_signature(
+        owner: WeakEntity<Self>,
+        id: String,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let owner = owner.clone();
+            let id = id.clone();
+            alert
+                .close_button(false)
+                .title("Delete this signature?")
+                .description("This removes it from Recent. This action cannot be undone.")
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            DialogClose::new().child(
+                                Button::new(DOCUMENT_SIGNATURE_RECENT_REMOVE_CANCEL_ID)
+                                    .debug_selector(|| {
+                                        DOCUMENT_SIGNATURE_RECENT_REMOVE_CANCEL_ID.into()
+                                    })
+                                    .outline()
+                                    .label("Cancel"),
+                            ),
+                        )
+                        .child(
+                            DialogAction::new().child(
+                                Button::new(DOCUMENT_SIGNATURE_RECENT_REMOVE_CONFIRM_ID)
+                                    .debug_selector(|| {
+                                        DOCUMENT_SIGNATURE_RECENT_REMOVE_CONFIRM_ID.into()
+                                    })
+                                    .danger()
+                                    .label("Delete"),
+                            ),
+                        ),
+                )
+                .on_ok(move |_, _, cx| {
+                    owner
+                        .update(cx, |workspace, cx| {
+                            workspace.remove_recent_signature(id.clone(), cx);
+                        })
+                        .is_ok()
+                })
+        });
+    }
+
     fn begin_signature_selection(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
         if self.pending_text_box_editor.is_some() || self.pending_close_document_id.is_some() {
             return;
@@ -10732,6 +11131,103 @@ impl DocumentWorkspace {
         cx.notify();
     }
 
+    fn ensure_signature_name_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        if let Some(input) = &self.signature_name_input {
+            return input.clone();
+        }
+        let input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Type your name"));
+        self.signature_name_input = Some(input.clone());
+        input
+    }
+
+    fn ensure_semantic_snap_inputs(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Entity<InputState>, Entity<InputState>) {
+        if let (Some(spacing), Some(increment)) = (
+            &self.semantic_snap_grid_spacing_input,
+            &self.semantic_snap_dimension_increment_input,
+        ) {
+            return (spacing.clone(), increment.clone());
+        }
+        let spacing = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(self.semantic_snap_settings.construction_grid_spacing_mm().to_string())
+                .step(1.)
+                .min(1.)
+                .max(500.)
+        });
+        let increment = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(self.semantic_snap_settings.dimension_increment_mm().to_string())
+                .step(0.1)
+                .min(0.1)
+                .max(500.)
+        });
+        self.semantic_snap_input_subscriptions.push(cx.subscribe_in(
+            &spacing,
+            window,
+            |workspace, input, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change)
+                    && let Ok(value) = input.read(cx).value().parse::<f64>()
+                {
+                    workspace.apply_semantic_snap_settings(
+                        workspace
+                            .semantic_snap_settings
+                            .with_construction_grid_spacing_mm(value),
+                        cx,
+                    );
+                }
+            },
+        ));
+        self.semantic_snap_input_subscriptions.push(cx.subscribe_in(
+            &increment,
+            window,
+            |workspace, input, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change)
+                    && let Ok(value) = input.read(cx).value().parse::<f64>()
+                {
+                    workspace.apply_semantic_snap_settings(
+                        workspace
+                            .semantic_snap_settings
+                            .with_dimension_increment_mm(value),
+                        cx,
+                    );
+                }
+            },
+        ));
+        self.semantic_snap_grid_spacing_input = Some(spacing.clone());
+        self.semantic_snap_dimension_increment_input = Some(increment.clone());
+        (spacing, increment)
+    }
+
+    fn prepare_typed_signature(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        let input = self
+            .signature_name_input
+            .as_ref()
+            .ok_or_else(|| "Typed signature input is unavailable.".to_owned())?;
+        let asset = TypedSignature::new(input.read(cx).value().as_ref())
+            .and_then(|signature| signature.rasterize())
+            .map_err(|error| error.to_string())?;
+        let pixels = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(
+            asset.width_px(),
+            asset.height_px(),
+            asset.rgba().to_vec(),
+        )
+        .ok_or_else(|| "Unable to process the typed signature.".to_owned())?;
+        self.signature_prepare_state = SignaturePrepareState::Preview(SignaturePreview {
+            asset,
+            image: Arc::new(RenderImage::new(smallvec::smallvec![Frame::new(pixels)])),
+        });
+        Ok(())
+    }
+
     fn dismiss_signature_popover(
         &mut self,
         document_id: DocumentId,
@@ -10747,7 +11243,11 @@ impl DocumentWorkspace {
         self.signature_popover_open = false;
         self.signature_prepare_state = SignaturePrepareState::Idle;
         self.drawn_signature.clear();
+        self.signature_input_mode = SignatureInputMode::Draw;
         if let Some(window) = window {
+            if let Some(input) = self.signature_name_input.as_ref() {
+                input.update(cx, |input, cx| input.set_value("", window, cx));
+            }
             self.workspace_focus.focus(window, cx);
         }
         cx.notify();
@@ -10766,6 +11266,43 @@ impl DocumentWorkspace {
                 .rasterize()
                 .map_err(|error| error.to_string())?,
         };
+        let source = match self.signature_input_mode {
+            SignatureInputMode::Draw => RecentSignatureSource::Drawn,
+            SignatureInputMode::Type => RecentSignatureSource::Typed,
+            SignatureInputMode::Image => RecentSignatureSource::Image,
+        };
+        self.arm_signature_asset_placement(document_id, asset.clone(), window, cx)?;
+        self.remember_recent_signature(asset, source, cx);
+        Ok(())
+    }
+
+    fn arm_recent_signature_placement(
+        &mut self,
+        document_id: DocumentId,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let recent = self
+            .recent_signatures
+            .iter()
+            .find(|recent| recent.signature.id() == id)
+            .cloned()
+            .ok_or_else(|| "This recent signature is no longer available.".to_owned())?;
+        let asset = recent.signature.asset().clone();
+        let source = recent.signature.source();
+        self.arm_signature_asset_placement(document_id, asset.clone(), window, cx)?;
+        self.remember_recent_signature(asset, source, cx);
+        Ok(())
+    }
+
+    fn arm_signature_asset_placement(
+        &mut self,
+        document_id: DocumentId,
+        asset: crate::annotation_model::DecodedRgbaAsset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
         let Some(session) = self.session(document_id, cx).cloned() else {
             return Err("document session is closed".into());
         };
@@ -10792,6 +11329,9 @@ impl DocumentWorkspace {
         self.signature_popover_open = false;
         self.signature_prepare_state = SignaturePrepareState::Idle;
         self.drawn_signature.clear();
+        if let Some(input) = self.signature_name_input.as_ref() {
+            input.update(cx, |input, cx| input.set_value("", window, cx));
+        }
         self.annotation_statuses
             .insert(document_id, "Click the page to place the signature".into());
         self.workspace_focus.focus(window, cx);
@@ -13702,6 +14242,49 @@ fn paint_semantic_snap_indicator(
     }
 }
 
+fn paint_construction_grid(
+    spacing_mm: f64,
+    pdf_page_size: (f32, f32),
+    page_bounds: Bounds<Pixels>,
+    transform: &PageTransform,
+    color: gpui::Hsla,
+    window: &mut Window,
+) {
+    let spacing = spacing_mm * 72. / 25.4;
+    if !spacing.is_finite() || spacing <= 0. {
+        return;
+    }
+    let project = |sample: PdfPoint| {
+        let local = transform.point_to_local_pixels(sample);
+        point(
+            page_bounds.origin.x + px(local.x as f32),
+            page_bounds.origin.y + px(local.y as f32),
+        )
+    };
+    let mut builder = PathBuilder::stroke(px(1.));
+    let columns = (f64::from(pdf_page_size.0) / spacing).floor() as usize;
+    let rows = (f64::from(pdf_page_size.1) / spacing).floor() as usize;
+    for column in 0..=columns {
+        let x = column as f64 * spacing;
+        builder.move_to(project(PdfPoint { x, y: 0. }));
+        builder.line_to(project(PdfPoint {
+            x,
+            y: f64::from(pdf_page_size.1),
+        }));
+    }
+    for row in 0..=rows {
+        let y = row as f64 * spacing;
+        builder.move_to(project(PdfPoint { x: 0., y }));
+        builder.line_to(project(PdfPoint {
+            x: f64::from(pdf_page_size.0),
+            y,
+        }));
+    }
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color.opacity(0.22));
+    }
+}
+
 fn annotation_layer(
     document_id: DocumentId,
     page_index: u32,
@@ -13713,6 +14296,8 @@ fn annotation_layer(
     highlights_precomposed: bool,
     image_assets: Arc<HashMap<String, Arc<RenderImage>>>,
     selection_color: gpui::Hsla,
+    construction_grid_color: gpui::Hsla,
+    construction_grid_spacing_mm: Option<f64>,
     semantic_snap_decision: Option<SemanticSnapDecision>,
     selection_marquee: Option<SelectionMarquee>,
     interaction_control: Option<WeakEntity<DocumentWorkspace>>,
@@ -13762,6 +14347,7 @@ fn annotation_layer(
         })
         .flatten();
     let painted_semantic_snap_decision = semantic_snap_decision.clone();
+    let painted_construction_grid_spacing_mm = construction_grid_spacing_mm;
     gpui::div()
         .id(stable_id)
         .debug_selector(move || selector.clone().into())
@@ -13792,6 +14378,16 @@ fn annotation_layer(
                     else {
                         return;
                     };
+                    if let Some(spacing_mm) = painted_construction_grid_spacing_mm {
+                        paint_construction_grid(
+                            spacing_mm,
+                            pdf_page_size,
+                            page_bounds,
+                            &transform,
+                            construction_grid_color,
+                            window,
+                        );
+                    }
                     paint_redact_annotations(
                         scene.redacts,
                         page_bounds,
@@ -14442,23 +15038,31 @@ fn annotation_layer(
                                 });
                             let count = projected.len() as f32;
                             let caption: SharedString = annotation.caption.into();
+                            let text_style = &annotation.text_style;
+                            let text_color = try_parse_color(text_style.color())
+                                .unwrap_or(selection_color)
+                                .opacity(text_style.opacity() as f32);
                             let run = TextRun {
                                 len: caption.len(),
-                                font: font("Helvetica"),
-                                color: stroke_color,
+                                font: font(text_style.font_family()),
+                                color: text_color,
                                 background_color: None,
                                 underline: None,
                                 strikethrough: None,
                             };
                             let shaped = window.text_system().shape_line(
                                 caption,
-                                px(12. * scale),
+                                px(text_style.font_size_pt() as f32 * scale),
                                 &[run],
                                 None,
                             );
                             let _ = shaped.paint(
-                                point(center.x / count, center.y / count - px(14. * scale)),
-                                px(14. * scale),
+                                point(
+                                    center.x / count,
+                                    center.y / count
+                                        - px(text_style.font_size_pt() as f32 * 1.15 * scale),
+                                ),
+                                px(text_style.font_size_pt() as f32 * 1.15 * scale),
                                 TextAlign::Center,
                                 None,
                                 window,
@@ -14690,8 +15294,13 @@ fn annotation_layer(
                         let start = project(annotation.start);
                         let end = project(annotation.end);
                         let scale = f32::from(page_bounds.size.width) / page_size.0;
-                        let color = try_parse_color("#ff0000").unwrap_or(selection_color);
-                        let mut builder = PathBuilder::stroke(px(scale.max(1.)));
+                        let line = annotation.appearance.line();
+                        let color = try_parse_color(line.stroke_color())
+                            .unwrap_or(selection_color)
+                            .opacity(line.opacity() as f32);
+                        let mut builder = PathBuilder::stroke(px(
+                            (line.stroke_width_pt() as f32 * scale).max(1.),
+                        ));
                         builder.move_to(start);
                         builder.line_to(end);
                         if let Ok(path) = builder.build() {
@@ -14699,26 +15308,31 @@ fn annotation_layer(
                         }
                         if annotation.show_caption {
                             let caption: SharedString = annotation.caption.into();
+                            let text = annotation.appearance.text();
+                            let text_color = try_parse_color(text.color())
+                                .unwrap_or(selection_color)
+                                .opacity(text.opacity() as f32);
                             let run = TextRun {
                                 len: caption.len(),
-                                font: font("Helvetica"),
-                                color,
+                                font: font(text.font_family()),
+                                color: text_color,
                                 background_color: None,
                                 underline: None,
                                 strikethrough: None,
                             };
                             let shaped = window.text_system().shape_line(
                                 caption,
-                                px(12. * scale),
+                                px(text.font_size_pt() as f32 * scale),
                                 &[run],
                                 None,
                             );
                             let _ = shaped.paint(
                                 point(
                                     start.x + (end.x - start.x) / 2.,
-                                    start.y + (end.y - start.y) / 2. - px(14. * scale),
+                                    start.y + (end.y - start.y) / 2.
+                                        - px(text.font_size_pt() as f32 * 1.15 * scale),
                                 ),
-                                px(14. * scale),
+                                px(text.font_size_pt() as f32 * 1.15 * scale),
                                 TextAlign::Center,
                                 None,
                                 window,
@@ -14753,7 +15367,10 @@ fn annotation_layer(
                             ),
                             size(px(local.width as f32), px(local.height as f32)),
                         );
-                        if let Some(image) = image_assets.get(annotation.asset_id.as_str()) {
+                        if let Some(image) = image_assets.get(&annotation_image_cache_key(
+                            annotation.asset_id.as_str(),
+                            annotation.opacity,
+                        )) {
                             let _ = window.paint_image(
                                 image_bounds,
                                 image_bounds,
@@ -14779,7 +15396,10 @@ fn annotation_layer(
                             ),
                             size(px(local.width as f32), px(local.height as f32)),
                         );
-                        if let Some(image) = image_assets.get(annotation.asset_id.as_str()) {
+                        if let Some(image) = image_assets.get(&annotation_image_cache_key(
+                            annotation.asset_id.as_str(),
+                            annotation.opacity,
+                        )) {
                             let _ = window.paint_image(
                                 image_bounds,
                                 image_bounds,
@@ -14877,6 +15497,20 @@ fn annotation_layer(
         })
         .when_some(semantic_snap_debug_marker, |layer, marker| {
             layer.child(marker)
+        })
+        .context_menu(move |menu, _, _| {
+            menu.menu("Select tool", Box::new(SelectTool))
+                .menu("Hand tool", Box::new(PanTool))
+                .separator()
+                .menu("Zoom in", Box::new(ZoomIn))
+                .menu("Zoom out", Box::new(ZoomOut))
+                .menu("Fit width", Box::new(FitWidth))
+                .menu("Fit page", Box::new(FitPage))
+                .separator()
+                .label(format!("Page {}", page_index + 1))
+                .menu("Set page scale…", Box::new(SetPageScale))
+                .menu("Rotate left", Box::new(RotatePageLeft))
+                .menu("Rotate right", Box::new(RotatePageRight))
         })
 }
 
@@ -15050,6 +15684,164 @@ fn rail_tool_section(label: &'static str, buttons: Vec<gpui::AnyElement>, column
         .into_any_element()
 }
 
+fn signature_input_surface(
+    mode: SignatureInputMode,
+    drawn_signature: DrawnSignature,
+    signature_name_input: Entity<InputState>,
+    control: WeakEntity<DocumentWorkspace>,
+    border: gpui::Hsla,
+    background: gpui::Hsla,
+    muted_foreground: gpui::Hsla,
+) -> gpui::AnyElement {
+    match mode {
+        SignatureInputMode::Draw => drawn_signature_canvas(
+            drawn_signature,
+            control,
+            border,
+            background,
+        )
+        .into_any_element(),
+        SignatureInputMode::Type => v_flex()
+            .gap_2()
+            .child(gpui::div().text_sm().child("Type your signature"))
+            .child(
+                gpui::div()
+                    .id(DOCUMENT_SIGNATURE_NAME_INPUT_ID)
+                    .debug_selector(|| DOCUMENT_SIGNATURE_NAME_INPUT_ID.into())
+                    .child(
+                        Input::new(&signature_name_input)
+                            .accessibility_id(DOCUMENT_SIGNATURE_NAME_INPUT_ID)
+                            .aria_label("Signature name"),
+                    ),
+            )
+            .into_any_element(),
+        SignatureInputMode::Image => gpui::div()
+            .text_sm()
+            .text_color(muted_foreground)
+            .child("Choose a PNG or JPEG signature image.")
+            .into_any_element(),
+    }
+}
+
+fn recent_signature_preview(signature: RecentSignature) -> Option<RecentSignaturePreview> {
+    let asset = signature.asset();
+    let pixels = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(
+        asset.width_px(),
+        asset.height_px(),
+        asset.rgba().to_vec(),
+    )?;
+    Some(RecentSignaturePreview {
+        signature,
+        image: Arc::new(RenderImage::new(smallvec::smallvec![Frame::new(pixels)])),
+    })
+}
+
+fn recent_signature_section(
+    document_id: DocumentId,
+    recent_signatures: Vec<RecentSignaturePreview>,
+    loading: bool,
+    storage_issue: Option<String>,
+    control: WeakEntity<DocumentWorkspace>,
+) -> gpui::AnyElement {
+    let mut section = v_flex()
+        .id(DOCUMENT_SIGNATURE_RECENT_ID)
+        .debug_selector(|| DOCUMENT_SIGNATURE_RECENT_ID.into())
+        .gap_2();
+    if loading {
+        section = section.child(
+            h_flex()
+                .id("document-workspace-signature-recent-loading")
+                .gap_2()
+                .role(Role::Status)
+                .aria_label("Loading recent signatures…")
+                .child(Spinner::new().small())
+                .child("Loading recent signatures…"),
+        );
+    } else if !recent_signatures.is_empty() {
+        section = section
+            .child(gpui::div().text_sm().font_semibold().child("Recent signatures"))
+            .children(recent_signatures.into_iter().enumerate().map(|(index, recent)| {
+                let id = recent.signature.id().to_owned();
+                let use_id = format!("document-workspace-signature-recent-use-{id}");
+                let remove_id = format!("document-workspace-signature-recent-remove-{id}");
+                let group_id = format!("document-workspace-signature-recent-row-{id}");
+                let use_control = control.clone();
+                let remove_control = control.clone();
+                h_flex()
+                    .group(group_id.clone())
+                    .gap_1()
+                    .child(
+                        Button::new(use_id.clone())
+                            .debug_selector(move || use_id.clone().into())
+                            .outline()
+                            .w_full()
+                            .h_16()
+                            .tooltip(format!("Use recent signature {}", index + 1))
+                            .child(
+                                gpui::div()
+                                    .size_full()
+                                    .rounded_sm()
+                                    .bg(gpui::rgb(0xffffff))
+                                    .p_1()
+                                    .child(
+                                        img(recent.image.clone())
+                                            .size_full()
+                                            .object_fit(ObjectFit::Contain),
+                                    ),
+                            )
+                            .on_click(move |_, window, cx| {
+                                let _ = use_control.update(cx, |workspace, cx| {
+                                    if let Err(error) = workspace.arm_recent_signature_placement(
+                                        document_id,
+                                        &id,
+                                        window,
+                                        cx,
+                                    ) {
+                                        workspace.signature_prepare_state =
+                                            SignaturePrepareState::Error(error);
+                                        cx.notify();
+                                    }
+                                });
+                            }),
+                    )
+                    .child(accessible_icon_button(
+                        Button::new(remove_id.clone())
+                            .debug_selector(move || remove_id.clone().into())
+                            .icon(IconName::Delete)
+                            .ghost()
+                            .danger()
+                            .tooltip(format!("Remove recent signature {}", index + 1))
+                            .opacity(0.)
+                            .group_hover(group_id, |style| style.opacity(1.))
+                            .focus(|style| style.opacity(1.))
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                DocumentWorkspace::confirm_remove_recent_signature(
+                                    remove_control.clone(),
+                                    recent.signature.id().to_owned(),
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        format!("Remove recent signature {}", index + 1),
+                    ))
+            }));
+    }
+    section
+        .when_some(storage_issue, |section, issue| {
+            section.child(
+                gpui::div()
+                    .id(DOCUMENT_SIGNATURE_RECENT_STATUS_ID)
+                    .debug_selector(|| DOCUMENT_SIGNATURE_RECENT_STATUS_ID.into())
+                    .role(Role::Status)
+                    .text_sm()
+                    .text_color(gpui::red())
+                    .child(issue),
+            )
+        })
+        .into_any_element()
+}
+
 fn annotation_tool_group(
     document_id: DocumentId,
     current_page: u32,
@@ -15060,6 +15852,11 @@ fn annotation_tool_group(
     signature_popover_open: bool,
     signature_prepare_state: SignaturePrepareState,
     drawn_signature: DrawnSignature,
+    signature_input_mode: SignatureInputMode,
+    signature_name_input: Entity<InputState>,
+    recent_signatures: Vec<RecentSignaturePreview>,
+    recent_signatures_loading: bool,
+    recent_signature_storage_issue: Option<String>,
     page_scale_control: WeakEntity<PageScaleControl>,
     cx: &mut Context<DocumentWorkspace>,
 ) -> gpui::AnyElement {
@@ -15067,6 +15864,7 @@ fn annotation_tool_group(
     let signature_content_control = cx.entity().downgrade();
     let signature_canvas_border = cx.theme().border;
     let signature_canvas_background = cx.theme().background;
+    let signature_muted_foreground = cx.theme().muted_foreground;
     let signature_control = Popover::new(DOCUMENT_SIGNATURE_POPOVER_ID)
         .anchor(Anchor::TopRight)
         .open(signature_popover_open)
@@ -15076,6 +15874,8 @@ fn annotation_tool_group(
                     workspace.signature_popover_open = true;
                     workspace.signature_prepare_state = SignaturePrepareState::Idle;
                     workspace.drawn_signature.clear();
+                    workspace.signature_input_mode = SignatureInputMode::Draw;
+                    workspace.load_recent_signatures(cx);
                     cx.notify();
                 } else {
                     workspace.dismiss_signature_popover(document_id, Some(window), cx);
@@ -15087,21 +15887,84 @@ fn annotation_tool_group(
                 .debug_selector(|| DOCUMENT_SIGNATURE_TOOL_ID.into())
                 .disabled(save_busy),
         )
-        .content(move |_, _, _| {
+        .content(move |_, _, cx| {
             let choose_control = signature_content_control.clone();
             let add_control = signature_content_control.clone();
             let clear_control = signature_content_control.clone();
+            let clear_name_input = signature_name_input.clone();
+            let draw_mode_control = signature_content_control.clone();
+            let type_mode_control = signature_content_control.clone();
+            let image_mode_control = signature_content_control.clone();
             let loading = matches!(signature_prepare_state, SignaturePrepareState::Loading);
             let has_signature =
                 matches!(signature_prepare_state, SignaturePrepareState::Preview(_))
-                    || !drawn_signature.is_empty();
-            let mut content = v_flex().w_64().gap_2();
+                    || (signature_input_mode == SignatureInputMode::Draw
+                        && !drawn_signature.is_empty())
+                    || (signature_input_mode == SignatureInputMode::Type
+                        && !signature_name_input.read(cx).value().trim().is_empty());
+            let mut content = v_flex()
+                .w_72()
+                .gap_2()
+                .child(recent_signature_section(
+                    document_id,
+                    recent_signatures.clone(),
+                    recent_signatures_loading,
+                    recent_signature_storage_issue.clone(),
+                    signature_content_control.clone(),
+                ))
+                .child(
+                ButtonGroup::new("document-workspace-signature-mode")
+                    .child(
+                        Button::new(DOCUMENT_SIGNATURE_MODE_DRAW_ID)
+                            .debug_selector(|| DOCUMENT_SIGNATURE_MODE_DRAW_ID.into())
+                            .label("Draw")
+                            .selected(signature_input_mode == SignatureInputMode::Draw)
+                            .on_click(move |_, _, cx| {
+                                let _ = draw_mode_control.update(cx, |workspace, cx| {
+                                    workspace.signature_input_mode = SignatureInputMode::Draw;
+                                    workspace.signature_prepare_state = SignaturePrepareState::Idle;
+                                    cx.notify();
+                                });
+                            }),
+                    )
+                    .child(
+                        Button::new(DOCUMENT_SIGNATURE_MODE_TYPE_ID)
+                            .debug_selector(|| DOCUMENT_SIGNATURE_MODE_TYPE_ID.into())
+                            .label("Type")
+                            .selected(signature_input_mode == SignatureInputMode::Type)
+                            .on_click(move |_, _, cx| {
+                                let _ = type_mode_control.update(cx, |workspace, cx| {
+                                    workspace.signature_input_mode = SignatureInputMode::Type;
+                                    workspace.signature_prepare_state = SignaturePrepareState::Idle;
+                                    workspace.drawn_signature.clear();
+                                    cx.notify();
+                                });
+                            }),
+                    )
+                    .child(
+                        Button::new(DOCUMENT_SIGNATURE_MODE_IMAGE_ID)
+                            .debug_selector(|| DOCUMENT_SIGNATURE_MODE_IMAGE_ID.into())
+                            .label("Image")
+                            .selected(signature_input_mode == SignatureInputMode::Image)
+                            .on_click(move |_, _, cx| {
+                                let _ = image_mode_control.update(cx, |workspace, cx| {
+                                    workspace.signature_input_mode = SignatureInputMode::Image;
+                                    workspace.signature_prepare_state = SignaturePrepareState::Idle;
+                                    workspace.drawn_signature.clear();
+                                    cx.notify();
+                                });
+                            }),
+                    ),
+                );
             content = match &signature_prepare_state {
-                SignaturePrepareState::Idle => content.child(drawn_signature_canvas(
+                SignaturePrepareState::Idle => content.child(signature_input_surface(
+                    signature_input_mode,
                     drawn_signature.clone(),
+                    signature_name_input.clone(),
                     signature_content_control.clone(),
                     signature_canvas_border,
                     signature_canvas_background,
+                    signature_muted_foreground,
                 )),
                 SignaturePrepareState::Loading => content.child(
                     h_flex()
@@ -15114,11 +15977,14 @@ fn annotation_tool_group(
                         .child("Processing signature…"),
                 ),
                 SignaturePrepareState::Error(error) => content
-                    .child(drawn_signature_canvas(
+                    .child(signature_input_surface(
+                        signature_input_mode,
                         drawn_signature.clone(),
+                        signature_name_input.clone(),
                         signature_content_control.clone(),
                         signature_canvas_border,
                         signature_canvas_background,
+                        signature_muted_foreground,
                     ))
                     .child(
                         gpui::div()
@@ -15145,7 +16011,7 @@ fn annotation_tool_group(
                 ),
             };
             content
-                .child(
+                .when(signature_input_mode == SignatureInputMode::Image, |content| content.child(
                     Button::new(DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID)
                         .debug_selector(|| DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID.into())
                         .label("Choose file")
@@ -15155,7 +16021,7 @@ fn annotation_tool_group(
                                 workspace.begin_signature_selection(document_id, cx);
                             });
                         }),
-                )
+                ))
                 .child(
                     h_flex()
                         .gap_2()
@@ -15164,7 +16030,10 @@ fn annotation_tool_group(
                                 .debug_selector(|| DOCUMENT_SIGNATURE_CLEAR_ID.into())
                                 .label("Clear")
                                 .disabled(loading || !has_signature)
-                                .on_click(move |_, _, cx| {
+                                .on_click(move |_, window, cx| {
+                                    clear_name_input.update(cx, |input, cx| {
+                                        input.set_value("", window, cx);
+                                    });
                                     let _ = clear_control.update(cx, |workspace, cx| {
                                         workspace.clear_signature_input(cx);
                                     });
@@ -15178,6 +16047,14 @@ fn annotation_tool_group(
                                 .disabled(loading || !has_signature)
                                 .on_click(move |_, window, cx| {
                                     let _ = add_control.update(cx, |workspace, cx| {
+                                        if signature_input_mode == SignatureInputMode::Type
+                                            && let Err(error) = workspace.prepare_typed_signature(cx)
+                                        {
+                                            workspace.signature_prepare_state =
+                                                SignaturePrepareState::Error(error);
+                                            cx.notify();
+                                            return;
+                                        }
                                         if let Err(error) = workspace.arm_signature_placement(
                                             document_id,
                                             window,
@@ -15496,6 +16373,9 @@ impl Render for DocumentWorkspace {
         }
         self.page_interactions.clear();
         let page_scale_control = self.ensure_page_scale_control(window, cx);
+        let signature_name_input = self.ensure_signature_name_input(window, cx);
+        let (snap_grid_spacing_input, snap_dimension_increment_input) =
+            self.ensure_semantic_snap_inputs(window, cx);
         let rectangle_property_inspector = self.ensure_rectangle_property_inspector(window, cx);
         let ellipse_property_inspector = self.ensure_ellipse_property_inspector(window, cx);
         let ink_property_inspector = self.ensure_ink_property_inspector(window, cx);
@@ -15624,6 +16504,29 @@ impl Render for DocumentWorkspace {
             }))
             .on_action(cx.listener(|workspace, _: &SinglePageView, _, cx| {
                 workspace.set_active_page_view_mode(PageViewMode::SinglePage, cx);
+            }))
+            .on_action(cx.listener(|workspace, _: &SelectTool, _, cx| {
+                workspace.select_available_annotation_tool(AnnotationTool::Select, cx);
+            }))
+            .on_action(cx.listener(|workspace, _: &PanTool, _, cx| {
+                workspace.select_available_annotation_tool(AnnotationTool::Select, cx);
+                if workspace.active_document_id.is_some() {
+                    workspace.pan_tool_active = true;
+                    cx.notify();
+                }
+            }))
+            .on_action(cx.listener(|workspace, _: &SetPageScale, window, cx| {
+                let Some(document_id) = workspace.active_document_id else {
+                    return;
+                };
+                let current_page = workspace
+                    .session(document_id, cx)
+                    .map(|session| session.read(cx).current_page)
+                    .unwrap_or_default();
+                let control = workspace.ensure_page_scale_control(window, cx);
+                control.update(cx, |control, cx| {
+                    control.open_for(document_id, current_page, window, cx);
+                });
             }))
             .on_action(cx.listener(Self::select_line_tool_from_action))
             .on_action(cx.listener(Self::select_arc_tool_from_action))
@@ -16009,6 +16912,7 @@ impl Render for DocumentWorkspace {
             recovery_pending,
             annotation_scene,
             semantic_snap_decision,
+            construction_grid_spacing_mm,
             active_selection_marquee,
             current_highlights_precomposed,
             image_assets,
@@ -16083,6 +16987,13 @@ impl Render for DocumentWorkspace {
                     },
                     annotation.locked,
                 )),
+                [Annotation::Image(annotation)] => Some((
+                    annotation.id.clone(),
+                    EngineeringVisualPropertyValues::Image {
+                        opacity: annotation.opacity(),
+                    },
+                    annotation.locked,
+                )),
                 _ => None,
             };
             let selected_text_box = match selected_annotations.as_slice() {
@@ -16117,7 +17028,47 @@ impl Render for DocumentWorkspace {
                 _ => None,
             };
             let selected_dimension = match selected_annotations.as_slice() {
-                [Annotation::Dimension(annotation)] => Some(annotation.clone()),
+                [Annotation::Dimension(annotation)] => Some((
+                    annotation.id.clone(),
+                    annotation.dimension_line_offset(),
+                    true,
+                    annotation.appearance.clone(),
+                    annotation.locked,
+                )),
+                [Annotation::Length(annotation)] => Some((
+                    annotation.id.clone(),
+                    0.,
+                    false,
+                    annotation.appearance.clone(),
+                    annotation.locked,
+                )),
+                [Annotation::MeasurementPath(annotation)] => Some((
+                    annotation.id.clone(),
+                    0.,
+                    false,
+                    DimensionAppearance::new(
+                        StraightLineAppearance::new(
+                            annotation.appearance.stroke_color(),
+                            annotation.appearance.stroke_width_pt(),
+                            annotation.appearance.opacity(),
+                            annotation.appearance.stroke_style(),
+                        ).expect("stored measurement appearance is valid"),
+                        TextBoxStyle::new(
+                            annotation.text_style().font_family(),
+                            annotation.text_style().font_size_pt(),
+                            annotation.text_style().color(),
+                            annotation.appearance.opacity(),
+                        )
+                        .and_then(|style| {
+                            style.with_weight_and_alignment(
+                                annotation.text_style().weight(),
+                                annotation.text_style().alignment(),
+                            )
+                        })
+                        .expect("stored measurement text style is valid"),
+                    ).expect("measurement path line and text share opacity"),
+                    annotation.locked,
+                )),
                 _ => None,
             };
             let selected_rectangle_stroke_width = session
@@ -16168,6 +17119,14 @@ impl Render for DocumentWorkspace {
             let annotation_scene =
                 self.annotation_scene_for_session(document_id, current_page, &session);
             let semantic_snap_decision = session.annotations.semantic_snap_decision().cloned();
+            let construction_grid_spacing_mm = (self
+                .semantic_snap_settings
+                .is_source_enabled(SemanticSnapSource::ConstructionGrid)
+                && self.semantic_snap_settings.construction_grid_visible())
+            .then_some(
+                self.semantic_snap_settings
+                    .construction_grid_spacing_mm(),
+            );
             let active_selection_marquee = session
                 .annotations
                 .active_selection_marquee(document_id.value());
@@ -16305,6 +17264,7 @@ impl Render for DocumentWorkspace {
                 recovery_pending,
                 annotation_scene,
                 semantic_snap_decision,
+                construction_grid_spacing_mm,
                 active_selection_marquee,
                 current_highlights_precomposed,
                 image_assets,
@@ -16315,14 +17275,15 @@ impl Render for DocumentWorkspace {
                 viewer_snapshot,
             )
         };
-        if let Some(dimension) = selected_dimension.as_ref() {
+        if let Some((id, offset, show_offset, appearance, locked)) = selected_dimension.as_ref() {
             let snapshot = DimensionPropertySnapshot {
                 document_id,
-                annotation_id: dimension.id.clone(),
+                annotation_id: id.clone(),
                 expected_revision: annotation_scene.revision,
-                offset_pt: dimension.dimension_line_offset(),
-                appearance: dimension.appearance.clone(),
-                locked: dimension.locked,
+                offset_pt: *offset,
+                show_offset: *show_offset,
+                appearance: appearance.clone(),
+                locked: *locked,
                 mutation_disabled: save_busy,
             };
             if dimension_property_inspector
@@ -16790,6 +17751,13 @@ impl Render for DocumentWorkspace {
         let semantic_settings = self.semantic_snap_settings;
         let snap_open_control = cx.entity().downgrade();
         let snap_markup_control = cx.entity().downgrade();
+        let snap_grid_control = cx.entity().downgrade();
+        let snap_grid_visible_control = cx.entity().downgrade();
+        let snap_dimension_control = cx.entity().downgrade();
+        let snap_guides_control = cx.entity().downgrade();
+        let snap_alignment_guide_control = cx.entity().downgrade();
+        let snap_equal_size_guide_control = cx.entity().downgrade();
+        let snap_equal_spacing_guide_control = cx.entity().downgrade();
         let snap_endpoint_control = cx.entity().downgrade();
         let snap_midpoint_control = cx.entity().downgrade();
         let snap_center_control = cx.entity().downgrade();
@@ -16810,8 +17778,15 @@ impl Render for DocumentWorkspace {
                     .tooltip("Snap settings")
                     .disabled(save_busy),
             )
-            .content(move |_, _, _| {
+            .content(move |_, window, _| {
                 let snap_markup_control = snap_markup_control.clone();
+                let snap_grid_control = snap_grid_control.clone();
+                let snap_grid_visible_control = snap_grid_visible_control.clone();
+                let snap_dimension_control = snap_dimension_control.clone();
+                let snap_guides_control = snap_guides_control.clone();
+                let snap_alignment_guide_control = snap_alignment_guide_control.clone();
+                let snap_equal_size_guide_control = snap_equal_size_guide_control.clone();
+                let snap_equal_spacing_guide_control = snap_equal_spacing_guide_control.clone();
                 let snap_endpoint_control = snap_endpoint_control.clone();
                 let snap_midpoint_control = snap_midpoint_control.clone();
                 let snap_center_control = snap_center_control.clone();
@@ -16820,6 +17795,9 @@ impl Render for DocumentWorkspace {
                 v_flex()
                     .id(DOCUMENT_SNAP_POPOVER_ID)
                     .debug_selector(|| DOCUMENT_SNAP_POPOVER_ID.into())
+                    .w_72()
+                    .max_h(window.viewport_size().height - px(32.))
+                    .overflow_y_scroll()
                     .gap_2()
                     .child(gpui::div().text_sm().font_semibold().child("Snap to"))
                     .child(
@@ -16832,6 +17810,96 @@ impl Render for DocumentWorkspace {
                                     workspace.set_semantic_snap_annotations_enabled(*checked, cx);
                                 });
                             }),
+                    )
+                    .child(gpui::div().text_sm().font_semibold().child("Construction grid"))
+                    .child(
+                        Checkbox::new(DOCUMENT_SNAP_CONSTRUCTION_GRID_ID)
+                            .debug_selector(|| DOCUMENT_SNAP_CONSTRUCTION_GRID_ID.into())
+                            .label("Snap to grid")
+                            .checked(semantic_settings.is_source_enabled(
+                                SemanticSnapSource::ConstructionGrid,
+                            ))
+                            .on_click(move |checked, _, cx| {
+                                let _ = snap_grid_control.update(cx, |workspace, cx| {
+                                    workspace.set_semantic_snap_source(
+                                        SemanticSnapSource::ConstructionGrid,
+                                        *checked,
+                                        cx,
+                                    );
+                                });
+                            }),
+                    )
+                    .child(
+                        Checkbox::new(DOCUMENT_SNAP_CONSTRUCTION_GRID_VISIBLE_ID)
+                            .debug_selector(|| {
+                                DOCUMENT_SNAP_CONSTRUCTION_GRID_VISIBLE_ID.into()
+                            })
+                            .label("Show grid")
+                            .checked(semantic_settings.construction_grid_visible())
+                            .disabled(!semantic_settings.is_source_enabled(
+                                SemanticSnapSource::ConstructionGrid,
+                            ))
+                            .on_click(move |checked, _, cx| {
+                                let _ = snap_grid_visible_control.update(cx, |workspace, cx| {
+                                    workspace.set_semantic_snap_grid_visible(*checked, cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .gap_3()
+                            .child(gpui::div().text_sm().child("Spacing (mm)"))
+                            .child(
+                                gpui::div()
+                                    .id(DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID)
+                                    .debug_selector(|| {
+                                        DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID.into()
+                                    })
+                                    .w_24()
+                                    .child(
+                                        NumberInput::new(&snap_grid_spacing_input)
+                                            .small()
+                                            .disabled(!semantic_settings.is_source_enabled(
+                                                SemanticSnapSource::ConstructionGrid,
+                                            )),
+                                    ),
+                            ),
+                    )
+                    .child(gpui::div().text_sm().font_semibold().child("Dimension increments"))
+                    .child(
+                        Checkbox::new(DOCUMENT_SNAP_DIMENSION_INCREMENT_ID)
+                            .debug_selector(|| DOCUMENT_SNAP_DIMENSION_INCREMENT_ID.into())
+                            .label("Snap dimensions")
+                            .checked(semantic_settings.dimension_increment_enabled())
+                            .on_click(move |checked, _, cx| {
+                                let _ = snap_dimension_control.update(cx, |workspace, cx| {
+                                    workspace.set_semantic_snap_dimension_increment_enabled(
+                                        *checked, cx,
+                                    );
+                                });
+                            }),
+                    )
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .gap_3()
+                            .child(gpui::div().text_sm().child("Increment (mm)"))
+                            .child(
+                                gpui::div()
+                                    .id(DOCUMENT_SNAP_DIMENSION_INCREMENT_VALUE_ID)
+                                    .debug_selector(|| {
+                                        DOCUMENT_SNAP_DIMENSION_INCREMENT_VALUE_ID.into()
+                                    })
+                                    .w_24()
+                                    .child(
+                                        NumberInput::new(&snap_dimension_increment_input)
+                                            .small()
+                                            .disabled(
+                                                !semantic_settings.dimension_increment_enabled(),
+                                            ),
+                                    ),
+                            ),
                     )
                     .child(gpui::div().text_sm().font_semibold().child("Snap points"))
                     .child(
@@ -16925,6 +17993,81 @@ impl Render for DocumentWorkspace {
                                 });
                             }),
                     )
+                    .child(gpui::div().text_sm().font_semibold().child("Snap guides"))
+                    .child(
+                        Checkbox::new(DOCUMENT_SNAP_GUIDES_ID)
+                            .debug_selector(|| DOCUMENT_SNAP_GUIDES_ID.into())
+                            .label("Show snap guides")
+                            .checked(semantic_settings.guides_enabled())
+                            .on_click(move |checked, _, cx| {
+                                let _ = snap_guides_control.update(cx, |workspace, cx| {
+                                    workspace.set_semantic_snap_guides_enabled(*checked, cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        Checkbox::new(DOCUMENT_SNAP_GUIDE_ALIGNMENT_ID)
+                            .debug_selector(|| DOCUMENT_SNAP_GUIDE_ALIGNMENT_ID.into())
+                            .label("Alignment")
+                            .checked(semantic_settings.is_guide_enabled(
+                                SemanticSnapGuideType::Alignment,
+                            ))
+                            .disabled(!semantic_settings.guides_enabled())
+                            .on_click(move |checked, _, cx| {
+                                let _ = snap_alignment_guide_control.update(
+                                    cx,
+                                    |workspace, cx| {
+                                        workspace.set_semantic_snap_guide(
+                                            SemanticSnapGuideType::Alignment,
+                                            *checked,
+                                            cx,
+                                        );
+                                    },
+                                );
+                            }),
+                    )
+                    .child(
+                        Checkbox::new(DOCUMENT_SNAP_GUIDE_EQUAL_SIZE_ID)
+                            .debug_selector(|| DOCUMENT_SNAP_GUIDE_EQUAL_SIZE_ID.into())
+                            .label("Equal size")
+                            .checked(semantic_settings.is_guide_enabled(
+                                SemanticSnapGuideType::EqualSize,
+                            ))
+                            .disabled(!semantic_settings.guides_enabled())
+                            .on_click(move |checked, _, cx| {
+                                let _ = snap_equal_size_guide_control.update(
+                                    cx,
+                                    |workspace, cx| {
+                                        workspace.set_semantic_snap_guide(
+                                            SemanticSnapGuideType::EqualSize,
+                                            *checked,
+                                            cx,
+                                        );
+                                    },
+                                );
+                            }),
+                    )
+                    .child(
+                        Checkbox::new(DOCUMENT_SNAP_GUIDE_EQUAL_SPACING_ID)
+                            .debug_selector(|| DOCUMENT_SNAP_GUIDE_EQUAL_SPACING_ID.into())
+                            .label("Equal spacing")
+                            .checked(semantic_settings.is_guide_enabled(
+                                SemanticSnapGuideType::EqualSpacing,
+                            ))
+                            .disabled(!semantic_settings.guides_enabled())
+                            .on_click(move |checked, _, cx| {
+                                let _ = snap_equal_spacing_guide_control.update(
+                                    cx,
+                                    |workspace, cx| {
+                                        workspace.set_semantic_snap_guide(
+                                            SemanticSnapGuideType::EqualSpacing,
+                                            *checked,
+                                            cx,
+                                        );
+                                    },
+                                );
+                            }),
+                    )
             });
         let tool_group = annotation_tool_group(
             document_id,
@@ -16936,6 +18079,11 @@ impl Render for DocumentWorkspace {
             self.signature_popover_open,
             self.signature_prepare_state.clone(),
             self.drawn_signature.clone(),
+            self.signature_input_mode,
+            signature_name_input,
+            self.recent_signatures.clone(),
+            self.recent_signatures_loading,
+            self.recent_signature_storage_issue.clone(),
             page_scale_control.downgrade(),
             cx,
         );
@@ -18019,8 +19167,9 @@ impl Render for DocumentWorkspace {
                 ),
             };
         let inspector_visible = inspector_kind.is_some();
-        let combined_path_measurement = inspector_visible
-            && selected_measurement.is_some() && selected_vertex_path.is_some();
+        let combined_measurement_properties = inspector_visible
+            && selected_measurement.is_some()
+            && selected_dimension.is_some();
         let inspector_shell = match inspector_kind {
             Some(ActiveInspectorKind::Rectangle) => active_inspector_shell().child(
                 self.rectangle_property_inspector
@@ -18323,6 +19472,8 @@ impl Render for DocumentWorkspace {
                                                                             highlights_precomposed,
                                                                             thumbnail_images.clone(),
                                                                             selection_color,
+                                                                            cx.theme().border,
+                                                                            None,
                                                                             None,
                                                                             None,
                                                                             None,
@@ -18587,9 +19738,10 @@ impl Render for DocumentWorkspace {
                                 })),
                         ),
                 );
-        let supporting_actions = if combined_path_measurement && self.pending_text_box_editor.is_none() {
+        let supporting_actions = if combined_measurement_properties && self.pending_text_box_editor.is_none() {
             let title = match selected_measurement.as_ref().map(|selected| selected.1) {
                 Some(AnnotationKind::Area) => "Area",
+                Some(AnnotationKind::Length) => "Length",
                 _ => "Polylength",
             };
             let close = accessible_icon_button(Button::new(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID)
@@ -18597,7 +19749,7 @@ impl Render for DocumentWorkspace {
                 .ghost().xsmall().icon(IconName::Close).tooltip("Close properties")
                 .on_click(cx.listener(|workspace, _, _, cx| {
                     workspace.right_rail_actions_open = false;
-                    workspace.vertex_path_property_inspector_open = false;
+                    workspace.dimension_property_inspector_open = false;
                     workspace.measurement_property_inspector_open = false;
                     cx.notify();
                 })), "Close properties");
@@ -18607,6 +19759,7 @@ impl Render for DocumentWorkspace {
                 .header_trailing(close)
                 .child(v_flex().w_full()
                     .child(vertex_path_property_inspector.clone())
+                    .child(dimension_property_inspector.clone())
                     .child(gpui::div().w_full().border_t_1().border_color(cx.theme().border)
                         .child(measurement_property_inspector.clone())))
                 .into_any_element()
@@ -19098,6 +20251,8 @@ impl Render for DocumentWorkspace {
                                                             highlights_precomposed,
                                                             image_assets.clone(),
                                                             selection_color,
+                                                            cx.theme().border,
+                                                            construction_grid_spacing_mm,
                                                             (page_index == current_page)
                                                                 .then(|| semantic_snap_decision.clone())
                                                                 .flatten(),
@@ -19137,6 +20292,8 @@ impl Render for DocumentWorkspace {
                                                     current_highlights_precomposed,
                                                     image_assets,
                                                     selection_color,
+                                                    cx.theme().border,
+                                                    construction_grid_spacing_mm,
                                                     semantic_snap_decision.clone(),
                                                     active_selection_marquee
                                                         .as_ref()
@@ -19250,17 +20407,6 @@ fn straight_line_property_patch_matches(
         StraightLinePropertyPatch::Color(value) => line.appearance.stroke_color() == value,
         StraightLinePropertyPatch::WidthPt(value) => line.appearance.stroke_width_pt() == *value,
         StraightLinePropertyPatch::Opacity(value) => line.appearance.opacity() == *value,
-    }
-}
-
-fn dimension_property_patch_matches(
-    patch: &DimensionPropertyPatch,
-    dimension: &DimensionAnnotation,
-) -> bool {
-    match patch {
-        DimensionPropertyPatch::Locked(value) => dimension.locked == *value,
-        DimensionPropertyPatch::OffsetPt(value) => dimension.dimension_line_offset() == *value,
-        DimensionPropertyPatch::Appearance(value) => &dimension.appearance == value,
     }
 }
 

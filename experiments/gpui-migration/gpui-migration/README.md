@@ -12,7 +12,7 @@ modify or replace the production Electron application.
   `8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc`
 - Rust: `1.97.1`
 - Prepared source digest:
-  `911330d721c582c4c9ef0b409b0d3d5b17cf59f89deae75b0df21301a02d2a73`
+  `35254d5f899bb03514766c834996cc9025f16e06ad19ffd4fcfb3e32c105dd69`
 
 `source-preparation-policy.json`, `THIRD_PARTY_NOTICES.md`, and the preparation
 scripts pin source identity, patches, checksums, allowed dependencies, and
@@ -365,13 +365,14 @@ Local Markdown under `docs/planning/` owns changing work state.
   `[0, 0, width, height]`. This was also a test-oracle defect and is not
   evidence of a product failure.
 
-**Failed — current partial work:**
+**Historical failures — superseded by current Phase 2 evidence:**
 
-- Snapshot remains partial and unaccepted. The latest exact receipt
+- The historical Snapshot receipt
   `.prepared/evidence/button-probe-20260829T040423Z-1439428.log` failed because
-  the scene preview rotation was not `+30`. Preserve this as partial evidence,
-  not acceptance.
-- The Dimension stable-inspector journey remains red. The latest exact
+  the scene preview rotation was not `+30`. The current Phase 2
+  `snapshot-cutover-real` journey supersedes it and passes rotation, reset,
+  opacity, locking, save/reopen, PDFium pixels and object-graph deletion.
+- The historical Dimension stable-inspector journey was red. Its exact
   `dimension-workspace` receipt
   `.prepared/evidence/button-probe-20260829T023942Z-1403455.summary.json`
   records status 101 for one focused test in 40 seconds. Pointer creation and
@@ -379,8 +380,9 @@ Local Markdown under `docs/planning/` owns changing work state.
   history, and the permanent inspector slot renders. The failure is that the
   retained `DIMENSION_PROPERTY_INSPECTOR_ID` root is absent after the trigger
   click. Resume at the trigger-to-permanent-slot mount and retained-view
-  identity seam; do not reopen unrelated inspectors or change the already
-  accepted Dimension persistence cutover.
+  identity seam. The current Phase 2 `dimension-cutover-real` journey
+  supersedes that diagnostic and passes the rendered current inspector plus
+  persistence boundary.
 
 **Failed — superseded semantic-snapping diagnostic:**
 

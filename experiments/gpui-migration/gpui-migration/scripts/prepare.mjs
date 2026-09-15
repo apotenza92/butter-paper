@@ -48,6 +48,7 @@ async function verifyCheckout(root, policy) {
   const expectedChanges = [
     "M  Cargo.toml",
     "M  crates/ui/src/button/button.rs",
+    "M  crates/ui/src/menu/menu_item.rs",
     "M  crates/ui/src/menu/popup_menu.rs",
     "M  crates/ui/src/tab/tab.rs",
   ].join("\n");
@@ -61,6 +62,9 @@ async function verifyCheckout(root, policy) {
   }
   if (await fileSha256(join(probeDirectory, policy.tabStatePatch.path)) !== policy.tabStatePatch.sha256) {
     throw new Error("tab state patch checksum drifted");
+  }
+  if (await fileSha256(join(probeDirectory, policy.menuAccessibilityPatch.path)) !== policy.menuAccessibilityPatch.sha256) {
+    throw new Error("menu accessibility patch checksum drifted");
   }
   return validatePreparedTree(root, policy);
 }
@@ -83,6 +87,7 @@ async function prepare(source) {
     run("git", ["checkout", "--detach", policy.component.revision], { cwd: temporary });
     run("git", ["apply", "--index", join(probeDirectory, policy.patch.path)], { cwd: temporary });
     run("git", ["apply", "--index", join(probeDirectory, policy.tabStatePatch.path)], { cwd: temporary });
+    run("git", ["apply", "--index", join(probeDirectory, policy.menuAccessibilityPatch.path)], { cwd: temporary });
 
     const digest = await verifyCheckout(temporary, policy);
     await rename(temporary, output);

@@ -22,7 +22,7 @@ use butter_paper_gpui_migration::{
     document_workspace::{
         ApplyDisposition, DOCUMENT_ANNOTATION_DELETE_ID, DOCUMENT_ANNOTATION_REDO_ID,
         DOCUMENT_ANNOTATION_UNDO_ID, DOCUMENT_ARROW_TOOL_ID, DOCUMENT_ELLIPSE_TOOL_ID,
-        DOCUMENT_ERROR_ID, DOCUMENT_HIGHLIGHT_COLOR_YELLOW_ID, DOCUMENT_HIGHLIGHT_TOOL_ID,
+        DOCUMENT_ERROR_ID, DOCUMENT_HIGHLIGHT_TOOL_ID,
         DOCUMENT_IMAGE_TOOL_ID, DOCUMENT_INK_PROPERTIES_ID, DOCUMENT_LINE_TOOL_ID,
         DOCUMENT_PEN_TOOL_ID, DOCUMENT_RECTANGLE_TOOL_ID, DOCUMENT_SAVE_AS_ID, DOCUMENT_SAVE_ID,
         DOCUMENT_SELECT_TOOL_ID, DOCUMENT_STRAIGHT_LINE_PROPERTIES_ID,
@@ -43,6 +43,7 @@ use butter_paper_gpui_migration::{
         INK_INSPECTOR_LOCKED_ID, INK_INSPECTOR_OPACITY_ID, INK_INSPECTOR_OPACITY_TRACK_ID,
         INK_INSPECTOR_WIDTH_ID,
     },
+    highlight_defaults_panel::{HIGHLIGHT_DEFAULTS_CLOSE_ID, HIGHLIGHT_DEFAULTS_PANEL_ID},
     native_document_view_state::{RestartView, RestartZoom},
     native_launch::{NativeLaunchAction, NativeLaunchConfig, NativeLaunchSessionSource},
     page_view_control::PageViewMode,
@@ -207,27 +208,72 @@ fn owned_target(name: impl AsRef<Path>) -> PathBuf {
 
 fn scroll_annotation_target_into_view(cx: &mut gpui::VisualTestContext, target_id: &'static str) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let scroll = cx
-        .debug_bounds(DOCUMENT_TOOLBAR_SCROLL_ID)
-        .expect("the annotation toolbar must expose its horizontal scroll owner");
+    if cx.debug_bounds(target_id).is_none() {
+        let rail = cx
+            .debug_bounds("document-workspace-right-rail-scroll")
+            .expect("the annotation rail must expose its vertical scroll owner");
+        for delta_y in [-240., -240., -240., -240., 240., 240., 240., 240.] {
+            cx.simulate_event(ScrollWheelEvent {
+                position: rail.center(),
+                delta: ScrollDelta::Pixels(point(px(0.), px(delta_y))),
+                ..Default::default()
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            if cx.debug_bounds(target_id).is_some() {
+                break;
+            }
+        }
+    }
     let target = cx
         .debug_bounds(target_id)
-        .unwrap_or_else(|| panic!("{target_id} must render before scrolling"));
-    let delta_x = if target.right() > scroll.right() {
-        -(f32::from(target.right() - scroll.right()) + 8.)
-    } else if target.left() < scroll.left() {
-        f32::from(scroll.left() - target.left()) + 8.
-    } else {
-        0.
-    };
-    if delta_x != 0. {
+        .unwrap_or_else(|| panic!("{target_id} must render after scrolling the annotation rail"));
+    if let Some(scroll) = cx.debug_bounds(DOCUMENT_TOOLBAR_SCROLL_ID) {
+        let delta_x = if target.right() > scroll.right() {
+            -(f32::from(target.right() - scroll.right()) + 8.)
+        } else if target.left() < scroll.left() {
+            f32::from(scroll.left() - target.left()) + 8.
+        } else {
+            0.
+        };
+        if delta_x == 0. {
+            return;
+        }
         cx.simulate_event(ScrollWheelEvent {
             position: scroll.center(),
             delta: ScrollDelta::Pixels(point(px(delta_x), px(0.))),
             ..Default::default()
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
+        return;
     }
+
+    let scroll = cx
+        .debug_bounds("document-workspace-right-rail-scroll")
+        .expect("the annotation rail must expose its vertical scroll owner");
+    let delta_y = if target.bottom() > scroll.bottom() {
+        -(f32::from(target.bottom() - scroll.bottom()) + 8.)
+    } else if target.top() < scroll.top() {
+        f32::from(scroll.top() - target.top()) + 8.
+    } else {
+        0.
+    };
+    if delta_y != 0. {
+        cx.simulate_event(ScrollWheelEvent {
+            position: scroll.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta_y))),
+            ..Default::default()
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+}
+
+fn toggle_document_actions(cx: &mut gpui::VisualTestContext) {
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let actions = cx
+        .debug_bounds("document-workspace-rail-actions")
+        .expect("the current Document actions control must render");
+    cx.simulate_click(actions.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
 }
 
 fn edit_selected_straight_line_through_real_controls(
@@ -3219,6 +3265,12 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
         });
         Root::new(shell, window, cx)
     });
+    // This journey exercises page-thumbnail input while properties are open.
+    // Use an explicit width where both preferred sidebars and the canvas fit;
+    // the accepted narrow-window policy intentionally hides thumbnails rather
+    // than shrinking either sidebar below its supported minimum.
+    cx.simulate_resize(gpui::size(px(1500.), px(900.)));
+    cx.run_until_parked();
 
     assert_eq!(
         workspace.update(cx, |workspace, cx| workspace.open_documents(
@@ -3317,6 +3369,13 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
             .is_err(),
         "a zoom revision must reject stale real-PDF tile work",
     );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let thumbnail_toggle = cx
+        .debug_bounds("document-left-rail-pages")
+        .expect("the real Page Thumbnails disclosure must render");
+    cx.simulate_click(thumbnail_toggle.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     let first_view = workspace
         .read_with(cx, |workspace, cx| {
             workspace.document_view_state(document_id, cx)
@@ -3333,6 +3392,8 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
         workspace.read_with(cx, |workspace, _| workspace.active_document_id()),
         Some(sibling_id),
     );
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     let sibling_thumbnail_id = Box::leak(document_thumbnail_id(sibling_id, 1).into_boxed_str());
     let sibling_thumbnail = cx
         .debug_bounds(sibling_thumbnail_id)
@@ -3409,6 +3470,12 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
         first_view,
         "switching documents must preserve the first document's independent view state",
     );
+    let document_actions = cx
+        .debug_bounds("document-workspace-rail-actions")
+        .expect("the real Document actions disclosure must render");
+    cx.simulate_click(document_actions.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
 
     let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
     let layer = cx
@@ -3486,22 +3553,15 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
     }
     assert!(edited.dirty);
 
-    scroll_annotation_target_into_view(cx, DOCUMENT_ANNOTATION_UNDO_ID);
-    let undo = cx
-        .debug_bounds(DOCUMENT_ANNOTATION_UNDO_ID)
-        .expect("the real Undo command must render");
-    cx.simulate_click(undo.center(), Modifiers::default());
+    cx.update(|window, cx| workspace_focus.focus(window, cx));
+    cx.simulate_keystrokes(EDIT_UNDO);
     let undone = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(document_id, cx)
         })
         .unwrap();
     assert_ne!(undone.rectangles[0].rect, expected_rect);
-    scroll_annotation_target_into_view(cx, DOCUMENT_ANNOTATION_REDO_ID);
-    let redo = cx
-        .debug_bounds(DOCUMENT_ANNOTATION_REDO_ID)
-        .expect("the real Redo command must render");
-    cx.simulate_click(redo.center(), Modifiers::default());
+    cx.simulate_keystrokes(EDIT_REDO);
     let redone_rect = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(document_id, cx)
@@ -3620,11 +3680,19 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
         });
         Root::new(shell, window, cx)
     });
+    fresh_cx.simulate_resize(gpui::size(px(1500.), px(900.)));
+    fresh_cx.run_until_parked();
     let reopened_id = fresh_workspace.update(fresh_cx, |workspace, cx| {
         workspace.open_path(owned_source.clone(), cx)
     });
     fresh_cx.run_until_parked();
     fresh_cx.update(|window, _| window.activate_window());
+    fresh_cx.update(|window, cx| window.draw(cx).clear(cx));
+    let fresh_document_actions = fresh_cx
+        .debug_bounds("document-workspace-rail-actions")
+        .expect("the fresh shell must render Document actions");
+    fresh_cx.simulate_click(fresh_document_actions.center(), Modifiers::default());
+    fresh_cx.run_until_parked();
     fresh_cx.update(|window, cx| window.draw(cx).clear(cx));
     let reopened_worker_pid = fresh_workspace
         .read_with(fresh_cx, |workspace, cx| {
@@ -3708,11 +3776,10 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
             .as_ref(),
         Some(&rectangle_id)
     );
-    scroll_annotation_target_into_view(fresh_cx, DOCUMENT_ANNOTATION_DELETE_ID);
-    let delete = fresh_cx
-        .debug_bounds(DOCUMENT_ANNOTATION_DELETE_ID)
-        .expect("the fresh shell must render the Delete control");
-    fresh_cx.simulate_click(delete.center(), Modifiers::default());
+    let fresh_workspace_focus =
+        fresh_workspace.read_with(fresh_cx, |workspace, _| workspace.focus_handle());
+    fresh_cx.update(|window, cx| fresh_workspace_focus.focus(window, cx));
+    fresh_cx.simulate_keystrokes("delete");
     let deleted = fresh_workspace
         .read_with(fresh_cx, |workspace, cx| {
             workspace.annotation_snapshot(reopened_id, cx)
@@ -3856,6 +3923,7 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
     let saver = Arc::new(PdfDocumentSaver::new(backend.clone()));
 
     cx.update(gpui_component::init);
+    cx.update(init_document_workspace_actions);
     let workspace = cx.new({
         let backend = backend.clone();
         move |cx| DocumentWorkspace::with_opener(backend, cx)
@@ -3878,6 +3946,7 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
         });
         Root::new(shell, window, cx)
     });
+    cx.simulate_resize(gpui::size(px(1500.), px(900.)));
 
     let document_id = workspace.update(cx, |workspace, cx| {
         workspace.open_path(owned_source.clone(), cx)
@@ -3953,12 +4022,12 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
     assert_eq!(pen_created.pens[0].appearance.width_pt(), 1.);
     assert_eq!(pen_created.pens[0].appearance.opacity(), 1.);
 
-    scroll_annotation_target_into_view(cx, DOCUMENT_INK_PROPERTIES_ID);
-    let pen_properties = cx
-        .debug_bounds(DOCUMENT_INK_PROPERTIES_ID)
-        .expect("the exact selected Pen must expose the real Properties trigger");
-    cx.simulate_click(pen_properties.center(), Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
+    scroll_annotation_target_into_view(cx, DOCUMENT_SELECT_TOOL_ID);
+    let select_tool = cx
+        .debug_bounds(DOCUMENT_SELECT_TOOL_ID)
+        .expect("Select must remain available before opening inline Pen properties");
+    cx.simulate_click(select_tool.center(), Modifiers::default());
+    toggle_document_actions(cx);
     for id in [
         INK_INSPECTOR_LOCKED_ID,
         INK_INSPECTOR_COLOR_ID,
@@ -3982,18 +4051,26 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
     );
     assert!(edited_pen.pens[0].locked);
     assert_eq!((edited_pen.revision, edited_pen.undo_depth), (5, 5));
-    scroll_annotation_target_into_view(cx, DOCUMENT_INK_PROPERTIES_ID);
-    let close_pen_properties = cx
-        .debug_bounds(DOCUMENT_INK_PROPERTIES_ID)
-        .expect("the Pen Properties trigger must remain available while its panel is open");
-    cx.simulate_click(close_pen_properties.center(), Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
+    toggle_document_actions(cx);
 
     scroll_annotation_target_into_view(cx, DOCUMENT_HIGHLIGHT_TOOL_ID);
     let highlight_tool = cx
         .debug_bounds(DOCUMENT_HIGHLIGHT_TOOL_ID)
         .expect("the actual Highlight control must render");
     cx.simulate_click(highlight_tool.center(), Modifiers::default());
+    cx.simulate_event(MouseDownEvent {
+        button: MouseButton::Left,
+        position: highlight_tool.center(),
+        modifiers: Modifiers::default(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    cx.simulate_event(MouseUpEvent {
+        button: MouseButton::Left,
+        position: highlight_tool.center(),
+        modifiers: Modifiers::default(),
+        click_count: 2,
+    });
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .annotation_tool(document_id, cx)),
@@ -4002,16 +4079,17 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(
-        cx.debug_bounds(DOCUMENT_HIGHLIGHT_COLOR_YELLOW_ID)
-            .is_some(),
+        cx.debug_bounds(HIGHLIGHT_DEFAULTS_PANEL_ID).is_some(),
         "the Highlight settings must open from its GPUI Component trigger",
     );
-    cx.simulate_keystrokes("escape");
+    let highlight_close = cx
+        .debug_bounds(HIGHLIGHT_DEFAULTS_CLOSE_ID)
+        .expect("Highlight properties must expose the accepted top-right close control");
+    cx.simulate_click(highlight_close.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(
-        cx.debug_bounds(DOCUMENT_HIGHLIGHT_COLOR_YELLOW_ID)
-            .is_none(),
-        "Escape must dismiss the Highlight settings",
+        cx.debug_bounds(HIGHLIGHT_DEFAULTS_PANEL_ID).is_none(),
+        "the top-right close control must dismiss Highlight properties",
     );
     let highlight_points = [(72., 240.), (144., 252.), (240., 244.)];
     cx.simulate_mouse_down(
@@ -4057,12 +4135,7 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
             > 0
     );
 
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let highlight_properties = cx
-        .debug_bounds(DOCUMENT_INK_PROPERTIES_ID)
-        .expect("the exact selected Highlight must expose the controlled Properties trigger");
-    cx.simulate_click(highlight_properties.center(), Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
+    toggle_document_actions(cx);
     for id in [
         INK_INSPECTOR_LOCKED_ID,
         INK_INSPECTOR_COLOR_ID,
@@ -4090,11 +4163,9 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
         (10, 10)
     );
 
-    scroll_annotation_target_into_view(cx, DOCUMENT_ANNOTATION_UNDO_ID);
-    let undo = cx
-        .debug_bounds(DOCUMENT_ANNOTATION_UNDO_ID)
-        .expect("the actual Undo control must render");
-    cx.simulate_click(undo.center(), Modifiers::default());
+    let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| workspace_focus.focus(window, cx));
+    cx.simulate_keystrokes(EDIT_UNDO);
     let undone = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(document_id, cx)
@@ -4106,11 +4177,7 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
         !undone.pens[1].locked,
         "Undo must revert exactly the lock edit"
     );
-    scroll_annotation_target_into_view(cx, DOCUMENT_ANNOTATION_REDO_ID);
-    let redo = cx
-        .debug_bounds(DOCUMENT_ANNOTATION_REDO_ID)
-        .expect("the actual Redo control must render");
-    cx.simulate_click(redo.center(), Modifiers::default());
+    cx.simulate_keystrokes(EDIT_REDO);
     let redone = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(document_id, cx)
@@ -4487,6 +4554,7 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
         });
         Root::new(shell, window, cx)
     });
+    cx.simulate_resize(gpui::size(px(1500.), px(900.)));
 
     let document_id = workspace.update(cx, |workspace, cx| {
         workspace.open_path(owned_source.clone(), cx)
@@ -4730,13 +4798,7 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
         .clone();
     assert_eq!(pre_appearance_text_box.content(), edited_content);
 
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, DOCUMENT_TEXT_BOX_PROPERTIES_ID);
-    let properties = cx
-        .debug_bounds(DOCUMENT_TEXT_BOX_PROPERTIES_ID)
-        .expect("the selected real Text Box must expose Properties");
-    cx.simulate_click(properties.center(), Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
+    toggle_document_actions(cx);
     let inspector = workspace
         .read_with(cx, |workspace, _| workspace.text_box_property_inspector())
         .unwrap();
@@ -5495,17 +5557,25 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
         .unwrap()
         .center();
     cx.simulate_click(highlight_tool_point, Modifiers::default());
+    cx.simulate_event(MouseDownEvent {
+        button: MouseButton::Left,
+        position: highlight_tool_point,
+        modifiers: Modifiers::default(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    cx.simulate_event(MouseUpEvent {
+        button: MouseButton::Left,
+        position: highlight_tool_point,
+        modifiers: Modifiers::default(),
+        click_count: 2,
+    });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(
-        cx.debug_bounds(DOCUMENT_HIGHLIGHT_COLOR_YELLOW_ID)
-            .is_some()
-    );
-    cx.simulate_keystrokes("escape");
+    assert!(cx.debug_bounds(HIGHLIGHT_DEFAULTS_PANEL_ID).is_some());
+    let highlight_close = cx.debug_bounds(HIGHLIGHT_DEFAULTS_CLOSE_ID).unwrap();
+    cx.simulate_click(highlight_close.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(
-        cx.debug_bounds(DOCUMENT_HIGHLIGHT_COLOR_YELLOW_ID)
-            .is_none()
-    );
+    assert!(cx.debug_bounds(HIGHLIGHT_DEFAULTS_PANEL_ID).is_none());
     cx.simulate_mouse_down(to_view(180., 600.), MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(
         to_view(250., 608.),

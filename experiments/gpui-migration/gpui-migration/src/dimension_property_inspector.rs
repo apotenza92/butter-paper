@@ -46,6 +46,7 @@ pub struct DimensionPropertySnapshot {
     pub annotation_id: MarkupId,
     pub expected_revision: u64,
     pub offset_pt: f64,
+    pub show_offset: bool,
     pub appearance: DimensionAppearance,
     pub locked: bool,
     pub mutation_disabled: bool,
@@ -386,9 +387,9 @@ impl Render for DimensionPropertyInspector {
                     }),
             ),
         );
-        let appearance = v_flex()
-            .gap_3()
-            .child(
+        let mut appearance = v_flex().gap_3();
+        if snapshot.show_offset {
+            appearance = appearance.child(
                 Field::new().label("Offset").child(
                     PropertyNumericInput::new(
                         DIMENSION_INSPECTOR_OFFSET_ID,
@@ -398,7 +399,9 @@ impl Render for DimensionPropertyInspector {
                     .suffix("pt")
                     .disabled(disabled),
                 ),
-            )
+            );
+        }
+        let appearance = appearance
             .child(color_field(
                 DIMENSION_INSPECTOR_STROKE_COLOR_ID,
                 "Stroke colour",

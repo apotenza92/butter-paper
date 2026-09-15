@@ -1093,6 +1093,7 @@ pub struct MeasurementPathAnnotation {
     pub kind: MeasurementPathKind,
     calibration: LengthCalibration,
     pub appearance: RectangleAppearance,
+    text_style: TextBoxStyle,
     pub locked: bool,
 }
 
@@ -1105,6 +1106,27 @@ impl MeasurementPathAnnotation {
         calibration: LengthCalibration,
         appearance: RectangleAppearance,
     ) -> Result<Self, AnnotationError> {
+        Self::new_with_text_style(
+            id,
+            page_index,
+            points,
+            kind,
+            calibration,
+            appearance,
+            TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.)?,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_text_style(
+        id: MarkupId,
+        page_index: u32,
+        points: Vec<PdfPoint>,
+        kind: MeasurementPathKind,
+        calibration: LengthCalibration,
+        appearance: RectangleAppearance,
+        text_style: TextBoxStyle,
+    ) -> Result<Self, AnnotationError> {
         validate_measurement_path(&points, kind)?;
         Ok(Self {
             id,
@@ -1113,6 +1135,7 @@ impl MeasurementPathAnnotation {
             kind,
             calibration,
             appearance,
+            text_style,
             locked: false,
         })
     }
@@ -1123,6 +1146,10 @@ impl MeasurementPathAnnotation {
 
     pub fn calibration(&self) -> &LengthCalibration {
         &self.calibration
+    }
+
+    pub fn text_style(&self) -> &TextBoxStyle {
+        &self.text_style
     }
 
     pub fn measured_value(&self) -> f64 {
@@ -1175,8 +1202,9 @@ impl MeasurementPathAnnotation {
         self.id == other.id
             && self.page_index == other.page_index
             && self.kind == other.kind
-            && self.calibration == other.calibration
+            && self.calibration.same_persisted_state_as(&other.calibration)
             && self.appearance == other.appearance
+            && self.text_style == other.text_style
             && self.locked == other.locked
             && self.points.len() == other.points.len()
             && self.points.iter().zip(&other.points).all(|(left, right)| {
@@ -2560,6 +2588,22 @@ impl LengthCalibration {
             && self.unit == other.unit
             && self.scale_precision == other.scale_precision
     }
+
+    fn same_persisted_state_as(&self, other: &LengthCalibration) -> bool {
+        const PDF_NUMBER_TOLERANCE: f64 = 0.000_001;
+        (self.units_per_point - other.units_per_point).abs() <= PDF_NUMBER_TOLERANCE
+            && (self.scale_x - other.scale_x).abs() <= PDF_NUMBER_TOLERANCE
+            && (self.scale_y - other.scale_y).abs() <= PDF_NUMBER_TOLERANCE
+            && (self.paper_points - other.paper_points).abs() <= PDF_NUMBER_TOLERANCE
+            && (self.real_world_value - other.real_world_value).abs() <= PDF_NUMBER_TOLERANCE
+            && self.unit == other.unit
+            && self.label == other.label
+            && self.precision == other.precision
+            && self.scale_precision.mode == other.scale_precision.mode
+            && (self.scale_precision.value - other.scale_precision.value).abs()
+                <= PDF_NUMBER_TOLERANCE
+            && self.show_caption == other.show_caption
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2707,6 +2751,7 @@ pub struct LengthAnnotation {
     pub start: PdfPoint,
     pub end: PdfPoint,
     calibration: LengthCalibration,
+    pub appearance: DimensionAppearance,
     pub locked: bool,
 }
 
@@ -2717,6 +2762,27 @@ impl LengthAnnotation {
         start: PdfPoint,
         end: PdfPoint,
         calibration: LengthCalibration,
+    ) -> Result<Self, AnnotationError> {
+        Self::new_with_appearance(
+            id,
+            page_index,
+            start,
+            end,
+            calibration,
+            DimensionAppearance::new(
+                StraightLineAppearance::default_for(LineKind::Line),
+                TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.)?,
+            )?,
+        )
+    }
+
+    pub fn new_with_appearance(
+        id: MarkupId,
+        page_index: u32,
+        start: PdfPoint,
+        end: PdfPoint,
+        calibration: LengthCalibration,
+        appearance: DimensionAppearance,
     ) -> Result<Self, AnnotationError> {
         for (name, value) in [
             ("length.start.x", start.x),
@@ -2737,6 +2803,7 @@ impl LengthAnnotation {
             start,
             end,
             calibration,
+            appearance,
             locked: false,
         })
     }
@@ -2775,10 +2842,8 @@ impl LengthAnnotation {
             && (self.start.y - other.start.y).abs() <= PDF_NUMBER_TOLERANCE
             && (self.end.x - other.end.x).abs() <= PDF_NUMBER_TOLERANCE
             && (self.end.y - other.end.y).abs() <= PDF_NUMBER_TOLERANCE
-            && self.calibration.same_scale_as(&other.calibration)
-            && self.calibration.label == other.calibration.label
-            && self.calibration.precision == other.calibration.precision
-            && self.calibration.show_caption == other.calibration.show_caption
+            && self.calibration.same_persisted_state_as(&other.calibration)
+            && self.appearance == other.appearance
             && self.locked == other.locked
     }
 }
@@ -2873,6 +2938,7 @@ pub struct ImageAnnotation {
     pub page_index: u32,
     pub rect: PdfRect,
     asset: DecodedRgbaAsset,
+    opacity: f64,
     pub aspect_locked: bool,
     pub locked: bool,
 }
@@ -2921,6 +2987,20 @@ impl SnapshotAnnotation {
         self.rotation_degrees
     }
 
+    pub fn same_persisted_state_as(&self, other: &Self) -> bool {
+        const PDF_NUMBER_TOLERANCE: f64 = 0.000_1;
+        self.id == other.id
+            && self.page_index == other.page_index
+            && (self.rect.x - other.rect.x).abs() <= PDF_NUMBER_TOLERANCE
+            && (self.rect.y - other.rect.y).abs() <= PDF_NUMBER_TOLERANCE
+            && (self.rect.width - other.rect.width).abs() <= PDF_NUMBER_TOLERANCE
+            && (self.rect.height - other.rect.height).abs() <= PDF_NUMBER_TOLERANCE
+            && (self.opacity - other.opacity).abs() <= PDF_NUMBER_TOLERANCE
+            && (self.rotation_degrees - other.rotation_degrees).abs() <= PDF_NUMBER_TOLERANCE
+            && self.asset == other.asset
+            && self.locked == other.locked
+    }
+
     pub fn with_rotation_degrees(mut self, rotation_degrees: f64) -> Result<Self, AnnotationError> {
         require_finite("snapshot.rotation", rotation_degrees)?;
         self.rotation_degrees = canonical_float(rotation_degrees.rem_euclid(360.));
@@ -2941,13 +3021,26 @@ impl ImageAnnotation {
         asset: DecodedRgbaAsset,
         aspect_locked: bool,
     ) -> Result<Self, AnnotationError> {
+        Self::new_with_opacity(id, page_index, rect, asset, aspect_locked, 1.)
+    }
+
+    pub fn new_with_opacity(
+        id: MarkupId,
+        page_index: u32,
+        rect: PdfRect,
+        asset: DecodedRgbaAsset,
+        aspect_locked: bool,
+        opacity: f64,
+    ) -> Result<Self, AnnotationError> {
         validate_layout_rect(rect, "image")?;
         validate_image_aspect(rect, &asset, aspect_locked)?;
+        validate_snapshot_opacity(opacity)?;
         Ok(Self {
             id,
             page_index,
             rect,
             asset,
+            opacity: canonical_float(opacity),
             aspect_locked,
             locked: false,
         })
@@ -2955,6 +3048,10 @@ impl ImageAnnotation {
 
     pub fn asset(&self) -> &DecodedRgbaAsset {
         &self.asset
+    }
+
+    pub fn opacity(&self) -> f64 {
+        self.opacity
     }
 }
 
@@ -3325,13 +3422,14 @@ impl Annotation {
                     .iter()
                     .map(|point| PdfPoint::new(point.x + delta_x, point.y + delta_y))
                     .collect::<Result<Vec<_>, _>>()?;
-                let mut copy = MeasurementPathAnnotation::new(
+                let mut copy = MeasurementPathAnnotation::new_with_text_style(
                     id,
                     page_index,
                     points,
                     source.kind,
                     source.calibration.clone(),
                     source.appearance.clone(),
+                    source.text_style.clone(),
                 )?;
                 copy.locked = source.locked;
                 Self::MeasurementPath(copy)
@@ -3380,18 +3478,19 @@ impl Annotation {
                 Self::Dimension(copy)
             }
             Self::Length(source) => {
-                let mut copy = LengthAnnotation::new(
+                let mut copy = LengthAnnotation::new_with_appearance(
                     id,
                     page_index,
                     PdfPoint::new(source.start.x + delta_x, source.start.y + delta_y)?,
                     PdfPoint::new(source.end.x + delta_x, source.end.y + delta_y)?,
                     source.calibration.clone(),
+                    source.appearance.clone(),
                 )?;
                 copy.locked = source.locked;
                 Self::Length(copy)
             }
             Self::Image(source) => {
-                let mut copy = ImageAnnotation::new(
+                let mut copy = ImageAnnotation::new_with_opacity(
                     id,
                     page_index,
                     PdfRect::new(
@@ -3402,6 +3501,7 @@ impl Annotation {
                     )?,
                     source.asset.clone(),
                     source.aspect_locked,
+                    source.opacity,
                 )?;
                 copy.locked = source.locked;
                 Self::Image(copy)
@@ -3533,6 +3633,10 @@ pub enum AnnotationEdit {
         delta_y: f64,
     },
     SetMeasurementPathCalibration(LengthCalibration),
+    SetMeasurementPathAppearance {
+        appearance: RectangleAppearance,
+        text_style: TextBoxStyle,
+    },
     SetMeasurementPathPoint {
         vertex_index: usize,
         point: PdfPoint,
@@ -3542,12 +3646,14 @@ pub enum AnnotationEdit {
         delta_y: f64,
     },
     SetStraightLineAppearance(StraightLineAppearance),
+    SetLengthAppearance(DimensionAppearance),
     SetVertexPathAppearance(RectangleAppearance),
     TranslateLength {
         delta_x: f64,
         delta_y: f64,
     },
     SetImageRect(PdfRect),
+    SetImageOpacity(f64),
     SetSnapshotRect(PdfRect),
     SetSnapshotRotation(f64),
     SetSnapshotOpacity(f64),
@@ -4010,6 +4116,7 @@ pub struct SceneMeasurementPath {
     pub points: Vec<PdfPoint>,
     pub kind: MeasurementPathKind,
     pub appearance: RectangleAppearance,
+    pub text_style: TextBoxStyle,
     pub caption: String,
     pub show_caption: bool,
     pub selected: bool,
@@ -4061,6 +4168,7 @@ pub struct SceneLength {
     pub end: PdfPoint,
     pub caption: String,
     pub show_caption: bool,
+    pub appearance: DimensionAppearance,
     pub selected: bool,
     pub locked: bool,
 }
@@ -4073,6 +4181,7 @@ pub struct SceneImage {
     pub width_px: u32,
     pub height_px: u32,
     pub aspect_locked: bool,
+    pub opacity: f64,
     pub selected: bool,
     pub locked: bool,
 }
@@ -7731,6 +7840,25 @@ impl AnnotationDocument {
                 });
                 Ok((AnnotationKind::Length, true))
             }
+            AnnotationEdit::SetLengthAppearance(appearance) => {
+                let annotation = self.length(id).ok_or(AnnotationError::NoSelection)?;
+                if annotation.locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                if annotation.appearance == appearance {
+                    return Ok((AnnotationKind::Length, false));
+                }
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    state
+                        .lengths
+                        .iter_mut()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a validated length edit must retain its target")
+                        .appearance = appearance;
+                });
+                Ok((AnnotationKind::Length, true))
+            }
             AnnotationEdit::SetLengthEndpoint { endpoint, point } => {
                 require_finite("length.endpoint.x", point.x)?;
                 require_finite("length.endpoint.y", point.y)?;
@@ -8404,6 +8532,32 @@ impl AnnotationDocument {
                 });
                 Ok((kind.into(), true))
             }
+            AnnotationEdit::SetMeasurementPathAppearance {
+                appearance,
+                text_style,
+            } => {
+                let annotation = self
+                    .measurement_path(id)
+                    .ok_or(AnnotationError::NoSelection)?;
+                if annotation.locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                if annotation.appearance == appearance && annotation.text_style == text_style {
+                    return Ok((annotation.kind.into(), false));
+                }
+                let kind = annotation.kind;
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    let annotation = state
+                        .measurement_paths
+                        .iter_mut()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a validated measurement-path edit must retain its target");
+                    annotation.appearance = appearance;
+                    annotation.text_style = text_style;
+                });
+                Ok((kind.into(), true))
+            }
             AnnotationEdit::SetMeasurementPathPoint {
                 vertex_index,
                 point,
@@ -8486,6 +8640,27 @@ impl AnnotationDocument {
                         .find(|annotation| annotation.id == id)
                         .expect("a validated image edit must retain its target")
                         .rect = rect;
+                });
+                Ok((AnnotationKind::Image, true))
+            }
+            AnnotationEdit::SetImageOpacity(opacity) => {
+                validate_snapshot_opacity(opacity)?;
+                let annotation = self.image(id).ok_or(AnnotationError::NoSelection)?;
+                if annotation.locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                let opacity = canonical_float(opacity);
+                if annotation.opacity == opacity {
+                    return Ok((AnnotationKind::Image, false));
+                }
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    state
+                        .images
+                        .iter_mut()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a validated image edit must retain its target")
+                        .opacity = opacity;
                 });
                 Ok((AnnotationKind::Image, true))
             }
@@ -8743,6 +8918,7 @@ impl AnnotationDocument {
                 points: annotation.points.clone(),
                 kind: annotation.kind,
                 appearance: annotation.appearance.clone(),
+                text_style: annotation.text_style.clone(),
                 caption: annotation.caption(),
                 show_caption: annotation.calibration.show_caption(),
                 selected: editor_state && self.selected_ids.contains(&annotation.id),
@@ -8779,6 +8955,7 @@ impl AnnotationDocument {
                 end: annotation.end,
                 caption: annotation.caption(),
                 show_caption: annotation.calibration.show_caption,
+                appearance: annotation.appearance.clone(),
                 selected: editor_state && self.selected_ids.contains(&annotation.id),
                 locked: annotation.locked,
             })
@@ -8797,6 +8974,7 @@ impl AnnotationDocument {
                 width_px: annotation.asset.width_px,
                 height_px: annotation.asset.height_px,
                 aspect_locked: annotation.aspect_locked,
+                opacity: annotation.opacity,
                 selected: editor_state && self.selected_ids.contains(&annotation.id),
                 locked: annotation.locked,
             })
@@ -10105,6 +10283,140 @@ mod tests {
             ..reopened
         };
         assert!(!expected.same_persisted_state_as(&materially_moved));
+    }
+
+    #[test]
+    fn snapshot_persisted_state_accepts_pdf_rounding_but_rejects_material_rotation_changes() {
+        let asset = DecodedRgbaAsset::new(1, 1, vec![10, 20, 30, 255]).unwrap();
+        let expected = SnapshotAnnotation::new(
+            id("workspace:snapshot:1"),
+            0,
+            PdfRect::new(84., 84., 480., 660.).unwrap(),
+            asset,
+            0.45,
+        )
+        .unwrap()
+        .with_rotation_degrees(30.)
+        .unwrap()
+        .with_locked(true);
+        let rounded = SnapshotAnnotation {
+            rotation_degrees: 30.000_099,
+            ..expected.clone()
+        };
+        assert_ne!(expected, rounded);
+        assert!(expected.same_persisted_state_as(&rounded));
+
+        let materially_rotated = SnapshotAnnotation {
+            rotation_degrees: 30.000_101,
+            ..rounded
+        };
+        assert!(!expected.same_persisted_state_as(&materially_rotated));
+    }
+
+    #[test]
+    fn remaining_parity_appearance_edits_are_atomic_and_undoable() {
+        let calibration = LengthCalibration::from_scale(72., 1., "ft", 2, true).unwrap();
+        let length_id = id("parity:length");
+        let path_id = id("parity:path");
+        let image_id = id("parity:image");
+        let asset = DecodedRgbaAsset::new(1, 1, vec![10, 20, 30, 255]).unwrap();
+        let mut document = AnnotationDocument::default();
+        document
+            .load_imported_annotations(
+                vec![
+                    Annotation::Length(
+                        LengthAnnotation::new(
+                            length_id.clone(),
+                            0,
+                            point(10., 10.),
+                            point(100., 10.),
+                            calibration.clone(),
+                        )
+                        .unwrap(),
+                    ),
+                    Annotation::MeasurementPath(
+                        MeasurementPathAnnotation::new(
+                            path_id.clone(),
+                            0,
+                            vec![point(10., 20.), point(100., 20.)],
+                            MeasurementPathKind::Polylength,
+                            calibration,
+                            RectangleAppearance::default(),
+                        )
+                        .unwrap(),
+                    ),
+                    Annotation::Image(
+                        ImageAnnotation::new(
+                            image_id.clone(),
+                            0,
+                            PdfRect::new(10., 30., 24., 24.).unwrap(),
+                            asset,
+                            true,
+                        )
+                        .unwrap(),
+                    ),
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+
+        let line = StraightLineAppearance::new("#123456", 2.5, 0.4, StrokeStyle::Dashed).unwrap();
+        let text = TextBoxStyle::new("Arimo", 18., "#654321", 0.4).unwrap();
+        assert!(document.select(&length_id));
+        document
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id: length_id,
+                edit: AnnotationEdit::SetLengthAppearance(
+                    DimensionAppearance::new(line.clone(), text.clone()).unwrap(),
+                ),
+            })
+            .unwrap();
+        assert!(document.select(&path_id));
+        document
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id: path_id,
+                edit: AnnotationEdit::SetMeasurementPathAppearance {
+                    appearance: RectangleAppearance::new("#123456", 2.5, None::<String>, 0.4)
+                        .unwrap()
+                        .with_stroke_style(StrokeStyle::Dashed),
+                    text_style: text,
+                },
+            })
+            .unwrap();
+        assert!(document.select(&image_id));
+        document
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id: image_id,
+                edit: AnnotationEdit::SetImageOpacity(0.35),
+            })
+            .unwrap();
+
+        let changed = document.snapshot();
+        assert_eq!(changed.lengths[0].appearance.line(), &line);
+        assert_eq!(
+            changed.measurement_paths[0].text_style().font_size_pt(),
+            18.
+        );
+        assert_eq!(changed.images[0].opacity(), 0.35);
+        document.undo().unwrap();
+        assert_eq!(document.snapshot().images[0].opacity(), 1.);
+    }
+
+    #[test]
+    fn length_calibration_persisted_state_accepts_only_pdf_rounding_error() {
+        let expected = LengthCalibration::from_scale(36., 1., "m", 3, true).unwrap();
+        let rounded = LengthCalibration {
+            scale_x: expected.scale_x + 0.000_000_9,
+            ..expected.clone()
+        };
+        assert_ne!(expected, rounded);
+        assert!(expected.same_persisted_state_as(&rounded));
+
+        let materially_changed = LengthCalibration {
+            scale_x: expected.scale_x + 0.000_001_1,
+            ..rounded
+        };
+        assert!(!expected.same_persisted_state_as(&materially_changed));
     }
 
     #[test]
