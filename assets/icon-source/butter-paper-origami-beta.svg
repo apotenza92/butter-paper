@@ -3,7 +3,7 @@
   <desc id="description">A faceted violet origami butterfly with a teal central fold.</desc>
   <defs>
     <clipPath id="silhouette">
-      <path d="M10 10 L71 24 L117 46 L128 35 L139 46 L185 24 L246 10 L185 96 L185 142 L139 189 L128 127 L117 189 L71 142 L71 96 Z"/>
+      <path d="M22 10 L71 24 L117 46 L128 35 L139 46 L185 24 L234 10 L185 96 L193 142 L144 189 L128 127 L112 189 L63 142 L71 96 Z"/>
     </clipPath>
     <linearGradient id="silhouette-base" x1="18" y1="8" x2="238" y2="190" gradientUnits="userSpaceOnUse">
       <stop stop-color="#c8c0ec"/><stop offset=".48" stop-color="#6756b3"/><stop offset="1" stop-color="#2c235f"/>
@@ -12,7 +12,7 @@
       <stop stop-color="#afa4e3"/><stop offset="1" stop-color="#8979d0"/>
     </linearGradient>
     <linearGradient id="upper-left-outer" x1="10" y1="10" x2="71" y2="96" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#e2ddf6"/><stop offset="1" stop-color="#c8c0ec"/>
+      <stop stop-color="#c5bce9"/><stop offset="1" stop-color="#a99cde"/>
     </linearGradient>
     <linearGradient id="upper-right" x1="242" y1="10" x2="128" y2="127" gradientUnits="userSpaceOnUse">
       <stop stop-color="#7563c0"/><stop offset="1" stop-color="#392c78"/>
@@ -41,19 +41,19 @@
   </defs>
 
   <!-- One base silhouette prevents seams at shared facet edges. -->
-  <path d="M10 10 L71 24 L117 46 L128 35 L139 46 L185 24 L246 10 L185 96 L185 142 L139 189 L128 127 L117 189 L71 142 L71 96 Z" fill="url(#silhouette-base)"/>
+  <path d="M22 10 L71 24 L117 46 L128 35 L139 46 L185 24 L234 10 L185 96 L193 142 L144 189 L128 127 L112 189 L63 142 L71 96 Z" fill="url(#silhouette-base)"/>
 
   <!-- Ten clean paper planes use exact mirrored nodes. No linework or decorative strips. -->
   <g clip-path="url(#silhouette)">
-    <path d="M10 10 L71 24 L71 96 Z" fill="url(#upper-left-outer)"/>
+    <path d="M22 10 L71 24 L71 96 Z" fill="url(#upper-left-outer)"/>
     <path d="M71 24 L117 46 L121 76 L71 96 Z" fill="url(#upper-left)"/>
-    <path d="M246 10 L185 24 L185 96 Z" fill="url(#upper-right-outer)"/>
+    <path d="M234 10 L185 24 L185 96 Z" fill="url(#upper-right-outer)"/>
     <path d="M185 24 L139 46 L135 76 L185 96 Z" fill="url(#upper-right)"/>
     <path d="M71 96 L121 76 L128 127 Z" fill="url(#shoulder-left)"/>
     <path d="M185 96 L135 76 L128 127 Z" fill="url(#shoulder-right)"/>
     <path d="M117 46 L128 31 L128 127 L121 76 Z" fill="url(#center-left)"/>
     <path d="M139 46 L128 31 L128 127 L135 76 Z" fill="url(#center-right)"/>
-    <path d="M71 96 L128 127 L117 189 L71 142 Z" fill="url(#lower-left)"/>
-    <path d="M185 96 L128 127 L139 189 L185 142 Z" fill="url(#lower-right)"/>
+    <path d="M71 96 L128 127 L112 189 L63 142 Z" fill="url(#lower-left)"/>
+    <path d="M185 96 L128 127 L144 189 L193 142 Z" fill="url(#lower-right)"/>
   </g>
 </svg>

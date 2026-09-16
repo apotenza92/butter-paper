@@ -42,6 +42,8 @@ const variants = [
     name: 'stable',
     source: join(repositoryRoot, 'assets/butter-paper-icon.png'),
     darkSource: join(repositoryRoot, 'assets/butter-paper-icon-dark.png'),
+    macosSource: join(repositoryRoot, 'assets/butter-paper-icon-macos.png'),
+    macosDarkSource: join(repositoryRoot, 'assets/butter-paper-icon-macos-dark.png'),
     adaptiveArtwork: 'macos/Butter Paper.icon/Assets',
     output: join(repositoryRoot, 'apps/desktop/assets'),
   },
@@ -49,6 +51,8 @@ const variants = [
     name: 'beta',
     source: join(repositoryRoot, 'assets/butter-paper-icon-beta.png'),
     darkSource: join(repositoryRoot, 'assets/butter-paper-icon-beta-dark.png'),
+    macosSource: join(repositoryRoot, 'assets/butter-paper-icon-beta-macos.png'),
+    macosDarkSource: join(repositoryRoot, 'assets/butter-paper-icon-beta-macos-dark.png'),
     adaptiveArtwork: 'macos/Butter Paper Beta.icon/Assets',
     output: join(repositoryRoot, 'apps/desktop/assets/beta'),
   },
@@ -93,8 +97,8 @@ async function generateVariant(variant) {
     ['icon.png', pngBySize.get(512)],
     ['icon.ico', buildIco(icoSizes, pngBySize)],
     ['icon.icns', buildIcns(icnsEntries, pngBySize)],
-    [`${variant.adaptiveArtwork}/01-artwork.png`, await readFile(variant.source)],
-    [`${variant.adaptiveArtwork}/01-artwork-dark.png`, await readFile(variant.darkSource)],
+    [`${variant.adaptiveArtwork}/01-artwork.png`, await readFile(variant.macosSource)],
+    [`${variant.adaptiveArtwork}/01-artwork-dark.png`, await readFile(variant.macosDarkSource)],
   ]);
   for (const size of linuxSizes) {
     generatedFiles.set(`linux/${size}x${size}.png`, pngBySize.get(size));
@@ -107,10 +111,13 @@ async function generateVariant(variant) {
   }
 
   const sourceContents = await readFile(variant.source);
+  const macosSourceContents = await readFile(variant.macosSource);
   const manifest = {
     schemaVersion: 1,
     source: repositoryRelativePath(variant.source),
     sourceSha256: sha256(sourceContents),
+    macosSource: repositoryRelativePath(variant.macosSource),
+    macosSourceSha256: sha256(macosSourceContents),
     outputs: Object.fromEntries(
       [...generatedFiles]
         .sort(([left], [right]) => left.localeCompare(right))
@@ -142,6 +149,7 @@ async function verifyGeneratedVariant(variant, variantMismatches) {
   }
 
   const sourceContents = await readFile(variant.source);
+  const macosSourceContents = await readFile(variant.macosSource);
   const expectedPaths = expectedOutputPaths(variant);
   if (manifest.schemaVersion !== 1) {
     variantMismatches.push(`${manifestPath}: unsupported schema version`);
@@ -151,6 +159,12 @@ async function verifyGeneratedVariant(variant, variantMismatches) {
   }
   if (manifest.sourceSha256 !== sha256(sourceContents)) {
     variantMismatches.push(`${manifestPath}: source hash does not match`);
+  }
+  if (manifest.macosSource !== repositoryRelativePath(variant.macosSource)) {
+    variantMismatches.push(`${manifestPath}: macOS source path does not match`);
+  }
+  if (manifest.macosSourceSha256 !== sha256(macosSourceContents)) {
+    variantMismatches.push(`${manifestPath}: macOS source hash does not match`);
   }
   const manifestPaths = Object.keys(manifest.outputs ?? {}).sort();
   if (JSON.stringify(manifestPaths) !== JSON.stringify(expectedPaths)) {

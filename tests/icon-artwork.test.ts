@@ -15,12 +15,16 @@ const variants = {
   stable: {
     light: 'assets/butter-paper-icon.png',
     dark: 'assets/butter-paper-icon-dark.png',
+    macosLight: 'assets/butter-paper-icon-macos.png',
+    macosDark: 'assets/butter-paper-icon-macos-dark.png',
     nativeLight: 'apps/desktop/assets/macos/Butter Paper.icon/Assets/01-artwork.png',
     nativeDark: 'apps/desktop/assets/macos/Butter Paper.icon/Assets/01-artwork-dark.png',
   },
   beta: {
     light: 'assets/butter-paper-icon-beta.png',
     dark: 'assets/butter-paper-icon-beta-dark.png',
+    macosLight: 'assets/butter-paper-icon-beta-macos.png',
+    macosDark: 'assets/butter-paper-icon-beta-macos-dark.png',
     nativeLight: 'apps/desktop/assets/beta/macos/Butter Paper Beta.icon/Assets/01-artwork.png',
     nativeDark: 'apps/desktop/assets/beta/macos/Butter Paper Beta.icon/Assets/01-artwork-dark.png',
   },
@@ -47,9 +51,17 @@ describe('Butter Paper icon artwork', () => {
   });
 
   it('optically sizes the canonical SVG artwork for native icon canvases', () => {
-    expect(brandIconRenderer).toContain('const visibleWidthRatio = 0.80;');
+    expect(brandIconRenderer).toContain('const visibleWidthRatio = 0.78;');
+    expect(brandIconRenderer).toContain('const macosDockTileSize = 64;');
+    expect(brandIconRenderer).toContain('const macosDockEdgeInset = 6;');
+    expect(brandIconRenderer).toContain('const opticalYOffsetRatio = 0.018;');
+    expect(brandIconRenderer).toContain('const centralFoldBounds = { top: 31, bottom: 127 };');
+    expect(brandIconRenderer).toContain('const centralFoldFiveTwelfthsFromBottom = centralFoldBounds.bottom');
+    expect(brandIconRenderer).toContain('sourceY: centralFoldFiveTwelfthsFromBottom');
+    expect(brandIconRenderer).toContain('targetY: canvasSize / 2');
     expect(brandIconRenderer).toContain("source: 'butter-paper-origami.svg'");
     expect(brandIconRenderer).toContain("source: 'butter-paper-origami-beta.svg'");
+    expect(brandIconRenderer).toContain("macosOutputs: ['butter-paper-icon-macos.png', 'butter-paper-icon-macos-dark.png']");
     expect(brandIconRenderer).toContain('context.drawImage(image, renderedLeft, renderedTop, renderedWidth, renderedHeight);');
   });
 
@@ -59,10 +71,12 @@ describe('Butter Paper icon artwork', () => {
       const source = readFileSync(filePath, 'utf8');
       expect(source).toContain('viewBox="0 0 256 200"');
       expect(source).toContain('clip-path="url(#silhouette)"');
-      expect(source).toContain('M10 10 L71 24 L71 96');
-      expect(source).toContain('M246 10 L185 24 L185 96');
+      expect(source).toContain('M22 10 L71 24 L71 96');
+      expect(source).toContain('M234 10 L185 24 L185 96');
       expect(source).toContain('M71 96 L121 76 L128 127');
       expect(source).toContain('M185 96 L135 76 L128 127');
+      expect(source).toContain('M71 96 L128 127 L112 189 L63 142');
+      expect(source).toContain('M185 96 L128 127 L144 189 L193 142');
       expect(source).not.toContain('stroke=');
       expect(source).not.toContain('<circle');
       expect(source).not.toContain('<ellipse');
@@ -94,8 +108,8 @@ describe('Butter Paper icon artwork', () => {
 
   it('keeps each macOS adaptive source byte-identical to its canonical artwork', () => {
     for (const variant of Object.values(variants)) {
-      expect(sha256(variant.nativeLight)).toBe(sha256(variant.light));
-      expect(sha256(variant.nativeDark)).toBe(sha256(variant.dark));
+      expect(sha256(variant.nativeLight)).toBe(sha256(variant.macosLight));
+      expect(sha256(variant.nativeDark)).toBe(sha256(variant.macosDark));
     }
   });
 
