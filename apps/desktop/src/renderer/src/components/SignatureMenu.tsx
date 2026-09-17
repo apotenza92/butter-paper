@@ -797,7 +797,7 @@ export function SignatureMenu({ disabled = false, contextId = null, onUseSignatu
                   />
                 </Field>
                 <div
-                  className="flex h-28 items-center justify-center overflow-hidden rounded-md border border-input bg-white px-4 text-center text-5xl text-slate-900"
+                  className="flex h-28 items-center justify-center overflow-hidden rounded-md border border-input bg-white px-4 text-center text-5xl text-bp-signature-ink"
                   style={{ fontFamily: 'Allura, cursive' }}
                   data-testid="signature-type-preview"
                 >

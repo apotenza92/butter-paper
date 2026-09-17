@@ -44,12 +44,16 @@ For each compound control, specify which elements should respond together. Exerc
 ## Test the implementation users actually run
 
 - Trace the live app's render path before choosing regression tests. A legacy preview or standalone component suite does not prove the current workspace composition. Add a focused regression on the actual path for demonstrated state/geometry failures.
+- Modal interaction tests must paint the same root dialog layer as the real application. Render the first animation frame before advancing animation time and targeting controls; owning dialog state alone does not paint its hit targets.
+- For bounded scrolling overlays, exercise enough content to overflow and verify the final action becomes reachable by scrolling. A viewport rectangle inside the window is insufficient: a height limit inherited by the inner content can erase the scroll range while children still overflow.
 - For nested stock components, check callback ownership before attaching handlers: tooltips or managed behaviour may already register the same callback. Exercise the composed control, not just the handler in isolation.
 - Audit every control exposed inside stock overlays, including alternate tabs and alpha/transparency sliders. A working colour swatch does not prove that the picker's transparency is wired; do not silently discard exposed values. Preserve an existing domain capability or record the unsupported control explicitly.
 - When a compound control changes colour and opacity together, verify one atomic domain/history edit, not two competing events. Reapply an unchanged value and check that numeric precision conversion creates no undo entry. Preserve unrelated imported fields when changing one property, including fields the current editor does not expose.
 - When old tests disagree with an approved component size or composition, separate obsolete expectations from still-valid behaviour failures. Port or repair useful contracts with evidence; neither delete a failing suite nor change expected numbers just to make it green.
 - Inspect accessible role, full name, selected/checked and disabled states separately from painted appearance and click inertness. A missing foundation capability remains a tracked gap, not an invitation to fake semantics with styling.
 - Keep dependency preparation and runtime verification separate. A passing corrected component test does not prove all source receipts match; audit drift before refreshing identities, and preserve unrelated dirty changes.
+
+- For composed property editors, verify section bounds do not overlap and that one intended container owns scrolling. Accessibility-tree presence alone does not prove a control is visible: inspect appearance and measurement sections together, then scroll to and operate the final control.
 
 ## Handoff gate
 
@@ -64,3 +68,9 @@ Show reference/before/after for implementation handoffs, with honest state/theme
 ## Maintaining the checklist
 
 When a demonstrated miss recurs or teaches a general review failure, update the narrowest rule here with a concrete observable check. Keep the current defect, suspected cause, resolution and evidence in its region brief. Consolidate overlapping rules; do not append transcripts, dated worklogs or universal restrictions inferred from one example. Do not modify the upstream GPUI guides to encode application-specific preferences.
+
+### Native macOS launch and Signature evidence
+
+- Launch the isolated review `.app` through LaunchServices, with explicit disposable data/temporary directories and fixture arguments. A raw executable launch can differ in native input/repaint behaviour; compare launch paths before attributing delayed state to application code.
+- Exercise Tab from the popover's first control through both Recent use/removal controls. Verify that focus remains inside the popover and the removal control appears while focused, even when the pointer is elsewhere.
+- Label QR, expiry, hover and keyboard screenshots with their actual state. Cancel disposable QR sessions after capturing evidence. Reopen the saved files for contradiction review; a QR picture alone cannot establish a successful physical-phone transfer.

@@ -25,10 +25,17 @@ pub fn format_window_title(active_document_name: Option<&str>, document_count: u
     }
 }
 
-/// Returns the uncustomised GPUI Component window configuration required by
-/// the title bar's native controls, dragging, and double-click behaviour.
+/// AppKit owns the macOS title bar, including the user's double-click action
+/// (Fill, Zoom, Minimise or Do Nothing). Other platforms use GPUI Component.
 pub fn title_bar_window_options() -> WindowOptions {
-    TitleBar::window_options()
+    #[cfg(target_os = "macos")]
+    {
+        WindowOptions::default()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        TitleBar::window_options()
+    }
 }
 
 pub fn window_title_bar(

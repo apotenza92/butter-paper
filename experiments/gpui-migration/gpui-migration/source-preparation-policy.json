@@ -85,11 +85,11 @@
   "sharedExperimentSources": [
     {
       "path": "../gpui-migration/Cargo.toml",
-      "sha256": "407c0b07efc4ee19a80f2473cf8f402181fcace99aa51415efa04602f420d0e0"
+      "sha256": "8ed221ef48fe77be6bddfdb5b03a5b2b85c9a179d9b32fb1eb04d5c4566d8f17"
     },
     {
       "path": "../gpui-migration/src/lib.rs",
-      "sha256": "efb13a9ed28fe6d1669420b63436bb39273b14d623752846bd90f78ab9bc8f6f"
+      "sha256": "1da893d5fcfa94e6ff39489db49a2eab2dec59810719f0bbb0399ccffbb02221"
     },
     {
       "path": "../gpui-migration/src/recent_signature_store.rs",
@@ -117,11 +117,15 @@
     },
     {
       "path": "../gpui-migration/src/image_asset_decode.rs",
-      "sha256": "cedd34b88d424f6a968f53b44b13b6bdf4e5df40c1318a0f76216d64ee49c9b1"
+      "sha256": "77eafcbf755dd499b9186ba5a5f670497f05ac45ad991144cd21b35c028b0523"
     },
     {
       "path": "../gpui-migration/src/annotation_adapter.rs",
       "sha256": "be4cd02a9d726f3cee1d431bbacc1c1550086f1f99fa126ede7b876f688487bb"
+    },
+    {
+      "path": "../gpui-migration/src/interaction_chrome.rs",
+      "sha256": "ec5bb008498a4cb20672a9cc22c05b19e4bd30c3bd24a9e866bde6ecfa746887"
     },
     {
       "path": "../gpui-migration/src/semantic_snapping.rs",
@@ -145,7 +149,7 @@
     },
     {
       "path": "../gpui-migration/src/pdf_engine.rs",
-      "sha256": "d702dc2a7015b8befdca22bb50f5668b5401354212e956c54e1d422ae8001255"
+      "sha256": "3b5201a9aaf7b5530b8a0dc0432bac43f1bfb12b3fa3f54997eda72d6e324f0a"
     },
     {
       "path": "../gpui-migration/src/pdf_file_authority.rs",

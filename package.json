@@ -33,7 +33,7 @@
     "test:package:desktop": "node scripts/smoke-packaged-desktop.mjs",
     "test:macos-verifier": "vitest run --config vitest.config.mts tests/macos-package-verifier.test.ts",
     "test:macos-updater": "node scripts/test-macos-update.mjs",
-    "check": "pnpm check:repo && pnpm check:icons && pnpm typecheck && pnpm build && pnpm test",
+    "check": "pnpm check:repo && pnpm check:ui && pnpm check:icons && pnpm typecheck && pnpm build && pnpm test",
     "postinstall": "node scripts/ensure-native-deps.mjs",
     "predev:desktop": "node scripts/prepare-desktop-dev.mjs && pnpm --filter @butter-paper/core build && pnpm --filter @butter-paper/pdf build",
     "dev:desktop": "pnpm --filter @butter-paper/desktop dev",
@@ -49,7 +49,11 @@
     "make:desktop:windows": "pnpm build:desktop && pnpm --dir apps/desktop make:windows",
     "make:desktop:linux": "pnpm build:desktop && pnpm --dir apps/desktop make:linux",
     "generate:fixtures": "node scripts/generate-fixtures.mjs",
-    "generate:icons": "node scripts/render-brand-icons.mjs && node scripts/generate-icons.mjs"
+    "generate:icons": "node scripts/render-brand-icons.mjs && node scripts/generate-icons.mjs",
+    "lint:ui": "pnpm check:ui",
+    "check:ui": "pnpm check:ui:electron && pnpm check:ui:gpui",
+    "check:ui:electron": "pnpm --filter @butter-paper/desktop lint:ui",
+    "check:ui:gpui": "node --test experiments/gpui-migration/gpui-migration/tests/document-tab-style-source.test.mjs experiments/gpui-migration/gpui-migration/tests/application-menu-source.test.mjs experiments/gpui-migration/gpui-migration/tests/ui-policy-source.test.mjs"
   },
   "devDependencies": {
     "@electron/asar": "4.2.1",

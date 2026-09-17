@@ -435,6 +435,11 @@ test("runner modes expose only fixed reviewed Cargo argument arrays", () => {
     ],
     controlledFailureStatus: null,
   });
+  assert.deepEqual(resolveRunnerMode("recent-signature-workspace"), {
+    name: "recent-signature-workspace",
+    cargoArgs: ["--lib", "document_workspace::recent_signature_tests"],
+    controlledFailureStatus: null,
+  });
   assert.deepEqual(resolveRunnerMode("recent-signature-store"), {
     name: "recent-signature-store",
     cargoArgs: ["--lib", "recent_signature_store::tests"],

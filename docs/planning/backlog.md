@@ -27,3 +27,8 @@ The universal properties migration omits these inert reference controls instead 
 - #38 — Pi-backed desktop agent chat: provider sign-in and available models; optional local models via LM Studio/Ollama/llama.cpp; automatic detection and accessible setup; hardware-aware model recommendations verified with a local benchmark; consistent app tools for local/cloud models. Separate from current region migration.
 
 All 15 formerly open issues were moved to local planning at the user's request. Their historical discussions remain available on GitHub. Closing them as not planned means the GitHub tracking objects were retired; retained product requirements above remain pending.
+
+## Deferred Phase 3 hardware verification
+
+- **Camera signature capture — open:** on native macOS, exercise permission handling, an actual capture, cancellation and device release after closing. Helper compilation and deterministic pipe/lifecycle checks passed; these do not prove physical-camera behaviour. Carried forward when the user requested Phase 3 closure.
+- **Physical-phone signing — waived for Phase 3 by the user:** retain same-Mac transfer evidence; do not describe physical QR scanning/touch as tested.

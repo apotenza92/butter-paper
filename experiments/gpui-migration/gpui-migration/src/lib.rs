@@ -62,3 +62,7 @@ mod viewer_icons;
 pub mod viewer_toolbar_strip;
 pub mod window_title_bar;
 pub mod zoom_control;
+
+pub mod camera_signature;
+pub mod phone_signature;
+pub mod local_phone_signature;

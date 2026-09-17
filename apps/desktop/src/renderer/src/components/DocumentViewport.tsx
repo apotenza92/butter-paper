@@ -3147,7 +3147,7 @@ function PageOverviewTile({
   return (
     <div
       className={[
-        'absolute border border-neutral-300 bg-neutral-100 transition-[border-color,box-shadow]',
+        'absolute border border-bp-page-border bg-bp-overview-paper transition-[border-color,box-shadow]',
         isCurrentPage ? 'bp-current-page-outline' : '',
       ].join(' ')}
       style={{
@@ -3164,7 +3164,7 @@ function PageOverviewTile({
       data-overview-tile="true"
       onClick={() => onSelectPage(layout.index)}
     >
-      <div className="absolute inset-[3px] border border-neutral-300 bg-neutral-200" />
+      <div className="absolute inset-[3px] border border-bp-page-border bg-bp-overview-placeholder" />
       {sourceUrl ? (
         <img
           src={sourceUrl}

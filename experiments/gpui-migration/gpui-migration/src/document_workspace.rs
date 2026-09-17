@@ -1,3 +1,7 @@
+#[path = "interaction_chrome.rs"]
+mod interaction_chrome;
+
+use gpui_component::FocusTrapElement as _;
 use gpui_component::ElementExt as _;
 use std::{
     cell::Cell,
@@ -116,7 +120,7 @@ use crate::{
     page_geometry::PageCoordinateSpace,
     pdf_engine::{InPlacePublicationCapability, PdfPersistenceSession, PdfPublicationOutcome},
     pdf_file_authority::{SaveAsTargetAuthority, SaveTargetErrorKind},
-    selection_geometry::{SelectionMarquee, SelectionPoint, SelectionShape},
+    selection_geometry::{SelectionMarquee, SelectionPoint},
     semantic_snapping::{
         SemanticSnapDecision, SemanticSnapGuideType, SemanticSnapRole, SemanticSnapSettings,
         SemanticSnapSource, SemanticSnapTarget,
@@ -2192,12 +2196,15 @@ pub struct DocumentWorkspace {
     signature_prepare_state: SignaturePrepareState,
     drawn_signature: DrawnSignature,
     signature_input_mode: SignatureInputMode,
+    signature_operation: Option<crate::phone_signature::SignatureOperation>,
+    signature_camera_available: bool,
     signature_name_input: Option<Entity<InputState>>,
     recent_signature_store: Option<Arc<RecentSignatureStore>>,
     recent_signatures: Vec<RecentSignaturePreview>,
     recent_signatures_loading: bool,
     recent_signature_storage_issue: Option<String>,
     recent_signature_request: u64,
+    recent_signature_operation: Option<Task<()>>,
     pending_save_prompt: Option<SavePromptAuthority>,
     rejected_stale_save_prompts: u64,
     page_scale_control: Option<Entity<PageScaleControl>>,
@@ -2323,6 +2330,7 @@ enum SignaturePrepareState {
     Idle,
     Loading,
     Preview(SignaturePreview),
+    PhoneQr(Arc<RenderImage>),
     Error(String),
 }
 
@@ -2595,12 +2603,15 @@ impl DocumentWorkspace {
             signature_prepare_state: SignaturePrepareState::Idle,
             drawn_signature: DrawnSignature::default(),
             signature_input_mode: SignatureInputMode::Draw,
+            signature_operation: None,
+            signature_camera_available: crate::camera_signature::helper_path().is_some(),
             signature_name_input: None,
             recent_signature_store: None,
             recent_signatures: Vec::new(),
             recent_signatures_loading: false,
             recent_signature_storage_issue: None,
             recent_signature_request: 0,
+            recent_signature_operation: None,
             pending_save_prompt: None,
             rejected_stale_save_prompts: 0,
             page_scale_control: None,
@@ -2674,6 +2685,10 @@ impl DocumentWorkspace {
     }
 
     pub fn bind_recent_signature_store(&mut self, store: Arc<RecentSignatureStore>) {
+        self.recent_signature_request = self.recent_signature_request.saturating_add(1);
+        self.recent_signatures.clear();
+        self.recent_signatures_loading = false;
+        self.recent_signature_storage_issue = None;
         self.recent_signature_store = Some(store);
     }
 
@@ -10843,35 +10858,82 @@ impl DocumentWorkspace {
     }
 
     fn load_recent_signatures(&mut self, cx: &mut Context<Self>) {
+        self.run_recent_signature_operation(
+            |store| store.list(),
+            "Recent signatures could not be loaded.",
+            cx,
+        );
+    }
+
+    fn run_recent_signature_operation(
+        &mut self,
+        operation: impl FnOnce(
+            Arc<RecentSignatureStore>,
+        ) -> Result<
+            RecentSignaturesSnapshot,
+            crate::recent_signature_store::RecentSignatureStoreError,
+        > + Send
+        + 'static,
+        failure_message: &'static str,
+        cx: &mut Context<Self>,
+    ) {
         let Some(store) = self.recent_signature_store.clone() else {
+            self.recent_signatures_loading = false;
+            self.recent_signature_storage_issue =
+                Some("Recent signatures need secure system storage.".into());
+            cx.notify();
             return;
         };
         self.recent_signature_request = self.recent_signature_request.saturating_add(1);
         let request = self.recent_signature_request;
+        let document_id = self.active_document_id;
         self.recent_signatures_loading = true;
         self.recent_signature_storage_issue = None;
-        cx.notify();
+        // Preserve invocation order: reopening immediately after remembering must
+        // read the new state, regardless of background-executor scheduling.
+        let previous = self.recent_signature_operation.take();
         let background = cx.background_executor().clone();
-        cx.spawn(async move |entity, cx| {
-            let result = background.spawn(async move { store.list() }).await;
+        self.recent_signature_operation = Some(cx.spawn(async move |entity, cx| {
+            if let Some(previous) = previous {
+                previous.await;
+            }
+            let result = background.spawn(async move { operation(store) }).await;
             let _ = entity.update(cx, |workspace, cx| {
                 if workspace.recent_signature_request != request {
                     return;
                 }
                 workspace.recent_signatures_loading = false;
-                workspace.apply_recent_signature_snapshot(
-                    result,
-                    "Recent signatures could not be loaded.",
-                );
+                workspace.apply_recent_signature_snapshot(result, failure_message);
+                if !workspace.signature_popover_open {
+                    workspace.recent_signatures.clear();
+                    if let Some(issue) = workspace.recent_signature_storage_issue.as_ref()
+                        && let Some(document_id) = document_id
+                        && workspace.active_document_id == Some(document_id)
+                    {
+                        // Remembering is best-effort; report failure without changing
+                        // the armed tool or the annotation already placed on the page.
+                        let status = workspace
+                            .annotation_statuses
+                            .entry(document_id)
+                            .or_default();
+                        if !status.is_empty() {
+                            status.push_str(". ");
+                        }
+                        status.push_str(issue);
+                    }
+                }
                 cx.notify();
             });
-        })
-        .detach();
+        }));
+        cx.notify();
     }
 
     fn apply_recent_signature_snapshot(
         &mut self,
-        result: Result<RecentSignaturesSnapshot, crate::recent_signature_store::RecentSignatureStoreError>,
+        result: Result<
+            RecentSignaturesSnapshot,
+            crate::recent_signature_store::RecentSignatureStoreError,
+        >,
         failure_message: &'static str,
     ) {
         match result {
@@ -10883,7 +10945,7 @@ impl DocumentWorkspace {
                     .collect();
                 self.recent_signature_storage_issue = None;
             }
-            Ok(_) => {
+            Ok(_) | Err(crate::recent_signature_store::RecentSignatureStoreError::Unavailable) => {
                 self.recent_signatures.clear();
                 self.recent_signature_storage_issue =
                     Some("Recent signatures need secure system storage.".into());
@@ -10901,60 +10963,25 @@ impl DocumentWorkspace {
         source: RecentSignatureSource,
         cx: &mut Context<Self>,
     ) {
-        let Some(store) = self.recent_signature_store.clone() else {
-            return;
-        };
-        self.recent_signature_request = self.recent_signature_request.saturating_add(1);
-        let request = self.recent_signature_request;
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis()
             .try_into()
             .unwrap_or(u64::MAX);
-        let background = cx.background_executor().clone();
-        cx.spawn(async move |entity, cx| {
-            let result = background
-                .spawn(async move { store.remember(asset, source, now_ms) })
-                .await;
-            let _ = entity.update(cx, |workspace, cx| {
-                if workspace.recent_signature_request != request {
-                    return;
-                }
-                workspace.apply_recent_signature_snapshot(
-                    result,
-                    "This signature could not be saved to Recent.",
-                );
-                cx.notify();
-            });
-        })
-        .detach();
+        self.run_recent_signature_operation(
+            move |store| store.remember(asset, source, now_ms),
+            "This signature could not be saved to Recent.",
+            cx,
+        );
     }
 
     fn remove_recent_signature(&mut self, id: String, cx: &mut Context<Self>) {
-        let Some(store) = self.recent_signature_store.clone() else {
-            return;
-        };
-        self.recent_signature_request = self.recent_signature_request.saturating_add(1);
-        let request = self.recent_signature_request;
-        self.recent_signatures_loading = true;
-        cx.notify();
-        let background = cx.background_executor().clone();
-        cx.spawn(async move |entity, cx| {
-            let result = background.spawn(async move { store.remove(&id) }).await;
-            let _ = entity.update(cx, |workspace, cx| {
-                if workspace.recent_signature_request != request {
-                    return;
-                }
-                workspace.recent_signatures_loading = false;
-                workspace.apply_recent_signature_snapshot(
-                    result,
-                    "Recent signatures could not be changed.",
-                );
-                cx.notify();
-            });
-        })
-        .detach();
+        self.run_recent_signature_operation(
+            move |store| store.remove(&id),
+            "Recent signatures could not be changed.",
+            cx,
+        );
     }
 
     fn confirm_remove_recent_signature(
@@ -10963,6 +10990,11 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let _ = owner.update(cx, |workspace, cx| {
+            if let Some(document_id) = workspace.active_document_id {
+                workspace.dismiss_signature_popover(document_id, Some(window), cx);
+            }
+        });
         window.open_alert_dialog(cx, move |alert, _, _| {
             let owner = owner.clone();
             let id = id.clone();
@@ -11003,7 +11035,62 @@ impl DocumentWorkspace {
         });
     }
 
+    fn cancel_signature_operation(&mut self, cx: &mut Context<Self>) {
+        self.signature_operation.take();
+        if let Some(id) = self.active_document_id
+            && let Some(session) = self.session(id, cx).cloned() {
+            session.update(cx, |session, _| {
+                session.image_prepare_generation = session.image_prepare_generation.saturating_add(1);
+            });
+        }
+    }
+
+    fn begin_platform_signature(&mut self, document_id: DocumentId, phone: Option<crate::phone_signature::PhoneMode>, cx: &mut Context<Self>) {
+        self.cancel_signature_operation(cx);
+        let Some(session) = self.session(document_id, cx).cloned() else { return; };
+        let authority = session.read(cx);
+        if !matches!(authority.status, NativeDocumentStatus::Ready) || authority.save_status == NativeDocumentSaveStatus::Saving { return; }
+        let authority = ImagePrepareAuthority { document_id, document_generation: authority.generation, prepare_generation: authority.image_prepare_generation };
+        let operation = crate::phone_signature::SignatureOperation::default();
+        let cancel = operation.0.clone();
+        self.signature_operation = Some(operation);
+        self.drawn_signature.clear();
+        self.signature_prepare_state = SignaturePrepareState::Loading;
+        cx.notify();
+        enum Event { Qr(crate::annotation_model::DecodedRgbaAsset), Done(Result<Option<SanitizedSignatureFile>, String>) }
+        let (tx, rx) = async_channel::bounded(2);
+        let background = cx.background_executor().spawn(async move {
+            let result = if let Some(mode) = phone {
+                crate::local_phone_signature::receive(mode, cancel, |asset| tx.try_send(Event::Qr(asset)).is_ok())
+            } else { crate::camera_signature::capture(cancel) };
+            let _ = tx.send(Event::Done(result)).await;
+        });
+        cx.spawn(async move |entity, cx| {
+            while let Ok(event) = rx.recv().await {
+                let done = matches!(event, Event::Done(_));
+                if entity.update(cx, |workspace, cx| {
+                    if !workspace.signature_authority_is_current(authority, cx) { return; }
+                    match event {
+                        Event::Qr(asset) => {
+                            if let Some(pixels) = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(asset.width_px(), asset.height_px(), asset.rgba().to_vec()) {
+                                workspace.signature_prepare_state = SignaturePrepareState::PhoneQr(Arc::new(RenderImage::new(smallvec::smallvec![Frame::new(pixels)])));
+                                cx.notify();
+                            }
+                        }
+                        Event::Done(result) => {
+                            workspace.signature_operation.take();
+                            workspace.apply_signature_prepare_result(authority, match result { Ok(Some(image)) => Some(Ok(image)), Ok(None) => None, Err(error) => Some(Err(error)) }, cx);
+                        }
+                    }
+                }).is_err() { break; }
+                if done { break; }
+            }
+            background.await;
+        }).detach();
+    }
+
     fn begin_signature_selection(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
+        self.cancel_signature_operation(cx);
         if self.pending_text_box_editor.is_some() || self.pending_close_document_id.is_some() {
             return;
         }
@@ -11240,12 +11327,17 @@ impl DocumentWorkspace {
                     session.image_prepare_generation.saturating_add(1);
             });
         }
+        self.cancel_signature_operation(cx);
         self.signature_popover_open = false;
+        self.recent_signature_request = self.recent_signature_request.saturating_add(1);
+        self.recent_signatures_loading = false;
+        self.recent_signatures.clear();
         self.signature_prepare_state = SignaturePrepareState::Idle;
         self.drawn_signature.clear();
         self.signature_input_mode = SignatureInputMode::Draw;
+        let name_input = self.signature_name_input.take();
         if let Some(window) = window {
-            if let Some(input) = self.signature_name_input.as_ref() {
+            if let Some(input) = name_input {
                 input.update(cx, |input, cx| input.set_value("", window, cx));
             }
             self.workspace_focus.focus(window, cx);
@@ -11326,12 +11418,7 @@ impl DocumentWorkspace {
             cx.notify();
             Ok::<(), String>(())
         })?;
-        self.signature_popover_open = false;
-        self.signature_prepare_state = SignaturePrepareState::Idle;
-        self.drawn_signature.clear();
-        if let Some(input) = self.signature_name_input.as_ref() {
-            input.update(cx, |input, cx| input.set_value("", window, cx));
-        }
+        self.dismiss_signature_popover(document_id, Some(window), cx);
         self.annotation_statuses
             .insert(document_id, "Click the page to place the signature".into());
         self.workspace_focus.focus(window, cx);
@@ -11383,6 +11470,7 @@ impl DocumentWorkspace {
     }
 
     fn clear_signature_input(&mut self, cx: &mut Context<Self>) {
+        self.cancel_signature_operation(cx);
         self.signature_prepare_state = SignaturePrepareState::Idle;
         self.drawn_signature.clear();
         cx.notify();
@@ -13271,11 +13359,6 @@ fn paint_ellipse_annotations(
             if let Ok(path) = builder.build() {
                 window.paint_path(path, selection_color);
             }
-            let handle_color = if annotation.locked {
-                selection_color.opacity(0.55)
-            } else {
-                selection_color
-            };
             for center in RectangleResizeHandle::ALL
                 .map(|handle| {
                     ellipse_resize_handle_point_for_rect(
@@ -13286,13 +13369,10 @@ fn paint_ellipse_annotations(
                 })
                 .map(project)
             {
-                window.paint_quad(fill(
-                    Bounds::new(
+                interaction_chrome::paint_handle(Bounds::new(
                         point(center.x - px(4.), center.y - px(4.)),
                         size(px(8.), px(8.)),
-                    ),
-                    handle_color,
-                ));
+                    ), annotation.locked, window);
             }
             if let Ok(rotation_handle) = ellipse_rotation_handle_point_for_rect(
                 annotation.rect,
@@ -13308,16 +13388,13 @@ fn paint_ellipse_annotations(
                 connector.move_to(project(north));
                 connector.line_to(project(rotation_handle));
                 if let Ok(path) = connector.build() {
-                    window.paint_path(path, handle_color);
+                    window.paint_path(path, interaction_chrome::outline_colour(annotation.locked));
                 }
                 let center = project(rotation_handle);
-                window.paint_quad(fill(
-                    Bounds::new(
+                interaction_chrome::paint_handle(Bounds::new(
                         point(center.x - px(4.), center.y - px(4.)),
                         size(px(8.), px(8.)),
-                    ),
-                    handle_color,
-                ));
+                    ), annotation.locked, window);
             }
         }
     }
@@ -13453,13 +13530,8 @@ fn paint_cloud_plus_annotation(
         },
     );
     if annotation.selected {
-        let handle_color = if annotation.locked {
-            selection_color.opacity(0.55)
-        } else {
-            selection_color
-        };
         window.paint_quad(
-            outline(text_box_bounds, handle_color, BorderStyle::Solid)
+            outline(text_box_bounds, interaction_chrome::outline_colour(annotation.locked), BorderStyle::Solid)
                 .border_widths(px(if annotation.locked { 1. } else { 2. })),
         );
         for center in annotation
@@ -13468,13 +13540,10 @@ fn paint_cloud_plus_annotation(
             .map(project)
             .chain(projected_leader)
         {
-            window.paint_quad(fill(
-                Bounds::new(
+            interaction_chrome::paint_handle(Bounds::new(
                     point(center.x - px(4.), center.y - px(4.)),
                     size(px(8.), px(8.)),
-                ),
-                handle_color,
-            ));
+                ), annotation.locked, window);
         }
     }
 }
@@ -13628,23 +13697,16 @@ fn paint_dimension_annotation(
     );
 
     if annotation.selected {
-        let handle_color = if annotation.locked {
-            selection_color.opacity(0.55)
-        } else {
-            selection_color
-        };
+
         for center in [
             project(annotation.start),
             project(annotation.end),
             project(caption_center),
         ] {
-            window.paint_quad(fill(
-                Bounds::new(
+            interaction_chrome::paint_handle(Bounds::new(
                     point(center.x - px(4.), center.y - px(4.)),
                     size(px(8.), px(8.)),
-                ),
-                handle_color,
-            ));
+                ), annotation.locked, window);
         }
     }
 }
@@ -13697,23 +13759,16 @@ fn paint_arc_annotations(
             if let Ok(path) = selection.build() {
                 window.paint_path(path, selection_color);
             }
-            let handle_color = if annotation.locked {
-                selection_color.opacity(0.55)
-            } else {
-                selection_color
-            };
+
             for center in [
                 project(annotation.start),
                 project(annotation.mid),
                 project(annotation.end),
             ] {
-                window.paint_quad(fill(
-                    Bounds::new(
+                interaction_chrome::paint_handle(Bounds::new(
                         point(center.x - px(4.), center.y - px(4.)),
                         size(px(8.), px(8.)),
-                    ),
-                    handle_color,
-                ));
+                    ), annotation.locked, window);
             }
         }
     }
@@ -13795,11 +13850,7 @@ fn paint_redact_annotations(
         window.paint_quad(
             outline(annotation_bounds, selection_color, BorderStyle::Solid).border_widths(px(2.)),
         );
-        let handle_color = if annotation.locked {
-            selection_color.opacity(0.55)
-        } else {
-            selection_color
-        };
+
         for handle in RectangleResizeHandle::ALL {
             let local =
                 transform.point_to_local_pixels(redact_resize_point(annotation.rect, handle));
@@ -13807,13 +13858,10 @@ fn paint_redact_annotations(
                 page_bounds.origin.x + px(local.x as f32),
                 page_bounds.origin.y + px(local.y as f32),
             );
-            window.paint_quad(fill(
-                Bounds::new(
+            interaction_chrome::paint_handle(Bounds::new(
                     point(center.x - px(4.), center.y - px(4.)),
                     size(px(8.), px(8.)),
-                ),
-                handle_color,
-            ));
+                ), annotation.locked, window);
         }
     }
 }
@@ -14465,13 +14513,10 @@ fn annotation_layer(
                                     window.paint_path(path, selection_color);
                                 }
                                 for center in points {
-                                    window.paint_quad(fill(
-                                        Bounds::new(
+                                    interaction_chrome::paint_handle(Bounds::new(
                                             point(center.x - px(4.), center.y - px(4.)),
                                             size(px(8.), px(8.)),
-                                        ),
-                                        selection_color,
-                                    ));
+                                        ), annotation.locked, window);
                                 }
                             }
                             continue;
@@ -14550,11 +14595,6 @@ fn annotation_layer(
                             let center_y = top + annotation_bounds.size.height / 2.;
                             let handle_size = px(8.);
                             let handle_half = handle_size / 2.;
-                            let handle_color = if annotation.locked {
-                                selection_color.opacity(0.55)
-                            } else {
-                                selection_color
-                            };
                             for center in [
                                 point(left, top),
                                 point(center_x, top),
@@ -14565,13 +14605,10 @@ fn annotation_layer(
                                 point(left, bottom),
                                 point(left, center_y),
                             ] {
-                                window.paint_quad(fill(
-                                    Bounds::new(
+                                interaction_chrome::paint_handle(Bounds::new(
                                         point(center.x - handle_half, center.y - handle_half),
                                         size(handle_size, handle_size),
-                                    ),
-                                    handle_color,
-                                ));
+                                    ), annotation.locked, window);
                             }
                             let rotation_center = point(center_x, top - px(12.));
                             window.paint_quad(fill(
@@ -14579,18 +14616,15 @@ fn annotation_layer(
                                     point(center_x - px(1.), rotation_center.y),
                                     size(px(2.), px(12.)),
                                 ),
-                                handle_color,
+                                interaction_chrome::outline_colour(annotation.locked),
                             ));
-                            window.paint_quad(fill(
-                                Bounds::new(
+                            interaction_chrome::paint_handle(Bounds::new(
                                     point(
                                         rotation_center.x - handle_half,
                                         rotation_center.y - handle_half,
                                     ),
                                     size(handle_size, handle_size),
-                                ),
-                                handle_color,
-                            ));
+                                ), annotation.locked, window);
                         }
                     }
                     paint_ellipse_annotations(
@@ -14666,19 +14700,12 @@ fn annotation_layer(
                             }
                         }
                         if annotation.selected {
-                            let handle_color = if annotation.locked {
-                                selection_color.opacity(0.55)
-                            } else {
-                                selection_color
-                            };
+
                             for center in [start, end] {
-                                window.paint_quad(fill(
-                                    Bounds::new(
+                                interaction_chrome::paint_handle(Bounds::new(
                                         point(center.x - px(4.), center.y - px(4.)),
                                         size(px(8.), px(8.)),
-                                    ),
-                                    handle_color,
-                                ));
+                                    ), annotation.locked, window);
                             }
                         }
                     }
@@ -14747,19 +14774,12 @@ fn annotation_layer(
                             window.paint_path(path, stroke_color);
                         }
                         if annotation.selected {
-                            let handle_color = if annotation.locked {
-                                selection_color.opacity(0.55)
-                            } else {
-                                selection_color
-                            };
+
                             for center in projected {
-                                window.paint_quad(fill(
-                                    Bounds::new(
+                                interaction_chrome::paint_handle(Bounds::new(
                                         point(center.x - px(4.), center.y - px(4.)),
                                         size(px(8.), px(8.)),
-                                    ),
-                                    handle_color,
-                                ));
+                                    ), annotation.locked, window);
                             }
                         }
                     }
@@ -14793,19 +14813,12 @@ fn annotation_layer(
                             window.paint_path(path, stroke_color);
                         }
                         if annotation.selected {
-                            let handle_color = if annotation.locked {
-                                selection_color.opacity(0.55)
-                            } else {
-                                selection_color
-                            };
+
                             for center in annotation.points.into_iter().map(project) {
-                                window.paint_quad(fill(
-                                    Bounds::new(
+                                interaction_chrome::paint_handle(Bounds::new(
                                         point(center.x - px(4.), center.y - px(4.)),
                                         size(px(8.), px(8.)),
-                                    ),
-                                    handle_color,
-                                ));
+                                    ), annotation.locked, window);
                             }
                         }
                     }
@@ -14946,23 +14959,15 @@ fn annotation_layer(
                             },
                         );
                         if annotation.selected {
-                            let handle_color = if annotation.locked {
-                                selection_color.opacity(0.55)
-                            } else {
-                                selection_color
-                            };
                             window.paint_quad(
-                                outline(text_box_bounds, handle_color, BorderStyle::Solid)
+                                outline(text_box_bounds, interaction_chrome::outline_colour(annotation.locked), BorderStyle::Solid)
                                     .border_widths(px(if annotation.locked { 1. } else { 2. })),
                             );
                             for center in projected_leader {
-                                window.paint_quad(fill(
-                                    Bounds::new(
+                                interaction_chrome::paint_handle(Bounds::new(
                                         point(center.x - px(4.), center.y - px(4.)),
                                         size(px(8.), px(8.)),
-                                    ),
-                                    handle_color,
-                                ));
+                                    ), annotation.locked, window);
                             }
                         }
                     }
@@ -15070,19 +15075,12 @@ fn annotation_layer(
                             );
                         }
                         if annotation.selected {
-                            let handle_color = if annotation.locked {
-                                selection_color.opacity(0.55)
-                            } else {
-                                selection_color
-                            };
+
                             for center in projected.iter().copied() {
-                                window.paint_quad(fill(
-                                    Bounds::new(
+                                interaction_chrome::paint_handle(Bounds::new(
                                         point(center.x - px(4.), center.y - px(4.)),
                                         size(px(8.), px(8.)),
-                                    ),
-                                    handle_color,
-                                ));
+                                    ), annotation.locked, window);
                             }
                         }
                     }
@@ -15237,13 +15235,8 @@ fn annotation_layer(
                             },
                         );
                         if annotation.selected {
-                            let handle_color = if annotation.locked {
-                                selection_color.opacity(0.55)
-                            } else {
-                                selection_color
-                            };
                             window.paint_quad(
-                                outline(annotation_bounds, handle_color, BorderStyle::Solid)
+                                outline(annotation_bounds, interaction_chrome::outline_colour(annotation.locked), BorderStyle::Solid)
                                     .border_widths(px(if annotation.locked { 1. } else { 2. })),
                             );
                             let left = annotation_bounds.origin.x;
@@ -15262,13 +15255,10 @@ fn annotation_layer(
                                 point(left, bottom),
                                 point(left, center_y),
                             ] {
-                                window.paint_quad(fill(
-                                    Bounds::new(
+                                interaction_chrome::paint_handle(Bounds::new(
                                         point(center.x - px(4.), center.y - px(4.)),
                                         size(px(8.), px(8.)),
-                                    ),
-                                    handle_color,
-                                ));
+                                    ), annotation.locked, window);
                             }
                         }
                     }
@@ -15342,19 +15332,12 @@ fn annotation_layer(
                         if annotation.selected {
                             let handle_size = px(8.);
                             let handle_half = handle_size / 2.;
-                            let handle_color = if annotation.locked {
-                                selection_color.opacity(0.55)
-                            } else {
-                                selection_color
-                            };
+
                             for center in [start, end] {
-                                window.paint_quad(fill(
-                                    Bounds::new(
+                                interaction_chrome::paint_handle(Bounds::new(
                                         point(center.x - handle_half, center.y - handle_half),
                                         size(handle_size, handle_size),
-                                    ),
-                                    handle_color,
-                                ));
+                                    ), annotation.locked, window);
                             }
                         }
                     }
@@ -15430,13 +15413,10 @@ fn annotation_layer(
                                 point(left, bottom),
                                 point(left, center_y),
                             ] {
-                                window.paint_quad(fill(
-                                    Bounds::new(
+                                interaction_chrome::paint_handle(Bounds::new(
                                         point(center.x - px(4.), center.y - px(4.)),
                                         size(px(8.), px(8.)),
-                                    ),
-                                    selection_color,
-                                ));
+                                    ), annotation.locked, window);
                             }
                         }
                     }
@@ -15449,38 +15429,7 @@ fn annotation_layer(
                                 page_bounds.origin.y + px(sample.y as f32),
                             )
                         };
-                        let color = selection_color.opacity(0.9);
-                        match marquee.shape {
-                            SelectionShape::Box => {
-                                let start = project(marquee.start);
-                                let current = project(marquee.current);
-                                let left = start.x.min(current.x);
-                                let top = start.y.min(current.y);
-                                let right = start.x.max(current.x);
-                                let bottom = start.y.max(current.y);
-                                window.paint_quad(
-                                    outline(
-                                        Bounds::new(
-                                            point(left, top),
-                                            size(right - left, bottom - top),
-                                        ),
-                                        color,
-                                        BorderStyle::Dashed,
-                                    )
-                                    .border_widths(px(1.)),
-                                );
-                            }
-                            SelectionShape::Lasso => {
-                                let mut builder = PathBuilder::stroke(px(1.));
-                                builder.move_to(project(marquee.points[0]));
-                                for sample in marquee.points.iter().skip(1) {
-                                    builder.line_to(project(*sample));
-                                }
-                                if let Ok(path) = builder.build() {
-                                    window.paint_path(path, color);
-                                }
-                            }
-                        }
+                        interaction_chrome::paint_marquee(&marquee, project, window);
                     }
                     if let Some(decision) = painted_semantic_snap_decision.as_ref() {
                         paint_semantic_snap_indicator(decision, page_bounds, &transform, window);
@@ -15542,6 +15491,7 @@ fn drawn_signature_canvas(
         .debug_selector(|| DOCUMENT_SIGNATURE_CANVAS_ID.into())
         .role(Role::Canvas)
         .aria_label("Draw signature")
+        .flex_none()
         .relative()
         .h_24()
         .w_full()
@@ -15742,10 +15692,12 @@ fn recent_signature_section(
     loading: bool,
     storage_issue: Option<String>,
     control: WeakEntity<DocumentWorkspace>,
+    muted_foreground: gpui::Hsla,
 ) -> gpui::AnyElement {
     let mut section = v_flex()
         .id(DOCUMENT_SIGNATURE_RECENT_ID)
         .debug_selector(|| DOCUMENT_SIGNATURE_RECENT_ID.into())
+        .flex_none()
         .gap_2();
     if loading {
         section = section.child(
@@ -15770,22 +15722,31 @@ fn recent_signature_section(
                 h_flex()
                     .group(group_id.clone())
                     .gap_1()
-                    .child(
+                    .child(accessible_icon_button(
                         Button::new(use_id.clone())
                             .debug_selector(move || use_id.clone().into())
                             .outline()
-                            .w_full()
+                            .flex_1()
+                            .min_w_0()
                             .h_16()
                             .tooltip(format!("Use recent signature {}", index + 1))
                             .child(
                                 gpui::div()
                                     .size_full()
                                     .rounded_sm()
+                                    // Signature ink is raster content; preview it on paper
+                                    // in both themes, independently of the UI surface.
                                     .bg(gpui::rgb(0xffffff))
                                     .p_1()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .overflow_hidden()
                                     .child(
                                         img(recent.image.clone())
-                                            .size_full()
+                                            .flex_none()
+                                            .w(gpui::rems((2.5 * recent.signature.asset().width_px() as f32 / recent.signature.asset().height_px() as f32).min(14.0)))
+                                            .h(gpui::rems((14.0 * recent.signature.asset().height_px() as f32 / recent.signature.asset().width_px() as f32).min(2.5)))
                                             .object_fit(ObjectFit::Contain),
                                     ),
                             )
@@ -15803,7 +15764,8 @@ fn recent_signature_section(
                                     }
                                 });
                             }),
-                    )
+                        format!("Use recent signature {}", index + 1),
+                    ))
                     .child(accessible_icon_button(
                         Button::new(remove_id.clone())
                             .debug_selector(move || remove_id.clone().into())
@@ -15826,6 +15788,9 @@ fn recent_signature_section(
                         format!("Remove recent signature {}", index + 1),
                     ))
             }));
+    } else if storage_issue.is_none() {
+        section = section.child(gpui::div().text_sm().text_color(muted_foreground)
+            .child("No recent signatures yet."));
     }
     section
         .when_some(storage_issue, |section, issue| {
@@ -15835,7 +15800,7 @@ fn recent_signature_section(
                     .debug_selector(|| DOCUMENT_SIGNATURE_RECENT_STATUS_ID.into())
                     .role(Role::Status)
                     .text_sm()
-                    .text_color(gpui::red())
+                    .text_color(muted_foreground)
                     .child(issue),
             )
         })
@@ -15854,6 +15819,7 @@ fn annotation_tool_group(
     drawn_signature: DrawnSignature,
     signature_input_mode: SignatureInputMode,
     signature_name_input: Entity<InputState>,
+    camera_available: bool,
     recent_signatures: Vec<RecentSignaturePreview>,
     recent_signatures_loading: bool,
     recent_signature_storage_issue: Option<String>,
@@ -15887,15 +15853,19 @@ fn annotation_tool_group(
                 .debug_selector(|| DOCUMENT_SIGNATURE_TOOL_ID.into())
                 .disabled(save_busy),
         )
-        .content(move |_, _, cx| {
+        .content(move |state, window, cx| {
+            let signature_focus = state.focus_handle(cx);
             let choose_control = signature_content_control.clone();
+            let camera_control = signature_content_control.clone();
+            let phone_control = signature_content_control.clone();
+            let close_control = signature_content_control.clone();
             let add_control = signature_content_control.clone();
             let clear_control = signature_content_control.clone();
             let clear_name_input = signature_name_input.clone();
             let draw_mode_control = signature_content_control.clone();
             let type_mode_control = signature_content_control.clone();
             let image_mode_control = signature_content_control.clone();
-            let loading = matches!(signature_prepare_state, SignaturePrepareState::Loading);
+            let loading = matches!(signature_prepare_state, SignaturePrepareState::Loading | SignaturePrepareState::PhoneQr(_));
             let has_signature =
                 matches!(signature_prepare_state, SignaturePrepareState::Preview(_))
                     || (signature_input_mode == SignatureInputMode::Draw
@@ -15903,14 +15873,26 @@ fn annotation_tool_group(
                     || (signature_input_mode == SignatureInputMode::Type
                         && !signature_name_input.read(cx).value().trim().is_empty());
             let mut content = v_flex()
-                .w_72()
+                .id("document-workspace-signature-scroll-content")
+                .w_full()
                 .gap_2()
+                .child(h_flex().justify_between()
+                    .child(gpui::div().text_sm().font_semibold().child("Signature"))
+                    .child(accessible_icon_button(
+                        Button::new("document-workspace-signature-close")
+                            .icon(IconName::Close).ghost().tooltip("Close signature")
+                            .on_click(move |_, window, cx| {
+                                let _ = close_control.update(cx, |workspace, cx| {
+                                    workspace.dismiss_signature_popover(document_id, Some(window), cx);
+                                });
+                            }), "Close signature")))
                 .child(recent_signature_section(
                     document_id,
                     recent_signatures.clone(),
                     recent_signatures_loading,
                     recent_signature_storage_issue.clone(),
                     signature_content_control.clone(),
+                    signature_muted_foreground,
                 ))
                 .child(
                 ButtonGroup::new("document-workspace-signature-mode")
@@ -15921,6 +15903,7 @@ fn annotation_tool_group(
                             .selected(signature_input_mode == SignatureInputMode::Draw)
                             .on_click(move |_, _, cx| {
                                 let _ = draw_mode_control.update(cx, |workspace, cx| {
+                                    workspace.cancel_signature_operation(cx);
                                     workspace.signature_input_mode = SignatureInputMode::Draw;
                                     workspace.signature_prepare_state = SignaturePrepareState::Idle;
                                     cx.notify();
@@ -15934,6 +15917,7 @@ fn annotation_tool_group(
                             .selected(signature_input_mode == SignatureInputMode::Type)
                             .on_click(move |_, _, cx| {
                                 let _ = type_mode_control.update(cx, |workspace, cx| {
+                                    workspace.cancel_signature_operation(cx);
                                     workspace.signature_input_mode = SignatureInputMode::Type;
                                     workspace.signature_prepare_state = SignaturePrepareState::Idle;
                                     workspace.drawn_signature.clear();
@@ -15948,6 +15932,7 @@ fn annotation_tool_group(
                             .selected(signature_input_mode == SignatureInputMode::Image)
                             .on_click(move |_, _, cx| {
                                 let _ = image_mode_control.update(cx, |workspace, cx| {
+                                    workspace.cancel_signature_operation(cx);
                                     workspace.signature_input_mode = SignatureInputMode::Image;
                                     workspace.signature_prepare_state = SignaturePrepareState::Idle;
                                     workspace.drawn_signature.clear();
@@ -15957,6 +15942,7 @@ fn annotation_tool_group(
                     ),
                 );
             content = match &signature_prepare_state {
+                SignaturePrepareState::PhoneQr(image) => content.child(v_flex().gap_2().child("Scan with your phone").child(gpui::img(image.clone()).w_full().h_48().object_fit(gpui::ObjectFit::Contain))),
                 SignaturePrepareState::Idle => content.child(signature_input_surface(
                     signature_input_mode,
                     drawn_signature.clone(),
@@ -16003,15 +15989,33 @@ fn annotation_tool_group(
                         .aria_label("Signature preview")
                         .h_24()
                         .w_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .overflow_hidden()
                         .child(
                             img(preview.image.clone())
-                                .size_full()
+                                .flex_none()
+                                .w(gpui::rems((6.0 * preview.asset.width_px() as f32 / preview.asset.height_px() as f32).min(16.0)))
+                                .h(gpui::rems((16.0 * preview.asset.height_px() as f32 / preview.asset.width_px() as f32).min(6.0)))
                                 .object_fit(ObjectFit::Contain),
                         ),
                 ),
             };
-            content
-                .when(signature_input_mode == SignatureInputMode::Image, |content| content.child(
+            let phone_pairing = matches!(signature_prepare_state, SignaturePrepareState::PhoneQr(_));
+            let content = content
+                .when(!phone_pairing && signature_input_mode == SignatureInputMode::Image && camera_available, |content| content.child(
+                    Button::new("signature-camera").label("Use camera").disabled(loading).on_click(move |_, _, cx| {
+                        let _ = camera_control.update(cx, |workspace, cx| workspace.begin_platform_signature(document_id, None, cx));
+                    })
+                ))
+                .when(!phone_pairing && signature_input_mode != SignatureInputMode::Type && crate::local_phone_signature::helper_path().is_some(), |content| content.child(
+                    Button::new("signature-phone").label("Use phone").disabled(loading).on_click(move |_, _, cx| {
+                        let mode = if signature_input_mode == SignatureInputMode::Draw { crate::phone_signature::PhoneMode::Draw } else { crate::phone_signature::PhoneMode::Image };
+                        let _ = phone_control.update(cx, |workspace, cx| workspace.begin_platform_signature(document_id, Some(mode), cx));
+                    })
+                ))
+                .when(!phone_pairing && signature_input_mode == SignatureInputMode::Image, |content| content.child(
                     Button::new(DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID)
                         .debug_selector(|| DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID.into())
                         .label("Choose file")
@@ -16022,7 +16026,7 @@ fn annotation_tool_group(
                             });
                         }),
                 ))
-                .child(
+                .when(!phone_pairing, |content| content.child(
                     h_flex()
                         .gap_2()
                         .child(
@@ -16067,7 +16071,18 @@ fn annotation_tool_group(
                                     });
                                 }),
                         ),
-                )
+                ));
+            // Keep the viewport limit outside Scrollable: a max-height on its
+            // content would hide overflow from the stock scroll handle.
+            v_flex()
+                .id("document-workspace-signature-content")
+                .debug_selector(|| "document-workspace-signature-content".into())
+                .w_72()
+                .max_h(window.viewport_size().height - window.rem_size() * 4.)
+                .child(v_flex().flex_1().overflow_hidden().child(
+                    content.size_full().overflow_y_scrollbar(),
+                ))
+                .focus_trap("signature-input-focus", &signature_focus)
         });
     v_flex().w_full().flex_none().gap_2()
  .child(rail_tool_section("General", vec![rail_tool_button(DOCUMENT_SELECT_TOOL_ID, "Select", "mouse-pointer-2").disabled(save_busy)
@@ -17582,7 +17597,7 @@ impl Render for DocumentWorkspace {
         )
         .absolute()
         .inset_0();
-        let selection_color = cx.theme().primary;
+        let selection_color = interaction_chrome::selection_colour();
         let pending_text_box_input = self
             .pending_text_box_editor
             .as_ref()
@@ -18081,6 +18096,7 @@ impl Render for DocumentWorkspace {
             self.drawn_signature.clone(),
             self.signature_input_mode,
             signature_name_input,
+            self.signature_camera_available,
             self.recent_signatures.clone(),
             self.recent_signatures_loading,
             self.recent_signature_storage_issue.clone(),
@@ -20529,3 +20545,7 @@ mod tests {
         assert_eq!(authority.baseline_text, before.baseline_text);
     }
 }
+
+#[cfg(test)]
+#[path = "document_workspace_recent_signature_tests.rs"]
+mod recent_signature_tests;

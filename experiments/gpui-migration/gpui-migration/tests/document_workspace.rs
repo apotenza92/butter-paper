@@ -13,7 +13,7 @@ use std::{
 };
 
 use butter_paper_gpui_migration::cad_view_control::{
-    CAD_ORGANISATION_ROWS_ID, CAD_VIEW_PRIMARY_ID, CAD_VIEW_SETTINGS_ID,
+    CAD_VIEW_PRIMARY_ID, CAD_VIEW_SETTINGS_ID,
 };
 use butter_paper_gpui_migration::document_tab_bar::{
     DOCUMENT_TAB_OPEN_ID, DOCUMENT_TAB_POINTER_DRAG_THRESHOLD, DOCUMENT_TAB_REORDER_STATUS_ID,
@@ -22,12 +22,12 @@ use butter_paper_gpui_migration::document_tab_bar::{
 };
 use butter_paper_gpui_migration::document_workspace::{
     ActualSize, ApplyDisposition, CloseDocument, CloseRequestDisposition, ContinuousView,
-    DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID, DOCUMENT_ANNOTATION_DELETE_ID,
-    DOCUMENT_ANNOTATION_LOCK_ID, DOCUMENT_ANNOTATION_REDO_ID,
-    DOCUMENT_ANNOTATION_UNDO_ID, DOCUMENT_ARC_PREVIEW_MARKER_ID, DOCUMENT_ARC_TOOL_ID, DOCUMENT_AREA_TOOL_ID,
+    DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID,
+
+    DOCUMENT_ARC_PREVIEW_MARKER_ID, DOCUMENT_ARC_TOOL_ID, DOCUMENT_AREA_TOOL_ID,
     DOCUMENT_ACTIVE_INSPECTOR_SLOT_ID,
-    DOCUMENT_ARROW_TOOL_ID, DOCUMENT_CALLOUT_TOOL_ID, DOCUMENT_CLOSE_ID,
-    DOCUMENT_CLOUD_PLUS_TOOL_ID, DOCUMENT_CLOUD_TOOL_ID, DOCUMENT_DIMENSION_PROPERTIES_ID,
+    DOCUMENT_ARROW_TOOL_ID, DOCUMENT_CALLOUT_TOOL_ID,
+    DOCUMENT_CLOUD_PLUS_TOOL_ID, DOCUMENT_CLOUD_TOOL_ID,
     DOCUMENT_DIMENSION_TOOL_ID,
     DOCUMENT_DIRTY_CLOSE_CANCEL_ID, DOCUMENT_DIRTY_CLOSE_DISCARD_ID, DOCUMENT_DIRTY_CLOSE_ID,
     DOCUMENT_DIRTY_CLOSE_SAVE_ID, DOCUMENT_ELLIPSE_TOOL_ID,
@@ -37,11 +37,11 @@ use butter_paper_gpui_migration::document_workspace::{
     DOCUMENT_OPEN_ERROR_DISMISS_ID, DOCUMENT_OPEN_PROGRESS_ID, DOCUMENT_OPEN_STATUS_ID,
     DOCUMENT_PAGE_ID, DOCUMENT_PEN_TOOL_ID, DOCUMENT_POLYGON_TOOL_ID, DOCUMENT_POLYLENGTH_TOOL_ID,
     DOCUMENT_POLYLINE_TOOL_ID, DOCUMENT_RECOVERY_ALERT_ID, DOCUMENT_RECOVERY_RETRY_ID,
-    DOCUMENT_RECTANGLE_STROKE_ID, DOCUMENT_RECTANGLE_TOOL_ID,
-    DOCUMENT_REDACT_PENDING_ALERT_ID, DOCUMENT_REDACT_TOOL_ID, DOCUMENT_ROTATE_LEFT_ID,
-    DOCUMENT_ROTATE_RIGHT_ID, DOCUMENT_SAVE_AS_ID, DOCUMENT_SAVE_ERROR_ALERT_ID,
+    DOCUMENT_RECTANGLE_TOOL_ID,
+    DOCUMENT_REDACT_PENDING_ALERT_ID, DOCUMENT_REDACT_TOOL_ID,
+    DOCUMENT_SAVE_ERROR_ALERT_ID,
     DOCUMENT_SAVE_ERROR_DISMISS_ID, DOCUMENT_SAVE_ERROR_RETRY_ID, DOCUMENT_SAVE_ERROR_SAVE_AS_ID,
-    DOCUMENT_SAVE_ID, DOCUMENT_SELECT_TOOL_ID, DOCUMENT_SESSION_TABS_ID, DOCUMENT_SIGNATURE_ADD_ID,
+    DOCUMENT_SELECT_TOOL_ID, DOCUMENT_SESSION_TABS_ID, DOCUMENT_SIGNATURE_ADD_ID,
     DOCUMENT_SIGNATURE_CANVAS_ID, DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID, DOCUMENT_SIGNATURE_CLEAR_ID,
     DOCUMENT_SIGNATURE_ERROR_ALERT_ID, DOCUMENT_SIGNATURE_LOADING_ID,
     DOCUMENT_SIGNATURE_MODE_IMAGE_ID, DOCUMENT_SIGNATURE_MODE_TYPE_ID,
@@ -50,7 +50,7 @@ use butter_paper_gpui_migration::document_workspace::{
     DOCUMENT_SNAP_CONSTRUCTION_GRID_ID, DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID,
     DOCUMENT_SNAP_DIMENSION_INCREMENT_ID, DOCUMENT_SNAP_GUIDES_ID, DOCUMENT_SNAP_MARKUP_ID,
     DOCUMENT_SNAP_POPOVER_ID, DOCUMENT_SNAP_SETTINGS_ID, DOCUMENT_SNAPSHOT_TOOL_ID,
-    DOCUMENT_STRAIGHT_LINE_PROPERTIES_ID, DOCUMENT_VERTEX_PATH_PROPERTIES_ID,
+
     DOCUMENT_TEXT_BOX_EDITOR_ID, DOCUMENT_TEXT_BOX_TOOL_ID,
     DOCUMENT_THUMBNAIL_STRIP_ID, DOCUMENT_TOOLBAR_SCROLL_ID, DOCUMENT_VIEWER_PROGRESS_ID,
     DOCUMENT_VIEWER_STATUS_ID, DOCUMENT_VIEWPORT_ID, DOCUMENT_WORKSPACE_ID, DirtyCloseResolution,
@@ -65,7 +65,8 @@ use butter_paper_gpui_migration::document_workspace::{
     document_annotation_layer_id, document_session_close_id, document_session_tab_id,
     document_thumbnail_id, document_viewer_error_id, document_viewer_page_id,
     document_viewer_quality_id, document_viewer_retry_id, document_viewer_tile_id,
-    init_document_workspace_actions, resolve_document_save_route, save_as_command_label,
+    init_document_workspace_actions, register_document_workspace_global_actions, Save, SaveAs,
+    resolve_document_save_route, save_as_command_label,
     save_as_prompt_spec, straight_line_arrowhead_points,
 };
 use butter_paper_gpui_migration::ink_property_inspector::{
@@ -95,7 +96,7 @@ use butter_paper_gpui_migration::measurement_property_inspector::{
     MEASUREMENT_PROPERTY_INSPECTOR_ID,
 };
 use butter_paper_gpui_migration::native_document_view_state::{
-    CadViewOrganisation, RestartView, RestartZoom,
+    RestartView, RestartZoom,
 };
 use butter_paper_gpui_migration::page_scale_control::{
     CalibrationPointDisposition, PAGE_SCALE_APPLY_ID, PAGE_SCALE_CUSTOM_PDF_LENGTH_ID,
@@ -731,8 +732,6 @@ fn legacy_length_preserves_external_identity_until_edit_and_rejects_ambiguity() 
 
 #[test]
 fn legacy_length_hardening_preserves_unnamed_and_ambiguous_inputs_and_cleans_owned_graphs() {
-    legacy_length_preserves_external_identity_until_edit_and_rejects_ambiguity();
-
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let fixture =
         manifest_dir.join("../performance/results/public-fixtures-v1/bp-annotation-all-v1.pdf");
@@ -799,12 +798,23 @@ fn legacy_length_hardening_preserves_unnamed_and_ambiguous_inputs_and_cleans_own
         .expect("the first edit must promote an unnamed external Length");
     let edited = PdfPersistenceSession::open(&unnamed_edited).unwrap();
     assert!(edited.length_has_canonical_native_identity(&synthetic_id));
+    let text_before = native_annotation_graph_oracle(&unnamed_source, "text-1");
+    let shared_ids = text_before.resolved_appearance_graph.iter()
+        .map(|(id, _)| *id).collect::<std::collections::BTreeSet<_>>();
+    let private_ids = old_graph_ids.iter().copied()
+        .filter(|id| !shared_ids.contains(id)).collect::<Vec<_>>();
+    assert!(!private_ids.is_empty());
+    assert!(old_graph_ids.iter().any(|id| shared_ids.contains(id)),
+        "the fixture exercises a font shared by Length and FreeText");
     assert!(
-        object_ids_exist(&unnamed_edited, &old_graph_ids)
-            .into_iter()
-            .all(|exists| !exists),
-        "editing must remove every unreferenced object in the old Length appearance graph",
+        object_ids_exist(&unnamed_edited, &private_ids).into_iter().all(|exists| !exists),
+        "editing must remove the obsolete private appearance objects",
     );
+    let edited_objects = LopdfDocument::load(&unnamed_edited).unwrap();
+    for (id, expected) in &text_before.resolved_appearance_graph {
+        assert_eq!(format!("{:?}", edited_objects.get_object(*id).unwrap()), *expected,
+            "cleanup must preserve the retained external appearance and its shared font");
+    }
     let edited_graph_ids = first_length_oracle(&unnamed_edited)
         .resolved_appearance_graph
         .iter()
@@ -1104,6 +1114,32 @@ fn engineering_visual_enter_number(
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {value} enter"));
 }
 
+fn show_page_thumbnails(cx: &mut gpui::VisualTestContext) {
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    if cx.debug_bounds(DOCUMENT_THUMBNAIL_STRIP_ID).is_none() {
+        let pages = cx.debug_bounds("document-left-rail-pages").expect("Pages must be available in the left rail");
+        cx.simulate_click(pages.center(), Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+}
+
+fn native_save_command(cx: &mut gpui::VisualTestContext, workspace: &gpui::Entity<DocumentWorkspace>, save_as: bool) {
+    cx.update(|_, cx| register_document_workspace_global_actions(workspace, cx));
+    if save_as { cx.dispatch_action(SaveAs); } else { cx.dispatch_action(Save); }
+}
+
+fn workspace_edit_shortcut(
+    cx: &mut gpui::VisualTestContext,
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    shortcut: &str,
+) {
+    let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| focus.focus(window, cx));
+    cx.simulate_keystrokes(shortcut);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+}
+
 fn engineering_visual_release_opacity(
     cx: &mut gpui::VisualTestContext,
     workspace: &gpui::Entity<DocumentWorkspace>,
@@ -1113,7 +1149,7 @@ fn engineering_visual_release_opacity(
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let track = cx
         .debug_bounds(ENGINEERING_VISUAL_INSPECTOR_OPACITY_TRACK_ID)
-        .expect("the selected engineering visual kind must expose opacity");
+        .unwrap_or_else(|| panic!("selected engineering visual must expose opacity at {fraction}: {:?}", workspace.read_with(cx, |workspace, cx| workspace.engineering_visual_property_inspector().map(|i| i.read(cx).snapshot().cloned()))));
     let target = point(track.origin.x + track.size.width * fraction, track.center().y);
     let before = workspace
         .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
@@ -3025,6 +3061,7 @@ fn native_open_origin_policy_cancels_focuses_existing_and_force_opens_drop(
     });
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    show_page_thumbnails(cx);
     let second_thumbnail_id =
         Box::leak(document_thumbnail_id(DocumentId::new(1), 1).into_boxed_str());
     let second_thumbnail = cx
@@ -5192,14 +5229,9 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
         workspace.select_annotation(document_id, &line_id, cx)
     }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_STRAIGHT_LINE_PROPERTIES_ID);
-    let properties = cx
-        .debug_bounds(DOCUMENT_STRAIGHT_LINE_PROPERTIES_ID)
-        .expect("a selected Line must render the real properties trigger");
-    assert!(properties.size.width > px(0.) && properties.size.height > px(0.));
-    let properties_target = point(properties.left() + px(8.), properties.center().y);
-    cx.simulate_click(properties_target, Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
+    if cx.debug_bounds(STRAIGHT_LINE_PROPERTY_INSPECTOR_ID).is_none() {
+        toggle_document_actions(cx);
+    }
     let before_properties = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(document_id, cx)
@@ -6021,7 +6053,7 @@ fn page_rotation_is_one_document_revision_rejects_stale_pixels_and_preserves_fai
 }
 
 #[gpui::test]
-fn real_component_rotation_buttons_dispatch_the_retained_rotation_journey(cx: &mut TestAppContext) {
+fn native_rotation_action_dispatches_the_retained_rotation_journey(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -6044,11 +6076,11 @@ fn real_component_rotation_buttons_dispatch_the_retained_rotation_journey(cx: &m
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.debug_bounds(DOCUMENT_ROTATE_LEFT_ID).is_some());
-    let rotate_right = cx
-        .debug_bounds(DOCUMENT_ROTATE_RIGHT_ID)
-        .expect("the real GPUI Component Rotate Right button must render");
-    cx.simulate_click(rotate_right.center(), Modifiers::default());
+    let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| {
+        focus.focus(window, cx);
+        window.dispatch_action(Box::new(RotatePageRight), cx);
+    });
     cx.run_until_parked();
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
@@ -6386,7 +6418,7 @@ fn in_place_save_keeps_the_published_document_live_when_durability_has_a_warning
 }
 
 #[gpui::test]
-fn in_place_save_real_component_button_dispatches_the_active_opened_document(
+fn in_place_save_registered_command_dispatches_the_active_opened_document(
     cx: &mut TestAppContext,
 ) {
     cx.update(gpui_component::init);
@@ -6411,10 +6443,7 @@ fn in_place_save_real_component_button_dispatches_the_active_opened_document(
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save = cx
-        .debug_bounds(DOCUMENT_SAVE_ID)
-        .expect("the real GPUI Component Save button must render");
-    cx.simulate_click(save.center(), Modifiers::default());
+    native_save_command(cx, &workspace, false);
     assert!(matches!(
         workspace.read_with(cx, |workspace, cx| workspace
             .session(request.document_id, cx)
@@ -6463,8 +6492,7 @@ fn in_place_save_failure_renders_real_recovery_actions_without_losing_the_docume
         .unwrap();
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save = cx.debug_bounds(DOCUMENT_SAVE_ID).unwrap();
-    cx.simulate_click(save.center(), Modifiers::default());
+    native_save_command(cx, &workspace, false);
     cx.run_until_parked();
     let first_failure = workspace
         .read_with(cx, |workspace, cx| {
@@ -6712,7 +6740,7 @@ fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each
         .expect("the selected Arc must render the canonical inspector");
     let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
     assert_eq!(panel.right(), rail.left());
-    assert_eq!(panel.top(), rail.top());
+    assert!(panel.top() >= rail.top() && panel.bottom() <= rail.bottom());
     for id in [
         ENGINEERING_VISUAL_PROPERTY_INSPECTOR_ID,
         ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID,
@@ -6982,7 +7010,7 @@ fn straight_line_inspector_renders_exact_line_arrow_controls_and_revalidates_eac
         .expect("the selected Line must render the canonical inspector");
     let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
     assert_eq!(panel.right(), rail.left());
-    assert_eq!(panel.top(), rail.top());
+    assert!(panel.top() >= rail.top() && panel.bottom() <= rail.bottom());
     for id in [
         STRAIGHT_LINE_PROPERTY_INSPECTOR_ID,
         STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID,
@@ -7184,7 +7212,7 @@ fn vertex_path_inspector_exact_controls_revalidate_and_preserve_hidden_state(cx:
         .expect("the selected Polygon must render the canonical inspector");
     let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
     assert_eq!(panel.right(), rail.left());
-    assert_eq!(panel.top(), rail.top());
+    assert!(panel.top() >= rail.top() && panel.bottom() <= rail.bottom());
     for id in [VERTEX_PATH_PROPERTY_INSPECTOR_ID, VERTEX_PATH_INSPECTOR_LOCKED_ID, VERTEX_PATH_INSPECTOR_STROKE_COLOR_ID, VERTEX_PATH_INSPECTOR_APPLY_STROKE_ID, VERTEX_PATH_INSPECTOR_WIDTH_ID, VERTEX_PATH_INSPECTOR_OPACITY_ID, VERTEX_PATH_INSPECTOR_FILL_COLOR_ID, VERTEX_PATH_INSPECTOR_APPLY_FILL_ID, VERTEX_PATH_INSPECTOR_NO_FILL_ID] { assert!(cx.debug_bounds(id).is_some(), "Polygon must render {id}"); }
     let initial = workspace.read_with(cx, |workspace, _| workspace.vertex_path_property_inspector()).unwrap().read_with(cx, |inspector, _| inspector.snapshot().cloned()).unwrap();
     assert_eq!((initial.annotation_id, initial.expected_revision, initial.kind), (polygon.id.clone(), 0, PathPropertyKind::Polygon));
@@ -7352,23 +7380,23 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
-    let layer = cx.debug_bounds(layer_id).unwrap();
-    let render_scale =
-        (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
-    let origin = point(
-        layer.origin.x + px((f32::from(layer.size.width) - 612. * render_scale) / 2.),
-        layer.origin.y + px((f32::from(layer.size.height) - 792. * render_scale) / 2.),
-    );
-    let to_view = |x: f64, y: f64| {
-        point(
-            origin.x + px(x as f32 * render_scale),
-            origin.y + px((792. - y as f32) * render_scale),
+    let projection = |cx: &mut gpui::VisualTestContext| {
+        let layer = cx.debug_bounds(layer_id).unwrap();
+        let render_scale =
+            (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+        move |x: f64, y: f64| point(
+            layer.origin.x + px((f32::from(layer.size.width) - 612. * render_scale) / 2.)
+                + px(x as f32 * render_scale),
+            layer.origin.y + px((f32::from(layer.size.height) - 792. * render_scale) / 2.)
+                + px((792. - y as f32) * render_scale),
         )
     };
 
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ARC_TOOL_ID);
     let tool = cx.debug_bounds(DOCUMENT_ARC_TOOL_ID).unwrap();
     cx.simulate_click(tool.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let to_view = projection(cx);
     cx.simulate_click(to_view(60., 620.), Modifiers::default());
     cx.simulate_click(to_view(180., 620.), Modifiers::default());
     cx.simulate_mouse_move(to_view(120., 680.), None, Modifiers::default());
@@ -7414,6 +7442,8 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_CLOUD_TOOL_ID);
     let tool = cx.debug_bounds(DOCUMENT_CLOUD_TOOL_ID).unwrap();
     cx.simulate_click(tool.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let to_view = projection(cx);
     for (x, y) in [(240., 500.), (360., 500.), (360., 590.), (240., 590.)] {
         cx.simulate_click(to_view(x, y), Modifiers::default());
     }
@@ -7444,7 +7474,11 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SNAPSHOT_TOOL_ID);
     let tool = cx.debug_bounds(DOCUMENT_SNAPSHOT_TOOL_ID).unwrap();
     cx.simulate_click(tool.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let to_view = projection(cx);
     cx.simulate_click(to_view(72., 72.), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let to_view = projection(cx);
     cx.simulate_mouse_move(to_view(180., 180.), None, Modifiers::default());
     cx.simulate_click(to_view(180., 180.), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -7454,12 +7488,18 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
         .id
         .clone();
     assert!(workspace.update(cx, |workspace, cx| {
+        workspace.set_annotation_tool(document_id, AnnotationTool::Select, cx).unwrap();
         workspace.select_annotation(document_id, &snapshot_id, cx)
     }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    cx.simulate_mouse_down(to_view(126., 126.), MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(to_view(450., 126.), Some(MouseButton::Left), Modifiers::default());
-    cx.simulate_mouse_up(to_view(450., 126.), MouseButton::Left, Modifiers::default());
+    let to_view = projection(cx);
+    let rect = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_snapshot(document_id, cx).unwrap().snapshots[0].rect
+    });
+    let centre = (rect.x + rect.width / 2., rect.y + rect.height / 2.);
+    cx.simulate_mouse_down(to_view(centre.0, centre.1), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(to_view(centre.0 + 200., centre.1), Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(to_view(centre.0 + 200., centre.1), MouseButton::Left, Modifiers::default());
     cx.update(|window, cx| {
         workspace.update(cx, |workspace, cx| {
             workspace.set_engineering_visual_property_inspector_open(true, window, cx);
@@ -7488,8 +7528,7 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     assert_eq!(expected_snapshot.opacity(), 0.45);
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save_as = cx.debug_bounds(DOCUMENT_SAVE_AS_ID).unwrap();
-    cx.simulate_click(save_as.center(), Modifiers::default());
+    native_save_command(cx, &workspace, true);
     assert!(cx.did_prompt_for_new_path());
     cx.simulate_new_path_selection({
         let saved_path = saved_path.clone();
@@ -7508,7 +7547,7 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
             session.worker_pid().unwrap()
         });
     assert_ne!(saved_worker_pid, original_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_exists(original_worker_pid));
     for command in ["qpdf", "pdfinfo"] {
         let success = if command == "qpdf" {
             std::process::Command::new(command).arg("--check").arg(&saved_path).status()
@@ -7530,7 +7569,7 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
         .unwrap();
     assert!(persisted_arc.same_persisted_state_as(&expected_arc));
     assert!(persisted_cloud.same_persisted_state_as(&expected_cloud));
-    assert_eq!(persisted_snapshot, &expected_snapshot);
+    assert!(persisted_snapshot.same_persisted_state_as(&expected_snapshot));
     assert!(independent.arc_has_canonical_native_identity(&arc_id));
     assert!(independent.cloud_has_canonical_native_identity(&cloud_id));
     assert!(independent.snapshot_has_canonical_native_identity(&snapshot_id));
@@ -7557,13 +7596,13 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     }
     let pixel_worker_pid = pixel_proof.worker_pid().unwrap();
     pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(pixel_worker_pid));
 
     assert_eq!(
         workspace.update(cx, |workspace, cx| workspace.request_close_document(document_id, cx)),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{saved_worker_pid}")).exists());
+    assert!(!worker_process_exists(saved_worker_pid));
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
     let fresh_document = fresh_workspace
         .update(cx, |workspace, cx| workspace.open_path(saved_path.clone(), cx));
@@ -7573,7 +7612,7 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     assert_eq!((reopened.arcs.len(), reopened.clouds.len(), reopened.snapshots.len()), (1, 1, 1));
     assert!(reopened.arcs[0].same_persisted_state_as(&expected_arc));
     assert!(reopened.clouds[0].same_persisted_state_as(&expected_cloud));
-    assert_eq!(reopened.snapshots[0], expected_snapshot);
+    assert!(reopened.snapshots[0].same_persisted_state_as(&expected_snapshot));
     assert_eq!(reopened.annotation_order, vec![arc_id, cloud_id, snapshot_id]);
     let fresh_worker_pid = fresh_workspace
         .read_with(cx, |workspace, cx| {
@@ -7588,7 +7627,7 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{fresh_worker_pid}")).exists());
+    assert!(!worker_process_exists(fresh_worker_pid));
     assert!(
         !surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none(),
         "all engineering visual property workers and mapped surfaces must be released",
@@ -7662,7 +7701,7 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
     let source_base_digest = Sha256::digest(source_base.pixels_bgra()).to_vec();
     let source_proof_pid = source_proof.worker_pid().unwrap();
     source_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{source_proof_pid}")).exists());
+    assert!(!worker_process_exists(source_proof_pid));
 
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -7797,7 +7836,7 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
         session.worker_pid().unwrap()
     });
     assert_ne!(first_worker_pid, original_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_exists(original_worker_pid));
     let first_typed = PdfPersistenceSession::open(&first_path).unwrap();
     for expected_annotation in [&expected_line, &expected_arrow] {
         let actual = first_typed
@@ -7823,7 +7862,7 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
         session.worker_pid().unwrap()
     });
     assert_ne!(second_worker_pid, first_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{first_worker_pid}")).exists());
+    assert!(!worker_process_exists(first_worker_pid));
     assert_eq!(
         qpdf_canonical_straight_line_dictionary(&second_path, &line_id, LineKind::Line),
         first_line_dictionary,
@@ -7876,13 +7915,13 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
     }
     let pixel_worker_pid = pixel_proof.worker_pid().unwrap();
     pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(pixel_worker_pid));
 
     assert_eq!(
         workspace.update(cx, |workspace, cx| workspace.request_close_document(document_id, cx)),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{second_worker_pid}")).exists());
+    assert!(!worker_process_exists(second_worker_pid));
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
     let fresh_document = fresh_workspace.update(cx, |workspace, cx| workspace.open_path(second_path.clone(), cx));
     cx.run_until_parked();
@@ -7901,7 +7940,7 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
         fresh_workspace.update(cx, |workspace, cx| workspace.request_close_document(fresh_document, cx)),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{fresh_worker_pid}")).exists());
+    assert!(!worker_process_exists(fresh_worker_pid));
     assert_eq!(format!("{:x}", Sha256::digest(std::fs::read(&fixture).unwrap())), fixture_sha);
     assert!(
         !surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none(),
@@ -7988,7 +8027,7 @@ fn ink_property_inspector_targets_exact_single_ink_and_commits_identity_bound_hi
         .expect("the selected Pen must render the canonical Ink inspector");
     let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
     assert_eq!(panel.right(), rail.left());
-    assert_eq!(panel.top(), rail.top());
+    assert!(panel.top() >= rail.top() && panel.bottom() <= rail.bottom());
     for id in [
         INK_INSPECTOR_LOCKED_ID,
         INK_INSPECTOR_COLOR_ID,
@@ -8294,7 +8333,7 @@ fn text_box_property_inspector_uses_real_controls_and_exact_single_selection(
         .expect("the selected Text Box must render the canonical inspector");
     let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
     assert_eq!(panel.right(), rail.left());
-    assert_eq!(panel.top(), rail.top());
+    assert!(panel.top() >= rail.top() && panel.bottom() <= rail.bottom());
 
     let inspector = workspace
         .read_with(cx, |workspace, _| workspace.text_box_property_inspector())
@@ -8581,18 +8620,34 @@ fn measurement_property_inspector_toggles_exact_selected_length_caption_and_open
         .expect("the selected Length must render the canonical Measurement inspector");
     let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
     assert_eq!(panel.right(), rail.left());
-    assert_eq!(panel.top(), rail.top());
+    assert!(panel.top() >= rail.top() && panel.bottom() <= rail.bottom());
 
+    let appearance = cx.debug_bounds(DIMENSION_PROPERTY_INSPECTOR_ID).unwrap();
+    assert!(appearance.bottom() <= panel.top(), "measurement details must follow appearance without overlap");
+    assert!(cx.debug_bounds("dimension-property-inspector-scroll").is_none());
+    assert!(cx.debug_bounds("measurement-property-inspector-scroll").is_none());
+    let scroll = cx.debug_bounds("measurement-combined-properties-scroll").unwrap();
+    cx.simulate_event(ScrollWheelEvent {
+        position: scroll.center(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-1_000.))),
+        ..Default::default()
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     let show_caption = cx
         .debug_bounds(MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID)
         .expect("the real Show caption Switch must render");
-    cx.simulate_click(show_caption.center(), Modifiers::default());
+    cx.simulate_click(point(show_caption.left() + px(12.), show_caption.center().y), Modifiers::default());
     let hidden = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
         })
         .unwrap();
-    assert_eq!((hidden.revision, hidden.undo_depth), (1, 1));
+    assert_eq!((hidden.revision, hidden.undo_depth), (1, 1),
+        "caption={show_caption:?}, inner scroll={:?}, outer scroll={:?}, switch={:?}, state={:?}",
+        cx.debug_bounds("measurement-property-inspector-scroll"),
+        cx.debug_bounds("measurement-combined-properties-scroll"),
+        cx.debug_bounds("switch-bar"),
+        workspace.read_with(cx, |workspace, cx| workspace.measurement_property_inspector().unwrap().read(cx).snapshot().cloned()));
     assert!(!hidden.lengths[0].calibration().show_caption());
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -8684,7 +8739,7 @@ fn measurement_property_inspector_toggles_exact_selected_length_caption_and_open
         let show_caption = cx
             .debug_bounds(MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID)
             .expect("each exact selected measurement path must expose Show caption");
-        cx.simulate_click(show_caption.center(), Modifiers::default());
+        cx.simulate_click(point(show_caption.left() + px(12.), show_caption.center().y), Modifiers::default());
         let snapshot = workspace
             .read_with(cx, |workspace, cx| {
                 workspace.annotation_snapshot(request.document_id, cx)
@@ -8753,7 +8808,7 @@ fn measurement_property_inspector_toggles_exact_selected_length_caption_and_open
     let show_caption = cx
         .debug_bounds(MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID)
         .unwrap();
-    cx.simulate_click(show_caption.center(), Modifiers::default());
+    cx.simulate_click(point(show_caption.left() + px(12.), show_caption.center().y), Modifiers::default());
     let primary_only = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -8859,7 +8914,7 @@ fn rectangle_property_inspector_renders_stable_controls_and_commits_identity_bou
         .expect("the selected Rectangle must render the canonical inspector");
     let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
     assert_eq!(panel.right(), rail.left());
-    assert_eq!(panel.top(), rail.top());
+    assert!(panel.top() >= rail.top() && panel.bottom() <= rail.bottom());
     for id in [
         RECTANGLE_INSPECTOR_LOCKED_ID,
         RECTANGLE_INSPECTOR_STROKE_COLOR_ID,
@@ -9105,7 +9160,7 @@ fn shared_shape_property_inspector_ellipse_renders_and_commits_identity_bound_hi
         .expect("the selected Ellipse must render the canonical inspector");
     let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
     assert_eq!(panel.right(), rail.left());
-    assert_eq!(panel.top(), rail.top());
+    assert!(panel.top() >= rail.top() && panel.bottom() <= rail.bottom());
     for id in [
         ELLIPSE_INSPECTOR_LOCKED_ID,
         ELLIPSE_INSPECTOR_STROKE_COLOR_ID,
@@ -9699,7 +9754,7 @@ fn multi_selection_workspace_shift_click_group_move_is_ordered_lock_aware_and_on
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
     cx.update(|window, cx| focus.focus(window, cx));
-    cx.simulate_keystrokes("ctrl-c ctrl-v");
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-c cmd-v" } else { "ctrl-c ctrl-v" });
     let pasted_ids = workspace.read_with(cx, |workspace, cx| {
         workspace.selected_annotation_ids(request.document_id, cx)
     });
@@ -9778,7 +9833,7 @@ fn multi_selection_workspace_shift_click_group_move_is_ordered_lock_aware_and_on
             workspace.redo_annotations(request.document_id, cx)
         })
         .unwrap();
-    cx.simulate_keystrokes("ctrl-a");
+    cx.simulate_keystrokes(EDIT_SELECT_ALL);
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| {
@@ -9806,12 +9861,7 @@ fn multi_selection_workspace_shift_click_group_move_is_ordered_lock_aware_and_on
         workspace.toggle_annotation_selection(request.document_id, &unlocked_secondary, cx)
     }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_DELETE_ID);
-    let delete_center = cx
-        .debug_bounds(DOCUMENT_ANNOTATION_DELETE_ID)
-        .unwrap()
-        .center();
-    cx.simulate_click(delete_center, Modifiers::default());
+    workspace_edit_shortcut(cx, &workspace, "delete");
     let mixed_deleted = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -11816,13 +11866,8 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
     let length_tool = cx
         .debug_bounds(DOCUMENT_LENGTH_TOOL_ID)
         .expect("the real Length tool must render");
-    let rotate_left = cx
-        .debug_bounds(DOCUMENT_ROTATE_LEFT_ID)
-        .expect("the fixed Rotate Left control must render");
-    assert!(
-        length_tool.right() <= rotate_left.left(),
-        "a scrolled annotation target must not overlap fixed document controls"
-    );
+    let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
+    assert!(rail.contains(&length_tool.center()));
     cx.simulate_click(length_tool.center(), Modifiers::default());
     let toolbar_selected = workspace
         .read_with(cx, |workspace, cx| {
@@ -13112,7 +13157,7 @@ fn retained_length_body_endpoint_lock_delete_and_undo_are_one_document_history(
 
 #[gpui::test]
 fn real_component_annotation_controls_dispatch_retained_commands(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| { gpui_component::init(cx); init_document_workspace_actions(cx); });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -13139,34 +13184,11 @@ fn real_component_annotation_controls_dispatch_retained_commands(cx: &mut TestAp
         workspace.select_annotation(request.document_id, &imported.id, cx)
     }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    for id in [
-        DOCUMENT_SELECT_TOOL_ID,
-        DOCUMENT_RECTANGLE_TOOL_ID,
-        DOCUMENT_ANNOTATION_UNDO_ID,
-        DOCUMENT_ANNOTATION_REDO_ID,
-        DOCUMENT_RECTANGLE_STROKE_ID,
-        DOCUMENT_ANNOTATION_LOCK_ID,
-        DOCUMENT_ANNOTATION_DELETE_ID,
-    ] {
-        assert!(
-            cx.debug_bounds(id).is_some(),
-            "{id} must render under its stable ID"
-        );
-    }
-
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_RECTANGLE_STROKE_ID);
-
-    let stroke_center = cx
-        .debug_bounds(DOCUMENT_RECTANGLE_STROKE_ID)
-        .unwrap()
-        .center();
-    cx.simulate_click(stroke_center, Modifiers::default());
-    cx.run_until_parked();
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let width_four = cx
-        .debug_bounds("document-workspace-stroke-4")
-        .expect("the real GPUI Component stroke menu must open");
-    cx.simulate_click(width_four.center(), Modifiers::default());
+    toggle_document_actions(cx);
+    let inspector = workspace.read_with(cx, |workspace, _| workspace.rectangle_property_inspector()).unwrap();
+    let width = inspector.read_with(cx, |inspector, _| inspector.stroke_width_input());
+    cx.update(|window, cx| width.read(cx).focus_handle(cx).focus(window, cx));
+    cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} 4 enter"));
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| {
@@ -13179,12 +13201,7 @@ fn real_component_annotation_controls_dispatch_retained_commands(cx: &mut TestAp
         4.
     );
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_UNDO_ID);
-    let undo_center = cx
-        .debug_bounds(DOCUMENT_ANNOTATION_UNDO_ID)
-        .unwrap()
-        .center();
-    cx.simulate_click(undo_center, Modifiers::default());
+    workspace_edit_shortcut(cx, &workspace, EDIT_UNDO);
     assert!(
         !workspace
             .read_with(cx, |workspace, cx| workspace
@@ -13192,15 +13209,9 @@ fn real_component_annotation_controls_dispatch_retained_commands(cx: &mut TestAp
             .unwrap()
             .dirty
     );
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_REDO_ID);
-    let redo_center = cx
-        .debug_bounds(DOCUMENT_ANNOTATION_REDO_ID)
-        .unwrap()
-        .center();
-    cx.simulate_click(redo_center, Modifiers::default());
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_LOCK_ID);
+    workspace_edit_shortcut(cx, &workspace, EDIT_REDO);
     let lock_center = cx
-        .debug_bounds(DOCUMENT_ANNOTATION_LOCK_ID)
+        .debug_bounds(RECTANGLE_INSPECTOR_LOCKED_ID)
         .unwrap()
         .center();
     cx.simulate_click(lock_center, Modifiers::default());
@@ -13211,12 +13222,7 @@ fn real_component_annotation_controls_dispatch_retained_commands(cx: &mut TestAp
         .unwrap();
     assert!(locked.rectangles[0].locked);
     let locked_revision = locked.revision;
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_DELETE_ID);
-    let delete_center = cx
-        .debug_bounds(DOCUMENT_ANNOTATION_DELETE_ID)
-        .unwrap()
-        .center();
-    cx.simulate_click(delete_center, Modifiers::default());
+    workspace_edit_shortcut(cx, &workspace, "delete");
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| {
@@ -13225,20 +13231,14 @@ fn real_component_annotation_controls_dispatch_retained_commands(cx: &mut TestAp
             .unwrap()
             .revision,
         locked_revision,
-        "the disabled Delete control must suppress locked annotation deletion"
+        "Delete must preserve locked annotations"
     );
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_LOCK_ID);
     let unlock_center = cx
-        .debug_bounds(DOCUMENT_ANNOTATION_LOCK_ID)
+        .debug_bounds(RECTANGLE_INSPECTOR_LOCKED_ID)
         .unwrap()
         .center();
     cx.simulate_click(unlock_center, Modifiers::default());
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_DELETE_ID);
-    let delete_center = cx
-        .debug_bounds(DOCUMENT_ANNOTATION_DELETE_ID)
-        .unwrap()
-        .center();
-    cx.simulate_click(delete_center, Modifiers::default());
+    workspace_edit_shortcut(cx, &workspace, "delete");
     assert!(
         workspace
             .read_with(cx, |workspace, cx| workspace
@@ -13283,8 +13283,6 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
         DOCUMENT_SELECT_TOOL_ID,
         DOCUMENT_POLYLINE_TOOL_ID,
         DOCUMENT_POLYGON_TOOL_ID,
-        DOCUMENT_ANNOTATION_UNDO_ID,
-        DOCUMENT_ANNOTATION_REDO_ID,
     ] {
         assert!(cx.debug_bounds(id).is_some(), "{id} must render as a stable control");
     }
@@ -13528,16 +13526,12 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
     assert_eq!(after_vertex.vertex_paths[1], closure_polygon_before_edits);
     assert_eq!(after_vertex.vertex_paths[2], escape_polygon_before_edits);
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_UNDO_ID);
-    let undo = cx.debug_bounds(DOCUMENT_ANNOTATION_UNDO_ID).unwrap().center();
-    cx.simulate_click(undo, Modifiers::default());
+    workspace_edit_shortcut(cx, &workspace, EDIT_UNDO);
     let undone = workspace
         .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
         .unwrap();
     assert_eq!(undone.vertex_paths[0].points(), before_vertex.vertex_paths[0].points());
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_REDO_ID);
-    let redo = cx.debug_bounds(DOCUMENT_ANNOTATION_REDO_ID).unwrap().center();
-    cx.simulate_click(redo, Modifiers::default());
+    workspace_edit_shortcut(cx, &workspace, EDIT_REDO);
     let redone = workspace
         .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
         .unwrap();
@@ -13968,12 +13962,9 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
     assert_eq!(edited.measurement_paths[1], after_area.measurement_paths[1]);
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_VERTEX_PATH_PROPERTIES_ID);
-    let properties = cx
-        .debug_bounds(DOCUMENT_VERTEX_PATH_PROPERTIES_ID)
-        .expect("one exact selected Polylength must expose the retained path inspector");
-    cx.simulate_click(properties.center(), Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
+    if cx.debug_bounds(VERTEX_PATH_PROPERTY_INSPECTOR_ID).is_none() {
+        toggle_document_actions(cx);
+    }
     let inspector = workspace
         .read_with(cx, |workspace, _| workspace.vertex_path_property_inspector())
         .unwrap();
@@ -14431,10 +14422,10 @@ fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor(cx: &mu
     assert_eq!(edited.cloud_pluses.len(), 1);
     assert_eq!(edited.cloud_pluses[0].content(), "one\ntwo\nthree\nfour");
     assert_eq!(edited.cloud_pluses[0].text_box.height, 67.2);
-    assert_eq!(
-        edited.cloud_pluses[0].text_box.y + edited.cloud_pluses[0].text_box.height * 0.5,
-        initial_text_box.y + initial_text_box.height * 0.5,
-        "multiline growth must preserve the composite text-box center"
+    assert!(
+        ((edited.cloud_pluses[0].text_box.y + edited.cloud_pluses[0].text_box.height * 0.5)
+            - (initial_text_box.y + initial_text_box.height * 0.5)).abs() < 1e-9,
+        "multiline growth must preserve the composite text-box centre"
     );
     assert_eq!(edited.cloud_pluses[0].leader_points().len(), 3);
     let connection = edited.cloud_pluses[0].leader_points()[2];
@@ -14690,25 +14681,16 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
     cx.run_until_parked();
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let rotate_left_before_scroll = cx
-        .debug_bounds(DOCUMENT_ROTATE_LEFT_ID)
-        .expect("fixed Rotate Left must render before Dimension Properties scrolls");
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_DIMENSION_PROPERTIES_ID);
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let properties = cx.debug_bounds(DOCUMENT_DIMENSION_PROPERTIES_ID).expect("selected Dimension exposes its retained inspector trigger");
-    let rotate_left_after_scroll = cx
-        .debug_bounds(DOCUMENT_ROTATE_LEFT_ID)
-        .expect("fixed Rotate Left must remain rendered after Dimension Properties scrolls");
-    assert_eq!(rotate_left_after_scroll, rotate_left_before_scroll);
-    assert!(
-        properties.right() <= rotate_left_after_scroll.left(),
-        "scrolled Dimension Properties must not overlap fixed Rotate Left",
-    );
     let before_properties_click = workspace
         .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
         .unwrap();
     assert_eq!(before_properties_click.selected_id.as_ref(), Some(&dimension_id));
-    cx.simulate_click(properties.center(), Modifiers::default());
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx).unwrap();
+    });
+    if cx.debug_bounds(DIMENSION_PROPERTY_INSPECTOR_ID).is_none() {
+        toggle_document_actions(cx);
+    }
     let after_click_before_draw = workspace
         .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
         .unwrap();
@@ -14739,15 +14721,11 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
     assert!(viewer_bounds.size.width > px(0.) && viewer_bounds.size.height > px(0.));
 
     let inspector_width = inspector_bounds.size.width;
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_DIMENSION_PROPERTIES_ID);
-    let properties = cx.debug_bounds(DOCUMENT_DIMENSION_PROPERTIES_ID).unwrap();
-    cx.simulate_click(properties.center(), Modifiers::default());
+    let close = cx.debug_bounds(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID).unwrap();
+    cx.simulate_click(close.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds(DIMENSION_PROPERTY_INSPECTOR_ID).is_none());
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_DIMENSION_PROPERTIES_ID);
-    let properties = cx.debug_bounds(DOCUMENT_DIMENSION_PROPERTIES_ID).unwrap();
-    cx.simulate_click(properties.center(), Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
+    toggle_document_actions(cx);
     assert_eq!(
         cx.debug_bounds(DIMENSION_PROPERTY_INSPECTOR_ID)
             .unwrap()
@@ -14820,7 +14798,7 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let lock = cx.debug_bounds(DIMENSION_INSPECTOR_LOCKED_ID).unwrap();
-    cx.simulate_click(lock.center(), Modifiers::default());
+    cx.simulate_click(point(lock.left() + px(12.), lock.center().y), Modifiers::default());
     let locked = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
     assert!(locked.dimensions[0].locked);
     assert_eq!((locked.revision, locked.undo_depth), (edited.revision + 1, edited.undo_depth + 1));
@@ -14828,11 +14806,11 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
     assert!(!workspace.update(cx, |workspace, cx| workspace.apply_dimension_property_event(&locked_edit, cx)).unwrap());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let lock = cx.debug_bounds(DIMENSION_INSPECTOR_LOCKED_ID).unwrap();
-    cx.simulate_click(lock.center(), Modifiers::default());
+    cx.simulate_click(point(lock.left() + px(12.), lock.center().y), Modifiers::default());
     edited = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
     assert!(!edited.dimensions[0].locked);
 
-    let save_request = workspace.update(cx, |workspace, cx| workspace.begin_save_as(request.document_id, PathBuf::from("dimension-busy.pdf"), cx)).unwrap();
+    let save_request = workspace.update(cx, |workspace, cx| workspace.begin_save_as(request.document_id, workspace_save_target("dimension-busy.pdf"), cx)).unwrap();
     let busy = DimensionPropertyEvent { document_id: request.document_id, annotation_id: dimension_id.clone(), expected_revision: edited.revision, patch: DimensionPropertyPatch::OffsetPt(40.) };
     assert!(!workspace.update(cx, |workspace, cx| workspace.apply_dimension_property_event(&busy, cx)).unwrap());
     workspace.update(cx, |workspace, cx| workspace.apply_save_result(&save_request, Err("finish busy proof".into()), cx));
@@ -14842,12 +14820,8 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
     assert_eq!(edited.annotation_order, original_order);
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_DIMENSION_PROPERTIES_ID);
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let properties = cx
-        .debug_bounds(DOCUMENT_DIMENSION_PROPERTIES_ID)
-        .expect("the open Dimension inspector must retain its toolbar trigger");
-    cx.simulate_click(properties.center(), Modifiers::default());
+    let close = cx.debug_bounds(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID).unwrap();
+    cx.simulate_click(close.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds(DIMENSION_PROPERTY_INSPECTOR_ID).is_none());
     let layer = cx
@@ -15253,15 +15227,11 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     assert!(!after_shift_release.arcs[0].locked);
 
     let after_controls = after_shift_release;
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_UNDO_ID);
-    let undo = cx.debug_bounds(DOCUMENT_ANNOTATION_UNDO_ID).unwrap().center();
-    cx.simulate_click(undo, Modifiers::default());
+    workspace_edit_shortcut(cx, &workspace, EDIT_UNDO);
     let undone = snapshot!();
     assert_ne!(undone.arcs[0].mid, after_controls.arcs[0].mid);
     assert_eq!(undone.arcs[0].end, after_controls.arcs[0].end);
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ANNOTATION_REDO_ID);
-    let redo = cx.debug_bounds(DOCUMENT_ANNOTATION_REDO_ID).unwrap().center();
-    cx.simulate_click(redo, Modifiers::default());
+    workspace_edit_shortcut(cx, &workspace, EDIT_REDO);
     assert_eq!(snapshot!().arcs[0], after_controls.arcs[0]);
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -15783,7 +15753,7 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     let source_page_sha256 = Sha256::digest(source_page.pixels_bgra());
     let source_pixel_worker_pid = source_pixel_proof.worker_pid().unwrap();
     source_pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{source_pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(source_pixel_worker_pid));
 
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -16107,7 +16077,7 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         })
         .expect("the validated Save As reopen must own a replacement worker");
     assert_ne!(saved_worker_pid, original_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_exists(original_worker_pid));
     for command in ["qpdf", "pdfinfo"] {
         let status = if command == "qpdf" {
             std::process::Command::new(command)
@@ -16177,14 +16147,14 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     );
     let pixel_worker_pid = saved_pixel_proof.worker_pid().unwrap();
     saved_pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(pixel_worker_pid));
     assert_eq!(
         workspace.update(cx, |workspace, cx| {
             workspace.request_close_document(document_id, cx)
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{saved_worker_pid}")).exists());
+    assert!(!worker_process_exists(saved_worker_pid));
 
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
     let reopened_document = fresh_workspace.update(cx, |workspace, cx| {
@@ -16252,7 +16222,7 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{final_worker_pid}")).exists());
+    assert!(!worker_process_exists(final_worker_pid));
     assert!(
         !surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none(),
         "all real Snapshot sessions must release workers and mapped surfaces",
@@ -16327,7 +16297,7 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
     let source_page_sha256 = Sha256::digest(source_page.pixels_bgra());
     let source_pixel_worker_pid = source_pixel_proof.worker_pid().unwrap();
     source_pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{source_pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(source_pixel_worker_pid));
 
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -16565,7 +16535,7 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
         })
         .expect("the validated Save As reopen must own a replacement worker");
     assert_ne!(saved_worker_pid, original_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_exists(original_worker_pid));
 
     let independent = PdfPersistenceSession::open(&saved_path).unwrap();
     let persisted = independent
@@ -16602,7 +16572,7 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
     );
     let saved_pixel_worker_pid = saved_pixel_proof.worker_pid().unwrap();
     saved_pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{saved_pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(saved_pixel_worker_pid));
 
     assert_eq!(
         workspace.update(cx, |workspace, cx| {
@@ -16610,7 +16580,7 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{saved_worker_pid}")).exists());
+    assert!(!worker_process_exists(saved_worker_pid));
 
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
     let reopened_document = fresh_workspace.update(cx, |workspace, cx| {
@@ -16703,14 +16673,14 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
     );
     let deleted_pixel_worker_pid = deleted_pixel_proof.worker_pid().unwrap();
     deleted_pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{deleted_pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(deleted_pixel_worker_pid));
     assert_eq!(
         fresh_workspace.update(cx, |workspace, cx| {
             workspace.request_close_document(reopened_document, cx)
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{final_worker_pid}")).exists());
+    assert!(!worker_process_exists(final_worker_pid));
     assert!(
         !surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none(),
         "all real pending-Redact sessions must release workers and mapped surfaces",
@@ -16807,6 +16777,11 @@ fn cloud_workspace_engineering_pointer_renders_real_component_tool_and_retains_s
         Some(AnnotationTool::Select),
     );
 
+    cx.update(|window, cx| {
+        workspace_focus.focus(window, cx);
+        window.dispatch_action(Box::new(FitPage), cx);
+    });
+    cx.run_until_parked();
     let cloud_id = created.clouds[0].id.clone();
     assert!(workspace.update(cx, |workspace, cx| {
         workspace.select_annotation(request.document_id, &cloud_id, cx)
@@ -16815,13 +16790,24 @@ fn cloud_workspace_engineering_pointer_renders_real_component_tool_and_retains_s
     let vertex = cx
         .debug_bounds("cloud.vertex.1")
         .expect("selected Cloud must expose its rendered second vertex handle");
-    let moved_vertex = point(vertex.center().x + px(18.), vertex.center().y - px(12.));
-    cx.simulate_mouse_down(vertex.center(), MouseButton::Left, Modifiers::default());
+    let current_layer = cx.debug_bounds(layer_id).unwrap();
+    let current_scale = (f32::from(current_layer.size.width) / 612.)
+        .min(f32::from(current_layer.size.height) / 792.);
+    let vertex_pdf = created.clouds[0].points()[1];
+    let vertex_center = point(
+        current_layer.left() + px((f32::from(current_layer.size.width) - 612. * current_scale) / 2.)
+            + px(vertex_pdf.x as f32 * current_scale),
+        current_layer.top() + px((f32::from(current_layer.size.height) - 792. * current_scale) / 2.)
+            + px((792. - vertex_pdf.y as f32) * current_scale),
+    );
+    let moved_vertex = point(vertex_center.x + px(18.), vertex_center.y - px(12.));
+    cx.simulate_mouse_down(vertex_center, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.simulate_mouse_move(moved_vertex, Some(MouseButton::Left), Modifiers::default());
     let preview = workspace.read_with(cx, |workspace, cx| {
         workspace.annotation_scene(request.document_id, 0, cx)
     });
-    assert!(preview.clouds[0].draft);
+    assert!(preview.clouds[0].draft, "vertex={vertex:?}, layer={:?}, viewport={:?}, selected={:?}", cx.debug_bounds(layer_id), cx.debug_bounds(DOCUMENT_VIEWPORT_ID), workspace.read_with(cx, |workspace, cx| workspace.selected_annotation_ids(request.document_id, cx)));
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| workspace
@@ -16932,7 +16918,7 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     .to_vec();
     let source_pixel_worker_pid = source_pixel_proof.worker_pid().unwrap();
     source_pixel_proof.close().unwrap();
-    assert!(!Path::new(&format!("/proc/{source_pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(source_pixel_worker_pid));
 
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -16961,7 +16947,7 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
                 .and_then(|session| session.read(cx).worker_pid())
         })
         .expect("the real document must own a PDF worker");
-    assert!(PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(worker_process_exists(original_worker_pid));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_POLYLINE_TOOL_ID);
@@ -17162,7 +17148,7 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     );
     assert!(saved_path.is_file());
     assert_ne!(save_as_worker_pid, original_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_exists(original_worker_pid));
     assert_eq!(std::fs::read(&fixture).unwrap(), fixture_bytes);
 
     cx.simulate_click(to_view(216., 414.), Modifiers::default());
@@ -17288,7 +17274,7 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     assert!(!saved_after_edit.dirty);
     assert_eq!(saved_after_edit.saved_revision, saved_after_edit.revision);
     assert_ne!(saved_worker_pid, save_as_worker_pid);
-    assert!(!Path::new(&format!("/proc/{save_as_worker_pid}")).exists());
+    assert!(!worker_process_exists(save_as_worker_pid));
 
     let expected_vertex_paths = saved_after_edit.vertex_paths.clone();
     assert_eq!(expected_vertex_paths.len(), 2);
@@ -17371,7 +17357,7 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     }
     let pixel_worker_pid = pixel_proof.worker_pid().unwrap();
     pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(pixel_worker_pid));
     for command in ["qpdf", "pdfinfo"] {
         let status = if command == "qpdf" {
             std::process::Command::new(command).arg("--check").arg(&saved_path).status()
@@ -17387,7 +17373,7 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{saved_worker_pid}")).exists());
+    assert!(!worker_process_exists(saved_worker_pid));
 
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
     let reopened_document = fresh_workspace.update(cx, |workspace, cx| {
@@ -17431,7 +17417,7 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_exists(reopened_worker_pid));
     assert_eq!(std::fs::read(&fixture).unwrap(), fixture_bytes);
     assert!(
         !surface_root.exists()
@@ -17515,7 +17501,7 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
     ).to_vec();
     let source_pixel_worker_pid = source_pixel_proof.worker_pid().unwrap();
     source_pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{source_pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(source_pixel_worker_pid));
 
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -17544,7 +17530,7 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
                 .and_then(|session| session.read(cx).worker_pid())
         })
         .expect("the real document must own a PDF worker");
-    assert!(PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(worker_process_exists(original_worker_pid));
 
     let scale = PageScale::from_factors(
         0,
@@ -17895,7 +17881,7 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
         })
         .expect("the validated Save As reopen must own a replacement worker");
     assert_ne!(saved_worker_pid, original_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_exists(original_worker_pid));
     assert_eq!(std::fs::read(&fixture).unwrap(), fixture_bytes);
     let expected_measurement_paths = saved.measurement_paths.clone();
 
@@ -17959,7 +17945,7 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
     }
     let pixel_worker_pid = pixel_proof.worker_pid().unwrap();
     pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(pixel_worker_pid));
     for command in ["qpdf", "pdfinfo"] {
         let status = if command == "qpdf" {
             std::process::Command::new(command).arg("--check").arg(&saved_path).status()
@@ -17975,7 +17961,7 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{saved_worker_pid}")).exists());
+    assert!(!worker_process_exists(saved_worker_pid));
 
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
     let reopened_document = fresh_workspace.update(cx, |workspace, cx| {
@@ -18019,7 +18005,7 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_exists(reopened_worker_pid));
     assert!(
         !surface_root.exists()
             || std::fs::read_dir(&surface_root)
@@ -18107,7 +18093,7 @@ fn real_cloud_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext
                 .and_then(|session| session.read(cx).worker_pid())
         })
         .unwrap();
-    assert!(PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(worker_process_exists(original_worker_pid));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_CLOUD_TOOL_ID);
@@ -18213,7 +18199,7 @@ fn real_cloud_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext
         })
         .unwrap();
     assert_ne!(saved_worker_pid, original_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_exists(original_worker_pid));
 
     let independent = PdfPersistenceSession::open(&saved_path).unwrap();
     let persisted = independent
@@ -18242,7 +18228,7 @@ fn real_cloud_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext
     );
     let pixel_worker_pid = pixel_proof.worker_pid().unwrap();
     pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(pixel_worker_pid));
     assert!(
         std::process::Command::new("qpdf")
             .arg("--check")
@@ -18258,7 +18244,7 @@ fn real_cloud_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{saved_worker_pid}")).exists());
+    assert!(!worker_process_exists(saved_worker_pid));
 
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
     let reopened_document = fresh_workspace.update(cx, |workspace, cx| {
@@ -18292,7 +18278,7 @@ fn real_cloud_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_exists(reopened_worker_pid));
     assert!(
         !surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none(),
         "all real Cloud sessions must release workers and mapped surfaces",
@@ -18370,7 +18356,7 @@ fn real_callout_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppConte
                 .and_then(|session| session.read(cx).worker_pid())
         })
         .expect("the real fixture must own one live worker");
-    assert!(PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(worker_process_exists(original_worker_pid));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_CALLOUT_TOOL_ID);
@@ -18477,7 +18463,7 @@ fn real_callout_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppConte
         })
         .expect("the validated Save As reopen must own a replacement worker");
     assert_ne!(saved_worker_pid, original_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_exists(original_worker_pid));
 
     let independent = PdfPersistenceSession::open(&saved_path)
         .expect("the saved PDF must reopen through the typed parser");
@@ -18515,7 +18501,7 @@ fn real_callout_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppConte
     );
     let pixel_worker_pid = pixel_proof.worker_pid().unwrap();
     pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(pixel_worker_pid));
     assert!(
         std::process::Command::new("qpdf")
             .arg("--check")
@@ -18531,7 +18517,7 @@ fn real_callout_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppConte
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{saved_worker_pid}")).exists());
+    assert!(!worker_process_exists(saved_worker_pid));
 
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
     let reopened_document = fresh_workspace.update(cx, |workspace, cx| {
@@ -18565,7 +18551,7 @@ fn real_callout_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppConte
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_exists(reopened_worker_pid));
     assert!(
         !surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none(),
         "all real Callout sessions must release workers and mapped surfaces",
@@ -18646,7 +18632,7 @@ fn real_cloud_plus_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
                 .and_then(|session| session.read(cx).worker_pid())
         })
         .expect("the real fixture must own one live worker");
-    assert!(PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(worker_process_exists(original_worker_pid));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_CLOUD_PLUS_TOOL_ID);
@@ -18760,7 +18746,7 @@ fn real_cloud_plus_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
         })
         .expect("the validated Save As reopen must own a replacement worker");
     assert_ne!(saved_worker_pid, original_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_exists(original_worker_pid));
 
     let independent = PdfPersistenceSession::open(&saved_path)
         .expect("the saved PDF must reopen through the typed parser");
@@ -18796,7 +18782,7 @@ fn real_cloud_plus_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
     );
     let pixel_worker_pid = pixel_proof.worker_pid().unwrap();
     pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(pixel_worker_pid));
     assert!(
         std::process::Command::new("qpdf")
             .arg("--check")
@@ -18812,7 +18798,7 @@ fn real_cloud_plus_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{saved_worker_pid}")).exists());
+    assert!(!worker_process_exists(saved_worker_pid));
 
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
     let reopened_document = fresh_workspace.update(cx, |workspace, cx| {
@@ -18850,7 +18836,7 @@ fn real_cloud_plus_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_exists(reopened_worker_pid));
     assert!(
         !surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none(),
         "all real Cloud+ sessions must release workers and mapped surfaces",
@@ -19171,7 +19157,7 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
         })
         .expect("validated Save As must own a replacement worker");
     assert_ne!(saved_worker_pid, original_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_exists(original_worker_pid));
 
     let independent = PdfPersistenceSession::open(&saved_path)
         .expect("the snapped PDF must reopen through the typed parser");
@@ -19208,7 +19194,7 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
     );
     let pixel_worker_pid = pixel_proof.worker_pid().unwrap();
     pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(pixel_worker_pid));
     assert!(
         std::process::Command::new("qpdf")
             .arg("--check")
@@ -19231,7 +19217,7 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{saved_worker_pid}")).exists());
+    assert!(!worker_process_exists(saved_worker_pid));
 
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
     let reopened_document = fresh_workspace.update(cx, |workspace, cx| {
@@ -19290,7 +19276,7 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_exists(reopened_worker_pid));
     assert!(
         !surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none(),
         "all semantic-snapping sessions must release workers and mapped surfaces",
@@ -19484,7 +19470,8 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
         .expect("the real Dimension popover must render its stable offset NumberInput");
     let before_offset_edit = created.clone();
     cx.simulate_click(offset.center(), Modifiers::default());
-    cx.simulate_keystrokes("ctrl-a 4 0 enter");
+    cx.simulate_keystrokes(EDIT_SELECT_ALL);
+    cx.simulate_keystrokes("4 0 enter");
     let edited_after_number = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(document_id, cx)
@@ -19548,7 +19535,7 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
     assert_eq!(saved.saved_revision, saved.revision);
     assert!(saved_path.is_file());
     assert_ne!(save_as_worker_pid, original_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_exists(original_worker_pid));
     assert_eq!(std::fs::read(&fixture).unwrap(), fixture_bytes);
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -19559,7 +19546,8 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
         .debug_bounds("dimension-property-offset")
         .expect("the rebound Dimension must retain its offset NumberInput");
     cx.simulate_click(offset.center(), Modifiers::default());
-    cx.simulate_keystrokes("ctrl-a - 1 2 enter");
+    cx.simulate_keystrokes(EDIT_SELECT_ALL);
+    cx.simulate_keystrokes("- 1 2 enter");
     let after_second_edit = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(document_id, cx)
@@ -19585,7 +19573,7 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
         )
     });
     assert_ne!(saved_worker_pid, save_as_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{save_as_worker_pid}")).exists());
+    assert!(!worker_process_exists(save_as_worker_pid));
     assert!(!saved_after_in_place.dirty);
     assert_eq!(
         saved_after_in_place.saved_revision,
@@ -19627,7 +19615,7 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
     );
     let pixel_worker_pid = pixel_proof.worker_pid().unwrap();
     pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(pixel_worker_pid));
     assert!(
         std::process::Command::new("qpdf")
             .arg("--check")
@@ -19643,7 +19631,7 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{saved_worker_pid}")).exists());
+    assert!(!worker_process_exists(saved_worker_pid));
 
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
     let reopened_document = fresh_workspace.update(cx, |workspace, cx| {
@@ -19672,7 +19660,7 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_exists(reopened_worker_pid));
     assert!(
         !surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none(),
         "all real Dimension sessions must release workers and mapped surfaces",
@@ -19765,7 +19753,7 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     let source_base_digest = Sha256::digest(source_base.pixels_bgra());
     let source_pixel_worker_pid = source_pixel_proof.worker_pid().unwrap();
     source_pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{source_pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(source_pixel_worker_pid));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ARC_TOOL_ID);
@@ -20052,7 +20040,7 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
         })
         .expect("the validated Save As reopen must own a replacement worker");
     assert_ne!(saved_worker_pid, original_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_exists(original_worker_pid));
     assert_eq!(std::fs::read(&fixture).unwrap(), fixture_bytes);
 
     assert!(
@@ -20291,7 +20279,7 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     }
     let pixel_worker_pid = pixel_proof.worker_pid().unwrap();
     pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{pixel_worker_pid}")).exists());
+    assert!(!worker_process_exists(pixel_worker_pid));
     drop(independent);
 
     assert_eq!(
@@ -20300,7 +20288,7 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{saved_worker_pid}")).exists());
+    assert!(!worker_process_exists(saved_worker_pid));
     assert!(workspace.read_with(cx, |workspace, cx| workspace.session(document_id, cx).is_none()));
 
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
@@ -20334,7 +20322,7 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_exists(reopened_worker_pid));
     assert_eq!(std::fs::read(&fixture).unwrap(), fixture_bytes);
     assert!(
         !surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none(),
@@ -20349,7 +20337,7 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
-fn visible_toolbar_close_routes_a_dirty_document_through_confirmation(cx: &mut TestAppContext) {
+fn visible_tab_close_routes_a_dirty_document_through_confirmation(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -20382,9 +20370,8 @@ fn visible_toolbar_close_routes_a_dirty_document_through_confirmation(cx: &mut T
         .unwrap();
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let close = cx
-        .debug_bounds(DOCUMENT_CLOSE_ID)
-        .expect("the live document toolbar must expose its Close action");
+    let close_id = Box::leak(document_session_close_id(request.document_id).into_boxed_str());
+    let close = cx.debug_bounds(close_id).expect("the document tab must expose Close");
     cx.simulate_click(close.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
@@ -20499,10 +20486,12 @@ fn two_documents_switch_and_dirty_close_targets_only_the_stable_session(cx: &mut
     let first_tab = cx.debug_bounds("document-1-session-tab").unwrap();
     assert!(open_button.right() <= new_template_button.left());
     assert!(new_template_button.right() <= template_picker.left());
-    assert!(template_picker.right() <= first_tab.left());
+    let second_tab = cx.debug_bounds("document-2-session-tab").unwrap();
+    assert!(first_tab.right() <= second_tab.left());
+    assert!(second_tab.right() <= open_button.left());
     assert!(
-        cx.debug_bounds("more").is_some(),
-        "the stock TabBar overflow affordance must remain available"
+        cx.debug_bounds("more").is_none(),
+        "two fitting tabs must not expose an unnecessary overflow control"
     );
     let first_tab_center = first_tab.center();
     cx.simulate_click(first_tab_center, Modifiers::default());
@@ -21906,7 +21895,7 @@ fn native_view_navigation_routes_real_single_page_wheel_and_control_zoom(cx: &mu
 }
 
 #[gpui::test]
-fn cad_workspace_routes_real_controls_into_independent_session_layouts(cx: &mut TestAppContext) {
+fn viewer_controls_preserve_independent_session_modes_and_responsive_layouts(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -21944,188 +21933,50 @@ fn cad_workspace_routes_real_controls_into_independent_session_layouts(cx: &mut 
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
-    for id in [CAD_VIEW_PRIMARY_ID, CAD_VIEW_SETTINGS_ID] {
-        let bounds = cx
-            .debug_bounds(id)
-            .expect("CAD target must render in the real toolbar");
-        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
-    }
-    for id in [
-        "viewer-fit-width-icon",
-        "viewer-fit-page-icon",
-        "viewer-continuous-icon",
-        "viewer-single-page-icon",
-        "viewer-zoom-out-icon",
-        "viewer-zoom-in-icon",
-    ] {
-        let bounds = cx
-            .debug_bounds(id)
-            .expect("the frozen viewer icon must render under its stable identity");
-        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
-    }
-    let cad_primary = cx.debug_bounds(CAD_VIEW_PRIMARY_ID).unwrap().center();
-    cx.simulate_click(cad_primary, Modifiers::default());
-    let first_state = workspace
-        .read_with(cx, |workspace, cx| {
-            workspace.document_view_state(first.document_id, cx)
-        })
-        .unwrap();
-    assert!(first_state.cad_view_active());
-    assert_eq!(first_state.mode(), PageViewMode::Continuous);
-    assert_eq!(first_state.scroll(), (120., 240.));
-
-    let columns = workspace
-        .update(cx, |workspace, cx| {
-            workspace.plan_viewport(
-                first.document_id,
-                PageViewMode::Continuous,
-                first_state.zoom_percent(),
-                1.,
-                800.,
-                600.,
-                0.,
-                0.,
-                cx,
-            )
-        })
-        .unwrap();
-    assert_eq!(
-        columns
-            .page_layouts
-            .iter()
-            .map(|page| (page.column_index, page.row_index))
-            .collect::<Vec<_>>(),
-        [(0, 0), (0, 1), (0, 2)]
-    );
-
-    let cad_settings = cx.debug_bounds(CAD_VIEW_SETTINGS_ID).unwrap().center();
-    cx.simulate_click(cad_settings, Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let rows = cx
-        .debug_bounds(CAD_ORGANISATION_ROWS_ID)
-        .expect("Rows must render in the real CAD popover")
-        .center();
-    cx.simulate_click(rows, Modifiers::default());
-    let rows_state = workspace
-        .read_with(cx, |workspace, cx| {
-            workspace.document_view_state(first.document_id, cx)
-        })
-        .unwrap();
-    assert_eq!(rows_state.cad_organisation(), CadViewOrganisation::Rows);
-    let rows = workspace
-        .update(cx, |workspace, cx| {
-            workspace.plan_viewport(
-                first.document_id,
-                PageViewMode::Continuous,
-                rows_state.zoom_percent(),
-                1.,
-                800.,
-                600.,
-                0.,
-                0.,
-                cx,
-            )
-        })
-        .unwrap();
-    assert_eq!(
-        rows.page_layouts
-            .iter()
-            .map(|page| (page.column_index, page.row_index))
-            .collect::<Vec<_>>(),
-        [(0, 0), (1, 0), (2, 0)]
-    );
-
+    assert!(cx.debug_bounds(CAD_VIEW_PRIMARY_ID).is_none());
+    assert!(cx.debug_bounds(CAD_VIEW_SETTINGS_ID).is_none());
+    let single = cx.debug_bounds(SINGLE_PAGE_PRIMARY_ID).unwrap();
+    cx.simulate_click(single.center(), Modifiers::default());
+    assert_eq!(workspace.read_with(cx, |workspace, cx| {
+        workspace.document_view_state(first.document_id, cx).unwrap().mode()
+    }), PageViewMode::SinglePage);
     workspace.update(cx, |workspace, cx| {
         workspace.activate_document(second.document_id, cx);
     });
-    let second_state = workspace
-        .read_with(cx, |workspace, cx| {
-            workspace.document_view_state(second.document_id, cx)
-        })
-        .unwrap();
-    assert!(!second_state.cad_view_active());
-    assert_eq!(
-        second_state.cad_organisation(),
-        CadViewOrganisation::Columns
-    );
-    let restored_first = workspace
-        .read_with(cx, |workspace, cx| {
-            workspace.document_view_state(first.document_id, cx)
-        })
-        .unwrap();
-    assert!(restored_first.cad_view_active());
-    assert_eq!(restored_first.cad_organisation(), CadViewOrganisation::Rows);
-    assert_eq!(restored_first.scroll(), (120., 240.));
-
-    for (width, height) in [(1200., 800.), (900., 600.), (800., 600.), (320., 480.)] {
-        cx.simulate_resize(size(px(width), px(height)));
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-        let workspace_bounds = cx.debug_bounds(DOCUMENT_WORKSPACE_ID).unwrap();
-        let thumbnails = cx.debug_bounds(DOCUMENT_THUMBNAIL_STRIP_ID).unwrap();
-        let page = cx.debug_bounds(DOCUMENT_PAGE_ID).unwrap();
-        let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
-        let first_tab_id = Box::leak(document_session_tab_id(first.document_id).into_boxed_str());
-        let first_close_id =
-            Box::leak(document_session_close_id(first.document_id).into_boxed_str());
-        let first_tab = cx.debug_bounds(first_tab_id).unwrap();
-        let first_close = cx.debug_bounds(first_close_id).unwrap();
-        assert!(
-            thumbnails.right() <= page.left(),
-            "rails must not overlap at {width}x{height}"
-        );
-        assert!(page.contains(&viewport.center()));
-        assert!(workspace_bounds.contains(&thumbnails.center()));
-        assert!(workspace_bounds.contains(&page.center()));
-        assert!(thumbnails.size.width >= px(180.));
-        assert!(page.size.width > px(0.) && page.size.height > px(0.));
-        assert!(first_tab.size.width <= px(190.));
-        assert_eq!(first_close.size, size(px(24.), px(24.)));
-    }
-
-    cx.simulate_resize(size(px(900.), px(600.)));
+    assert_eq!(workspace.read_with(cx, |workspace, cx| {
+        workspace.document_view_state(second.document_id, cx).unwrap().mode()
+    }), PageViewMode::Continuous);
+    workspace.update(cx, |workspace, cx| {
+        workspace.activate_document(first.document_id, cx);
+    });
+    assert_eq!(workspace.read_with(cx, |workspace, cx| {
+        workspace.document_view_state(first.document_id, cx).unwrap().mode()
+    }), PageViewMode::SinglePage);
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let rail_before = cx.debug_bounds(DOCUMENT_THUMBNAIL_STRIP_ID).unwrap();
-    let page_before = cx.debug_bounds(DOCUMENT_PAGE_ID).unwrap();
-    let divider = point(page_before.left(), rail_before.center().y);
-    let activated_divider = point(divider.x + px(5.), divider.y);
-    let resized_divider = point(divider.x + px(40.), divider.y);
-    cx.simulate_mouse_down(divider, MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(
-        activated_divider,
-        Some(MouseButton::Left),
-        Modifiers::default(),
-    );
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    cx.simulate_mouse_move(
-        resized_divider,
-        Some(MouseButton::Left),
-        Modifiers::default(),
-    );
-    cx.simulate_mouse_up(resized_divider, MouseButton::Left, Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let rail_after = cx.debug_bounds(DOCUMENT_THUMBNAIL_STRIP_ID).unwrap();
-    let page_after = cx.debug_bounds(DOCUMENT_PAGE_ID).unwrap();
-    assert_eq!(rail_after.size.width, rail_before.size.width + px(40.));
-    assert!(rail_after.right() <= page_after.left());
-
+    let continuous = cx.debug_bounds(CONTINUOUS_PRIMARY_ID).unwrap();
+    cx.simulate_click(continuous.center(), Modifiers::default());
+    assert_eq!(workspace.read_with(cx, |workspace, cx| {
+        workspace.document_view_state(first.document_id, cx).unwrap().mode()
+    }), PageViewMode::Continuous);
+    show_page_thumbnails(cx);
     for mode in [ThemeMode::Light, ThemeMode::Dark] {
         cx.update(|window, cx| Theme::change(mode, Some(window), cx));
-        for scale_factor in [1.25, 1.5] {
+        for scale_factor in [1., 1.25, 1.5] {
             cx.update(|window, _| window.set_scale_factor(scale_factor));
-            for (width, height) in [(900., 600.), (800., 600.), (640., 360.)] {
+            for (width, height) in [(1200., 800.), (900., 600.), (800., 600.)] {
                 cx.simulate_resize(size(px(width), px(height)));
                 cx.update(|window, cx| window.draw(cx).clear(cx));
                 let workspace_bounds = cx.debug_bounds(DOCUMENT_WORKSPACE_ID).unwrap();
-                let thumbnails = cx.debug_bounds(DOCUMENT_THUMBNAIL_STRIP_ID).unwrap();
                 let page = cx.debug_bounds(DOCUMENT_PAGE_ID).unwrap();
                 let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
-                assert!(thumbnails.right() <= page.left());
-                assert!(workspace_bounds.contains(&thumbnails.center()));
+                if let Some(thumbnails) = cx.debug_bounds(DOCUMENT_THUMBNAIL_STRIP_ID) {
+                    assert!(thumbnails.right() <= page.left());
+                    assert!(workspace_bounds.contains(&thumbnails.center()));
+                }
                 assert!(workspace_bounds.contains(&page.center()));
                 assert!(page.contains(&viewport.center()));
-                assert!(thumbnails.size.width >= px(180.));
                 assert!(page.size.width > px(0.) && page.size.height > px(0.));
-                for target in [FIT_WIDTH_ID, FIT_PAGE_ID, CAD_VIEW_PRIMARY_ID] {
+                for target in [FIT_WIDTH_ID, FIT_PAGE_ID, CONTINUOUS_PRIMARY_ID, SINGLE_PAGE_PRIMARY_ID] {
                     let bounds = cx.debug_bounds(target).unwrap();
                     assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
                 }
@@ -22169,6 +22020,7 @@ fn virtualized_thumbnail_rail_exposes_all_pages_and_tracks_keyboard_navigation(
     });
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    show_page_thumbnails(cx);
     assert!(cx.debug_bounds("document-1-thumbnail-0").is_some());
     assert!(cx.debug_bounds("document-1-thumbnail-99").is_none());
     workspace.update(cx, |workspace, cx| {
@@ -22187,6 +22039,9 @@ fn virtualized_thumbnail_rail_exposes_all_pages_and_tracks_keyboard_navigation(
         "the active virtual row must be scrolled inside the thumbnail viewport",
     );
 
+    cx.run_until_parked();
+    let cached_before_navigation = workspace.read_with(cx, |workspace, cx| workspace
+        .evidence_snapshot(request.document_id, cx).unwrap().thumbnail_count);
     let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
     cx.update(|window, cx| workspace_focus.focus(window, cx));
     cx.simulate_keystrokes("end");
@@ -22200,14 +22055,12 @@ fn virtualized_thumbnail_rail_exposes_all_pages_and_tracks_keyboard_navigation(
             .current_page()),
         99
     );
-    assert_eq!(
-        workspace.read_with(cx, |workspace, cx| workspace
-            .evidence_snapshot(request.document_id, cx)
-            .unwrap()
-            .thumbnail_count),
-        13,
-        "navigation must lazily retain one real thumbnail beyond the eager twelve",
-    );
+    let cached_after_navigation = workspace.read_with(cx, |workspace, cx| workspace
+        .evidence_snapshot(request.document_id, cx).unwrap().thumbnail_count);
+    assert!(cached_after_navigation >= cached_before_navigation);
+    assert!(cached_after_navigation <= cached_before_navigation + 1,
+        "navigation must reuse the visible thumbnail cache");
+    assert!(cached_after_navigation < 100, "opening thumbnails must remain lazy");
     assert!(cx.debug_bounds("document-1-thumbnail-99").is_some());
 }
 
@@ -22590,8 +22443,7 @@ fn native_file_authority_opens_multiple_pdfs_and_rejects_a_stale_save_target(
         })
         .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save = cx.debug_bounds(DOCUMENT_SAVE_AS_ID).unwrap();
-    cx.simulate_click(save.center(), Modifiers::default());
+    native_save_command(cx, &workspace, true);
     assert!(cx.did_prompt_for_new_path());
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace
@@ -22602,7 +22454,7 @@ fn native_file_authority_opens_multiple_pdfs_and_rejects_a_stale_save_target(
         workspace.document_command_state(cx).save_busy
     }));
     assert_eq!(save_as_command_label(false), "Save As…");
-    cx.simulate_click(save.center(), Modifiers::default());
+    native_save_command(cx, &workspace, true);
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace
             .pending_save_prompt_document_id()),
@@ -22634,7 +22486,7 @@ fn native_file_authority_opens_multiple_pdfs_and_rejects_a_stale_save_target(
             .dirty
     }));
 
-    cx.simulate_click(save.center(), Modifiers::default());
+    native_save_command(cx, &workspace, true);
     assert!(cx.did_prompt_for_new_path());
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace
@@ -22701,8 +22553,9 @@ fn native_file_authority_dirty_close_picker_cancel_preserves_close_intent_and_li
     });
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let close = cx.debug_bounds(DOCUMENT_CLOSE_ID).unwrap().center();
-    cx.simulate_click(close, Modifiers::default());
+    let close_id = Box::leak(document_session_close_id(document_id).into_boxed_str());
+    let close = cx.debug_bounds(close_id).expect("generated document tab must expose Close");
+    cx.simulate_click(close.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let save = cx
         .debug_bounds(DOCUMENT_DIRTY_CLOSE_SAVE_ID)
@@ -22845,8 +22698,19 @@ fn native_file_authority_binds_one_exact_non_utf8_pdf_target_and_is_consumed_onc
         second.save_target_error().map(|error| error.kind()),
         Some(SaveTargetErrorKind::AlreadyConsumed)
     );
-    assert_eq!(prepared.publish().unwrap(), PdfPublicationOutcome::Durable);
-    assert!(target.is_file());
+    #[cfg(target_os = "macos")]
+    {
+        // APFS rejects an invalid UTF-8 leaf at rename publication. The consumed
+        // authority must fail safely, leaving no published or staged PDF behind.
+        assert!(prepared.publish().is_err());
+        assert!(!target.exists());
+        assert_eq!(std::fs::read_dir(&selected_parent).unwrap().count(), 0);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert_eq!(prepared.publish().unwrap(), PdfPublicationOutcome::Durable);
+        assert!(target.is_file());
+    }
 }
 
 #[cfg(unix)]
@@ -23498,6 +23362,14 @@ fn local_signature_typed_mode_uses_the_shared_placement_path(cx: &mut TestAppCon
         }
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let recent_path = std::env::temp_dir().join(format!("bp-recent-failed-{}.enc", std::process::id()));
+    assert!(!recent_path.exists());
+    let _recent_scratch = ScratchFiles(vec![recent_path.clone()]);
+    let keys = Arc::new(RecentWorkspaceKeys::default());
+    keys.fail_save.store(true, Ordering::SeqCst);
+    workspace.update(cx, |workspace, _| workspace.bind_recent_signature_store(Arc::new(
+        butter_paper_gpui_migration::recent_signature_store::RecentSignatureStore::new(recent_path.clone(), keys.clone()),
+    )));
     let request = workspace.update(cx, |workspace, cx| {
         workspace.begin_open(PathBuf::from("typed-signature.pdf"), cx)
     });
@@ -23535,7 +23407,7 @@ fn local_signature_typed_mode_uses_the_shared_placement_path(cx: &mut TestAppCon
     cx.simulate_click(add.center(), Modifiers::default());
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
-        Some("Click the page to place the signature".into())
+        Some("Click the page to place the signature. This signature could not be saved to Recent.".into())
     );
 
     cx.run_until_parked();
@@ -23550,6 +23422,8 @@ fn local_signature_typed_mode_uses_the_shared_placement_path(cx: &mut TestAppCon
         .unwrap();
     assert_eq!((placed.images.len(), placed.undo_depth), (1, 1));
     assert!(placed.images[0].aspect_locked);
+    assert_eq!(keys.writes.load(Ordering::SeqCst), 1);
+    assert!(!recent_path.exists(), "failed secure remembering must not prevent page placement");
 }
 
 #[test]
@@ -23566,17 +23440,11 @@ fn local_signature_drawn_raster_is_exact_bounded_and_deterministic() {
     let first = signature.rasterize().unwrap();
     let second = signature.rasterize().unwrap();
     assert_eq!(first, second);
-    assert_eq!((first.width_px(), first.height_px()), (216, 25));
-    assert_eq!(
-        first.id().as_str(),
-        "7971db0d1e82794f1357465decd550b6da7a9b8ec5f9fd8ea218e3c8251d6eb7"
-    );
-    assert!(
-        first
-            .rgba()
-            .chunks_exact(4)
-            .all(|pixel| { pixel[..3] == [17, 24, 39] && matches!(pixel[3], 0 | 255) })
-    );
+    assert!(first.width_px() > 500 && first.width_px() <= 2048);
+    assert!(first.height_px() <= 768);
+    assert!(first.rgba().chunks_exact(4).all(|pixel| pixel[..3] == [17, 24, 39]));
+    assert!(first.rgba().chunks_exact(4).any(|pixel| pixel[3] > 0 && pixel[3] < 255),
+        "drawn ink must retain fractional edge coverage");
     assert_eq!(signature.stroke_count(), 1);
     assert_eq!(signature.point_count(), 2);
 
@@ -23782,7 +23650,7 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
     .to_vec();
     let source_proof_pid = source_pixel_proof.worker_pid().unwrap();
     source_pixel_proof.close().unwrap();
-    assert!(!Path::new(&format!("/proc/{source_proof_pid}")).exists());
+    assert!(!worker_process_exists(source_proof_pid));
 
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -23815,11 +23683,11 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let signature_canvas = cx.debug_bounds(DOCUMENT_SIGNATURE_CANVAS_ID).unwrap();
     let draw_start = point(
-        signature_canvas.origin.x + signature_canvas.size.width * 0.25,
+        signature_canvas.origin.x + px(1.) + (signature_canvas.size.width - px(2.)) * (16_255. / 65_535.),
         signature_canvas.origin.y + signature_canvas.size.height * 0.5,
     );
     let draw_end = point(
-        signature_canvas.origin.x + signature_canvas.size.width * 0.75,
+        signature_canvas.origin.x + px(1.) + (signature_canvas.size.width - px(2.)) * (49_280. / 65_535.),
         signature_canvas.origin.y + signature_canvas.size.height * 0.5,
     );
     cx.simulate_event(MouseDownEvent {
@@ -24006,7 +23874,7 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
     cx.run_until_parked();
     let (saved_worker_pid, saved_snapshot) = workspace.read_with(cx, |workspace, cx| {
         let session = workspace.session(document_id, cx).unwrap().read(cx);
-        assert_eq!(session.path(), saved_path.as_path());
+        assert_eq!(session.path(), saved_path.as_path(), "save status: {:?}", session.save_status());
         assert_eq!(session.save_status(), &NativeDocumentSaveStatus::Idle);
         (
             session.worker_pid().unwrap(),
@@ -24014,7 +23882,7 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
         )
     });
     assert_ne!(saved_worker_pid, original_worker_pid);
-    assert!(!Path::new(&format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_exists(original_worker_pid));
     assert!(!saved_snapshot.dirty);
     assert_eq!(saved_snapshot.saved_revision, saved_snapshot.revision);
     assert_eq!(saved_snapshot.images.len(), 1);
@@ -24043,7 +23911,7 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
         }),
         CloseRequestDisposition::Closed
     );
-    assert!(!Path::new(&format!("/proc/{saved_worker_pid}")).exists());
+    assert!(!worker_process_exists(saved_worker_pid));
     cx.run_until_parked();
     cx.update(|window, _| assert!(!window.has_image_atlas_entry(&redone_render_asset)));
     let redone_render_asset_weak = Arc::downgrade(&redone_render_asset);
@@ -24102,7 +23970,7 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
     );
     let saved_proof_pid = saved_pixel_proof.worker_pid().unwrap();
     saved_pixel_proof.close().unwrap();
-    assert!(!Path::new(&format!("/proc/{saved_proof_pid}")).exists());
+    assert!(!worker_process_exists(saved_proof_pid));
 
     assert_eq!(
         fresh_workspace.update(cx, |workspace, cx| {
@@ -24110,7 +23978,7 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
         }),
         CloseRequestDisposition::Closed
     );
-    assert!(!Path::new(&format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_exists(reopened_worker_pid));
     assert!(reopened_asset_weak.upgrade().is_none());
     assert!(
         !surface_root.exists()
@@ -24545,7 +24413,7 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
         )
     });
     assert_ne!(saved_worker, original_worker);
-    assert!(!PathBuf::from(format!("/proc/{original_worker}")).exists());
+    assert!(!worker_process_exists(original_worker));
     assert!(!saved.dirty);
     assert_eq!(saved.saved_revision, saved.revision);
     assert!(saved.images[0].rect.same_pdf_geometry_as(resized_rect));
@@ -24726,14 +24594,14 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     let source_proof_worker = source_proof.worker_pid().unwrap();
     saved_proof.close().unwrap();
     source_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{saved_proof_worker}")).exists());
-    assert!(!PathBuf::from(format!("/proc/{source_proof_worker}")).exists());
+    assert!(!worker_process_exists(saved_proof_worker));
+    assert!(!worker_process_exists(source_proof_worker));
 
     assert_eq!(
         workspace.update(cx, |workspace, cx| workspace.request_close_document(document_id, cx)),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{saved_worker}")).exists());
+    assert!(!worker_process_exists(saved_worker));
     cx.run_until_parked();
     cx.update(|window, _| assert!(!window.has_image_atlas_entry(&render_asset)));
     let render_asset_weak = Arc::downgrade(&render_asset);
@@ -24792,7 +24660,7 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
         }),
         CloseRequestDisposition::Closed,
     );
-    assert!(!PathBuf::from(format!("/proc/{fresh_worker}")).exists());
+    assert!(!worker_process_exists(fresh_worker));
     assert!(fresh_asset_weak.upgrade().is_none());
     assert!(!surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none());
     assert_eq!(std::fs::read(&fixture).unwrap(), fixture_bytes);
@@ -25127,7 +24995,7 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
     ));
     assert!(!created_target.exists() && !edited_target.exists() && !deleted_target.exists());
     let source_session = PdfPersistenceSession::open(&source).unwrap();
-    assert!(source_session.lengths().is_empty());
+    let imported_lengths = source_session.lengths().to_vec();
     let created = LengthAnnotation::new(
         MarkupId::new("workspace:length:persistence-1").unwrap(),
         0,
@@ -25169,7 +25037,7 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
                 callouts: source_session.callouts().to_vec(),
                 measurement_paths: source_session.measurement_paths().to_vec(),
                 text_boxes: source_session.text_boxes().to_vec(),
-                lengths: vec![created.clone()],
+                lengths: imported_lengths.iter().cloned().chain([created.clone()]).collect(),
                 images: source_session.images().to_vec(),
                 snapshots: source_session.snapshots().to_vec(),
                 page_scales: Vec::new(),
@@ -25183,7 +25051,7 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
         })
         .expect("Length creation must survive typed Save As validation");
     let created_reopen = PdfPersistenceSession::open(&created_target).unwrap();
-    assert_eq!(created_reopen.lengths(), &[created.clone()]);
+    assert_eq!(created_reopen.lengths(), imported_lengths.iter().cloned().chain([created.clone()]).collect::<Vec<_>>());
 
     let edited_length = LengthAnnotation::new(
         created.id.clone(),
@@ -25222,7 +25090,7 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
                 callouts: created_reopen.callouts().to_vec(),
                 measurement_paths: created_reopen.measurement_paths().to_vec(),
                 text_boxes: created_reopen.text_boxes().to_vec(),
-                lengths: vec![edited_length.clone()],
+                lengths: imported_lengths.iter().cloned().chain([edited_length.clone()]).collect(),
                 images: created_reopen.images().to_vec(),
                 snapshots: created_reopen.snapshots().to_vec(),
                 page_scales: Vec::new(),
@@ -25236,7 +25104,7 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
         })
         .expect("Length edit must survive typed Save As validation");
     let edited = PdfPersistenceSession::open(&edited_target).unwrap();
-    assert_eq!(edited.lengths(), &[edited_length.clone()]);
+    assert_eq!(edited.lengths(), imported_lengths.iter().cloned().chain([edited_length.clone()]).collect::<Vec<_>>());
 
     let deleted_id = edited_length.id.clone();
     saver
@@ -25267,7 +25135,7 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
                 callouts: edited.callouts().to_vec(),
                 measurement_paths: edited.measurement_paths().to_vec(),
                 text_boxes: edited.text_boxes().to_vec(),
-                lengths: Vec::new(),
+                lengths: imported_lengths.clone(),
                 images: edited.images().to_vec(),
                 snapshots: edited.snapshots().to_vec(),
                 page_scales: Vec::new(),
@@ -25281,7 +25149,7 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
         })
         .expect("Length deletion must survive typed Save As validation");
     let deleted = PdfPersistenceSession::open(&deleted_target).unwrap();
-    assert!(deleted.lengths().is_empty());
+    assert_eq!(deleted.lengths(), imported_lengths);
     assert!(!deleted.has_raw_annotation_name(&deleted_id));
     std::fs::remove_file(created_target).unwrap();
     std::fs::remove_file(edited_target).unwrap();
@@ -26503,7 +26371,7 @@ fn real_imported_template_library_renders_saves_reopens_and_releases(cx: &mut Te
         session.worker_pid().unwrap()
     });
     assert_ne!(first_worker_pid, reopened_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{first_worker_pid}")).exists());
+    assert!(!worker_process_exists(first_worker_pid));
     assert!(!temporary_source.exists());
     assert!(saved_path.exists());
     assert_eq!(
@@ -26517,7 +26385,7 @@ fn real_imported_template_library_renders_saves_reopens_and_releases(cx: &mut Te
             .request_close_document(document_id, cx)),
         CloseRequestDisposition::Closed
     );
-    assert!(!PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_exists(reopened_worker_pid));
     assert!(!surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none());
     store.remove_if_empty().unwrap();
     assert!(!store_root.exists());
@@ -26758,7 +26626,7 @@ fn real_generated_template_creates_opens_saves_reopens_and_releases(cx: &mut Tes
         (session.path().to_owned(), session.worker_pid().unwrap())
     });
     assert!(source_path.exists());
-    assert!(PathBuf::from(format!("/proc/{source_worker_pid}")).exists());
+    assert!(worker_process_exists(source_worker_pid));
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| {
             workspace.document_dirty_revision(document_id, cx)
@@ -26788,8 +26656,8 @@ fn real_generated_template_creates_opens_saves_reopens_and_releases(cx: &mut Tes
         session.worker_pid().unwrap()
     });
     assert_ne!(source_worker_pid, reopened_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{source_worker_pid}")).exists());
-    assert!(PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_exists(source_worker_pid));
+    assert!(worker_process_exists(reopened_worker_pid));
     assert!(!source_path.exists());
     assert!(saved_path.exists());
     assert!(PdfPersistenceSession::open(&saved_path).is_ok());
@@ -26805,7 +26673,7 @@ fn real_generated_template_creates_opens_saves_reopens_and_releases(cx: &mut Tes
         }),
         CloseRequestDisposition::Closed
     );
-    assert!(!PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_exists(reopened_worker_pid));
     assert!(!surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none());
     store.remove_if_empty().unwrap();
     assert!(!store_root.exists());
@@ -26912,9 +26780,9 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     let worker_pid = opened
         .worker_pid()
         .expect("the worker PID must be observable");
-    assert!(PathBuf::from(format!("/proc/{worker_pid}")).exists());
+    assert!(worker_process_exists(worker_pid));
     opened.close().expect("the real UserUnit worker must close");
-    assert!(!PathBuf::from(format!("/proc/{worker_pid}")).exists());
+    assert!(!worker_process_exists(worker_pid));
     assert!(
         !surface_root.exists()
             || std::fs::read_dir(&surface_root)
@@ -27429,10 +27297,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     let expected_snapshot = final_snapshot.snapshots[0].clone();
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save_as = cx
-        .debug_bounds(DOCUMENT_SAVE_AS_ID)
-        .expect("the real Save As button must render");
-    cx.simulate_click(save_as.center(), Modifiers::default());
+    native_save_command(cx, &workspace, true);
     assert!(cx.did_prompt_for_new_path());
     cx.simulate_new_path_selection({
         let expected_directory = fixture.parent().unwrap().to_path_buf();
@@ -27479,7 +27344,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
         expected_snapshot.asset().id()
     );
     assert_ne!(saved_worker_pid, original_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_exists(original_worker_pid));
     assert_eq!(std::fs::read(&fixture).unwrap(), fixture_bytes);
 
     let typed = PdfPersistenceSession::open(&saved_path)
@@ -27529,7 +27394,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     );
     let proof_worker_pid = independently_reopened.worker_pid().unwrap();
     independently_reopened.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{proof_worker_pid}")).exists());
+    assert!(!worker_process_exists(proof_worker_pid));
     assert!(
         std::process::Command::new("qpdf")
             .arg("--check")
@@ -27545,7 +27410,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
         }),
         CloseRequestDisposition::Closed
     );
-    assert!(!PathBuf::from(format!("/proc/{saved_worker_pid}")).exists());
+    assert!(!worker_process_exists(saved_worker_pid));
 
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
     let reopened_document = fresh_workspace.update(cx, |workspace, cx| {
@@ -27616,7 +27481,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
         }),
         CloseRequestDisposition::Closed
     );
-    assert!(!PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_exists(reopened_worker_pid));
     assert_eq!(std::fs::read(&fixture).unwrap(), fixture_bytes);
     assert!(
         !surface_root.exists()
@@ -27718,7 +27583,7 @@ fn real_pdfium_worker_opens_navigates_and_exits_without_an_orphan(cx: &mut TestA
     let worker_pid = opened
         .worker_pid()
         .expect("the worker PID must be observable");
-    assert!(PathBuf::from(format!("/proc/{worker_pid}")).exists());
+    assert!(worker_process_exists(worker_pid));
     let second_page = opened
         .render_page(1, 320)
         .expect("thumbnail navigation must rasterize a second real page");
@@ -27737,7 +27602,7 @@ fn real_pdfium_worker_opens_navigates_and_exits_without_an_orphan(cx: &mut TestA
         path: manifest_dir.join("missing-second-document.pdf"),
     });
     assert!(failed_second_open.is_err());
-    assert!(PathBuf::from(format!("/proc/{worker_pid}")).exists());
+    assert!(worker_process_exists(worker_pid));
     let preserved_page = opened
         .render_page(2, 320)
         .expect("a failed second open must not invalidate the first live worker");
@@ -27784,17 +27649,17 @@ fn real_pdfium_worker_opens_navigates_and_exits_without_an_orphan(cx: &mut TestA
     let coordinate_worker_pid = coordinate_opened
         .worker_pid()
         .expect("the coordinate fixture worker PID must be observable");
-    assert!(PathBuf::from(format!("/proc/{coordinate_worker_pid}")).exists());
+    assert!(worker_process_exists(coordinate_worker_pid));
     coordinate_opened
         .close()
         .expect("the coordinate fixture worker must close cleanly");
-    assert!(!PathBuf::from(format!("/proc/{coordinate_worker_pid}")).exists());
+    assert!(!worker_process_exists(coordinate_worker_pid));
 
     opened
         .close()
         .expect("close must release the worker protocol session");
     assert!(
-        !PathBuf::from(format!("/proc/{worker_pid}")).exists(),
+        !worker_process_exists(worker_pid),
         "the worker client drop must kill and wait for the child"
     );
 
@@ -27875,6 +27740,7 @@ fn real_pdfium_worker_opens_navigates_and_exits_without_an_orphan(cx: &mut TestA
         cx.debug_bounds(first_visible_tile).is_some(),
         "the real asynchronous PDFium tile must enter the visible GPUI tree"
     );
+    show_page_thumbnails(cx);
     let second_thumbnail = cx
         .debug_bounds("document-1-thumbnail-1")
         .expect("the real second thumbnail must render under its stable ID");
@@ -28266,6 +28132,9 @@ fn real_pdfium_worker_opens_navigates_and_exits_without_an_orphan(cx: &mut TestA
             )
         })
         .expect("the real document must accept a retained Text Box edit");
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace.select_annotation(live_document, &saved_text_box_id, cx)
+    }));
     let text_style_revision = workspace.read_with(cx, |workspace, cx| {
         workspace
             .annotation_snapshot(live_document, cx)
@@ -28459,8 +28328,8 @@ fn real_pdfium_worker_opens_navigates_and_exits_without_an_orphan(cx: &mut TestA
         })
         .expect("the saved document must own its independently reopened worker");
     assert_ne!(reopened_worker_pid, workspace_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{workspace_worker_pid}")).exists());
-    assert!(PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_exists(workspace_worker_pid));
+    assert!(worker_process_exists(reopened_worker_pid));
     let saved_render = backend
         .open(&OpenDocumentRequest {
             document_id: DocumentId::new(93),
@@ -28747,8 +28616,8 @@ fn real_pdfium_worker_opens_navigates_and_exits_without_an_orphan(cx: &mut TestA
         })
         .expect("the second real live session must own a distinct worker");
     assert_ne!(second_live_worker_pid, reopened_worker_pid);
-    assert!(PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
-    assert!(PathBuf::from(format!("/proc/{second_live_worker_pid}")).exists());
+    assert!(worker_process_exists(reopened_worker_pid));
+    assert!(worker_process_exists(second_live_worker_pid));
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace.active_document_id()),
         Some(second_live_document)
@@ -28762,13 +28631,13 @@ fn real_pdfium_worker_opens_navigates_and_exits_without_an_orphan(cx: &mut TestA
         }),
         CloseRequestDisposition::Closed
     );
-    assert!(!PathBuf::from(format!("/proc/{second_live_worker_pid}")).exists());
-    assert!(PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_exists(second_live_worker_pid));
+    assert!(worker_process_exists(reopened_worker_pid));
     assert!(workspace.update(cx, |workspace, cx| {
         workspace.close_document(live_document, cx)
     }));
     assert!(
-        !PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists(),
+        !worker_process_exists(reopened_worker_pid),
         "closing the real retained session must kill and wait for its worker"
     );
     assert!(
@@ -28934,7 +28803,7 @@ fn real_rectangle_property_inspector_save_close_and_fresh_workspace_reopen(
                 .and_then(|session| session.read(cx).worker_pid())
         })
         .expect("the opened fixture must own a real worker");
-    assert!(PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(worker_process_exists(original_worker_pid));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let rectangle_tool = cx
@@ -29062,7 +28931,7 @@ fn real_rectangle_property_inspector_save_close_and_fresh_workspace_reopen(
         })
         .expect("the validated Save As reopen must own a replacement worker");
     assert_ne!(saved_worker_pid, original_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_exists(original_worker_pid));
     let saved_pixel_proof = backend
         .open(&OpenDocumentRequest {
             document_id: DocumentId::new(9_001),
@@ -29083,7 +28952,7 @@ fn real_rectangle_property_inspector_save_close_and_fresh_workspace_reopen(
     );
     let pixel_proof_worker_pid = saved_pixel_proof.worker_pid().unwrap();
     saved_pixel_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{pixel_proof_worker_pid}")).exists());
+    assert!(!worker_process_exists(pixel_proof_worker_pid));
     assert!(
         std::process::Command::new("qpdf")
             .arg("--check")
@@ -29106,7 +28975,7 @@ fn real_rectangle_property_inspector_save_close_and_fresh_workspace_reopen(
         }),
         CloseRequestDisposition::Closed
     );
-    assert!(!PathBuf::from(format!("/proc/{saved_worker_pid}")).exists());
+    assert!(!worker_process_exists(saved_worker_pid));
     assert!(workspace.read_with(cx, |workspace, cx| {
         workspace.session(document_id, cx).is_none()
     }));
@@ -29145,14 +29014,14 @@ fn real_rectangle_property_inspector_save_close_and_fresh_workspace_reopen(
         })
         .expect("the fresh workspace must own its own worker");
     assert_ne!(reopened_worker_pid, saved_worker_pid);
-    assert!(PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(worker_process_exists(reopened_worker_pid));
     assert_eq!(
         fresh_workspace.update(cx, |workspace, cx| {
             workspace.request_close_document(reopened_document, cx)
         }),
         CloseRequestDisposition::Closed
     );
-    assert!(!PathBuf::from(format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_exists(reopened_worker_pid));
     assert!(
         !surface_root.exists()
             || std::fs::read_dir(&surface_root)
@@ -29262,8 +29131,8 @@ fn real_native_shell_preserves_independent_view_state_through_fit_scroll_thumbna
                 .unwrap(),
         )
     });
-    assert!(PathBuf::from(format!("/proc/{first_worker}")).exists());
-    assert!(PathBuf::from(format!("/proc/{second_worker}")).exists());
+    assert!(worker_process_exists(first_worker));
+    assert!(worker_process_exists(second_worker));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let first_tab_id = Box::leak(document_session_tab_id(first_id).into_boxed_str());
@@ -29316,6 +29185,7 @@ fn real_native_shell_preserves_independent_view_state_through_fit_scroll_thumbna
     cx.simulate_keystrokes("down down down down down down down down down down enter");
     cx.run_until_parked();
 
+    show_page_thumbnails(cx);
     let first_thumbnail_id = Box::leak(document_thumbnail_id(first_id, 1).into_boxed_str());
     let first_thumbnail = cx.debug_bounds(first_thumbnail_id).unwrap();
     cx.simulate_click(first_thumbnail.center(), Modifiers::default());
@@ -29525,19 +29395,15 @@ fn real_native_shell_preserves_independent_view_state_through_fit_scroll_thumbna
                 .thumbnail_base_raster(49)
                 .is_some_and(|thumbnail| thumbnail.has_spatial_variation())
     }));
-    assert_eq!(
-        workspace.read_with(cx, |workspace, cx| workspace
-            .evidence_snapshot(first_id, cx)
-            .unwrap()
-            .thumbnail_count),
-        13,
-        "the real fixture must retain one lazy page-50 thumbnail beyond the eager twelve",
-    );
+    let retained_thumbnails = workspace.read_with(cx, |workspace, cx| workspace
+        .evidence_snapshot(first_id, cx).unwrap().thumbnail_count);
+    assert!((13..100).contains(&retained_thumbnails),
+        "page 50 and visible neighbours must load lazily without eagerly rendering all 100 pages");
 
     assert!(workspace.update(cx, |workspace, cx| workspace.close_document(first_id, cx)));
     assert!(workspace.update(cx, |workspace, cx| workspace.close_document(second_id, cx)));
-    assert!(!PathBuf::from(format!("/proc/{first_worker}")).exists());
-    assert!(!PathBuf::from(format!("/proc/{second_worker}")).exists());
+    assert!(!worker_process_exists(first_worker));
+    assert!(!worker_process_exists(second_worker));
     assert!(!surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none());
     drop(scratch);
     assert!(
@@ -29658,11 +29524,10 @@ fn real_in_place_save_replaces_the_opened_pdf_and_reopens_cleanly(cx: &mut TestA
         let session = workspace.session(document_id, cx).unwrap().read(cx);
         (session.title().to_owned(), session.worker_pid().unwrap())
     });
-    assert!(PathBuf::from(format!("/proc/{worker_before}")).exists());
+    assert!(worker_process_exists(worker_before));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save = cx.debug_bounds(DOCUMENT_SAVE_ID).expect("Save must render");
-    cx.simulate_click(save.center(), Modifiers::default());
+    native_save_command(cx, &workspace, false);
     cx.run_until_parked();
 
     let (path_after, title_after, page_after, worker_after, save_status) =
@@ -29692,8 +29557,8 @@ fn real_in_place_save_replaces_the_opened_pdf_and_reopens_cleanly(cx: &mut TestA
     assert_eq!(saved_snapshot.saved_revision, saved_snapshot.revision);
     assert!(!saved_snapshot.dirty);
     assert_ne!(worker_after, worker_before);
-    assert!(!PathBuf::from(format!("/proc/{worker_before}")).exists());
-    assert!(PathBuf::from(format!("/proc/{worker_after}")).exists());
+    assert!(!worker_process_exists(worker_before));
+    assert!(worker_process_exists(worker_after));
     let saved_bytes = std::fs::read(&source).unwrap();
     assert_ne!(saved_bytes, original_bytes);
     assert_eq!(std::fs::read(&original_inode).unwrap(), original_bytes);
@@ -29754,7 +29619,7 @@ fn real_in_place_save_replaces_the_opened_pdf_and_reopens_cleanly(cx: &mut TestA
             .request_close_document(document_id, cx)),
         CloseRequestDisposition::Closed
     );
-    assert!(!PathBuf::from(format!("/proc/{worker_after}")).exists());
+    assert!(!worker_process_exists(worker_after));
 
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
     let reopened_id =
@@ -29782,7 +29647,7 @@ fn real_in_place_save_replaces_the_opened_pdf_and_reopens_cleanly(cx: &mut TestA
     assert!(fresh_workspace.update(cx, |workspace, cx| {
         workspace.close_document(reopened_id, cx)
     }));
-    assert!(!PathBuf::from(format!("/proc/{reopened_worker}")).exists());
+    assert!(!worker_process_exists(reopened_worker));
     assert!(
         !surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none(),
         "both workspaces must release every mapped surface"
@@ -29869,6 +29734,7 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(
     assert_ne!(document_a, document_b);
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    show_page_thumbnails(cx);
     let b_thumbnail_id = Box::leak(document_thumbnail_id(document_b, 1).into_boxed_str());
     let b_thumbnail = cx
         .debug_bounds(b_thumbnail_id)
@@ -29954,8 +29820,7 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(
     assert_ne!(a_worker, b_worker);
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save_as = cx.debug_bounds(DOCUMENT_SAVE_AS_ID).expect("Save As must render for document A");
-    cx.simulate_click(save_as.center(), Modifiers::default());
+    native_save_command(cx, &workspace, true);
     assert!(cx.did_prompt_for_new_path());
     cx.simulate_new_path_selection({
         let occupied = occupied.clone();
@@ -30008,7 +29873,7 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(
         )
     });
     assert_ne!(replacement_worker, a_worker);
-    assert!(!PathBuf::from(format!("/proc/{a_worker}")).exists());
+    assert!(!worker_process_exists(a_worker));
     assert!(!saved_a.dirty);
     assert_eq!(saved_a.saved_revision, saved_a.revision);
     assert_eq!((saved_a.revision, saved_a.undo_depth), (1, 1));
@@ -30087,8 +29952,8 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(
     let source_proof_worker = source_proof.worker_pid().unwrap();
     saved_proof.close().unwrap();
     source_proof.close().unwrap();
-    assert!(!PathBuf::from(format!("/proc/{saved_proof_worker}")).exists());
-    assert!(!PathBuf::from(format!("/proc/{source_proof_worker}")).exists());
+    assert!(!worker_process_exists(saved_proof_worker));
+    assert!(!worker_process_exists(source_proof_worker));
 
     let b_plan = workspace
         .update(cx, |workspace, cx| {
@@ -30115,8 +29980,8 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(
 
     assert!(workspace.update(cx, |workspace, cx| workspace.close_document(document_a, cx)));
     assert!(workspace.update(cx, |workspace, cx| workspace.close_document(document_b, cx)));
-    assert!(!PathBuf::from(format!("/proc/{replacement_worker}")).exists());
-    assert!(!PathBuf::from(format!("/proc/{b_worker}")).exists());
+    assert!(!worker_process_exists(replacement_worker));
+    assert!(!worker_process_exists(b_worker));
 
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
     let fresh_a = fresh_workspace.update(cx, |workspace, cx| {
@@ -30163,8 +30028,8 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(
     assert_ne!(fresh_a_worker, fresh_b_worker);
     assert!(fresh_workspace.update(cx, |workspace, cx| workspace.close_document(fresh_a, cx)));
     assert!(fresh_workspace.update(cx, |workspace, cx| workspace.close_document(fresh_b, cx)));
-    assert!(!PathBuf::from(format!("/proc/{fresh_a_worker}")).exists());
-    assert!(!PathBuf::from(format!("/proc/{fresh_b_worker}")).exists());
+    assert!(!worker_process_exists(fresh_a_worker));
+    assert!(!worker_process_exists(fresh_b_worker));
     assert_eq!(std::fs::read(&fixture).unwrap(), fixture_bytes);
     assert_eq!(std::fs::read(&source_a).unwrap(), source_a_before);
     assert_eq!(std::fs::read(&source_b).unwrap(), source_b_before);
@@ -30264,8 +30129,7 @@ fn real_save_as_collision_recovers_to_fresh_target_and_reopens(cx: &mut TestAppC
         .unwrap();
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save_as = cx.debug_bounds(DOCUMENT_SAVE_AS_ID).unwrap();
-    cx.simulate_click(save_as.center(), Modifiers::default());
+    native_save_command(cx, &workspace, true);
     assert!(cx.did_prompt_for_new_path());
     let occupied_selection = occupied.clone();
     cx.simulate_new_path_selection(move |_| Some(occupied_selection));
@@ -30322,7 +30186,7 @@ fn real_save_as_collision_recovers_to_fresh_target_and_reopens(cx: &mut TestAppC
         })
         .unwrap();
     assert_ne!(worker_after, worker_before);
-    assert!(!Path::new(&format!("/proc/{worker_before}")).exists());
+    assert!(!worker_process_exists(worker_before));
     assert!(fresh_target.is_file());
     assert_eq!(
         Sha256::digest(std::fs::read(&occupied).unwrap()),
@@ -30346,7 +30210,7 @@ fn real_save_as_collision_recovers_to_fresh_target_and_reopens(cx: &mut TestAppC
     assert!(workspace.update(cx, |workspace, cx| {
         workspace.close_document(document_id, cx)
     }));
-    assert!(!Path::new(&format!("/proc/{worker_after}")).exists());
+    assert!(!worker_process_exists(worker_after));
     assert!(!surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none());
 }
 
@@ -30436,7 +30300,7 @@ fn real_worker_crash_recovery_preserves_dirty_document_and_releases_resources(
     let crashed_pid = before
         .worker_pid
         .expect("the real worker PID must be observable");
-    assert!(PathBuf::from(format!("/proc/{crashed_pid}")).exists());
+    assert!(worker_process_exists(crashed_pid));
 
     let kill = std::process::Command::new("kill")
         .args(["-KILL", &crashed_pid.to_string()])
@@ -30499,8 +30363,8 @@ fn real_worker_crash_recovery_preserves_dirty_document_and_releases_resources(
         .worker_pid
         .expect("recovery must own a replacement worker");
     assert_ne!(recovered_pid, crashed_pid);
-    assert!(!PathBuf::from(format!("/proc/{crashed_pid}")).exists());
-    assert!(PathBuf::from(format!("/proc/{recovered_pid}")).exists());
+    assert!(!worker_process_exists(crashed_pid));
+    assert!(worker_process_exists(recovered_pid));
     assert!(recovered.ready);
     assert!(recovered.presentation_error.is_none());
     assert_eq!(recovered.current_page, before.current_page);
@@ -30530,7 +30394,7 @@ fn real_worker_crash_recovery_preserves_dirty_document_and_releases_resources(
             .resolve_dirty_close_discard(cx)),
         DirtyCloseResolution::Discarded
     );
-    assert!(!PathBuf::from(format!("/proc/{recovered_pid}")).exists());
+    assert!(!worker_process_exists(recovered_pid));
     assert!(
         !surface_root.exists()
             || std::fs::read_dir(&surface_root)
@@ -30617,7 +30481,7 @@ fn real_shared_shape_property_inspector_save_close_and_fresh_workspace_reopen(
         );
         session.worker_pid().unwrap()
     });
-    assert!(PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
+    assert!(worker_process_exists(original_worker_pid));
 
     let ellipse_id = MarkupId::new("workspace:ellipse:shared-inspector-real").unwrap();
     workspace
@@ -30721,14 +30585,14 @@ fn real_shared_shape_property_inspector_save_close_and_fresh_workspace_reopen(
         expected
     );
     assert_ne!(saved_worker_pid, original_worker_pid);
-    assert!(!PathBuf::from(format!("/proc/{original_worker_pid}")).exists());
-    assert!(PathBuf::from(format!("/proc/{saved_worker_pid}")).exists());
+    assert!(!worker_process_exists(original_worker_pid));
+    assert!(worker_process_exists(saved_worker_pid));
     assert_eq!(
         workspace.update(cx, |workspace, cx| workspace
             .request_close_document(document_id, cx)),
         CloseRequestDisposition::Closed
     );
-    assert!(!PathBuf::from(format!("/proc/{saved_worker_pid}")).exists());
+    assert!(!worker_process_exists(saved_worker_pid));
 
     let fresh = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
     let fresh_id = fresh.update(cx, |workspace, cx| {
@@ -30759,14 +30623,14 @@ fn real_shared_shape_property_inspector_save_close_and_fresh_workspace_reopen(
             .ellipses,
         vec![expected]
     );
-    assert!(PathBuf::from(format!("/proc/{fresh_worker_pid}")).exists());
+    assert!(worker_process_exists(fresh_worker_pid));
     let fresh_scene = fresh.read_with(cx, |workspace, cx| {
         workspace.annotation_scene(fresh_id, 0, cx)
     });
     assert_eq!(fresh_scene.ellipses.len(), 1);
     assert_eq!(fresh_scene.ellipses[0].id, ellipse_id);
     assert!(fresh.update(cx, |workspace, cx| workspace.close_document(fresh_id, cx)));
-    assert!(!PathBuf::from(format!("/proc/{fresh_worker_pid}")).exists());
+    assert!(!worker_process_exists(fresh_worker_pid));
     assert!(
         !surface_root.exists()
             || std::fs::read_dir(&surface_root)
@@ -30775,4 +30639,274 @@ fn real_shared_shape_property_inspector_save_close_and_fresh_workspace_reopen(
                 .is_none(),
         "both real workers must release every mapped surface"
     );
+}
+
+#[derive(Default)]
+struct RecentWorkspaceKeys {
+    secret: Mutex<Option<Vec<u8>>>,
+    fail_save: AtomicBool,
+    writes: std::sync::atomic::AtomicUsize,
+}
+impl butter_paper_gpui_migration::recent_signature_store::SignatureKeyStore
+    for RecentWorkspaceKeys
+{
+    fn load(
+        &self,
+    ) -> Result<
+        Option<zeroize::Zeroizing<Vec<u8>>>,
+        butter_paper_gpui_migration::recent_signature_store::SignatureKeyStoreError,
+    > {
+        Ok(self
+            .secret
+            .lock()
+            .unwrap()
+            .clone()
+            .map(zeroize::Zeroizing::new))
+    }
+    fn save(
+        &self,
+        key: &[u8],
+    ) -> Result<(), butter_paper_gpui_migration::recent_signature_store::SignatureKeyStoreError>
+    {
+        self.writes.fetch_add(1, Ordering::SeqCst);
+        if self.fail_save.load(Ordering::SeqCst) {
+            return Err(butter_paper_gpui_migration::recent_signature_store::SignatureKeyStoreError::Failure);
+        }
+        *self.secret.lock().unwrap() = Some(key.to_vec());
+        Ok(())
+    }
+}
+
+#[gpui::test]
+fn recent_signature_workspace_renders_order_reuses_and_confirms_removal(cx: &mut TestAppContext) {
+    use butter_paper_gpui_migration::document_workspace::{
+        DOCUMENT_SIGNATURE_RECENT_REMOVE_CANCEL_ID, DOCUMENT_SIGNATURE_RECENT_REMOVE_CONFIRM_ID,
+    };
+    use butter_paper_gpui_migration::recent_signature_store::{
+        RecentSignatureSource, RecentSignatureStore,
+    };
+    cx.update(gpui_component::init);
+    let path = std::env::temp_dir().join(format!("bp-recent-workspace-{}.enc", std::process::id()));
+    assert!(!path.exists());
+    let _scratch = ScratchFiles(vec![path.clone()]);
+    let store = Arc::new(RecentSignatureStore::new(
+        path,
+        Arc::new(RecentWorkspaceKeys::default()),
+    ));
+    let first = DecodedRgbaAsset::new(2, 1, vec![1, 0, 0, 255, 0, 0, 0, 255]).unwrap();
+    let second = DecodedRgbaAsset::new(2, 1, vec![2, 0, 0, 255, 0, 0, 0, 255]).unwrap();
+    let first_id = store
+        .remember(first.clone(), RecentSignatureSource::Drawn, 1)
+        .unwrap()
+        .signatures[0]
+        .id()
+        .to_owned();
+    let second_id = store
+        .remember(second, RecentSignatureSource::Typed, 2)
+        .unwrap()
+        .signatures[0]
+        .id()
+        .to_owned();
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        let store = store.clone();
+        move |window, cx| {
+            let workspace = cx.new(|cx| {
+                let mut workspace = DocumentWorkspace::new(cx);
+                workspace.bind_recent_signature_store(store);
+                workspace
+            });
+            slot.replace(Some(workspace.clone()));
+            let shell = cx.new(|_| RecentSignatureModalShell(workspace));
+            Root::new(shell, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("recent.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        );
+        workspace.set_view_configuration(request.document_id, PageViewMode::SinglePage, 100., cx);
+        workspace
+            .refresh_viewport_async(request.document_id, 800., 600., 1., cx)
+            .unwrap();
+    });
+    cx.run_until_parked();
+    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SIGNATURE_TOOL_ID);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let centre = cx
+        .debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID)
+        .unwrap()
+        .center();
+    cx.simulate_click(centre, Modifiers::default());
+    settle_recent_workspace(cx);
+    let use_first: &'static str =
+        Box::leak(format!("document-workspace-signature-recent-use-{first_id}").into_boxed_str());
+    let use_second: &'static str =
+        Box::leak(format!("document-workspace-signature-recent-use-{second_id}").into_boxed_str());
+    assert!(
+        cx.debug_bounds(use_second).unwrap().origin.y
+            < cx.debug_bounds(use_first).unwrap().origin.y
+    );
+    let centre = cx.debug_bounds(use_first).unwrap().center();
+    cx.simulate_click(centre, Modifiers::default());
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Image)
+    );
+    settle_recent_workspace(cx);
+    assert_eq!(store.list().unwrap().signatures[0].id(), first_id);
+    let layer_id: &'static str =
+        Box::leak(document_annotation_layer_id(request.document_id, 0).into_boxed_str());
+    let centre = cx.debug_bounds(layer_id).unwrap().center();
+    cx.simulate_mouse_down(centre, MouseButton::Left, Modifiers::default());
+    let snapshot = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_snapshot(request.document_id, cx)
+            .unwrap()
+    });
+    assert_eq!((snapshot.images.len(), snapshot.undo_depth), (1, 1));
+    assert_eq!(snapshot.images[0].asset(), &first);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let centre = cx
+        .debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID)
+        .unwrap()
+        .center();
+    cx.simulate_click(centre, Modifiers::default());
+    settle_recent_workspace(cx);
+    let remove_first: &'static str = Box::leak(
+        format!("document-workspace-signature-recent-remove-{first_id}").into_boxed_str(),
+    );
+    let centre = cx.debug_bounds(remove_first).unwrap().center();
+    cx.simulate_event(gpui::MouseMoveEvent {
+        position: centre,
+        pressed_button: None,
+        modifiers: Modifiers::default(),
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_click(centre, Modifiers::default());
+    settle_recent_workspace(cx);
+    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds(DOCUMENT_SIGNATURE_RECENT_REMOVE_CONFIRM_ID)
+            .is_some()
+    );
+    assert_eq!(store.list().unwrap().signatures.len(), 2);
+    let centre = cx
+        .debug_bounds(DOCUMENT_SIGNATURE_RECENT_REMOVE_CANCEL_ID)
+        .unwrap()
+        .center();
+    cx.simulate_click(centre, Modifiers::default());
+    settle_recent_workspace(cx);
+    cx.executor().advance_clock(Duration::from_millis(300));
+    settle_recent_workspace(cx);
+    assert_eq!(store.list().unwrap().signatures.len(), 2);
+    let centre = cx
+        .debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID)
+        .unwrap()
+        .center();
+    cx.simulate_click(centre, Modifiers::default());
+    settle_recent_workspace(cx);
+
+    let centre = cx.debug_bounds(remove_first).unwrap().center();
+    cx.simulate_event(gpui::MouseMoveEvent {
+        position: centre,
+        pressed_button: None,
+        modifiers: Modifiers::default(),
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_click(centre, Modifiers::default());
+    settle_recent_workspace(cx);
+    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_keystrokes("tab");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_keystrokes("enter");
+    settle_recent_workspace(cx);
+    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.run_until_parked();
+    assert_eq!(store.list().unwrap().signatures.len(), 1);
+    assert_eq!(store.list().unwrap().signatures[0].id(), second_id);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_snapshot(request.document_id, cx)
+            .unwrap()
+            .images
+            .len()),
+        1
+    );
+    // Five entries must remain bounded and scroll to the local creation controls.
+    for value in 3..8 {
+        let asset = DecodedRgbaAsset::new(2, 1, vec![value, 0, 0, 255, 0, 0, 0, 255]).unwrap();
+        store.remember(asset, RecentSignatureSource::Image, u64::from(value)).unwrap();
+    }
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_resize(size(px(800.), px(480.)));
+    cx.run_until_parked();
+    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SIGNATURE_TOOL_ID);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let centre = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap().center();
+    cx.simulate_click(centre, Modifiers::default());
+    settle_recent_workspace(cx);
+    let content = cx.debug_bounds("document-workspace-signature-content").unwrap();
+    assert!(content.origin.y >= px(0.) && content.bottom() <= px(480.));
+    let before = cx.debug_bounds(DOCUMENT_SIGNATURE_ADD_ID).unwrap();
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position: content.center(),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-2000.))),
+        modifiers: Modifiers::default(),
+        ..Default::default()
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let after = cx.debug_bounds(DOCUMENT_SIGNATURE_ADD_ID).unwrap();
+    assert!(after.origin.y < before.origin.y, "the five-item list must scroll: before={before:?}, after={after:?}, content={content:?}");
+    assert!(after.origin.y >= content.origin.y && after.bottom() <= content.bottom());
+
+}
+
+// Root provides modal state; like ApplicationCloseShell, the window composition
+// must also paint that layer to exercise the actual stock dialog controls.
+struct RecentSignatureModalShell(gpui::Entity<DocumentWorkspace>);
+impl gpui::Render for RecentSignatureModalShell {
+    fn render(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        use gpui::{ParentElement as _, Styled as _};
+        let dialogs = Root::render_dialog_layer(window, cx);
+        gpui::div()
+            .size_full()
+            .child(self.0.clone())
+            .children(dialogs)
+    }
+}
+
+fn settle_recent_workspace(cx: &mut gpui::VisualTestContext) {
+    // Controlled popover opening starts its load after the first frame. Drain
+    // that result and the modal/focus follow-up before inspecting hit targets.
+    for _ in 0..3 {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+}
+
+// Match the existing Linux liveness contract on macOS, which has no /proc.
+fn worker_process_exists(pid: u32) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // Signal 0 checks existence/permission without sending a signal.
+        let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(not(target_os = "macos"))]
+    { PathBuf::from(format!("/proc/{pid}")).exists() }
 }

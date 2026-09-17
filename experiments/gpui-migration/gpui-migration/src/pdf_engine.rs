@@ -8787,20 +8787,67 @@ fn import_image(
     page_index: u32,
 ) -> Result<ImageAnnotation, PdfPersistenceError> {
     let asset = import_media_appearance_asset(document, annotation)?;
+    let aspect_locked = annotation
+        .get(b"BPAspectLocked")
+        .ok()
+        .and_then(|value| value.as_bool().ok())
+        .unwrap_or(false);
+    let rect = import_pdf_rect(annotation, b"Rect")?;
+    let rect = if aspect_locked {
+        restore_image_aspect_after_pdf_rounding(
+            rect,
+            f64::from(asset.width_px()) / f64::from(asset.height_px()),
+        )
+    } else {
+        rect
+    };
     let mut imported = ImageAnnotation::new_with_opacity(
         MarkupId::new(name)?,
         page_index,
-        import_pdf_rect(annotation, b"Rect")?,
+        rect,
         asset,
-        annotation
-            .get(b"BPAspectLocked")
-            .ok()
-            .and_then(|value| value.as_bool().ok())
-            .unwrap_or(false),
+        aspect_locked,
         dictionary_float(annotation, b"CA").unwrap_or(1.),
     )?;
     imported.locked = annotation_locked(annotation);
     Ok(imported)
+}
+
+// PDF rectangle edges are f32 values. Restore the exact asset ratio only when
+// doing so leaves every persisted edge unchanged; actual distortion still fails
+// the model's aspect validation.
+fn restore_image_aspect_after_pdf_rounding(rect: PdfRect, ratio: f64) -> PdfRect {
+    // Each stored edge represents an interval between adjacent f32 midpoints.
+    // Find dimensions and an origin inside all four intervals simultaneously.
+    let interval = |value: f64| {
+        let value = value as f32;
+        (
+            (f64::from(value.next_down()) + f64::from(value)) / 2.,
+            (f64::from(value) + f64::from(value.next_up())) / 2.,
+        )
+    };
+    let (left, bottom, right, top) = (
+        interval(rect.x),
+        interval(rect.y),
+        interval(rect.x + rect.width),
+        interval(rect.y + rect.height),
+    );
+    let min_height = (top.0 - bottom.1).max((right.0 - left.1) / ratio);
+    let max_height = (top.1 - bottom.0).min((right.1 - left.0) / ratio);
+    if !min_height.is_finite() || !max_height.is_finite()
+        || max_height <= min_height || max_height <= 0.
+    {
+        return rect;
+    }
+    let height = (min_height.max(0.) + max_height) / 2.;
+    let width = height * ratio;
+    let candidate = PdfRect {
+        x: (left.0.max(right.0 - width) + left.1.min(right.1 - width)) / 2.,
+        y: (bottom.0.max(top.0 - height) + bottom.1.min(top.1 - height)) / 2.,
+        width,
+        height,
+    };
+    if candidate.same_pdf_geometry_as(rect) { candidate } else { rect }
 }
 
 fn import_snapshot(
@@ -9475,6 +9522,24 @@ mod tests {
         encode_response, helvetica_text_width_pt, pdf_text_box_contents,
         text_appearance_line_bytes, text_appearance_line_x,
     };
+
+    #[test]
+    fn image_aspect_rounding_restores_thin_signatures_without_changing_pdf_edges() {
+        use super::{PdfRect, restore_image_aspect_after_pdf_rounding};
+        for ratio in [128., 1. / 128.] {
+            let original = PdfRect::new(123.456, 456.789, 128., 128. / ratio).unwrap();
+            let left = f64::from(original.x as f32);
+            let bottom = f64::from(original.y as f32);
+            let right = f64::from((original.x + original.width) as f32);
+            let top = f64::from((original.y + original.height) as f32);
+            let rounded = PdfRect::new(left, bottom, right - left, top - bottom).unwrap();
+            let restored = restore_image_aspect_after_pdf_rounding(rounded, ratio);
+            assert!(restored.same_pdf_geometry_as(rounded));
+            assert!((restored.width / restored.height - ratio).abs() < 1e-10);
+        }
+        let distorted = PdfRect::new(100., 200., 128., 2.).unwrap();
+        assert_eq!(restore_image_aspect_after_pdf_rounding(distorted, 128.), distorted);
+    }
 
     #[test]
     fn text_box_contents_use_utf16_bom_and_decode_legacy_and_malformed_inputs_safely() {

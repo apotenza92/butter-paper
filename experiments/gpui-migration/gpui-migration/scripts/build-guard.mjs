@@ -259,6 +259,11 @@ const runnerModes = Object.freeze({
     ]),
     controlledFailureStatus: null,
   }),
+  "recent-signature-workspace": Object.freeze({
+    name: "recent-signature-workspace",
+    cargoArgs: Object.freeze(["--lib", "document_workspace::recent_signature_tests"]),
+    controlledFailureStatus: null,
+  }),
   "recent-signature-store": Object.freeze({
     name: "recent-signature-store",
     cargoArgs: Object.freeze(["--lib", "recent_signature_store::tests"]),

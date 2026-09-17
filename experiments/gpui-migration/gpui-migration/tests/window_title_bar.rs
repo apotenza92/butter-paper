@@ -24,6 +24,7 @@ fn multiple_documents_include_the_other_document_count() {
 }
 
 #[test]
+#[cfg(not(target_os = "macos"))]
 fn title_bar_window_options_preserve_component_owned_chrome_behaviour() {
     let options = title_bar_window_options();
     let titlebar = options.titlebar.expect("the title bar must be enabled");
@@ -32,6 +33,20 @@ fn title_bar_window_options_preserve_component_owned_chrome_behaviour() {
     assert!(titlebar.title.is_none());
     assert!(titlebar.traffic_light_position.is_some());
     assert!(options.app_owns_titlebar_drag);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn macos_title_bar_leaves_native_gestures_and_controls_to_appkit() {
+    let options = title_bar_window_options();
+    let titlebar = options.titlebar.expect("a native title bar is required");
+    assert!(!titlebar.appears_transparent, "content must not cover the native title bar");
+    assert!(titlebar.traffic_light_position.is_none(), "AppKit positions its controls");
+    assert!(!options.app_owns_titlebar_drag, "AppKit must receive title bar gestures");
+    assert!(options.is_movable);
+    assert!(options.is_resizable);
+    assert!(options.is_minimizable);
+    assert_eq!(options.kind, gpui::WindowKind::Normal);
 }
 
 #[test]

@@ -2265,7 +2265,7 @@ function PolygonStartMarker({ draft, transform }: { draft: VertexPathDraft; tran
       cy={firstPoint.y}
       r={5}
       fill={closeActive ? '#ff0000' : '#ffffff'}
-      stroke="#ff0000"
+      stroke="var(--color-bp-path-close)"
       strokeWidth={2}
       pointerEvents="none"
       aria-hidden="true"
@@ -2793,7 +2793,7 @@ function TextBoxEditor({
             appearance: 'none',
             transform: undefined,
           }}
-          className="bp-native-scroll-hidden block h-full w-full resize-none border-0 bg-transparent pr-0 outline-none selection:bg-blue-200/70"
+          className="bp-native-scroll-hidden block h-full w-full resize-none border-0 bg-transparent pr-0 outline-none selection:bg-bp-text-selection/70"
         />
       </foreignObject>
       {caretGeometry ? (
@@ -3330,7 +3330,7 @@ function DraftingGuides({
             y1={start.y}
             x2={end.x}
             y2={end.y}
-            stroke="#2563eb"
+            stroke="var(--color-bp-snap-guide)"
             strokeWidth={1.25}
             strokeDasharray="6 4"
             opacity={0.82}
@@ -3488,13 +3488,13 @@ function RelationshipMeasurement({
   const middleY = (viewportStart.y + viewportEnd.y) / 2;
   return (
     <g data-testid="relationship-measurement">
-      <line x1={viewportStart.x} y1={viewportStart.y} x2={viewportEnd.x} y2={viewportEnd.y} stroke="#16a34a" strokeWidth={1.25} />
+      <line x1={viewportStart.x} y1={viewportStart.y} x2={viewportEnd.x} y2={viewportEnd.y} stroke="var(--color-bp-relationship-guide)" strokeWidth={1.25} />
       <line
         x1={viewportStart.x + (axis === 'vertical' ? -tick : 0)}
         y1={viewportStart.y + (axis === 'horizontal' ? -tick : 0)}
         x2={viewportStart.x + (axis === 'vertical' ? tick : 0)}
         y2={viewportStart.y + (axis === 'horizontal' ? tick : 0)}
-        stroke="#16a34a"
+        stroke="var(--color-bp-relationship-guide)"
         strokeWidth={1.25}
       />
       <line
@@ -3502,7 +3502,7 @@ function RelationshipMeasurement({
         y1={viewportEnd.y + (axis === 'horizontal' ? -tick : 0)}
         x2={viewportEnd.x + (axis === 'vertical' ? tick : 0)}
         y2={viewportEnd.y + (axis === 'horizontal' ? tick : 0)}
-        stroke="#16a34a"
+        stroke="var(--color-bp-relationship-guide)"
         strokeWidth={1.25}
       />
       <text
@@ -3511,8 +3511,8 @@ function RelationshipMeasurement({
         textAnchor="middle"
         fontSize={11}
         fontWeight={700}
-        fill="#16a34a"
-        stroke="white"
+        fill="var(--color-bp-relationship-guide)"
+        stroke="var(--color-bp-ink-halo)"
         strokeWidth={3}
         paintOrder="stroke"
       >
@@ -3584,7 +3584,7 @@ function ReadOnlyCalloutAnnotation({ markup, transform }: { markup: Extract<Mark
         stroke={contentStyle.stroke}
         strokeWidth={contentStyle.strokeWidth}
       />
-      <text x={textBox.x + textInsetX} y={textBox.y + textBaselineOffset} fill="#0f172a" fontSize={fontSize} className="select-none">
+      <text x={textBox.x + textInsetX} y={textBox.y + textBaselineOffset} fill="var(--color-bp-callout-ink)" fontSize={fontSize} className="select-none">
         {markup.text || 'Callout'}
       </text>
     </g>

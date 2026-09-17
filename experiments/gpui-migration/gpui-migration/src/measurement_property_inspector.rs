@@ -159,7 +159,7 @@ impl Render for MeasurementPropertyInspector {
             MEASUREMENT_INSPECTOR_SCROLL_ID,
             "Measurement",
         )
-        .content_only(self.embedded && matches!(snapshot.annotation_kind, AnnotationKind::Polylength | AnnotationKind::Area))
+        .content_only(self.embedded)
         .child(
             v_flex()
                 .gap_3()

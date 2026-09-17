@@ -7,12 +7,12 @@ use cosmic_text::{Align, Attrs, Buffer, Color, Family, FontSystem, Metrics, Shap
 
 pub const MAX_SIGNATURE_STROKES: usize = 64;
 pub const MAX_SIGNATURE_POINTS: usize = 4_096;
-pub const SIGNATURE_RASTER_WIDTH: u32 = 768;
-pub const SIGNATURE_RASTER_HEIGHT: u32 = 288;
+pub const SIGNATURE_RASTER_WIDTH: u32 = 2048;
+pub const SIGNATURE_RASTER_HEIGHT: u32 = 768;
 pub const MAX_TYPED_SIGNATURE_NAME_CHARS: usize = 80;
 
 const NORMALIZED_MAX: u64 = u16::MAX as u64;
-const BRUSH_RADIUS: i32 = 4;
+const BRUSH_RADIUS: f32 = 4. * (2048. / 768.);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NormalizedSignaturePoint {
@@ -109,7 +109,10 @@ impl TypedSignature {
         let mut font_database = cosmic_text::fontdb::Database::new();
         font_database.load_font_data(include_bytes!("../assets/fonts/Allura-Regular.ttf").to_vec());
         let mut font_system = FontSystem::new_with_locale_and_db("en-US".to_owned(), font_database);
-        let mut buffer = Buffer::new(&mut font_system, Metrics::new(128., 176.));
+        let mut buffer = Buffer::new(
+            &mut font_system,
+            Metrics::new(128. * (2048. / 768.), 176. * (2048. / 768.)),
+        );
         let mut buffer = buffer.borrow_with(&mut font_system);
         buffer.set_size(
             Some(SIGNATURE_RASTER_WIDTH as f32),
@@ -312,9 +315,12 @@ fn rasterize_segment(alpha: &mut [u8], from: (i32, i32), to: (i32, i32)) {
 }
 
 fn stamp_disk(alpha: &mut [u8], center_x: i32, center_y: i32) {
-    for offset_y in -BRUSH_RADIUS..=BRUSH_RADIUS {
-        for offset_x in -BRUSH_RADIUS..=BRUSH_RADIUS {
-            if offset_x * offset_x + offset_y * offset_y > BRUSH_RADIUS * BRUSH_RADIUS {
+    let extent = (BRUSH_RADIUS + 1.).ceil() as i32;
+    for offset_y in -extent..=extent {
+        for offset_x in -extent..=extent {
+            let distance = ((offset_x * offset_x + offset_y * offset_y) as f32).sqrt();
+            let coverage = ((BRUSH_RADIUS + 0.5 - distance).clamp(0., 1.) * 255.).round() as u8;
+            if coverage == 0 {
                 continue;
             }
             let x = center_x + offset_x;
@@ -324,7 +330,8 @@ fn stamp_disk(alpha: &mut [u8], center_x: i32, center_y: i32) {
                 && x < SIGNATURE_RASTER_WIDTH as i32
                 && y < SIGNATURE_RASTER_HEIGHT as i32
             {
-                alpha[y as usize * SIGNATURE_RASTER_WIDTH as usize + x as usize] = 255;
+                let ix = y as usize * SIGNATURE_RASTER_WIDTH as usize + x as usize;
+                alpha[ix] = alpha[ix].max(coverage);
             }
         }
     }
@@ -333,6 +340,27 @@ fn stamp_disk(alpha: &mut [u8], center_x: i32, center_y: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drawn_signature_has_high_resolution_antialiased_edges() {
+        let mut drawing = DrawnSignature::default();
+        drawing
+            .begin_stroke(NormalizedSignaturePoint::new(8000, 55000))
+            .unwrap();
+        drawing
+            .append_point(NormalizedSignaturePoint::new(57000, 8000))
+            .unwrap();
+        drawing.end_stroke();
+        let asset = drawing.rasterize().unwrap();
+        assert!(asset.width_px() > 1500);
+        assert!(
+            asset
+                .rgba()
+                .chunks_exact(4)
+                .any(|pixel| pixel[3] > 0 && pixel[3] < 255)
+        );
+        assert_eq!(asset, drawing.rasterize().unwrap());
+    }
 
     #[test]
     fn typed_signature_trims_and_preserves_a_valid_name() {

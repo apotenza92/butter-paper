@@ -1,0 +1,12 @@
+{
+  "qrcp": {
+    "revision": "3b176183de83bdb945e733e978497fb727ede2c5",
+    "url": "https://codeload.github.com/claudiodangelis/qrcp/tar.gz/3b176183de83bdb945e733e978497fb727ede2c5",
+    "sha256": "9d22555bf48c486dbee5bdaaaf2b2cef11fc26ae333c7e418128a6ec494ea7c4"
+  },
+  "signaturePad": {
+    "version": "5.1.4",
+    "url": "https://registry.npmjs.org/signature_pad/-/signature_pad-5.1.4.tgz",
+    "sha512": "ab4c0ee5af94f8058f55c56688d5f3ec563801dd50884f30b68ff7627e35595a9ea6855560cbe46f5093a246963d45001d60cb2da6c7dff69c38379633d8c2ae"
+  }
+}

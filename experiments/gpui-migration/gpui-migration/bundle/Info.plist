@@ -24,5 +24,7 @@
   <string>13.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSCameraUsageDescription</key>
+  <string>Capture a signature from paper to place in your PDF.</string>
 </dict>
 </plist>

@@ -242,6 +242,9 @@ fn sanitize_signature_rgba(
     let (width, height) = rgba.dimensions();
     let pixel_count = usize::try_from(u64::from(width) * u64::from(height))
         .map_err(|_| SignatureImageError::UnsafeDimensions)?;
+    // Transparent drawings already carry edge coverage; photo cleanup would
+    // threshold and blur those anti-aliased pixels.
+    let transparent = rgba.pixels().any(|pixel| pixel[3] < 255);
     let mut strength = Vec::with_capacity(pixel_count);
     for pixel in rgba.pixels() {
         let luminance = f32::from(pixel[0]) * 0.2126
@@ -278,7 +281,11 @@ fn sanitize_signature_rgba(
                 weight += 1.;
             }
             let scaled = ((weighted / weight - 0.1) / 0.3).clamp(0., 1.);
-            let value = (255. * scaled * scaled * (3. - 2. * scaled)).round() as u8;
+            let value = if transparent {
+                (255. * strength[ix]).round() as u8
+            } else {
+                (255. * scaled * scaled * (3. - 2. * scaled)).round() as u8
+            };
             alpha[ix] = value;
             if value >= 16 {
                 ink_count += 1;
@@ -394,4 +401,25 @@ fn validate_geometry((width, height): (u32, u32)) -> Result<(), ImageDecodeError
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod signature_quality_tests {
+    use super::*;
+
+    #[test]
+    fn transparent_signature_preserves_edge_coverage_without_spreading_ink() {
+        let mut image = image::RgbaImage::new(32, 16);
+        for (x, alpha) in [(10, 64), (11, 128), (12, 255)] {
+            image.put_pixel(x, 8, image::Rgba([0, 0, 0, alpha]));
+        }
+        let signature = sanitize_signature_rgba(image).unwrap();
+        let coverage: Vec<_> = signature
+            .asset()
+            .rgba()
+            .chunks_exact(4)
+            .filter_map(|pixel| (pixel[3] > 0).then_some(pixel[3]))
+            .collect();
+        assert_eq!(coverage, vec![64, 128, 255]);
+    }
 }

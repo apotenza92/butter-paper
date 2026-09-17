@@ -10,6 +10,10 @@ default = []
 benchmark-evidence = ["gpui/profiler"]
 
 [dependencies]
+aes-gcm = { version = "0.11.1", features = ["zeroize"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+qrcode = { version = "0.14.1", default-features = false }
+getrandom = "0.3"
 async-channel = "2.5.0"
 base64 = "0.22.1"
 chacha20poly1305 = { version = "0.11.0", features = ["zeroize"] }

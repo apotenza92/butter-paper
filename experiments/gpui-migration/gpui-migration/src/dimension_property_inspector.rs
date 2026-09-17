@@ -375,7 +375,10 @@ impl Render for DimensionPropertyInspector {
         let stroke = cx.entity().downgrade();
         let text = cx.entity().downgrade();
         let details = Field::new().child(
-            div().id(DIMENSION_INSPECTOR_LOCKED_ID).child(
+            div()
+                .id(DIMENSION_INSPECTOR_LOCKED_ID)
+                .debug_selector(|| DIMENSION_INSPECTOR_LOCKED_ID.into())
+                .child(
                 Switch::new("dimension-property-locked-switch")
                     .label("Locked")
                     .checked(snapshot.locked)
@@ -471,6 +474,7 @@ impl Render for DimensionPropertyInspector {
             DIMENSION_INSPECTOR_SCROLL_ID,
             "Dimension properties",
         )
+        .content_only(self.embedded && !snapshot.show_offset)
         .child(accordion)
         .into_any_element()
     }
@@ -558,7 +562,7 @@ fn color_field(
     });
     Field::new()
         .label(label)
-        .child(div().id(id).child(picker).children(apply))
+        .child(div().id(id).debug_selector(move || id.into()).child(picker).children(apply))
         .into_any_element()
 }
 

@@ -18,6 +18,14 @@
 - Portaled menus, popovers, tooltips, selects, and dialogs must remain keyboard accessible, contained at constrained window sizes, and compatible with the application shortcut handler.
 - Use a top-right icon-only X to dismiss a transient panel or expanded subflow. Reserve the word `Cancel` for a modal decision beside a commit or destructive action. Keep destructive item controls hidden until hover or keyboard focus, but always keyboard accessible and separate from the item's primary click target.
 
+## UI lint policy
+
+- `pnpm check:ui` runs the required Electron and GPUI source-policy gates and is included in `pnpm check`. `pnpm lint:ui` runs the same strict check. Electron rules: component restyling, raw colours and unknown classes; zero warnings permitted. Run either side separately with `pnpm check:ui:electron` or `pnpm check:ui:gpui`.
+- `apps/desktop/.oxlintrc.json` owns narrowly scoped file/component contracts. Keep global permission at layout only. Generated `components/ui` internals own their styling; colour and unknown-class rules still apply there. Do not blanket-disable rules, add warning-count baselines, or broaden allowances to make a failure pass.
+- The contracts preserve established compositions: shell/menu/tab boundary integration; fixed-size icon rails; compact form/group gaps; scroll clearance in template/signature lists; calibration action clearance; numeric zoom alignment; thumbnail hit-target corners; signature hover/focus removal and reduced-motion page spinners. The three existing domain-UI contracts retain the separately reviewed property editor, closable tab and rich template tooltip treatment. Each allowance is limited to its named component in its owning file; new visual exceptions still require a documented product/accessibility reason and relevant tests.
+- PDF canvas roles use named `bp-*` colour tokens in `styles.css`. Keep their paper-relative colours independent of the shell theme. Dynamic annotation colours are document data. Standalone SVG data URLs cannot inherit CSS variables; preserve their explicit data colours and tests. Do not replace canvas roles with unrelated chart or status tokens to satisfy lint.
+- The GPUI source gate checks the existing stock-tab/close/menu contracts, token usage in inspector/panel/viewer-toolbar/system-theme modules, and embedded measurement scroll ownership. Its colour rule catches direct numeric `rgb`/`rgba`/`hsla` constructor calls; it is a bounded source check, not a Rust parser or complete style analysis. It does not inspect document raster colours, infer semantic roles, or certify rendered geometry/gestures. Native compiled interaction tests and visual review remain required. Extend this gate with regression tests for concrete migration failures; do not claim black canvas handles are resolved by a source-policy pass.
+
 ## Sources of truth
 
 - Keep durable repository conventions in this file.

@@ -21,6 +21,23 @@
 
 @custom-variant dark (&:is(.dark *));
 
+@theme static {
+  /* PDF canvas roles stay stable over paper in both shell themes. */
+  --color-bp-path-close: #ff0000;
+  --color-bp-snap-guide: #2563eb;
+  --color-bp-relationship-guide: #16a34a;
+  --color-bp-ink-halo: #ffffff;
+  --color-bp-callout-ink: #0f172a;
+  --color-bp-text-selection: var(--color-blue-200);
+  --color-bp-signature-ink: var(--color-slate-900);
+  --color-bp-page-label: var(--color-neutral-950);
+  --color-bp-page-placeholder: var(--color-neutral-50);
+  --color-bp-page-error: var(--color-neutral-400);
+  --color-bp-page-border: var(--color-neutral-300);
+  --color-bp-overview-paper: var(--color-neutral-100);
+  --color-bp-overview-placeholder: var(--color-neutral-200);
+}
+
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: 'Geist Variable', sans-serif;

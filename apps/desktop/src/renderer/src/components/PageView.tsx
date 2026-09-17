@@ -1008,7 +1008,7 @@ export function PageView({
     <div
       ref={pageRef}
       className={[
-        'absolute border border-neutral-300 bg-white transition-[border-color,box-shadow]',
+        'absolute border border-bp-page-border bg-white transition-[border-color,box-shadow]',
         isTargetPage ? 'bp-current-page-outline' : '',
       ].join(' ')}
       style={{
@@ -1025,7 +1025,7 @@ export function PageView({
     >
       {overviewLabel ? (
         <div
-          className="pointer-events-none absolute left-2 top-2 z-20 rounded-[5px] bg-neutral-950/85 px-2 py-1 text-[11px] font-semibold leading-tight text-white shadow-sm"
+          className="pointer-events-none absolute left-2 top-2 z-20 rounded-[5px] bg-bp-page-label/85 px-2 py-1 text-[11px] font-semibold leading-tight text-white shadow-sm"
           data-testid={`page-overview-label-${overviewLabel.pageNumber}`}
         >
           <div>{`Page ${overviewLabel.pageNumber}`}</div>
@@ -1058,9 +1058,9 @@ export function PageView({
           data-render-quality={imageQuality ?? 'unknown'}
         />
       ) : (
-        <div className="flex h-full items-center justify-center bg-neutral-50">
+        <div className="flex h-full items-center justify-center bg-bp-page-placeholder">
           {renderState === 'error' ? (
-            <div className="text-[12px] text-neutral-400">Unable to render page</div>
+            <div className="text-[12px] text-bp-page-error">Unable to render page</div>
           ) : (
             <Spinner
               className={placeholderSpinner.animated ? undefined : 'animate-none'}

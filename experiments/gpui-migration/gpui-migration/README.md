@@ -453,3 +453,30 @@ journey still requires native functional testing before platform acceptance.
 Current progress and acceptance evidence belong in local planning files. The former
 2,000-line chronological README is preserved in
 `../archive/parity-era-2026-08-27/docs/GPUI-COMPONENT-COMPAT-README.md`.
+
+### macOS Signature development checks
+
+Run native commands through the Mac adapter of the unchanged storage/resource
+policy (set `DEVELOPER_DIR` externally if the selected Xcode needs an override):
+
+```sh
+python3 scripts/run-native-bounded.py cargo test --locked --lib phone_signature::tests
+python3 scripts/run-native-bounded.py cargo test --locked --lib camera_signature::tests
+zsh scripts/build-macos-app.sh
+```
+
+The development bundle includes the AVFoundation camera helper and the camera
+usage description. Launch the bundle through `open -n`, using isolated
+`BP_GPUI_DATA_DIR` and `TMPDIR` directories and a disposable PDF. A raw process
+launch is not equivalent Mac input/repaint evidence. This is an ad-hoc signed
+development bundle using development-only PDFium, not a release candidate.
+
+Phone signing uses the bundled `butter-paper-signature-phone` qrcp helper and
+Signature Pad assets from `experiments/phone-signature-prototype`. The Mac bundle
+script prepares and includes this helper (Go and Python 3.12+ are build dependencies).
+The helper selects a local IPv4 interface, serves Draw or Image, and returns one
+PNG through the app pipe for sanitisation and normal signature placement. Closing
+the panel or the app ends the helper. No relay is contacted by the workspace.
+The former HTTPS protocol module remains available for its deterministic tests;
+it is not the workspace's phone-signing path. Physical phone scans and camera
+capture/device release remain separate acceptance checks.

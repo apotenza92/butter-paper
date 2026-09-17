@@ -1,0 +1,177 @@
+{
+  "$schema": "../../node_modules/oxlint/configuration_schema.json",
+  "categories": {"correctness": "off"},
+  "jsPlugins": ["@shadcn/lint"],
+  "rules": {"shadcn/no-restyle": ["error", {"allow": ["layout"]}], "shadcn/no-raw-colors": "error", "shadcn/no-unknown-classes": "error"},
+  "ignorePatterns": ["src/renderer/src/**/*.test.ts", "src/renderer/src/**/*.test.tsx"],
+  "overrides": [
+    {
+      "files": ["src/renderer/src/components/ui/**"],
+      "rules": {"shadcn/no-restyle": "off"}
+    },
+    {
+      "files": ["src/renderer/src/components/AppMenuBar.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^MenubarShortcut$", "allow": ["layout", "pl-8"]},
+          {"pattern": "^Menubar$", "allow": ["layout", "rounded-none", "border-x-0", "border-t-0"]}
+        ]}]
+      }
+    },
+    {
+      "files": ["src/renderer/src/components/BlankPdfSettingsFields.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^FieldGroup$", "allow": ["layout", "gap-4", "gap-3"]}
+        ]}]
+      }
+    },
+    {
+      "files": ["src/renderer/src/components/ConfirmationPopover.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^PopoverContent$", "allow": ["layout", "gap-3", "p-3"]}
+        ]}]
+      }
+    },
+    {
+      "files": ["src/renderer/src/components/DocumentTabBar.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^Tabs$", "allow": ["layout", "gap-0"]},
+          {"pattern": "^TabsList$", "allow": ["layout", "gap-2", "rounded-none", "bg-background!", "p-0!"]}
+        ]}]
+      }
+    },
+    {
+      "files": ["src/renderer/src/components/DocumentViewport.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^Alert$", "allow": ["layout", "pr-20"]}
+        ]}]
+      }
+    },
+    {
+      "files": ["src/renderer/src/components/LeftRail.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^Toggle$", "allow": ["layout", "p-0"]}
+        ]}]
+      }
+    },
+    {
+      "files": ["src/renderer/src/components/PageScaleDialog.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^Field$", "allow": ["layout", "gap-1.5", "gap-2"]},
+          {"pattern": "^FieldSet$", "allow": ["layout", "gap-2", "gap-1.5"]},
+          {"pattern": "^FieldLegend$", "allow": ["layout", "text-muted-foreground"]}
+        ]}]
+      }
+    },
+    {
+      "files": ["src/renderer/src/components/PageThumbnailItem.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^Button$", "allow": ["layout", "rounded-lg"]}
+        ]}]
+      }
+    },
+    {
+      "files": ["src/renderer/src/components/PageView.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^Spinner$", "allow": ["layout", "animate-none"]}
+        ]}]
+      }
+    },
+    {
+      "files": ["src/renderer/src/components/RightRail.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^Toggle$", "allow": ["layout", "p-0"]},
+          {"pattern": "^Button$", "allow": ["layout", "border-0", "bg-transparent", "p-0"]}
+        ]}]
+      }
+    },
+    {
+      "files": ["src/renderer/src/components/SignatureMenu.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^ItemGroup$", "allow": ["layout", "gap-2", "pr-3"]},
+          {"pattern": "^Item$", "allow": ["layout", "p-2", "hover:bg-muted"]},
+          {"pattern": "^ItemActions$", "allow": ["layout", "opacity-0", "transition-opacity", "group-hover/signature:opacity-100", "group-focus-within/signature:opacity-100"]},
+          {"pattern": "^Toggle$", "allow": ["layout", "p-0"]}
+        ]}]
+      }
+    },
+    {
+      "files": ["src/renderer/src/components/SnapSettingsMenu.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^Toggle$", "allow": ["layout", "p-0"]},
+          {"pattern": "^FieldSet$", "allow": ["layout", "gap-2"]},
+          {"pattern": "^ToggleGroup$", "allow": ["layout", "gap-2"]},
+          {"pattern": "^ToggleGroupItem$", "allow": ["layout", "px-2"]}
+        ]}]
+      }
+    },
+    {
+      "files": ["src/renderer/src/components/TemplateManagerDialog.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^ItemGroup$", "allow": ["layout", "gap-1", "pr-3"]}
+        ]}]
+      }
+    },
+    {
+      "files": ["src/renderer/src/components/TemplatePickerPopover.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^PopoverContent$", "allow": ["layout", "gap-3"]},
+          {"pattern": "^ItemGroup$", "allow": ["layout", "gap-1", "pr-3"]}
+        ]}]
+      }
+    },
+    {
+      "files": ["src/renderer/src/components/ViewerToolbar.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^Button$", "allow": ["layout", "tabular-nums"]},
+          {"pattern": "^DropdownMenuRadioItem$", "allow": ["layout", "tabular-nums"]}
+        ]}]
+      }
+    },
+    {
+      "files": ["src/renderer/src/components/domain-ui/ClosableDocumentTab.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^TabsTrigger$", "allow": ["layout", "bg-background!", "data-active:bg-muted!", "group-data-[dragging]/document-tab:after:opacity-0!"]}
+        ]}]
+      }
+    },
+    {
+      "files": ["src/renderer/src/components/domain-ui/LastTemplatePreviewTooltip.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^TooltipContent$", "allow": ["layout", "bg-popover", "text-popover-foreground", "shadow-md", "[&>div[aria-hidden=true]:last-child]:bg-popover!"]}
+        ]}]
+      }
+    },
+    {
+      "files": ["src/renderer/src/components/domain-ui/PropertyControls.tsx"],
+      "rules": {
+        "shadcn/no-restyle": ["error", {"allow": ["layout"], "contracts": [
+          {"pattern": "^FieldLabel$", "allow": ["layout", "text-xs", "uppercase"]},
+          {"pattern": "^FieldDescription$", "allow": ["layout", "text-xs"]},
+          {"pattern": "^AccordionItem$", "allow": ["layout", "border-b"]},
+          {"pattern": "^AccordionTrigger$", "allow": ["layout", "rounded-none", "border-0", "px-3", "py-3", "text-sm", "font-medium", "hover:no-underline"]},
+          {"pattern": "^AccordionContent$", "allow": ["layout", "px-3", "pb-5"]},
+          {"pattern": "^FieldSet$", "allow": ["layout", "gap-3"]},
+          {"pattern": "^FieldGroup$", "allow": ["layout", "gap-3", "gap-2"]},
+          {"pattern": "^TooltipContent$", "allow": ["layout", "gap-1", "py-2"]}
+        ]}]
+      }
+    }
+  ]
+}

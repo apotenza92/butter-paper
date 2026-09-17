@@ -34,14 +34,19 @@ use butter_paper_gpui_migration::perf_scenario::{
     PresentedCropEvidenceInput, PresentedCropSignalDisposition, QualificationError,
     map_presented_crop_evidence, merge_presented_crop_open_events,
 };
+use butter_paper_gpui_migration::recent_signature_store::{
+    PlatformSignatureKeyStore, RecentSignatureStore, RECENT_SIGNATURES_FILE_NAME,
+};
 use butter_paper_gpui_migration::session_manifest::SessionManifestStore;
 use butter_paper_gpui_migration::system_theme::follow_window_appearance_with_application_zoom;
 use butter_paper_gpui_migration::template_manager::{
     TemplateManagerView, legacy_blank_request_from_json, route_workspace_template_command,
 };
 use butter_paper_gpui_migration::window_title_bar::{
-    APPLICATION_TITLE, format_window_title, title_bar_window_options, window_title_bar,
+    APPLICATION_TITLE, format_window_title, title_bar_window_options,
 };
+#[cfg(not(target_os = "macos"))]
+use butter_paper_gpui_migration::window_title_bar::window_title_bar;
 use gpui::{
     App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, InteractiveElement as _,
     IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _,
@@ -1282,6 +1287,7 @@ impl Render for ComponentStory {
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground);
+        #[cfg(not(target_os = "macos"))]
         let root = root.child(window_title_bar(
             self.window_title.clone(),
             window.viewport_size().width,
@@ -1526,11 +1532,27 @@ fn main() {
                 ));
                 let saver = std::sync::Arc::new(PdfDocumentSaver::new(opener.clone()));
                 let document_workspace = cx.new(|cx| {
-                    DocumentWorkspace::with_opener_and_generated_store(
+                    let mut workspace = DocumentWorkspace::with_opener_and_generated_store(
                         opener,
                         generated_store.clone(),
                         cx,
-                    )
+                    );
+                    // Migration-only identity. Never consult Electron's production store.
+                    // Construction performs no credential or filesystem IO on the UI thread.
+                    if perf.is_none() {
+                        if let Some(directory) = application_data_directory() {
+                            workspace.bind_recent_signature_store(std::sync::Arc::new(
+                                RecentSignatureStore::new(
+                                    directory.join(RECENT_SIGNATURES_FILE_NAME),
+                                    std::sync::Arc::new(PlatformSignatureKeyStore::new(
+                                        "com.butterpaper.gpui-migration.recent-signatures",
+                                        "encryption-key-v1",
+                                    )),
+                                ),
+                            ));
+                        }
+                    }
+                    workspace
                 });
                 match launch_resolution.action.clone() {
                     NativeLaunchAction::None => {}
