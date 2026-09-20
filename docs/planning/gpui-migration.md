@@ -22,6 +22,8 @@ Integration must verify which regions abut or intersect, continuity and ownershi
 
 ## Current state
 
+Numbered task status lives in [migration-todo.md](migration-todo.md); this file owns the Phase detail. Region briefs own their gates and evidence.
+
 | Region | State | Next action |
 | --- | --- | --- |
 | Comparison baseline and ownership | Agreed | Reuse frozen evidence; refresh deliberately if it becomes unavailable |
@@ -133,6 +135,8 @@ Every row is **open for Phase 4 acceptance**. Preserve existing tested behaviour
 | Context menus and overlays | Right-click target/selection policy, dismissal, popup containment, submenu and tooltip timing, topmost Escape, return focus | Same target for menu action and visible context; no click-through; keyboard and pointer paths agree at minimum window size |
 | Properties | Selected/default/mixed values, slider drag and numeric edits, validation, switches, colour/opacity, lock, disabled/busy; coalesced history | Preview tracks input; one intended edit; unchanged values do not dirty the file; all sections reachable in one owned scroll region |
 | Workspace states | Active/inactive tabs, tool toggles, selected thumbnails/list rows, hover close/remove, drag reorder/resize, overflow, focus ring | Audit blue selected treatment per surface; hover and keyboard affordances agree; no layout jump or lost target during resizing |
+| File-drop open | PDF-only filtering, multi-file drops opening in new tabs, busy indication, authorisation/open failure messages, silent no-op for empty and non-PDF drops | Dropped batches match Electron filtering, tab placement and feedback; no silent loss of valid PDFs and no error for non-PDF content |
+| Fullscreen transition | macOS fullscreen entry/exit, custom title-bar and app-menu-bar visibility, traffic-light clearance, layout stability across the transition | Native fullscreen matches the Electron layout contract with no overlapping chrome or lost targets; state stays subscribed after repeated transitions |
 | Interruption and recovery | Escape hierarchy, pointer cancel/lost capture, mouse release beyond page/window, app deactivation, tab/page/tool switch, loading/error/save/worker recovery | No stuck cursor, handle, modifier, draft or stale selection; no partial edit persisted; returning focus resumes a coherent state |
 | Accessibility and scale | Keyboard reachability, names/roles/states, focus visibility, contrast, reduced motion, Retina/fractional scaling, narrow windows | Visible states are also exposed semantically; colour is reinforced by shape/dash/outline; stable screen-space target sizes and unclipped handles |
 
@@ -171,20 +175,16 @@ The native gate now also prevents interaction colours from escaping the shared `
 4. **Integrated input:** qualify snapping, text/IME, navigation, context menus, inspectors, keyboard focus and interruption across pages/tabs/windows.
 5. **Acceptance:** each row needs deterministic behaviour checks and representative real Mac input/visual evidence. Include light/dark, Retina and fractional scale, a constrained window, rotated page, overlapping and locked objects. Save/reopen representative edited documents and prove interaction chrome never enters PDF content. Run the focused native suites and `pnpm check`; inspect the final captures separately for contradictions. User visual acceptance and physical-device checks remain explicit; do not infer them from green tests.
 
-Next action now: unblock the real-window harness by restoring or substituting Apple Metal tooling, then run the canvas-interaction matrix with selected, hovered/active yellow handle, and window/crossing box and lasso states. Record the exact visible-state evidence and the passing/failing runner modes in the Phase 4 status; do not treat the existing synthetic and source checks as visual parity.
+Next action now: reference and contracts are recorded in [phase-4-interactions.md](phase-4-interactions.md) (Electron behaviour tables plus native assessment and ten implementation gaps). Continue in gap order there: shared hover/focus/draft roles, hold/click behaviour and tool persistence, then per-family placement and modifier corrections. Capture Electron/current GPUI interaction crops and short gesture recordings for the canvas region before implementing. Record the exact visible-state evidence and the passing/failing runner modes in the Phase 4 status; do not treat the existing synthetic and source checks as visual parity.
 
-### Approved region crop: left toolbar rail
+### Approved region crops
 
-Frozen Electron source in the main checkout: test-results/parallel-pilot/reference-two-tabs-full.png (1152×768). Proposed implementation bounds: x=0,y=108,w=46,h=660, from below the tab band to the window bottom. Includes the narrow rail, its page-thumbnail toggle, app-edge inset and right separator. Excludes the thumbnail sidebar contents, viewer toolbar and tabs. The expanded sidebar is a distinct region at x=46,y=108,w=288,h=660; its header, page cards, actions, scrolling and resize boundary will receive a separate brief. Opening/closing that panel and the resulting rail selected state remain rail interaction checks.
-
-Revised context capture: x=0,y=92,w=390,h=676, showing the entire expanded sidebar and a small canvas margin, not an ambiguous sliver. Evidence: test-results/parallel-pilot/proposed-left-regions-labelled.png; blue solid outline marks proposed rail scope, amber dashed outline marks sidebar context only. The labels and outlines are review annotations, not application styling. This replaces proposed-left-rail-context.png for approval. This historical reference has loading thumbnails outside scope; it is boundary/scope evidence, not settled-content or interaction proof. No region brief or implementation begins before approval of the revised crop.
+Crop ownership moved to the region briefs to avoid duplication: left rail and expanded sidebar context in [left-rail.md](left-rail.md), Page Thumbnails sidebar in [left-sidebar.md](left-sidebar.md), right tool rail in [right-rail.md](right-rail.md), whole-workspace scope in [workspace-integration.md](workspace-integration.md). Do not approve a new crop here.
 
 
 ## Source and evidence
 
-Approved region: right tool rail, x=1068,y=108,w=84,h=660 in the frozen 1152×768 Electron reference. Main-checkout evidence test-results/parallel-pilot/proposed-right-rail-region.png includes unscaled context x=1008,y=92,w=144,h=676. Blue outline identifies the rail; canvas scrollbar and tab edge are context only. Scope includes top controls, grouped tool buttons, headings, separators and boundary insets. Excludes expanded properties sidebar, inspectors and annotation-engine redesign. The user approved the crop and explicitly rejected the GPUI horizontal annotation strip. See right-rail.md for implementation and remaining gates. Preserve stock GPUI focus behaviour per the user's latest direction.
-
-Approved region: expanded Page Thumbnails sidebar. Frozen reference bounds x=46,y=108,w=288,h=660, including header, thumbnail cards and their page actions, scrolling and right resize boundary. The accepted left rail, tabs and canvas are context only. Main-checkout evidence test-results/parallel-pilot/proposed-sidebar-region.png uses the same x=0,y=92,w=390,h=676 context crop with a blue outline on the sidebar. User approved this spatial scope; the source's loading previews are not loaded-content acceptance. Sidebar top must meet tabs beside the viewer toolbar, not sit underneath that toolbar or the legacy tool row. See left-sidebar.md for implementation and remaining gates.
+Region crop detail lives in the briefs linked above; this section keeps only shared source policy.
 
 Active branch: codex/gpui-component-migration-spike. Active crate: experiments/gpui-migration/gpui-migration. Build and dependency instructions remain in that crate's README, FOUNDATION and source-preparation policy. The former gallery and other native prototypes are retired.
 
