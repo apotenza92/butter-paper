@@ -213,9 +213,9 @@ fn in_place_save_route_requires_a_new_target_for_provenance_or_platform_capabili
 use butter_paper_gpui_migration::semantic_snapping::{SemanticSnapRole, SemanticSnapSource};
 use butter_paper_gpui_migration::template_library::{BUILT_IN_BLANK_ID, TemplateLibrary};
 use gpui::{
-    AppContext as _, ClipboardItem, EntityInputHandler as _, Focusable as _, Modifiers,
-    MouseButton, MouseDownEvent, MouseExitEvent, MouseUpEvent, ScrollDelta, ScrollWheelEvent,
-    TestAppContext, point, px, size,
+    AppContext as _, ClipboardItem, EntityInputHandler as _, Focusable as _, KeyDownEvent,
+    KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent, MouseUpEvent,
+    ScrollDelta, ScrollWheelEvent, TestAppContext, point, px, size,
 };
 use gpui_component::{Root, Theme, ThemeMode, WindowExt as _};
 use image::{ImageBuffer, ImageFormat, Rgba};
@@ -30909,4 +30909,211 @@ fn worker_process_exists(pid: u32) -> bool {
     }
     #[cfg(not(target_os = "macos"))]
     { PathBuf::from(format!("/proc/{pid}")).exists() }
+}
+
+fn simulate_space_down(cx: &mut gpui::VisualTestContext, held: bool) {
+    cx.simulate_event(KeyDownEvent {
+        keystroke: Keystroke::parse("space").expect("space must parse"),
+        is_held: held,
+        prefer_character_input: false,
+    });
+}
+
+fn simulate_space_up(cx: &mut gpui::VisualTestContext) {
+    cx.simulate_event(KeyUpEvent {
+        keystroke: Keystroke::parse("space").expect("space must parse"),
+    });
+}
+
+fn workspace_tool_for_test(
+    cx: &mut gpui::VisualTestContext,
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: DocumentId,
+) -> Option<AnnotationTool> {
+    workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_tool(document_id, cx)
+    })
+}
+
+fn workspace_pan_for_test(
+    cx: &mut gpui::VisualTestContext,
+    workspace: &gpui::Entity<DocumentWorkspace>,
+) -> bool {
+    workspace.read_with(cx, |workspace, _| workspace.is_pan_tool_active())
+}
+
+#[gpui::test]
+fn hold_space_pans_temporarily_and_double_tap_toggles_pan_select(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("bp-space-pan.pdf"), cx)
+    });
+    let document_id = request.document_id;
+    let released = Arc::new(AtomicBool::new(false));
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| workspace.apply_open_result(
+            &request,
+            Ok(opened_document(released)),
+            cx,
+        )),
+        ApplyDisposition::Applied
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    // A focused session tab is an interactive target, so Space must not pan.
+    // No keyup follows: the ignored keydown leaves no stash and stamps no
+    // tap, keeping the sections below independent of the 300ms window.
+    let tab_focus = workspace
+        .read_with(cx, |workspace, _| {
+            workspace.session_tab_focus_handle(document_id)
+        })
+        .expect("the session tab must expose its focus handle");
+    cx.update(|window, cx| tab_focus.focus(window, cx));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(document_id, AnnotationTool::Line, cx)
+        })
+        .unwrap();
+    simulate_space_down(cx, false);
+    assert_eq!(
+        workspace_tool_for_test(cx, &workspace, document_id),
+        Some(AnnotationTool::Line),
+        "Space with tab focus must not stash or pan"
+    );
+    assert!(
+        !workspace_pan_for_test(cx, &workspace),
+        "Space with tab focus must not activate pan"
+    );
+
+    // Canvas presses claim workspace focus, mirroring DOM mousedown focus.
+    let layer = cx
+        .debug_bounds("document-1-annotation-layer-0")
+        .expect("the real annotation canvas must render");
+    cx.simulate_mouse_down(layer.center(), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(layer.center(), MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    assert_eq!(
+        cx.update(|window, cx| window.focused(cx)),
+        Some(workspace_focus),
+        "a canvas press must move focus to the workspace"
+    );
+
+    // An explicit tool change clears the stash: release must not restore it.
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(document_id, AnnotationTool::Rectangle, cx)
+        })
+        .unwrap();
+    simulate_space_down(cx, false);
+    assert!(
+        workspace_pan_for_test(cx, &workspace),
+        "hold must stash the rectangle tool and pan"
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(document_id, AnnotationTool::Ellipse, cx)
+        })
+        .unwrap();
+    assert!(
+        !workspace_pan_for_test(cx, &workspace),
+        "an explicit tool change must leave pan"
+    );
+    simulate_space_up(cx);
+    assert_eq!(
+        workspace_tool_for_test(cx, &workspace, document_id),
+        Some(AnnotationTool::Ellipse),
+        "release after an explicit change must not restore the stash"
+    );
+
+    // Leave the release's double-tap window before the next hold section.
+    std::thread::sleep(Duration::from_millis(350));
+
+    // Hold: keydown stashes the tool and pans; keyup restores exactly.
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(document_id, AnnotationTool::Line, cx)
+        })
+        .unwrap();
+    simulate_space_down(cx, false);
+    assert_eq!(
+        workspace_tool_for_test(cx, &workspace, document_id),
+        Some(AnnotationTool::Select),
+        "hold-Space must switch to the pan tool"
+    );
+    assert!(
+        workspace_pan_for_test(cx, &workspace),
+        "hold-Space must activate pan"
+    );
+    simulate_space_up(cx);
+    assert_eq!(
+        workspace_tool_for_test(cx, &workspace, document_id),
+        Some(AnnotationTool::Line),
+        "Space release must restore the stashed tool exactly"
+    );
+    assert!(
+        !workspace_pan_for_test(cx, &workspace),
+        "Space release must leave pan"
+    );
+
+    // Key repeat must not start, overwrite or disturb the double-tap window:
+    // the next real press still double-taps the release above.
+    simulate_space_down(cx, true);
+    assert_eq!(
+        workspace_tool_for_test(cx, &workspace, document_id),
+        Some(AnnotationTool::Line),
+        "repeat keydown must not start a hold"
+    );
+    assert!(
+        !workspace_pan_for_test(cx, &workspace),
+        "repeat keydown must not activate pan"
+    );
+
+    // Double-tap within 300ms toggles pan/select permanently.
+    simulate_space_down(cx, false);
+    assert_eq!(
+        workspace_tool_for_test(cx, &workspace, document_id),
+        Some(AnnotationTool::Select),
+        "double-tap must land on Select with permanent pan"
+    );
+    assert!(
+        workspace_pan_for_test(cx, &workspace),
+        "double-tap must keep pan active"
+    );
+    simulate_space_up(cx);
+    assert!(
+        workspace_pan_for_test(cx, &workspace),
+        "release after a double-tap toggle must not restore"
+    );
+    simulate_space_down(cx, false);
+    assert!(
+        !workspace_pan_for_test(cx, &workspace),
+        "double-tap from pan must toggle back to Select"
+    );
+    assert_eq!(
+        workspace_tool_for_test(cx, &workspace, document_id),
+        Some(AnnotationTool::Select)
+    );
+    simulate_space_up(cx);
+    assert!(
+        !workspace_pan_for_test(cx, &workspace),
+        "release after toggling back must stay on Select"
+    );
 }

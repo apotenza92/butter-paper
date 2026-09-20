@@ -3219,6 +3219,28 @@ impl AnnotationAdapter {
             .then(|| id.clone()))
     }
 
+    /// Hover candidate for pointer-move feedback. Mirrors the Select
+    /// pointer-down hit order (direct hit, then non-rectangle fallback) without
+    /// mutating selection. Callers clear the candidate on pointer exit, press,
+    /// and tool change.
+    pub fn hover_markup_id(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<MarkupId>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        let direct_hit = document.hit_test(page_index, point, tolerance_pt)?;
+        Ok(direct_hit
+            .as_ref()
+            .map(|hit| hit.markup_id().clone())
+            .or_else(|| hit_non_rectangle(document, page_index, point, tolerance_pt)))
+    }
+
     pub fn selected_ellipse_appearance(&self, document_id: u64) -> Option<&RectangleAppearance> {
         let document = self.documents.get(&document_id)?;
         let id = document.selected_id()?;
@@ -6886,6 +6908,15 @@ impl AnnotationAdapter {
             .get(&document_id)
             .map(AnnotationDocument::selected_ids)
             .unwrap_or_default()
+    }
+
+    /// Focused annotation for keyboard-focus feedback. Tracks the most
+    /// recently selected id; empty when nothing is selected.
+    pub fn focused_id(&self, document_id: u64) -> Option<MarkupId> {
+        self.documents
+            .get(&document_id)?
+            .focused_id()
+            .cloned()
     }
 
     /// Returns the current primary annotation without requiring the rest of
@@ -11275,5 +11306,42 @@ mod tests {
         let draft = dimension.document_scene(9, 0).dimensions.remove(0);
         assert!((draft.end.x - 15. * points_per_mm).abs() < 0.000_001);
         assert_eq!(draft.end.y, 0.);
+    }
+
+    #[test]
+    fn hover_markup_id_mirrors_select_hit_order() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = MarkupId::new("rectangle:hover").unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Rectangle(
+                RectangleAnnotation {
+                    id: id.clone(),
+                    page_index: 0,
+                    rect: PdfRect::new(10., 20., 100., 50.).unwrap(),
+                    rotation_degrees: 0.,
+                    appearance: RectangleAppearance::default(),
+                    locked: false,
+                },
+            )))
+            .unwrap();
+
+        assert_eq!(
+            adapter.hover_markup_id(7, 0, point(50., 40.), 1.0).unwrap(),
+            Some(id)
+        );
+        assert_eq!(
+            adapter
+                .hover_markup_id(7, 0, point(500., 500.), 1.0)
+                .unwrap(),
+            None
+        );
+        assert!(
+            adapter
+                .hover_markup_id(99, 0, point(50., 40.), 1.0)
+                .is_err()
+        );
     }
 }

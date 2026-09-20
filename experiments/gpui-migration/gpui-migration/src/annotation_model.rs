@@ -4412,6 +4412,7 @@ impl ActiveGesture {
 pub struct AnnotationDocument {
     state: DocumentState,
     selected_ids: Vec<MarkupId>,
+    focused_id: Option<MarkupId>,
     active_gesture: Option<ActiveGesture>,
     past: VecDeque<DocumentState>,
     future: VecDeque<DocumentState>,
@@ -4459,6 +4460,7 @@ impl AnnotationDocument {
                 revision: 0,
             },
             selected_ids: Vec::new(),
+            focused_id: None,
             active_gesture: None,
             past: VecDeque::new(),
             future: VecDeque::new(),
@@ -4695,11 +4697,34 @@ impl AnnotationDocument {
         self.future.clear();
         self.saved_revision = 0;
         self.next_revision = 1;
+        self.focused_id = None;
         Ok(())
     }
 
     pub fn selected_id(&self) -> Option<&MarkupId> {
         self.selected_ids.first()
+    }
+
+    /// Most recently selected annotation. An empty selection has no focus;
+    /// removing the focused annotation falls back to the last remaining one.
+    pub fn focused_id(&self) -> Option<&MarkupId> {
+        self.focused_id.as_ref()
+    }
+
+    fn refresh_focused_id(&mut self, explicit: Option<&MarkupId>) {
+        if let Some(id) = explicit {
+            if self.selected_ids.contains(id) {
+                self.focused_id = Some(id.clone());
+                return;
+            }
+        }
+        let still_selected = self
+            .focused_id
+            .as_ref()
+            .is_some_and(|id| self.selected_ids.contains(id));
+        if !still_selected {
+            self.focused_id = self.selected_ids.last().cloned();
+        }
     }
 
     pub fn selected_ids(&self) -> &[MarkupId] {
@@ -5800,6 +5825,7 @@ impl AnnotationDocument {
 
     pub fn clear_selection(&mut self) {
         self.selected_ids.clear();
+        self.focused_id = None;
     }
 
     pub fn select(&mut self, id: &MarkupId) -> bool {
@@ -5810,6 +5836,7 @@ impl AnnotationDocument {
             self.selected_ids.clear();
             self.selected_ids.push(id.clone());
         }
+        self.refresh_focused_id(Some(id));
         true
     }
 
@@ -5819,8 +5846,10 @@ impl AnnotationDocument {
         }
         if let Some(index) = self.selected_ids.iter().position(|selected| selected == id) {
             self.selected_ids.remove(index);
+            self.refresh_focused_id(None);
         } else {
             self.selected_ids.push(id.clone());
+            self.refresh_focused_id(Some(id));
         }
         true
     }
@@ -6018,6 +6047,7 @@ impl AnnotationDocument {
             .filter(|id| self.annotation_page(id) == Some(page_index))
             .cloned()
             .collect();
+        self.refresh_focused_id(None);
         &self.selected_ids
     }
 
@@ -6045,6 +6075,7 @@ impl AnnotationDocument {
             .map(|annotation| annotation.id().clone())
             .collect::<Vec<_>>();
         self.selected_ids = selection_after(&self.selected_ids, &hits, marquee.operation);
+        self.refresh_focused_id(None);
         &self.selected_ids
     }
 
@@ -6094,6 +6125,7 @@ impl AnnotationDocument {
             }
         });
         self.selected_ids = ids.clone();
+        self.refresh_focused_id(None);
         Ok(ids)
     }
 
@@ -6163,6 +6195,7 @@ impl AnnotationDocument {
                 .retain(|annotation| !deleted_for_state.contains(&annotation.id));
         });
         self.selected_ids.retain(|id| !deleted.contains(id));
+        self.refresh_focused_id(None);
         Ok(deleted)
     }
 
@@ -6287,6 +6320,7 @@ impl AnnotationDocument {
             .as_ref()
             .map(|target| vec![target.markup_id().clone()])
             .unwrap_or_default();
+        self.refresh_focused_id(hit.as_ref().map(|target| target.markup_id()));
         Ok(hit)
     }
 
@@ -6656,6 +6690,7 @@ impl AnnotationDocument {
                     state.pens.push(annotation);
                 });
                 self.selected_ids = vec![id.clone()];
+                self.focused_id = self.selected_ids.last().cloned();
                 Ok(CommitOutcome::Created(id))
             }
             ActiveGesture::Create { annotation, .. } => {
@@ -6671,6 +6706,7 @@ impl AnnotationDocument {
                     state.rectangles.push(annotation);
                 });
                 self.selected_ids = vec![id.clone()];
+                self.focused_id = self.selected_ids.last().cloned();
                 Ok(CommitOutcome::Created(id))
             }
             ActiveGesture::Move {
@@ -7339,6 +7375,7 @@ impl AnnotationDocument {
             }
         });
         self.selected_ids = vec![id];
+        self.focused_id = self.selected_ids.last().cloned();
         Ok(())
     }
 
@@ -9088,6 +9125,7 @@ impl AnnotationDocument {
             .cloned()
             .collect();
         self.selected_ids = existing;
+        self.refresh_focused_id(None);
     }
 }
 
@@ -12128,5 +12166,53 @@ mod tests {
             r##"{"markups":[{"appearance":{"fill":{"color":"#abcdef"},"fillOpacity":1.0,"opacity":0.35,"stroke":{"color":"#123456","widthPt":3.25}},"id":"perf-rectangle-1","kind":"rectangle","pageIndex":0,"rect":{"height":72.0,"width":216.0,"x":108.0,"y":552.0}}],"schema_version":1,"selection":"perf-rectangle-1"}"##
         );
         assert_eq!(fnv1a64_hex(snapshot.as_bytes()), "c43b4a338e830124");
+    }
+
+    #[test]
+    fn focused_id_tracks_most_recent_selection() {
+        let mut document = AnnotationDocument::default();
+        create_rectangle(&mut document, "a");
+        create_rectangle(&mut document, "b");
+        assert_eq!(document.focused_id(), Some(&id("b")));
+
+        assert!(document.select(&id("a")));
+        assert_eq!(document.focused_id(), Some(&id("a")));
+
+        assert!(document.toggle_selection(&id("b")));
+        assert_eq!(document.focused_id(), Some(&id("b")));
+
+        assert!(document.toggle_selection(&id("b")));
+        assert_eq!(document.focused_id(), Some(&id("a")));
+
+        document.clear_selection();
+        assert_eq!(document.focused_id(), None);
+        assert!(document.selected_ids().is_empty());
+    }
+
+    #[test]
+    fn focused_id_clears_when_selection_deleted() {
+        let mut document = AnnotationDocument::default();
+        create_rectangle(&mut document, "a");
+        assert_eq!(document.focused_id(), Some(&id("a")));
+
+        document.delete_selected_unlocked().unwrap();
+        assert_eq!(document.focused_id(), None);
+        assert!(document.selected_ids().is_empty());
+    }
+
+    #[test]
+    fn select_at_moves_focus_to_hit() {
+        let mut document = AnnotationDocument::default();
+        create_rectangle(&mut document, "a");
+        document.clear_selection();
+        assert_eq!(document.focused_id(), None);
+
+        let miss = document.select_at(0, point(500.0, 500.0), 1.0).unwrap();
+        assert!(miss.is_none());
+        assert_eq!(document.focused_id(), None);
+
+        let hit = document.select_at(0, point(50.0, 40.0), 1.0).unwrap();
+        assert!(hit.is_some());
+        assert_eq!(document.focused_id(), Some(&id("a")));
     }
 }

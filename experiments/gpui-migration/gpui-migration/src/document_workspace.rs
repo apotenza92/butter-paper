@@ -1,5 +1,7 @@
 #[path = "interaction_chrome.rs"]
 mod interaction_chrome;
+#[path = "space_pan.rs"]
+mod space_pan;
 
 use gpui_component::FocusTrapElement as _;
 use gpui_component::ElementExt as _;
@@ -133,7 +135,7 @@ use crate::{
 use gpui::{
     Anchor, App, AppContext as _, BorderStyle, Bounds, ClickEvent, ContentMask, Context,
     DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable as _, InteractiveElement as _,
-    IntoElement, KeyBinding, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent,
+    IntoElement, KeyBinding, KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent,
     MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement as _, PathBuilder, PathPromptOptions,
     Pixels, Point, Render, RenderImage, Role, ScrollHandle, ScrollStrategy, ScrollWheelEvent,
     SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription,
@@ -2161,6 +2163,7 @@ pub struct DocumentWorkspace {
     session_tab_reveal: Option<DocumentId>,
     session_tab_last_active: Option<DocumentId>,
     session_tab_hovered: Option<DocumentId>,
+    hovered_annotation: Option<(DocumentId, u32, MarkupId)>,
     session_tab_scroll: ScrollHandle,
     session_tab_close_bounds: HashMap<DocumentId, Rc<Cell<Bounds<Pixels>>>>,
     session_tab_pointer_drag: Option<DocumentSessionTabPointerDragState>,
@@ -2184,6 +2187,7 @@ pub struct DocumentWorkspace {
     right_rail_scroll: ScrollHandle,
     pan_tool_active: bool,
     pan_drag: Option<(DocumentId, Point<Pixels>, Point<Pixels>)>,
+    space_pan_hold: space_pan::SpacePanHold,
     workspace_focus: FocusHandle,
     text_box_return_focus: FocusHandle,
     pending_text_box_editor: Option<PendingTextBoxEditor>,
@@ -2568,6 +2572,7 @@ impl DocumentWorkspace {
             session_tab_reveal: None,
             session_tab_last_active: None,
             session_tab_hovered: None,
+            hovered_annotation: None,
             session_tab_scroll: ScrollHandle::new(),
             session_tab_close_bounds: HashMap::new(),
             session_tab_pointer_drag: None,
@@ -2591,6 +2596,7 @@ impl DocumentWorkspace {
             right_rail_scroll: ScrollHandle::new(),
             pan_tool_active: false,
             pan_drag: None,
+            space_pan_hold: space_pan::SpacePanHold::default(),
             workspace_focus: cx.focus_handle(),
             text_box_return_focus: cx.focus_handle(),
             pending_text_box_editor: None,
@@ -10688,6 +10694,10 @@ impl DocumentWorkspace {
     ) -> Result<(), String> {
         self.pan_tool_active = false;
         self.pan_drag = None;
+        // Every explicit tool change clears a hold-Space stash, mirroring
+        // `handleToolChange`. Hold/restore flows call this funnel first and
+        // record their own stash afterwards.
+        self.space_pan_hold.clear_stash();
         if self
             .active_annotation_pointer
             .is_some_and(|active| active.document_id == document_id)
@@ -10709,6 +10719,143 @@ impl DocumentWorkspace {
         })?;
         cx.notify();
         Ok(())
+    }
+
+    pub fn is_pan_tool_active(&self) -> bool {
+        self.pan_tool_active
+    }
+
+    /// Whether a canvas press may move focus to the workspace. The reference
+    /// moves DOM focus to the body on canvas mousedown, but natively the
+    /// claim must not preempt overlay dismissal: stealing focus from a
+    /// dangling handle or a portal overlay outside the workspace subtree
+    /// wedges toggle state (proven by the recent-signature placement press,
+    /// whose unmounted trigger kept focus while the popover flag was false).
+    /// Mounted in-workspace chrome (rail buttons, tabs, docked inputs)
+    /// mirrors DOM mousedown blur, except while a popover-class overlay owns
+    /// the interaction. Skipping the claim never disturbs the gesture itself.
+    fn canvas_focus_claim_allowed(&self, window: &mut Window, cx: &App) -> bool {
+        if !self.workspace_focus.contains_focused(window, cx) {
+            return window.focused(cx).is_none();
+        }
+        !self.signature_popover_open
+            && !self.annotation_stroke_menu_open
+            && !self.annotation_highlight_settings_open
+            && !self.semantic_snap_settings_open
+            && !self.right_rail_actions_open
+            && !self
+                .page_scale_control
+                .as_ref()
+                .is_some_and(|control| control.read(cx).is_picking())
+    }
+
+    /// Native equivalent of the reference `isInteractiveShortcutTarget` gate
+    /// for Space-pan: only canvas-level focus (or no focus) may hold Space.
+    /// Focused buttons, tabs, inputs, menus and dialogs keep their own Space
+    /// behaviour. Canvas presses claim `workspace_focus` (see
+    /// `begin_annotation_pointer`), mirroring DOM mousedown moving focus to
+    /// the body, so the guard stays usable after canvas interaction.
+    fn space_pan_available(&self, window: &mut Window, cx: &App) -> bool {
+        if self.pending_text_box_editor.is_some()
+            || self.pending_close_document_id.is_some()
+        {
+            return false;
+        }
+        match window.focused(cx) {
+            None => true,
+            Some(focused) => focused == self.workspace_focus,
+        }
+    }
+
+    fn space_pan_session_ready(&self, document_id: DocumentId, cx: &App) -> bool {
+        self.session(document_id, cx).is_some_and(|session| {
+            let session = session.read(cx);
+            matches!(session.status, NativeDocumentStatus::Ready)
+                && session.save_status != NativeDocumentSaveStatus::Saving
+        })
+    }
+
+    fn handle_space_pan_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.keystroke.key != "space" {
+            return;
+        }
+        // The reference `mod` early-return runs before Space handling, so
+        // platform/ctrl+Space is never swallowed or panned here either.
+        let modifiers = &event.keystroke.modifiers;
+        if modifiers.platform || modifiers.control {
+            return;
+        }
+        if !self.space_pan_available(window, cx) {
+            return;
+        }
+        // Mirror the reference: swallow Space before the repeat check so held
+        // repeats cannot arm focused-button activation, then ignore repeats.
+        window.prevent_default();
+        cx.stop_propagation();
+        let Some(document_id) = self.active_document_id else {
+            return;
+        };
+        let Some(current_tool) = self.annotation_tool(document_id, cx) else {
+            return;
+        };
+        if !self.space_pan_session_ready(document_id, cx) {
+            return;
+        }
+        match self.space_pan_hold.key_down(
+            Instant::now(),
+            self.pan_tool_active,
+            event.is_held,
+        ) {
+            space_pan::SpacePanDown::Ignored => {}
+            space_pan::SpacePanDown::BeginHold => {
+                let _ = self.set_annotation_tool(document_id, AnnotationTool::Select, cx);
+                // The funnel above clears the stash as an explicit change;
+                // record the hold stash afterwards.
+                self.space_pan_hold.set_stash(current_tool);
+                self.pan_tool_active = true;
+                cx.notify();
+            }
+            space_pan::SpacePanDown::TogglePermanent => {
+                // Read pan state before the funnel clears it: toggling from
+                // pan lands on Select, toggling from any tool lands on pan.
+                let was_pan_active = self.pan_tool_active;
+                let _ = self.set_annotation_tool(document_id, AnnotationTool::Select, cx);
+                if !was_pan_active {
+                    self.pan_tool_active = true;
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    fn handle_space_pan_up(
+        &mut self,
+        event: &KeyUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.keystroke.key != "space" {
+            return;
+        }
+        if !self.space_pan_available(window, cx) {
+            return;
+        }
+        window.prevent_default();
+        cx.stop_propagation();
+        // The release stamps the double-tap window even with no stash, so
+        // record it before checking for an active document.
+        let restore = self.space_pan_hold.key_up(Instant::now());
+        let Some(document_id) = self.active_document_id else {
+            return;
+        };
+        if let Some(restore) = restore {
+            let _ = self.set_annotation_tool(document_id, restore, cx);
+        }
     }
 
     pub fn prepare_image_from_path(
@@ -11981,6 +12128,7 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.clear_hover_candidate(cx);
         if self.pending_text_box_editor.is_some()
             || self.pending_close_document_id.is_some()
             || self
@@ -11996,6 +12144,16 @@ impl DocumentWorkspace {
                 return false;
             }
             let Some(session) = self.session(document_id, cx) else { return false; };
+            // DOM parity: a canvas press moves focus to the workspace body so
+            // hold-Space later sees a non-interactive target. This runs in the
+            // capture phase, so focusable chrome (buttons, tabs, inputs)
+            // still reclaims focus during bubble. Unreachable while the text
+            // editor owns focus: the guard above already returned. Overlay
+            // interaction in flight keeps its focus (see
+            // `canvas_focus_claim_allowed`).
+            if self.canvas_focus_claim_allowed(window, cx) {
+                self.workspace_focus.focus(window, cx);
+            }
             self.pan_drag = Some((document_id, position, session.read(cx).viewer.scroll_handle().offset()));
             return true;
         }
@@ -12010,6 +12168,9 @@ impl DocumentWorkspace {
         else {
             return false;
         };
+        if self.canvas_focus_claim_allowed(window, cx) {
+            self.workspace_focus.focus(window, cx);
+        }
         let Some(point) = Self::interaction_point(interaction, position, true) else {
             return false;
         };
@@ -12756,7 +12917,7 @@ impl DocumentWorkspace {
             && !cloud_plus_pending
             && !arc_pending
         {
-            return false;
+            return self.update_hover_candidate(&session, &interaction, point, cx);
         }
         let updated = session
             .update(cx, |session, cx| {
@@ -12825,6 +12986,61 @@ impl DocumentWorkspace {
             cx.notify();
         }
         updated
+    }
+
+    /// Hover candidate for pointer-move feedback. Resolves the topmost
+    /// selectable annotation under the pointer when no placement is pending
+    /// and no marquee gesture is active; anything else clears the candidate.
+    /// Returns true when the candidate changed. Paint reads the candidate to
+    /// render hover chrome; selection and draft states take precedence there.
+    fn update_hover_candidate(
+        &mut self,
+        session: &Entity<NativeDocumentSession>,
+        interaction: &PageInteraction,
+        point: PdfPoint,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let document_id = interaction.document_id;
+        let marquee_active = session
+            .read(cx)
+            .annotations
+            .active_selection_marquee(document_id.value())
+            .is_some();
+        if marquee_active {
+            return self.clear_hover_candidate(cx);
+        }
+        let tolerance = match interaction.transform.tolerance_points(4.) {
+            Ok(tolerance) => tolerance,
+            Err(_) => return self.clear_hover_candidate(cx),
+        };
+        let candidate = session
+            .read(cx)
+            .annotations
+            .hover_markup_id(
+                document_id.value(),
+                interaction.page_index,
+                point,
+                tolerance,
+            )
+            .ok()
+            .flatten()
+            .map(|id| (document_id, interaction.page_index, id));
+        if self.hovered_annotation != candidate {
+            self.hovered_annotation = candidate;
+            cx.notify();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn clear_hover_candidate(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.hovered_annotation.take().is_some() {
+            cx.notify();
+            true
+        } else {
+            false
+        }
     }
 
     fn update_annotation_pointer(
@@ -13297,6 +13513,8 @@ fn paint_ellipse_annotations(
     page_size: (f32, f32),
     transform: &PageTransform,
     selection_color: gpui::Hsla,
+    hovered_id: Option<&MarkupId>,
+    focused_id: Option<&MarkupId>,
     window: &mut Window,
 ) {
     for annotation in annotations {
@@ -13349,7 +13567,15 @@ fn paint_ellipse_annotations(
                     .opacity(annotation.appearance.opacity() as f32),
             );
         }
-        if annotation.selected {
+        let annotation_focused = focused_id == Some(&annotation.id);
+        let annotation_hovered = hovered_id == Some(&annotation.id);
+        if let Some(chrome_outline) = interaction_chrome::outline_for(
+            annotation.selected,
+            annotation_focused,
+            annotation_hovered,
+            annotation.preview,
+            annotation.locked,
+        ) {
             let mut builder = PathBuilder::stroke(px(2.));
             builder.move_to(project(start));
             for (control_a, control_b, to) in segments {
@@ -13357,44 +13583,46 @@ fn paint_ellipse_annotations(
             }
             builder.close();
             if let Ok(path) = builder.build() {
-                window.paint_path(path, selection_color);
+                window.paint_path(path, chrome_outline);
             }
-            for center in RectangleResizeHandle::ALL
-                .map(|handle| {
-                    ellipse_resize_handle_point_for_rect(
-                        annotation.rect,
-                        annotation.rotation_degrees,
-                        handle,
-                    )
-                })
-                .map(project)
-            {
-                interaction_chrome::paint_handle(Bounds::new(
-                        point(center.x - px(4.), center.y - px(4.)),
-                        size(px(8.), px(8.)),
-                    ), annotation.locked, window);
-            }
-            if let Ok(rotation_handle) = ellipse_rotation_handle_point_for_rect(
-                annotation.rect,
-                annotation.rotation_degrees,
-                transform.pixels_per_point(),
-            ) {
-                let north = ellipse_resize_handle_point_for_rect(
+            if (annotation.selected || annotation_focused) && !annotation.preview {
+                for center in RectangleResizeHandle::ALL
+                    .map(|handle| {
+                        ellipse_resize_handle_point_for_rect(
+                            annotation.rect,
+                            annotation.rotation_degrees,
+                            handle,
+                        )
+                    })
+                    .map(project)
+                {
+                    interaction_chrome::paint_handle(Bounds::new(
+                            point(center.x - px(4.), center.y - px(4.)),
+                            size(px(8.), px(8.)),
+                        ), annotation.locked, window);
+                }
+                if let Ok(rotation_handle) = ellipse_rotation_handle_point_for_rect(
                     annotation.rect,
                     annotation.rotation_degrees,
-                    RectangleResizeHandle::North,
-                );
-                let mut connector = PathBuilder::stroke(px(2.));
-                connector.move_to(project(north));
-                connector.line_to(project(rotation_handle));
-                if let Ok(path) = connector.build() {
-                    window.paint_path(path, interaction_chrome::outline_colour(annotation.locked));
+                    transform.pixels_per_point(),
+                ) {
+                    let north = ellipse_resize_handle_point_for_rect(
+                        annotation.rect,
+                        annotation.rotation_degrees,
+                        RectangleResizeHandle::North,
+                    );
+                    let mut connector = PathBuilder::stroke(px(2.));
+                    connector.move_to(project(north));
+                    connector.line_to(project(rotation_handle));
+                    if let Ok(path) = connector.build() {
+                        window.paint_path(path, chrome_outline);
+                    }
+                    let center = project(rotation_handle);
+                    interaction_chrome::paint_handle(Bounds::new(
+                            point(center.x - px(4.), center.y - px(4.)),
+                            size(px(8.), px(8.)),
+                        ), annotation.locked, window);
                 }
-                let center = project(rotation_handle);
-                interaction_chrome::paint_handle(Bounds::new(
-                        point(center.x - px(4.), center.y - px(4.)),
-                        size(px(8.), px(8.)),
-                    ), annotation.locked, window);
             }
         }
     }
@@ -13406,6 +13634,8 @@ fn paint_cloud_plus_annotation(
     page_bounds: Bounds<Pixels>,
     page_size: (f32, f32),
     selection_color: gpui::Hsla,
+    hovered_id: Option<&MarkupId>,
+    focused_id: Option<&MarkupId>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -13529,21 +13759,31 @@ fn paint_cloud_plus_annotation(
             }
         },
     );
-    if annotation.selected {
+    let annotation_focused = focused_id == Some(&annotation.id);
+    let annotation_hovered = hovered_id == Some(&annotation.id);
+    if let Some(chrome_outline) = interaction_chrome::outline_for(
+        annotation.selected,
+        annotation_focused,
+        annotation_hovered,
+        annotation.draft,
+        annotation.locked,
+    ) {
         window.paint_quad(
-            outline(text_box_bounds, interaction_chrome::outline_colour(annotation.locked), BorderStyle::Solid)
+            outline(text_box_bounds, chrome_outline, BorderStyle::Solid)
                 .border_widths(px(if annotation.locked { 1. } else { 2. })),
         );
-        for center in annotation
-            .cloud_points
-            .into_iter()
-            .map(project)
-            .chain(projected_leader)
-        {
-            interaction_chrome::paint_handle(Bounds::new(
-                    point(center.x - px(4.), center.y - px(4.)),
-                    size(px(8.), px(8.)),
-                ), annotation.locked, window);
+        if (annotation.selected || annotation_focused) && !annotation.draft {
+            for center in annotation
+                .cloud_points
+                .into_iter()
+                .map(project)
+                .chain(projected_leader)
+            {
+                interaction_chrome::paint_handle(Bounds::new(
+                        point(center.x - px(4.), center.y - px(4.)),
+                        size(px(8.), px(8.)),
+                    ), annotation.locked, window);
+            }
         }
     }
 }
@@ -13554,6 +13794,8 @@ fn paint_dimension_annotation(
     page_bounds: Bounds<Pixels>,
     page_size: (f32, f32),
     selection_color: gpui::Hsla,
+    _hovered_id: Option<&MarkupId>,
+    _focused_id: Option<&MarkupId>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -13696,7 +13938,7 @@ fn paint_dimension_annotation(
         cx,
     );
 
-    if annotation.selected {
+    if annotation.selected && !annotation.draft {
 
         for center in [
             project(annotation.start),
@@ -13717,6 +13959,8 @@ fn paint_arc_annotations(
     page_size: (f32, f32),
     transform: &PageTransform,
     selection_color: gpui::Hsla,
+    hovered_id: Option<&MarkupId>,
+    focused_id: Option<&MarkupId>,
     window: &mut Window,
 ) {
     for annotation in annotations {
@@ -13750,25 +13994,35 @@ fn paint_arc_annotations(
                     .opacity(annotation.appearance.opacity() as f32),
             );
         }
-        if annotation.selected {
+        let annotation_focused = focused_id == Some(&annotation.id);
+        let annotation_hovered = hovered_id == Some(&annotation.id);
+        if let Some(chrome_outline) = interaction_chrome::outline_for(
+            annotation.selected,
+            annotation_focused,
+            annotation_hovered,
+            annotation.draft,
+            annotation.locked,
+        ) {
             let mut selection = PathBuilder::stroke(px(2.));
             selection.move_to(project(first));
             for sample in annotation.sampled_path.iter().skip(1) {
                 selection.line_to(project(*sample));
             }
             if let Ok(path) = selection.build() {
-                window.paint_path(path, selection_color);
+                window.paint_path(path, chrome_outline);
             }
 
-            for center in [
-                project(annotation.start),
-                project(annotation.mid),
-                project(annotation.end),
-            ] {
-                interaction_chrome::paint_handle(Bounds::new(
-                        point(center.x - px(4.), center.y - px(4.)),
-                        size(px(8.), px(8.)),
-                    ), annotation.locked, window);
+            if (annotation.selected || annotation_focused) && !annotation.draft {
+                for center in [
+                    project(annotation.start),
+                    project(annotation.mid),
+                    project(annotation.end),
+                ] {
+                    interaction_chrome::paint_handle(Bounds::new(
+                            point(center.x - px(4.), center.y - px(4.)),
+                            size(px(8.), px(8.)),
+                        ), annotation.locked, window);
+                }
             }
         }
     }
@@ -13814,6 +14068,8 @@ fn paint_redact_annotations(
     page_size: (f32, f32),
     transform: &PageTransform,
     selection_color: gpui::Hsla,
+    hovered_id: Option<&MarkupId>,
+    focused_id: Option<&MarkupId>,
     window: &mut Window,
 ) {
     for annotation in annotations {
@@ -13844,24 +14100,34 @@ fn paint_redact_annotations(
             outline(annotation_bounds, stroke_color, BorderStyle::Solid)
                 .border_widths(stroke_width),
         );
-        if !annotation.selected {
+        let annotation_focused = focused_id == Some(&annotation.id);
+        let annotation_hovered = hovered_id == Some(&annotation.id);
+        let Some(chrome_outline) = interaction_chrome::outline_for(
+            annotation.selected,
+            annotation_focused,
+            annotation_hovered,
+            annotation.draft,
+            annotation.locked,
+        ) else {
             continue;
-        }
+        };
         window.paint_quad(
-            outline(annotation_bounds, selection_color, BorderStyle::Solid).border_widths(px(2.)),
+            outline(annotation_bounds, chrome_outline, BorderStyle::Solid).border_widths(px(2.)),
         );
 
-        for handle in RectangleResizeHandle::ALL {
-            let local =
-                transform.point_to_local_pixels(redact_resize_point(annotation.rect, handle));
-            let center = point(
-                page_bounds.origin.x + px(local.x as f32),
-                page_bounds.origin.y + px(local.y as f32),
-            );
-            interaction_chrome::paint_handle(Bounds::new(
-                    point(center.x - px(4.), center.y - px(4.)),
-                    size(px(8.), px(8.)),
-                ), annotation.locked, window);
+        if (annotation.selected || annotation_focused) && !annotation.draft {
+            for handle in RectangleResizeHandle::ALL {
+                let local =
+                    transform.point_to_local_pixels(redact_resize_point(annotation.rect, handle));
+                let center = point(
+                    page_bounds.origin.x + px(local.x as f32),
+                    page_bounds.origin.y + px(local.y as f32),
+                );
+                interaction_chrome::paint_handle(Bounds::new(
+                        point(center.x - px(4.), center.y - px(4.)),
+                        size(px(8.), px(8.)),
+                    ), annotation.locked, window);
+            }
         }
     }
 }
@@ -14344,6 +14610,8 @@ fn annotation_layer(
     highlights_precomposed: bool,
     image_assets: Arc<HashMap<String, Arc<RenderImage>>>,
     selection_color: gpui::Hsla,
+    hovered_id: Option<MarkupId>,
+    focused_id: Option<MarkupId>,
     construction_grid_color: gpui::Hsla,
     construction_grid_spacing_mm: Option<f64>,
     semantic_snap_decision: Option<SemanticSnapDecision>,
@@ -14421,6 +14689,8 @@ fn annotation_layer(
                     }
                 },
                 move |bounds, _, window, cx| {
+                    let hovered_id = hovered_id.as_ref();
+                    let focused_id = focused_id.as_ref();
                     let Some((page_bounds, transform)) =
                         contained_page_bounds_for_space(bounds, page_size, coordinate_space)
                     else {
@@ -14442,6 +14712,8 @@ fn annotation_layer(
                         page_size,
                         &transform,
                         selection_color,
+                        hovered_id,
+                        focused_id,
                         window,
                     );
                     for annotation in scene.rectangles {
@@ -14502,7 +14774,15 @@ fn annotation_layer(
                                     .opacity(annotation.appearance.opacity() as f32);
                                 window.paint_path(path, color);
                             }
-                            if annotation.selected {
+                            let annotation_focused = focused_id == Some(&annotation.id);
+                            let annotation_hovered = hovered_id == Some(&annotation.id);
+                            if let Some(chrome_outline) = interaction_chrome::outline_for(
+                                annotation.selected,
+                                annotation_focused,
+                                annotation_hovered,
+                                annotation.preview,
+                                annotation.locked,
+                            ) {
                                 let mut builder = PathBuilder::stroke(px(2.));
                                 builder.move_to(points[0]);
                                 for point in points.iter().skip(1) {
@@ -14510,13 +14790,16 @@ fn annotation_layer(
                                 }
                                 builder.close();
                                 if let Ok(path) = builder.build() {
-                                    window.paint_path(path, selection_color);
+                                    window.paint_path(path, chrome_outline);
                                 }
-                                for center in points {
-                                    interaction_chrome::paint_handle(Bounds::new(
-                                            point(center.x - px(4.), center.y - px(4.)),
-                                            size(px(8.), px(8.)),
-                                        ), annotation.locked, window);
+                                if (annotation.selected || annotation_focused) && !annotation.preview
+                                {
+                                    for center in points {
+                                        interaction_chrome::paint_handle(Bounds::new(
+                                                point(center.x - px(4.), center.y - px(4.)),
+                                                size(px(8.), px(8.)),
+                                            ), annotation.locked, window);
+                                    }
                                 }
                             }
                             continue;
@@ -14582,9 +14865,17 @@ fn annotation_layer(
                                 }
                             }
                         }
-                        if annotation.selected {
+                        let annotation_focused = focused_id == Some(&annotation.id);
+                        let annotation_hovered = hovered_id == Some(&annotation.id);
+                        if let Some(chrome_outline) = interaction_chrome::outline_for(
+                            annotation.selected,
+                            annotation_focused,
+                            annotation_hovered,
+                            annotation.preview,
+                            annotation.locked,
+                        ) {
                             window.paint_quad(
-                                outline(annotation_bounds, selection_color, BorderStyle::Solid)
+                                outline(annotation_bounds, chrome_outline, BorderStyle::Solid)
                                     .border_widths(px(2.)),
                             );
                             let left = annotation_bounds.origin.x;
@@ -14595,36 +14886,38 @@ fn annotation_layer(
                             let center_y = top + annotation_bounds.size.height / 2.;
                             let handle_size = px(8.);
                             let handle_half = handle_size / 2.;
-                            for center in [
-                                point(left, top),
-                                point(center_x, top),
-                                point(right, top),
-                                point(right, center_y),
-                                point(right, bottom),
-                                point(center_x, bottom),
-                                point(left, bottom),
-                                point(left, center_y),
-                            ] {
+                            if (annotation.selected || annotation_focused) && !annotation.preview {
+                                for center in [
+                                    point(left, top),
+                                    point(center_x, top),
+                                    point(right, top),
+                                    point(right, center_y),
+                                    point(right, bottom),
+                                    point(center_x, bottom),
+                                    point(left, bottom),
+                                    point(left, center_y),
+                                ] {
+                                    interaction_chrome::paint_handle(Bounds::new(
+                                            point(center.x - handle_half, center.y - handle_half),
+                                            size(handle_size, handle_size),
+                                        ), annotation.locked, window);
+                                }
+                                let rotation_center = point(center_x, top - px(12.));
+                                window.paint_quad(fill(
+                                    Bounds::new(
+                                        point(center_x - px(1.), rotation_center.y),
+                                        size(px(2.), px(12.)),
+                                    ),
+                                    chrome_outline,
+                                ));
                                 interaction_chrome::paint_handle(Bounds::new(
-                                        point(center.x - handle_half, center.y - handle_half),
+                                        point(
+                                            rotation_center.x - handle_half,
+                                            rotation_center.y - handle_half,
+                                        ),
                                         size(handle_size, handle_size),
                                     ), annotation.locked, window);
                             }
-                            let rotation_center = point(center_x, top - px(12.));
-                            window.paint_quad(fill(
-                                Bounds::new(
-                                    point(center_x - px(1.), rotation_center.y),
-                                    size(px(2.), px(12.)),
-                                ),
-                                interaction_chrome::outline_colour(annotation.locked),
-                            ));
-                            interaction_chrome::paint_handle(Bounds::new(
-                                    point(
-                                        rotation_center.x - handle_half,
-                                        rotation_center.y - handle_half,
-                                    ),
-                                    size(handle_size, handle_size),
-                                ), annotation.locked, window);
                         }
                     }
                     paint_ellipse_annotations(
@@ -14633,6 +14926,8 @@ fn annotation_layer(
                         page_size,
                         &transform,
                         selection_color,
+                        hovered_id,
+                        focused_id,
                         window,
                     );
                     paint_arc_annotations(
@@ -14641,6 +14936,8 @@ fn annotation_layer(
                         page_size,
                         &transform,
                         selection_color,
+                        hovered_id,
+                        focused_id,
                         window,
                     );
                     for annotation in scene.straight_lines {
@@ -14699,7 +14996,7 @@ fn annotation_layer(
                                 window.paint_path(path, color);
                             }
                         }
-                        if annotation.selected {
+                        if annotation.selected && !annotation.draft {
 
                             for center in [start, end] {
                                 interaction_chrome::paint_handle(Bounds::new(
@@ -14773,7 +15070,7 @@ fn annotation_layer(
                         if let Ok(path) = stroke_builder.build() {
                             window.paint_path(path, stroke_color);
                         }
-                        if annotation.selected {
+                        if annotation.selected && !annotation.draft {
 
                             for center in projected {
                                 interaction_chrome::paint_handle(Bounds::new(
@@ -14812,7 +15109,7 @@ fn annotation_layer(
                         if let Ok(path) = builder.build() {
                             window.paint_path(path, stroke_color);
                         }
-                        if annotation.selected {
+                        if annotation.selected && !annotation.draft {
 
                             for center in annotation.points.into_iter().map(project) {
                                 interaction_chrome::paint_handle(Bounds::new(
@@ -14829,6 +15126,8 @@ fn annotation_layer(
                             page_bounds,
                             page_size,
                             selection_color,
+                            hovered_id,
+                            focused_id,
                             window,
                             cx,
                         );
@@ -14958,16 +15257,26 @@ fn annotation_layer(
                                 }
                             },
                         );
-                        if annotation.selected {
+                        let annotation_focused = focused_id == Some(&annotation.id);
+                        let annotation_hovered = hovered_id == Some(&annotation.id);
+                        if let Some(chrome_outline) = interaction_chrome::outline_for(
+                            annotation.selected,
+                            annotation_focused,
+                            annotation_hovered,
+                            annotation.draft,
+                            annotation.locked,
+                        ) {
                             window.paint_quad(
-                                outline(text_box_bounds, interaction_chrome::outline_colour(annotation.locked), BorderStyle::Solid)
+                                outline(text_box_bounds, chrome_outline, BorderStyle::Solid)
                                     .border_widths(px(if annotation.locked { 1. } else { 2. })),
                             );
-                            for center in projected_leader {
-                                interaction_chrome::paint_handle(Bounds::new(
-                                        point(center.x - px(4.), center.y - px(4.)),
-                                        size(px(8.), px(8.)),
-                                    ), annotation.locked, window);
+                            if (annotation.selected || annotation_focused) && !annotation.draft {
+                                for center in projected_leader {
+                                    interaction_chrome::paint_handle(Bounds::new(
+                                            point(center.x - px(4.), center.y - px(4.)),
+                                            size(px(8.), px(8.)),
+                                        ), annotation.locked, window);
+                                }
                             }
                         }
                     }
@@ -15074,7 +15383,7 @@ fn annotation_layer(
                                 cx,
                             );
                         }
-                        if annotation.selected {
+                        if annotation.selected && !annotation.draft {
 
                             for center in projected.iter().copied() {
                                 interaction_chrome::paint_handle(Bounds::new(
@@ -15131,7 +15440,15 @@ fn annotation_layer(
                                 window.paint_path(path, color);
                             }
                         }
-                        if annotation.selected {
+                        let annotation_focused = focused_id == Some(&annotation.id);
+                        let annotation_hovered = hovered_id == Some(&annotation.id);
+                        if let Some(chrome_outline) = interaction_chrome::outline_for(
+                            annotation.selected,
+                            annotation_focused,
+                            annotation_hovered,
+                            annotation.draft,
+                            annotation.locked,
+                        ) {
                             let projected = annotation
                                 .paths
                                 .iter()
@@ -15158,7 +15475,7 @@ fn annotation_layer(
                                                 bottom - top + padding * 2.,
                                             ),
                                         ),
-                                        selection_color,
+                                        chrome_outline,
                                         BorderStyle::Solid,
                                     )
                                     .border_widths(px(1.)),
@@ -15234,9 +15551,17 @@ fn annotation_layer(
                                 }
                             },
                         );
-                        if annotation.selected {
+                        let annotation_focused = focused_id == Some(&annotation.id);
+                        let annotation_hovered = hovered_id == Some(&annotation.id);
+                        if let Some(chrome_outline) = interaction_chrome::outline_for(
+                            annotation.selected,
+                            annotation_focused,
+                            annotation_hovered,
+                            false,
+                            annotation.locked,
+                        ) {
                             window.paint_quad(
-                                outline(annotation_bounds, interaction_chrome::outline_colour(annotation.locked), BorderStyle::Solid)
+                                outline(annotation_bounds, chrome_outline, BorderStyle::Solid)
                                     .border_widths(px(if annotation.locked { 1. } else { 2. })),
                             );
                             let left = annotation_bounds.origin.x;
@@ -15245,20 +15570,22 @@ fn annotation_layer(
                             let bottom = top + annotation_bounds.size.height;
                             let center_x = left + annotation_bounds.size.width / 2.;
                             let center_y = top + annotation_bounds.size.height / 2.;
-                            for center in [
-                                point(left, top),
-                                point(center_x, top),
-                                point(right, top),
-                                point(right, center_y),
-                                point(right, bottom),
-                                point(center_x, bottom),
-                                point(left, bottom),
-                                point(left, center_y),
-                            ] {
-                                interaction_chrome::paint_handle(Bounds::new(
-                                        point(center.x - px(4.), center.y - px(4.)),
-                                        size(px(8.), px(8.)),
-                                    ), annotation.locked, window);
+                            if annotation.selected || annotation_focused {
+                                for center in [
+                                    point(left, top),
+                                    point(center_x, top),
+                                    point(right, top),
+                                    point(right, center_y),
+                                    point(right, bottom),
+                                    point(center_x, bottom),
+                                    point(left, bottom),
+                                    point(left, center_y),
+                                ] {
+                                    interaction_chrome::paint_handle(Bounds::new(
+                                            point(center.x - px(4.), center.y - px(4.)),
+                                            size(px(8.), px(8.)),
+                                        ), annotation.locked, window);
+                                }
                             }
                         }
                     }
@@ -15269,6 +15596,8 @@ fn annotation_layer(
                             page_bounds,
                             page_size,
                             selection_color,
+                            hovered_id,
+                            focused_id,
                             window,
                             cx,
                         );
@@ -15363,9 +15692,17 @@ fn annotation_layer(
                                 false,
                             );
                         }
-                        if annotation.selected {
+                        let annotation_focused = focused_id == Some(&annotation.id);
+                        let annotation_hovered = hovered_id == Some(&annotation.id);
+                        if let Some(chrome_outline) = interaction_chrome::outline_for(
+                            annotation.selected,
+                            annotation_focused,
+                            annotation_hovered,
+                            annotation.draft,
+                            annotation.locked,
+                        ) {
                             window.paint_quad(
-                                outline(image_bounds, selection_color, BorderStyle::Solid)
+                                outline(image_bounds, chrome_outline, BorderStyle::Solid)
                                     .border_widths(px(if annotation.locked { 1. } else { 2. })),
                             );
                         }
@@ -15392,9 +15729,17 @@ fn annotation_layer(
                                 false,
                             );
                         }
-                        if annotation.selected {
+                        let annotation_focused = focused_id == Some(&annotation.id);
+                        let annotation_hovered = hovered_id == Some(&annotation.id);
+                        if let Some(chrome_outline) = interaction_chrome::outline_for(
+                            annotation.selected,
+                            annotation_focused,
+                            annotation_hovered,
+                            false,
+                            annotation.locked,
+                        ) {
                             window.paint_quad(
-                                outline(image_bounds, selection_color, BorderStyle::Solid)
+                                outline(image_bounds, chrome_outline, BorderStyle::Solid)
                                     .border_widths(px(if annotation.locked { 1. } else { 2. })),
                             );
                             let left = image_bounds.origin.x;
@@ -15403,20 +15748,22 @@ fn annotation_layer(
                             let bottom = top + image_bounds.size.height;
                             let center_x = left + image_bounds.size.width / 2.;
                             let center_y = top + image_bounds.size.height / 2.;
-                            for center in [
-                                point(left, top),
-                                point(center_x, top),
-                                point(right, top),
-                                point(right, center_y),
-                                point(right, bottom),
-                                point(center_x, bottom),
-                                point(left, bottom),
-                                point(left, center_y),
-                            ] {
-                                interaction_chrome::paint_handle(Bounds::new(
-                                        point(center.x - px(4.), center.y - px(4.)),
-                                        size(px(8.), px(8.)),
-                                    ), annotation.locked, window);
+                            if annotation.selected || annotation_focused {
+                                for center in [
+                                    point(left, top),
+                                    point(center_x, top),
+                                    point(right, top),
+                                    point(right, center_y),
+                                    point(right, bottom),
+                                    point(center_x, bottom),
+                                    point(left, bottom),
+                                    point(left, center_y),
+                                ] {
+                                    interaction_chrome::paint_handle(Bounds::new(
+                                            point(center.x - px(4.), center.y - px(4.)),
+                                            size(px(8.), px(8.)),
+                                        ), annotation.locked, window);
+                                }
                             }
                         }
                     }
@@ -16429,6 +16776,16 @@ impl Render for DocumentWorkspace {
             .min_h_0()
             .track_focus(&self.workspace_focus)
             .key_context(DOCUMENT_WORKSPACE_CONTEXT)
+            .on_key_down(cx.listener(
+                |workspace, event: &KeyDownEvent, window, cx| {
+                    workspace.handle_space_pan_down(event, window, cx);
+                },
+            ))
+            .on_key_up(cx.listener(
+                |workspace, event: &KeyUpEvent, window, cx| {
+                    workspace.handle_space_pan_up(event, window, cx);
+                },
+            ))
             .on_action(cx.listener(Self::open_pdf_from_action))
             .on_action(cx.listener(|workspace, _: &NewFromTemplate, _, cx| {
                 workspace.template_manage_requests =
@@ -16568,6 +16925,9 @@ impl Render for DocumentWorkspace {
                 if workspace.pan_tool_active {
                     workspace.pan_tool_active = false;
                     workspace.pan_drag = None;
+                    // Escape also drops a hold-Space stash, mirroring the
+                    // reference global-Escape reset to Select.
+                    workspace.space_pan_hold.clear_stash();
                     cx.notify();
                 } else if workspace
                     .page_scale_control
@@ -17598,6 +17958,10 @@ impl Render for DocumentWorkspace {
         .absolute()
         .inset_0();
         let selection_color = interaction_chrome::selection_colour();
+        let focused_annotation_id = self
+            .session(document_id, cx)
+            .and_then(|session| session.read(cx).annotations.focused_id(document_id.value()));
+        let hovered_annotation = self.hovered_annotation.clone();
         let pending_text_box_input = self
             .pending_text_box_editor
             .as_ref()
@@ -19148,13 +19512,14 @@ impl Render for DocumentWorkspace {
                     }
                     let cancelled = exit_control
                         .update(cx, |workspace, cx| {
+                            let hover_cleared = workspace.clear_hover_candidate(cx);
                             if workspace
                                 .active_annotation_pointer
                                 .is_some_and(|active| active.placement_pending)
                             {
-                                false
+                                hover_cleared
                             } else {
-                                workspace.cancel_active_annotation_pointer(cx)
+                                workspace.cancel_active_annotation_pointer(cx) || hover_cleared
                             }
                         })
                         .unwrap_or(false);
@@ -19310,6 +19675,8 @@ impl Render for DocumentWorkspace {
                         .child({
                             let thumbnail_rows = Arc::new(thumbnails);
                             let thumbnail_count = thumbnail_rows.len();
+                            let thumbnail_hovered = hovered_annotation.clone();
+                            let thumbnail_focused = focused_annotation_id.clone();
                             let thumbnail_control = cx.entity().downgrade();
                             let thumbnail_images = image_assets.clone();
                             let thumbnail_scale_control = page_scale_control.clone();
@@ -19488,6 +19855,10 @@ impl Render for DocumentWorkspace {
                                                                             highlights_precomposed,
                                                                             thumbnail_images.clone(),
                                                                             selection_color,
+                                                                            thumbnail_hovered.clone().filter(|(doc, page, _)| {
+                                                                                *doc == document_id && *page == page_index
+                                                                            }).map(|(_, _, id)| id),
+                                                                            thumbnail_focused.clone(),
                                                                             cx.theme().border,
                                                                             None,
                                                                             None,
@@ -20267,6 +20638,10 @@ impl Render for DocumentWorkspace {
                                                             highlights_precomposed,
                                                             image_assets.clone(),
                                                             selection_color,
+                                                            hovered_annotation.clone().filter(|(doc, page, _)| {
+                                                                *doc == document_id && *page == page_index
+                                                            }).map(|(_, _, id)| id),
+                                                            focused_annotation_id.clone(),
                                                             cx.theme().border,
                                                             construction_grid_spacing_mm,
                                                             (page_index == current_page)
@@ -20308,6 +20683,10 @@ impl Render for DocumentWorkspace {
                                                     current_highlights_precomposed,
                                                     image_assets,
                                                     selection_color,
+                                                    hovered_annotation.clone().filter(|(doc, page, _)| {
+                                                        *doc == document_id && *page == current_page
+                                                    }).map(|(_, _, id)| id),
+                                                    focused_annotation_id.clone(),
                                                     cx.theme().border,
                                                     construction_grid_spacing_mm,
                                                     semantic_snap_decision.clone(),
