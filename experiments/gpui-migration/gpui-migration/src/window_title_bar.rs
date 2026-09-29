@@ -4,7 +4,7 @@ use gpui::{
 };
 use gpui_component::{TitleBar, h_flex};
 
-pub const APPLICATION_TITLE: &str = "GPUI Migration";
+pub const APPLICATION_TITLE: &str = "Butter Paper";
 #[cfg(target_os = "macos")]
 // The pinned TitleBar reserves this leading lane for native traffic lights but
 // does not expose a centred-title slot. Mirror that platform inset on the

@@ -112,17 +112,17 @@ pub fn build_in_window_application_menus(
 }
 
 fn build_product_menu() -> Menu {
-    Menu::new("GPUI Migration").items([
+    Menu::new("Butter Paper").items([
         MenuItem::action("Set as Default PDF App…", SetAsDefaultPdfApp).disabled(true),
         MenuItem::action(
-            "Default PDF registration is not yet available in GPUI Migration",
+            "Default PDF registration is not yet available in Butter Paper",
             SetAsDefaultPdfApp,
         )
         .disabled(true),
         MenuItem::separator(),
         MenuItem::action("Check for Updates…", CheckForUpdates).disabled(true),
         MenuItem::action(
-            "Updates are not yet available in GPUI Migration",
+            "Updates are not yet available in Butter Paper",
             CheckForUpdates,
         )
         .disabled(true),
@@ -133,7 +133,7 @@ fn build_product_menu() -> Menu {
         ),
         MenuItem::action("View Releases…", OpenReleasePage),
         MenuItem::separator(),
-        MenuItem::action("Quit GPUI Migration", RequestApplicationQuit),
+        MenuItem::action("Quit Butter Paper", RequestApplicationQuit),
     ])
 }
 

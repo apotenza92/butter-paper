@@ -547,11 +547,12 @@ export async function smokeSignedMacosPackage({
         helper,
       ],
       logs,
-      { timeout: 60_000 },
+      // Hosted Intel runners need well over a minute for an optimised swiftc build.
+      { timeout: 300_000 },
     );
     const driver = (command, ...args) => {
       const output = execute(helper, [command, ...args.map(String)], logs, {
-        timeout: 20_000,
+        timeout: 45_000,
       });
       try {
         return JSON.parse(output);
@@ -634,7 +635,7 @@ export async function smokeSignedMacosPackage({
         "packaged app did not remain alive through both worker observations",
       );
     result.edit = driver("edit", child.pid);
-    const saveDeadline = Date.now() + 15_000;
+    const saveDeadline = Date.now() + 30_000;
     let outputBytes;
     while (Date.now() < saveDeadline) {
       try {
@@ -643,6 +644,10 @@ export async function smokeSignedMacosPackage({
           MAX_FIXTURE,
           "edited output PDF",
         );
+        if (hash(outputBytes) === result.fixture.sha256) {
+          await sleep(300);
+          continue;
+        }
         const inspection = driver("inspect", outputPath);
         result.savedPdf = {
           bytes: outputBytes.length,

@@ -12,7 +12,7 @@ fn empty_workspace_uses_the_application_title() {
 fn one_document_names_the_document_and_application() {
     assert_eq!(
         format_window_title(Some("Drawing.pdf"), 1),
-        "Drawing.pdf — GPUI Migration"
+        "Drawing.pdf — Butter Paper"
     );
 }
 
@@ -20,7 +20,7 @@ fn one_document_names_the_document_and_application() {
 fn multiple_documents_include_the_other_document_count() {
     assert_eq!(
         format_window_title(Some("Drawing.pdf"), 4),
-        "Drawing.pdf (+3) — GPUI Migration"
+        "Drawing.pdf (+3) — Butter Paper"
     );
 }
 
@@ -72,7 +72,7 @@ fn title_bar_matches_the_application_surface_and_preserves_the_stock_separator()
     use butter_paper_gpui_migration::window_title_bar::window_title_bar;
     use gpui::{Styled, px};
     for background in [gpui::Hsla::white(), gpui::Hsla::black()] {
-        let mut title_bar = window_title_bar("Drawing.pdf — GPUI Migration", px(1200.), background);
+        let mut title_bar = window_title_bar("Drawing.pdf — Butter Paper", px(1200.), background);
         let style = title_bar.style();
         assert_eq!(
             style.border_widths.bottom, None,

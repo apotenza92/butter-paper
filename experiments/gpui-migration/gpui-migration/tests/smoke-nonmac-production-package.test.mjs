@@ -24,17 +24,31 @@ test("runtime smoke diagnostics use an uploadable non-hidden artifact stem", () 
   );
 });
 
-test("Windows normal Save invokes the visible accessible Save button", async () => {
+test("Windows Save opens the document actions Save control and completes the native Save As dialog", async () => {
   const source = await readFile(
     new URL("../scripts/smoke-nonmac-production-package.mjs", import.meta.url),
     "utf8",
   );
   assert.match(source, /UIAutomationClient/);
-  assert.match(source, /NameProperty,'Save'/);
+  assert.match(source, /Find-Buttons \$\{pid\} 'Document actions and properties'/);
+  assert.match(source, /Find-Buttons \$\{pid\} 'Save'/);
   assert.match(source, /InvokePattern/);
-  assert.match(source, /visible enabled Save button/);
+  assert.match(source, /ClassNameProperty,'#32770'/);
+  assert.match(source, /AutomationIdProperty,'1001'/);
+  assert.match(source, /ValuePattern/);
+  assert.match(source, /join\(runDir, "saved\.pdf"\)/);
+  assert.match(source, /Save As modified the original disposable PDF/);
+  assert.doesNotMatch(source, /function Find-Buttons\(\$pid/);
   assert.doesNotMatch(source, /SendWait\('\^s'\)/);
-  assert.doesNotMatch(source, /keybd_event\(0x53/);
+});
+
+test("Linux smoke records its launch-and-open scope explicitly", async () => {
+  const source = await readFile(
+    new URL("../scripts/smoke-nonmac-production-package.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /Linux Rectangle edit, Save and reopen were not exercised/);
+  assert.match(source, /!\/Rectangle\|Save\|reopen\/\.test\(claim\)/);
 });
 
 test("Linux Rectangle input clears modifiers and delivers an incremental drag", async () => {
@@ -429,7 +443,7 @@ test("fresh reopen clears first-process recovery evidence before relaunch", asyn
   const reset = source.indexOf(
     "await rm(recoveryStoreRoot, { recursive: true, force: true })",
   );
-  const relaunch = source.indexOf("child = launch();", reset);
+  const relaunch = source.indexOf("child = launch(savedPdfPath);", reset);
   assert.ok(fullClose >= 0 && reset > fullClose && relaunch > reset);
   assert.match(source, /recoveryResetBeforeFreshReopen = true/);
 });

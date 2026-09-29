@@ -661,14 +661,14 @@ function descendants(rootPid, processes) {
   return [...found].map((pid) => processes.get(pid)).filter(Boolean);
 }
 
-function powershell(script) {
+function powershell(script, timeout = 12_000) {
   const result = spawnSync(
     "powershell.exe",
     ["-NoProfile", "-NonInteractive", "-Command", script],
     {
       encoding: "utf8",
       windowsHide: true,
-      timeout: 12_000,
+      timeout,
       maxBuffer: 2 * 1024 * 1024,
     },
   );
@@ -1104,10 +1104,58 @@ async function driveRectangleEdit(pid) {
   };
 }
 
-function sendSaveShortcut(pid) {
-  if (process.platform === "linux") return runXdotool(["key", "ctrl+s"]);
-  const script = `Add-Type -AssemblyName UIAutomationClient; $processCondition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty,${pid}); $nameCondition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'Save'); $condition=[Windows.Automation.AndCondition]::new($processCondition,$nameCondition); $matches=[Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Descendants,$condition); $buttons=@($matches | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and $_.Current.IsEnabled -and -not $_.Current.IsOffscreen }); if($buttons.Count -ne 1){$available=@([Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Descendants,$processCondition) | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button } | ForEach-Object { $_.Current.Name } | Where-Object { $_ } | Select-Object -First 100); throw "expected one visible enabled Save button; available buttons: $($available -join ', ')"}; $pattern=$buttons[0].GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern); ([Windows.Automation.InvokePattern]$pattern).Invoke();`;
-  return powershell(script);
+const WINDOWS_UIA_PRELUDE = `Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes; $A=[Windows.Automation.AutomationElement]; $T=[Windows.Automation.TreeScope]; function Find-Buttons($procId, $name){ $c=[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,[int]$procId),[Windows.Automation.PropertyCondition]::new($A::NameProperty,$name)); @($A::RootElement.FindAll($T::Descendants,$c) | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and $_.Current.IsEnabled -and -not $_.Current.IsOffscreen }) }; function Invoke-Element($el){ ([Windows.Automation.InvokePattern]$el.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)).Invoke() };`;
+
+function powershellQuote(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+// Save is a global application action. Linux publishes in place with Ctrl+S.
+// Windows publication always requires a new target, so the visible Save
+// control opens the native Save As dialog, which is completed with a new path.
+async function saveEditedDocument(pid, windowsTarget) {
+  if (process.platform === "linux") {
+    runXdotool(["key", "ctrl+s"]);
+    return { route: "ctrl+s", target: null };
+  }
+  powershell(
+    `${WINDOWS_UIA_PRELUDE} $actions=Find-Buttons ${pid} 'Document actions and properties'; if($actions.Count -ne 1){throw "expected one Document actions and properties button; found $($actions.Count)"}; Invoke-Element $actions[0]; $deadline=(Get-Date).AddSeconds(10); do { Start-Sleep -Milliseconds 200; $save=Find-Buttons ${pid} 'Save' } until($save.Count -eq 1 -or (Get-Date) -gt $deadline); if($save.Count -ne 1){$available=@($A::RootElement.FindAll($T::Descendants,[Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,${pid})) | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button } | ForEach-Object { $_.Current.Name } | Where-Object { $_ } | Select-Object -First 100); throw "expected one visible enabled Save button; available buttons: $($available -join ', ')"}`,
+    20_000,
+  );
+  // Invoking a control that opens a modal dialog may not return until the
+  // dialog closes, so invoke asynchronously and drive the dialog separately.
+  const invoker = spawn(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `${WINDOWS_UIA_PRELUDE} $save=Find-Buttons ${pid} 'Save'; if($save.Count -ne 1){throw "expected one visible enabled Save button; found $($save.Count)"}; Invoke-Element $save[0]`,
+    ],
+    { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let invokerError = "";
+  invoker.stderr.on("data", (chunk) => {
+    invokerError += chunk.toString();
+  });
+  const invokerExit = new Promise((resolveExit) => invoker.on("exit", resolveExit));
+  try {
+    powershell(
+      `${WINDOWS_UIA_PRELUDE} $dialogCondition=[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,${pid}),[Windows.Automation.PropertyCondition]::new($A::ClassNameProperty,'#32770')); $deadline=(Get-Date).AddSeconds(25); do { Start-Sleep -Milliseconds 250; $dialog=$A::RootElement.FindFirst($T::Descendants,$dialogCondition) } until($dialog -or (Get-Date) -gt $deadline); if(-not $dialog){throw 'native Save As dialog did not appear'}; $name=$dialog.FindFirst($T::Descendants,[Windows.Automation.PropertyCondition]::new($A::AutomationIdProperty,'1001')); if(-not $name){throw 'Save As file name field was not found'}; ([Windows.Automation.ValuePattern]$name.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)).SetValue(${powershellQuote(windowsTarget)}); Start-Sleep -Milliseconds 200; $confirm=$dialog.FindFirst($T::Descendants,[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new($A::AutomationIdProperty,'1'),[Windows.Automation.PropertyCondition]::new($A::ControlTypeProperty,[Windows.Automation.ControlType]::Button))); if(-not $confirm){throw 'Save As confirmation button was not found'}; Invoke-Element $confirm`,
+      40_000,
+    );
+  } catch (error) {
+    fail(
+      `${error.message}${invokerError ? `; Save invocation: ${invokerError.trim()}` : ""}`,
+    );
+  }
+  const exitCode = await Promise.race([invokerExit, sleep(10_000).then(() => "timeout")]);
+  if (exitCode === "timeout") invoker.kill();
+  assert(
+    exitCode === "timeout" || exitCode === 0,
+    `Save invocation failed: ${invokerError.trim() || exitCode}`,
+  );
+  return { route: "document-actions Save + native Save As dialog", target: windowsTarget };
 }
 
 export function smokeArtifactStem(runDir) {
@@ -1268,8 +1316,8 @@ async function runSmoke({
       flag: "wx",
       mode: 0o600,
     });
-    const launch = () =>
-      spawn(pkg.executable, [ownedFixturePath], {
+    const launch = (documentPath = ownedFixturePath) =>
+      spawn(pkg.executable, [documentPath], {
         cwd: pkg.packageRoot,
         env,
         windowsHide: false,
@@ -1368,141 +1416,171 @@ async function runSmoke({
       closeRequest: null,
       cleanup: null,
     };
-    const rectangleBaseline = await readRectangleEditEvidence(
-      recoveryStoreRoot,
-      process.platform,
-      { requireNewEdit: false },
-    );
-    assert(
-      rectangleBaseline.currentRevision === 0 &&
-        rectangleBaseline.savedRevision === 0 &&
-        rectangleBaseline.rectangleCount === 0,
-      "initial exact-open recovery state is not a clean rectangle-free revision zero",
-    );
-    result.observation.rectangleEdit = await driveRectangleEdit(child.pid);
-    const editedState = await waitUntil(
-      async () =>
-        readRectangleEditEvidence(recoveryStoreRoot, process.platform).catch(
-          (error) => {
-            if (/no committed Rectangle edit/.test(error.message)) return null;
+    if (process.platform === "linux") {
+      // Owner-accepted first-release scope: the synthetic xdotool drag under
+      // Xvfb does not commit a Rectangle edit, so Linux qualifies launch,
+      // exact document open, PDF worker and process cleanup only.
+      result.claims = result.claims.filter(
+        (claim) => !/Rectangle|Save|reopen/.test(claim),
+      );
+      result.limitations.push(
+        "Linux Rectangle edit, Save and reopen were not exercised: synthetic xdotool input under Xvfb does not commit an edit. Launch, exact document open, PDF worker and process cleanup were verified.",
+      );
+    } else {
+      const rectangleBaseline = await readRectangleEditEvidence(
+        recoveryStoreRoot,
+        process.platform,
+        { requireNewEdit: false },
+      );
+      assert(
+        rectangleBaseline.currentRevision === 0 &&
+          rectangleBaseline.savedRevision === 0 &&
+          rectangleBaseline.rectangleCount === 0,
+        "initial exact-open recovery state is not a clean rectangle-free revision zero",
+      );
+      result.observation.rectangleEdit = await driveRectangleEdit(child.pid);
+      const editedState = await waitUntil(
+        async () =>
+          readRectangleEditEvidence(recoveryStoreRoot, process.platform).catch(
+            (error) => {
+              if (/no committed Rectangle edit/.test(error.message)) return null;
+              throw error;
+            },
+          ),
+        Math.max(1000, LIMIT_MS - (Date.now() - startedAt)),
+        "the committed Rectangle edit in recovery state",
+      );
+      assert(
+        editedState.currentRevision > rectangleBaseline.currentRevision &&
+          editedState.rectangleCount > rectangleBaseline.rectangleCount,
+        "pointer gesture did not add a new Rectangle to the initially opened document",
+      );
+      result.observation.rectangleEdit.recovery = {
+        baseline: rectangleBaseline,
+        edited: editedState,
+      };
+      const originalPdfHash = sha256(fixtureBytes);
+      const savedPdfPath =
+        process.platform === "win32"
+          ? join(runDir, "saved.pdf")
+          : ownedFixturePath;
+      result.observation.save = await saveEditedDocument(child.pid, savedPdfPath);
+      await waitUntil(
+        async () => {
+          try {
+            await lstat(savedPdfPath);
+          } catch (error) {
+            if (error?.code === "ENOENT") return false;
             throw error;
-          },
-        ),
-      Math.max(1000, LIMIT_MS - (Date.now() - startedAt)),
-      "the committed Rectangle edit in recovery state",
-    );
-    assert(
-      editedState.currentRevision > rectangleBaseline.currentRevision &&
-        editedState.rectangleCount > rectangleBaseline.rectangleCount,
-      "pointer gesture did not add a new Rectangle to the initially opened document",
-    );
-    result.observation.rectangleEdit.recovery = {
-      baseline: rectangleBaseline,
-      edited: editedState,
-    };
-    const originalPdfHash = sha256(fixtureBytes);
-    sendSaveShortcut(child.pid);
-    await waitUntil(
-      async () => {
-        await regularFile(ownedFixturePath, "saved disposable PDF");
-        const savedStat = await lstat(ownedFixturePath);
-        assert(
-          savedStat.size <= 128 * 1024 * 1024,
-          "saved PDF exceeds the 128 MiB smoke limit",
-        );
-        const current = await readFile(ownedFixturePath);
-        if (sha256(current) === originalPdfHash) return false;
-        const savedHead = await readJson(
-          join(recoveryStoreRoot, "heads", `${editedState.documentId}.json`),
-          "saved recovery head",
-        );
-        if (
-          savedHead.current_revision !== editedState.currentRevision ||
-          savedHead.saved_revision !== editedState.currentRevision
-        )
-          return false;
-        assert(
-          current.subarray(0, 5).toString("ascii") === "%PDF-" &&
-            current.includes(Buffer.from("%%EOF")),
-          "normal Save produced an invalid PDF header or EOF",
-        );
-        const check = spawnSync("qpdf", ["--check", ownedFixturePath], {
-          encoding: "utf8",
-          timeout: 15_000,
-          maxBuffer: 2 * 1024 * 1024,
-        });
-        assert(
-          !check.error && check.status === 0,
-          `independent qpdf validation failed: ${check.stderr || check.error?.message || check.status}`,
-        );
-        const semantic = spawnSync("qpdf", ["--json", ownedFixturePath], {
-          encoding: "utf8",
-          timeout: 15_000,
-          maxBuffer: 16 * 1024 * 1024,
-        });
-        assert(
-          !semantic.error && semantic.status === 0,
-          `independent qpdf semantic inspection failed: ${semantic.stderr || semantic.error?.message || semantic.status}`,
-        );
-        result.observation.savedPdf = {
-          bytes: current.length,
-          sha256: sha256(current),
-          qpdf: "--check passed",
-          semantic: parseQpdfRectangleEvidence(semantic.stdout),
-        };
-        return true;
-      },
-      Math.max(1000, LIMIT_MS - (Date.now() - startedAt)),
-      "normal Save to publish and independently validate the Rectangle-edited PDF",
-    );
-    result.observation.closeRequest = await askGracefulClose(child.pid);
-    await waitUntil(
-      async () => child.exitCode !== null || child.signalCode !== null,
-      Math.max(1000, LIMIT_MS - (Date.now() - startedAt)),
-      "the first packaged app window to close fully",
-    );
-    assert(
-      currentProcesses(child.pid, pkg.packageRoot).length === 0,
-      "packaged app or PDF worker remained after the full close",
-    );
-    await rm(recoveryStoreRoot, { recursive: true, force: true });
-    result.observation.recoveryResetBeforeFreshReopen = true;
-    child = launch();
-    attachLogs(child);
-    const reopenedPid = child.pid;
-    const reopenStartedAt = Date.now();
-    await waitUntil(
-      async () => {
-        if (spawnError)
-          fail(
-            `fresh packaged application could not start: ${spawnError.message}`,
+          }
+          await regularFile(savedPdfPath, "saved disposable PDF");
+          const savedStat = await lstat(savedPdfPath);
+          assert(
+            savedStat.size <= 128 * 1024 * 1024,
+            "saved PDF exceeds the 128 MiB smoke limit",
           );
-        if (child.exitCode !== null || child.signalCode !== null)
-          fail(
-            `fresh packaged application exited early (${child.exitCode ?? child.signalCode})`,
+          const current = await readFile(savedPdfPath);
+          if (sha256(current) === originalPdfHash) return false;
+          if (process.platform === "win32") {
+            // Save As publishes a new target; the opened original must be untouched.
+            assert(
+              sha256(await readFile(ownedFixturePath)) === originalPdfHash,
+              "Save As modified the original disposable PDF",
+            );
+          } else {
+            const savedHead = await readJson(
+              join(recoveryStoreRoot, "heads", `${editedState.documentId}.json`),
+              "saved recovery head",
+            );
+            if (
+              savedHead.current_revision !== editedState.currentRevision ||
+              savedHead.saved_revision !== editedState.currentRevision
+            )
+              return false;
+          }
+          assert(
+            current.subarray(0, 5).toString("ascii") === "%PDF-" &&
+              current.includes(Buffer.from("%%EOF")),
+            "normal Save produced an invalid PDF header or EOF",
           );
-        return (
-          Date.now() - reopenStartedAt >= MIN_ALIVE_MS &&
-          hasExecutable(
-            currentProcesses(reopenedPid, pkg.packageRoot),
-            pkg.worker,
-          ).length > 0
-        );
-      },
-      LIMIT_MS,
-      "the fresh packaged app and its PDF worker",
-    );
-    result.observation.freshReopen = await waitUntil(
-      async () =>
-        tryReadProductionOpenEvidence({
-          recoveryStoreRoot,
-          fixturePath: ownedFixturePath,
-          fixtureBytes: await readFile(ownedFixturePath),
-          platform: process.platform,
-        }),
-      LIMIT_MS,
-      "the saved PDF to open in the fresh packaged app",
-    );
+          const check = spawnSync("qpdf", ["--check", savedPdfPath], {
+            encoding: "utf8",
+            timeout: 15_000,
+            maxBuffer: 2 * 1024 * 1024,
+          });
+          assert(
+            !check.error && check.status === 0,
+            `independent qpdf validation failed: ${check.stderr || check.error?.message || check.status}`,
+          );
+          const semantic = spawnSync("qpdf", ["--json", savedPdfPath], {
+            encoding: "utf8",
+            timeout: 15_000,
+            maxBuffer: 16 * 1024 * 1024,
+          });
+          assert(
+            !semantic.error && semantic.status === 0,
+            `independent qpdf semantic inspection failed: ${semantic.stderr || semantic.error?.message || semantic.status}`,
+          );
+          result.observation.savedPdf = {
+            bytes: current.length,
+            sha256: sha256(current),
+            qpdf: "--check passed",
+            semantic: parseQpdfRectangleEvidence(semantic.stdout),
+          };
+          return true;
+        },
+        Math.max(1000, LIMIT_MS - (Date.now() - startedAt)),
+        "normal Save to publish and independently validate the Rectangle-edited PDF",
+      );
+      result.observation.closeRequest = await askGracefulClose(child.pid);
+      await waitUntil(
+        async () => child.exitCode !== null || child.signalCode !== null,
+        Math.max(1000, LIMIT_MS - (Date.now() - startedAt)),
+        "the first packaged app window to close fully",
+      );
+      assert(
+        currentProcesses(child.pid, pkg.packageRoot).length === 0,
+        "packaged app or PDF worker remained after the full close",
+      );
+      await rm(recoveryStoreRoot, { recursive: true, force: true });
+      result.observation.recoveryResetBeforeFreshReopen = true;
+      child = launch(savedPdfPath);
+      attachLogs(child);
+      const reopenedPid = child.pid;
+      const reopenStartedAt = Date.now();
+      await waitUntil(
+        async () => {
+          if (spawnError)
+            fail(
+              `fresh packaged application could not start: ${spawnError.message}`,
+            );
+          if (child.exitCode !== null || child.signalCode !== null)
+            fail(
+              `fresh packaged application exited early (${child.exitCode ?? child.signalCode})`,
+            );
+          return (
+            Date.now() - reopenStartedAt >= MIN_ALIVE_MS &&
+            hasExecutable(
+              currentProcesses(reopenedPid, pkg.packageRoot),
+              pkg.worker,
+            ).length > 0
+          );
+        },
+        LIMIT_MS,
+        "the fresh packaged app and its PDF worker",
+      );
+      result.observation.freshReopen = await waitUntil(
+        async () =>
+          tryReadProductionOpenEvidence({
+            recoveryStoreRoot,
+            fixturePath: savedPdfPath,
+            fixtureBytes: await readFile(savedPdfPath),
+            platform: process.platform,
+          }),
+        LIMIT_MS,
+        "the saved PDF to open in the fresh packaged app",
+      );
+    }
   } catch (error) {
     result.error = error.message;
   } finally {

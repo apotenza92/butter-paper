@@ -71,7 +71,7 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
     assert_eq!(
         menu_names(&menus),
         [
-            "GPUI Migration",
+            "Butter Paper",
             "File",
             "Edit",
             "Document",
@@ -79,8 +79,8 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
             "Window",
         ]
     );
-    let app = menu(&menus, "GPUI Migration");
-    assert_action(item(app, "Quit GPUI Migration"), |action| {
+    let app = menu(&menus, "Butter Paper");
+    assert_action(item(app, "Quit Butter Paper"), |action| {
         action.as_any().is::<RequestApplicationQuit>()
     });
     let file = menu(&menus, "File");
@@ -320,7 +320,7 @@ fn in_window_application_menu_is_the_four_menu_projection() {
 
     assert_eq!(
         menu_names(&menus),
-        ["GPUI Migration", "File", "Edit", "View"]
+        ["Butter Paper", "File", "Edit", "View"]
     );
     assert_eq!(
         menu_item_names(menu(&menus, "File")),

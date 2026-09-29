@@ -139,6 +139,40 @@ func availableButtonLabels(_ app: AXUIElement) -> [String] {
         .map { $0 }
 }
 
+func enabledMenuItem(_ app: AXUIElement, menu: String, item: String, timeout: TimeInterval = 5) -> AXUIElement? {
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat {
+        if let raw = attribute(app, kAXMenuBarAttribute as CFString), CFGetTypeID(raw) == AXUIElementGetTypeID() {
+            let bar = raw as! AXUIElement
+            let items = children(bar)
+                .filter { text($0, kAXTitleAttribute as CFString) == menu }
+                .flatMap(children)
+                .flatMap(children)
+                .filter { text($0, kAXTitleAttribute as CFString) == item }
+            if items.count == 1, (attribute(items[0], kAXEnabledAttribute as CFString) as? Bool) == true {
+                return items[0]
+            }
+        }
+        wait(0.2)
+    } while Date() < deadline
+    return nil
+}
+
+// Save is a global application action: prefer the ordinary native File > Save
+// menu item, then the visible Save control in the document actions panel.
+func invokeSave(_ app: AXUIElement) throws -> String {
+    if let item = enabledMenuItem(app, menu: "File", item: "Save") {
+        try press(item)
+        return "native-menu: File > Save"
+    }
+    let actions = try waitForSingleButton(app, "Document actions and properties")
+    try press(actions)
+    wait(0.4)
+    let saveButton = try waitForSingleButton(app, "Save")
+    try press(saveButton)
+    return "document-actions-panel: \(describe(saveButton))"
+}
+
 func activate(_ pid: pid_t) throws {
     guard let running = NSRunningApplication(processIdentifier: pid) else { throw SmokeFailure("packaged app PID is not running") }
     _ = running.activate(options: [.activateAllWindows])
@@ -185,10 +219,9 @@ func performEdit(pid: pid_t) throws -> [String: Any] {
     try postMouse(.leftMouseUp, at: end)
     wait(0.6)
 
-    let saveButton = try waitForSingleButton(app, "Save")
-    try press(saveButton)
+    let saveActivation = try invokeSave(app)
     wait(1.0)
-    return ["rectangleActivation": rectangleActivation, "saveButton": describe(saveButton),
+    return ["rectangleActivation": rectangleActivation, "saveActivation": saveActivation,
             "windowFrame": [frame.minX, frame.minY, frame.width, frame.height],
             "coordinateContract": "primary-window-relative central document viewport; GUI scale 100%; window minimum 900x600",
             "drag": [[start.x, start.y], [end.x, end.y]], "windowCount": windows.count]

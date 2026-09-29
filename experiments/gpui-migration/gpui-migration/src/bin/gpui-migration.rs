@@ -447,7 +447,7 @@ impl ComponentStory {
 
     fn save_application_preferences(&self) {
         if let Err(error) = self.application_preferences.save(self.preferences) {
-            eprintln!("unable to save GPUI Migration application preferences: {error}");
+            eprintln!("unable to save Butter Paper application preferences: {error}");
         }
     }
 
@@ -1775,7 +1775,7 @@ fn main() {
         match NativeLaunchConfig::parse(std::env::args_os().skip(1)) {
             Ok(config) => config,
             Err(error) => {
-                eprintln!("invalid GPUI Migration launch: {error}");
+                eprintln!("invalid Butter Paper launch: {error}");
                 std::process::exit(2);
             }
         }
@@ -1941,7 +1941,7 @@ fn main() {
                 if let Some(NativeLaunchWarning::SessionStateUnavailable(message)) =
                     launch_resolution.warning.as_ref()
                 {
-                    eprintln!("GPUI Migration session state is unavailable: {message}");
+                    eprintln!("Butter Paper session state is unavailable: {message}");
                 }
                 let opener = std::sync::Arc::new(PdfiumWorkerBackend::new(
                     worker_executable,
