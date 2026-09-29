@@ -27,8 +27,12 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 function fail(message) { throw new Error(message); }
 
-function defaultRun(command, args) {
-  const result = spawnSync(command, args, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+export function defaultRun(command, args, { input } = {}) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    input,
+    maxBuffer: 16 * 1024 * 1024,
+  });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${command} ${args.join(" ")} failed (${result.status}): ${`${result.stdout ?? ""}${result.stderr ?? ""}`.trim()}`);
   return `${result.stdout ?? ""}${result.stderr ?? ""}`;

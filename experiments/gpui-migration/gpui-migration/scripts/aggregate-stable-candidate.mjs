@@ -20,7 +20,7 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const STABLE_SEMVER =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+([0-9A-Za-z.-]+))?$/;
 const FORBIDDEN_MARKER =
-  /(?:development|dev)[-_\s.]*pdfium|pdfium[-_\s.]*(?:development|dev)|(?:pdfium.{0,80}override|override.{0,80}pdfium)|\b(?:BP_UPDATE_TEST_MODE|PDFIUM_(?:DEV|DEVELOPMENT|OVERRIDE)|DEV_PDFIUM|PDFIUM_OVERRIDE)\b/i;
+  /(?:development|dev)[-_\s.]*pdfium|pdfium[-_\s.]*(?:development|dev)|(?:pdfium.{0,80}(?<![a-z0-9])override(?![a-z0-9])|(?<![a-z0-9])override(?![a-z0-9]).{0,80}pdfium)|\b(?:BP_UPDATE_TEST_MODE|PDFIUM_(?:DEV|DEVELOPMENT|OVERRIDE)|DEV_PDFIUM|PDFIUM_OVERRIDE)\b/i;
 
 function fail(message) {
   throw new Error(message);

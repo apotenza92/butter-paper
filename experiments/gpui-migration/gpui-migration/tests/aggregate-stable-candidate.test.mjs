@@ -216,6 +216,41 @@ test("fails closed on development markers, unverified receipts, and unexpected i
       /development PDFium or override marker/,
     );
   });
+  await t.test("PDFium override marker", async () => {
+    const { root, candidate } = await fixture();
+    const receipt = join(root, candidate.targets[0].verificationReceipt);
+    const value = JSON.parse(await readFile(receipt, "utf8"));
+    value.notes = "PDFium override input";
+    await writeFile(receipt, JSON.stringify(value));
+    await assert.rejects(
+      outputFor(root),
+      /development PDFium or override marker/,
+    );
+  });
+  await t.test("ordinary PDFium GenerateObjectOverrides symbol", async () => {
+    const { root, candidate } = await fixture();
+    const record = candidate.targets.find(({ target }) => target === "linux-arm64");
+    const bytes = Buffer.from(
+      "_ZN18CPDF_FontSubsetter23GenerateObjectOverridesEN6pdfium4span",
+    );
+    const claim = {
+      path: record.artifact,
+      bytes: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    };
+    await writeFile(join(root, record.artifact), bytes);
+    for (const path of [record.packageManifest, record.verificationReceipt]) {
+      const value = JSON.parse(await readFile(join(root, path), "utf8"));
+      value.artifact = claim;
+      await writeFile(join(root, path), JSON.stringify(value));
+    }
+    const runtimePath = join(root, record.runtimeEvidence);
+    const runtime = JSON.parse(await readFile(runtimePath, "utf8"));
+    runtime.packageIdentity.archiveSha256 = claim.sha256;
+    await writeFile(runtimePath, JSON.stringify(runtime));
+    const result = await outputFor(root);
+    assert.equal(result.manifest.targets.find(({ target }) => target === "linux-arm64").artifact.sha256, claim.sha256);
+  });
   await t.test("unverified receipt", async () => {
     const { root, candidate } = await fixture();
     const receipt = join(root, candidate.targets[0].verificationReceipt);

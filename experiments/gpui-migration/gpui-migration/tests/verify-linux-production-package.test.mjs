@@ -20,7 +20,7 @@ function elf(machine) {
   return bytes;
 }
 
-async function fixture(root, architecture, { marker = false } = {}) {
+async function fixture(root, architecture, { marker = false, pdfiumSymbol = false } = {}) {
   const inputDir = join(root, `input-${architecture}`);
   await mkdir(inputDir, { recursive: true });
   const machine = architecture === "arm64" ? 183 : 62;
@@ -28,7 +28,7 @@ async function fixture(root, architecture, { marker = false } = {}) {
     "gpui-migration": elf(machine),
     "butter-paper-pdf-worker": elf(machine),
     "butter-paper-signature-phone": elf(machine),
-    "libpdfium.so": elf(machine),
+    "libpdfium.so": Buffer.concat([elf(machine), Buffer.from(pdfiumSymbol ? "_ZN18CPDF_FontSubsetter23GenerateObjectOverridesEN6pdfium4span" : "")]),
     "README.md": Buffer.from("Runtime dependencies include glibc and system libraries.\n"),
     "THIRD_PARTY_NOTICES.md": Buffer.from(marker ? "development-pdfium override marker\n" : "Reviewed third-party notices.\n"),
     "PHONE_HELPER_THIRD_PARTY_NOTICES.md": Buffer.from("Go dependency licences.\n"),
@@ -156,4 +156,14 @@ test("Linux verification refuses marker-bearing packages and existing outputs", 
   await rm(manifestPath);
   await assert.rejects(verifyLinuxProductionPackage({ inputArchive: archive, packageManifestPath: manifestPath, verificationReceiptPath: receiptPath, architecture: "x86_64", version: "1.2.3", revision: "d".repeat(40) }), /development PDFium or override marker/);
   await assert.rejects(readFile(manifestPath));
+});
+
+test("Linux verification allows PDFium's GenerateObjectOverrides symbol", async (t) => {
+  const root = await temporary(t, "bp-linux-verify-");
+  const { archive } = await fixture(root, "arm64", { pdfiumSymbol: true });
+  const manifestPath = join(root, "manifest.json");
+  const receiptPath = join(root, "verification.json");
+  await verifyLinuxProductionPackage({ inputArchive: archive, packageManifestPath: manifestPath, verificationReceiptPath: receiptPath, architecture: "arm64", version: "1.2.3", revision: "d".repeat(40) });
+  const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+  assert.equal(receipt.verified, true);
 });

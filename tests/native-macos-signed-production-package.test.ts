@@ -3,7 +3,10 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { packageSignedMacosProduction } from "../experiments/gpui-migration/gpui-migration/scripts/package-macos-signed-production.mjs";
+import {
+  defaultRun,
+  packageSignedMacosProduction,
+} from "../experiments/gpui-migration/gpui-migration/scripts/package-macos-signed-production.mjs";
 
 const roots: string[] = [];
 const fingerprint = "A".repeat(64);
@@ -54,6 +57,17 @@ async function fixture() {
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
 
 describe("signed macOS production release packaging", () => {
+  it("forwards stdin to verifier subprocesses such as plutil", () => {
+    const plist = "<?xml version=\"1.0\"?><plist/>";
+    const output = defaultRun(
+      process.execPath,
+      ["-e", "process.stdout.write(require('node:fs').readFileSync(0, 'utf8'))"],
+      { input: plist },
+    );
+
+    expect(output).toBe(plist);
+  });
+
   it("verifies before and after ZIP extraction and emits stable-candidate receipts", async () => {
     const f = await fixture();
     const result = await packageSignedMacosProduction({

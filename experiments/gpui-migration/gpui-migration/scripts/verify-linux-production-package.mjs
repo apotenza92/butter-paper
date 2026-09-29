@@ -11,7 +11,7 @@ const TARGETS = {
   x86_64: { label: "linux-x64", rust: "x86_64-unknown-linux-gnu", machine: 62 },
 };
 const COMMON = ["gpui-migration", "butter-paper-pdf-worker", "butter-paper-signature-phone", "libpdfium.so", "README.md", "THIRD_PARTY_NOTICES.md", "PHONE_HELPER_THIRD_PARTY_NOTICES.md", "QRCP_LICENSE", "SIGNATURE_PAD_LICENSE", "butter-paper.png", "butter-paper.desktop", "install-user.sh", "uninstall-user.sh"];
-const FORBIDDEN = /(?:development|dev)[-_\s.]*pdfium|pdfium[-_\s.]*(?:development|dev)|(?:pdfium.{0,80}override|override.{0,80}pdfium)|\b(?:BP_UPDATE_TEST_MODE|PDFIUM_(?:DEV|DEVELOPMENT|OVERRIDE)|DEV_PDFIUM|PDFIUM_OVERRIDE)\b/i;
+const FORBIDDEN = /(?:development|dev)[-_\s.]*pdfium|pdfium[-_\s.]*(?:development|dev)|(?:pdfium.{0,80}(?<![a-z0-9])override(?![a-z0-9])|(?<![a-z0-9])override(?![a-z0-9]).{0,80}pdfium)|\b(?:BP_UPDATE_TEST_MODE|PDFIUM_(?:DEV|DEVELOPMENT|OVERRIDE)|DEV_PDFIUM|PDFIUM_OVERRIDE)\b/i;
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const jsonBytes = (value) => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
 function fail(message) { throw new Error(message); }
