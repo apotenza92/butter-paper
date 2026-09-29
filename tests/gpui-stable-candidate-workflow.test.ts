@@ -99,6 +99,16 @@ describe("GPUI stable candidate workflow", () => {
     );
   });
 
+  it("provides pinned Python for the cross-platform phone helper preparation", () => {
+    expect(source).toContain(
+      "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+    );
+    expect(source).toContain("python-version: 3.12.12");
+    expect(source.indexOf("actions/setup-python@")).toBeLessThan(
+      source.indexOf('python "$PHONE_ROOT/prepare.py"'),
+    );
+  });
+
   it("keeps Linux build prerequisites in packaging and runtime prerequisites in clean-host smoke", () => {
     expect(source).toContain("Install Linux native build prerequisites");
     for (const dependency of [
