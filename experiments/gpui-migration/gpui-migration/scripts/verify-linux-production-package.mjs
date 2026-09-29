@@ -73,8 +73,9 @@ function parseTar(bytes, expectedRoot) {
   return entries;
 }
 
-function validateElf(bytes, machine, label) {
-  if (bytes.length < 64 || bytes[0] !== 0x7f || bytes.toString("ascii", 1, 4) !== "ELF" || bytes[4] !== 2 || bytes[5] !== 1 || bytes.readUInt16LE(16) !== 3 || bytes.readUInt16LE(18) !== machine) fail(`${label} is not a 64-bit little-endian ELF shared object for the requested architecture`);
+function validateElf(bytes, machine, label, allowedTypes = [3]) {
+  const type = bytes.length >= 64 ? bytes.readUInt16LE(16) : -1;
+  if (bytes.length < 64 || bytes[0] !== 0x7f || bytes.toString("ascii", 1, 4) !== "ELF" || bytes[4] !== 2 || bytes[5] !== 1 || !allowedTypes.includes(type) || bytes.readUInt16LE(18) !== machine) fail(`${label} is not a permitted 64-bit little-endian ELF binary for the requested architecture`);
 }
 
 function validatePng(bytes) {
@@ -158,7 +159,8 @@ export async function verifyLinuxProductionPackage({ inputArchive, packageManife
   let manifest;
   try { manifest = parseManifest(files.get("MANIFEST.json").bytes, { target, version, revision, names: files }); } catch (error) { throw error; }
   validatePdfiumReceipt(JSON.parse(files.get(receiptName).bytes.toString("utf8")), files.get("libpdfium.so").bytes, target);
-  for (const name of ["gpui-migration", "butter-paper-pdf-worker", "butter-paper-signature-phone", "libpdfium.so"]) validateElf(files.get(name).bytes, target.machine, name);
+  for (const name of ["gpui-migration", "butter-paper-pdf-worker", "libpdfium.so"]) validateElf(files.get(name).bytes, target.machine, name);
+  validateElf(files.get("butter-paper-signature-phone").bytes, target.machine, "butter-paper-signature-phone", [2, 3]);
   const readme = files.get("README.md").bytes.toString("utf8");
   if (!/runtime dependencies/i.test(readme) || !/libc|glibc/i.test(readme)) fail("archive README does not document Linux runtime dependencies");
   const desktop = files.get("butter-paper.desktop").bytes.toString("utf8");

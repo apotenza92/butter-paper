@@ -12,22 +12,24 @@ import { verifyLinuxProductionPackage } from "../scripts/verify-linux-production
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const productIconPath = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../assets/butter-paper-icon.png");
 
-function elf(machine) {
+function elf(machine, type = 3) {
   const bytes = Buffer.alloc(64);
   bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]);
-  bytes.writeUInt16LE(3, 16);
+  bytes.writeUInt16LE(type, 16);
   bytes.writeUInt16LE(machine, 18);
   return bytes;
 }
 
-async function fixture(root, architecture, { marker = false, pdfiumSymbol = false } = {}) {
+async function fixture(root, architecture, { marker = false, pdfiumSymbol = false, phoneElfType = 2 } = {}) {
   const inputDir = join(root, `input-${architecture}`);
   await mkdir(inputDir, { recursive: true });
   const machine = architecture === "arm64" ? 183 : 62;
   const content = {
     "gpui-migration": elf(machine),
     "butter-paper-pdf-worker": elf(machine),
-    "butter-paper-signature-phone": elf(machine),
+    // CGO-disabled Go binaries are normally ET_EXEC, while Rust PIEs and
+    // shared libraries are ET_DYN. Both are valid for this packaged helper.
+    "butter-paper-signature-phone": elf(machine, phoneElfType),
     "libpdfium.so": Buffer.concat([elf(machine), Buffer.from(pdfiumSymbol ? "_ZN18CPDF_FontSubsetter23GenerateObjectOverridesEN6pdfium4span" : "")]),
     "README.md": Buffer.from("Runtime dependencies include glibc and system libraries.\n"),
     "THIRD_PARTY_NOTICES.md": Buffer.from(marker ? "development-pdfium override marker\n" : "Reviewed third-party notices.\n"),
@@ -166,4 +168,17 @@ test("Linux verification allows PDFium's GenerateObjectOverrides symbol", async 
   await verifyLinuxProductionPackage({ inputArchive: archive, packageManifestPath: manifestPath, verificationReceiptPath: receiptPath, architecture: "arm64", version: "1.2.3", revision: "d".repeat(40) });
   const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
   assert.equal(receipt.verified, true);
+});
+
+test("Linux verification rejects an unsupported phone-helper ELF type", async (t) => {
+  const root = await temporary(t, "bp-linux-verify-");
+  const { archive } = await fixture(root, "x86_64", { phoneElfType: 1 });
+  const manifestPath = join(root, "manifest.json");
+  const receiptPath = join(root, "verification.json");
+  await assert.rejects(
+    verifyLinuxProductionPackage({ inputArchive: archive, packageManifestPath: manifestPath, verificationReceiptPath: receiptPath, architecture: "x86_64", version: "1.2.3", revision: "d".repeat(40) }),
+    /not a permitted 64-bit little-endian ELF binary/,
+  );
+  await assert.rejects(readFile(manifestPath));
+  await assert.rejects(readFile(receiptPath));
 });
