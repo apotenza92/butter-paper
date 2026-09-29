@@ -185,17 +185,6 @@ func performEdit(pid: pid_t) throws -> [String: Any] {
     let app = appElement(pid)
     let windows = applicationWindows(app)
     try require(!windows.isEmpty, "packaged app has no accessible window")
-    let rectangleButton = singleButtonIfPublished(app, "Rectangle")
-    let rectangleActivation: String
-    if let rectangleButton {
-        try press(rectangleButton)
-        rectangleActivation = "accessible-button: \(describe(rectangleButton))"
-    } else {
-        try postKey(0x0F) // R — the ordinary documented Rectangle shortcut.
-        rectangleActivation = "keyboard-shortcut-r; published buttons: \(availableButtonLabels(app))"
-    }
-    wait()
-
     let windowFrames = windows.compactMap(bounds)
     try require(windowFrames.count == windows.count, "could not read accessible window bounds")
     let frame = windowFrames.max { $0.width * $0.height < $1.width * $1.height }!
@@ -208,6 +197,22 @@ func performEdit(pid: pid_t) throws -> [String: Any] {
     try require(frame.insetBy(dx: 80, dy: 80).contains(start) && frame.insetBy(dx: 80, dy: 80).contains(end), "calculated rectangle drag is outside the supported window content area")
     let display = CGDisplayBounds(CGMainDisplayID())
     try require(display.contains(start) && display.contains(end), "calculated rectangle drag is outside the primary display")
+    // Tool shortcuts are scoped to the focused document workspace; a freshly
+    // launched window has no focused document, so click the page first.
+    try postMouse(.mouseMoved, at: start)
+    try postMouse(.leftMouseDown, at: start)
+    try postMouse(.leftMouseUp, at: start)
+    wait(0.4)
+    let rectangleButton = singleButtonIfPublished(app, "Rectangle")
+    let rectangleActivation: String
+    if let rectangleButton {
+        try press(rectangleButton)
+        rectangleActivation = "accessible-button: \(describe(rectangleButton))"
+    } else {
+        try postKey(0x0F) // R — the ordinary documented Rectangle shortcut.
+        rectangleActivation = "document-click then keyboard-shortcut-r; published buttons: \(availableButtonLabels(app))"
+    }
+    wait()
     try postMouse(.mouseMoved, at: start)
     try postMouse(.leftMouseDown, at: start)
     for step in 1...12 {

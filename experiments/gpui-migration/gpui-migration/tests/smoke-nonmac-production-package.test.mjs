@@ -39,7 +39,11 @@ test("Windows Save opens the document actions Save control and completes the nat
   assert.match(source, /join\(runDir, "saved\.pdf"\)/);
   assert.match(source, /Save As modified the original disposable PDF/);
   assert.doesNotMatch(source, /function Find-Buttons\(\$pid/);
-  assert.doesNotMatch(source, /SendWait\('\^s'\)/);
+  assert.doesNotMatch(source, /IsEnabled -and -not \$_\.Current\.IsOffscreen/);
+  // Ctrl+S is the ordinary route; it is sent asynchronously because the modal
+  // Save As dialog can block SendWait, and completed through UI Automation.
+  assert.match(source, /SendWait\('\^s'\)/);
+  assert.match(source, /completeSaveAsDialog\(pid, windowsTarget, 15\)/);
 });
 
 test("Linux smoke records its launch-and-open scope explicitly", async () => {

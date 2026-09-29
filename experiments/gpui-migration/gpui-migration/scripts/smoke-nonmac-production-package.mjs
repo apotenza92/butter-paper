@@ -1104,58 +1104,81 @@ async function driveRectangleEdit(pid) {
   };
 }
 
-const WINDOWS_UIA_PRELUDE = `Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes; $A=[Windows.Automation.AutomationElement]; $T=[Windows.Automation.TreeScope]; function Find-Buttons($procId, $name){ $c=[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,[int]$procId),[Windows.Automation.PropertyCondition]::new($A::NameProperty,$name)); @($A::RootElement.FindAll($T::Descendants,$c) | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and $_.Current.IsEnabled -and -not $_.Current.IsOffscreen }) }; function Invoke-Element($el){ ([Windows.Automation.InvokePattern]$el.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)).Invoke() };`;
+const WINDOWS_UIA_PRELUDE = `Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes; $A=[Windows.Automation.AutomationElement]; $T=[Windows.Automation.TreeScope]; function Find-Buttons($procId, $name){ $c=[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,[int]$procId),[Windows.Automation.PropertyCondition]::new($A::NameProperty,$name)); @($A::RootElement.FindAll($T::Descendants,$c) | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and $_.Current.IsEnabled }) }; function Invoke-Element($el){ ([Windows.Automation.InvokePattern]$el.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)).Invoke() };`;
 
 function powershellQuote(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
+function spawnPowershell(script) {
+  const child = spawn(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString();
+  });
+  const exited = new Promise((resolveExit) =>
+    child.on("exit", (code) => resolveExit(code)),
+  );
+  return {
+    async settle(ms = 10_000) {
+      const code = await Promise.race([exited, sleep(ms).then(() => "timeout")]);
+      if (code === "timeout") child.kill();
+      return { code, stderr: stderr.trim() };
+    },
+  };
+}
+
+// Completes the app's native Save As dialog with a new target. Returns false
+// when no dialog appears within the wait; throws for any other failure.
+function completeSaveAsDialog(pid, target, waitSeconds) {
+  const outcome = powershell(
+    `${WINDOWS_UIA_PRELUDE} $dialogCondition=[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,[int]${pid}),[Windows.Automation.PropertyCondition]::new($A::ClassNameProperty,'#32770')); $deadline=(Get-Date).AddSeconds(${waitSeconds}); do { Start-Sleep -Milliseconds 250; $dialog=$A::RootElement.FindFirst($T::Descendants,$dialogCondition) } until($dialog -or (Get-Date) -gt $deadline); if(-not $dialog){'absent'; return}; $name=$dialog.FindFirst($T::Descendants,[Windows.Automation.PropertyCondition]::new($A::AutomationIdProperty,'1001')); if(-not $name){throw 'Save As file name field was not found'}; ([Windows.Automation.ValuePattern]$name.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)).SetValue(${powershellQuote(target)}); Start-Sleep -Milliseconds 200; $confirm=$dialog.FindFirst($T::Descendants,[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new($A::AutomationIdProperty,'1'),[Windows.Automation.PropertyCondition]::new($A::ControlTypeProperty,[Windows.Automation.ControlType]::Button))); if(-not $confirm){throw 'Save As confirmation button was not found'}; Invoke-Element $confirm; 'completed'`,
+    (waitSeconds + 20) * 1000,
+  );
+  return outcome.split(/\r?\n/).at(-1).trim() === "completed";
+}
+
 // Save is a global application action. Linux publishes in place with Ctrl+S.
-// Windows publication always requires a new target, so the visible Save
-// control opens the native Save As dialog, which is completed with a new path.
-async function saveEditedDocument(pid, windowsTarget) {
+// Windows publication always requires a new target, so Save opens the native
+// Save As dialog, which is completed with a new path. Ctrl+S is the ordinary
+// route; the visible document-actions Save control is the fallback.
+async function saveEditedDocument(pid, windowsTarget, windowHandle) {
   if (process.platform === "linux") {
     runXdotool(["key", "ctrl+s"]);
     return { route: "ctrl+s", target: null };
   }
+  // SendWait may block while the modal dialog runs, so send asynchronously.
+  const shortcut = spawnPowershell(
+    `Add-Type -AssemblyName System.Windows.Forms; Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class BpFocus { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }'; [void][BpFocus]::SetForegroundWindow([IntPtr]${windowHandle}); Start-Sleep -Milliseconds 200; [System.Windows.Forms.SendKeys]::SendWait('^s')`,
+  );
+  if (completeSaveAsDialog(pid, windowsTarget, 15)) {
+    await shortcut.settle();
+    return { route: "ctrl+s + native Save As dialog", target: windowsTarget };
+  }
+  const shortcutResult = await shortcut.settle(2000);
   powershell(
-    `${WINDOWS_UIA_PRELUDE} $actions=Find-Buttons ${pid} 'Document actions and properties'; if($actions.Count -ne 1){throw "expected one Document actions and properties button; found $($actions.Count)"}; Invoke-Element $actions[0]; $deadline=(Get-Date).AddSeconds(10); do { Start-Sleep -Milliseconds 200; $save=Find-Buttons ${pid} 'Save' } until($save.Count -eq 1 -or (Get-Date) -gt $deadline); if($save.Count -ne 1){$available=@($A::RootElement.FindAll($T::Descendants,[Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,${pid})) | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button } | ForEach-Object { $_.Current.Name } | Where-Object { $_ } | Select-Object -First 100); throw "expected one visible enabled Save button; available buttons: $($available -join ', ')"}`,
+    `${WINDOWS_UIA_PRELUDE} $actions=Find-Buttons ${pid} 'Document actions and properties'; if($actions.Count -ne 1){$available=@($A::RootElement.FindAll($T::Descendants,[Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,[int]${pid})) | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button } | ForEach-Object { "$($_.Current.Name)[enabled=$($_.Current.IsEnabled),offscreen=$($_.Current.IsOffscreen)]" } | Select-Object -First 100); throw "expected one Document actions and properties button; available buttons: $($available -join ', ')"}; Invoke-Element $actions[0]; $deadline=(Get-Date).AddSeconds(10); do { Start-Sleep -Milliseconds 200; $save=Find-Buttons ${pid} 'Save' } until($save.Count -eq 1 -or (Get-Date) -gt $deadline); if($save.Count -ne 1){throw "expected one enabled Save button after opening document actions; found $($save.Count)"}`,
     20_000,
   );
-  // Invoking a control that opens a modal dialog may not return until the
-  // dialog closes, so invoke asynchronously and drive the dialog separately.
-  const invoker = spawn(
-    "powershell.exe",
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      `${WINDOWS_UIA_PRELUDE} $save=Find-Buttons ${pid} 'Save'; if($save.Count -ne 1){throw "expected one visible enabled Save button; found $($save.Count)"}; Invoke-Element $save[0]`,
-    ],
-    { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
+  const invoke = spawnPowershell(
+    `${WINDOWS_UIA_PRELUDE} $save=Find-Buttons ${pid} 'Save'; if($save.Count -ne 1){throw "expected one enabled Save button; found $($save.Count)"}; Invoke-Element $save[0]`,
   );
-  let invokerError = "";
-  invoker.stderr.on("data", (chunk) => {
-    invokerError += chunk.toString();
-  });
-  const invokerExit = new Promise((resolveExit) => invoker.on("exit", resolveExit));
-  try {
-    powershell(
-      `${WINDOWS_UIA_PRELUDE} $dialogCondition=[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,${pid}),[Windows.Automation.PropertyCondition]::new($A::ClassNameProperty,'#32770')); $deadline=(Get-Date).AddSeconds(25); do { Start-Sleep -Milliseconds 250; $dialog=$A::RootElement.FindFirst($T::Descendants,$dialogCondition) } until($dialog -or (Get-Date) -gt $deadline); if(-not $dialog){throw 'native Save As dialog did not appear'}; $name=$dialog.FindFirst($T::Descendants,[Windows.Automation.PropertyCondition]::new($A::AutomationIdProperty,'1001')); if(-not $name){throw 'Save As file name field was not found'}; ([Windows.Automation.ValuePattern]$name.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)).SetValue(${powershellQuote(windowsTarget)}); Start-Sleep -Milliseconds 200; $confirm=$dialog.FindFirst($T::Descendants,[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new($A::AutomationIdProperty,'1'),[Windows.Automation.PropertyCondition]::new($A::ControlTypeProperty,[Windows.Automation.ControlType]::Button))); if(-not $confirm){throw 'Save As confirmation button was not found'}; Invoke-Element $confirm`,
-      40_000,
-    );
-  } catch (error) {
+  if (!completeSaveAsDialog(pid, windowsTarget, 25)) {
+    const invoked = await invoke.settle(2000);
     fail(
-      `${error.message}${invokerError ? `; Save invocation: ${invokerError.trim()}` : ""}`,
+      `native Save As dialog did not appear after Ctrl+S or the Save control (Ctrl+S: ${shortcutResult.stderr || shortcutResult.code}; Save control: ${invoked.stderr || invoked.code})`,
     );
   }
-  const exitCode = await Promise.race([invokerExit, sleep(10_000).then(() => "timeout")]);
-  if (exitCode === "timeout") invoker.kill();
-  assert(
-    exitCode === "timeout" || exitCode === 0,
-    `Save invocation failed: ${invokerError.trim() || exitCode}`,
-  );
-  return { route: "document-actions Save + native Save As dialog", target: windowsTarget };
+  await invoke.settle();
+  return {
+    route: "document-actions Save + native Save As dialog",
+    target: windowsTarget,
+    ctrlS: shortcutResult,
+  };
 }
 
 export function smokeArtifactStem(runDir) {
@@ -1464,7 +1487,11 @@ async function runSmoke({
         process.platform === "win32"
           ? join(runDir, "saved.pdf")
           : ownedFixturePath;
-      result.observation.save = await saveEditedDocument(child.pid, savedPdfPath);
+      result.observation.save = await saveEditedDocument(
+      child.pid,
+      savedPdfPath,
+      result.observation.rectangleEdit.windowId,
+    );
       await waitUntil(
         async () => {
           try {

@@ -518,10 +518,12 @@ jobs:
             *) echo "unsupported smoke OS: $SMOKE_OS" >&2; exit 1 ;;
           esac
           if [[ "$SMOKE_OS" == macos ]]; then
+            # Hosted Intel runners can take well over a minute to start the worker.
             node "$MIGRATION_ROOT/scripts/smoke-signed-macos-package.mjs" \
               --archive "$archive" \
               --fixture-pdf tests/fixtures/generated/single-page.pdf \
-              --evidence-root "$evidence"
+              --evidence-root "$evidence" \
+              --timeout-ms 180000
           else
             if [[ "$SMOKE_OS" == linux ]]; then
               export DISPLAY=:99
