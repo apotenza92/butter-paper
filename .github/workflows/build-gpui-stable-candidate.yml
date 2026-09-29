@@ -283,7 +283,12 @@ jobs:
         run: |
           set -euo pipefail
           cargo +1.97.1 build --manifest-path "$MIGRATION_ROOT/Cargo.toml" --locked --release --no-default-features --target "$TARGET_TRIPLE" --bin gpui-migration --bin butter-paper-pdf-worker
-          python "$PHONE_ROOT/prepare.py"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            python_executable="${pythonLocation//\\//}/python.exe"
+            "$python_executable" "$PHONE_ROOT/prepare.py"
+          else
+            python "$PHONE_ROOT/prepare.py"
+          fi
           case "$TARGET_TRIPLE" in
             aarch64-apple-darwin) helper_os=darwin; helper_arch=arm64; helper_suffix= ;;
             x86_64-apple-darwin) helper_os=darwin; helper_arch=amd64; helper_suffix= ;;

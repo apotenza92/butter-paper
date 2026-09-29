@@ -115,9 +115,26 @@ describe("GPUI stable candidate workflow", () => {
       "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
     );
     expect(source).toContain("python-version: 3.12.10");
-    expect(source.indexOf("actions/setup-python@")).toBeLessThan(
-      source.indexOf('python "$PHONE_ROOT/prepare.py"'),
+    const steps = workflow.jobs.package.steps;
+    const setupPythonIndex = steps.findIndex((step: { uses?: string }) =>
+      step.uses?.startsWith("actions/setup-python@"),
     );
+    const buildStep = steps.find(
+      (step: { name?: string }) =>
+        step.name === "Build release binaries and local phone helper",
+    );
+    expect(setupPythonIndex).toBeGreaterThanOrEqual(0);
+    expect(buildStep?.shell).toBe("bash");
+    expect(buildStep?.run).toContain('if [[ "$RUNNER_OS" == "Windows" ]]');
+    expect(buildStep?.run).toContain(
+      'python_executable="${pythonLocation//\\\\//}/python.exe"',
+    );
+    expect(buildStep?.run).toContain('"$python_executable" "$PHONE_ROOT/prepare.py"');
+    expect(buildStep?.run).toContain('python "$PHONE_ROOT/prepare.py"');
+    expect(buildStep?.run.indexOf('if [[ "$RUNNER_OS" == "Windows" ]]')).toBeLessThan(
+      buildStep?.run.indexOf('python "$PHONE_ROOT/prepare.py"'),
+    );
+    expect(setupPythonIndex).toBeLessThan(steps.indexOf(buildStep));
   });
 
   it("keeps Linux build prerequisites in packaging and runtime prerequisites in clean-host smoke", () => {
