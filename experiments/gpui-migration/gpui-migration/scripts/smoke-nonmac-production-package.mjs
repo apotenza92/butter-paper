@@ -1096,8 +1096,12 @@ async function driveRectangleEdit(pid) {
 
 function sendSaveShortcut(pid) {
   if (process.platform === "linux") return runXdotool(["key", "ctrl+s"]);
-  const script = `Add-Type -AssemblyName System.Windows.Forms; Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class BpFocus { public delegate bool E(IntPtr h, IntPtr p); [DllImport("user32.dll")] public static extern bool EnumWindows(E cb, IntPtr p); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); }'; $target=${pid}; $wins=[System.Collections.Generic.List[IntPtr]]::new(); $cb=[BpFocus+E]{param($h,$p); [uint32]$owner=0; [void][BpFocus]::GetWindowThreadProcessId($h,[ref]$owner); if($owner -eq $target -and [BpFocus]::IsWindowVisible($h)){$wins.Add($h)}; return $true}; [void][BpFocus]::EnumWindows($cb,[IntPtr]::Zero); if($wins.Count -ne 1){throw 'expected one visible packaged app window'}; [void][BpFocus]::SetForegroundWindow($wins[0]); Start-Sleep -Milliseconds 150; if([BpFocus]::GetForegroundWindow() -ne $wins[0]){throw 'packaged app did not receive keyboard focus'}; [System.Windows.Forms.SendKeys]::SendWait('^s');`;
+  const script = `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class BpFocus { public delegate bool E(IntPtr h, IntPtr p); [DllImport("user32.dll")] public static extern bool EnumWindows(E cb, IntPtr p); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra); }'; $target=${pid}; $wins=[System.Collections.Generic.List[IntPtr]]::new(); $cb=[BpFocus+E]{param($h,$p); [uint32]$owner=0; [void][BpFocus]::GetWindowThreadProcessId($h,[ref]$owner); if($owner -eq $target -and [BpFocus]::IsWindowVisible($h)){$wins.Add($h)}; return $true}; [void][BpFocus]::EnumWindows($cb,[IntPtr]::Zero); if($wins.Count -ne 1){throw 'expected one visible packaged app window'}; [void][BpFocus]::SetForegroundWindow($wins[0]); Start-Sleep -Milliseconds 150; if([BpFocus]::GetForegroundWindow() -ne $wins[0]){throw 'packaged app did not receive keyboard focus'}; [BpFocus]::keybd_event(0x11,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 50; [BpFocus]::keybd_event(0x53,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 50; [BpFocus]::keybd_event(0x53,0,2,[UIntPtr]::Zero); [BpFocus]::keybd_event(0x11,0,2,[UIntPtr]::Zero);`;
   return powershell(script);
+}
+
+export function smokeArtifactStem(runDir) {
+  return basename(runDir).replace(/^\./, "");
 }
 
 function boundedLog(destination) {
@@ -1154,14 +1158,15 @@ async function runSmoke({
   const runDir = await mkdtemp(
     join(evidenceReal, `.bp-runtime-smoke-${architecture}-`),
   );
+  const artifactStem = smokeArtifactStem(runDir);
   const home = join(runDir, "home"),
     local = join(runDir, "local");
   await Promise.all([
     mkdir(home, { recursive: true }),
     mkdir(local, { recursive: true }),
   ]);
-  const stdoutPath = join(evidenceReal, `${basename(runDir)}.stdout.log`),
-    stderrPath = join(evidenceReal, `${basename(runDir)}.stderr.log`);
+  const stdoutPath = join(evidenceReal, `${artifactStem}.stdout.log`),
+    stderrPath = join(evidenceReal, `${artifactStem}.stderr.log`);
   let child,
     pkg,
     spawnError,
@@ -1592,7 +1597,7 @@ async function runSmoke({
       !result.error &&
       result.cleanup.status === "verified-clean" &&
       result.cleanup.tempRootRemoved;
-    const evidencePath = join(evidenceReal, `${basename(runDir)}.json`);
+    const evidencePath = join(evidenceReal, `${artifactStem}.json`);
     result.evidence.result = evidencePath;
     await writeFile(evidencePath, `${JSON.stringify(result, null, 2)}\n`, {
       flag: "wx",

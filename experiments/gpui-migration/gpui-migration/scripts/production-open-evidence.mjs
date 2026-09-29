@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { join, resolve, win32 } from "node:path";
 
 const MAX_INDEX_BYTES = 16 * 1024;
@@ -106,7 +106,14 @@ export async function readProductionOpenEvidence({ recoveryStoreRoot, fixturePat
   if (platform === "win32") {
     assert(windowsPathIdentity(decodedPath) === windowsPathIdentity(win32.resolve(fixturePath)), "recovery source path does not identify the exact fixture");
   } else {
-    assert(decodedPath.equals(Buffer.from(resolve(fixturePath))), "recovery source path does not identify the exact fixture");
+    let recordedRealPath;
+    try {
+      recordedRealPath = await realpath(decodedPath, { encoding: "buffer" });
+    } catch {
+      fail("recovery source path does not identify the exact fixture");
+    }
+    const fixtureRealPath = await realpath(fixturePath, { encoding: "buffer" });
+    assert(recordedRealPath.equals(fixtureRealPath), "recovery source path does not identify the exact fixture");
   }
 
   const fixtureSha256 = sha256(fixtureBytes);

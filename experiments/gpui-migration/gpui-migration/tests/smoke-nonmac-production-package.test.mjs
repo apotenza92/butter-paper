@@ -12,9 +12,30 @@ import {
   parseProductionTar,
   parseProductionZip,
   assertSidecars,
+  smokeArtifactStem,
 } from "../scripts/smoke-nonmac-production-package.mjs";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+test("runtime smoke diagnostics use an uploadable non-hidden artifact stem", () => {
+  assert.equal(
+    smokeArtifactStem("/tmp/evidence/.bp-runtime-smoke-x64-abc123"),
+    "bp-runtime-smoke-x64-abc123",
+  );
+});
+
+test("Windows normal Save uses focused low-level Ctrl+S input", async () => {
+  const source = await readFile(
+    new URL("../scripts/smoke-nonmac-production-package.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /GetForegroundWindow\(\) -ne \$wins\[0\]/);
+  assert.match(source, /keybd_event\(0x11,0,0/);
+  assert.match(source, /keybd_event\(0x53,0,0/);
+  assert.match(source, /keybd_event\(0x53,0,2/);
+  assert.match(source, /keybd_event\(0x11,0,2/);
+  assert.doesNotMatch(source, /SendWait\('\^s'\)/);
+});
 
 function crc32(bytes) {
   let crc = 0xffffffff;

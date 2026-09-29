@@ -155,6 +155,7 @@ describe("GPUI stable candidate workflow", () => {
     expect(source).toContain("Install Linux runtime smoke prerequisites");
     for (const dependency of [
       "libdbus-1-3",
+      "mesa-vulkan-drivers",
       "xvfb",
       "xauth",
       "xdotool",

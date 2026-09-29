@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -73,6 +73,25 @@ test("accepts an exact clean opened-document checkpoint and content-addressed ob
   assert.equal(evidence.timelineObjectSha256, expected.timelineHash);
   assert.equal(evidence.currentRevision, 0);
   assert.equal(evidence.requiresSaveAs, false);
+});
+
+test("accepts a Unix fixture reached through an equivalent filesystem alias", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "bp-open-evidence-alias-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const realDir = join(scratch, "real"), aliasDir = join(scratch, "alias");
+  await mkdir(realDir);
+  await symlink(realDir, aliasDir);
+  const recordedPath = join(realDir, "fixture.pdf");
+  await writeFile(recordedPath, fixtureBytes);
+  const store = join(scratch, "store");
+  await createStore(store, recordedPath);
+  const evidence = await readProductionOpenEvidence({
+    recoveryStoreRoot: store,
+    fixturePath: join(aliasDir, "fixture.pdf"),
+    fixtureBytes,
+    platform: "darwin",
+  });
+  assert.equal(evidence.documentId, documentId);
 });
 
 test("returns not-ready only for missing publication and fails closed after publication", async (t) => {

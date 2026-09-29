@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   isolatedAppEnvironment,
+  macosPathAliases,
   validateDisposableMacosRunner,
   validateExtractedInventory,
   validateFixturePdf,
@@ -56,6 +57,17 @@ test("accepts matching package and verification receipts for exact archive bytes
       signingCertificateSha256: "B".repeat(64),
     },
   );
+});
+
+test("macOS process ownership recognises the /var filesystem alias", () => {
+  assert.deepEqual(macosPathAliases("/var/folders/run/worker"), [
+    "/var/folders/run/worker",
+    "/private/var/folders/run/worker",
+  ]);
+  assert.deepEqual(macosPathAliases("/private/var/folders/run/worker"), [
+    "/private/var/folders/run/worker",
+    "/var/folders/run/worker",
+  ]);
 });
 
 test("rejects archive byte, receipt identity, and verification mutations", () => {
@@ -245,7 +257,10 @@ test("packaged smoke performs edit, normal save and quit, reopen, PDF inspection
   assert.match(source, /driver\("close", child\.pid\)/);
   assert.match(source, /driver\("reopened", child\.pid, outputPath\)/);
   assert.match(source, /driver\("inspect", outputPath\)/);
+  assert.match(source, /root = await realpath\(/);
   assert.match(source, /if \(root && safeToRemoveRoot\)/);
   assert.match(source, /retainedTempRoot = root/);
   assert.match(source, /rectangleCount === 1/);
+  assert.match(source, /process\.kill\(-launched\.pid, "SIGTERM"\)/);
+  assert.doesNotMatch(source, /process\.kill\(-process\.pid/);
 });

@@ -263,31 +263,42 @@ function processCommand(pid) {
     fail(`could not inspect process ${pid}`);
   return result.stdout.trim();
 }
+export function macosPathAliases(path) {
+  const paths = [path];
+  if (path.startsWith("/var/")) paths.push(`/private${path}`);
+  else if (path.startsWith("/private/var/")) paths.push(path.slice(8));
+  return [...new Set(paths)];
+}
 function isOwnedPath(pid, paths) {
   const command = processCommand(pid);
-  return paths.some(
+  return paths.flatMap(macosPathAliases).some(
     (path) => command === path || command.startsWith(`${path} `),
   );
 }
 function pidsForExecutable(path, logs) {
-  const result = spawnSync(
-    "/usr/bin/pgrep",
-    ["-f", `^${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( |$)`],
-    { encoding: "utf8", timeout: 5000 },
-  );
-  logs.stdout = bounded(`${logs.stdout}${result.stdout ?? ""}`);
-  logs.stderr = bounded(`${logs.stderr}${result.stderr ?? ""}`);
-  if (![0, 1].includes(result.status) || result.error)
-    fail(
-      `could not inspect packaged worker process table: ${result.error?.message ?? result.stderr ?? result.status}`,
+  const aliases = macosPathAliases(path);
+  const output = [];
+  for (const alias of aliases) {
+    const result = spawnSync(
+      "/usr/bin/pgrep",
+      ["-f", `^${alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( |$)`],
+      { encoding: "utf8", timeout: 5000 },
     );
-  return (result.stdout ?? "")
+    logs.stdout = bounded(`${logs.stdout}${result.stdout ?? ""}`);
+    logs.stderr = bounded(`${logs.stderr}${result.stderr ?? ""}`);
+    if (![0, 1].includes(result.status) || result.error)
+      fail(
+        `could not inspect packaged worker process table: ${result.error?.message ?? result.stderr ?? result.status}`,
+      );
+    output.push(result.stdout ?? "");
+  }
+  return output.join("\n")
     .trim()
     .split(/\s+/)
     .filter(Boolean)
     .map(Number)
     .filter(
-      (pid) => Number.isSafeInteger(pid) && pid > 0 && isOwnedPath(pid, [path]),
+      (pid) => Number.isSafeInteger(pid) && pid > 0 && isOwnedPath(pid, aliases),
     );
 }
 
@@ -402,7 +413,9 @@ export async function smokeSignedMacosPackage({
         `host architecture ${hostArch} does not natively match ${identity.target}`,
       );
     result.identity = { ...identity, target: identity.target, hostArch };
-    root = await mkdtemp(join(tmpdir(), "bp-signed-macos-runtime-"));
+    root = await realpath(
+      await mkdtemp(join(tmpdir(), "bp-signed-macos-runtime-")),
+    );
     const extracted = join(root, "extract");
     await mkdir(extracted, { mode: 0o700 });
     execute(
@@ -711,16 +724,16 @@ export async function smokeSignedMacosPackage({
           pids.push(...pidsForExecutable(workerPath, logs));
           return [...new Set(pids)];
         };
-        for (const process of children) {
-          if (process.exitCode === null) {
+        for (const launched of children) {
+          if (launched.exitCode === null) {
             try {
-              process.kill("SIGTERM");
+              launched.kill("SIGTERM");
             } catch (error) {
               if (error.code !== "ESRCH") throw error;
             }
           }
           try {
-            process.kill(-process.pid, "SIGTERM");
+            process.kill(-launched.pid, "SIGTERM");
           } catch (error) {
             if (error.code !== "ESRCH") throw error;
           }
@@ -732,10 +745,10 @@ export async function smokeSignedMacosPackage({
             pidsForExecutable(workerPath, logs).length)
         )
           await sleep(200);
-        for (const process of children)
-          if (process.exitCode === null) {
+        for (const launched of children)
+          if (launched.exitCode === null) {
             try {
-              process.kill(-process.pid, "SIGKILL");
+              process.kill(-launched.pid, "SIGKILL");
             } catch (error) {
               if (error.code !== "ESRCH") throw error;
             }
@@ -749,12 +762,12 @@ export async function smokeSignedMacosPackage({
           }
         }
         await Promise.all(
-          children.map((process) =>
-            process.exitCode !== null
+          children.map((launched) =>
+            launched.exitCode !== null
               ? Promise.resolve()
               : Promise.race([
                   new Promise((resolveExit) =>
-                    process.once("exit", resolveExit),
+                    launched.once("exit", resolveExit),
                   ),
                   sleep(2000),
                 ]),
@@ -764,14 +777,14 @@ export async function smokeSignedMacosPackage({
         const remaining = owned();
         if (
           remaining.length ||
-          children.some((process) => process.exitCode === null)
+          children.some((launched) => launched.exitCode === null)
         )
           fail(
             `owned processes remain after termination: ${remaining.join(", ")}`,
           );
         result.cleanup = {
           status: "verified-clean",
-          appPids: children.map((process) => process.pid),
+          appPids: children.map((launched) => launched.pid),
           workerPids: [...new Set([...workerPids, ...finalWorkers])],
           remaining,
         };
