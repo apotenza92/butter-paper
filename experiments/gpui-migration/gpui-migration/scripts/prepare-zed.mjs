@@ -28,7 +28,9 @@ export async function verifyZed(root, policy, projectRoot = probeDirectory) {
   if (await fileSha256(join(root, policy.zed.licenseFile)) !== policy.zed.licenseSha256) throw new Error('prepared Zed license drifted');
   validateZedPatch(await readFile(join(projectRoot, prepared.patch.path)), policy);
   const changed = git(['diff', 'HEAD', '--name-only'], root).split('\n').filter(Boolean).sort();
-  if (JSON.stringify(changed) !== JSON.stringify([...prepared.changedFiles].sort()) || git(['ls-files', '--others', '--exclude-standard'], root)) throw new Error('prepared Zed patch scope drifted');
+  if (JSON.stringify(changed) !== JSON.stringify([...prepared.changedFiles].sort())
+      || git(['diff', '--name-only'], root)
+      || git(['ls-files', '--others', '--exclude-standard'], root)) throw new Error('prepared Zed patch scope drifted');
   const digest = await deterministicTreeDigest(root);
   if (digest !== prepared.treeSha256) throw new Error(`prepared Zed tree checksum drifted: ${digest}`);
   return { output: root, revision: policy.zed.revision, patchSha256: prepared.patch.sha256, digest };
@@ -49,6 +51,7 @@ export async function prepareZed(policy, source, projectRoot = probeDirectory) {
     const before = 'ztracing = { path = "crates/ztracing" }';
     if (manifest.split(before).length !== 2) throw new Error('Zed tracing dependency drifted');
     await writeFile(manifestPath, manifest.replace(before, 'ztracing = { path = "../../vendor/ztracing-shim" }'));
+    git(['add', 'Cargo.toml'], temporary);
     await verifyZed(temporary, policy, projectRoot);
     await rename(temporary, output);
     return { status: 'prepared', ...await verifyZed(output, policy, projectRoot) };

@@ -14,6 +14,10 @@ const policy = await loadPolicy();
 const patch = await readFile(
   new URL(`../${policy.zedPrepared.patch.path}`, import.meta.url),
 );
+const preparationScript = await readFile(
+  new URL("../scripts/prepare-zed.mjs", import.meta.url),
+  "utf8",
+);
 test("prepared Zed patch is exact, checksum-bound, and includes the reviewed test-window contract", () => {
   validateZedPatch(patch, policy);
   assert.throws(
@@ -44,6 +48,10 @@ test("prepared Zed patch is exact, checksum-bound, and includes the reviewed tes
       source,
     ),
   );
+});
+test("prepared Zed digest binds every reviewed worktree change through the index", () => {
+  assert.ok(preparationScript.includes("git(['add', 'Cargo.toml'], temporary)"));
+  assert.ok(preparationScript.includes("git(['diff', '--name-only'], root)"));
 });
 test("prepared renderer patch carries transformed text and image sprites across every backend", () => {
   const source = patch.toString("utf8");

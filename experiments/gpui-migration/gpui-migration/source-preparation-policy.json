@@ -325,7 +325,7 @@
       "crates/gpui_wgpu/src/wgpu_renderer.rs",
       "crates/gpui_windows/src/shaders.hlsl"
     ],
-    "treeSha256": "29ec55885ffc59f3c59cc04e44608ad4e63cf26a26342fded331e998d94f207b",
+    "treeSha256": "5c8dc9ee47e1006c9bd1c7226920b582518e53ff0e9ab71812496a5157ca0436",
     "packages": {
       "collections": "crates/collections",
       "derive_refineable": "crates/refineable/derive_refineable",
