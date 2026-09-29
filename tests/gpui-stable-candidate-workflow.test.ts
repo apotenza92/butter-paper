@@ -90,6 +90,15 @@ describe("GPUI stable candidate workflow", () => {
     expect(source).toContain("SignatureCamera.swift");
   });
 
+  it("fetches the locked Rust graph before enforcing offline source verification", () => {
+    const fetch =
+      'cargo +1.97.1 fetch --locked --manifest-path "$MIGRATION_ROOT/Cargo.toml"';
+    expect(source).toContain(fetch);
+    expect(source.indexOf(fetch)).toBeLessThan(
+      source.indexOf('node "$MIGRATION_ROOT/scripts/verify-cargo-graph.mjs"'),
+    );
+  });
+
   it("keeps Linux build prerequisites in packaging and runtime prerequisites in clean-host smoke", () => {
     expect(source).toContain("Install Linux native build prerequisites");
     for (const dependency of [
