@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -329,6 +330,17 @@ test("prepared tree digest is independent of file creation order", async () => {
   await writeFile(join(second, "nested", "b.txt"), "bravo\n");
 
   assert.equal(await deterministicTreeDigest(first), await deterministicTreeDigest(second));
+});
+
+test("prepared Git digest follows the staged source identity rather than checkout line endings", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bp-prep-index-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  execFileSync("git", ["init", "--quiet", root]);
+  await writeFile(join(root, "source.txt"), "alpha\nbeta\n");
+  execFileSync("git", ["-C", root, "add", "source.txt"]);
+  const expected = await deterministicTreeDigest(root);
+  await writeFile(join(root, "source.txt"), "alpha\r\nbeta\r\n");
+  assert.equal(await deterministicTreeDigest(root), expected);
 });
 
 test("shared experiment source receipts reject path, checksum, and coverage drift", () => {

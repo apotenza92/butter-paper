@@ -22,7 +22,7 @@
   },
   "prepared": {
     "directory": ".prepared/gpui-component-c27f5d5c",
-    "treeSha256": "45c28a70a6a33e4e5bf6ed183199c66a81a231c4d3310d0b3df5965fa3f6ad66"
+    "treeSha256": "b8a00ac53a2dedc5d0029dedb1b895623d96474d70b3a2bc8c6c192886164bf7"
   },
   "tabStatePatch": {
     "path": "patches/gpui-component-tab-button-states.patch",
@@ -325,7 +325,7 @@
       "crates/gpui_wgpu/src/wgpu_renderer.rs",
       "crates/gpui_windows/src/shaders.hlsl"
     ],
-    "treeSha256": "804408c8f6cc18f84a03d7f31b65d527acb9c522792427a09b80848f33d926dd",
+    "treeSha256": "29ec55885ffc59f3c59cc04e44608ad4e63cf26a26342fded331e998d94f207b",
     "packages": {
       "collections": "crates/collections",
       "derive_refineable": "crates/refineable/derive_refineable",

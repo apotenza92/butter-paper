@@ -139,12 +139,12 @@ export async function deterministicTreeDigest(root) {
       return sha256((await treeEntries(resolvedRoot)).join(""));
     }
   }
-  const indexModes = new Map(indexed.stdout.split("\0").filter(Boolean).map((entry) => {
-    const match = entry.match(/^(100644|100755|120000) [0-9a-f]+ \d\t(.+)$/s);
+  const indexEntries = indexed.stdout.split("\0").filter(Boolean).map((entry) => {
+    const match = entry.match(/^(100644|100755|120000) ([0-9a-f]+) 0\t(.+)$/s);
     if (!match) throw new Error(`invalid prepared Git index entry: ${entry}`);
-    return [match[2].split("\\").join("/"), match[1]];
-  }));
-  return sha256((await treeEntries(resolvedRoot, resolvedRoot, indexModes)).join(""));
+    return `${match[1]}\0${match[3].split("\\").join("/")}\0${match[2]}\n`;
+  });
+  return sha256(indexEntries.join(""));
 }
 
 export function validatePreparedManifest(manifest, policy) {
