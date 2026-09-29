@@ -84,8 +84,8 @@ describe("GPUI PDFium production candidate workflow", () => {
     expect(source).toContain("Microsoft.VisualStudio.Component.VC.Tools.x86.x64");
     expect(source).toContain("-requires $component -format json | ConvertFrom-Json");
     expect(source).toContain("$instances[0].catalog.productLineVersion");
-    expect(source).toContain("'^2022$' { '2022'; break }");
-    expect(source).toContain("'^2026$' { '2026'; break }");
+    expect(source).toContain("'^(17|2022)$' { '2022'; break }");
+    expect(source).toContain("'^(18|2026)$' { '2026'; break }");
     expect(source).toContain('"vs${vsVersion}_install=$installation" >> $env:GITHUB_ENV');
     expect(source).toContain('"GYP_MSVS_OVERRIDE_PATH=$installation" >> $env:GITHUB_ENV');
     expect(source).toContain('"GYP_MSVS_VERSION=$vsVersion" >> $env:GITHUB_ENV');

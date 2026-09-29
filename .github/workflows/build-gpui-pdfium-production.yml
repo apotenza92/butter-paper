@@ -123,8 +123,8 @@ jobs:
           }
           $installation = [string]$instances[0].installationPath
           $vsVersion = switch -Regex ([string]$instances[0].catalog.productLineVersion) {
-            '^2022$' { '2022'; break }
-            '^2026$' { '2026'; break }
+            '^(17|2022)$' { '2022'; break }
+            '^(18|2026)$' { '2026'; break }
             default { throw "unsupported Visual Studio product line: $($instances[0].catalog.productLineVersion)" }
           }
           "vs${vsVersion}_install=$installation" >> $env:GITHUB_ENV
