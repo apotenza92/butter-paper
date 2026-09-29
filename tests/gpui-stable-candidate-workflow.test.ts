@@ -60,6 +60,12 @@ describe("GPUI stable candidate workflow", () => {
     expect(
       workflow.on.workflow_dispatch.inputs.approved_pdfium_run_id.required,
     ).toBe(true);
+    expect(
+      workflow.on.workflow_dispatch.inputs.approved_pdfium_run_attempt.required,
+    ).toBe(true);
+    expect(workflow.on.workflow_dispatch.inputs).not.toHaveProperty(
+      "approved_pdfium_artifact",
+    );
     expect(source).toContain('[[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]');
     expect(source).toContain("git merge-base --is-ancestor HEAD origin/main");
     expect(
@@ -67,6 +73,9 @@ describe("GPUI stable candidate workflow", () => {
     ).toBeGreaterThanOrEqual(2);
     expect(source).toContain("production-pdfium-approved.json");
     expect(source).toContain("approved_pdfium_run_id");
+    expect(source).toContain("run.path !== '.github/workflows/approve-gpui-pdfium-production.yml'");
+    expect(source).toContain("run.head_repository?.full_name !== repository");
+    expect(source).toContain("name: gpui-pdfium-production-approved");
     expect(source).toContain("stage-pdfium-production.mjs");
     expect(source).toContain("stage-nonmac-pdfium-production.mjs");
   });
@@ -172,6 +181,8 @@ describe("GPUI stable candidate workflow", () => {
       )?.env,
     ).toMatchObject({
       APPROVED_PDFIUM_RUN_ID: "${{ inputs.approved_pdfium_run_id }}",
+      APPROVED_PDFIUM_RUN_ATTEMPT:
+        "${{ inputs.approved_pdfium_run_attempt }}",
       BUILD_VERSION: "${{ inputs.build_version }}",
       SOURCE_REVISION: "${{ inputs.source_revision }}",
     });

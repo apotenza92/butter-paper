@@ -11,10 +11,9 @@ on:
         description: Run containing the human-approved production PDFium artifact
         required: true
         type: string
-      approved_pdfium_artifact:
-        description: Same-repository artifact containing production-pdfium-approved.json and its bound files
+      approved_pdfium_run_attempt:
+        description: Exact successful approval workflow attempt containing the reviewed artifact
         required: true
-        default: gpui-pdfium-production-approved
         type: string
       build_version:
         description: Numeric macOS bundle build version
@@ -44,18 +43,35 @@ jobs:
         shell: bash
         env:
           APPROVED_PDFIUM_RUN_ID: ${{ inputs.approved_pdfium_run_id }}
+          APPROVED_PDFIUM_RUN_ATTEMPT: ${{ inputs.approved_pdfium_run_attempt }}
           BUILD_VERSION: ${{ inputs.build_version }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
           SOURCE_REVISION: ${{ inputs.source_revision }}
         run: |
           set -euo pipefail
           [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ "$APPROVED_PDFIUM_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$APPROVED_PDFIUM_RUN_ATTEMPT" =~ ^[1-9][0-9]{0,4}$ ]]
           [[ "$BUILD_VERSION" =~ ^[0-9]+$ ]]
           test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
           git fetch --no-tags origin main
           git merge-base --is-ancestor HEAD origin/main
           version="$(node -p "require('./package.json').version")"
           [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z.-]+)?$ ]]
+          approval_run="$RUNNER_TEMP/pdfium-approval-run.json"
+          gh api "repos/$REPOSITORY/actions/runs/$APPROVED_PDFIUM_RUN_ID" > "$approval_run"
+          node --input-type=module - "$approval_run" "$APPROVED_PDFIUM_RUN_ATTEMPT" "$REPOSITORY" <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const [path, expectedAttempt, repository] = process.argv.slice(2);
+          const run = JSON.parse(await readFile(path, 'utf8'));
+          if (run.path !== '.github/workflows/approve-gpui-pdfium-production.yml' ||
+              run.event !== 'workflow_dispatch' || run.status !== 'completed' ||
+              run.conclusion !== 'success' || String(run.run_attempt) !== expectedAttempt ||
+              run.head_repository?.full_name !== repository) {
+            throw new Error('PDFium approval input must be the exact successful same-repository approval workflow attempt');
+          }
+          NODE
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   package:
@@ -175,7 +191,7 @@ jobs:
       - name: Download reviewed production PDFium inputs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ inputs.approved_pdfium_artifact }}
+          name: gpui-pdfium-production-approved
           path: ${{ runner.temp }}/approved-pdfium
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
