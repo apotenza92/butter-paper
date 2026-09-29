@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { approvePdfiumProductionCandidate } from "../scripts/approve-pdfium-production-candidate.mjs";
+import { approvePdfiumProductionCandidate, argumentsFrom } from "../scripts/approve-pdfium-production-candidate.mjs";
 import { validateNonMacProductionManifest } from "../scripts/stage-nonmac-pdfium-production.mjs";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -99,6 +99,22 @@ const approve = (f, outputPath = join(f.temp, "approved.json")) => approvePdfium
   redistributionReviewPath: f.redistributionPath,
   supplierReviewPath: f.supplierPath,
   outputPath,
+});
+
+test("maps CLI option names to the path fields used by the approval function", () => {
+  assert.deepEqual(argumentsFrom([
+    "--artifact-root", "/candidate",
+    "--manifest", "/candidate/manifest.json",
+    "--redistribution-review", "/candidate/redistribution.json",
+    "--supplier-review", "/candidate/supplier.json",
+    "--output", "/approved.json",
+  ]), {
+    artifactRoot: "/candidate",
+    manifestPath: "/candidate/manifest.json",
+    redistributionReviewPath: "/candidate/redistribution.json",
+    supplierReviewPath: "/candidate/supplier.json",
+    outputPath: "/approved.json",
+  });
 });
 
 test("promotes only the exact candidate bound to two explicit reviews and preserves its artifact records", async (t) => {

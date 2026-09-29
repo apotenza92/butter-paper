@@ -195,7 +195,7 @@ export async function approvePdfiumProductionCandidate({ artifactRoot, manifestP
   return out;
 }
 
-function argumentsFrom(argv) {
+export function argumentsFrom(argv) {
   const values = new Map();
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i];
@@ -205,7 +205,13 @@ function argumentsFrom(argv) {
   }
   const keys = ["--artifact-root", "--manifest", "--redistribution-review", "--supplier-review", "--output"];
   if (values.size !== keys.length || keys.some((key) => !values.has(key))) fail("usage: approve-pdfium-production-candidate.mjs --artifact-root DIR --manifest FILE --redistribution-review FILE --supplier-review FILE --output FILE");
-  return Object.fromEntries(keys.map((key) => [key.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase()), values.get(key)]));
+  return {
+    artifactRoot: values.get("--artifact-root"),
+    manifestPath: values.get("--manifest"),
+    redistributionReviewPath: values.get("--redistribution-review"),
+    supplierReviewPath: values.get("--supplier-review"),
+    outputPath: values.get("--output"),
+  };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(new URL(import.meta.url).pathname)) {
