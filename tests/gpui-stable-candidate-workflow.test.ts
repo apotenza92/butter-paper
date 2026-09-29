@@ -214,6 +214,12 @@ describe("GPUI stable candidate workflow", () => {
       '"CARGO_TARGET_${cargoTargetKey}_LINKER=$($resolvedTools[\'link.exe\'])"',
     );
     expect(source).toContain("where.exe $tool");
+    expect(source).toContain("$gitBash = 'C:\\Program Files\\Git\\bin\\bash.exe'");
+    expect(source).toContain("Split-Path -Parent $gitBash");
+    expect(source).toContain("& $gitBash --version");
+    expect(source.indexOf("Split-Path -Parent $gitBash")).toBeLessThan(
+      source.indexOf("$pathValue.Split(';'")
+    );
     expect(
       source.indexOf("Activate matching Windows MSVC and LLVM toolchain"),
     ).toBeLessThan(

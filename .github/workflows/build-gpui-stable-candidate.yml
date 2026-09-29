@@ -257,10 +257,16 @@ jobs:
             }
           }
           if (-not $pathValue) { throw 'VsDevCmd did not emit Path' }
+          $gitBash = 'C:\Program Files\Git\bin\bash.exe'
+          if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) {
+            throw "required Git Bash is missing: $gitBash"
+          }
+          Split-Path -Parent $gitBash |
+            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           $pathValue.Split(';', [StringSplitOptions]::RemoveEmptyEntries) |
             ForEach-Object { $_ | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append }
           $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          $env:Path = "$llvmBin;$pathValue"
+          $env:Path = "$(Split-Path -Parent $gitBash);$llvmBin;$pathValue"
 
           $targetKey = $env:TARGET_TRIPLE.Replace('-', '_')
           "CC_$targetKey=$llvmBin\clang.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -273,6 +279,7 @@ jobs:
             $resolvedTools[$tool] = $resolved[0]
             Write-Host "$tool -> $($resolved[0])"
           }
+          & $gitBash --version
           $cargoTargetKey = $targetKey.ToUpperInvariant()
           "CARGO_TARGET_${cargoTargetKey}_LINKER=$($resolvedTools['link.exe'])" |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
