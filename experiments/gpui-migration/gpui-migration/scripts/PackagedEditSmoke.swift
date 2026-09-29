@@ -130,6 +130,15 @@ func singleButtonIfPublished(_ app: AXUIElement, _ label: String, timeout: TimeI
     return nil
 }
 
+func availableButtonLabels(_ app: AXUIElement) -> [String] {
+    descendants(app)
+        .filter { text($0, kAXRoleAttribute as CFString) == kAXButtonRole as String }
+        .map(describe)
+        .filter { !$0.isEmpty }
+        .prefix(100)
+        .map { $0 }
+}
+
 func activate(_ pid: pid_t) throws {
     guard let running = NSRunningApplication(processIdentifier: pid) else { throw SmokeFailure("packaged app PID is not running") }
     _ = running.activate(options: [.activateAllWindows])
@@ -149,7 +158,7 @@ func performEdit(pid: pid_t) throws -> [String: Any] {
         rectangleActivation = "accessible-button: \(describe(rectangleButton))"
     } else {
         try postKey(0x0F) // R — the ordinary documented Rectangle shortcut.
-        rectangleActivation = "keyboard-shortcut-r"
+        rectangleActivation = "keyboard-shortcut-r; published buttons: \(availableButtonLabels(app))"
     }
     wait()
 

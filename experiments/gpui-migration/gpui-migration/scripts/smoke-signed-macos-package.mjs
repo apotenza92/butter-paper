@@ -255,7 +255,7 @@ function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 function processCommand(pid) {
-  const result = spawnSync("/bin/ps", ["-p", String(pid), "-o", "command="], {
+  const result = spawnSync("/bin/ps", ["-ww", "-p", String(pid), "-o", "command="], {
     encoding: "utf8",
     timeout: 5000,
   });
@@ -303,7 +303,7 @@ function pidsForExecutable(path, logs) {
 }
 
 function processInventory(path, logs) {
-  const result = spawnSync("/bin/ps", ["-axo", "pid=,ppid=,command="], {
+  const result = spawnSync("/bin/ps", ["-ww", "-axo", "pid=,ppid=,command="], {
     encoding: "utf8",
     timeout: 5000,
   });
@@ -347,7 +347,7 @@ export async function smokeSignedMacosPackage({
     passed: false,
     claims: [
       "exact signed package identity",
-      "normal accessible Rectangle selection",
+      "normal accessible-button or documented-keyboard Rectangle selection",
       "CoreGraphics pointer drag",
       "normal Save",
       "PDFKit rectangle inspection",
@@ -586,10 +586,13 @@ export async function smokeSignedMacosPackage({
       if (child.exitCode !== null)
         fail(`packaged app exited early (${child.exitCode})`);
       workerPids = pidsForExecutable(worker, logs);
+      const stableWorkerObserved =
+        !observations.length ||
+        workerPids.some((pid) => observations[0].workerPids.includes(pid));
       if (
         workerPids.length &&
-        (!observations.length ||
-          Date.now() - observations.at(-1).observedAt >= 200)
+        stableWorkerObserved &&
+        (!observations.length || Date.now() - observations.at(-1).observedAt >= 200)
       )
         observations.push({
           observedAt: Date.now(),

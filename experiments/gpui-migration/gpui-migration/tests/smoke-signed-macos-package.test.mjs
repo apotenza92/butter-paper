@@ -248,6 +248,7 @@ test("native edit driver requires AX, posts real pointer events, and independent
   assert.match(helper, /available buttons/);
   assert.match(helper, /keyboard-shortcut-r/);
   assert.match(helper, /postKey\(0x0F\)/);
+  assert.match(helper, /published buttons/);
   assert.doesNotMatch(helper, /BP_TEST|SMOKE_AUTOMATION|automation-backdoor/i);
 });
 
@@ -267,6 +268,8 @@ test("packaged smoke performs edit, normal save and quit, reopen, PDF inspection
   assert.match(source, /rectangleCount === 1/);
   assert.match(source, /processInventory\(worker, logs\)/);
   assert.match(source, /await sleep\(100\)/);
+  assert.match(source, /stableWorkerObserved/);
+  assert.match(source, /"-ww"/);
   assert.match(source, /process\.kill\(-launched\.pid, "SIGTERM"\)/);
   assert.doesNotMatch(source, /process\.kill\(-process\.pid/);
   assert.doesNotMatch(source, /children\.some\(\(launched\) => launched\.exitCode === null\)/);
