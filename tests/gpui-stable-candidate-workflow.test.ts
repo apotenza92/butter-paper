@@ -103,7 +103,7 @@ describe("GPUI stable candidate workflow", () => {
     expect(source).toContain(
       "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
     );
-    expect(source).toContain("python-version: 3.12.12");
+    expect(source).toContain("python-version: 3.12.10");
     expect(source.indexOf("actions/setup-python@")).toBeLessThan(
       source.indexOf('python "$PHONE_ROOT/prepare.py"'),
     );
