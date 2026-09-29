@@ -149,7 +149,8 @@ jobs:
         env:
           PDFIUM_REVISION: 91b9d569b34be4f38eed7b3c49b227356c3aadad
         run: |
-          git clone https://pdfium.googlesource.com/pdfium.git pdfium
+          git -c core.autocrlf=false clone https://pdfium.googlesource.com/pdfium.git pdfium
+          git -C pdfium config core.autocrlf false
           git -C pdfium checkout --detach "$PDFIUM_REVISION"
           dependency_patch="$GITHUB_WORKSPACE/experiments/gpui-migration/gpui-migration/patches/pdfium-production-local-deps.patch"
           git -C pdfium apply --check "$dependency_patch"

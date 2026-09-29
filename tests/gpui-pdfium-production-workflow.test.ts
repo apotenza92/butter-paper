@@ -110,6 +110,8 @@ describe("GPUI PDFium production candidate workflow", () => {
     expect(source).toContain(
       'python3 build/linux/sysroot_scripts/install-sysroot.py --arch="$sysroot_arch"',
     );
+    expect(source).toContain("git -c core.autocrlf=false clone");
+    expect(source).toContain("git -C pdfium config core.autocrlf false");
     expect(source).toContain('arm64) sysroot_arch="arm64"');
     expect(source).toContain('x64) sysroot_arch="amd64"');
     expect(source).toContain("git -C pdfium apply --check");
