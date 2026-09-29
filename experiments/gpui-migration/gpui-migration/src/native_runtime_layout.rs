@@ -137,7 +137,7 @@ impl fmt::Display for NativeRuntimeLayoutError {
             ),
             Self::InvalidPdfiumBasename { expected, actual } => write!(
                 formatter,
-                "PDFium override basename must be {expected}, got {}",
+                "rendering-library input basename must be {expected}, got {}",
                 actual
                     .as_deref()
                     .map(Path::new)

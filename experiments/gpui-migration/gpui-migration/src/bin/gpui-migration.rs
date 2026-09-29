@@ -1523,7 +1523,7 @@ fn native_runtime_mode(
     {
         if development.is_some() || pdfium_library.is_some() {
             return Err(
-                "development PDFium overrides are not compiled into this production build"
+                "external rendering-library inputs are not compiled into this production build"
                     .to_owned(),
             );
         }
@@ -1589,7 +1589,7 @@ mod native_runtime_mode_tests {
         .unwrap_err();
         assert_eq!(
             error,
-            "development PDFium overrides are not compiled into this production build"
+            "external rendering-library inputs are not compiled into this production build"
         );
         assert!(native_runtime_mode(None, Some(OsString::from("/tmp/libpdfium.dylib"))).is_err());
     }

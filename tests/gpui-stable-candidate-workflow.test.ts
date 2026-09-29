@@ -16,6 +16,17 @@ const targets = [
 ];
 
 describe("GPUI stable candidate workflow", () => {
+  it("keeps production binary messages clear of release-verifier marker strings", () => {
+    for (const nativeSource of [
+      "experiments/gpui-migration/gpui-migration/src/bin/gpui-migration.rs",
+      "experiments/gpui-migration/gpui-migration/src/native_runtime_layout.rs",
+    ]) {
+      const nativeText = readFileSync(nativeSource, "utf8");
+      expect(nativeText).not.toContain("development PDFium overrides");
+      expect(nativeText).not.toContain("PDFium override basename");
+    }
+  });
+
   it("packages all six targets as required release artifacts", () => {
     const matrix = workflow.jobs.package.strategy.matrix.include;
     expect(
