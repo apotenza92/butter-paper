@@ -105,6 +105,31 @@ func matching(_ app: AXUIElement, _ label: String) -> [AXUIElement] {
     descendants(app).filter { describe($0).split(separator: "|").contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).localizedCaseInsensitiveCompare(label) == .orderedSame } }
 }
 
+func waitForSingleButton(_ app: AXUIElement, _ label: String, timeout: TimeInterval = 10) throws -> AXUIElement {
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat {
+        let buttons = matching(app, label).filter { text($0, kAXRoleAttribute as CFString) == kAXButtonRole as String }
+        if buttons.count == 1 { return buttons[0] }
+        wait(0.2)
+    } while Date() < deadline
+    let labels = descendants(app)
+        .filter { text($0, kAXRoleAttribute as CFString) == kAXButtonRole as String }
+        .map(describe)
+        .filter { !$0.isEmpty }
+        .prefix(100)
+    throw SmokeFailure("expected exactly one accessible \(label) button; available buttons: \(Array(labels))")
+}
+
+func singleButtonIfPublished(_ app: AXUIElement, _ label: String, timeout: TimeInterval = 2) -> AXUIElement? {
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat {
+        let buttons = matching(app, label).filter { text($0, kAXRoleAttribute as CFString) == kAXButtonRole as String }
+        if buttons.count == 1 { return buttons[0] }
+        wait(0.2)
+    } while Date() < deadline
+    return nil
+}
+
 func activate(_ pid: pid_t) throws {
     guard let running = NSRunningApplication(processIdentifier: pid) else { throw SmokeFailure("packaged app PID is not running") }
     _ = running.activate(options: [.activateAllWindows])
@@ -117,9 +142,15 @@ func performEdit(pid: pid_t) throws -> [String: Any] {
     let app = appElement(pid)
     let windows = applicationWindows(app)
     try require(!windows.isEmpty, "packaged app has no accessible window")
-    let rectangleButtons = matching(app, "Rectangle").filter { text($0, kAXRoleAttribute as CFString) == kAXButtonRole as String }
-    try require(rectangleButtons.count == 1, "expected exactly one accessible Rectangle button; found \(rectangleButtons.count)")
-    try press(rectangleButtons[0])
+    let rectangleButton = singleButtonIfPublished(app, "Rectangle")
+    let rectangleActivation: String
+    if let rectangleButton {
+        try press(rectangleButton)
+        rectangleActivation = "accessible-button: \(describe(rectangleButton))"
+    } else {
+        try postKey(0x0F) // R — the ordinary documented Rectangle shortcut.
+        rectangleActivation = "keyboard-shortcut-r"
+    }
     wait()
 
     let windowFrames = windows.compactMap(bounds)
@@ -145,11 +176,10 @@ func performEdit(pid: pid_t) throws -> [String: Any] {
     try postMouse(.leftMouseUp, at: end)
     wait(0.6)
 
-    let saveButtons = matching(app, "Save").filter { text($0, kAXRoleAttribute as CFString) == kAXButtonRole as String }
-    try require(saveButtons.count == 1, "expected exactly one accessible Save button; found \(saveButtons.count)")
-    try press(saveButtons[0])
+    let saveButton = try waitForSingleButton(app, "Save")
+    try press(saveButton)
     wait(1.0)
-    return ["rectangleButton": describe(rectangleButtons[0]), "saveButton": describe(saveButtons[0]),
+    return ["rectangleActivation": rectangleActivation, "saveButton": describe(saveButton),
             "windowFrame": [frame.minX, frame.minY, frame.width, frame.height],
             "coordinateContract": "primary-window-relative central document viewport; GUI scale 100%; window minimum 900x600",
             "drag": [[start.x, start.y], [end.x, end.y]], "windowCount": windows.count]

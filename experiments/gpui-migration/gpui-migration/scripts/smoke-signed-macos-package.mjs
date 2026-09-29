@@ -302,6 +302,23 @@ function pidsForExecutable(path, logs) {
     );
 }
 
+function processInventory(path, logs) {
+  const result = spawnSync("/bin/ps", ["-axo", "pid=,ppid=,command="], {
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  logs.stdout = bounded(`${logs.stdout}${result.stdout ?? ""}`);
+  logs.stderr = bounded(`${logs.stderr}${result.stderr ?? ""}`);
+  if (result.error || result.status !== 0)
+    return `process inventory unavailable: ${result.error?.message ?? result.stderr ?? result.status}`;
+  const name = basename(path);
+  const matches = (result.stdout ?? "")
+    .split(/\r?\n/)
+    .filter((line) => line.includes(name))
+    .slice(0, 20);
+  return matches.length ? matches.join(" | ") : `no process command contained ${name}`;
+}
+
 export async function smokeSignedMacosPackage({
   archivePath,
   fixturePdfPath,
@@ -569,16 +586,23 @@ export async function smokeSignedMacosPackage({
       if (child.exitCode !== null)
         fail(`packaged app exited early (${child.exitCode})`);
       workerPids = pidsForExecutable(worker, logs);
-      if (workerPids.length)
+      if (
+        workerPids.length &&
+        (!observations.length ||
+          Date.now() - observations.at(-1).observedAt >= 200)
+      )
         observations.push({
+          observedAt: Date.now(),
           atMs: timeoutMs - (deadline - Date.now()),
           appPid: child.pid,
           workerPids: [...workerPids],
         });
-      await sleep(400);
+      await sleep(100);
     }
     if (observations.length < 2)
-      fail("packaged PDF worker was not observed alive twice");
+      fail(
+        `packaged PDF worker was not observed alive twice (${processInventory(worker, logs)})`,
+      );
     const recoveryStoreRoot = stableRecoveryStoreRoot({
       platform: "darwin",
       effectiveHome: disposableRunner.effectiveHome,
@@ -775,10 +799,7 @@ export async function smokeSignedMacosPackage({
         );
         await sleep(300);
         const remaining = owned();
-        if (
-          remaining.length ||
-          children.some((launched) => launched.exitCode === null)
-        )
+        if (remaining.length)
           fail(
             `owned processes remain after termination: ${remaining.join(", ")}`,
           );

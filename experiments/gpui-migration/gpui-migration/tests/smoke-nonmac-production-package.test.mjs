@@ -24,17 +24,27 @@ test("runtime smoke diagnostics use an uploadable non-hidden artifact stem", () 
   );
 });
 
-test("Windows normal Save uses focused low-level Ctrl+S input", async () => {
+test("Windows normal Save invokes the visible accessible Save button", async () => {
   const source = await readFile(
     new URL("../scripts/smoke-nonmac-production-package.mjs", import.meta.url),
     "utf8",
   );
-  assert.match(source, /GetForegroundWindow\(\) -ne \$wins\[0\]/);
-  assert.match(source, /keybd_event\(0x11,0,0/);
-  assert.match(source, /keybd_event\(0x53,0,0/);
-  assert.match(source, /keybd_event\(0x53,0,2/);
-  assert.match(source, /keybd_event\(0x11,0,2/);
+  assert.match(source, /UIAutomationClient/);
+  assert.match(source, /NameProperty,'Save'/);
+  assert.match(source, /InvokePattern/);
+  assert.match(source, /visible enabled Save button/);
   assert.doesNotMatch(source, /SendWait\('\^s'\)/);
+  assert.doesNotMatch(source, /keybd_event\(0x53/);
+});
+
+test("Linux Rectangle input clears modifiers and delivers an incremental drag", async () => {
+  const source = await readFile(
+    new URL("../scripts/smoke-nonmac-production-package.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /\["key", "--clearmodifiers", "r"\]/);
+  assert.match(source, /for \(let step = 1; step <= 12; step \+= 1\)/);
+  assert.match(source, /await sleep\(25\)/);
 });
 
 function crc32(bytes) {

@@ -1081,9 +1081,19 @@ async function driveRectangleEdit(pid) {
     x: Math.round(x + width * 0.54),
     y: Math.round(y + height * 0.52),
   };
-  runXdotool(["key", "r"]);
-  runXdotool(["mousemove", String(start.x), String(start.y), "mousedown", "1"]);
-  runXdotool(["mousemove", "--sync", String(end.x), String(end.y)]);
+  runXdotool(["key", "--clearmodifiers", "r"]);
+  runXdotool(["mousemove", "--sync", String(start.x), String(start.y)]);
+  runXdotool(["mousedown", "1"]);
+  for (let step = 1; step <= 12; step += 1) {
+    const fraction = step / 12;
+    runXdotool([
+      "mousemove",
+      "--sync",
+      String(Math.round(start.x + (end.x - start.x) * fraction)),
+      String(Math.round(start.y + (end.y - start.y) * fraction)),
+    ]);
+    await sleep(25);
+  }
   runXdotool(["mouseup", "1"]);
   return {
     windowId,
@@ -1096,7 +1106,7 @@ async function driveRectangleEdit(pid) {
 
 function sendSaveShortcut(pid) {
   if (process.platform === "linux") return runXdotool(["key", "ctrl+s"]);
-  const script = `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class BpFocus { public delegate bool E(IntPtr h, IntPtr p); [DllImport("user32.dll")] public static extern bool EnumWindows(E cb, IntPtr p); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra); }'; $target=${pid}; $wins=[System.Collections.Generic.List[IntPtr]]::new(); $cb=[BpFocus+E]{param($h,$p); [uint32]$owner=0; [void][BpFocus]::GetWindowThreadProcessId($h,[ref]$owner); if($owner -eq $target -and [BpFocus]::IsWindowVisible($h)){$wins.Add($h)}; return $true}; [void][BpFocus]::EnumWindows($cb,[IntPtr]::Zero); if($wins.Count -ne 1){throw 'expected one visible packaged app window'}; [void][BpFocus]::SetForegroundWindow($wins[0]); Start-Sleep -Milliseconds 150; if([BpFocus]::GetForegroundWindow() -ne $wins[0]){throw 'packaged app did not receive keyboard focus'}; [BpFocus]::keybd_event(0x11,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 50; [BpFocus]::keybd_event(0x53,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 50; [BpFocus]::keybd_event(0x53,0,2,[UIntPtr]::Zero); [BpFocus]::keybd_event(0x11,0,2,[UIntPtr]::Zero);`;
+  const script = `Add-Type -AssemblyName UIAutomationClient; $processCondition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty,${pid}); $nameCondition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'Save'); $condition=[Windows.Automation.AndCondition]::new($processCondition,$nameCondition); $matches=[Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Descendants,$condition); $buttons=@($matches | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and $_.Current.IsEnabled -and -not $_.Current.IsOffscreen }); if($buttons.Count -ne 1){$available=@([Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Descendants,$processCondition) | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button } | ForEach-Object { $_.Current.Name } | Where-Object { $_ } | Select-Object -First 100); throw "expected one visible enabled Save button; available buttons: $($available -join ', ')"}; $pattern=$buttons[0].GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern); ([Windows.Automation.InvokePattern]$pattern).Invoke();`;
   return powershell(script);
 }
 
