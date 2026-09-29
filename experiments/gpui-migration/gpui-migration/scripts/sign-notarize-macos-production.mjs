@@ -32,6 +32,42 @@ function defaultRun(command, args, { input } = {}) {
   return output;
 }
 
+const SUBMISSION_ID = /\/notary\/v2\/submissions\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+const TRANSIENT_NETWORK = /NSURLErrorDomain Code=-(?:1001|1005|1009)|timed out|connection appears to be offline|network connection was lost/i;
+
+// A submission that has already been uploaded must not be re-submitted when
+// only notarytool's status polling loses the network (seen on hosted Intel
+// runners). Resume waiting on the exact submission ID Apple returned.
+export async function submitAndAwaitNotarisation({ run, archivePath, notaryProfile, sleep, attempts = 6, delayMs = 30_000 }) {
+  try {
+    return run("xcrun", [
+      "notarytool", "submit", archivePath,
+      "--keychain-profile", notaryProfile,
+      "--wait",
+      "--output-format", "json",
+    ]);
+  } catch (error) {
+    const message = String(error?.message ?? error);
+    const submission = SUBMISSION_ID.exec(message)?.[1];
+    if (!submission || !TRANSIENT_NETWORK.test(message)) throw error;
+    let lastError = error;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      await sleep(delayMs);
+      try {
+        return run("xcrun", [
+          "notarytool", "wait", submission,
+          "--keychain-profile", notaryProfile,
+          "--output-format", "json",
+        ]);
+      } catch (retryError) {
+        lastError = retryError;
+        if (!TRANSIENT_NETWORK.test(String(retryError?.message ?? retryError))) throw retryError;
+      }
+    }
+    throw lastError;
+  }
+}
+
 function validateInputs({ appPath, manifestPath, identity, fingerprint, notaryProfile, receiptPath }) {
   for (const [label, value] of Object.entries({ appPath, manifestPath, identity, fingerprint, notaryProfile, receiptPath })) {
     if (typeof value !== "string" || value.trim() === "") throw new Error(`${label} is required`);
@@ -71,6 +107,7 @@ export async function signNotariseVerifyNativeMacosApp({
   notaryProfile,
   receiptPath,
   run = defaultRun,
+  sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
 }) {
   const validated = validateInputs({ appPath, manifestPath, identity, fingerprint, notaryProfile, receiptPath });
   const app = resolve(appPath);
@@ -124,12 +161,7 @@ export async function signNotariseVerifyNativeMacosApp({
 
     const archivePath = resolve(entitlementsDirectory, "Butter Paper notarisation.zip");
     run("/usr/bin/ditto", ["-c", "-k", "--keepParent", app, archivePath]);
-    const notarisationOutput = run("xcrun", [
-      "notarytool", "submit", archivePath,
-      "--keychain-profile", notaryProfile,
-      "--wait",
-      "--output-format", "json",
-    ]);
+    const notarisationOutput = await submitAndAwaitNotarisation({ run, archivePath, notaryProfile, sleep });
     const submissionId = requireAcceptedNotarisation(notarisationOutput);
     run("xcrun", ["stapler", "staple", app]);
 

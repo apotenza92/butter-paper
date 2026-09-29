@@ -9,6 +9,7 @@ import {
 } from "../experiments/gpui-migration/gpui-migration/scripts/verify-signed-macos-production.mjs";
 import {
   signNotariseVerifyNativeMacosApp,
+  submitAndAwaitNotarisation,
 } from "../experiments/gpui-migration/gpui-migration/scripts/sign-notarize-macos-production.mjs";
 import { createNativeMacosProductionFixture } from "./helpers/native-macos-production-fixture";
 
@@ -248,5 +249,67 @@ describe("macOS production signing and notarisation orchestration", () => {
     expect(rejectedFake.calls.some(({ command, args }) => command === "codesign" && args[0] === "--verify")).toBe(false);
     expect(rejectedFake.archivePath).toBeDefined();
     expect(existsSync(rejectedFake.archivePath!)).toBe(false);
+  });
+});
+
+describe("notarisation submission polling recovery", () => {
+  const uploadedTimeout = new Error(
+    'xcrun notarytool submit a.zip failed (1): Error: HTTPError(statusCode: nil, error: Error Domain=NSURLErrorDomain Code=-1001 "The request timed out." NSErrorFailingURLStringKey=https://appstoreconnect.apple.com/notary/v2/submissions/2437b67f-5297-48cd-8938-dd450532d940?)',
+  );
+
+  it("resumes waiting on the uploaded submission instead of resubmitting after a polling timeout", async () => {
+    const calls: string[][] = [];
+    let waits = 0;
+    const output = await submitAndAwaitNotarisation({
+      archivePath: "a.zip",
+      notaryProfile: "production-notary",
+      sleep: async () => {},
+      run: (_command: string, args: string[]) => {
+        calls.push(args);
+        if (args[1] === "submit") throw uploadedTimeout;
+        waits += 1;
+        if (waits === 1) throw new Error("NSURLErrorDomain Code=-1009 The Internet connection appears to be offline.");
+        return JSON.stringify({ id: "2437b67f-5297-48cd-8938-dd450532d940", status: "Accepted" });
+      },
+    });
+    expect(JSON.parse(output).status).toBe("Accepted");
+    expect(calls.filter((args) => args[1] === "submit")).toHaveLength(1);
+    expect(calls.filter((args) => args[1] === "wait")).toEqual([
+      ["notarytool", "wait", "2437b67f-5297-48cd-8938-dd450532d940", "--keychain-profile", "production-notary", "--output-format", "json"],
+      ["notarytool", "wait", "2437b67f-5297-48cd-8938-dd450532d940", "--keychain-profile", "production-notary", "--output-format", "json"],
+    ]);
+  });
+
+  it("does not retry non-network failures or failures without an uploaded submission", async () => {
+    const rejected = new Error("xcrun notarytool submit a.zip failed (1): Error: invalid credentials");
+    for (const failure of [rejected, new Error("NSURLErrorDomain Code=-1001 The request timed out.")]) {
+      const calls: string[][] = [];
+      await expect(submitAndAwaitNotarisation({
+        archivePath: "a.zip",
+        notaryProfile: "production-notary",
+        sleep: async () => {},
+        run: (_command: string, args: string[]) => {
+          calls.push(args);
+          throw failure;
+        },
+      })).rejects.toBe(failure);
+      expect(calls).toHaveLength(1);
+    }
+  });
+
+  it("gives up after bounded wait attempts", async () => {
+    const calls: string[][] = [];
+    await expect(submitAndAwaitNotarisation({
+      archivePath: "a.zip",
+      notaryProfile: "production-notary",
+      sleep: async () => {},
+      attempts: 3,
+      run: (_command: string, args: string[]) => {
+        calls.push(args);
+        if (args[1] === "submit") throw uploadedTimeout;
+        throw new Error("NSURLErrorDomain Code=-1001 The request timed out.");
+      },
+    })).rejects.toThrow("timed out");
+    expect(calls.filter((args) => args[1] === "wait")).toHaveLength(3);
   });
 });
