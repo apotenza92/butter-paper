@@ -1,0 +1,126 @@
+diff --git a/crates/ui/src/input/input.rs b/crates/ui/src/input/input.rs
+index 5eb9b44b..fd3c7d6f 100644
+--- a/crates/ui/src/input/input.rs
++++ b/crates/ui/src/input/input.rs
+@@ -3,8 +3,9 @@ use std::rc::Rc;
+ use gpui::prelude::FluentBuilder as _;
+ use gpui::{
+     AccessibleAction, AnyElement, App, DefiniteLength, Edges, Entity, Hsla,
+-    InteractiveElement as _, IntoElement, ParentElement as _, Rems, RenderOnce, Role, SharedString,
+-    StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, Window, div, px, relative,
++    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Rems, RenderOnce, Role,
++    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, Window, div,
++    px, relative,
+ };
+ 
+ use crate::button::{Button, ButtonRounded, ButtonVariants as _};
+@@ -126,6 +127,7 @@ pub struct Input {
+     role: RoleOverride,
+     accessibility_id: Option<SharedString>,
+     aria_label: Option<SharedString>,
++    editor_paddings: Option<Edges<Pixels>>,
+ 
+     /// An optional context menu builder to allow a custom context menu on the input.
+     ///
+@@ -197,6 +199,7 @@ impl Input {
+             role: RoleOverride::default(),
+             accessibility_id: None,
+             aria_label: None,
++            editor_paddings: None,
+             context_menu_builder: None,
+         }
+     }
+@@ -246,6 +249,11 @@ impl Input {
+         self
+     }
+ 
++    pub(crate) fn editor_paddings(mut self, paddings: Edges<Pixels>) -> Self {
++        self.editor_paddings = Some(paddings);
++        self
++    }
++
+     /// Set focus border for the input, default is true.
+     pub fn focus_bordered(mut self, bordered: bool) -> Self {
+         self.focus_bordered = bordered;
+@@ -409,16 +417,18 @@ impl RenderOnce for Input {
+             cx,
+         );
+         state.set_editor_paddings(
+-            if state.presentation(cx).is_multi_line() {
+-                Edges {
+-                    top: self.size.input_py(),
+-                    right: self.size.input_px(),
+-                    bottom: self.size.input_py(),
+-                    left: self.size.input_px(),
++            self.editor_paddings.unwrap_or_else(|| {
++                if state.presentation(cx).is_multi_line() {
++                    Edges {
++                        top: self.size.input_py(),
++                        right: self.size.input_px(),
++                        bottom: self.size.input_py(),
++                        left: self.size.input_px(),
++                    }
++                } else {
++                    Edges::default()
+                 }
+-            } else {
+-                Edges::default()
+-            },
++            }),
+             cx,
+         );
+         state.set_disabled(self.disabled, cx);
+diff --git a/crates/ui/src/input/textarea.rs b/crates/ui/src/input/textarea.rs
+index 37b61655..77a71219 100644
+--- a/crates/ui/src/input/textarea.rs
++++ b/crates/ui/src/input/textarea.rs
+@@ -1,8 +1,8 @@
+ use std::rc::Rc;
+ 
+ use gpui::{
+-    App, DefiniteLength, Entity, IntoElement, RenderOnce, SharedString, StyleRefinement, Styled,
+-    Window, prelude::FluentBuilder as _,
++    App, DefiniteLength, Edges, Entity, IntoElement, Pixels, RenderOnce, SharedString,
++    StyleRefinement, Styled, Window, prelude::FluentBuilder as _,
+ };
+ 
+ use super::{Input, TextareaState};
+@@ -22,6 +22,7 @@ pub struct Textarea {
+     tab_index: isize,
+     role: RoleOverride,
+     aria_label: Option<SharedString>,
++    editor_paddings: Option<Edges<Pixels>>,
+ 
+     /// An optional context menu builder to allow a custom context menu.
+     ///
+@@ -42,6 +43,7 @@ impl Textarea {
+             tab_index: 0,
+             role: RoleOverride::default(),
+             aria_label: None,
++            editor_paddings: None,
+             context_menu_builder: None,
+         }
+     }
+@@ -61,6 +63,12 @@ impl Textarea {
+         self
+     }
+ 
++    /// Override the internal editor padding used for multiline text layout.
++    pub fn editor_paddings(mut self, paddings: Edges<Pixels>) -> Self {
++        self.editor_paddings = Some(paddings);
++        self
++    }
++
+     pub fn disabled(mut self, disabled: bool) -> Self {
+         self.disabled = disabled;
+         self
+@@ -119,6 +127,9 @@ impl RenderOnce for Textarea {
+             .readonly(self.readonly)
+             .tab_index(self.tab_index)
+             .role(self.role)
++            .when_some(self.editor_paddings, |this, paddings| {
++                this.editor_paddings(paddings)
++            })
+             .when_some(self.height, |this, height| this.h(height))
+             .when_some(self.aria_label, |this, label| this.aria_label(label))
+             .when_some(self.context_menu_builder, |this, build| {

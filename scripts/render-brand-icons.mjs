@@ -8,13 +8,14 @@ const { createCanvas, loadImage } = require('@napi-rs/canvas');
 
 const canvasSize = 1024;
 const visibleWidthRatio = 0.80;
+const opticalVerticalOffsetRatio = 0.02;
 const sourceViewBox = { width: 256, height: 200 };
 const visibleBounds = { left: 10, right: 246, top: 10, bottom: 189 };
 const visibleWidth = visibleBounds.right - visibleBounds.left;
 const renderedWidth = canvasSize * visibleWidthRatio * (sourceViewBox.width / visibleWidth);
 const renderedHeight = renderedWidth * (sourceViewBox.height / sourceViewBox.width);
 const renderedLeft = (canvasSize - renderedWidth) / 2;
-const renderedTop = (canvasSize - renderedHeight) / 2;
+const renderedTop = ((canvasSize - renderedHeight) / 2) + (canvasSize * opticalVerticalOffsetRatio);
 
 const variants = [
   {
@@ -42,4 +43,6 @@ for (const variant of variants) {
   }
 }
 
-console.log(`Rendered brand icons with ${Math.round(visibleWidthRatio * 100)}% visible-width optical sizing.`);
+console.log(
+  `Rendered brand icons with ${Math.round(visibleWidthRatio * 100)}% visible-width sizing and ${Math.round(opticalVerticalOffsetRatio * 100)}% downward optical offset.`,
+);

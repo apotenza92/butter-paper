@@ -211,10 +211,17 @@ cleanup_owned_prepared_overlay() {
     return 125
   }
   [[ -d "$prepared_overlay/gpui-component-c27f5d5c" &&
-     ! -L "$prepared_overlay/gpui-component-c27f5d5c" ]] &&
+     ! -L "$prepared_overlay/gpui-component-c27f5d5c" &&
+     -d "$prepared_overlay/zed-8b1497d" &&
+     ! -L "$prepared_overlay/zed-8b1497d" &&
+     -f "$prepared_overlay/zed-8b1497d/crates/gpui/Cargo.toml" &&
+     ! -L "$prepared_overlay/zed-8b1497d/crates/gpui/Cargo.toml" ]] &&
     diff -qr \
       "$source_snapshot/gpui-migration/.prepared/gpui-component-c27f5d5c" \
-      "$prepared_overlay/gpui-component-c27f5d5c" >/dev/null || {
+      "$prepared_overlay/gpui-component-c27f5d5c" >/dev/null &&
+    diff -qr \
+      "$source_snapshot/gpui-migration/.prepared/zed-8b1497d" \
+      "$prepared_overlay/zed-8b1497d" >/dev/null || {
     echo "prepared overlay changed the pinned dependency content" >&2
     return 125
   }
@@ -223,7 +230,7 @@ cleanup_owned_prepared_overlay() {
   for entry in "${top_entries[@]}"; do
     name=${entry##*/}
     case "$name" in
-      gpui-component-c27f5d5c)
+      gpui-component-c27f5d5c|zed-8b1497d)
         ;;
       real-document-spine-surfaces)
         [[ -d "$entry" && ! -L "$entry" ]] || {
@@ -301,12 +308,16 @@ test_owned_overlay_cleanup() {
   sibling="$state/runs/prior-failure/evidence"
   mkdir -p \
     "$prepared_overlay/gpui-component-c27f5d5c" \
+    "$prepared_overlay/zed-8b1497d/crates/gpui" \
     "$source_snapshot/gpui-migration/.prepared/gpui-component-c27f5d5c" \
+    "$source_snapshot/gpui-migration/.prepared/zed-8b1497d/crates/gpui" \
     "$target" "${sibling%/*}"
   printf '%s\n' '{"prior":"preserved"}' > "$sibling"
   printf '%s\n' '{"kind":"butter-paper-portable-ubuntu24-run","runId":"test-current"}' > "$run_state/.run-owner.json"
   printf '%s\n' pinned > "$prepared_overlay/gpui-component-c27f5d5c/content"
   printf '%s\n' pinned > "$source_snapshot/gpui-migration/.prepared/gpui-component-c27f5d5c/content"
+  printf '%s\n' '[package]' > "$prepared_overlay/zed-8b1497d/crates/gpui/Cargo.toml"
+  printf '%s\n' '[package]' > "$source_snapshot/gpui-migration/.prepared/zed-8b1497d/crates/gpui/Cargo.toml"
 
   case "$fixture" in
     expected)
@@ -465,7 +476,18 @@ snapshot_tmp=$(mktemp -d "$state/source.new.XXXXXX")
 trap 'rm -rf --one-file-system -- "$snapshot_tmp" 2>/dev/null || true; terminate_owned_run ""' EXIT INT TERM
 mkdir -p "$snapshot_tmp/gpui-migration/.prepared/real-document-spine-surfaces" "$snapshot_tmp/gpui-migration" "$snapshot_tmp/performance/fixtures" "$snapshot_tmp/performance/results/public-fixtures-v1"
 cp -a "$probe_dir/Cargo.toml" "$probe_dir/Cargo.lock" "$probe_dir/rust-toolchain.toml" "$probe_dir/src" "$probe_dir/tests" "$probe_dir/vendor" "$snapshot_tmp/gpui-migration/"
-cp -a "$probe_dir/.prepared/gpui-component-c27f5d5c" "$snapshot_tmp/gpui-migration/.prepared/"
+[[ -f "$probe_dir/.prepared/zed-8b1497d/crates/gpui/Cargo.toml" ]] || {
+  echo "the prepared Zed GPUI manifest is unavailable" >&2
+  exit 125
+}
+cp -a \
+  "$probe_dir/.prepared/gpui-component-c27f5d5c" \
+  "$probe_dir/.prepared/zed-8b1497d" \
+  "$snapshot_tmp/gpui-migration/.prepared/"
+[[ -f "$snapshot_tmp/gpui-migration/.prepared/zed-8b1497d/crates/gpui/Cargo.toml" ]] || {
+  echo "the frozen source snapshot omitted the prepared Zed GPUI manifest" >&2
+  exit 125
+}
 app_dir="$migration_dir/gpui-migration"
 cp -a "$app_dir/Cargo.toml" "$app_dir/Cargo.lock" "$app_dir/rust-toolchain.toml" "$app_dir/src" "$snapshot_tmp/gpui-migration/"
 for input in comparison-workload.json comparison-workload-v4.materialized.json comparison-workload-v5.materialized.json; do
@@ -493,6 +515,10 @@ printf '%s\n' "{\"kind\":\"butter-paper-portable-ubuntu24-run\",\"runId\":\"$run
 cp --reflink=auto -a "$source_snapshot/gpui-migration/.prepared/." "$prepared_overlay/"
 diff -qr "$source_snapshot/gpui-migration/.prepared" "$prepared_overlay" >/dev/null || {
   echo "prepared overlay does not match the frozen source seed" >&2
+  exit 125
+}
+[[ -f "$prepared_overlay/zed-8b1497d/crates/gpui/Cargo.toml" ]] || {
+  echo "the prepared overlay omitted the prepared Zed GPUI manifest" >&2
   exit 125
 }
 

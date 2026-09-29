@@ -6,7 +6,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use serde_json::Value;
@@ -17,10 +20,13 @@ use crate::{
 };
 
 const MANIFEST_NAME: &str = "session-manifest.json";
+const RECOVERY_MARKER_NAME: &str = "session-recovery.json";
 const MANIFEST_VERSION: u64 = 2;
+const RECOVERY_MARKER_VERSION: u64 = 1;
 const MAX_MANIFEST_BYTES: u64 = 1_048_576;
 const MAX_DOCUMENTS: usize = 64;
 const MAX_PATH_UNITS: usize = 32_768;
+const MAX_TITLE_BYTES: usize = 1_024;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// A validated session checkpoint ready for atomic manifest publication.
@@ -46,6 +52,70 @@ impl SessionSnapshot {
     pub fn with_restart_views(mut self, restart_views: Vec<RestartView>) -> Self {
         self.restart_views = restart_views;
         self
+    }
+}
+
+/// One document whose committed in-memory changes had not reached a durable PDF.
+///
+/// This marker deliberately does not claim to contain recoverable annotation
+/// content. It exists so an application-process crash cannot silently present a
+/// clean restart after losing edits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionRecoveryDocument {
+    path: PathBuf,
+    title: String,
+    dirty_revision: u64,
+    requires_save_as: bool,
+}
+
+impl SessionRecoveryDocument {
+    pub fn new(
+        path: PathBuf,
+        title: impl Into<String>,
+        dirty_revision: u64,
+        requires_save_as: bool,
+    ) -> Self {
+        Self {
+            path,
+            title: title.into(),
+            dirty_revision,
+            requires_save_as,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub const fn dirty_revision(&self) -> u64 {
+        self.dirty_revision
+    }
+
+    pub const fn requires_save_as(&self) -> bool {
+        self.requires_save_as
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionRecoverySnapshot {
+    documents: Vec<SessionRecoveryDocument>,
+}
+
+impl SessionRecoverySnapshot {
+    pub fn new(documents: Vec<SessionRecoveryDocument>) -> Self {
+        Self { documents }
+    }
+
+    pub fn documents(&self) -> &[SessionRecoveryDocument] {
+        &self.documents
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.documents.is_empty()
     }
 }
 
@@ -111,6 +181,7 @@ pub enum SessionManifestOperation {
     WriteTemporary,
     SyncTemporary,
     Publish,
+    Remove,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,6 +208,8 @@ pub enum SessionManifestValidationError {
     EmptySnapshotHasActiveDocument,
     RestartViewCountMismatch,
     NonFiniteRestartView,
+    RecoveryTitleEmpty,
+    RecoveryTitleTooLong,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -163,6 +236,13 @@ pub enum SessionManifestError {
 pub struct SessionManifestStore {
     root: PathBuf,
     manifest: PathBuf,
+    recovery_marker: PathBuf,
+    recovery_publication: Mutex<RecoveryPublicationState>,
+}
+
+#[derive(Debug, Default)]
+struct RecoveryPublicationState {
+    stopped: bool,
 }
 
 impl SessionManifestStore {
@@ -170,7 +250,9 @@ impl SessionManifestStore {
         validate_root(&root)?;
         Ok(Self {
             manifest: root.join(MANIFEST_NAME),
+            recovery_marker: root.join(RECOVERY_MARKER_NAME),
             root,
+            recovery_publication: Mutex::new(RecoveryPublicationState::default()),
         })
     }
 
@@ -229,7 +311,7 @@ impl SessionManifestStore {
             }
         }
 
-        let (temporary_path, mut temporary) = self.create_temporary()?;
+        let (temporary_path, mut temporary) = self.create_temporary("session-manifest")?;
         let mut guard = TemporaryGuard::new(temporary_path.clone());
         temporary
             .write_all(encoded.as_bytes())
@@ -253,14 +335,131 @@ impl SessionManifestStore {
         Ok(())
     }
 
-    fn create_temporary(&self) -> Result<(PathBuf, File), SessionManifestError> {
+    /// Loads the last live dirty-session marker. A missing marker means the
+    /// previous process had no committed edits awaiting a PDF save.
+    pub fn load_recovery_marker(
+        &self,
+    ) -> Result<Option<SessionRecoverySnapshot>, SessionManifestError> {
+        validate_root(&self.root)?;
+        let metadata = match fs::symlink_metadata(&self.recovery_marker) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(operation_io(
+                    SessionManifestOperation::InspectManifest,
+                    error,
+                ));
+            }
+        };
+        validate_manifest_metadata(&metadata)?;
+        if metadata.len() > MAX_MANIFEST_BYTES {
+            return Err(SessionManifestError::Corruption(
+                SessionManifestCorruptionError::ManifestTooLarge,
+            ));
+        }
+        let file = open_manifest_for_read(&self.recovery_marker)?;
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.take(MAX_MANIFEST_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| operation_io(SessionManifestOperation::ReadManifest, error))?;
+        if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+            return Err(SessionManifestError::Corruption(
+                SessionManifestCorruptionError::ManifestTooLarge,
+            ));
+        }
+        decode_recovery_marker(&bytes).map(Some)
+    }
+
+    /// Atomically replaces the live dirty-session marker, or durably removes it
+    /// once every committed change has reached a PDF or been explicitly discarded.
+    pub fn replace_recovery_marker(
+        &self,
+        snapshot: &SessionRecoverySnapshot,
+    ) -> Result<(), SessionManifestError> {
+        let publication = self
+            .recovery_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if publication.stopped {
+            return Ok(());
+        }
+        self.replace_recovery_marker_locked(snapshot)
+    }
+
+    /// Makes a clean application-close checkpoint authoritative over every
+    /// queued live marker write from this process.
+    pub fn clear_recovery_marker_and_stop_live_writes(&self) -> Result<(), SessionManifestError> {
+        let mut publication = self
+            .recovery_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let result = self.replace_recovery_marker_locked(&SessionRecoverySnapshot::default());
+        // Clean-close owns the final checkpoint even when marker removal or its
+        // directory durability sync reports a warning. Never let a delayed
+        // debounced write race in afterwards and replace the close result.
+        publication.stopped = true;
+        result
+    }
+
+    fn replace_recovery_marker_locked(
+        &self,
+        snapshot: &SessionRecoverySnapshot,
+    ) -> Result<(), SessionManifestError> {
+        validate_recovery_snapshot(snapshot).map_err(SessionManifestError::Validation)?;
+        validate_root(&self.root)?;
+        match fs::symlink_metadata(&self.recovery_marker) {
+            Ok(metadata) => validate_manifest_metadata(&metadata)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(operation_io(
+                    SessionManifestOperation::InspectManifest,
+                    error,
+                ));
+            }
+        }
+
+        if snapshot.is_empty() {
+            match fs::remove_file(&self.recovery_marker) {
+                Ok(()) => self.sync_root(),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(operation_io(SessionManifestOperation::Remove, error)),
+            }
+        } else {
+            let encoded = encode_recovery_marker(snapshot);
+            let (temporary_path, mut temporary) = self.create_temporary("session-recovery")?;
+            let mut guard = TemporaryGuard::new(temporary_path.clone());
+            temporary
+                .write_all(encoded.as_bytes())
+                .map_err(|error| operation_io(SessionManifestOperation::WriteTemporary, error))?;
+            temporary
+                .sync_all()
+                .map_err(|error| operation_io(SessionManifestOperation::SyncTemporary, error))?;
+            drop(temporary);
+            publish(&temporary_path, &self.recovery_marker)
+                .map_err(|error| operation_io(SessionManifestOperation::Publish, error))?;
+            guard.disarm();
+            self.sync_root()
+        }
+    }
+
+    fn sync_root(&self) -> Result<(), SessionManifestError> {
+        #[cfg(unix)]
+        File::open(&self.root)
+            .and_then(|directory| directory.sync_all())
+            .map_err(
+                |error| SessionManifestError::PublishedButDirectorySyncFailed {
+                    kind: error.kind(),
+                },
+            )?;
+        Ok(())
+    }
+
+    fn create_temporary(&self, label: &str) -> Result<(PathBuf, File), SessionManifestError> {
         for _ in 0..128 {
             let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let path = self.root.join(format!(
-                ".session-manifest.{}.{}.tmp",
-                std::process::id(),
-                sequence
-            ));
+            let path = self
+                .root
+                .join(format!(".{label}.{}.{}.tmp", std::process::id(), sequence));
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
             #[cfg(unix)]
@@ -363,6 +562,28 @@ fn validate_snapshot(
         validate_path(path)?;
         if !unique.insert(normalized_path_key(path)) {
             return Err(SessionManifestValidationError::DuplicatePath);
+        }
+    }
+    Ok(())
+}
+
+fn validate_recovery_snapshot(
+    snapshot: &SessionRecoverySnapshot,
+) -> Result<(), SessionManifestValidationError> {
+    if snapshot.documents.len() > MAX_DOCUMENTS {
+        return Err(SessionManifestValidationError::TooManyDocuments);
+    }
+    let mut unique = HashSet::with_capacity(snapshot.documents.len());
+    for document in &snapshot.documents {
+        validate_path(&document.path)?;
+        if !unique.insert(normalized_path_key(&document.path)) {
+            return Err(SessionManifestValidationError::DuplicatePath);
+        }
+        if document.title.is_empty() {
+            return Err(SessionManifestValidationError::RecoveryTitleEmpty);
+        }
+        if document.title.len() > MAX_TITLE_BYTES {
+            return Err(SessionManifestValidationError::RecoveryTitleTooLong);
         }
     }
     Ok(())
@@ -496,6 +717,27 @@ fn encode_manifest(snapshot: &SessionSnapshot) -> String {
     encoded
 }
 
+fn encode_recovery_marker(snapshot: &SessionRecoverySnapshot) -> String {
+    let mut documents = Vec::with_capacity(snapshot.documents.len());
+    for document in &snapshot.documents {
+        let (encoding, path) = encode_path(&document.path);
+        documents.push(serde_json::json!({
+            "encoding": encoding,
+            "path": path,
+            "title": document.title,
+            "dirtyRevision": document.dirty_revision,
+            "requiresSaveAs": document.requires_save_as,
+        }));
+    }
+    let mut encoded = serde_json::json!({
+        "version": RECOVERY_MARKER_VERSION,
+        "documents": documents,
+    })
+    .to_string();
+    encoded.push('\n');
+    encoded
+}
+
 fn encode_restart_view(encoded: &mut String, view: RestartView) {
     let mode = match view.mode() {
         PageViewMode::Continuous => "continuous",
@@ -588,6 +830,68 @@ fn decode_manifest(bytes: &[u8]) -> Result<SessionRestorePlan, SessionManifestEr
         restart_views,
         active_document,
     })
+}
+
+fn decode_recovery_marker(bytes: &[u8]) -> Result<SessionRecoverySnapshot, SessionManifestError> {
+    let value: Value = serde_json::from_slice(bytes).map_err(|_| {
+        SessionManifestError::Corruption(SessionManifestCorruptionError::MalformedJson)
+    })?;
+    let object = value.as_object().ok_or_else(invalid_shape)?;
+    require_exact_fields(object.keys().map(String::as_str), &["version", "documents"])?;
+    if object.get("version").and_then(Value::as_u64) != Some(RECOVERY_MARKER_VERSION) {
+        return Err(SessionManifestError::Corruption(
+            SessionManifestCorruptionError::UnsupportedVersion,
+        ));
+    }
+    let encoded_documents = object
+        .get("documents")
+        .and_then(Value::as_array)
+        .ok_or_else(invalid_shape)?;
+    let mut documents = Vec::with_capacity(encoded_documents.len());
+    for encoded in encoded_documents {
+        let object = encoded.as_object().ok_or_else(invalid_shape)?;
+        require_exact_fields(
+            object.keys().map(String::as_str),
+            &[
+                "encoding",
+                "path",
+                "title",
+                "dirtyRevision",
+                "requiresSaveAs",
+            ],
+        )?;
+        let encoding = object
+            .get("encoding")
+            .and_then(Value::as_str)
+            .ok_or_else(invalid_shape)?;
+        let path = object
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(invalid_shape)?;
+        let title = object
+            .get("title")
+            .and_then(Value::as_str)
+            .ok_or_else(invalid_shape)?;
+        let dirty_revision = object
+            .get("dirtyRevision")
+            .and_then(Value::as_u64)
+            .ok_or_else(invalid_shape)?;
+        let requires_save_as = object
+            .get("requiresSaveAs")
+            .and_then(Value::as_bool)
+            .ok_or_else(invalid_shape)?;
+        documents.push(SessionRecoveryDocument::new(
+            decode_path(encoding, path)?,
+            title,
+            dirty_revision,
+            requires_save_as,
+        ));
+    }
+    let snapshot = SessionRecoverySnapshot::new(documents);
+    validate_recovery_snapshot(&snapshot).map_err(|error| {
+        SessionManifestError::Corruption(SessionManifestCorruptionError::InvalidSnapshot(error))
+    })?;
+    Ok(snapshot)
 }
 
 fn decode_restart_view(value: &Value) -> Result<RestartView, SessionManifestError> {

@@ -11,6 +11,8 @@ use std::{
     sync::Arc,
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
@@ -18,6 +20,18 @@ use crate::page_geometry::{PageCoordinateSpace, Rotation as CoordinateRotation};
 use crate::selection_geometry::{
     SelectionMarquee, SelectionPath, SelectionPoint, geometry_selected, selection_after,
 };
+
+/// Additional measured selection polygons, keyed by annotation identity in PDF space.
+pub type AnnotationSelectionSupplement = std::collections::HashMap<MarkupId, Vec<PdfPoint>>;
+
+/// Immutable page-local bounds for a PDF annotation retained in the opaque
+/// page-rendering channel rather than admitted into the editable model.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RetainedAnnotationObstacle {
+    pub id: String,
+    pub page_index: u32,
+    pub rect: PdfRect,
+}
 
 pub const DEFAULT_HISTORY_LIMIT: usize = 100;
 pub const MIN_RECT_SIZE_PT: f64 = 1.0;
@@ -34,7 +48,7 @@ pub const MAX_MEASUREMENT_LABEL_BYTES: usize = 256;
 pub const MAX_DECODED_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_IMAGE_DIMENSION_PX: u32 = 8_192;
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum PageRotation {
     Degrees0,
     Degrees90,
@@ -251,7 +265,8 @@ impl PageTransform {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PdfPoint {
     pub x: f64,
     pub y: f64,
@@ -265,7 +280,8 @@ impl PdfPoint {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PdfRect {
     pub x: f64,
     pub y: f64,
@@ -405,7 +421,7 @@ impl PdfRect {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct MarkupId(String);
 
 impl MarkupId {
@@ -428,7 +444,8 @@ impl fmt::Display for MarkupId {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RectangleAppearance {
     stroke_color: String,
     stroke_width_pt: f64,
@@ -438,7 +455,7 @@ pub struct RectangleAppearance {
     stroke_style: StrokeStyle,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum StrokeStyle {
     Solid,
     Dashed,
@@ -533,7 +550,8 @@ impl Default for RectangleAppearance {
 
 pub const PENDING_REDACTION_STATUS: &str = "Pending redaction mark — saving keeps the underlying PDF content; this mark does not securely remove text or graphics.";
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RedactAnnotation {
     pub id: MarkupId,
     pub page_index: u32,
@@ -603,7 +621,8 @@ impl RedactAnnotation {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RectangleAnnotation {
     pub id: MarkupId,
     pub page_index: u32,
@@ -636,7 +655,8 @@ impl RectangleAnnotation {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct EllipseAnnotation {
     pub id: MarkupId,
     pub page_index: u32,
@@ -695,7 +715,8 @@ pub enum ArcControlPoint {
     End,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArcAnnotation {
     pub id: MarkupId,
     pub page_index: u32,
@@ -704,6 +725,16 @@ pub struct ArcAnnotation {
     pub mid: PdfPoint,
     pub appearance: RectangleAppearance,
     pub locked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ellipse_geometry: Option<ArcEllipseGeometry>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ArcEllipseGeometry {
+    rect: PdfRect,
+    angle1_degrees: f64,
+    angle2_degrees: f64,
 }
 
 impl ArcAnnotation {
@@ -738,9 +769,43 @@ impl ArcAnnotation {
             mid,
             appearance,
             locked: false,
+            ellipse_geometry: None,
         };
         annotation.circle_geometry()?;
         Ok(annotation)
+    }
+
+    pub fn from_rect_angles(
+        id: MarkupId,
+        page_index: u32,
+        rect: PdfRect,
+        angle1_degrees: f64,
+        angle2_degrees: f64,
+        appearance: RectangleAppearance,
+    ) -> Result<Self, AnnotationError> {
+        require_finite("arc.angle1", angle1_degrees)?;
+        require_finite("arc.angle2", angle2_degrees)?;
+        let sweep = normalize_arc_sweep(angle1_degrees, angle2_degrees);
+        if sweep.abs() <= f64::EPSILON {
+            return Err(AnnotationError::InvalidGeometry(
+                "arc sweep must be nonzero".into(),
+            ));
+        }
+        let point_at = |angle: f64| ellipse_point(rect, angle);
+        Ok(Self {
+            id,
+            page_index,
+            start: point_at(angle1_degrees),
+            end: point_at(angle1_degrees + sweep),
+            mid: point_at(angle1_degrees + sweep * 0.5),
+            appearance,
+            locked: false,
+            ellipse_geometry: Some(ArcEllipseGeometry {
+                rect,
+                angle1_degrees: canonical_float(angle1_degrees),
+                angle2_degrees: canonical_float(angle1_degrees + sweep),
+            }),
+        })
     }
 
     pub fn constrained_midpoint(
@@ -798,6 +863,9 @@ impl ArcAnnotation {
     }
 
     pub fn rect(&self) -> PdfRect {
+        if let Some(geometry) = &self.ellipse_geometry {
+            return geometry.rect;
+        }
         let (center, radius, _, _) = self
             .circle_geometry()
             .expect("a retained Arc always has valid circle geometry");
@@ -811,12 +879,18 @@ impl ArcAnnotation {
     }
 
     pub fn angle1_degrees(&self) -> f64 {
+        if let Some(geometry) = &self.ellipse_geometry {
+            return geometry.angle1_degrees;
+        }
         self.circle_geometry()
             .expect("a retained Arc always has valid circle geometry")
             .2
     }
 
     pub fn angle2_degrees(&self) -> f64 {
+        if let Some(geometry) = &self.ellipse_geometry {
+            return geometry.angle2_degrees;
+        }
         let (_, _, start_angle, sweep) = self
             .circle_geometry()
             .expect("a retained Arc always has valid circle geometry");
@@ -824,12 +898,29 @@ impl ArcAnnotation {
     }
 
     pub fn sweep_degrees(&self) -> f64 {
+        if let Some(geometry) = &self.ellipse_geometry {
+            return normalize_arc_sweep(geometry.angle1_degrees, geometry.angle2_degrees);
+        }
         self.circle_geometry()
             .expect("a retained Arc always has valid circle geometry")
             .3
     }
 
     pub fn sampled_path(&self, segments: usize) -> Vec<PdfPoint> {
+        if self.ellipse_geometry.is_some() {
+            let rect = self.rect();
+            let start_angle = self.angle1_degrees();
+            let sweep = self.sweep_degrees();
+            let segments = segments.max(1);
+            let mut points = (0..=segments)
+                .map(|index| {
+                    ellipse_point(rect, start_angle + sweep * index as f64 / segments as f64)
+                })
+                .collect::<Vec<_>>();
+            points[0] = self.start;
+            points[segments] = self.end;
+            return points;
+        }
         let (center, radius, start_angle, sweep) = self
             .circle_geometry()
             .expect("a retained Arc always has valid circle geometry");
@@ -852,18 +943,126 @@ impl ArcAnnotation {
         const PDF_NUMBER_TOLERANCE: f64 = 0.000_1;
         self.id == other.id
             && self.page_index == other.page_index
-            && [
-                (self.start, other.start),
-                (self.end, other.end),
-                (self.mid, other.mid),
-            ]
-            .into_iter()
-            .all(|(left, right)| {
-                (left.x - right.x).abs() <= PDF_NUMBER_TOLERANCE
-                    && (left.y - right.y).abs() <= PDF_NUMBER_TOLERANCE
-            })
+            && self.rect().same_pdf_geometry_as(other.rect())
+            && (self.angle1_degrees() - other.angle1_degrees()).abs() <= PDF_NUMBER_TOLERANCE
+            && (self.angle2_degrees() - other.angle2_degrees()).abs() <= PDF_NUMBER_TOLERANCE
             && self.appearance == other.appearance
             && self.locked == other.locked
+    }
+
+    pub fn with_control_point(
+        &self,
+        control: ArcControlPoint,
+        point: PdfPoint,
+    ) -> Result<Self, AnnotationError> {
+        let (start, end, mid) = match control {
+            ArcControlPoint::Start => (point, self.end, self.mid),
+            ArcControlPoint::Mid => (self.start, self.end, point),
+            ArcControlPoint::End => (self.start, point, self.mid),
+        };
+        let Some(geometry) = &self.ellipse_geometry else {
+            let mut replacement = Self::new(
+                self.id.clone(),
+                self.page_index,
+                start,
+                end,
+                mid,
+                self.appearance.clone(),
+            )?;
+            replacement.locked = self.locked;
+            return Ok(replacement);
+        };
+        let ratio = geometry.rect.height / geometry.rect.width;
+        let to_circle = |point: PdfPoint| PdfPoint {
+            x: point.x,
+            y: point.y / ratio,
+        };
+        let circle = Self::new(
+            self.id.clone(),
+            self.page_index,
+            to_circle(start),
+            to_circle(end),
+            to_circle(mid),
+            self.appearance.clone(),
+        )?;
+        let circle_rect = circle.rect();
+        let rect = PdfRect::new(
+            circle_rect.x,
+            circle_rect.y * ratio,
+            circle_rect.width,
+            circle_rect.height * ratio,
+        )?;
+        let mut replacement = Self::from_rect_angles(
+            self.id.clone(),
+            self.page_index,
+            rect,
+            circle.angle1_degrees(),
+            circle.angle2_degrees(),
+            self.appearance.clone(),
+        )?;
+        replacement.locked = self.locked;
+        Ok(replacement)
+    }
+
+    pub fn constrained_midpoint_for_shape(
+        &self,
+        pointer: PdfPoint,
+        minimum_bulge_pt: f64,
+        snap_quarter_turn: bool,
+    ) -> Result<PdfPoint, AnnotationError> {
+        let Some(geometry) = &self.ellipse_geometry else {
+            return Self::constrained_midpoint(
+                self.start,
+                self.end,
+                pointer,
+                minimum_bulge_pt,
+                snap_quarter_turn,
+            );
+        };
+        let ratio = geometry.rect.height / geometry.rect.width;
+        let to_circle = |point: PdfPoint| PdfPoint {
+            x: point.x,
+            y: point.y / ratio,
+        };
+        let resolved = Self::constrained_midpoint(
+            to_circle(self.start),
+            to_circle(self.end),
+            to_circle(pointer),
+            minimum_bulge_pt / ratio.max(f64::EPSILON),
+            snap_quarter_turn,
+        )?;
+        PdfPoint::new(resolved.x, resolved.y * ratio)
+    }
+
+    pub fn translated(&self, delta_x: f64, delta_y: f64) -> Result<Self, AnnotationError> {
+        if let Some(geometry) = &self.ellipse_geometry {
+            let mut translated = Self::from_rect_angles(
+                self.id.clone(),
+                self.page_index,
+                PdfRect::new(
+                    geometry.rect.x + delta_x,
+                    geometry.rect.y + delta_y,
+                    geometry.rect.width,
+                    geometry.rect.height,
+                )?,
+                geometry.angle1_degrees,
+                geometry.angle2_degrees,
+                self.appearance.clone(),
+            )?;
+            translated.locked = self.locked;
+            Ok(translated)
+        } else {
+            let mut translated = Self::new(
+                self.id.clone(),
+                self.page_index,
+                PdfPoint::new(self.start.x + delta_x, self.start.y + delta_y)?,
+                PdfPoint::new(self.end.x + delta_x, self.end.y + delta_y)?,
+                PdfPoint::new(self.mid.x + delta_x, self.mid.y + delta_y)?,
+                self.appearance.clone(),
+            )?;
+            translated.locked = self.locked;
+            Ok(translated)
+        }
     }
 
     fn circle_geometry(&self) -> Result<(PdfPoint, f64, f64, f64), AnnotationError> {
@@ -944,7 +1143,7 @@ pub enum AnnotationKind {
     Snapshot,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum VertexPathKind {
     Polyline,
     Polygon,
@@ -972,7 +1171,8 @@ impl From<VertexPathKind> for AnnotationKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct VertexPathAnnotation {
     pub id: MarkupId,
     pub page_index: u32,
@@ -984,7 +1184,8 @@ pub struct VertexPathAnnotation {
 
 pub const DEFAULT_CLOUD_SCALLOP_RADIUS_PT: f64 = 14.28;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CloudAnnotation {
     pub id: MarkupId,
     pub page_index: u32,
@@ -1057,7 +1258,7 @@ impl CloudAnnotation {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum MeasurementPathKind {
     Polylength,
     Area,
@@ -1085,7 +1286,8 @@ impl From<MeasurementPathKind> for AnnotationKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MeasurementPathAnnotation {
     pub id: MarkupId,
     pub page_index: u32,
@@ -1252,7 +1454,7 @@ impl VertexPathAnnotation {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum LineKind {
     Line,
     Arrow,
@@ -1264,7 +1466,8 @@ pub enum LineEndpoint {
     End,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct StraightLineAppearance {
     stroke_color: String,
     stroke_width_pt: f64,
@@ -1328,7 +1531,8 @@ impl StraightLineAppearance {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct StraightLineAnnotation {
     pub id: MarkupId,
     pub page_index: u32,
@@ -1460,7 +1664,8 @@ pub fn straight_line_painted_bounds(
     .ok()
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PenAppearance {
     color: String,
     width_pt: f64,
@@ -1505,7 +1710,8 @@ impl PenAppearance {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PenAnnotation {
     pub id: MarkupId,
     pub page_index: u32,
@@ -1518,19 +1724,20 @@ pub struct PenAnnotation {
     pub locked: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum InkTool {
     Pen,
     Highlight,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum BlendMode {
     Normal,
     Multiply,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TextBoxStyle {
     font_family: String,
     font_size_pt: f64,
@@ -1538,9 +1745,11 @@ pub struct TextBoxStyle {
     opacity: f64,
     weight: u16,
     alignment: TextAlignment,
+    line_height_pt: Option<f64>,
+    inset_pt: f64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum TextAlignment {
     Left,
     Center,
@@ -1575,7 +1784,38 @@ impl TextBoxStyle {
             opacity: canonical_float(opacity),
             weight: 400,
             alignment: TextAlignment::Left,
+            line_height_pt: None,
+            inset_pt: 0.,
         })
+    }
+
+    pub fn with_layout_metrics(
+        mut self,
+        line_height_pt: f64,
+        inset_pt: f64,
+    ) -> Result<Self, AnnotationError> {
+        require_finite("text.line_height_pt", line_height_pt)?;
+        require_finite("text.inset_pt", inset_pt)?;
+        let line_height_pt = canonical_float(line_height_pt);
+        let inset_pt = canonical_float(inset_pt);
+        require_finite("text.line_height_pt", line_height_pt)?;
+        require_finite("text.inset_pt", inset_pt)?;
+        if line_height_pt <= 0. || inset_pt < 0. {
+            return Err(AnnotationError::InvalidAppearance(
+                "text line height must be positive and inset non-negative".into(),
+            ));
+        }
+        self.line_height_pt =
+            (line_height_pt != canonical_float(self.font_size_pt * 1.15)).then_some(line_height_pt);
+        self.inset_pt = inset_pt;
+        Ok(self)
+    }
+
+    pub fn line_height_pt(&self) -> f64 {
+        self.line_height_pt.unwrap_or(self.font_size_pt * 1.15)
+    }
+    pub fn inset_pt(&self) -> f64 {
+        self.inset_pt
     }
 
     pub fn with_weight_and_alignment(
@@ -1618,17 +1858,109 @@ impl TextBoxStyle {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextBoxRichTextRun {
+    text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    font_family: Option<String>,
+    #[serde(default)]
+    bold: bool,
+    #[serde(default)]
+    italic: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    font_size_pt: Option<f64>,
+}
+
+impl TextBoxRichTextRun {
+    pub fn new(text: impl Into<String>) -> Result<Self, AnnotationError> {
+        let text = text.into();
+        validate_text(&text, "rich text run", MAX_TEXT_BOX_BYTES)?;
+        Ok(Self {
+            text,
+            font_family: None,
+            bold: false,
+            italic: false,
+            color: None,
+            font_size_pt: None,
+        })
+    }
+
+    pub fn with_font_family(
+        mut self,
+        font_family: impl Into<String>,
+    ) -> Result<Self, AnnotationError> {
+        let font_family = font_family.into();
+        validate_text(&font_family, "rich text font family", MAX_FONT_FAMILY_BYTES)?;
+        self.font_family = Some(font_family);
+        Ok(self)
+    }
+
+    pub fn with_emphasis(mut self, bold: bool, italic: bool) -> Self {
+        self.bold = bold;
+        self.italic = italic;
+        self
+    }
+
+    pub fn with_color(mut self, color: impl Into<String>) -> Result<Self, AnnotationError> {
+        self.color = Some(normalize_color(color.into())?);
+        Ok(self)
+    }
+
+    pub fn with_font_size_pt(mut self, font_size_pt: f64) -> Result<Self, AnnotationError> {
+        require_finite("rich_text.font_size_pt", font_size_pt)?;
+        if font_size_pt <= 0.0 {
+            return Err(AnnotationError::InvalidAppearance(
+                "rich text font size must be positive".into(),
+            ));
+        }
+        self.font_size_pt = Some(canonical_float(font_size_pt));
+        Ok(self)
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn font_family(&self) -> Option<&str> {
+        self.font_family.as_deref()
+    }
+
+    pub fn bold(&self) -> bool {
+        self.bold
+    }
+
+    pub fn italic(&self) -> bool {
+        self.italic
+    }
+
+    pub fn color(&self) -> Option<&str> {
+        self.color.as_deref()
+    }
+
+    pub fn font_size_pt(&self) -> Option<f64> {
+        self.font_size_pt
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TextBoxAnnotation {
     pub id: MarkupId,
     pub page_index: u32,
     pub layout_rect: PdfRect,
     content: String,
     style: TextBoxStyle,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    rich_text_runs: Vec<TextBoxRichTextRun>,
+    rotation_degrees: f64,
     pub locked: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CalloutAppearance {
     line: StraightLineAppearance,
     text: TextBoxStyle,
@@ -1653,11 +1985,25 @@ impl CalloutAppearance {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CloudPlusAppearance {
     cloud: RectangleAppearance,
     leader: StraightLineAppearance,
     text: TextBoxStyle,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub enum CloudAppearancePathCommand {
+    MoveTo(PdfPoint),
+    LineTo(PdfPoint),
+    CubicTo {
+        control_1: PdfPoint,
+        control_2: PdfPoint,
+        end: PdfPoint,
+    },
+    Close,
 }
 
 impl CloudPlusAppearance {
@@ -1704,12 +2050,14 @@ impl CloudPlusAppearance {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CloudPlusAnnotation {
     pub id: MarkupId,
     pub page_index: u32,
     cloud_points: Vec<PdfPoint>,
     border_effect_intensity: f64,
+    cloud_appearance_path: Option<Vec<CloudAppearancePathCommand>>,
     leader_points: Vec<PdfPoint>,
     pub text_box: PdfRect,
     content: String,
@@ -1748,6 +2096,7 @@ impl CloudPlusAnnotation {
             page_index,
             cloud_points,
             border_effect_intensity: canonical_float(border_effect_intensity),
+            cloud_appearance_path: None,
             leader_points,
             text_box,
             content,
@@ -1764,6 +2113,32 @@ impl CloudPlusAnnotation {
         self.border_effect_intensity
     }
 
+    pub fn cloud_appearance_path(&self) -> Option<&[CloudAppearancePathCommand]> {
+        self.cloud_appearance_path.as_deref()
+    }
+
+    pub fn with_cloud_appearance_path(
+        mut self,
+        path: Option<Vec<CloudAppearancePathCommand>>,
+    ) -> Result<Self, AnnotationError> {
+        if let Some(path) = path.as_deref() {
+            validate_cloud_appearance_path(path)?;
+        }
+        self.cloud_appearance_path = path;
+        Ok(self)
+    }
+
+    pub fn translated_cloud_appearance_path(
+        &self,
+        delta_x: f64,
+        delta_y: f64,
+    ) -> Result<Option<Vec<CloudAppearancePathCommand>>, AnnotationError> {
+        self.cloud_appearance_path
+            .as_deref()
+            .map(|path| translate_cloud_appearance_path(path, delta_x, delta_y))
+            .transpose()
+    }
+
     pub fn leader_points(&self) -> &[PdfPoint] {
         &self.leader_points
     }
@@ -1773,6 +2148,9 @@ impl CloudPlusAnnotation {
     }
 
     pub fn scallop_path(&self) -> Vec<PdfPoint> {
+        if let Some(path) = &self.cloud_appearance_path {
+            return sample_cloud_appearance_path(path);
+        }
         sampled_cloud_scallop_path(
             &self.cloud_points,
             DEFAULT_CLOUD_SCALLOP_RADIUS_PT * (self.border_effect_intensity / 2.0).max(0.25),
@@ -1803,7 +2181,178 @@ impl CloudPlusAnnotation {
             && self.locked == other.locked
             && points_match(&self.cloud_points, &other.cloud_points)
             && points_match(&self.leader_points, &other.leader_points)
+            && cloud_appearance_paths_match(
+                self.cloud_appearance_path.as_deref(),
+                other.cloud_appearance_path.as_deref(),
+                PDF_NUMBER_TOLERANCE,
+            )
     }
+}
+
+fn validate_cloud_appearance_path(
+    path: &[CloudAppearancePathCommand],
+) -> Result<(), AnnotationError> {
+    if path.len() < 3 || !matches!(path.first(), Some(CloudAppearancePathCommand::MoveTo(_))) {
+        return Err(AnnotationError::InvalidGeometry(
+            "Cloud+ appearance path must start with MoveTo and retain a drawable closed path"
+                .into(),
+        ));
+    }
+    if !matches!(path.last(), Some(CloudAppearancePathCommand::Close)) {
+        return Err(AnnotationError::InvalidGeometry(
+            "Cloud+ appearance path must end with Close".into(),
+        ));
+    }
+    let mut drawable = 0usize;
+    for (index, command) in path.iter().enumerate() {
+        if matches!(
+            command,
+            CloudAppearancePathCommand::LineTo(_) | CloudAppearancePathCommand::CubicTo { .. }
+        ) {
+            drawable += 1;
+        }
+        let points = match command {
+            CloudAppearancePathCommand::MoveTo(point)
+            | CloudAppearancePathCommand::LineTo(point) => vec![point],
+            CloudAppearancePathCommand::CubicTo {
+                control_1,
+                control_2,
+                end,
+            } => vec![control_1, control_2, end],
+            CloudAppearancePathCommand::Close => Vec::new(),
+        };
+        for point in points {
+            require_finite(&format!("cloud_plus.appearance_path[{index}].x"), point.x)?;
+            require_finite(&format!("cloud_plus.appearance_path[{index}].y"), point.y)?;
+        }
+    }
+    if drawable < 2 {
+        return Err(AnnotationError::InvalidGeometry(
+            "Cloud+ appearance path must retain at least two drawable segments".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn sample_cloud_appearance_path(path: &[CloudAppearancePathCommand]) -> Vec<PdfPoint> {
+    const CUBIC_STEPS: usize = 12;
+    let mut sampled = Vec::new();
+    let mut current = None;
+    let mut subpath_start = None;
+    for command in path {
+        match *command {
+            CloudAppearancePathCommand::MoveTo(point) => {
+                sampled.push(point);
+                current = Some(point);
+                subpath_start = Some(point);
+            }
+            CloudAppearancePathCommand::LineTo(point) => {
+                sampled.push(point);
+                current = Some(point);
+            }
+            CloudAppearancePathCommand::CubicTo {
+                control_1,
+                control_2,
+                end,
+            } => {
+                let start = current.expect("validated Cloud+ path starts with MoveTo");
+                for step in 1..=CUBIC_STEPS {
+                    let t = step as f64 / CUBIC_STEPS as f64;
+                    let one_minus_t = 1. - t;
+                    sampled.push(PdfPoint {
+                        x: one_minus_t.powi(3) * start.x
+                            + 3. * one_minus_t.powi(2) * t * control_1.x
+                            + 3. * one_minus_t * t.powi(2) * control_2.x
+                            + t.powi(3) * end.x,
+                        y: one_minus_t.powi(3) * start.y
+                            + 3. * one_minus_t.powi(2) * t * control_1.y
+                            + 3. * one_minus_t * t.powi(2) * control_2.y
+                            + t.powi(3) * end.y,
+                    });
+                }
+                current = Some(end);
+            }
+            CloudAppearancePathCommand::Close => {
+                if let Some(start) = subpath_start
+                    && sampled.last() != Some(&start)
+                {
+                    sampled.push(start);
+                }
+            }
+        }
+    }
+    sampled
+}
+
+fn translate_cloud_appearance_path(
+    path: &[CloudAppearancePathCommand],
+    delta_x: f64,
+    delta_y: f64,
+) -> Result<Vec<CloudAppearancePathCommand>, AnnotationError> {
+    let translated = |point: PdfPoint| PdfPoint::new(point.x + delta_x, point.y + delta_y);
+    path.iter()
+        .map(|command| match *command {
+            CloudAppearancePathCommand::MoveTo(point) => {
+                Ok(CloudAppearancePathCommand::MoveTo(translated(point)?))
+            }
+            CloudAppearancePathCommand::LineTo(point) => {
+                Ok(CloudAppearancePathCommand::LineTo(translated(point)?))
+            }
+            CloudAppearancePathCommand::CubicTo {
+                control_1,
+                control_2,
+                end,
+            } => Ok(CloudAppearancePathCommand::CubicTo {
+                control_1: translated(control_1)?,
+                control_2: translated(control_2)?,
+                end: translated(end)?,
+            }),
+            CloudAppearancePathCommand::Close => Ok(CloudAppearancePathCommand::Close),
+        })
+        .collect()
+}
+
+fn cloud_appearance_paths_match(
+    left: Option<&[CloudAppearancePathCommand]>,
+    right: Option<&[CloudAppearancePathCommand]>,
+    tolerance: f64,
+) -> bool {
+    let (Some(left), Some(right)) = (left, right) else {
+        return left.is_none() && right.is_none();
+    };
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| match (left, right) {
+                (CloudAppearancePathCommand::Close, CloudAppearancePathCommand::Close) => true,
+                (
+                    CloudAppearancePathCommand::MoveTo(left),
+                    CloudAppearancePathCommand::MoveTo(right),
+                )
+                | (
+                    CloudAppearancePathCommand::LineTo(left),
+                    CloudAppearancePathCommand::LineTo(right),
+                ) => (left.x - right.x).abs() <= tolerance && (left.y - right.y).abs() <= tolerance,
+                (
+                    CloudAppearancePathCommand::CubicTo {
+                        control_1: l1,
+                        control_2: l2,
+                        end: le,
+                    },
+                    CloudAppearancePathCommand::CubicTo {
+                        control_1: r1,
+                        control_2: r2,
+                        end: re,
+                    },
+                ) => [(*l1, *r1), (*l2, *r2), (*le, *re)]
+                    .into_iter()
+                    .all(|(left, right)| {
+                        (left.x - right.x).abs() <= tolerance
+                            && (left.y - right.y).abs() <= tolerance
+                    }),
+                _ => false,
+            })
 }
 
 fn validate_cloud_plus_leader_points(points: &[PdfPoint]) -> Result<(), AnnotationError> {
@@ -1824,7 +2373,8 @@ fn validate_cloud_plus_leader_points(points: &[PdfPoint]) -> Result<(), Annotati
     Ok(())
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CalloutAnnotation {
     pub id: MarkupId,
     pub page_index: u32,
@@ -1903,6 +2453,36 @@ impl CalloutAnnotation {
 
     pub fn content(&self) -> &str {
         &self.content
+    }
+
+    pub fn resized_text_box(&self, text_box: PdfRect) -> Result<Self, AnnotationError> {
+        let connection = *self
+            .leader_points
+            .last()
+            .expect("validated Callout has a connection point");
+        let attached_to_left = (connection.x - self.text_box.x).abs()
+            <= (connection.x - (self.text_box.x + self.text_box.width)).abs();
+        let mut leader_points = self.leader_points.clone();
+        *leader_points
+            .last_mut()
+            .expect("validated Callout has a connection point") = PdfPoint {
+            x: if attached_to_left {
+                text_box.x
+            } else {
+                text_box.x + text_box.width
+            },
+            y: text_box.y + text_box.height * 0.5,
+        };
+        let mut replacement = Self::new(
+            self.id.clone(),
+            self.page_index,
+            leader_points,
+            text_box,
+            self.content.clone(),
+            self.appearance.clone(),
+        )?;
+        replacement.locked = self.locked;
+        Ok(replacement)
     }
 
     pub fn disk_geometry(&self) -> Result<CalloutDiskGeometry, AnnotationError> {
@@ -2003,6 +2583,8 @@ impl TextBoxAnnotation {
             && self.layout_rect.same_pdf_geometry_as(other.layout_rect)
             && self.content == other.content
             && self.style == other.style
+            && self.rich_text_runs == other.rich_text_runs
+            && (self.rotation_degrees - other.rotation_degrees).abs() <= 0.000_1
             && self.locked == other.locked
     }
 
@@ -2022,8 +2604,19 @@ impl TextBoxAnnotation {
             layout_rect,
             content,
             style,
+            rich_text_runs: Vec::new(),
+            rotation_degrees: 0.,
             locked: false,
         })
+    }
+
+    pub fn with_rich_text_runs(
+        mut self,
+        rich_text_runs: Vec<TextBoxRichTextRun>,
+    ) -> Result<Self, AnnotationError> {
+        validate_text_box_rich_text_runs(&self.content, &rich_text_runs)?;
+        self.rich_text_runs = rich_text_runs;
+        Ok(self)
     }
 
     pub fn content(&self) -> &str {
@@ -2033,9 +2626,23 @@ impl TextBoxAnnotation {
     pub fn style(&self) -> &TextBoxStyle {
         &self.style
     }
+
+    pub fn rich_text_runs(&self) -> &[TextBoxRichTextRun] {
+        &self.rich_text_runs
+    }
+
+    pub fn rotation_degrees(&self) -> f64 {
+        self.rotation_degrees
+    }
+
+    pub fn with_rotation_degrees(mut self, rotation_degrees: f64) -> Result<Self, AnnotationError> {
+        require_finite("text_box.rotation", rotation_degrees)?;
+        self.rotation_degrees = canonical_float(rotation_degrees.rem_euclid(360.));
+        Ok(self)
+    }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ScaleUnit {
     In,
     Ft,
@@ -2077,7 +2684,7 @@ impl ScaleUnit {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ScaleSource {
     Preset,
     Custom,
@@ -2094,13 +2701,14 @@ impl ScaleSource {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ScalePrecisionMode {
     Decimal,
     Fraction,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScalePrecision {
     pub mode: ScalePrecisionMode,
     pub value: f64,
@@ -2166,7 +2774,8 @@ impl Default for ScalePrecision {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PageScale {
     pub page_index: u32,
     pub source: ScaleSource,
@@ -2296,7 +2905,8 @@ impl PageScale {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScalePreset {
     pub id: String,
     pub name: String,
@@ -2417,7 +3027,8 @@ fn format_scale_number(value: f64) -> String {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LengthCalibration {
     units_per_point: f64,
     scale_x: f64,
@@ -2606,7 +3217,8 @@ impl LengthCalibration {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DimensionAppearance {
     line: StraightLineAppearance,
     text: TextBoxStyle,
@@ -2631,7 +3243,8 @@ impl DimensionAppearance {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DimensionAnnotation {
     pub id: MarkupId,
     pub page_index: u32,
@@ -2744,7 +3357,8 @@ impl DimensionAnnotation {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LengthAnnotation {
     pub id: MarkupId,
     pub page_index: u32,
@@ -2932,6 +3546,18 @@ impl DecodedRgbaAsset {
     }
 }
 
+const RECOVERY_ASSET_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DecodedRgbaAssetWire {
+    asset_schema_version: u32,
+    id: String,
+    width_px: u32,
+    height_px: u32,
+    rgba_base64: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImageAnnotation {
     pub id: MarkupId,
@@ -2939,6 +3565,7 @@ pub struct ImageAnnotation {
     pub rect: PdfRect,
     asset: DecodedRgbaAsset,
     opacity: f64,
+    rotation_degrees: f64,
     pub aspect_locked: bool,
     pub locked: bool,
 }
@@ -3041,6 +3668,7 @@ impl ImageAnnotation {
             rect,
             asset,
             opacity: canonical_float(opacity),
+            rotation_degrees: 0.,
             aspect_locked,
             locked: false,
         })
@@ -3052,6 +3680,27 @@ impl ImageAnnotation {
 
     pub fn opacity(&self) -> f64 {
         self.opacity
+    }
+
+    pub fn rotation_degrees(&self) -> f64 {
+        self.rotation_degrees
+    }
+
+    pub fn same_persisted_state_as(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.page_index == other.page_index
+            && self.rect.same_pdf_geometry_as(other.rect)
+            && self.asset == other.asset
+            && (self.opacity - other.opacity).abs() <= 0.000_1
+            && (self.rotation_degrees - other.rotation_degrees).abs() <= 0.000_1
+            && self.aspect_locked == other.aspect_locked
+            && self.locked == other.locked
+    }
+
+    pub fn with_rotation_degrees(mut self, rotation_degrees: f64) -> Result<Self, AnnotationError> {
+        require_finite("image.rotation", rotation_degrees)?;
+        self.rotation_degrees = canonical_float(rotation_degrees.rem_euclid(360.));
+        Ok(self)
     }
 }
 
@@ -3315,14 +3964,30 @@ impl Annotation {
                 locked: source.locked,
             }),
             Self::Arc(source) => {
-                let mut copy = ArcAnnotation::new(
-                    id,
-                    page_index,
-                    PdfPoint::new(source.start.x + delta_x, source.start.y + delta_y)?,
-                    PdfPoint::new(source.end.x + delta_x, source.end.y + delta_y)?,
-                    PdfPoint::new(source.mid.x + delta_x, source.mid.y + delta_y)?,
-                    source.appearance.clone(),
-                )?;
+                let mut copy = if let Some(geometry) = &source.ellipse_geometry {
+                    ArcAnnotation::from_rect_angles(
+                        id,
+                        page_index,
+                        PdfRect::new(
+                            geometry.rect.x + delta_x,
+                            geometry.rect.y + delta_y,
+                            geometry.rect.width,
+                            geometry.rect.height,
+                        )?,
+                        geometry.angle1_degrees,
+                        geometry.angle2_degrees,
+                        source.appearance.clone(),
+                    )?
+                } else {
+                    ArcAnnotation::new(
+                        id,
+                        page_index,
+                        PdfPoint::new(source.start.x + delta_x, source.start.y + delta_y)?,
+                        PdfPoint::new(source.end.x + delta_x, source.end.y + delta_y)?,
+                        PdfPoint::new(source.mid.x + delta_x, source.mid.y + delta_y)?,
+                        source.appearance.clone(),
+                    )?
+                };
                 copy.locked = source.locked;
                 Self::Arc(copy)
             }
@@ -3390,6 +4055,9 @@ impl Annotation {
                     source.text_box.translated(delta_x, delta_y),
                     source.content.clone(),
                     source.appearance.clone(),
+                )?
+                .with_cloud_appearance_path(
+                    source.translated_cloud_appearance_path(delta_x, delta_y)?,
                 )?;
                 copy.locked = source.locked;
                 Self::CloudPlus(copy)
@@ -3460,7 +4128,9 @@ impl Annotation {
                     )?,
                     source.content.clone(),
                     source.style.clone(),
-                )?;
+                )?
+                .with_rich_text_runs(source.rich_text_runs.clone())?
+                .with_rotation_degrees(source.rotation_degrees)?;
                 copy.locked = source.locked;
                 Self::TextBox(copy)
             }
@@ -3502,7 +4172,8 @@ impl Annotation {
                     source.asset.clone(),
                     source.aspect_locked,
                     source.opacity,
-                )?;
+                )?
+                .with_rotation_degrees(source.rotation_degrees)?;
                 copy.locked = source.locked;
                 Self::Image(copy)
             }
@@ -3555,6 +4226,7 @@ pub enum AnnotationEdit {
     SetInkAppearance(PenAppearance),
     SetTextBoxContent(String),
     SetTextBoxLayoutRect(PdfRect),
+    SetTextBoxRotation(f64),
     SetTextBoxStyle(TextBoxStyle),
     SetDimensionEndpoint {
         endpoint: LineEndpoint,
@@ -3624,6 +4296,7 @@ pub enum AnnotationEdit {
         point_index: usize,
         point: PdfPoint,
     },
+    SetCalloutTextBox(PdfRect),
     TranslateCalloutTextBox {
         delta_x: f64,
         delta_y: f64,
@@ -3653,6 +4326,7 @@ pub enum AnnotationEdit {
         delta_y: f64,
     },
     SetImageRect(PdfRect),
+    SetImageRotation(f64),
     SetImageOpacity(f64),
     SetSnapshotRect(PdfRect),
     SetSnapshotRotation(f64),
@@ -3985,6 +4659,7 @@ pub struct SceneRectangle {
     pub selected: bool,
     pub locked: bool,
     pub preview: bool,
+    pub feedback: SceneInteractionFeedback,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3996,10 +4671,13 @@ pub struct SceneRedact {
     pub selected: bool,
     pub locked: bool,
     pub draft: bool,
+    pub feedback: SceneInteractionFeedback,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnnotationScene {
+    /// Committed page identities in document stacking order; new draft identities paint last.
+    pub annotation_order: Vec<MarkupId>,
     pub page_index: u32,
     pub revision: u64,
     pub rectangles: Vec<SceneRectangle>,
@@ -4020,12 +4698,168 @@ pub struct AnnotationScene {
     pub snapshots: Vec<SceneSnapshot>,
 }
 
+/// An owned scene item; moving into paint order never clones annotation payloads.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SceneAnnotation {
+    Rectangle(SceneRectangle),
+    Redact(SceneRedact),
+    Ellipse(SceneRectangle),
+    Arc(SceneArc),
+    StraightLine(SceneStraightLine),
+    VertexPath(SceneVertexPath),
+    Cloud(SceneCloud),
+    CloudPlus(SceneCloudPlus),
+    Callout(SceneCallout),
+    MeasurementPath(SceneMeasurementPath),
+    Pen(ScenePen),
+    TextBox(SceneTextBox),
+    Dimension(SceneDimension),
+    Length(SceneLength),
+    Image(SceneImage),
+    Snapshot(SceneSnapshot),
+}
+
+impl SceneAnnotation {
+    pub fn id(&self) -> &MarkupId {
+        match self {
+            Self::Rectangle(annotation) => &annotation.id,
+            Self::Redact(annotation) => &annotation.id,
+            Self::Ellipse(annotation) => &annotation.id,
+            Self::Arc(annotation) => &annotation.id,
+            Self::StraightLine(annotation) => &annotation.id,
+            Self::VertexPath(annotation) => &annotation.id,
+            Self::Cloud(annotation) => &annotation.id,
+            Self::CloudPlus(annotation) => &annotation.id,
+            Self::Callout(annotation) => &annotation.id,
+            Self::MeasurementPath(annotation) => &annotation.id,
+            Self::Pen(annotation) => &annotation.id,
+            Self::TextBox(annotation) => &annotation.id,
+            Self::Dimension(annotation) => &annotation.id,
+            Self::Length(annotation) => &annotation.id,
+            Self::Image(annotation) => &annotation.id,
+            Self::Snapshot(annotation) => &annotation.id,
+        }
+    }
+}
+
+impl AnnotationScene {
+    fn with_document_order(mut self, order: &[MarkupId]) -> Self {
+        let mut ids = std::collections::HashSet::new();
+        ids.extend(self.rectangles.iter().map(|annotation| &annotation.id));
+        ids.extend(self.redacts.iter().map(|annotation| &annotation.id));
+        ids.extend(self.ellipses.iter().map(|annotation| &annotation.id));
+        ids.extend(self.arcs.iter().map(|annotation| &annotation.id));
+        ids.extend(self.straight_lines.iter().map(|annotation| &annotation.id));
+        ids.extend(self.vertex_paths.iter().map(|annotation| &annotation.id));
+        ids.extend(self.clouds.iter().map(|annotation| &annotation.id));
+        ids.extend(self.cloud_pluses.iter().map(|annotation| &annotation.id));
+        ids.extend(self.callouts.iter().map(|annotation| &annotation.id));
+        ids.extend(
+            self.measurement_paths
+                .iter()
+                .map(|annotation| &annotation.id),
+        );
+        ids.extend(self.pens.iter().map(|annotation| &annotation.id));
+        ids.extend(self.text_boxes.iter().map(|annotation| &annotation.id));
+        ids.extend(self.dimensions.iter().map(|annotation| &annotation.id));
+        ids.extend(self.lengths.iter().map(|annotation| &annotation.id));
+        ids.extend(self.images.iter().map(|annotation| &annotation.id));
+        ids.extend(self.snapshots.iter().map(|annotation| &annotation.id));
+        self.annotation_order = order
+            .iter()
+            .filter(|id| ids.contains(id))
+            .cloned()
+            .collect();
+        self
+    }
+
+    /// Existing-identity previews replace their committed slot. New drafts follow
+    /// all committed items, preserving their deterministic scene encounter order.
+    pub fn into_ordered_annotations(self) -> std::vec::IntoIter<SceneAnnotation> {
+        let slot_count = self.annotation_order.len();
+        let ranks: std::collections::HashMap<_, _> = self
+            .annotation_order
+            .into_iter()
+            .enumerate()
+            .map(|(rank, id)| (id, rank))
+            .collect();
+        let mut ordered: Vec<Option<SceneAnnotation>> =
+            std::iter::repeat_with(|| None).take(slot_count).collect();
+        let mut drafts = Vec::new();
+        let mut append = |annotation: SceneAnnotation| {
+            if let Some(&rank) = ranks.get(annotation.id()) {
+                ordered[rank] = Some(annotation);
+            } else {
+                drafts.push(annotation);
+            }
+        };
+        for annotation in self.rectangles {
+            append(SceneAnnotation::Rectangle(annotation));
+        }
+        for annotation in self.redacts {
+            append(SceneAnnotation::Redact(annotation));
+        }
+        for annotation in self.ellipses {
+            append(SceneAnnotation::Ellipse(annotation));
+        }
+        for annotation in self.arcs {
+            append(SceneAnnotation::Arc(annotation));
+        }
+        for annotation in self.straight_lines {
+            append(SceneAnnotation::StraightLine(annotation));
+        }
+        for annotation in self.vertex_paths {
+            append(SceneAnnotation::VertexPath(annotation));
+        }
+        for annotation in self.clouds {
+            append(SceneAnnotation::Cloud(annotation));
+        }
+        for annotation in self.cloud_pluses {
+            append(SceneAnnotation::CloudPlus(annotation));
+        }
+        for annotation in self.callouts {
+            append(SceneAnnotation::Callout(annotation));
+        }
+        for annotation in self.measurement_paths {
+            append(SceneAnnotation::MeasurementPath(annotation));
+        }
+        for annotation in self.pens {
+            append(SceneAnnotation::Pen(annotation));
+        }
+        for annotation in self.text_boxes {
+            append(SceneAnnotation::TextBox(annotation));
+        }
+        for annotation in self.dimensions {
+            append(SceneAnnotation::Dimension(annotation));
+        }
+        for annotation in self.lengths {
+            append(SceneAnnotation::Length(annotation));
+        }
+        for annotation in self.images {
+            append(SceneAnnotation::Image(annotation));
+        }
+        for annotation in self.snapshots {
+            append(SceneAnnotation::Snapshot(annotation));
+        }
+        ordered
+            .into_iter()
+            .flatten()
+            .chain(drafts)
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneArc {
     pub id: MarkupId,
     pub start: PdfPoint,
     pub end: PdfPoint,
     pub mid: PdfPoint,
+    /// Canonical full-circle bounds retained for Electron-compatible routing.
+    pub rect: PdfRect,
+    pub angle1_degrees: f64,
+    pub angle2_degrees: f64,
     pub sampled_path: Vec<PdfPoint>,
     pub appearance: RectangleAppearance,
     pub selected: bool,
@@ -4035,16 +4869,7 @@ pub struct SceneArc {
 
 impl SceneArc {
     pub fn sweep_degrees(&self) -> f64 {
-        ArcAnnotation::new(
-            self.id.clone(),
-            0,
-            self.start,
-            self.end,
-            self.mid,
-            self.appearance.clone(),
-        )
-        .expect("a rendered Arc always has valid circle geometry")
-        .sweep_degrees()
+        normalize_arc_sweep(self.angle1_degrees, self.angle2_degrees)
     }
 }
 
@@ -4058,6 +4883,85 @@ pub struct SceneStraightLine {
     pub selected: bool,
     pub locked: bool,
     pub draft: bool,
+    pub feedback: SceneInteractionFeedback,
+}
+
+/// Paint-only interaction state. Creation drafts suppress selection chrome,
+/// while manipulation previews can retain the reference outline/active-handle
+/// feedback without changing canonical annotation or history state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SceneInteractionFeedback {
+    Normal,
+    Creation,
+    Move {
+        chrome_visible: bool,
+    },
+    Transform {
+        chrome_visible: bool,
+        active_handle: usize,
+    },
+}
+
+impl SceneInteractionFeedback {
+    pub const fn chrome_visible(self) -> bool {
+        match self {
+            Self::Normal => true,
+            Self::Creation => false,
+            Self::Move { chrome_visible } | Self::Transform { chrome_visible, .. } => {
+                chrome_visible
+            }
+        }
+    }
+
+    pub const fn handle_visible(self, handle: usize) -> bool {
+        match self {
+            Self::Normal => true,
+            Self::Transform {
+                chrome_visible: true,
+                active_handle,
+            } => active_handle == handle,
+            Self::Creation
+            | Self::Move { .. }
+            | Self::Transform {
+                chrome_visible: false,
+                ..
+            } => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod scene_interaction_feedback_tests {
+    use super::SceneInteractionFeedback;
+
+    #[test]
+    fn creation_move_and_transform_filter_chrome_and_handles() {
+        assert!(SceneInteractionFeedback::Normal.chrome_visible());
+        assert!(SceneInteractionFeedback::Normal.handle_visible(0));
+        assert!(!SceneInteractionFeedback::Creation.chrome_visible());
+        assert!(!SceneInteractionFeedback::Creation.handle_visible(0));
+
+        let moving = SceneInteractionFeedback::Move {
+            chrome_visible: true,
+        };
+        assert!(moving.chrome_visible());
+        assert!(!moving.handle_visible(0));
+
+        let transforming = SceneInteractionFeedback::Transform {
+            chrome_visible: true,
+            active_handle: 1,
+        };
+        assert!(transforming.chrome_visible());
+        assert!(!transforming.handle_visible(0));
+        assert!(transforming.handle_visible(1));
+
+        let snapped = SceneInteractionFeedback::Transform {
+            chrome_visible: false,
+            active_handle: 1,
+        };
+        assert!(!snapped.chrome_visible());
+        assert!(!snapped.handle_visible(1));
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4081,6 +4985,7 @@ pub struct SceneCloud {
     pub selected: bool,
     pub locked: bool,
     pub draft: bool,
+    pub feedback: SceneInteractionFeedback,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4096,6 +5001,7 @@ pub struct SceneCloudPlus {
     pub selected: bool,
     pub locked: bool,
     pub draft: bool,
+    pub feedback: SceneInteractionFeedback,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4108,6 +5014,7 @@ pub struct SceneCallout {
     pub selected: bool,
     pub locked: bool,
     pub draft: bool,
+    pub feedback: SceneInteractionFeedback,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4136,6 +5043,7 @@ pub struct ScenePen {
     pub selected: bool,
     pub locked: bool,
     pub draft: bool,
+    pub feedback: SceneInteractionFeedback,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4144,8 +5052,11 @@ pub struct SceneTextBox {
     pub layout_rect: PdfRect,
     pub content: String,
     pub style: TextBoxStyle,
+    pub rich_text_runs: Vec<TextBoxRichTextRun>,
+    pub rotation_degrees: f64,
     pub selected: bool,
     pub locked: bool,
+    pub feedback: SceneInteractionFeedback,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4159,6 +5070,7 @@ pub struct SceneDimension {
     pub selected: bool,
     pub locked: bool,
     pub draft: bool,
+    pub feedback: SceneInteractionFeedback,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4171,6 +5083,8 @@ pub struct SceneLength {
     pub appearance: DimensionAppearance,
     pub selected: bool,
     pub locked: bool,
+    pub draft: bool,
+    pub feedback: SceneInteractionFeedback,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4182,8 +5096,10 @@ pub struct SceneImage {
     pub height_px: u32,
     pub aspect_locked: bool,
     pub opacity: f64,
+    pub rotation_degrees: f64,
     pub selected: bool,
     pub locked: bool,
+    pub feedback: SceneInteractionFeedback,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4199,6 +5115,7 @@ pub struct SceneSnapshot {
     pub selected: bool,
     pub locked: bool,
     pub draft: bool,
+    pub feedback: SceneInteractionFeedback,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -4230,6 +5147,7 @@ pub enum AnnotationError {
     InvalidMarkupId,
     InvalidTolerance,
     InvalidFixture(String),
+    InvalidRecoveryTimeline(String),
     CanonicalFixtureMismatch(String),
     NoActiveGesture,
     NoSelection,
@@ -4251,6 +5169,9 @@ impl fmt::Display for AnnotationError {
                 "hit-test tolerance must be finite and nonnegative"
             ),
             Self::InvalidFixture(message) => write!(formatter, "invalid fixture: {message}"),
+            Self::InvalidRecoveryTimeline(message) => {
+                write!(formatter, "invalid recovery timeline: {message}")
+            }
             Self::CanonicalFixtureMismatch(message) => {
                 write!(formatter, "fixture canonical mismatch: {message}")
             }
@@ -4292,6 +5213,762 @@ struct DocumentState {
     page_length_calibrations: BTreeMap<u32, LengthCalibration>,
     page_rotations: BTreeMap<u32, PageRotation>,
     revision: u64,
+}
+
+const RECOVERY_TIMELINE_SCHEMA_VERSION: u32 = 2;
+const MAX_RECOVERY_TIMELINE_BYTES: usize = 256 * 1024 * 1024;
+const MAX_RECOVERY_HISTORY_STATES: usize = 10_000;
+const MAX_RECOVERY_ANNOTATIONS_PER_STATE: usize = 1_000_000;
+const MAX_RECOVERY_ASSETS: usize = 65_536;
+const MAX_RECOVERY_ASSET_REFERENCES: usize = 1_000_000;
+// Base64 expands by 4/3. Keep decoded bytes below the envelope limit with
+// headroom for state metadata; the final serialized-length check remains authoritative.
+const MAX_RECOVERY_DECODED_ASSET_BYTES: usize = 191 * 1024 * 1024;
+const MAX_RECOVERY_SPATIAL_CELLS_PER_RECTANGLE: usize = 65_536;
+const MAX_RECOVERY_SPATIAL_CELLS_PER_STATE: usize = 1_000_000;
+const MAX_RECOVERY_ABS_COORDINATE_PT: f64 = 1_000_000.;
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RecoveryTimelineWire {
+    schema_version: u32,
+    assets: Vec<DecodedRgbaAssetWire>,
+    current: RecoveryDocumentState,
+    past: Vec<RecoveryDocumentState>,
+    future: Vec<RecoveryDocumentState>,
+    history_limit: usize,
+    saved_revision: u64,
+    next_revision: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RecoveryImageAnnotation {
+    id: MarkupId,
+    page_index: u32,
+    rect: PdfRect,
+    asset_ref: String,
+    opacity: f64,
+    rotation_degrees: f64,
+    aspect_locked: bool,
+    locked: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RecoverySnapshotAnnotation {
+    id: MarkupId,
+    page_index: u32,
+    rect: PdfRect,
+    asset_ref: String,
+    opacity: f64,
+    rotation_degrees: f64,
+    locked: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RecoveryDocumentState {
+    annotation_order: Vec<MarkupId>,
+    rectangles: Vec<RectangleAnnotation>,
+    redacts: Vec<RedactAnnotation>,
+    ellipses: Vec<EllipseAnnotation>,
+    arcs: Vec<ArcAnnotation>,
+    straight_lines: Vec<StraightLineAnnotation>,
+    vertex_paths: Vec<VertexPathAnnotation>,
+    clouds: Vec<CloudAnnotation>,
+    cloud_pluses: Vec<CloudPlusAnnotation>,
+    callouts: Vec<CalloutAnnotation>,
+    measurement_paths: Vec<MeasurementPathAnnotation>,
+    pens: Vec<PenAnnotation>,
+    text_boxes: Vec<TextBoxAnnotation>,
+    dimensions: Vec<DimensionAnnotation>,
+    lengths: Vec<LengthAnnotation>,
+    images: Vec<RecoveryImageAnnotation>,
+    snapshots: Vec<RecoverySnapshotAnnotation>,
+    page_scales: BTreeMap<u32, PageScale>,
+    scale_presets: Vec<ScalePreset>,
+    page_length_calibrations: BTreeMap<u32, LengthCalibration>,
+    page_rotations: BTreeMap<u32, PageRotation>,
+    revision: u64,
+}
+
+fn recovery_error(message: impl Into<String>) -> AnnotationError {
+    AnnotationError::InvalidRecoveryTimeline(message.into())
+}
+
+fn serialize_recovery_wire(
+    wire: &RecoveryTimelineWire,
+    max_bytes: usize,
+) -> Result<Vec<u8>, AnnotationError> {
+    let encoded = serde_json::to_vec(wire)
+        .map_err(|error| recovery_error(format!("cannot encode timeline: {error}")))?;
+    if encoded.len() > max_bytes {
+        return Err(recovery_error("encoded timeline exceeds the byte limit"));
+    }
+    Ok(encoded)
+}
+
+fn register_recovery_asset(
+    asset: &DecodedRgbaAsset,
+    assets: &mut BTreeMap<String, DecodedRgbaAssetWire>,
+) -> Result<String, AnnotationError> {
+    let id = asset.id().as_str().to_owned();
+    assets
+        .entry(id.clone())
+        .or_insert_with(|| DecodedRgbaAssetWire {
+            asset_schema_version: RECOVERY_ASSET_SCHEMA_VERSION,
+            id: id.clone(),
+            width_px: asset.width_px(),
+            height_px: asset.height_px(),
+            rgba_base64: BASE64.encode(asset.rgba()),
+        });
+    Ok(id)
+}
+
+impl RecoveryDocumentState {
+    fn encode(
+        state: &DocumentState,
+        assets: &mut BTreeMap<String, DecodedRgbaAssetWire>,
+    ) -> Result<Self, AnnotationError> {
+        let images = state
+            .images
+            .iter()
+            .map(|annotation| {
+                Ok(RecoveryImageAnnotation {
+                    id: annotation.id.clone(),
+                    page_index: annotation.page_index,
+                    rect: annotation.rect,
+                    asset_ref: register_recovery_asset(&annotation.asset, assets)?,
+                    opacity: annotation.opacity,
+                    rotation_degrees: annotation.rotation_degrees,
+                    aspect_locked: annotation.aspect_locked,
+                    locked: annotation.locked,
+                })
+            })
+            .collect::<Result<_, AnnotationError>>()?;
+        let snapshots = state
+            .snapshots
+            .iter()
+            .map(|annotation| {
+                Ok(RecoverySnapshotAnnotation {
+                    id: annotation.id.clone(),
+                    page_index: annotation.page_index,
+                    rect: annotation.rect,
+                    asset_ref: register_recovery_asset(&annotation.asset, assets)?,
+                    opacity: annotation.opacity,
+                    rotation_degrees: annotation.rotation_degrees,
+                    locked: annotation.locked,
+                })
+            })
+            .collect::<Result<_, AnnotationError>>()?;
+        Ok(Self {
+            annotation_order: state.annotation_order.clone(),
+            rectangles: state.rectangles.clone(),
+            redacts: state.redacts.clone(),
+            ellipses: state.ellipses.clone(),
+            arcs: state.arcs.clone(),
+            straight_lines: state.straight_lines.clone(),
+            vertex_paths: state.vertex_paths.clone(),
+            clouds: state.clouds.clone(),
+            cloud_pluses: state.cloud_pluses.clone(),
+            callouts: state.callouts.clone(),
+            measurement_paths: state.measurement_paths.clone(),
+            pens: state.pens.clone(),
+            text_boxes: state.text_boxes.clone(),
+            dimensions: state.dimensions.clone(),
+            lengths: state.lengths.clone(),
+            images,
+            snapshots,
+            page_scales: state.page_scales.clone(),
+            scale_presets: state.scale_presets.clone(),
+            page_length_calibrations: state.page_length_calibrations.clone(),
+            page_rotations: state.page_rotations.clone(),
+            revision: state.revision,
+        })
+    }
+
+    fn decode(
+        self,
+        assets: &BTreeMap<String, DecodedRgbaAsset>,
+        referenced: &mut BTreeSet<String>,
+        reference_count: &mut usize,
+    ) -> Result<DocumentState, AnnotationError> {
+        let resolve = |id: &str,
+                       referenced: &mut BTreeSet<String>,
+                       reference_count: &mut usize|
+         -> Result<DecodedRgbaAsset, AnnotationError> {
+            *reference_count = reference_count
+                .checked_add(1)
+                .ok_or_else(|| recovery_error("asset reference count overflow"))?;
+            if *reference_count > MAX_RECOVERY_ASSET_REFERENCES {
+                return Err(recovery_error(
+                    "timeline contains too many asset references",
+                ));
+            }
+            let asset = assets
+                .get(id)
+                .ok_or_else(|| recovery_error(format!("missing asset {id}")))?;
+            referenced.insert(id.to_owned());
+            Ok(asset.clone())
+        };
+        let images = self
+            .images
+            .into_iter()
+            .map(|wire| {
+                let asset = resolve(&wire.asset_ref, referenced, reference_count)?;
+                let mut annotation = ImageAnnotation::new_with_opacity(
+                    wire.id,
+                    wire.page_index,
+                    wire.rect,
+                    asset,
+                    wire.aspect_locked,
+                    wire.opacity,
+                )?
+                .with_rotation_degrees(wire.rotation_degrees)?;
+                annotation.locked = wire.locked;
+                Ok(annotation)
+            })
+            .collect::<Result<_, AnnotationError>>()?;
+        let snapshots = self
+            .snapshots
+            .into_iter()
+            .map(|wire| {
+                let asset = resolve(&wire.asset_ref, referenced, reference_count)?;
+                let mut annotation = SnapshotAnnotation::new(
+                    wire.id,
+                    wire.page_index,
+                    wire.rect,
+                    asset,
+                    wire.opacity,
+                )?
+                .with_rotation_degrees(wire.rotation_degrees)?;
+                annotation.locked = wire.locked;
+                Ok(annotation)
+            })
+            .collect::<Result<_, AnnotationError>>()?;
+        let mut state = DocumentState {
+            annotation_order: self.annotation_order,
+            rectangles: self.rectangles,
+            redacts: self.redacts,
+            ellipses: self.ellipses,
+            arcs: self.arcs,
+            rectangle_index: RectangleSpatialIndex::default(),
+            straight_lines: self.straight_lines,
+            vertex_paths: self.vertex_paths,
+            clouds: self.clouds,
+            cloud_pluses: self.cloud_pluses,
+            callouts: self.callouts,
+            measurement_paths: self.measurement_paths,
+            pens: self.pens,
+            text_boxes: self.text_boxes,
+            dimensions: self.dimensions,
+            lengths: self.lengths,
+            images,
+            snapshots,
+            page_scales: self.page_scales,
+            scale_presets: self.scale_presets,
+            page_length_calibrations: self.page_length_calibrations,
+            page_rotations: self.page_rotations,
+            revision: self.revision,
+        };
+        validate_recovery_state(&state)?;
+        state.rectangle_index = RectangleSpatialIndex::rebuild(&state.rectangles);
+        Ok(state)
+    }
+}
+
+fn validate_recovery_rectangle_appearance(
+    appearance: &RectangleAppearance,
+) -> Result<(), AnnotationError> {
+    let rebuilt = RectangleAppearance::new(
+        appearance.stroke_color.clone(),
+        appearance.stroke_width_pt,
+        appearance.fill_color.clone(),
+        appearance.opacity,
+    )?
+    .with_fill_opacity(appearance.fill_opacity)?
+    .with_stroke_style(appearance.stroke_style);
+    if &rebuilt != appearance {
+        return Err(recovery_error("rectangle appearance is not canonical"));
+    }
+    Ok(())
+}
+
+fn validate_recovery_line_appearance(
+    appearance: &StraightLineAppearance,
+) -> Result<(), AnnotationError> {
+    let rebuilt = StraightLineAppearance::new(
+        appearance.stroke_color.clone(),
+        appearance.stroke_width_pt,
+        appearance.opacity,
+        appearance.stroke_style,
+    )?;
+    if &rebuilt != appearance {
+        return Err(recovery_error("line appearance is not canonical"));
+    }
+    Ok(())
+}
+
+fn validate_recovery_pen_appearance(appearance: &PenAppearance) -> Result<(), AnnotationError> {
+    let rebuilt = PenAppearance::new(
+        appearance.color.clone(),
+        appearance.width_pt,
+        appearance.opacity,
+    )?;
+    if &rebuilt != appearance {
+        return Err(recovery_error("pen appearance is not canonical"));
+    }
+    Ok(())
+}
+
+fn validate_recovery_text_style(style: &TextBoxStyle) -> Result<(), AnnotationError> {
+    let rebuilt = TextBoxStyle::new(
+        style.font_family.clone(),
+        style.font_size_pt,
+        style.color.clone(),
+        style.opacity,
+    )?
+    .with_weight_and_alignment(style.weight, style.alignment)?
+    .with_layout_metrics(style.line_height_pt(), style.inset_pt)?;
+    if &rebuilt != style {
+        return Err(recovery_error("text style is not canonical"));
+    }
+    Ok(())
+}
+
+fn validate_recovery_calibration(calibration: &LengthCalibration) -> Result<(), AnnotationError> {
+    for (name, value) in [
+        ("units_per_point", calibration.units_per_point),
+        ("scale_x", calibration.scale_x),
+        ("scale_y", calibration.scale_y),
+        ("paper_points", calibration.paper_points),
+        ("real_world_value", calibration.real_world_value),
+    ] {
+        require_finite(name, value)?;
+        if value <= 0. {
+            return Err(recovery_error(format!("{name} must be positive")));
+        }
+    }
+    if calibration.precision > 12 {
+        return Err(recovery_error("calibration precision is out of range"));
+    }
+    validate_text(
+        &calibration.unit,
+        "measurement unit",
+        MAX_MEASUREMENT_UNIT_BYTES,
+    )?;
+    if !calibration.label.is_empty() {
+        validate_text(
+            &calibration.label,
+            "measurement label",
+            MAX_MEASUREMENT_LABEL_BYTES,
+        )?;
+    }
+    let precision = validate_recovery_scale_precision(calibration.scale_precision)?;
+    let reconstructed = LengthCalibration::from_scale(
+        calibration.paper_points,
+        calibration.real_world_value,
+        calibration.unit.clone(),
+        calibration.precision,
+        calibration.show_caption,
+    )?
+    .with_label(calibration.label.clone())?;
+    if precision != calibration.scale_precision
+        || (calibration.units_per_point - reconstructed.units_per_point).abs() > 0.000_001_1
+    {
+        return Err(recovery_error("calibration scale metadata is inconsistent"));
+    }
+    Ok(())
+}
+
+fn validate_recovery_scale_precision(
+    precision: ScalePrecision,
+) -> Result<ScalePrecision, AnnotationError> {
+    match precision.mode {
+        ScalePrecisionMode::Decimal => ScalePrecision::decimal(precision.value),
+        ScalePrecisionMode::Fraction => {
+            let value = precision.value;
+            if !value.is_finite() || value.fract() != 0. || value > f64::from(u16::MAX) {
+                return Err(recovery_error("fraction precision is invalid"));
+            }
+            ScalePrecision::fraction(value as u16)
+        }
+    }
+    .map_err(|error| recovery_error(error.to_string()))
+}
+
+fn validate_recovery_rotation(field: &str, rotation: f64) -> Result<(), AnnotationError> {
+    require_finite(field, rotation)?;
+    if !(0. ..360.).contains(&rotation) || canonical_float(rotation) != rotation {
+        return Err(recovery_error(format!("{field} is not canonical")));
+    }
+    Ok(())
+}
+
+fn recovery_rectangle_spatial_cell_count(
+    annotation: &RectangleAnnotation,
+) -> Result<usize, AnnotationError> {
+    let bounds = rectangle_world_bounds(annotation.rect, annotation.rotation_degrees);
+    let edges = [
+        bounds.x,
+        bounds.y,
+        bounds.x + bounds.width,
+        bounds.y + bounds.height,
+    ];
+    if edges
+        .iter()
+        .any(|edge| !edge.is_finite() || edge.abs() > MAX_RECOVERY_ABS_COORDINATE_PT)
+    {
+        return Err(recovery_error(
+            "rectangle bounds exceed the recovery geometry budget",
+        ));
+    }
+    let min_x = (edges[0] / SPATIAL_CELL_PT).floor();
+    let min_y = (edges[1] / SPATIAL_CELL_PT).floor();
+    let max_x = (edges[2] / SPATIAL_CELL_PT).floor();
+    let max_y = (edges[3] / SPATIAL_CELL_PT).floor();
+    let columns = (max_x - min_x + 1.) as usize;
+    let rows = (max_y - min_y + 1.) as usize;
+    let cells = columns
+        .checked_mul(rows)
+        .ok_or_else(|| recovery_error("rectangle spatial cell count overflow"))?;
+    if cells > MAX_RECOVERY_SPATIAL_CELLS_PER_RECTANGLE {
+        return Err(recovery_error("rectangle exceeds the spatial cell budget"));
+    }
+    Ok(cells)
+}
+
+fn validate_recovery_state(state: &DocumentState) -> Result<(), AnnotationError> {
+    let family_ids = state
+        .rectangles
+        .iter()
+        .map(|a| &a.id)
+        .chain(state.redacts.iter().map(|a| &a.id))
+        .chain(state.ellipses.iter().map(|a| &a.id))
+        .chain(state.arcs.iter().map(|a| &a.id))
+        .chain(state.straight_lines.iter().map(|a| &a.id))
+        .chain(state.vertex_paths.iter().map(|a| &a.id))
+        .chain(state.clouds.iter().map(|a| &a.id))
+        .chain(state.cloud_pluses.iter().map(|a| &a.id))
+        .chain(state.callouts.iter().map(|a| &a.id))
+        .chain(state.measurement_paths.iter().map(|a| &a.id))
+        .chain(state.pens.iter().map(|a| &a.id))
+        .chain(state.text_boxes.iter().map(|a| &a.id))
+        .chain(state.dimensions.iter().map(|a| &a.id))
+        .chain(state.lengths.iter().map(|a| &a.id))
+        .chain(state.images.iter().map(|a| &a.id))
+        .chain(state.snapshots.iter().map(|a| &a.id))
+        .collect::<Vec<_>>();
+    let annotation_count = family_ids.len();
+    if annotation_count > MAX_RECOVERY_ANNOTATIONS_PER_STATE {
+        return Err(recovery_error("state contains too many annotations"));
+    }
+    let mut ids = BTreeSet::new();
+    for id in family_ids {
+        MarkupId::new(id.as_str()).map_err(|_| recovery_error("invalid markup id"))?;
+        if !ids.insert(id.clone()) {
+            return Err(recovery_error(format!("duplicate markup id {id}")));
+        }
+    }
+    if state.annotation_order.len() != annotation_count {
+        return Err(recovery_error(
+            "annotation order length does not match state",
+        ));
+    }
+    let mut ordered_ids = BTreeSet::new();
+    for id in &state.annotation_order {
+        if !ids.contains(id) || !ordered_ids.insert(id.clone()) {
+            return Err(recovery_error(
+                "annotation order is missing, duplicate, or unknown",
+            ));
+        }
+    }
+    let mut spatial_cell_count = 0usize;
+    for annotation in &state.rectangles {
+        validate_layout_rect(annotation.rect, "rectangle")?;
+        validate_recovery_rotation("rectangle.rotation", annotation.rotation_degrees)?;
+        validate_recovery_rectangle_appearance(&annotation.appearance)?;
+        spatial_cell_count = spatial_cell_count
+            .checked_add(recovery_rectangle_spatial_cell_count(annotation)?)
+            .ok_or_else(|| recovery_error("state spatial cell count overflow"))?;
+        if spatial_cell_count > MAX_RECOVERY_SPATIAL_CELLS_PER_STATE {
+            return Err(recovery_error("state exceeds the spatial cell budget"));
+        }
+    }
+    for annotation in &state.redacts {
+        validate_recovery_rectangle_appearance(&annotation.appearance)?;
+        RedactAnnotation::new(
+            annotation.id.clone(),
+            annotation.page_index,
+            annotation.rect,
+            annotation.redaction_color.clone(),
+            annotation.overlay_text.clone(),
+            annotation.appearance.clone(),
+        )?;
+    }
+    for annotation in &state.ellipses {
+        validate_recovery_rectangle_appearance(&annotation.appearance)?;
+        EllipseAnnotation::new(
+            annotation.id.clone(),
+            annotation.page_index,
+            annotation.rect,
+            annotation.appearance.clone(),
+        )?;
+        validate_recovery_rotation("ellipse.rotation", annotation.rotation_degrees)?;
+    }
+    for annotation in &state.arcs {
+        validate_recovery_rectangle_appearance(&annotation.appearance)?;
+        if let Some(geometry) = &annotation.ellipse_geometry {
+            validate_layout_rect(geometry.rect, "arc")?;
+            let expected = ArcAnnotation::from_rect_angles(
+                annotation.id.clone(),
+                annotation.page_index,
+                geometry.rect,
+                geometry.angle1_degrees,
+                geometry.angle2_degrees,
+                annotation.appearance.clone(),
+            )?;
+            let controls_match = [
+                (annotation.start, expected.start),
+                (annotation.mid, expected.mid),
+                (annotation.end, expected.end),
+            ]
+            .into_iter()
+            .all(|(actual, expected)| {
+                (actual.x - expected.x).abs() <= 0.000_1 && (actual.y - expected.y).abs() <= 0.000_1
+            });
+            if !controls_match {
+                return Err(recovery_error(
+                    "elliptical Arc controls do not match its rectangle and angles",
+                ));
+            }
+        } else {
+            ArcAnnotation::new(
+                annotation.id.clone(),
+                annotation.page_index,
+                annotation.start,
+                annotation.end,
+                annotation.mid,
+                annotation.appearance.clone(),
+            )?;
+        }
+    }
+    for annotation in &state.straight_lines {
+        validate_recovery_line_appearance(&annotation.appearance)?;
+        StraightLineAnnotation::new(
+            annotation.id.clone(),
+            annotation.page_index,
+            annotation.start,
+            annotation.end,
+            annotation.kind,
+            annotation.appearance.clone(),
+        )?;
+    }
+    for annotation in &state.vertex_paths {
+        validate_recovery_rectangle_appearance(&annotation.appearance)?;
+        VertexPathAnnotation::new(
+            annotation.id.clone(),
+            annotation.page_index,
+            annotation.points.clone(),
+            annotation.kind,
+            annotation.appearance.clone(),
+        )?;
+    }
+    for annotation in &state.clouds {
+        validate_recovery_rectangle_appearance(&annotation.appearance)?;
+        CloudAnnotation::new(
+            annotation.id.clone(),
+            annotation.page_index,
+            annotation.points.clone(),
+            annotation.border_effect_intensity,
+            annotation.appearance.clone(),
+        )?;
+    }
+    for annotation in &state.cloud_pluses {
+        validate_recovery_rectangle_appearance(&annotation.appearance.cloud)?;
+        validate_recovery_line_appearance(&annotation.appearance.leader)?;
+        validate_recovery_text_style(&annotation.appearance.text)?;
+        CloudPlusAppearance::new(
+            annotation.appearance.cloud.clone(),
+            annotation.appearance.leader.clone(),
+            annotation.appearance.text.clone(),
+        )?;
+        CloudPlusAnnotation::new(
+            annotation.id.clone(),
+            annotation.page_index,
+            annotation.cloud_points.clone(),
+            annotation.border_effect_intensity,
+            annotation.leader_points.clone(),
+            annotation.text_box,
+            annotation.content.clone(),
+            annotation.appearance.clone(),
+        )?;
+        if let Some(path) = &annotation.cloud_appearance_path {
+            validate_cloud_appearance_path(path)?;
+        }
+    }
+    for annotation in &state.callouts {
+        validate_recovery_line_appearance(&annotation.appearance.line)?;
+        validate_recovery_text_style(&annotation.appearance.text)?;
+        CalloutAppearance::new(
+            annotation.appearance.line.clone(),
+            annotation.appearance.text.clone(),
+        )?;
+        CalloutAnnotation::new(
+            annotation.id.clone(),
+            annotation.page_index,
+            annotation.leader_points.clone(),
+            annotation.text_box,
+            annotation.content.clone(),
+            annotation.appearance.clone(),
+        )?;
+    }
+    for annotation in &state.measurement_paths {
+        validate_recovery_calibration(&annotation.calibration)?;
+        validate_recovery_rectangle_appearance(&annotation.appearance)?;
+        validate_recovery_text_style(&annotation.text_style)?;
+        MeasurementPathAnnotation::new_with_text_style(
+            annotation.id.clone(),
+            annotation.page_index,
+            annotation.points.clone(),
+            annotation.kind,
+            annotation.calibration.clone(),
+            annotation.appearance.clone(),
+            annotation.text_style.clone(),
+        )?;
+    }
+    for annotation in &state.pens {
+        validate_recovery_pen_appearance(&annotation.appearance)?;
+        let paths = annotation.paths().map(<[PdfPoint]>::to_vec).collect();
+        match (annotation.tool, annotation.blend_mode) {
+            (InkTool::Pen, BlendMode::Normal) => {
+                PenAnnotation::new_paths(
+                    annotation.id.clone(),
+                    annotation.page_index,
+                    paths,
+                    annotation.appearance.clone(),
+                    annotation.smooth_curves,
+                )?;
+            }
+            (InkTool::Highlight, BlendMode::Multiply) if !annotation.smooth_curves => {
+                PenAnnotation::new_highlight_paths(
+                    annotation.id.clone(),
+                    annotation.page_index,
+                    paths,
+                    annotation.appearance.clone(),
+                )?;
+            }
+            _ => {
+                return Err(recovery_error(
+                    "ink tool and blend metadata are inconsistent",
+                ));
+            }
+        }
+    }
+    for annotation in &state.text_boxes {
+        validate_recovery_text_style(&annotation.style)?;
+        TextBoxAnnotation::new(
+            annotation.id.clone(),
+            annotation.page_index,
+            annotation.layout_rect,
+            annotation.content.clone(),
+            annotation.style.clone(),
+        )?
+        .with_rich_text_runs(annotation.rich_text_runs.clone())?;
+        validate_recovery_rotation("text.rotation", annotation.rotation_degrees)?;
+    }
+    for annotation in &state.dimensions {
+        validate_recovery_line_appearance(&annotation.appearance.line)?;
+        validate_recovery_text_style(&annotation.appearance.text)?;
+        DimensionAppearance::new(
+            annotation.appearance.line.clone(),
+            annotation.appearance.text.clone(),
+        )?;
+        DimensionAnnotation::new(
+            annotation.id.clone(),
+            annotation.page_index,
+            annotation.start,
+            annotation.end,
+            annotation.dimension_line_offset,
+            annotation.content.clone(),
+            annotation.appearance.clone(),
+        )?;
+    }
+    for annotation in &state.lengths {
+        validate_recovery_calibration(&annotation.calibration)?;
+        validate_recovery_line_appearance(&annotation.appearance.line)?;
+        validate_recovery_text_style(&annotation.appearance.text)?;
+        DimensionAppearance::new(
+            annotation.appearance.line.clone(),
+            annotation.appearance.text.clone(),
+        )?;
+        LengthAnnotation::new_with_appearance(
+            annotation.id.clone(),
+            annotation.page_index,
+            annotation.start,
+            annotation.end,
+            annotation.calibration.clone(),
+            annotation.appearance.clone(),
+        )?;
+    }
+    for (page_index, scale) in &state.page_scales {
+        if page_index != &scale.page_index {
+            return Err(recovery_error(
+                "page scale key does not match its page index",
+            ));
+        }
+        PageScale::from_factors(
+            scale.page_index,
+            scale.source,
+            scale.name.clone(),
+            scale.pdf_units,
+            scale.real_units,
+            scale.scale_x,
+            scale.scale_y,
+            scale.precision,
+        )
+        .map_err(|error| recovery_error(error.to_string()))?;
+        validate_recovery_scale_precision(scale.precision)?;
+    }
+    if state
+        .page_scales
+        .keys()
+        .ne(state.page_length_calibrations.keys())
+    {
+        return Err(recovery_error(
+            "page scale and calibration keys are inconsistent",
+        ));
+    }
+    for (page_index, calibration) in &state.page_length_calibrations {
+        validate_recovery_calibration(calibration)?;
+        let expected = state
+            .page_scales
+            .get(page_index)
+            .expect("matching page scale key was checked")
+            .length_calibration()?;
+        if !calibration.same_scale_as(&expected) {
+            return Err(recovery_error("page scale and calibration values disagree"));
+        }
+    }
+    let mut preset_ids = BTreeSet::new();
+    for preset in &state.scale_presets {
+        validate_text(&preset.id, "scale preset id", MAX_MEASUREMENT_LABEL_BYTES)?;
+        validate_text(
+            &preset.name,
+            "scale preset name",
+            MAX_MEASUREMENT_LABEL_BYTES,
+        )?;
+        for value in [preset.scale_x, preset.scale_y] {
+            if !value.is_finite() || value <= 0. {
+                return Err(recovery_error("scale preset factors must be positive"));
+            }
+        }
+        if !preset_ids.insert(&preset.id) {
+            return Err(recovery_error("scale preset ids must be unique"));
+        }
+    }
+    Ok(())
 }
 
 const SPATIAL_CELL_PT: f64 = 64.0;
@@ -4468,6 +6145,222 @@ impl AnnotationDocument {
             saved_revision: 0,
             next_revision: 1,
         })
+    }
+
+    /// Encodes the committed model and its exact undo/redo timeline. Ephemeral
+    /// selection, gesture previews, drafts, spatial indexes, and renderer caches
+    /// are deliberately not part of this model-owned recovery contract.
+    pub fn encode_recovery_timeline(&self) -> Result<Vec<u8>, AnnotationError> {
+        if self.history_limit > MAX_RECOVERY_HISTORY_STATES
+            || self.next_revision == u64::MAX
+            || self.saved_revision >= self.next_revision
+        {
+            return Err(recovery_error(
+                "document revision or history bounds are not recoverable",
+            ));
+        }
+        let mut assets = BTreeMap::new();
+        let current = RecoveryDocumentState::encode(&self.state, &mut assets)?;
+        let past = self
+            .past
+            .iter()
+            .map(|state| RecoveryDocumentState::encode(state, &mut assets))
+            .collect::<Result<Vec<_>, _>>()?;
+        let future = self
+            .future
+            .iter()
+            .map(|state| RecoveryDocumentState::encode(state, &mut assets))
+            .collect::<Result<Vec<_>, _>>()?;
+        let reference_count = self
+            .past
+            .iter()
+            .chain(std::iter::once(&self.state))
+            .chain(self.future.iter())
+            .try_fold(0usize, |total, state| {
+                total
+                    .checked_add(state.images.len())
+                    .and_then(|total| total.checked_add(state.snapshots.len()))
+                    .ok_or_else(|| recovery_error("asset reference count overflow"))
+            })?;
+        let aggregate_asset_bytes = assets.values().try_fold(0usize, |total, asset| {
+            let bytes = usize::try_from(asset.width_px)
+                .ok()
+                .and_then(|width| {
+                    usize::try_from(asset.height_px)
+                        .ok()
+                        .and_then(|height| width.checked_mul(height))
+                })
+                .and_then(|pixels| pixels.checked_mul(4))
+                .ok_or_else(|| recovery_error("decoded asset byte count overflow"))?;
+            total
+                .checked_add(bytes)
+                .ok_or_else(|| recovery_error("decoded asset byte count overflow"))
+        })?;
+        if assets.len() > MAX_RECOVERY_ASSETS
+            || reference_count > MAX_RECOVERY_ASSET_REFERENCES
+            || aggregate_asset_bytes > MAX_RECOVERY_DECODED_ASSET_BYTES
+        {
+            return Err(recovery_error("document assets exceed recovery bounds"));
+        }
+        serialize_recovery_wire(
+            &RecoveryTimelineWire {
+                schema_version: RECOVERY_TIMELINE_SCHEMA_VERSION,
+                assets: assets.into_values().collect(),
+                current,
+                past,
+                future,
+                history_limit: self.history_limit,
+                saved_revision: self.saved_revision,
+                next_revision: self.next_revision,
+            },
+            MAX_RECOVERY_TIMELINE_BYTES,
+        )
+    }
+
+    pub fn hydrate_recovery_timeline(bytes: &[u8]) -> Result<Self, AnnotationError> {
+        if bytes.len() > MAX_RECOVERY_TIMELINE_BYTES {
+            return Err(recovery_error("timeline exceeds the decoder byte limit"));
+        }
+        let wire: RecoveryTimelineWire = serde_json::from_slice(bytes)
+            .map_err(|error| recovery_error(format!("invalid JSON: {error}")))?;
+        if !matches!(wire.schema_version, 1 | RECOVERY_TIMELINE_SCHEMA_VERSION) {
+            return Err(recovery_error(format!(
+                "unsupported schema version {}",
+                wire.schema_version
+            )));
+        }
+        if wire.history_limit == 0 || wire.history_limit > MAX_RECOVERY_HISTORY_STATES {
+            return Err(recovery_error(
+                "history limit is outside the supported range",
+            ));
+        }
+        if wire.next_revision == u64::MAX || wire.saved_revision >= wire.next_revision {
+            return Err(recovery_error(
+                "saved or next revision is outside the supported range",
+            ));
+        }
+        if wire.past.len() > wire.history_limit
+            || wire.future.len() > wire.history_limit
+            || wire.past.len() > MAX_RECOVERY_HISTORY_STATES
+            || wire.future.len() > MAX_RECOVERY_HISTORY_STATES
+        {
+            return Err(recovery_error(
+                "history contains more states than its limit",
+            ));
+        }
+        if wire.assets.len() > MAX_RECOVERY_ASSETS {
+            return Err(recovery_error("timeline contains too many assets"));
+        }
+        let mut assets = BTreeMap::new();
+        let mut aggregate_asset_bytes = 0usize;
+        for wire_asset in wire.assets {
+            if assets.contains_key(&wire_asset.id) {
+                return Err(recovery_error(format!(
+                    "duplicate asset id {}",
+                    wire_asset.id
+                )));
+            }
+            if wire_asset.asset_schema_version != RECOVERY_ASSET_SCHEMA_VERSION {
+                return Err(recovery_error("unsupported decoded RGBA asset version"));
+            }
+            let rgba = BASE64
+                .decode(&wire_asset.rgba_base64)
+                .map_err(|_| recovery_error("invalid decoded RGBA base64"))?;
+            aggregate_asset_bytes = aggregate_asset_bytes
+                .checked_add(rgba.len())
+                .ok_or_else(|| recovery_error("decoded asset byte count overflow"))?;
+            if aggregate_asset_bytes > MAX_RECOVERY_DECODED_ASSET_BYTES {
+                return Err(recovery_error(
+                    "decoded assets exceed the aggregate byte limit",
+                ));
+            }
+            let asset = DecodedRgbaAsset::new(wire_asset.width_px, wire_asset.height_px, rgba)
+                .map_err(|error| recovery_error(error.to_string()))?;
+            if asset.id().as_str() != wire_asset.id {
+                return Err(recovery_error("decoded RGBA asset hash mismatch"));
+            }
+            assets.insert(wire_asset.id, asset);
+        }
+        let mut referenced = BTreeSet::new();
+        let mut reference_count = 0usize;
+        let state = wire
+            .current
+            .decode(&assets, &mut referenced, &mut reference_count)
+            .map_err(|error| recovery_error(error.to_string()))?;
+        let past = wire
+            .past
+            .into_iter()
+            .map(|state| {
+                state
+                    .decode(&assets, &mut referenced, &mut reference_count)
+                    .map_err(|error| recovery_error(error.to_string()))
+            })
+            .collect::<Result<VecDeque<_>, _>>()?;
+        let future = wire
+            .future
+            .into_iter()
+            .map(|state| {
+                state
+                    .decode(&assets, &mut referenced, &mut reference_count)
+                    .map_err(|error| recovery_error(error.to_string()))
+            })
+            .collect::<Result<VecDeque<_>, _>>()?;
+        if referenced.len() != assets.len() {
+            return Err(recovery_error("asset table contains unreachable entries"));
+        }
+        let mut revisions = BTreeSet::new();
+        for revision in past
+            .iter()
+            .map(|state| state.revision)
+            .chain(std::iter::once(state.revision))
+            .chain(future.iter().map(|state| state.revision))
+        {
+            if !revisions.insert(revision) {
+                return Err(recovery_error("timeline contains duplicate revisions"));
+            }
+        }
+        if !past
+            .iter()
+            .map(|state| state.revision)
+            .chain(std::iter::once(state.revision))
+            .is_sorted()
+        {
+            return Err(recovery_error("past revisions are out of order"));
+        }
+        if !std::iter::once(state.revision)
+            .chain(future.iter().rev().map(|state| state.revision))
+            .is_sorted()
+        {
+            return Err(recovery_error("future revisions are out of order"));
+        }
+        let greatest_revision = revisions.last().copied().unwrap_or(0);
+        if wire.next_revision < greatest_revision
+            || (greatest_revision != u64::MAX && wire.next_revision == greatest_revision)
+        {
+            return Err(recovery_error("next revision does not follow the timeline"));
+        }
+        Ok(Self {
+            state,
+            selected_ids: Vec::new(),
+            focused_id: None,
+            active_gesture: None,
+            past,
+            future,
+            history_limit: wire.history_limit,
+            saved_revision: wire.saved_revision,
+            next_revision: wire.next_revision,
+        })
+    }
+
+    /// Returns every annotation identity retained by current, undo, or redo
+    /// state so external recovery storage can reason about historical reachability.
+    pub fn recovery_markup_ids(&self) -> BTreeSet<MarkupId> {
+        self.past
+            .iter()
+            .chain(std::iter::once(&self.state))
+            .chain(self.future.iter())
+            .flat_map(|state| state.annotation_order.iter().cloned())
+            .collect()
     }
 
     pub fn rectangles(&self) -> &[RectangleAnnotation] {
@@ -5060,6 +6953,7 @@ impl AnnotationDocument {
                 selected: self.selected_ids.contains(&annotation.id),
                 locked: annotation.locked,
                 preview: false,
+                feedback: SceneInteractionFeedback::Normal,
             })
             .collect::<Vec<_>>();
         if let Some(preview) = preview.filter(|preview| preview.annotation.page_index == page_index)
@@ -5072,6 +6966,23 @@ impl AnnotationDocument {
                 selected: true,
                 locked: preview.annotation.locked,
                 preview: true,
+                feedback: match preview.kind {
+                    GestureKind::Create => SceneInteractionFeedback::Creation,
+                    GestureKind::Move => SceneInteractionFeedback::Move {
+                        chrome_visible: true,
+                    },
+                    GestureKind::Resize(handle) => SceneInteractionFeedback::Transform {
+                        chrome_visible: true,
+                        active_handle: RectangleResizeHandle::ALL
+                            .iter()
+                            .position(|candidate| *candidate == handle)
+                            .expect("a rectangle resize gesture uses a known handle"),
+                    },
+                    GestureKind::Rotate => SceneInteractionFeedback::Transform {
+                        chrome_visible: true,
+                        active_handle: RectangleResizeHandle::ALL.len(),
+                    },
+                },
             };
             if let Some(existing) = rectangles
                 .iter_mut()
@@ -5083,6 +6994,7 @@ impl AnnotationDocument {
             }
         }
         AnnotationScene {
+            annotation_order: Vec::new(),
             page_index,
             revision: self.state.revision,
             rectangles,
@@ -5102,10 +7014,12 @@ impl AnnotationDocument {
             images: self.scene_images(page_index, true),
             snapshots: self.scene_snapshots(page_index, true),
         }
+        .with_document_order(&self.state.annotation_order)
     }
 
     pub fn thumbnail_scene(&self, page_index: u32) -> AnnotationScene {
         AnnotationScene {
+            annotation_order: Vec::new(),
             page_index,
             revision: self.state.revision,
             rectangles: self
@@ -5121,6 +7035,7 @@ impl AnnotationDocument {
                     selected: false,
                     locked: annotation.locked,
                     preview: false,
+                    feedback: SceneInteractionFeedback::Normal,
                 })
                 .collect(),
             redacts: self.scene_redacts(page_index, false),
@@ -5139,6 +7054,7 @@ impl AnnotationDocument {
             images: self.scene_images(page_index, false),
             snapshots: self.scene_snapshots(page_index, false),
         }
+        .with_document_order(&self.state.annotation_order)
     }
 
     pub fn replay_rectangle_manifest(
@@ -6033,6 +7949,10 @@ impl AnnotationDocument {
             .collect()
     }
 
+    pub(crate) fn annotation_order(&self) -> &[MarkupId] {
+        &self.state.annotation_order
+    }
+
     pub fn selected_has_unlocked(&self) -> bool {
         self.selected_ids
             .iter()
@@ -6051,29 +7971,210 @@ impl AnnotationDocument {
         &self.selected_ids
     }
 
+    /// Geometric hits in document order, independent of the selection operation.
+    /// Preview and release use this same read-only query.
+    pub fn marquee_candidates(
+        &self,
+        page_index: u32,
+        marquee: &SelectionMarquee,
+        to_viewport: impl Fn(PdfPoint) -> SelectionPoint,
+    ) -> Vec<MarkupId> {
+        self.marquee_candidates_with_supplement(
+            page_index,
+            marquee,
+            to_viewport,
+            &AnnotationSelectionSupplement::new(),
+        )
+    }
+
+    pub fn marquee_candidates_with_supplement(
+        &self,
+        page_index: u32,
+        marquee: &SelectionMarquee,
+        to_viewport: impl Fn(PdfPoint) -> SelectionPoint,
+        supplement: &AnnotationSelectionSupplement,
+    ) -> Vec<MarkupId> {
+        if !marquee.active {
+            return Vec::new();
+        }
+        // Walk page-filtered families once; looking up every ordered id in each
+        // family would make a pointer-move preview quadratic in document size.
+        let annotations = std::iter::empty::<Annotation>()
+            .chain(
+                self.state
+                    .rectangles
+                    .iter()
+                    .filter(|a| a.page_index == page_index)
+                    .cloned()
+                    .map(Annotation::Rectangle),
+            )
+            .chain(
+                self.state
+                    .redacts
+                    .iter()
+                    .filter(|a| a.page_index == page_index)
+                    .cloned()
+                    .map(Annotation::Redact),
+            )
+            .chain(
+                self.state
+                    .ellipses
+                    .iter()
+                    .filter(|a| a.page_index == page_index)
+                    .cloned()
+                    .map(Annotation::Ellipse),
+            )
+            .chain(
+                self.state
+                    .arcs
+                    .iter()
+                    .filter(|a| a.page_index == page_index)
+                    .cloned()
+                    .map(Annotation::Arc),
+            )
+            .chain(
+                self.state
+                    .straight_lines
+                    .iter()
+                    .filter(|a| a.page_index == page_index)
+                    .cloned()
+                    .map(Annotation::StraightLine),
+            )
+            .chain(
+                self.state
+                    .vertex_paths
+                    .iter()
+                    .filter(|a| a.page_index == page_index)
+                    .cloned()
+                    .map(Annotation::VertexPath),
+            )
+            .chain(
+                self.state
+                    .clouds
+                    .iter()
+                    .filter(|a| a.page_index == page_index)
+                    .cloned()
+                    .map(Annotation::Cloud),
+            )
+            .chain(
+                self.state
+                    .cloud_pluses
+                    .iter()
+                    .filter(|a| a.page_index == page_index)
+                    .cloned()
+                    .map(Annotation::CloudPlus),
+            )
+            .chain(
+                self.state
+                    .callouts
+                    .iter()
+                    .filter(|a| a.page_index == page_index)
+                    .cloned()
+                    .map(Annotation::Callout),
+            )
+            .chain(
+                self.state
+                    .dimensions
+                    .iter()
+                    .filter(|a| a.page_index == page_index)
+                    .cloned()
+                    .map(Annotation::Dimension),
+            )
+            .chain(
+                self.state
+                    .measurement_paths
+                    .iter()
+                    .filter(|a| a.page_index == page_index)
+                    .cloned()
+                    .map(Annotation::MeasurementPath),
+            )
+            .chain(
+                self.state
+                    .pens
+                    .iter()
+                    .filter(|a| a.page_index == page_index)
+                    .cloned()
+                    .map(Annotation::Pen),
+            )
+            .chain(
+                self.state
+                    .text_boxes
+                    .iter()
+                    .filter(|a| a.page_index == page_index)
+                    .cloned()
+                    .map(Annotation::TextBox),
+            )
+            .chain(
+                self.state
+                    .lengths
+                    .iter()
+                    .filter(|a| a.page_index == page_index)
+                    .cloned()
+                    .map(Annotation::Length),
+            )
+            .chain(
+                self.state
+                    .images
+                    .iter()
+                    .filter(|a| a.page_index == page_index)
+                    .cloned()
+                    .map(Annotation::Image),
+            )
+            .chain(
+                self.state
+                    .snapshots
+                    .iter()
+                    .filter(|a| a.page_index == page_index)
+                    .cloned()
+                    .map(Annotation::Snapshot),
+            );
+        let hits = annotations
+            .filter(|annotation| {
+                let mut paths = annotation_selection_paths(annotation, &to_viewport);
+                if let Some(points) = supplement.get(annotation.id()) {
+                    paths.push(SelectionPath::new(
+                        points.iter().copied().map(&to_viewport).collect(),
+                        true,
+                    ));
+                }
+                geometry_selected(&paths, marquee)
+            })
+            .map(|annotation| annotation.id().clone())
+            .collect::<std::collections::HashSet<_>>();
+        self.state
+            .annotation_order
+            .iter()
+            .filter(|id| hits.contains(*id))
+            .cloned()
+            .collect()
+    }
+
     pub fn apply_marquee_selection(
         &mut self,
         page_index: u32,
         marquee: &SelectionMarquee,
         to_viewport: impl Fn(PdfPoint) -> SelectionPoint,
     ) -> &[MarkupId] {
+        self.apply_marquee_selection_with_supplement(
+            page_index,
+            marquee,
+            to_viewport,
+            &AnnotationSelectionSupplement::new(),
+        )
+    }
+
+    pub fn apply_marquee_selection_with_supplement(
+        &mut self,
+        page_index: u32,
+        marquee: &SelectionMarquee,
+        to_viewport: impl Fn(PdfPoint) -> SelectionPoint,
+        supplement: &AnnotationSelectionSupplement,
+    ) -> &[MarkupId] {
         if !marquee.active {
             return &self.selected_ids;
         }
-        let hits = self
-            .state
-            .annotation_order
-            .iter()
-            .filter_map(|id| self.annotation_owned(id))
-            .filter(|annotation| self.annotation_page(annotation.id()) == Some(page_index))
-            .filter(|annotation| {
-                geometry_selected(
-                    &annotation_selection_paths(annotation, &to_viewport),
-                    marquee,
-                )
-            })
-            .map(|annotation| annotation.id().clone())
-            .collect::<Vec<_>>();
+        let hits =
+            self.marquee_candidates_with_supplement(page_index, marquee, to_viewport, supplement);
         self.selected_ids = selection_after(&self.selected_ids, &hits, marquee.operation);
         self.refresh_focused_id(None);
         &self.selected_ids
@@ -7621,17 +9722,18 @@ impl AnnotationDocument {
                 if annotation.locked {
                     return Err(AnnotationError::LockedMarkup(id.clone()));
                 }
-                if annotation.content == content {
+                if annotation.content == content && annotation.rich_text_runs.is_empty() {
                     return Ok((AnnotationKind::TextBox, false));
                 }
                 let id = id.clone();
                 self.commit_state_change(move |state| {
-                    state
+                    let annotation = state
                         .text_boxes
                         .iter_mut()
                         .find(|annotation| annotation.id == id)
-                        .expect("a validated text box edit must retain its target")
-                        .content = content;
+                        .expect("a validated text box edit must retain its target");
+                    annotation.content = content;
+                    annotation.rich_text_runs.clear();
                 });
                 Ok((AnnotationKind::TextBox, true))
             }
@@ -7652,6 +9754,27 @@ impl AnnotationDocument {
                         .find(|annotation| annotation.id == id)
                         .expect("a validated text layout edit must retain its target")
                         .layout_rect = layout_rect;
+                });
+                Ok((AnnotationKind::TextBox, true))
+            }
+            AnnotationEdit::SetTextBoxRotation(rotation_degrees) => {
+                require_finite("text_box.rotation", rotation_degrees)?;
+                let rotation_degrees = canonical_float(rotation_degrees.rem_euclid(360.));
+                let annotation = self.text_box(id).ok_or(AnnotationError::NoSelection)?;
+                if annotation.locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                if annotation.rotation_degrees == rotation_degrees {
+                    return Ok((AnnotationKind::TextBox, false));
+                }
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    state
+                        .text_boxes
+                        .iter_mut()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a validated text box rotation edit must retain its target")
+                        .rotation_degrees = rotation_degrees;
                 });
                 Ok((AnnotationKind::TextBox, true))
             }
@@ -7685,23 +9808,15 @@ impl AnnotationDocument {
                 if annotation.locked {
                     return Err(AnnotationError::LockedMarkup(id.clone()));
                 }
-                let (start, end, mid) = match control {
-                    ArcControlPoint::Start => (point, annotation.end, annotation.mid),
-                    ArcControlPoint::Mid => (annotation.start, annotation.end, point),
-                    ArcControlPoint::End => (annotation.start, point, annotation.mid),
+                let current = match control {
+                    ArcControlPoint::Start => annotation.start,
+                    ArcControlPoint::Mid => annotation.mid,
+                    ArcControlPoint::End => annotation.end,
                 };
-                if (start, end, mid) == (annotation.start, annotation.end, annotation.mid) {
+                if point == current {
                     return Ok((AnnotationKind::Arc, false));
                 }
-                let mut replacement = ArcAnnotation::new(
-                    annotation.id.clone(),
-                    annotation.page_index,
-                    start,
-                    end,
-                    mid,
-                    annotation.appearance.clone(),
-                )?;
-                replacement.locked = annotation.locked;
+                let replacement = annotation.with_control_point(control, point)?;
                 let id = id.clone();
                 self.commit_state_change(move |state| {
                     *state
@@ -8339,7 +10454,8 @@ impl AnnotationDocument {
                     text_box,
                     content,
                     annotation.appearance.clone(),
-                )?;
+                )?
+                .with_cloud_appearance_path(annotation.cloud_appearance_path.clone())?;
                 replacement.locked = annotation.locked;
                 let id = id.clone();
                 self.commit_state_change(move |state| {
@@ -8476,6 +10592,25 @@ impl AnnotationDocument {
                         .find(|annotation| annotation.id == id)
                         .expect("a validated callout leader edit must retain its target") =
                         replacement;
+                });
+                Ok((AnnotationKind::Callout, true))
+            }
+            AnnotationEdit::SetCalloutTextBox(text_box) => {
+                let annotation = self.callout(id).ok_or(AnnotationError::NoSelection)?;
+                if annotation.locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                if annotation.text_box == text_box {
+                    return Ok((AnnotationKind::Callout, false));
+                }
+                let replacement = annotation.resized_text_box(text_box)?;
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    *state
+                        .callouts
+                        .iter_mut()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a validated Callout resize must retain its target") = replacement;
                 });
                 Ok((AnnotationKind::Callout, true))
             }
@@ -8680,6 +10815,27 @@ impl AnnotationDocument {
                 });
                 Ok((AnnotationKind::Image, true))
             }
+            AnnotationEdit::SetImageRotation(rotation_degrees) => {
+                require_finite("image.rotation", rotation_degrees)?;
+                let rotation_degrees = canonical_float(rotation_degrees.rem_euclid(360.));
+                let annotation = self.image(id).ok_or(AnnotationError::NoSelection)?;
+                if annotation.locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                if annotation.rotation_degrees == rotation_degrees {
+                    return Ok((AnnotationKind::Image, false));
+                }
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    state
+                        .images
+                        .iter_mut()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a validated image rotation edit must retain its target")
+                        .rotation_degrees = rotation_degrees;
+                });
+                Ok((AnnotationKind::Image, true))
+            }
             AnnotationEdit::SetImageOpacity(opacity) => {
                 validate_snapshot_opacity(opacity)?;
                 let annotation = self.image(id).ok_or(AnnotationError::NoSelection)?;
@@ -8789,6 +10945,7 @@ impl AnnotationDocument {
                 selected: editor_state && self.selected_ids.contains(&annotation.id),
                 locked: annotation.locked,
                 draft: false,
+                feedback: SceneInteractionFeedback::Normal,
             })
             .collect::<Vec<_>>();
         if editor_state
@@ -8806,6 +10963,7 @@ impl AnnotationDocument {
                 selected: true,
                 locked: false,
                 draft: true,
+                feedback: SceneInteractionFeedback::Creation,
             });
         }
         pens
@@ -8825,6 +10983,7 @@ impl AnnotationDocument {
                 selected: editor_state && self.selected_ids.contains(&annotation.id),
                 locked: annotation.locked,
                 draft: false,
+                feedback: SceneInteractionFeedback::Normal,
             })
             .collect()
     }
@@ -8860,6 +11019,7 @@ impl AnnotationDocument {
                 selected: editor_state && self.selected_ids.contains(&annotation.id),
                 locked: annotation.locked,
                 draft: false,
+                feedback: SceneInteractionFeedback::Normal,
             })
             .collect()
     }
@@ -8881,6 +11041,7 @@ impl AnnotationDocument {
                 selected: editor_state && self.selected_ids.contains(&annotation.id),
                 locked: annotation.locked,
                 draft: false,
+                feedback: SceneInteractionFeedback::Normal,
             })
             .collect()
     }
@@ -8899,6 +11060,7 @@ impl AnnotationDocument {
                 selected: editor_state && self.selected_ids.contains(&annotation.id),
                 locked: annotation.locked,
                 draft: false,
+                feedback: SceneInteractionFeedback::Normal,
             })
             .collect()
     }
@@ -8918,6 +11080,7 @@ impl AnnotationDocument {
                 selected: editor_state && self.selected_ids.contains(&annotation.id),
                 locked: annotation.locked,
                 draft: false,
+                feedback: SceneInteractionFeedback::Normal,
             })
             .collect()
     }
@@ -8932,6 +11095,9 @@ impl AnnotationDocument {
                 start: annotation.start,
                 end: annotation.end,
                 mid: annotation.mid,
+                rect: annotation.rect(),
+                angle1_degrees: annotation.angle1_degrees(),
+                angle2_degrees: annotation.angle2_degrees(),
                 sampled_path: annotation.sampled_path(64),
                 appearance: annotation.appearance.clone(),
                 selected: editor_state && self.selected_ids.contains(&annotation.id),
@@ -8975,8 +11141,11 @@ impl AnnotationDocument {
                 layout_rect: annotation.layout_rect,
                 content: annotation.content.clone(),
                 style: annotation.style.clone(),
+                rich_text_runs: annotation.rich_text_runs.clone(),
+                rotation_degrees: annotation.rotation_degrees,
                 selected: editor_state && self.selected_ids.contains(&annotation.id),
                 locked: annotation.locked,
+                feedback: SceneInteractionFeedback::Normal,
             })
             .collect()
     }
@@ -8995,6 +11164,8 @@ impl AnnotationDocument {
                 appearance: annotation.appearance.clone(),
                 selected: editor_state && self.selected_ids.contains(&annotation.id),
                 locked: annotation.locked,
+                draft: false,
+                feedback: SceneInteractionFeedback::Normal,
             })
             .collect()
     }
@@ -9012,8 +11183,10 @@ impl AnnotationDocument {
                 height_px: annotation.asset.height_px,
                 aspect_locked: annotation.aspect_locked,
                 opacity: annotation.opacity,
+                rotation_degrees: annotation.rotation_degrees,
                 selected: editor_state && self.selected_ids.contains(&annotation.id),
                 locked: annotation.locked,
+                feedback: SceneInteractionFeedback::Normal,
             })
             .collect()
     }
@@ -9035,6 +11208,7 @@ impl AnnotationDocument {
                 selected: editor_state && self.selected_ids.contains(&annotation.id),
                 locked: annotation.locked,
                 draft: false,
+                feedback: SceneInteractionFeedback::Normal,
             })
             .collect()
     }
@@ -9052,6 +11226,7 @@ impl AnnotationDocument {
                 selected: editor_state && self.selected_ids.contains(&annotation.id),
                 locked: annotation.locked,
                 draft: false,
+                feedback: SceneInteractionFeedback::Normal,
             })
             .collect()
     }
@@ -9069,6 +11244,7 @@ impl AnnotationDocument {
                 selected: editor_state && self.selected_ids.contains(&annotation.id),
                 locked: annotation.locked,
                 preview: false,
+                feedback: SceneInteractionFeedback::Normal,
             })
             .collect()
     }
@@ -9175,9 +11351,9 @@ fn annotation_selection_paths(
         Annotation::VertexPath(annotation) => {
             vec![path(annotation.points.clone(), annotation.kind.is_closed())]
         }
-        Annotation::Cloud(annotation) => vec![path(annotation.scallop_path(), true)],
+        Annotation::Cloud(annotation) => vec![path(annotation.points.clone(), true)],
         Annotation::CloudPlus(annotation) => {
-            let mut paths = vec![path(annotation.scallop_path(), true)];
+            let mut paths = vec![path(annotation.cloud_points.clone(), true)];
             if !annotation.leader_points.is_empty() {
                 paths.push(path(annotation.leader_points.clone(), false));
             }
@@ -9190,10 +11366,33 @@ fn annotation_selection_paths(
         ],
         Annotation::Dimension(annotation) => {
             let (dimension_start, dimension_end) = annotation.dimension_line_points();
-            vec![
-                path(vec![annotation.start, annotation.end], false),
-                path(vec![dimension_start, dimension_end], false),
-            ]
+            let delta_x = annotation.end.x - annotation.start.x;
+            let delta_y = annotation.end.y - annotation.start.y;
+            let length = delta_x.hypot(delta_y);
+            let sign = if annotation.dimension_line_offset >= 0. {
+                1.
+            } else {
+                -1.
+            };
+            // Match Electron dimensionHitPath, including its four-point overhang
+            // path, rather than the baseline or the full painted extension lines.
+            let overhang_x = -delta_y / length * sign * 4.;
+            let overhang_y = delta_x / length * sign * 4.;
+            vec![path(
+                vec![
+                    PdfPoint {
+                        x: dimension_start.x + overhang_x,
+                        y: dimension_start.y + overhang_y,
+                    },
+                    dimension_start,
+                    dimension_end,
+                    PdfPoint {
+                        x: dimension_end.x + overhang_x,
+                        y: dimension_end.y + overhang_y,
+                    },
+                ],
+                false,
+            )]
         }
         Annotation::MeasurementPath(annotation) => {
             vec![path(annotation.points.clone(), annotation.kind.is_closed())]
@@ -9572,6 +11771,54 @@ fn validate_text(value: &str, field: &str, max_bytes: usize) -> Result<(), Annot
     Ok(())
 }
 
+fn validate_text_box_rich_text_runs(
+    content: &str,
+    rich_text_runs: &[TextBoxRichTextRun],
+) -> Result<(), AnnotationError> {
+    if rich_text_runs.is_empty() {
+        return Ok(());
+    }
+    let content_bytes = content.as_bytes();
+    let mut offset = 0usize;
+    for run in rich_text_runs {
+        validate_text(&run.text, "rich text run", MAX_TEXT_BOX_BYTES)?;
+        offset = offset.checked_add(run.text.len()).ok_or_else(|| {
+            AnnotationError::InvalidGeometry("rich text run length overflow".into())
+        })?;
+        if offset > MAX_TEXT_BOX_BYTES
+            || content_bytes.get(offset - run.text.len()..offset) != Some(run.text.as_bytes())
+        {
+            return Err(AnnotationError::InvalidGeometry(
+                "rich text runs must concatenate to the text box content".into(),
+            ));
+        }
+        if let Some(font_family) = &run.font_family {
+            validate_text(font_family, "rich text font family", MAX_FONT_FAMILY_BYTES)?;
+        }
+        if let Some(color) = &run.color
+            && normalize_color(color.clone())? != *color
+        {
+            return Err(AnnotationError::InvalidAppearance(
+                "rich text color must be canonical".into(),
+            ));
+        }
+        if let Some(font_size_pt) = run.font_size_pt {
+            require_finite("rich_text.font_size_pt", font_size_pt)?;
+            if font_size_pt <= 0.0 || canonical_float(font_size_pt) != font_size_pt {
+                return Err(AnnotationError::InvalidAppearance(
+                    "rich text font size must be positive and canonical".into(),
+                ));
+            }
+        }
+    }
+    if offset != content_bytes.len() {
+        return Err(AnnotationError::InvalidGeometry(
+            "rich text runs must concatenate to the text box content".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn require_finite(name: &str, value: f64) -> Result<(), AnnotationError> {
     if value.is_finite() {
         Ok(())
@@ -9642,6 +11889,25 @@ fn rotate_point_around_rect_center(
 
 fn normalize_degrees(value: f64) -> f64 {
     canonical_float(value.rem_euclid(360.0))
+}
+
+fn normalize_arc_sweep(angle1_degrees: f64, angle2_degrees: f64) -> f64 {
+    let mut sweep = angle2_degrees - angle1_degrees;
+    while sweep <= -360. {
+        sweep += 360.;
+    }
+    while sweep > 360. {
+        sweep -= 360.;
+    }
+    canonical_float(sweep)
+}
+
+fn ellipse_point(rect: PdfRect, angle_degrees: f64) -> PdfPoint {
+    let angle = angle_degrees.to_radians();
+    PdfPoint {
+        x: canonical_float(rect.x + rect.width * 0.5 + rect.width * 0.5 * angle.cos()),
+        y: canonical_float(rect.y + rect.height * 0.5 + rect.height * 0.5 * angle.sin()),
+    }
 }
 
 pub fn rectangle_world_corners(rect: PdfRect, rotation_degrees: f64) -> [PdfPoint; 4] {
@@ -10016,6 +12282,17 @@ fn canonical_cloud_plus(annotation: &CloudPlusAnnotation) -> Value {
             "x": point.x,
             "y": point.y,
         })).collect::<Vec<_>>(),
+        "cloudAppearancePath": annotation.cloud_appearance_path.as_deref().map(|path| path.iter().map(|command| match command {
+            CloudAppearancePathCommand::MoveTo(point) => json!({"command": "move", "point": {"x": point.x, "y": point.y}}),
+            CloudAppearancePathCommand::LineTo(point) => json!({"command": "line", "point": {"x": point.x, "y": point.y}}),
+            CloudAppearancePathCommand::CubicTo { control_1, control_2, end } => json!({
+                "command": "cubic",
+                "control1": {"x": control_1.x, "y": control_1.y},
+                "control2": {"x": control_2.x, "y": control_2.y},
+                "end": {"x": end.x, "y": end.y},
+            }),
+            CloudAppearancePathCommand::Close => json!({"command": "close"}),
+        }).collect::<Vec<_>>()),
         "content": annotation.content,
         "id": annotation.id.as_str(),
         "kind": "cloud-plus",
@@ -10094,7 +12371,7 @@ fn canonical_dimension(annotation: &DimensionAnnotation) -> Value {
 }
 
 fn canonical_arc(annotation: &ArcAnnotation) -> Value {
-    json!({
+    let mut value = json!({
         "appearance": {
             "opacity": annotation.appearance.opacity,
             "stroke": {
@@ -10113,7 +12390,16 @@ fn canonical_arc(annotation: &ArcAnnotation) -> Value {
         "mid": { "x": annotation.mid.x, "y": annotation.mid.y },
         "pageIndex": annotation.page_index,
         "start": { "x": annotation.start.x, "y": annotation.start.y },
-    })
+    });
+    if annotation.ellipse_geometry.is_some() {
+        let object = value
+            .as_object_mut()
+            .expect("canonical Arc JSON is an object");
+        object.insert("rect".into(), json!(annotation.rect()));
+        object.insert("angle1Degrees".into(), json!(annotation.angle1_degrees()));
+        object.insert("angle2Degrees".into(), json!(annotation.angle2_degrees()));
+    }
+    value
 }
 
 fn canonical_measurement_path(annotation: &MeasurementPathAnnotation) -> Value {
@@ -10154,7 +12440,7 @@ fn canonical_measurement_path(annotation: &MeasurementPathAnnotation) -> Value {
 }
 
 fn canonical_text_box(annotation: &TextBoxAnnotation) -> Value {
-    json!({
+    let mut value = json!({
         "content": annotation.content,
         "id": annotation.id.as_str(),
         "kind": "textBox",
@@ -10177,7 +12463,36 @@ fn canonical_text_box(annotation: &TextBoxAnnotation) -> Value {
             "opacity": annotation.style.opacity,
             "weight": annotation.style.weight,
         },
-    })
+    });
+    if annotation.rotation_degrees != 0.0 {
+        value["rotation"] = json!(annotation.rotation_degrees);
+    }
+    if !annotation.rich_text_runs.is_empty() {
+        value["richTextRuns"] = Value::Array(
+            annotation
+                .rich_text_runs
+                .iter()
+                .map(|run| {
+                    let mut value = Map::from_iter([
+                        ("bold".into(), Value::Bool(run.bold)),
+                        ("italic".into(), Value::Bool(run.italic)),
+                        ("text".into(), Value::String(run.text.clone())),
+                    ]);
+                    if let Some(font_family) = &run.font_family {
+                        value.insert("fontFamily".into(), Value::String(font_family.clone()));
+                    }
+                    if let Some(color) = &run.color {
+                        value.insert("color".into(), Value::String(color.clone()));
+                    }
+                    if let Some(font_size_pt) = run.font_size_pt {
+                        value.insert("fontSizePt".into(), json!(font_size_pt));
+                    }
+                    Value::Object(value)
+                })
+                .collect(),
+        );
+    }
+    value
 }
 
 fn canonical_length(annotation: &LengthAnnotation) -> Value {
@@ -10201,7 +12516,7 @@ fn canonical_length(annotation: &LengthAnnotation) -> Value {
 }
 
 fn canonical_image(annotation: &ImageAnnotation) -> Value {
-    json!({
+    let mut value = json!({
         "aspectLocked": annotation.aspect_locked,
         "asset": {
             "heightPx": annotation.asset.height_px,
@@ -10217,7 +12532,11 @@ fn canonical_image(annotation: &ImageAnnotation) -> Value {
             "x": annotation.rect.x,
             "y": annotation.rect.y,
         },
-    })
+    });
+    if annotation.rotation_degrees != 0.0 {
+        value["rotation"] = json!(annotation.rotation_degrees);
+    }
+    value
 }
 
 fn canonical_snapshot(annotation: &SnapshotAnnotation) -> Value {
@@ -10282,6 +12601,91 @@ mod tests {
         MarkupId::new(value).unwrap()
     }
 
+    #[test]
+    fn elliptical_arc_geometry_translates_reshapes_and_recovers_without_circularising() {
+        let rect = PdfRect::new(10., 20., 220., 110.).unwrap();
+        let arc = ArcAnnotation::from_rect_angles(
+            id("ellipse-arc"),
+            3,
+            rect,
+            0.,
+            180.,
+            RectangleAppearance::default(),
+        )
+        .unwrap();
+        assert_eq!(arc.start, point(230., 75.));
+        assert_eq!(arc.mid, point(120., 130.));
+        assert_eq!(arc.end, point(10., 75.));
+        assert_eq!(arc.sampled_path(2), vec![arc.start, arc.mid, arc.end]);
+
+        let translated = arc.translated(15., -5.).unwrap();
+        assert_eq!(
+            translated.rect(),
+            PdfRect::new(25., 15., 220., 110.).unwrap()
+        );
+        assert_eq!(translated.angle1_degrees(), 0.);
+        assert_eq!(translated.angle2_degrees(), 180.);
+
+        let reshaped = arc
+            .with_control_point(ArcControlPoint::Mid, point(120., 145.))
+            .unwrap();
+        assert!((reshaped.rect().width / reshaped.rect().height - 2.).abs() < 1e-9);
+        assert_ne!(reshaped.rect(), arc.rect());
+
+        let mut document = AnnotationDocument::with_history_limit(4).unwrap();
+        document
+            .insert_annotations(vec![Annotation::Arc(arc.clone())])
+            .unwrap();
+        let encoded = document.encode_recovery_timeline().unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&encoded).unwrap()["schema_version"],
+            RECOVERY_TIMELINE_SCHEMA_VERSION
+        );
+        let recovered = AnnotationDocument::hydrate_recovery_timeline(&encoded).unwrap();
+        assert!(recovered.arcs()[0].same_persisted_state_as(&arc));
+
+        let mut malformed = serde_json::from_slice::<Value>(&encoded).unwrap();
+        malformed["current"]["arcs"][0]["ellipse_geometry"]["rect"]["width"] = json!(0.0);
+        assert!(
+            AnnotationDocument::hydrate_recovery_timeline(&serde_json::to_vec(&malformed).unwrap())
+                .is_err()
+        );
+
+        let legacy_circle = ArcAnnotation::new(
+            id("legacy-circle-arc"),
+            0,
+            point(0., 0.),
+            point(20., 0.),
+            point(10., 8.),
+            RectangleAppearance::default(),
+        )
+        .unwrap();
+        let mut legacy_document = AnnotationDocument::with_history_limit(4).unwrap();
+        legacy_document
+            .insert_annotations(vec![Annotation::Arc(legacy_circle.clone())])
+            .unwrap();
+        let mut legacy =
+            serde_json::from_slice::<Value>(&legacy_document.encode_recovery_timeline().unwrap())
+                .unwrap();
+        legacy["schema_version"] = json!(1);
+        let legacy_recovered =
+            AnnotationDocument::hydrate_recovery_timeline(&serde_json::to_vec(&legacy).unwrap())
+                .unwrap();
+        assert!(legacy_recovered.arcs()[0].same_persisted_state_as(&legacy_circle));
+
+        assert!(
+            ArcAnnotation::from_rect_angles(
+                id("invalid-ellipse-arc"),
+                0,
+                rect,
+                f64::NAN,
+                180.,
+                RectangleAppearance::default(),
+            )
+            .is_err()
+        );
+    }
+
     fn create_rectangle(document: &mut AnnotationDocument, markup_id: &str) {
         document
             .begin_create(
@@ -10297,6 +12701,605 @@ mod tests {
             document.commit_gesture(7).unwrap(),
             CommitOutcome::Created(id(markup_id))
         );
+    }
+
+    fn recovery_document_with_future_only_assets() -> AnnotationDocument {
+        let asset = DecodedRgbaAsset::new(2, 1, vec![1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        let mut image = ImageAnnotation::new_with_opacity(
+            id("recovery:image:雪"),
+            2,
+            PdfRect::new(10., 20., 30., 15.).unwrap(),
+            asset.clone(),
+            true,
+            0.35,
+        )
+        .unwrap()
+        .with_rotation_degrees(450.)
+        .unwrap();
+        image.locked = true;
+        let snapshot = SnapshotAnnotation::new(
+            id("recovery:snapshot:é"),
+            3,
+            PdfRect::new(50., 60., 70., 80.).unwrap(),
+            asset,
+            0.625,
+        )
+        .unwrap()
+        .with_rotation_degrees(-30.)
+        .unwrap()
+        .with_locked(true);
+        let mut document = AnnotationDocument::with_history_limit(7).unwrap();
+        document
+            .insert_annotations(vec![
+                Annotation::Image(image),
+                Annotation::Snapshot(snapshot),
+            ])
+            .unwrap();
+        assert!(matches!(
+            document
+                .apply_command(AnnotationCommand::MarkSaved)
+                .unwrap(),
+            CommandOutcome::Saved { revision: 1 }
+        ));
+        document.commit_state_change(|state| {
+            state.annotation_order.clear();
+            state.images.clear();
+            state.snapshots.clear();
+        });
+        assert_eq!(document.state.revision, 2);
+        assert!(document.undo().unwrap());
+        assert!(document.undo().unwrap());
+        assert!(document.images().is_empty());
+        assert!(document.snapshots().is_empty());
+        assert_eq!(document.history_depths(), (0, 2));
+        document
+    }
+
+    #[test]
+    fn recovery_timeline_round_trips_exact_history_assets_and_revision_semantics() {
+        let document = recovery_document_with_future_only_assets();
+        let encoded = document.encode_recovery_timeline().unwrap();
+        assert!(encoded.len() <= MAX_RECOVERY_TIMELINE_BYTES);
+        let wire: RecoveryTimelineWire = serde_json::from_slice(&encoded).unwrap();
+        assert!(serialize_recovery_wire(&wire, encoded.len() - 1).is_err());
+        let boundary_encoded = serialize_recovery_wire(&wire, encoded.len()).unwrap();
+        assert_eq!(boundary_encoded, encoded);
+        AnnotationDocument::hydrate_recovery_timeline(&boundary_encoded).unwrap();
+        let encoded_json: Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(
+            encoded_json["schema_version"],
+            RECOVERY_TIMELINE_SCHEMA_VERSION
+        );
+        assert_eq!(encoded_json["history_limit"], 7);
+        assert_eq!(encoded_json["assets"].as_array().unwrap().len(), 1);
+        assert!(
+            !encoded
+                .windows(8)
+                .any(|window| window == [1, 2, 3, 4, 5, 6, 7, 8])
+        );
+
+        let mut hydrated = AnnotationDocument::hydrate_recovery_timeline(&encoded).unwrap();
+        assert_eq!(hydrated.history_depths(), (0, 2));
+        assert_eq!(hydrated.saved_revision, 1);
+        assert_eq!(hydrated.next_revision, 3);
+        assert!(hydrated.snapshot().dirty);
+        assert!(hydrated.selected_ids.is_empty());
+        assert!(hydrated.focused_id.is_none());
+        assert!(hydrated.active_gesture.is_none());
+        assert_eq!(
+            hydrated.recovery_markup_ids(),
+            BTreeSet::from([id("recovery:image:雪"), id("recovery:snapshot:é")])
+        );
+
+        assert!(hydrated.redo().unwrap());
+        assert_eq!(hydrated.snapshot().revision, 1);
+        assert!(!hydrated.snapshot().dirty);
+        assert_eq!(hydrated.images()[0].rotation_degrees(), 90.);
+        assert_eq!(hydrated.images()[0].opacity(), 0.35);
+        assert!(hydrated.images()[0].aspect_locked);
+        assert!(hydrated.images()[0].locked);
+        assert_eq!(
+            hydrated.images()[0].asset().rgba(),
+            &[1, 2, 3, 4, 5, 6, 7, 8]
+        );
+        assert_eq!(hydrated.snapshots()[0].rotation_degrees(), 330.);
+        assert_eq!(hydrated.snapshots()[0].opacity(), 0.625);
+        assert!(hydrated.snapshots()[0].locked);
+        assert_eq!(
+            hydrated.snapshots()[0].asset().rgba(),
+            &[1, 2, 3, 4, 5, 6, 7, 8]
+        );
+        assert!(Arc::ptr_eq(
+            &hydrated.images()[0].asset.rgba,
+            &hydrated.snapshots()[0].asset.rgba
+        ));
+        assert!(hydrated.redo().unwrap());
+        assert_eq!(hydrated.snapshot().revision, 2);
+        assert!(hydrated.snapshot().dirty);
+        assert!(hydrated.images().is_empty());
+        assert!(hydrated.undo().unwrap());
+        assert_eq!(hydrated.images().len(), 1);
+    }
+
+    #[test]
+    fn recovery_timeline_rebuilds_spatial_index_and_excludes_selection_and_preview() {
+        let mut document = AnnotationDocument::default();
+        create_rectangle(&mut document, "recovery:rectangle");
+        assert!(document.select(&id("recovery:rectangle")));
+        document
+            .begin_create(
+                99,
+                id("recovery:preview"),
+                0,
+                point(300., 300.),
+                RectangleAppearance::default(),
+            )
+            .unwrap();
+        document.update_gesture(99, point(360., 360.)).unwrap();
+
+        let encoded = document.encode_recovery_timeline().unwrap();
+        let hydrated = AnnotationDocument::hydrate_recovery_timeline(&encoded).unwrap();
+        assert_eq!(hydrated.rectangles().len(), 1);
+        assert_eq!(hydrated.rectangles()[0].id, id("recovery:rectangle"));
+        assert!(hydrated.selected_ids.is_empty());
+        assert!(hydrated.active_gesture.is_none());
+        assert_eq!(
+            hydrated
+                .spatial_query_work(0, point(50., 40.), 1.)
+                .unwrap()
+                .candidate_count,
+            1
+        );
+        let mut huge_geometry: Value = serde_json::from_slice(&encoded).unwrap();
+        huge_geometry["current"]["rectangles"][0]["rect"]["width"] = json!(1.0e100);
+        assert!(
+            AnnotationDocument::hydrate_recovery_timeline(
+                &serde_json::to_vec(&huge_geometry).unwrap()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn recovery_timeline_accepts_constructor_canonical_calibration_ratio() {
+        let calibration = LengthCalibration::from_scale(
+            65.395_838_068_188_72,
+            590.682_577_254_596_5,
+            "m",
+            6,
+            true,
+        )
+        .unwrap();
+        assert_ne!(
+            calibration.units_per_point,
+            canonical_float(calibration.real_world_value / calibration.paper_points)
+        );
+        let length = LengthAnnotation::new(
+            id("recovery:nontrivial-calibration"),
+            0,
+            point(0., 0.),
+            point(100., 0.),
+            calibration.clone(),
+        )
+        .unwrap();
+        let mut document = AnnotationDocument::default();
+        document
+            .load_imported_annotations(vec![Annotation::Length(length)], Vec::new())
+            .unwrap();
+        let encoded = document.encode_recovery_timeline().unwrap();
+        let hydrated = AnnotationDocument::hydrate_recovery_timeline(&encoded).unwrap();
+        assert_eq!(hydrated.lengths()[0].calibration, calibration);
+
+        let mut corrupt: Value = serde_json::from_slice(&encoded).unwrap();
+        corrupt["current"]["lengths"][0]["calibration"]["units_per_point"] = json!(123.0);
+        assert!(
+            AnnotationDocument::hydrate_recovery_timeline(&serde_json::to_vec(&corrupt).unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn recovery_timeline_round_trips_every_annotation_family_and_private_state() {
+        let rectangle_appearance = RectangleAppearance::new("#123456", 2.5, Some("#abcdef"), 0.75)
+            .unwrap()
+            .with_fill_opacity(0.25)
+            .unwrap()
+            .with_stroke_style(StrokeStyle::Dashed);
+        let line_appearance =
+            StraightLineAppearance::new("#123456", 2.5, 0.75, StrokeStyle::Dashed).unwrap();
+        let text_style = TextBoxStyle::new("Arimo", 13., "#654321", 0.75)
+            .unwrap()
+            .with_weight_and_alignment(650, TextAlignment::Center)
+            .unwrap()
+            .with_layout_metrics(17., 2.)
+            .unwrap();
+        let calibration = LengthCalibration::from_scale(72., 3., "m", 3, false)
+            .unwrap()
+            .with_label("Échelle 雪")
+            .unwrap();
+        let page_calibration = calibration.clone();
+        let asset = DecodedRgbaAsset::new(1, 1, vec![9, 8, 7, 6]).unwrap();
+        let redact_appearance = RectangleAppearance::new("#ff0000", 1., Some("#000000"), 0.35)
+            .unwrap()
+            .with_fill_opacity(0.35)
+            .unwrap();
+        let cloud_appearance = RectangleAppearance::new("#123456", 2.5, None::<String>, 0.75)
+            .unwrap()
+            .with_stroke_style(StrokeStyle::Dashed);
+        let cloud_plus_appearance = CloudPlusAppearance::new(
+            cloud_appearance.clone(),
+            line_appearance.clone(),
+            text_style.clone(),
+        )
+        .unwrap();
+        let callout_appearance =
+            CalloutAppearance::new(line_appearance.clone(), text_style.clone()).unwrap();
+        let dimension_appearance =
+            DimensionAppearance::new(line_appearance.clone(), text_style.clone()).unwrap();
+        let annotations = vec![
+            Annotation::Rectangle(RectangleAnnotation {
+                id: id("family:rectangle"),
+                page_index: 0,
+                rect: PdfRect::new(1., 2., 30., 20.).unwrap(),
+                rotation_degrees: 15.,
+                appearance: rectangle_appearance.clone(),
+                locked: true,
+            }),
+            Annotation::Redact(
+                RedactAnnotation::new(
+                    id("family:redact"),
+                    0,
+                    PdfRect::new(2., 3., 30., 20.).unwrap(),
+                    "#010203",
+                    Some("秘密"),
+                    redact_appearance,
+                )
+                .unwrap(),
+            ),
+            Annotation::Ellipse(
+                EllipseAnnotation::new(
+                    id("family:ellipse"),
+                    0,
+                    PdfRect::new(3., 4., 30., 20.).unwrap(),
+                    rectangle_appearance.clone(),
+                )
+                .unwrap(),
+            ),
+            Annotation::Arc(
+                ArcAnnotation::new(
+                    id("family:arc"),
+                    0,
+                    point(0., 0.),
+                    point(20., 0.),
+                    point(10., 8.),
+                    rectangle_appearance.clone(),
+                )
+                .unwrap(),
+            ),
+            Annotation::StraightLine(
+                StraightLineAnnotation::new(
+                    id("family:line"),
+                    0,
+                    point(0., 0.),
+                    point(20., 5.),
+                    LineKind::Arrow,
+                    line_appearance.clone(),
+                )
+                .unwrap(),
+            ),
+            Annotation::VertexPath(
+                VertexPathAnnotation::new(
+                    id("family:polygon"),
+                    0,
+                    vec![point(0., 0.), point(20., 0.), point(10., 10.)],
+                    VertexPathKind::Polygon,
+                    rectangle_appearance.clone(),
+                )
+                .unwrap(),
+            ),
+            Annotation::Cloud(
+                CloudAnnotation::new(
+                    id("family:cloud"),
+                    0,
+                    vec![point(0., 0.), point(20., 0.), point(10., 10.)],
+                    2.5,
+                    cloud_appearance.clone(),
+                )
+                .unwrap(),
+            ),
+            Annotation::CloudPlus(
+                CloudPlusAnnotation::new(
+                    id("family:cloud-plus"),
+                    0,
+                    vec![point(0., 0.), point(20., 0.), point(10., 10.)],
+                    2.,
+                    vec![point(20., 5.), point(28., 8.), point(35., 5.)],
+                    PdfRect::new(35., 0., 40., 20.).unwrap(),
+                    "Nuage 雪",
+                    cloud_plus_appearance,
+                )
+                .unwrap()
+                .with_cloud_appearance_path(Some(vec![
+                    CloudAppearancePathCommand::MoveTo(point(0., 0.)),
+                    CloudAppearancePathCommand::LineTo(point(20., 0.)),
+                    CloudAppearancePathCommand::LineTo(point(10., 10.)),
+                    CloudAppearancePathCommand::Close,
+                ]))
+                .unwrap(),
+            ),
+            Annotation::Callout(
+                CalloutAnnotation::new(
+                    id("family:callout"),
+                    0,
+                    vec![point(0., 0.), point(20., 10.)],
+                    PdfRect::new(20., 5., 40., 20.).unwrap(),
+                    "Appel é",
+                    callout_appearance,
+                )
+                .unwrap(),
+            ),
+            Annotation::MeasurementPath(
+                MeasurementPathAnnotation::new_with_text_style(
+                    id("family:area"),
+                    0,
+                    vec![point(0., 0.), point(20., 0.), point(10., 10.)],
+                    MeasurementPathKind::Area,
+                    calibration.clone(),
+                    rectangle_appearance.clone(),
+                    text_style.clone(),
+                )
+                .unwrap(),
+            ),
+            Annotation::Pen(
+                PenAnnotation::new_paths(
+                    id("family:pen"),
+                    0,
+                    vec![
+                        vec![point(0., 0.), point(1., 1.)],
+                        vec![point(2., 2.), point(3., 4.)],
+                    ],
+                    PenAppearance::new("#123456", 3., 0.5).unwrap(),
+                    false,
+                )
+                .unwrap(),
+            ),
+            Annotation::TextBox(
+                TextBoxAnnotation::new(
+                    id("family:text"),
+                    0,
+                    PdfRect::new(1., 2., 50., 25.).unwrap(),
+                    "Unicode 雪 é",
+                    text_style.clone(),
+                )
+                .unwrap()
+                .with_rotation_degrees(270.)
+                .unwrap(),
+            ),
+            Annotation::Dimension(
+                DimensionAnnotation::new(
+                    id("family:dimension"),
+                    0,
+                    point(0., 0.),
+                    point(30., 0.),
+                    -12.,
+                    "30 m",
+                    dimension_appearance.clone(),
+                )
+                .unwrap(),
+            ),
+            Annotation::Length(
+                LengthAnnotation::new_with_appearance(
+                    id("family:length"),
+                    0,
+                    point(0., 0.),
+                    point(30., 5.),
+                    calibration,
+                    dimension_appearance,
+                )
+                .unwrap(),
+            ),
+            Annotation::Image(
+                ImageAnnotation::new_with_opacity(
+                    id("family:image"),
+                    0,
+                    PdfRect::new(1., 1., 10., 10.).unwrap(),
+                    asset.clone(),
+                    true,
+                    0.4,
+                )
+                .unwrap()
+                .with_rotation_degrees(90.)
+                .unwrap(),
+            ),
+            Annotation::Snapshot(
+                SnapshotAnnotation::new(
+                    id("family:snapshot"),
+                    0,
+                    PdfRect::new(2., 2., 12., 12.).unwrap(),
+                    asset,
+                    0.6,
+                )
+                .unwrap()
+                .with_rotation_degrees(180.)
+                .unwrap(),
+            ),
+        ];
+        let mut document = AnnotationDocument::default();
+        document
+            .load_imported_annotations(annotations, Vec::new())
+            .unwrap();
+        let page_scale = PageScale::from_factors(
+            0,
+            ScaleSource::Custom,
+            "Échelle 1:24",
+            ScaleUnit::In,
+            ScaleUnit::M,
+            page_calibration.scale_x,
+            page_calibration.scale_y,
+            page_calibration.scale_precision,
+        )
+        .unwrap();
+        document.state.page_scales.insert(0, page_scale);
+        document
+            .state
+            .page_length_calibrations
+            .insert(0, page_calibration);
+        document.state.scale_presets.push(ScalePreset {
+            id: "custom-雪".into(),
+            name: "Custom é".into(),
+            pdf_units: ScaleUnit::In,
+            real_units: ScaleUnit::M,
+            scale_x: 0.25,
+            scale_y: 0.5,
+            source: ScaleSource::Custom,
+            built_in: false,
+        });
+        document
+            .state
+            .page_rotations
+            .insert(0, PageRotation::Degrees270);
+        let encoded = document.encode_recovery_timeline().unwrap();
+        let hydrated = AnnotationDocument::hydrate_recovery_timeline(&encoded).unwrap();
+        assert_eq!(
+            hydrated.state.annotation_order,
+            document.state.annotation_order
+        );
+        assert_eq!(hydrated.state.rectangles, document.state.rectangles);
+        assert_eq!(hydrated.state.redacts, document.state.redacts);
+        assert_eq!(hydrated.state.ellipses, document.state.ellipses);
+        assert_eq!(hydrated.state.arcs, document.state.arcs);
+        assert_eq!(hydrated.state.straight_lines, document.state.straight_lines);
+        assert_eq!(hydrated.state.vertex_paths, document.state.vertex_paths);
+        assert_eq!(hydrated.state.clouds, document.state.clouds);
+        assert_eq!(hydrated.state.cloud_pluses, document.state.cloud_pluses);
+        assert_eq!(hydrated.state.callouts, document.state.callouts);
+        assert_eq!(
+            hydrated.state.measurement_paths,
+            document.state.measurement_paths
+        );
+        assert_eq!(hydrated.state.pens, document.state.pens);
+        assert_eq!(hydrated.state.text_boxes, document.state.text_boxes);
+        assert_eq!(hydrated.state.dimensions, document.state.dimensions);
+        assert_eq!(hydrated.state.lengths, document.state.lengths);
+        assert_eq!(hydrated.state.images, document.state.images);
+        assert_eq!(hydrated.state.snapshots, document.state.snapshots);
+        assert_eq!(hydrated.state.page_scales, document.state.page_scales);
+        assert_eq!(hydrated.state.scale_presets, document.state.scale_presets);
+        assert_eq!(
+            hydrated.state.page_length_calibrations,
+            document.state.page_length_calibrations
+        );
+        assert_eq!(hydrated.state.page_rotations, document.state.page_rotations);
+
+        let mut malformed_path: Value = serde_json::from_slice(&encoded).unwrap();
+        malformed_path["current"]["cloud_pluses"][0]["cloud_appearance_path"] = json!([]);
+        assert!(
+            AnnotationDocument::hydrate_recovery_timeline(
+                &serde_json::to_vec(&malformed_path).unwrap()
+            )
+            .is_err()
+        );
+        let mut malformed_style: Value = serde_json::from_slice(&encoded).unwrap();
+        malformed_style["current"]["text_boxes"][0]["style"]["opacity"] = json!(2.0);
+        assert!(
+            AnnotationDocument::hydrate_recovery_timeline(
+                &serde_json::to_vec(&malformed_style).unwrap()
+            )
+            .is_err()
+        );
+        let mut malformed_preset: Value = serde_json::from_slice(&encoded).unwrap();
+        malformed_preset["current"]["scale_presets"][0]["scale_x"] = json!(-1.0);
+        assert!(
+            AnnotationDocument::hydrate_recovery_timeline(
+                &serde_json::to_vec(&malformed_preset).unwrap()
+            )
+            .is_err()
+        );
+        let mut mismatched_calibration: Value = serde_json::from_slice(&encoded).unwrap();
+        let calibration = mismatched_calibration["current"]["page_length_calibrations"]["0"].take();
+        mismatched_calibration["current"]["page_length_calibrations"]["1"] = calibration;
+        assert!(
+            AnnotationDocument::hydrate_recovery_timeline(
+                &serde_json::to_vec(&mismatched_calibration).unwrap()
+            )
+            .is_err()
+        );
+        let mut malformed_rotation: Value = serde_json::from_slice(&encoded).unwrap();
+        malformed_rotation["current"]["page_rotations"]["0"] = json!("Degrees45");
+        assert!(
+            AnnotationDocument::hydrate_recovery_timeline(
+                &serde_json::to_vec(&malformed_rotation).unwrap()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn recovery_timeline_rejects_unknown_versions_fields_hashes_dimensions_and_order() {
+        let encoded = recovery_document_with_future_only_assets()
+            .encode_recovery_timeline()
+            .unwrap();
+        let original: Value = serde_json::from_slice(&encoded).unwrap();
+        let rejects = |mutate: fn(&mut Value)| {
+            let mut value = original.clone();
+            mutate(&mut value);
+            match AnnotationDocument::hydrate_recovery_timeline(
+                &serde_json::to_vec(&value).unwrap(),
+            ) {
+                Ok(_) => panic!("malformed recovery timeline was accepted"),
+                Err(error) => error,
+            }
+        };
+
+        assert!(matches!(
+            rejects(|value| value["schema_version"] = json!(99)),
+            AnnotationError::InvalidRecoveryTimeline(_)
+        ));
+        assert!(matches!(
+            rejects(|value| value["history_limit"] = json!(MAX_RECOVERY_HISTORY_STATES + 1)),
+            AnnotationError::InvalidRecoveryTimeline(_)
+        ));
+        assert!(matches!(
+            rejects(|value| {
+                let next = value["next_revision"].clone();
+                value["saved_revision"] = next;
+            }),
+            AnnotationError::InvalidRecoveryTimeline(_)
+        ));
+        assert!(matches!(
+            rejects(|value| value["next_revision"] = json!(u64::MAX)),
+            AnnotationError::InvalidRecoveryTimeline(_)
+        ));
+        assert!(matches!(
+            rejects(|value| value["unexpected"] = json!(true)),
+            AnnotationError::InvalidRecoveryTimeline(_)
+        ));
+        assert!(matches!(
+            rejects(|value| value["future"][1]["unexpected"] = json!(true)),
+            AnnotationError::InvalidRecoveryTimeline(_)
+        ));
+        assert!(matches!(
+            rejects(|value| value["assets"][0]["id"] = json!("00")),
+            AnnotationError::InvalidRecoveryTimeline(_)
+        ));
+        assert!(matches!(
+            rejects(|value| value["assets"][0]["width_px"] = json!(0)),
+            AnnotationError::InvalidRecoveryTimeline(_)
+        ));
+        assert!(matches!(
+            rejects(|value| {
+                value["future"][1]["annotation_order"] =
+                    json!(["recovery:image:雪", "recovery:image:雪"])
+            }),
+            AnnotationError::InvalidRecoveryTimeline(_)
+        ));
+        assert!(matches!(
+            rejects(|value| {
+                let duplicate = value["assets"][0].clone();
+                value["assets"].as_array_mut().unwrap().push(duplicate);
+            }),
+            AnnotationError::InvalidRecoveryTimeline(_)
+        ));
     }
 
     #[test]
@@ -10349,6 +13352,71 @@ mod tests {
             ..rounded
         };
         assert!(!expected.same_persisted_state_as(&materially_rotated));
+    }
+
+    #[test]
+    fn text_box_and_image_rotation_is_normalized_persisted_and_history_aware() {
+        let text_id = id("rotation:text-box");
+        let image_id = id("rotation:image");
+        let style = TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap();
+        let text = TextBoxAnnotation::new(
+            text_id.clone(),
+            0,
+            PdfRect::new(10., 20., 100., 40.).unwrap(),
+            "Rotated",
+            style,
+        )
+        .unwrap()
+        .with_rotation_degrees(-30.)
+        .unwrap();
+        let image = ImageAnnotation::new(
+            image_id.clone(),
+            0,
+            PdfRect::new(50., 60., 40., 40.).unwrap(),
+            DecodedRgbaAsset::new(1, 1, vec![10, 20, 30, 255]).unwrap(),
+            true,
+        )
+        .unwrap()
+        .with_rotation_degrees(390.)
+        .unwrap();
+
+        assert_eq!(text.rotation_degrees(), 330.);
+        assert_eq!(image.rotation_degrees(), 30.);
+        assert!(text.clone().with_rotation_degrees(f64::NAN).is_err());
+        assert!(image.clone().with_rotation_degrees(f64::INFINITY).is_err());
+        assert!(!text.same_persisted_state_as(&text.clone().with_rotation_degrees(331.).unwrap()));
+        assert!(!image.same_persisted_state_as(&image.clone().with_rotation_degrees(31.).unwrap()));
+
+        let mut document = AnnotationDocument::default();
+        document
+            .load_imported_annotations(
+                vec![Annotation::TextBox(text), Annotation::Image(image)],
+                Vec::new(),
+            )
+            .unwrap();
+        assert_eq!(document.history_depths(), (0, 0));
+        assert_eq!(
+            document
+                .edit_annotation(&text_id, AnnotationEdit::SetTextBoxRotation(690.))
+                .unwrap(),
+            (AnnotationKind::TextBox, false)
+        );
+        assert_eq!(document.history_depths(), (0, 0));
+        assert_eq!(
+            document
+                .edit_annotation(&image_id, AnnotationEdit::SetImageRotation(-45.))
+                .unwrap(),
+            (AnnotationKind::Image, true)
+        );
+        assert_eq!(document.images()[0].rotation_degrees(), 315.);
+        assert_eq!(document.history_depths(), (1, 0));
+
+        document.state.images[0].locked = true;
+        assert_eq!(
+            document.edit_annotation(&image_id, AnnotationEdit::SetImageRotation(0.)),
+            Err(AnnotationError::LockedMarkup(image_id))
+        );
+        assert_eq!(document.history_depths(), (1, 0));
     }
 
     #[test]
@@ -11249,6 +14317,170 @@ mod tests {
     }
 
     #[test]
+    fn ordered_scene_preserves_cross_family_page_and_thumbnail_order() {
+        let mut document = AnnotationDocument::default();
+        let pen = |name: &str, page| {
+            Annotation::Pen(
+                PenAnnotation::new(
+                    id(name),
+                    page,
+                    vec![point(150., 150.), point(180., 180.)],
+                    PenAppearance::new("#000000", 1., 1.).unwrap(),
+                )
+                .unwrap(),
+            )
+        };
+        let rectangle = Annotation::Rectangle(RectangleAnnotation {
+            id: id("middle"),
+            page_index: 0,
+            rect: PdfRect::new(10., 20., 100., 50.).unwrap(),
+            rotation_degrees: 0.,
+            appearance: RectangleAppearance::default(),
+            locked: false,
+        });
+        document
+            .load_imported_annotations(
+                vec![
+                    pen("bottom", 0),
+                    pen("other-page", 1),
+                    rectangle,
+                    pen("top", 0),
+                ],
+                vec![],
+            )
+            .unwrap();
+        let before = document.snapshot();
+        for scene in [document.document_scene(0), document.thumbnail_scene(0)] {
+            assert_eq!(
+                scene.annotation_order,
+                vec![id("bottom"), id("middle"), id("top")]
+            );
+            let ordered: Vec<_> = scene.into_ordered_annotations().collect();
+            assert_eq!(
+                ordered
+                    .iter()
+                    .map(|item| item.id().as_str())
+                    .collect::<Vec<_>>(),
+                vec!["bottom", "middle", "top"]
+            );
+            assert!(matches!(ordered[0], SceneAnnotation::Pen(_)));
+            assert!(matches!(ordered[1], SceneAnnotation::Rectangle(_)));
+            assert!(matches!(ordered[2], SceneAnnotation::Pen(_)));
+        }
+        assert_eq!(
+            document
+                .document_scene(1)
+                .into_ordered_annotations()
+                .map(|item| item.id().clone())
+                .collect::<Vec<_>>(),
+            vec![id("other-page")]
+        );
+        let mut duplicate_order = document.document_scene(0);
+        duplicate_order.annotation_order.push(id("bottom"));
+        assert_eq!(duplicate_order.into_ordered_annotations().count(), 3);
+        assert_eq!(document.snapshot(), before);
+    }
+
+    #[test]
+    fn select_all_is_page_scoped_ordered_and_includes_locked_annotations() {
+        let rectangle = |name: &str, page_index, locked| {
+            Annotation::Rectangle(RectangleAnnotation {
+                id: id(name),
+                page_index,
+                rect: PdfRect::new(10., 20., 100., 50.).unwrap(),
+                rotation_degrees: 0.,
+                appearance: RectangleAppearance::default(),
+                locked,
+            })
+        };
+        let mut document = AnnotationDocument::default();
+        document
+            .load_imported_annotations(
+                vec![
+                    rectangle("page-zero-first", 0, false),
+                    rectangle("page-one", 1, false),
+                    rectangle("page-zero-locked", 0, true),
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            document.select_all_on_page(0),
+            &[id("page-zero-first"), id("page-zero-locked")],
+        );
+        assert_eq!(document.focused_id(), Some(&id("page-zero-locked")));
+
+        assert_eq!(document.select_all_on_page(1), &[id("page-one")]);
+        assert_eq!(document.focused_id(), Some(&id("page-one")));
+    }
+
+    #[test]
+    fn ordered_scene_replaces_preview_in_place_and_appends_new_draft() {
+        let mut document = AnnotationDocument::default();
+        create_rectangle(&mut document, "existing");
+        document
+            .insert_annotations(vec![Annotation::Pen(
+                PenAnnotation::new(
+                    id("top-pen"),
+                    0,
+                    vec![point(150., 150.), point(180., 180.)],
+                    PenAppearance::new("#000000", 1., 1.).unwrap(),
+                )
+                .unwrap(),
+            )])
+            .unwrap();
+        let mut before = document.snapshot();
+        // Pointer-down deliberately selects the existing rectangle.
+        before.selected_id = Some(id("existing"));
+        document.begin_move(55, 0, point(10., 40.), 2.).unwrap();
+        document.update_gesture(55, point(30., 60.)).unwrap();
+        let ordered: Vec<_> = document
+            .document_scene(0)
+            .into_ordered_annotations()
+            .collect();
+        assert!(matches!(&ordered[0], SceneAnnotation::Rectangle(value)
+            if value.id == id("existing") && value.preview && value.rect.x == 30.));
+        assert_eq!(ordered[1].id(), &id("top-pen"));
+        assert_eq!(
+            document
+                .thumbnail_scene(0)
+                .into_ordered_annotations()
+                .next()
+                .unwrap()
+                .id(),
+            &id("existing")
+        );
+        document.cancel_gesture(55).unwrap();
+        document
+            .begin_create(
+                56,
+                id("new-draft"),
+                0,
+                point(200., 200.),
+                RectangleAppearance::default(),
+            )
+            .unwrap();
+        document.update_gesture(56, point(220., 240.)).unwrap();
+        assert_eq!(
+            document
+                .document_scene(0)
+                .into_ordered_annotations()
+                .map(|item| item.id().clone())
+                .collect::<Vec<_>>(),
+            vec![id("existing"), id("top-pen"), id("new-draft")]
+        );
+        assert_eq!(
+            document
+                .thumbnail_scene(0)
+                .into_ordered_annotations()
+                .count(),
+            2
+        );
+        assert_eq!(document.snapshot(), before);
+    }
+
+    #[test]
     fn thumbnail_scene_projects_committed_page_geometry_without_editor_chrome() {
         let mut document = AnnotationDocument::default();
         create_rectangle(&mut document, "thumbnail");
@@ -11258,6 +14490,7 @@ mod tests {
         assert_eq!(
             document.thumbnail_scene(0),
             AnnotationScene {
+                annotation_order: vec![id("thumbnail")],
                 page_index: 0,
                 revision: 1,
                 rectangles: vec![SceneRectangle {
@@ -11268,6 +14501,7 @@ mod tests {
                     selected: false,
                     locked: false,
                     preview: false,
+                    feedback: SceneInteractionFeedback::Normal,
                 }],
                 redacts: vec![],
                 ellipses: vec![],
@@ -11382,6 +14616,31 @@ mod tests {
             .unwrap();
         let before = document.snapshot();
         let identity = |point: PdfPoint| SelectionPoint::new(point.x, point.y);
+
+        for operation in [
+            crate::selection_geometry::SelectionOperation::Replace,
+            crate::selection_geometry::SelectionOperation::Add,
+            crate::selection_geometry::SelectionOperation::Remove,
+        ] {
+            let mut preview = SelectionMarquee::armed_box(SelectionPoint::new(0., 0.), operation);
+            assert!(
+                document
+                    .marquee_candidates(0, &preview, identity)
+                    .is_empty()
+            );
+            preview.update(SelectionPoint::new(110., 70.));
+            let unchanged = document.snapshot();
+            assert_eq!(
+                document.marquee_candidates(0, &preview, identity),
+                vec![rectangle_id.clone(), line_id.clone()]
+            );
+            assert!(
+                document
+                    .marquee_candidates(1, &preview, identity)
+                    .is_empty()
+            );
+            assert_eq!(document.snapshot(), unchanged);
+        }
 
         let mut window = SelectionMarquee::armed_box(
             SelectionPoint::new(0., 0.),
@@ -11757,6 +15016,248 @@ mod tests {
     }
 
     #[test]
+    fn marquee_cloud_uses_control_path_instead_of_visible_scallops() {
+        use crate::selection_geometry::SelectionOperation;
+        let identity = |point: PdfPoint| SelectionPoint::new(point.x, point.y);
+        for intensity in [0.5, 2., 4.] {
+            let cloud = CloudAnnotation::new(
+                id("marquee:cloud"),
+                0,
+                vec![
+                    point(10., 10.),
+                    point(90., 10.),
+                    point(90., 70.),
+                    point(10., 70.),
+                ],
+                intensity,
+                RectangleAppearance::default(),
+            )
+            .unwrap();
+            assert!(
+                cloud.scallop_path().iter().any(|point| point.y > 70.01),
+                "fixture must have a visible lobe outside its control path"
+            );
+            let mut document = AnnotationDocument::default();
+            document
+                .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Cloud(
+                    cloud,
+                )))
+                .unwrap();
+            let before = document.snapshot();
+            for (start, end, expected) in [
+                ((10., 10.), (90., 70.), vec![id("marquee:cloud")]),
+                ((100., 80.), (0., 70.01), vec![]),
+            ] {
+                let mut marquee = SelectionMarquee::armed_box(
+                    SelectionPoint::new(start.0, start.1),
+                    SelectionOperation::Replace,
+                );
+                marquee.update(SelectionPoint::new(end.0, end.1));
+                let before_query = document.snapshot();
+                assert_eq!(
+                    document.marquee_candidates(0, &marquee, identity),
+                    expected,
+                    "cloud control-path query at intensity {intensity}"
+                );
+                assert_eq!(document.snapshot(), before_query);
+                assert_eq!(
+                    document.apply_marquee_selection(0, &marquee, identity),
+                    expected
+                );
+                let mut after = document.snapshot();
+                after.selected_id = before.selected_id.clone();
+                assert_eq!(after, before, "selection must not mutate model history");
+            }
+        }
+    }
+
+    #[test]
+    fn marquee_cloud_plus_keeps_control_path_leader_and_caption_as_one_group() {
+        use crate::selection_geometry::SelectionOperation;
+        let identity = |point: PdfPoint| SelectionPoint::new(point.x, point.y);
+        let cloud = CloudPlusAnnotation::new(
+            id("marquee:cloud-plus"),
+            0,
+            vec![
+                point(10., 10.),
+                point(90., 10.),
+                point(90., 70.),
+                point(10., 70.),
+            ],
+            2.,
+            vec![point(90., 40.), point(110., 50.), point(130., 50.)],
+            PdfRect::new(130., 40., 50., 20.).unwrap(),
+            "Cloud+",
+            CloudPlusAppearance::new(
+                RectangleAppearance::default(),
+                StraightLineAppearance::default_for(LineKind::Line),
+                TextBoxStyle::new("Helvetica", 12., "#000000", 1.).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(cloud.scallop_path().iter().any(|point| point.y > 70.01));
+        let mut document = AnnotationDocument::default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::CloudPlus(
+                cloud,
+            )))
+            .unwrap();
+        let before = document.snapshot();
+        for (label, start, end, hit) in [
+            (
+                "whole group inside tight control bounds",
+                (10., 10.),
+                (180., 70.),
+                true,
+            ),
+            (
+                "cloud alone is insufficient for window",
+                (10., 10.),
+                (90., 70.),
+                false,
+            ),
+            (
+                "caption interior alone does not cross its path",
+                (170., 55.),
+                (150., 45.),
+                false,
+            ),
+            ("caption-only crossing", (185., 55.), (175., 45.), true),
+            ("leader-only crossing", (122., 55.), (112., 45.), true),
+            (
+                "visible scallop alone is insufficient",
+                (100., 80.),
+                (0., 70.01),
+                false,
+            ),
+        ] {
+            let mut marquee = SelectionMarquee::armed_box(
+                SelectionPoint::new(start.0, start.1),
+                SelectionOperation::Replace,
+            );
+            marquee.update(SelectionPoint::new(end.0, end.1));
+            let expected = if hit {
+                vec![id("marquee:cloud-plus")]
+            } else {
+                vec![]
+            };
+            let before_query = document.snapshot();
+            assert_eq!(
+                document.marquee_candidates(0, &marquee, identity),
+                expected,
+                "{label}"
+            );
+            assert_eq!(document.snapshot(), before_query);
+            assert_eq!(
+                document.apply_marquee_selection(0, &marquee, identity),
+                expected,
+                "{label}"
+            );
+            let mut after = document.snapshot();
+            after.selected_id = before.selected_id.clone();
+            assert_eq!(after, before, "{label} must not mutate model history");
+        }
+    }
+
+    #[test]
+    fn marquee_dimension_uses_offset_and_overhang_path_without_baseline() {
+        use crate::selection_geometry::SelectionOperation;
+        // Ten CSS pixels per PDF point makes each small crossing box active.
+        let project = |point: PdfPoint| SelectionPoint::new(point.x * 10., point.y * 10.);
+        for (end, offset, normal) in [
+            (point(110., 10.), 20., (0., 1.)),
+            (point(110., 10.), -20., (0., 1.)),
+            (point(70., 90.), 20., (-0.8, 0.6)),
+            (point(70., 90.), -20., (-0.8, 0.6)),
+        ] {
+            let start = point(10., 10.);
+            let dimension = DimensionAnnotation::new(
+                id("marquee:dimension"),
+                0,
+                start,
+                end,
+                offset,
+                "Dimension",
+                DimensionAppearance::new(
+                    StraightLineAppearance::default_for(LineKind::Line),
+                    TextBoxStyle::new("Helvetica", 12., "#000000", 1.).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let (dimension_start, dimension_end) = dimension.dimension_line_points();
+            let sign = if offset >= 0. { 1. } else { -1. };
+            let baseline_midpoint = point((start.x + end.x) / 2., (start.y + end.y) / 2.);
+            let extension_midpoint = point(
+                dimension_start.x + normal.0 * sign * 2.,
+                dimension_start.y + normal.1 * sign * 2.,
+            );
+            let offset_quarter = point(
+                dimension_start.x * 0.75 + dimension_end.x * 0.25,
+                dimension_start.y * 0.75 + dimension_end.y * 0.25,
+            );
+            let annotation = Annotation::Dimension(dimension);
+            let mut document = AnnotationDocument::default();
+            document
+                .apply_command(AnnotationCommand::CreateAnnotation(annotation.clone()))
+                .unwrap();
+            let before = document.snapshot();
+            for (label, center, hit) in [
+                ("baseline alone", baseline_midpoint, false),
+                ("extension overhang", extension_midpoint, true),
+                ("offset line", offset_quarter, true),
+            ] {
+                let mut marquee = SelectionMarquee::armed_box(
+                    project(point(center.x + 0.5, center.y + 0.5)),
+                    SelectionOperation::Replace,
+                );
+                marquee.update(project(point(center.x - 0.5, center.y - 0.5)));
+                assert!(marquee.active);
+                let expected = if hit {
+                    vec![id("marquee:dimension")]
+                } else {
+                    vec![]
+                };
+                let before_query = document.snapshot();
+                assert_eq!(
+                    document.marquee_candidates(0, &marquee, project),
+                    expected,
+                    "{label}: end {end:?}, offset {offset}"
+                );
+                assert_eq!(document.snapshot(), before_query);
+                assert_eq!(
+                    document.apply_marquee_selection(0, &marquee, project),
+                    expected
+                );
+                let mut after = document.snapshot();
+                after.selected_id = before.selected_id.clone();
+                assert_eq!(after, before);
+            }
+            let paths = annotation_selection_paths(&annotation, &project);
+            let body_path = paths.first().expect("dimension body path");
+            let expected = [
+                point(
+                    dimension_start.x + normal.0 * sign * 4.,
+                    dimension_start.y + normal.1 * sign * 4.,
+                ),
+                dimension_start,
+                dimension_end,
+                point(
+                    dimension_end.x + normal.0 * sign * 4.,
+                    dimension_end.y + normal.1 * sign * 4.,
+                ),
+            ];
+            assert!(!body_path.closed);
+            assert_eq!(body_path.points.len(), expected.len());
+            for (actual, expected) in body_path.points.iter().zip(expected.map(project)) {
+                assert!((actual.x - expected.x).abs() < 0.000_001);
+                assert!((actual.y - expected.y).abs() < 0.000_001);
+            }
+        }
+    }
+
+    #[test]
     fn cloud_annotation_contract_preserves_intensity_identity_and_vertex_edits() {
         let cloud = CloudAnnotation::new(
             id("cloud:contract"),
@@ -11890,6 +15391,46 @@ mod tests {
         assert_eq!(snapshot.annotation_order, vec![id("callout:contract")]);
         assert_eq!(snapshot.revision, 3);
         assert_eq!(snapshot.undo_depth, 3);
+    }
+
+    #[test]
+    fn callout_text_box_resize_preserves_leader_order_and_attachment_side() {
+        let appearance = CalloutAppearance::new(
+            StraightLineAppearance::new("#ff0000", 1., 1., StrokeStyle::Solid).unwrap(),
+            TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+        )
+        .unwrap();
+        let make_callout = |connection| {
+            CalloutAnnotation::new(
+                id("callout:resize-side"),
+                0,
+                vec![point(20., 20.), point(60., 80.), connection],
+                PdfRect::new(100., 60., 100., 40.).unwrap(),
+                "Callout",
+                appearance.clone(),
+            )
+            .unwrap()
+        };
+        let next_box = PdfRect::new(120., 70., 140., 60.).unwrap();
+
+        let right = make_callout(point(200., 80.))
+            .resized_text_box(next_box)
+            .unwrap();
+        assert_eq!(
+            right.leader_points(),
+            &[point(20., 20.), point(60., 80.), point(260., 100.),]
+        );
+
+        let tie = make_callout(point(150., 80.))
+            .resized_text_box(next_box)
+            .unwrap();
+        assert_eq!(
+            tie.leader_points(),
+            &[point(20., 20.), point(60., 80.), point(120., 100.),]
+        );
+        assert_eq!(tie.text_box, next_box);
+        assert_eq!(tie.content(), "Callout");
+        assert_eq!(tie.appearance, appearance);
     }
 
     #[test]
@@ -12112,6 +15653,111 @@ mod tests {
     }
 
     #[test]
+    fn cloud_plus_custom_appearance_path_survives_non_shape_edits_and_translates_atomically() {
+        let id = id("cloud-plus:custom-path");
+        let appearance = CloudPlusAppearance::new(
+            RectangleAppearance::new("#ff0000", 1., None::<String>, 1.).unwrap(),
+            StraightLineAppearance::new("#ff0000", 1., 1., StrokeStyle::Solid).unwrap(),
+            TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+        )
+        .unwrap();
+        let custom_path = vec![
+            CloudAppearancePathCommand::MoveTo(point(8., 12.)),
+            CloudAppearancePathCommand::CubicTo {
+                control_1: point(25., 0.),
+                control_2: point(65., 0.),
+                end: point(92., 12.),
+            },
+            CloudAppearancePathCommand::LineTo(point(92., 72.)),
+            CloudAppearancePathCommand::LineTo(point(8., 72.)),
+            CloudAppearancePathCommand::Close,
+        ];
+        let annotation = CloudPlusAnnotation::new(
+            id.clone(),
+            0,
+            vec![
+                point(10., 10.),
+                point(90., 10.),
+                point(90., 70.),
+                point(10., 70.),
+            ],
+            2.,
+            vec![point(92., 40.), point(110., 60.), point(130., 60.)],
+            PdfRect::new(130., 38., 150., 44.).unwrap(),
+            "External",
+            appearance,
+        )
+        .unwrap()
+        .with_cloud_appearance_path(Some(custom_path.clone()))
+        .unwrap();
+        assert!(annotation.scallop_path().len() > custom_path.len());
+        let mut document = AnnotationDocument::default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::CloudPlus(
+                annotation,
+            )))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id: id.clone(),
+                edit: AnnotationEdit::SetCloudPlusContent("Edited caption".into()),
+            })
+            .unwrap();
+        assert_eq!(
+            document.cloud_plus(&id).unwrap().cloud_appearance_path(),
+            Some(custom_path.as_slice())
+        );
+        document
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id: id.clone(),
+                edit: AnnotationEdit::TranslateCloudPlusGroup {
+                    delta_x: 7.,
+                    delta_y: -3.,
+                },
+            })
+            .unwrap();
+        let translated = document
+            .cloud_plus(&id)
+            .unwrap()
+            .cloud_appearance_path()
+            .unwrap();
+        assert_eq!(
+            translated[0],
+            CloudAppearancePathCommand::MoveTo(point(15., 9.))
+        );
+        assert_eq!(
+            translated[1],
+            CloudAppearancePathCommand::CubicTo {
+                control_1: point(32., -3.),
+                control_2: point(72., -3.),
+                end: point(99., 9.),
+            }
+        );
+        document.undo().unwrap();
+        assert_eq!(
+            document.cloud_plus(&id).unwrap().cloud_appearance_path(),
+            Some(custom_path.as_slice())
+        );
+        document
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id: id.clone(),
+                edit: AnnotationEdit::SetCloudPlusCloudPoint {
+                    vertex_index: 1,
+                    point: point(100., 15.),
+                    leader_points: vec![point(100., 42.), point(115., 60.), point(130., 60.)],
+                },
+            })
+            .unwrap();
+        assert!(
+            document
+                .cloud_plus(&id)
+                .unwrap()
+                .cloud_appearance_path()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn many_preview_updates_commit_one_stable_semantic_result() {
         const SAMPLES: u32 = 360;
         let mut document = AnnotationDocument::default();
@@ -12198,6 +15844,199 @@ mod tests {
         document.delete_selected_unlocked().unwrap();
         assert_eq!(document.focused_id(), None);
         assert!(document.selected_ids().is_empty());
+    }
+
+    #[test]
+    fn text_box_rich_runs_are_bounded_canonical_and_backwards_compatible() {
+        let runs = vec![
+            TextBoxRichTextRun::new("Normal ").unwrap(),
+            TextBoxRichTextRun::new("bold")
+                .unwrap()
+                .with_font_family("Arimo")
+                .unwrap()
+                .with_emphasis(true, false)
+                .with_color("#0080FF")
+                .unwrap()
+                .with_font_size_pt(14.)
+                .unwrap(),
+        ];
+        let annotation = TextBoxAnnotation::new(
+            id("rich:model"),
+            0,
+            PdfRect::new(10., 20., 120., 40.).unwrap(),
+            "Normal bold",
+            TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+        )
+        .unwrap()
+        .with_rich_text_runs(runs)
+        .unwrap();
+
+        assert_eq!(annotation.rich_text_runs().len(), 2);
+        let styled = &annotation.rich_text_runs()[1];
+        assert_eq!(styled.text(), "bold");
+        assert_eq!(styled.font_family(), Some("Arimo"));
+        assert!(styled.bold());
+        assert!(!styled.italic());
+        assert_eq!(styled.color(), Some("#0080ff"));
+        assert_eq!(styled.font_size_pt(), Some(14.));
+        assert!(
+            TextBoxAnnotation::new(
+                id("rich:mismatch"),
+                0,
+                PdfRect::new(0., 0., 20., 20.).unwrap(),
+                "different",
+                TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+            )
+            .unwrap()
+            .with_rich_text_runs(annotation.rich_text_runs().to_vec())
+            .is_err()
+        );
+        assert!(TextBoxRichTextRun::new("").is_err());
+        assert!(
+            TextBoxRichTextRun::new("x")
+                .unwrap()
+                .with_font_family("x".repeat(MAX_FONT_FAMILY_BYTES + 1))
+                .is_err()
+        );
+        assert!(
+            TextBoxRichTextRun::new("x")
+                .unwrap()
+                .with_color("red")
+                .is_err()
+        );
+        assert!(
+            TextBoxRichTextRun::new("x")
+                .unwrap()
+                .with_font_size_pt(f64::NAN)
+                .is_err()
+        );
+
+        let mut legacy = serde_json::to_value(&annotation).unwrap();
+        legacy.as_object_mut().unwrap().remove("rich_text_runs");
+        let legacy: TextBoxAnnotation = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.rich_text_runs().is_empty());
+    }
+
+    #[test]
+    fn text_box_rich_runs_survive_copy_and_non_content_edits_but_content_clears_them() {
+        let text_id = id("rich:edit");
+        let text = TextBoxAnnotation::new(
+            text_id.clone(),
+            0,
+            PdfRect::new(10., 20., 120., 40.).unwrap(),
+            "bold italic",
+            TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+        )
+        .unwrap()
+        .with_rich_text_runs(vec![
+            TextBoxRichTextRun::new("bold ")
+                .unwrap()
+                .with_emphasis(true, false),
+            TextBoxRichTextRun::new("italic")
+                .unwrap()
+                .with_emphasis(false, true),
+        ])
+        .unwrap();
+        let translated = Annotation::TextBox(text.clone())
+            .translated_copy(id("rich:copy"), 1, 3., 4.)
+            .unwrap();
+        let Annotation::TextBox(translated) = translated else {
+            panic!("expected translated text box");
+        };
+        assert_eq!(translated.rich_text_runs(), text.rich_text_runs());
+
+        let mut document = AnnotationDocument::default();
+        document
+            .load_imported_annotations(vec![Annotation::TextBox(text)], Vec::new())
+            .unwrap();
+        assert_eq!(
+            document.document_scene(0).text_boxes[0]
+                .rich_text_runs
+                .len(),
+            2
+        );
+        assert_eq!(
+            document.thumbnail_scene(0).text_boxes[0]
+                .rich_text_runs
+                .len(),
+            2
+        );
+        document
+            .edit_annotation(
+                &text_id,
+                AnnotationEdit::SetTextBoxLayoutRect(PdfRect::new(20., 30., 120., 40.).unwrap()),
+            )
+            .unwrap();
+        assert_eq!(document.text_boxes()[0].rich_text_runs().len(), 2);
+        document
+            .edit_annotation(
+                &text_id,
+                AnnotationEdit::SetTextBoxStyle(
+                    TextBoxStyle::new("Arimo", 16., "#123456", 0.75).unwrap(),
+                ),
+            )
+            .unwrap();
+        assert_eq!(document.text_boxes()[0].rich_text_runs().len(), 2);
+        assert_eq!(
+            document
+                .edit_annotation(
+                    &text_id,
+                    AnnotationEdit::SetTextBoxContent("bold italic".into()),
+                )
+                .unwrap(),
+            (AnnotationKind::TextBox, true)
+        );
+        assert!(document.text_boxes()[0].rich_text_runs().is_empty());
+        assert!(document.undo().unwrap());
+        assert_eq!(document.text_boxes()[0].rich_text_runs().len(), 2);
+    }
+
+    #[test]
+    fn recovery_round_trips_rich_runs_and_rejects_invalid_run_state() {
+        let text = TextBoxAnnotation::new(
+            id("rich:recovery"),
+            0,
+            PdfRect::new(10., 20., 120., 40.).unwrap(),
+            "styled",
+            TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+        )
+        .unwrap()
+        .with_rich_text_runs(vec![
+            TextBoxRichTextRun::new("styled")
+                .unwrap()
+                .with_font_family("Tinos")
+                .unwrap()
+                .with_emphasis(true, true)
+                .with_color("#123456")
+                .unwrap()
+                .with_font_size_pt(18.)
+                .unwrap(),
+        ])
+        .unwrap();
+        let mut document = AnnotationDocument::default();
+        document
+            .load_imported_annotations(vec![Annotation::TextBox(text.clone())], Vec::new())
+            .unwrap();
+        let encoded = document.encode_recovery_timeline().unwrap();
+        let hydrated = AnnotationDocument::hydrate_recovery_timeline(&encoded).unwrap();
+        assert_eq!(hydrated.text_boxes()[0], text);
+
+        let mut malformed: Value = serde_json::from_slice(&encoded).unwrap();
+        malformed["current"]["text_boxes"][0]["rich_text_runs"][0]["text"] = json!("mismatch");
+        assert!(
+            AnnotationDocument::hydrate_recovery_timeline(&serde_json::to_vec(&malformed).unwrap())
+                .is_err()
+        );
+
+        let mut legacy: Value = serde_json::from_slice(&encoded).unwrap();
+        legacy["current"]["text_boxes"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("rich_text_runs");
+        let hydrated =
+            AnnotationDocument::hydrate_recovery_timeline(&serde_json::to_vec(&legacy).unwrap())
+                .unwrap();
+        assert!(hydrated.text_boxes()[0].rich_text_runs().is_empty());
     }
 
     #[test]

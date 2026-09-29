@@ -94,10 +94,7 @@ mod tests {
     #[test]
     fn hold_stashes_and_keyup_restores() {
         let (mut hold, now) = hold();
-        assert_eq!(
-            hold.key_down(now, false, false),
-            SpacePanDown::BeginHold
-        );
+        assert_eq!(hold.key_down(now, false, false), SpacePanDown::BeginHold);
         hold.set_stash(AnnotationTool::Line);
         assert_eq!(hold.stash, Some(AnnotationTool::Line));
         assert_eq!(hold.key_up(now), Some(AnnotationTool::Line));
@@ -164,10 +161,7 @@ mod tests {
     #[test]
     fn second_down_keeps_the_original_stash() {
         let (mut hold, now) = hold();
-        assert_eq!(
-            hold.key_down(now, false, false),
-            SpacePanDown::BeginHold
-        );
+        assert_eq!(hold.key_down(now, false, false), SpacePanDown::BeginHold);
         hold.set_stash(AnnotationTool::Arrow);
         // A duplicate keydown without an intervening keyup must not overwrite
         // the stash, matching the reference `stash === null` guard.
@@ -178,10 +172,7 @@ mod tests {
     #[test]
     fn explicit_tool_change_clears_the_stash() {
         let (mut hold, now) = hold();
-        assert_eq!(
-            hold.key_down(now, false, false),
-            SpacePanDown::BeginHold
-        );
+        assert_eq!(hold.key_down(now, false, false), SpacePanDown::BeginHold);
         hold.set_stash(AnnotationTool::Pen);
         hold.clear_stash();
         assert_eq!(hold.key_up(now), None);

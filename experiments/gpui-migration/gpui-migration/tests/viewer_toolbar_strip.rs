@@ -16,7 +16,8 @@ use butter_paper_gpui_migration::{
     },
     viewer_toolbar_strip::{
         FIT_BUTTON_GROUP_ID, FIT_PAGE_ID, FIT_WIDTH_ID, FitPreset, VIEWER_TOOLBAR_CONTENT_ID,
-        VIEWER_TOOLBAR_ID, VIEWER_TOOLBAR_SCROLL_ID, ViewerToolbarStrip,
+        VIEWER_TOOLBAR_FROZEN_CONTENT_WIDTH, VIEWER_TOOLBAR_ID, VIEWER_TOOLBAR_SCROLL_ID,
+        ViewerToolbarStrip,
     },
     zoom_control::{
         DEFAULT_VIEWER_ZOOM, MAX_VIEWER_ZOOM, MIN_VIEWER_ZOOM, ZOOM_GROUP_ID, ZOOM_IN_ID,
@@ -644,14 +645,20 @@ fn cad_toolbar_preserves_non_wrapping_targets_at_fixed_widths(cx: &mut TestAppCo
     set_width(cx, &entities.harness, MINIMUM_CENTER_STRIP_WIDTH);
     let minimum_toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
     let minimum_content = bounds(cx, VIEWER_TOOLBAR_CONTENT_ID);
-    assert_eq!(minimum_content.size.width, px(MINIMUM_CENTER_STRIP_WIDTH));
+    assert_eq!(
+        minimum_content.size.width,
+        px(VIEWER_TOOLBAR_FROZEN_CONTENT_WIDTH)
+    );
     let minimum_targets = cad_interactive_bounds(cx);
     assert_target_geometry_is_preserved(&normal_targets, &minimum_targets);
     for target in minimum_targets {
         assert_fully_inside(minimum_content, target);
     }
     assert_cad_target_order(&minimum_targets);
-    assert_fully_inside(minimum_toolbar, minimum_targets[10]);
+    assert!(
+        minimum_targets[10].right() > minimum_toolbar.right(),
+        "the 480 px viewport must exercise the frozen toolbar overflow contract"
+    );
 
     set_width(cx, &entities.harness, CONSTRAINED_OVERFLOW_WIDTH);
     let constrained_toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
@@ -717,7 +724,10 @@ fn toolbar_composition_preserves_targets_across_representative_widths(cx: &mut T
     let minimum_toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
     assert_eq!(minimum_toolbar.size.width, px(MINIMUM_CENTER_STRIP_WIDTH));
     let minimum_content = bounds(cx, VIEWER_TOOLBAR_CONTENT_ID);
-    assert_eq!(minimum_content.size.width, px(MINIMUM_CENTER_STRIP_WIDTH));
+    assert_eq!(
+        minimum_content.size.width,
+        px(VIEWER_TOOLBAR_FROZEN_CONTENT_WIDTH)
+    );
     let minimum_targets = interactive_bounds(cx);
     assert_target_geometry_is_preserved(&normal_targets, &minimum_targets);
     assert!(minimum_targets[0].right() <= minimum_targets[1].left());
@@ -728,7 +738,10 @@ fn toolbar_composition_preserves_targets_across_representative_widths(cx: &mut T
     assert!(minimum_targets[6].right() <= minimum_targets[8].left());
     assert_fully_inside(minimum_targets[6], minimum_targets[5]);
     assert_fully_inside(minimum_targets[8], minimum_targets[7]);
-    assert_fully_inside(minimum_toolbar, minimum_targets[8]);
+    assert!(
+        minimum_targets[8].right() > minimum_toolbar.right(),
+        "the 480 px viewport must exercise the frozen toolbar overflow contract"
+    );
 
     set_width(cx, &entities.harness, CONSTRAINED_OVERFLOW_WIDTH);
     let constrained_toolbar = bounds(cx, VIEWER_TOOLBAR_ID);

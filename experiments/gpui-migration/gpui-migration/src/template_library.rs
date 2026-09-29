@@ -28,9 +28,10 @@ pub const BUILT_IN_TEMPLATE_IDS: [&str; 6] = [
     "built-in-triangle",
 ];
 const INDEX_VERSION: u32 = 1;
-const INDEX_FILE: &str = "library.json";
-const SENTINEL_FILE: &str = ".butter-paper-template-library-v1";
-const SOURCE_FILE: &str = "source.pdf";
+pub(crate) const INDEX_FILE: &str = "library.json";
+pub(crate) const SENTINEL_FILE: &str = ".butter-paper-template-library-v1";
+pub(crate) const SENTINEL_BYTES: &[u8] = b"butter-paper-template-library-v1\n";
+pub(crate) const SOURCE_FILE: &str = "source.pdf";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, PartialEq)]
@@ -214,6 +215,17 @@ impl TemplateLibrary {
         created_at: &str,
         source: &Path,
     ) -> Result<&TemplateRecord, TemplateLibraryError> {
+        let bytes = fs::read(source)?;
+        self.import_pdf_bytes(id, name, created_at, &bytes)
+    }
+
+    pub(crate) fn import_pdf_bytes(
+        &mut self,
+        id: &str,
+        name: &str,
+        created_at: &str,
+        bytes: &[u8],
+    ) -> Result<&TemplateRecord, TemplateLibraryError> {
         validate_imported_id(id)?;
         self.ensure_unique(id)?;
         if created_at.trim().is_empty() {
@@ -221,8 +233,7 @@ impl TemplateLibrary {
                 "template creation time is required".into(),
             ));
         }
-        let bytes = fs::read(source)?;
-        let sha256 = digest(&bytes);
+        let sha256 = digest(bytes);
         let directory = self.root.join(id);
         fs::create_dir(&directory)?;
         let source_path = directory.join(SOURCE_FILE);
@@ -232,7 +243,7 @@ impl TemplateLibrary {
                 .write(true)
                 .create_new(true)
                 .open(&source_path)?;
-            file.write_all(&bytes)?;
+            file.write_all(bytes)?;
             file.sync_all()?;
             let session = PdfPersistenceSession::open(&source_path)?;
             let page_count = session.page_count();
@@ -401,6 +412,45 @@ impl TemplateLibrary {
         }
         result
     }
+}
+
+pub(crate) fn serialise_migration_index(
+    records: &[TemplateRecord],
+    last_template_id: &str,
+) -> Result<Vec<u8>, TemplateLibraryError> {
+    let mut ids = std::collections::BTreeSet::new();
+    for record in records {
+        if BUILT_IN_TEMPLATE_IDS.contains(&record.id()) || !ids.insert(record.id()) {
+            return Err(TemplateLibraryError(
+                "template library contains a duplicate identifier".into(),
+            ));
+        }
+        StoredRecord::from_record(record).into_record()?;
+    }
+    if !BUILT_IN_TEMPLATE_IDS.contains(&last_template_id) && !ids.contains(last_template_id) {
+        return Err(TemplateLibraryError(
+            "the selected template does not exist".into(),
+        ));
+    }
+    let stored = StoredIndex {
+        version: INDEX_VERSION,
+        records: records.iter().map(StoredRecord::from_record).collect(),
+        last_template_id: last_template_id.into(),
+        legacy_blank_migrated: false,
+    };
+    let mut bytes = serde_json::to_vec_pretty(&stored)?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+pub(crate) fn normalise_imported_template_name(name: &str) -> String {
+    normalize_imported_name(name)
+}
+
+pub(crate) fn normalise_generated_template_name(
+    name: &str,
+) -> Result<String, TemplateLibraryError> {
+    normalize_custom_name(name)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -632,7 +682,7 @@ fn ensure_sentinel(root: &Path) -> Result<(), TemplateLibraryError> {
         return Ok(());
     }
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-    file.write_all(b"butter-paper-template-library-v1\n")?;
+    file.write_all(SENTINEL_BYTES)?;
     file.sync_all()?;
     Ok(())
 }

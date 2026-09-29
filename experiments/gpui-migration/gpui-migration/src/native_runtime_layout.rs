@@ -414,6 +414,20 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    fn absolute(path: &str) -> PathBuf {
+        #[cfg(windows)]
+        {
+            PathBuf::from(format!(
+                r"C:\{}",
+                path.trim_start_matches('/').replace('/', r"\")
+            ))
+        }
+        #[cfg(not(windows))]
+        {
+            PathBuf::from(path)
+        }
+    }
+
     #[derive(Default)]
     struct FakeProbe(HashMap<PathBuf, PathKind>);
 
@@ -438,17 +452,17 @@ mod tests {
 
     #[test]
     fn bundled_linux_layout_uses_only_exact_sibling_entries() {
-        let executable = Path::new("/opt/gpui-migration/gpui-migration");
-        let worker = Path::new("/opt/gpui-migration/butter-paper-pdf-worker");
-        let pdfium = Path::new("/opt/gpui-migration/libpdfium.so");
+        let executable = absolute("/opt/gpui-migration/gpui-migration");
+        let worker = absolute("/opt/gpui-migration/butter-paper-pdf-worker");
+        let pdfium = absolute("/opt/gpui-migration/libpdfium.so");
         let probe = FakeProbe::default()
-            .regular(executable, true)
-            .regular(worker, true)
-            .regular(pdfium, false);
+            .regular(&executable, true)
+            .regular(&worker, true)
+            .regular(&pdfium, false);
 
         let layout = resolve_layout(
             NativePlatform::Linux,
-            executable,
+            &executable,
             NativeRuntimeMode::Bundled,
             &probe,
         )
@@ -477,16 +491,16 @@ mod tests {
 
     #[test]
     fn bundled_windows_layout_uses_exe_worker_and_dll_siblings() {
-        let executable = Path::new("/package/gpui-migration.exe");
-        let worker = Path::new("/package/butter-paper-pdf-worker.exe");
-        let pdfium = Path::new("/package/pdfium.dll");
+        let executable = absolute("/package/gpui-migration.exe");
+        let worker = absolute("/package/butter-paper-pdf-worker.exe");
+        let pdfium = absolute("/package/pdfium.dll");
         let probe = FakeProbe::default()
-            .regular(executable, false)
-            .regular(worker, false)
-            .regular(pdfium, false);
+            .regular(&executable, false)
+            .regular(&worker, false)
+            .regular(&pdfium, false);
         let layout = resolve_layout(
             NativePlatform::Windows,
-            executable,
+            &executable,
             NativeRuntimeMode::Bundled,
             &probe,
         )
@@ -497,19 +511,18 @@ mod tests {
 
     #[test]
     fn bundled_macos_layout_uses_macos_worker_and_frameworks_pdfium() {
-        let executable =
-            Path::new("/Applications/GPUI Migration.app/Contents/MacOS/gpui-migration");
+        let executable = absolute("/Applications/GPUI Migration.app/Contents/MacOS/gpui-migration");
         let worker =
-            Path::new("/Applications/GPUI Migration.app/Contents/MacOS/butter-paper-pdf-worker");
+            absolute("/Applications/GPUI Migration.app/Contents/MacOS/butter-paper-pdf-worker");
         let pdfium =
-            Path::new("/Applications/GPUI Migration.app/Contents/Frameworks/libpdfium.dylib");
+            absolute("/Applications/GPUI Migration.app/Contents/Frameworks/libpdfium.dylib");
         let probe = FakeProbe::default()
-            .regular(executable, true)
-            .regular(worker, true)
-            .regular(pdfium, false);
+            .regular(&executable, true)
+            .regular(&worker, true)
+            .regular(&pdfium, false);
         let layout = resolve_layout(
             NativePlatform::MacOs,
-            executable,
+            &executable,
             NativeRuntimeMode::Bundled,
             &probe,
         )
@@ -520,12 +533,12 @@ mod tests {
 
     #[test]
     fn non_app_macos_layout_requires_explicit_development_override() {
-        let executable = Path::new("/tmp/debug/gpui-migration");
-        let probe = FakeProbe::default().regular(executable, true);
+        let executable = absolute("/tmp/debug/gpui-migration");
+        let probe = FakeProbe::default().regular(&executable, true);
         assert_eq!(
             resolve_layout(
                 NativePlatform::MacOs,
-                executable,
+                &executable,
                 NativeRuntimeMode::Bundled,
                 &probe,
             ),
@@ -537,16 +550,16 @@ mod tests {
 
     #[test]
     fn development_override_is_absolute_and_has_exact_platform_basename() {
-        let executable = Path::new("/tmp/debug/gpui-migration");
-        let worker = Path::new("/tmp/debug/butter-paper-pdf-worker");
-        let pdfium = Path::new("/verified/pdfium/libpdfium.dylib");
+        let executable = absolute("/tmp/debug/gpui-migration");
+        let worker = absolute("/tmp/debug/butter-paper-pdf-worker");
+        let pdfium = absolute("/verified/pdfium/libpdfium.dylib");
         let probe = FakeProbe::default()
-            .regular(executable, true)
-            .regular(worker, true)
-            .regular(pdfium, false);
+            .regular(&executable, true)
+            .regular(&worker, true)
+            .regular(&pdfium, false);
         let layout = resolve_layout(
             NativePlatform::MacOs,
-            executable,
+            &executable,
             NativeRuntimeMode::Development {
                 pdfium_library: pdfium.to_owned(),
             },
@@ -560,11 +573,11 @@ mod tests {
 
         let error = resolve_layout(
             NativePlatform::Linux,
-            Path::new("/tmp/debug/gpui-migration"),
+            &absolute("/tmp/debug/gpui-migration"),
             NativeRuntimeMode::Development {
                 pdfium_library: PathBuf::from("libpdfium.so"),
             },
-            &FakeProbe::default().regular("/tmp/debug/gpui-migration", true),
+            &FakeProbe::default().regular(absolute("/tmp/debug/gpui-migration"), true),
         )
         .unwrap_err();
         assert!(matches!(
@@ -578,17 +591,17 @@ mod tests {
 
     #[test]
     fn selected_entries_reject_symlinks_and_non_executable_unix_workers() {
-        let executable = Path::new("/opt/app/gpui-migration");
-        let worker = Path::new("/opt/app/butter-paper-pdf-worker");
-        let pdfium = Path::new("/opt/app/libpdfium.so");
+        let executable = absolute("/opt/app/gpui-migration");
+        let worker = absolute("/opt/app/butter-paper-pdf-worker");
+        let pdfium = absolute("/opt/app/libpdfium.so");
         let symlink_error = resolve_layout(
             NativePlatform::Linux,
-            executable,
+            &executable,
             NativeRuntimeMode::Bundled,
             &FakeProbe::default()
-                .regular(executable, true)
-                .regular(worker, true)
-                .with_kind(pdfium, PathKind::Symlink),
+                .regular(&executable, true)
+                .regular(&worker, true)
+                .with_kind(&pdfium, PathKind::Symlink),
         )
         .unwrap_err();
         assert!(matches!(
@@ -601,12 +614,12 @@ mod tests {
 
         let worker_error = resolve_layout(
             NativePlatform::Linux,
-            executable,
+            &executable,
             NativeRuntimeMode::Bundled,
             &FakeProbe::default()
-                .regular(executable, true)
-                .regular(worker, false)
-                .regular(pdfium, false),
+                .regular(&executable, true)
+                .regular(&worker, false)
+                .regular(&pdfium, false),
         )
         .unwrap_err();
         assert!(matches!(
@@ -620,14 +633,14 @@ mod tests {
 
     #[test]
     fn missing_and_non_file_entries_return_typed_errors() {
-        let executable = Path::new("/opt/app/gpui-migration");
-        let worker = Path::new("/opt/app/butter-paper-pdf-worker");
-        let pdfium = Path::new("/opt/app/libpdfium.so");
+        let executable = absolute("/opt/app/gpui-migration");
+        let worker = absolute("/opt/app/butter-paper-pdf-worker");
+        let pdfium = absolute("/opt/app/libpdfium.so");
         let missing = resolve_layout(
             NativePlatform::Linux,
-            executable,
+            &executable,
             NativeRuntimeMode::Bundled,
-            &FakeProbe::default().regular(executable, true),
+            &FakeProbe::default().regular(&executable, true),
         )
         .unwrap_err();
         assert_eq!(
@@ -640,12 +653,12 @@ mod tests {
 
         let not_file = resolve_layout(
             NativePlatform::Linux,
-            executable,
+            &executable,
             NativeRuntimeMode::Bundled,
             &FakeProbe::default()
-                .regular(executable, true)
-                .regular(worker, true)
-                .with_kind(pdfium, PathKind::Other),
+                .regular(&executable, true)
+                .regular(&worker, true)
+                .with_kind(&pdfium, PathKind::Other),
         )
         .unwrap_err();
         assert_eq!(
@@ -659,19 +672,19 @@ mod tests {
 
     #[test]
     fn invalid_override_basename_fails_without_trying_a_bundled_fallback() {
-        let executable = Path::new("/opt/app/gpui-migration");
-        let bundled_pdfium = Path::new("/opt/app/libpdfium.so");
-        let override_path = Path::new("/verified/pdfium/pdfium.so");
+        let executable = absolute("/opt/app/gpui-migration");
+        let bundled_pdfium = absolute("/opt/app/libpdfium.so");
+        let override_path = absolute("/verified/pdfium/pdfium.so");
         let error = resolve_layout(
             NativePlatform::Linux,
-            executable,
+            &executable,
             NativeRuntimeMode::Development {
                 pdfium_library: override_path.to_owned(),
             },
             &FakeProbe::default()
-                .regular(executable, true)
-                .regular("/opt/app/butter-paper-pdf-worker", true)
-                .regular(bundled_pdfium, false),
+                .regular(&executable, true)
+                .regular(absolute("/opt/app/butter-paper-pdf-worker"), true)
+                .regular(&bundled_pdfium, false),
         )
         .unwrap_err();
         assert_eq!(

@@ -79,9 +79,37 @@ RectangleVertical, ZoomIn, and ZoomOut reproduce the 24 px geometry used by the
 shipping Electron toolbar. This product dependency is separate from the
 Longbridge Lucide 0.546.0 component-asset evidence above.
 
+## PDF annotation fonts
+
+The native PDF appearance writer embeds application-owned copies of the same
+annotation-font files pinned by the Electron workspace. The package wrapper
+code is MIT licensed and the font files are licensed under OFL-1.1. The macOS
+bundle carries the family-specific OFL notices and the Expo Google Fonts MIT
+notice from `assets/fonts`.
+
+- `@expo-google-fonts/arimo` 0.4.3: Regular
+  `88cc899855d30f9c779b73c3319d0e077b098f927187aafce11ca029add707a6`,
+  Bold `ec96ac9fdd94766f66f6140c1375bf011577558f88d43f76b3b59307d2a6bca3`,
+  Italic `6bd2c6a6fa87f4566cf0a92c5834884597acbd7be9719e550837865ac4167a42`,
+  Bold Italic `b42b19c10bf5d526f00068303a643282c3df55a79c6fa2eea80b4a078a4a705a`.
+- `@expo-google-fonts/roboto-mono` 0.4.2: Regular
+  `e4bf45837847d4abfa5a502b807a83393aa138727bdb9ea9c93fb17d53208d95`,
+  Bold `92649d819cc4c20480b23a47aaa111769924eb31c66b6ecdcf6f573662558c83`,
+  Italic `82629b0b8a721ce1a79942f68b39438512b406dad2a4a7476c94b72e7794b2f4`,
+  Bold Italic `5bc2918abfd7399aff52e0a7ee22c97d544601f7ae8ff3b49ad176497acff1ed`.
+- `@expo-google-fonts/tinos` 0.4.2: Regular
+  `924ef269e73da94c1803ff68877f5d998dd16605c5ffad82ee181034f8a1fffe`,
+  Bold `576a19b5dc026cafe6ae8fde4c849588dae6475cf5d912cebdf2827388c43ad9`,
+  Italic `4a52de5bcf70e37bd71949f8a85302b75795a1943aedffbbee4f2db7744e1c81`,
+  Bold Italic `10c90ef7896d758923c06a1485d7824cdb457466da0bf7d42f81c5228931281b`.
+
+The exact source paths, byte sizes, hashes, package versions and licence
+receipts are enforced by `source-preparation-policy.json` and its deterministic
+source-preparation tests.
+
 ## GPUI Migration application
 
-- Package: `butter-paper-gpui-migration` 0.1.0
+- Package: `butter-paper-gpui-migration` 0.0.26
 - License: MIT
 - Feature policy: default features are disabled; the app uses the prepared
   Longbridge GPUI Component source and the pinned Zed GPUI graph directly.

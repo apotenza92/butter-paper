@@ -1,13 +1,14 @@
 [package]
 name = "butter-paper-gpui-migration"
-version = "0.1.0"
+version = "0.0.26"
 edition = "2024"
 publish = false
 license = "MIT"
 
 [features]
-default = []
+default = ["development-pdfium-override"]
 benchmark-evidence = ["gpui/profiler"]
+development-pdfium-override = []
 
 [dependencies]
 aes-gcm = { version = "0.11.1", features = ["zeroize"] }
@@ -32,19 +33,49 @@ serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"
 serde_json = "1.0"
 smallvec = "1.15.1"
+rustybuzz = "=0.20.1"
+ttf-parser = "=0.25.1"
+unicode-bidi = "=0.3.18"
 zeroize = "1.9.0"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.4", features = ["fs"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10.1"
+core-foundation-sys = "0.8.7"
+security-framework = "3.7.0"
+
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["test-support", "wayland", "x11", "windows-manifest"] }
 
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["test-support", "font-kit", "wayland", "x11"] }
+
 [patch."https://github.com/zed-industries/zed"]
 ztracing = { path = "vendor/ztracing-shim" }
+collections = { path = ".prepared/zed-8b1497d/crates/collections" }
+derive_refineable = { path = ".prepared/zed-8b1497d/crates/refineable/derive_refineable" }
+gpui = { path = ".prepared/zed-8b1497d/crates/gpui" }
+gpui_apple = { path = ".prepared/zed-8b1497d/crates/gpui_apple" }
+gpui_linux = { path = ".prepared/zed-8b1497d/crates/gpui_linux" }
+gpui_macos = { path = ".prepared/zed-8b1497d/crates/gpui_macos" }
+gpui_macros = { path = ".prepared/zed-8b1497d/crates/gpui_macros" }
+gpui_platform = { path = ".prepared/zed-8b1497d/crates/gpui_platform" }
+gpui_shared_string = { path = ".prepared/zed-8b1497d/crates/gpui_shared_string" }
+gpui_util = { path = ".prepared/zed-8b1497d/crates/gpui_util" }
+gpui_web = { path = ".prepared/zed-8b1497d/crates/gpui_web" }
+gpui_wgpu = { path = ".prepared/zed-8b1497d/crates/gpui_wgpu" }
+gpui_windows = { path = ".prepared/zed-8b1497d/crates/gpui_windows" }
+http_client = { path = ".prepared/zed-8b1497d/crates/http_client" }
+media = { path = ".prepared/zed-8b1497d/crates/media" }
+perf = { path = ".prepared/zed-8b1497d/tooling/perf" }
+refineable = { path = ".prepared/zed-8b1497d/crates/refineable" }
+scheduler = { path = ".prepared/zed-8b1497d/crates/scheduler" }
+sum_tree = { path = ".prepared/zed-8b1497d/crates/sum_tree" }
+util_macros = { path = ".prepared/zed-8b1497d/crates/util_macros" }
 
 [profile.dev]
 codegen-units = 1

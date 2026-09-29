@@ -170,6 +170,11 @@ mod tests {
     use image::ImageEncoder;
     use std::os::unix::fs::PermissionsExt;
 
+    fn process_exists(pid: i32) -> bool {
+        let result = unsafe { libc::kill(pid, 0) };
+        result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+
     #[test]
     fn helper_delivery_is_sanitized_and_dismissal_cancels() {
         let root = std::env::temp_dir().join(format!("bp-local-phone-test-{}", std::process::id()));
@@ -236,6 +241,46 @@ mod tests {
                 |_| true
             )
             .is_err()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellation_kills_and_reaps_the_local_phone_helper() {
+        let root =
+            std::env::temp_dir().join(format!("bp-local-phone-reap-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let helper = root.join("helper");
+        let pid_file = root.join("pid");
+        let qr = image::RgbaImage::from_pixel(16, 16, image::Rgba([255, 255, 255, 255]));
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(qr.as_raw(), 16, 16, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let ready = serde_json::json!({"event":"ready","qrPng":B64.encode(&png)});
+        std::fs::write(
+            &helper,
+            format!(
+                "#!/bin/sh\nprintf '%s' $$ > '{}'\nprintf '%s\\n' '{}'\nexec /bin/sleep 30\n",
+                pid_file.display(),
+                ready
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel_from_qr = cancelled.clone();
+        let result = receive_from(helper, "127.0.0.1", PhoneMode::Draw, cancelled, move |_| {
+            cancel_from_qr.store(true, Ordering::Release);
+            true
+        })
+        .unwrap();
+        assert!(result.is_none());
+        let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().parse().unwrap();
+        assert!(
+            !process_exists(pid),
+            "the local phone helper must be reaped"
         );
         std::fs::remove_dir_all(root).unwrap();
     }

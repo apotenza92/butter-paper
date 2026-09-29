@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { UpdateFrequency, UpdateStatus } from '../../../shared/protocol';
+import type { ElectronMigrationExportRequest, UpdateFrequency, UpdateStatus } from '../../../shared/protocol';
 import type { ManualUpdateCheckState } from '../components/updateDialogState';
 
 export interface UpdaterActions {
   checkNow(): Promise<void>;
   dismissManualCheck(): void;
-  installDownloaded(): Promise<void>;
+  installDownloaded(request: ElectronMigrationExportRequest): Promise<void>;
   openReleasePage(): Promise<void>;
   setFrequency(frequency: UpdateFrequency): Promise<void>;
 }
@@ -71,11 +71,12 @@ export function useUpdater(): {
     setManualCheck(closedManualCheck);
   }, []);
 
-  const installDownloaded = useCallback(async () => {
+  const installDownloaded = useCallback(async (request: ElectronMigrationExportRequest) => {
     try {
-      await window.butterPaper.updates.installDownloaded();
+      await window.butterPaper.updates.installDownloaded(request);
     } catch (error) {
       console.error('Unable to install the downloaded update.', error);
+      throw error;
     }
   }, []);
 

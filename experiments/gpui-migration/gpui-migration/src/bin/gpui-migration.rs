@@ -1,21 +1,34 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use butter_paper_gpui_migration::application_close_workspace::{
     ApplicationCloseCheckpointPublisher, ApplicationCloseShell, ApplicationCloseWorkspace,
     register_application_close_action,
 };
+#[cfg(feature = "development-pdfium-override")]
+use butter_paper_gpui_migration::application_shell::application_data_directory;
 use butter_paper_gpui_migration::application_shell::{
     ApplicationShellPreferences, ApplicationShellPreferencesStore, ApplicationUiZoomAction,
     MakeInterfaceBigger, MakeInterfaceSmaller, OpenReleasePage, ResetInterfaceSize,
-    ToggleApplicationFullScreen, ToggleApplicationMenuBar, application_data_directory,
-    apply_application_ui_zoom, focus_initial_command_context, init_application_shell_actions,
+    ToggleApplicationFullScreen, ToggleApplicationMenuBar, apply_application_ui_zoom,
+    focus_initial_command_context, init_application_shell_actions,
     resolve_application_ui_zoom_level,
+};
+use butter_paper_gpui_migration::document_recovery_store::{
+    DocumentRecoveryStore, RecoverySourceKind,
 };
 use butter_paper_gpui_migration::document_tab_bar::TemplateCatalogItem;
 use butter_paper_gpui_migration::document_workspace::{
-    DocumentId, DocumentWorkspace, DocumentWorkspaceEvidenceSnapshot,
+    DeferredStartupOpen, DocumentId, DocumentWorkspace, DocumentWorkspaceEvidenceSnapshot,
     DocumentWorkspaceTemplateCommand, PaintedPageEvidence, PdfDocumentSaver, PdfiumWorkerBackend,
-    init_document_workspace_actions, register_document_workspace_global_actions,
+    StartupRecoveryAvailability, StartupRecoveryItem, init_document_workspace_actions,
+    register_document_workspace_global_actions,
+};
+#[cfg(not(feature = "development-pdfium-override"))]
+use butter_paper_gpui_migration::electron_data_migration::{
+    StartupDataPolicy, prepare_startup_data,
 };
 use butter_paper_gpui_migration::generated_document::GeneratedDocumentStore;
+use butter_paper_gpui_migration::macos_process_lifecycle::AppRootLifecycleReceipt;
 use butter_paper_gpui_migration::native_application::{
     ApplicationMenuShellState, NativeApplicationMenuState, NativeDocumentIngress,
     install_native_application_menus_with_shell, install_native_platform_menus,
@@ -23,9 +36,25 @@ use butter_paper_gpui_migration::native_application::{
 use butter_paper_gpui_migration::native_launch::{
     NativeLaunchAction, NativeLaunchConfig, NativeLaunchSessionSource, NativeLaunchWarning,
 };
+#[cfg(all(not(feature = "development-pdfium-override"), target_os = "linux"))]
+use butter_paper_gpui_migration::native_platform_storage::linux_production_storage;
+#[cfg(all(not(feature = "development-pdfium-override"), target_os = "windows"))]
+use butter_paper_gpui_migration::native_platform_storage::windows_production_storage;
+#[cfg(all(not(feature = "development-pdfium-override"), target_os = "macos"))]
+use butter_paper_gpui_migration::native_release_identity::{
+    attest_current_release, current_user_home_directory, display_fatal_launch_error,
+};
 use butter_paper_gpui_migration::native_runtime_layout::{
     NativeRuntimeLayout, NativeRuntimeMode, require_explicit_development_authority,
 };
+#[cfg(all(not(feature = "development-pdfium-override"), target_os = "macos"))]
+use butter_paper_gpui_migration::native_storage_layout::NativeProductionStorage;
+#[cfg(all(
+    not(feature = "development-pdfium-override"),
+    any(target_os = "windows", target_os = "linux")
+))]
+use butter_paper_gpui_migration::native_storage_layout::NativeReleaseChannel;
+use butter_paper_gpui_migration::native_storage_layout::NativeStorageLayout;
 use butter_paper_gpui_migration::perf_capture_signal::{CaptureSignalError, CaptureSignalGuard};
 use butter_paper_gpui_migration::perf_protocol::{PerfProtocol, StdoutSink, fields};
 use butter_paper_gpui_migration::perf_scenario::{
@@ -35,29 +64,30 @@ use butter_paper_gpui_migration::perf_scenario::{
     map_presented_crop_evidence, merge_presented_crop_open_events,
 };
 use butter_paper_gpui_migration::recent_signature_store::{
-    PlatformSignatureKeyStore, RecentSignatureStore, RECENT_SIGNATURES_FILE_NAME,
+    PlatformSignatureKeyStore, RECENT_SIGNATURES_FILE_NAME, RecentSignatureStore,
 };
 use butter_paper_gpui_migration::session_manifest::SessionManifestStore;
 use butter_paper_gpui_migration::system_theme::follow_window_appearance_with_application_zoom;
 use butter_paper_gpui_migration::template_manager::{
     TemplateManagerView, legacy_blank_request_from_json, route_workspace_template_command,
 };
-use butter_paper_gpui_migration::window_title_bar::{
-    APPLICATION_TITLE, format_window_title, title_bar_window_options,
-};
 #[cfg(not(target_os = "macos"))]
 use butter_paper_gpui_migration::window_title_bar::window_title_bar;
+use butter_paper_gpui_migration::window_title_bar::{
+    APPLICATION_TITLE, format_window_title_for_application, title_bar_window_options,
+};
 use gpui::{
     App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, InteractiveElement as _,
     IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, WindowBounds, WindowOptions, div, px, size,
+    Subscription, Task, Window, WindowBounds, WindowOptions, div, px, size,
 };
 use gpui_component::{ActiveTheme as _, Root, WindowExt as _, menu::AppMenuBar, v_flex};
 use serde_json::json;
 use std::{
     cell::Cell,
-    path::Path,
+    ffi::{OsStr, OsString},
     rc::Rc,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -86,6 +116,55 @@ struct PerfStoryRuntime {
     capture: CaptureOrchestrationCoordinator,
     cleanup_probe: Option<PerfCleanupProbe>,
     failed: bool,
+}
+
+const DEVELOPMENT_SIGNATURE_KEYCHAIN_SERVICE: &str =
+    "com.butterpaper.gpui-migration.recent-signatures";
+
+struct ResolvedStorageContext {
+    layout: NativeStorageLayout,
+    preferences: ApplicationShellPreferences,
+    signature_keychain_service: &'static str,
+    application_title: &'static str,
+}
+
+fn exit_for_launch_failure(context: &str, error: &str) -> ! {
+    let message = format!("{context}: {error}");
+    eprintln!("{message}");
+    #[cfg(all(not(feature = "development-pdfium-override"), target_os = "macos"))]
+    display_fatal_launch_error(&message);
+    #[cfg(target_os = "windows")]
+    display_windows_fatal_launch_error(&message);
+    std::process::exit(2);
+}
+
+#[cfg(target_os = "windows")]
+fn display_windows_fatal_launch_error(detail: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MB_ICONERROR, MB_OK, MB_TASKMODAL, MessageBoxW,
+    };
+
+    let text = wide_null_terminated(detail);
+    let title = wide_null_terminated("Butter Paper could not start");
+    // A GUI-subsystem executable has no visible console for startup errors.
+    // Keep this synchronous so the user can read the diagnostic before exit.
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR | MB_TASKMODAL,
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn wide_null_terminated(value: &str) -> Vec<u16> {
+    value
+        .replace('\0', "�")
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 impl PerfStoryRuntime {
@@ -158,12 +237,20 @@ struct ComponentStory {
     ui_zoom_level: Rc<Cell<i8>>,
     ui_zoom_base_font_size: Rc<Cell<gpui::Pixels>>,
     template_manager: Option<Entity<TemplateManagerView>>,
+    session_store: Option<Arc<SessionManifestStore>>,
+    last_observed_recovery_snapshot:
+        Option<butter_paper_gpui_migration::session_manifest::SessionRecoverySnapshot>,
+    pending_recovery_snapshot:
+        Option<butter_paper_gpui_migration::session_manifest::SessionRecoverySnapshot>,
+    recovery_marker_task: Option<Task<()>>,
+    _document_workspace_subscription: Subscription,
     _template_command_subscription: Option<Subscription>,
     _app_menu_bar_focus_out_subscription: Subscription,
     _system_theme_subscription: Subscription,
     last_native_menu_state: Option<NativeApplicationMenuState>,
     last_in_window_menu_state: Option<NativeApplicationMenuState>,
     last_native_menu_shell_state: Option<ApplicationMenuShellState>,
+    application_title: &'static str,
     window_title: String,
     has_focused_input: bool,
     perf: Option<PerfStoryRuntime>,
@@ -179,17 +266,20 @@ impl ComponentStory {
         ui_zoom_level: Rc<Cell<i8>>,
         ui_zoom_base_font_size: Rc<Cell<gpui::Pixels>>,
         template_manager: Option<Entity<TemplateManagerView>>,
+        session_store: Option<Arc<SessionManifestStore>>,
         perf: Option<PerfStoryRuntime>,
+        application_title: &'static str,
         system_theme_subscription: Subscription,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.observe_in(&document_workspace, window, |story, _, window, cx| {
-            story.sync_native_application_menu(cx);
-            story.sync_template_operation_state(cx);
-            story.sync_window_title(window, cx);
-        })
-        .detach();
+        let document_workspace_subscription =
+            cx.observe_in(&document_workspace, window, |story, _, window, cx| {
+                story.sync_native_application_menu(cx);
+                story.sync_template_operation_state(cx);
+                story.sync_window_title(window, cx);
+                story.schedule_recovery_marker_checkpoint(cx);
+            });
         if template_manager.is_some() {
             document_workspace.update(cx, |workspace, _| {
                 workspace.use_external_template_authority(true);
@@ -238,12 +328,18 @@ impl ComponentStory {
             ui_zoom_level,
             ui_zoom_base_font_size,
             template_manager,
+            session_store,
+            last_observed_recovery_snapshot: None,
+            pending_recovery_snapshot: None,
+            recovery_marker_task: None,
+            _document_workspace_subscription: document_workspace_subscription,
             _template_command_subscription: template_command_subscription,
             _app_menu_bar_focus_out_subscription: app_menu_bar_focus_out_subscription,
             _system_theme_subscription: system_theme_subscription,
             last_native_menu_state: None,
             last_in_window_menu_state: None,
             last_native_menu_shell_state: None,
+            application_title,
             window_title: String::new(),
             has_focused_input: false,
             perf,
@@ -252,6 +348,43 @@ impl ComponentStory {
         story.sync_template_catalog(cx);
         story.sync_window_title(window, cx);
         story
+    }
+
+    fn schedule_recovery_marker_checkpoint(&mut self, cx: &mut Context<Self>) {
+        let Some(store) = self.session_store.clone() else {
+            return;
+        };
+        let snapshot = {
+            let workspace = self.document_workspace.read(cx);
+            if workspace.active_document_open_batches() > 0 {
+                return;
+            }
+            let snapshot = workspace.session_recovery_snapshot(cx);
+            if snapshot.is_empty() && workspace.session_recovery_warning().is_some() {
+                return;
+            }
+            snapshot
+        };
+        if self.last_observed_recovery_snapshot.as_ref() == Some(&snapshot) {
+            return;
+        }
+        self.last_observed_recovery_snapshot = Some(snapshot.clone());
+        self.pending_recovery_snapshot = Some(snapshot);
+        let executor = cx.background_executor().clone();
+        self.recovery_marker_task = Some(cx.spawn(async move |entity, cx| {
+            executor.timer(Duration::from_millis(250)).await;
+            let Ok(Some(snapshot)) =
+                entity.update(cx, |story, _| story.pending_recovery_snapshot.take())
+            else {
+                return;
+            };
+            let result = executor
+                .spawn(async move { store.replace_recovery_marker(&snapshot) })
+                .await;
+            if let Err(error) = result {
+                eprintln!("unable to publish the dirty-session marker: {error:?}");
+            }
+        }));
     }
 
     fn sync_window_title(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -266,7 +399,11 @@ impl ComponentStory {
             });
             (active_document_name, workspace.sessions().len())
         };
-        let title = format_window_title(active_document_name.as_deref(), document_count);
+        let title = format_window_title_for_application(
+            active_document_name.as_deref(),
+            document_count,
+            self.application_title,
+        );
         if self.window_title == title {
             return;
         }
@@ -587,14 +724,16 @@ impl ComponentStory {
             let worker_exited = cleanup
                 .worker_pid
                 .is_none_or(|pid| !process_is_running(pid));
-            let surface_root = self
-                .perf
-                .as_ref()
-                .expect("runtime exists")
-                .config
-                .cache_directory
-                .join("document-workspace");
-            let surfaces_released = directory_is_absent_or_empty(&surface_root);
+            let storage = NativeStorageLayout::performance(
+                &self
+                    .perf
+                    .as_ref()
+                    .expect("runtime exists")
+                    .config
+                    .cache_directory,
+            )
+            .expect("performance storage was validated before launch");
+            let surfaces_released = storage.surfaces_released();
             if worker_exited && surfaces_released {
                 let perf = self.perf.as_mut().expect("runtime exists");
                 let reason = perf
@@ -1336,26 +1475,61 @@ impl Render for ComponentStory {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn process_is_running(pid: u32) -> bool {
-    Path::new("/proc").join(pid.to_string()).exists()
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return true;
+    };
+    if pid <= 0 {
+        return true;
+    }
+    // Signal 0 probes existence without signalling the owned worker. Permission
+    // denial (and unexpected errors) cannot prove termination: fail closed.
+    let result = unsafe { libc::kill(pid, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(unix))]
 fn process_is_running(_: u32) -> bool {
     true
 }
 
-fn directory_is_absent_or_empty(path: &Path) -> bool {
-    match std::fs::read_dir(path) {
-        Ok(mut entries) => entries.next().is_none(),
-        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+#[cfg(all(test, unix))]
+mod process_cleanup_tests {
+    #[test]
+    fn owned_child_is_alive_until_terminated_and_reaped() {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "read ignored"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let running = super::process_is_running(pid);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(running, "the blocked owned child must be reported alive");
+        assert!(
+            !super::process_is_running(pid),
+            "a reaped child must not block cleanup"
+        );
     }
 }
 
-fn native_runtime_mode_from_environment() -> Result<NativeRuntimeMode, String> {
-    let development = std::env::var_os("BP_NATIVE_DEVELOPMENT");
-    let pdfium_library = std::env::var_os("BP_PDFIUM_LIBRARY");
+fn native_runtime_mode(
+    development: Option<&OsStr>,
+    pdfium_library: Option<OsString>,
+) -> Result<NativeRuntimeMode, String> {
+    #[cfg(not(feature = "development-pdfium-override"))]
+    {
+        if development.is_some() || pdfium_library.is_some() {
+            return Err(
+                "development PDFium overrides are not compiled into this production build"
+                    .to_owned(),
+            );
+        }
+        Ok(NativeRuntimeMode::Bundled)
+    }
+    #[cfg(feature = "development-pdfium-override")]
     match development.as_deref() {
         None if pdfium_library.is_none() => Ok(NativeRuntimeMode::Bundled),
         None => Err("BP_PDFIUM_LIBRARY is allowed only when BP_NATIVE_DEVELOPMENT=1".to_owned()),
@@ -1370,6 +1544,57 @@ fn native_runtime_mode_from_environment() -> Result<NativeRuntimeMode, String> {
     }
 }
 
+fn native_runtime_mode_from_environment() -> Result<NativeRuntimeMode, String> {
+    let development = std::env::var_os("BP_NATIVE_DEVELOPMENT");
+    native_runtime_mode(
+        development.as_deref(),
+        std::env::var_os("BP_PDFIUM_LIBRARY"),
+    )
+}
+
+#[cfg(test)]
+mod native_runtime_mode_tests {
+    use super::*;
+
+    #[test]
+    fn bundled_runtime_requires_no_external_override() {
+        assert!(matches!(
+            native_runtime_mode(None, None).unwrap(),
+            NativeRuntimeMode::Bundled
+        ));
+    }
+
+    #[cfg(feature = "development-pdfium-override")]
+    #[test]
+    fn development_build_requires_explicit_paired_authority() {
+        assert!(matches!(
+            native_runtime_mode(
+                Some(OsStr::new("1")),
+                Some(OsString::from("/owned/libpdfium.dylib")),
+            )
+            .unwrap(),
+            NativeRuntimeMode::Development { .. }
+        ));
+        assert!(native_runtime_mode(None, Some(OsString::from("/tmp/libpdfium.dylib"))).is_err());
+        assert!(native_runtime_mode(Some(OsStr::new("1")), None).is_err());
+    }
+
+    #[cfg(not(feature = "development-pdfium-override"))]
+    #[test]
+    fn production_build_rejects_development_override_variables() {
+        let error = native_runtime_mode(
+            Some(OsStr::new("1")),
+            Some(OsString::from("/tmp/libpdfium.dylib")),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "development PDFium overrides are not compiled into this production build"
+        );
+        assert!(native_runtime_mode(None, Some(OsString::from("/tmp/libpdfium.dylib"))).is_err());
+    }
+}
+
 fn authorized_perf_run_config_from_process() -> Result<Option<PerfRunConfig>, String> {
     if std::env::var_os("BP_GPUI_PERF_SCENARIO").is_none() {
         return Ok(None);
@@ -1377,6 +1602,158 @@ fn authorized_perf_run_config_from_process() -> Result<Option<PerfRunConfig>, St
     require_explicit_development_authority(std::env::var_os("BP_NATIVE_DEVELOPMENT").as_deref())
         .map_err(|error| error.to_string())?;
     PerfRunConfig::from_process().map_err(|error| format!("{error:?}"))
+}
+
+fn apply_launch_action(
+    workspace: &mut DocumentWorkspace,
+    action: NativeLaunchAction,
+    cx: &mut Context<DocumentWorkspace>,
+) {
+    match action {
+        NativeLaunchAction::None => {}
+        NativeLaunchAction::OpenExplicit(request) => {
+            workspace.open_documents(request, cx);
+        }
+        NativeLaunchAction::Restore(plan) => {
+            workspace.restore_session(plan, cx);
+        }
+    }
+}
+
+fn deferred_startup_open(action: NativeLaunchAction) -> DeferredStartupOpen {
+    match action {
+        NativeLaunchAction::None => DeferredStartupOpen::None,
+        NativeLaunchAction::OpenExplicit(request) => DeferredStartupOpen::Explicit(request),
+        NativeLaunchAction::Restore(plan) => DeferredStartupOpen::Restore(plan),
+    }
+}
+
+fn apply_deferred_startup_open(
+    workspace: &mut DocumentWorkspace,
+    action: DeferredStartupOpen,
+    cx: &mut Context<DocumentWorkspace>,
+) {
+    match action {
+        DeferredStartupOpen::None => {}
+        DeferredStartupOpen::Explicit(request) => {
+            workspace.open_documents(request, cx);
+        }
+        DeferredStartupOpen::Restore(plan) => {
+            workspace.restore_session(plan, cx);
+        }
+    }
+}
+
+fn resolve_storage_context(
+    perf: Option<&PerfStoryRuntime>,
+) -> Result<ResolvedStorageContext, String> {
+    if let Some(perf) = perf {
+        return NativeStorageLayout::performance(&perf.config.cache_directory)
+            .and_then(|layout| {
+                let preferences = ApplicationShellPreferencesStore::new(layout.preferences_root())
+                    .load()
+                    .map_err(|_| "the application preferences are unreadable or invalid")?;
+                Ok(ResolvedStorageContext {
+                    layout,
+                    preferences,
+                    signature_keychain_service: DEVELOPMENT_SIGNATURE_KEYCHAIN_SERVICE,
+                    application_title: APPLICATION_TITLE,
+                })
+            })
+            .map_err(str::to_owned);
+    }
+
+    #[cfg(feature = "development-pdfium-override")]
+    {
+        let run_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "the system clock must follow the Unix epoch".to_owned())?
+            .as_nanos();
+        return NativeStorageLayout::development(
+            application_data_directory(),
+            std::env::temp_dir().join(format!(
+                "butter-paper-gpui-surfaces-{}-{run_id}",
+                std::process::id(),
+            )),
+        )
+        .and_then(|layout| {
+            let preferences = ApplicationShellPreferencesStore::new(layout.preferences_root())
+                .load()
+                .map_err(|_| "the application preferences are unreadable or invalid")?;
+            Ok(ResolvedStorageContext {
+                layout,
+                preferences,
+                signature_keychain_service: DEVELOPMENT_SIGNATURE_KEYCHAIN_SERVICE,
+                application_title: APPLICATION_TITLE,
+            })
+        })
+        .map_err(str::to_owned);
+    }
+
+    #[cfg(not(feature = "development-pdfium-override"))]
+    {
+        if std::env::var_os("BP_GPUI_DATA_DIR").is_some() {
+            return Err("BP_GPUI_DATA_DIR is not permitted in a production build".to_owned());
+        }
+        #[cfg(target_os = "macos")]
+        let (storage, channel) = {
+            let identity = attest_current_release().map_err(|error| error.to_string())?;
+            let home = current_user_home_directory().map_err(|error| error.to_string())?;
+            let channel = identity.channel();
+            (
+                NativeProductionStorage::macos(&home, channel).map_err(str::to_owned)?,
+                channel,
+            )
+        };
+        #[cfg(target_os = "windows")]
+        let (storage, channel) = {
+            // The first Windows native package is stable-only. Authenticity is
+            // enforced by the Authenticode/package verification release gate,
+            // not by accepting a user-controlled runtime channel override.
+            let channel = NativeReleaseChannel::Stable;
+            (
+                windows_production_storage(
+                    std::env::var_os("APPDATA").as_deref(),
+                    std::env::var_os("LOCALAPPDATA").as_deref(),
+                    channel,
+                )
+                .map_err(str::to_owned)?,
+                channel,
+            )
+        };
+        #[cfg(target_os = "linux")]
+        let (storage, channel) = {
+            // The first Linux native package is stable-only. Package
+            // provenance is verified by the release pipeline; runtime storage
+            // never accepts a channel from the environment.
+            let channel = NativeReleaseChannel::Stable;
+            (
+                linux_production_storage(
+                    std::env::var_os("HOME").as_deref(),
+                    std::env::var_os("XDG_DATA_HOME").as_deref(),
+                    std::env::var_os("XDG_CACHE_HOME").as_deref(),
+                    std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+                    channel,
+                )
+                .map_err(str::to_owned)?,
+                channel,
+            )
+        };
+        prepare_startup_data(&storage, StartupDataPolicy::NativeOnly)
+            .map_err(|error| error.to_string())?;
+        let preferences =
+            ApplicationShellPreferencesStore::new(storage.layout().preferences_root())
+                .load()
+                .map_err(|error| {
+                    format!("the native application preferences are invalid: {error}")
+                })?;
+        Ok(ResolvedStorageContext {
+            layout: storage.layout().clone(),
+            preferences,
+            signature_keychain_service: channel.signature_keychain_service(),
+            application_title: channel.product_name(),
+        })
+    }
 }
 
 fn main() {
@@ -1405,23 +1782,48 @@ fn main() {
     } else {
         NativeLaunchConfig::default()
     };
+    let app_lifecycle = if perf.is_some() {
+        AppRootLifecycleReceipt::begin_from_authorized_performance_environment().unwrap_or_else(
+            |error| {
+                eprintln!("invalid GPUI application lifecycle configuration: {error}");
+                std::process::exit(2);
+            },
+        )
+    } else {
+        None
+    };
+    if let Some(app_lifecycle) = app_lifecycle {
+        app_lifecycle
+            .install_normal_exit_publisher()
+            .unwrap_or_else(|error| {
+                eprintln!("invalid GPUI application lifecycle configuration: {error}");
+                std::process::exit(2);
+            });
+    }
     let native_runtime_layout = if perf.is_none() {
         let mode = native_runtime_mode_from_environment().unwrap_or_else(|error| {
-            eprintln!("invalid GPUI Migration native runtime mode: {error}");
-            std::process::exit(2);
+            exit_for_launch_failure("invalid Butter Paper native runtime mode", &error)
         });
         Some(NativeRuntimeLayout::discover(mode).unwrap_or_else(|error| {
-            eprintln!("invalid GPUI Migration native runtime layout: {error}");
-            std::process::exit(2);
+            exit_for_launch_failure(
+                "invalid Butter Paper native runtime layout",
+                &error.to_string(),
+            )
         }))
     } else {
         None
     };
+    let storage_context = resolve_storage_context(perf.as_ref()).unwrap_or_else(|error| {
+        exit_for_launch_failure("invalid Butter Paper storage or migration", &error)
+    });
+    let storage_layout = storage_context.layout;
+    let startup_preferences = storage_context.preferences;
+    let signature_keychain_service = storage_context.signature_keychain_service;
+    let application_title = storage_context.application_title;
     let session_source = NativeLaunchSessionSource::new(perf.is_some(), &native_launch);
     let native_ingress = NativeDocumentIngress::default();
-    let application = gpui_platform::application().with_assets(
-        butter_paper_gpui_migration::application_assets::ApplicationAssets,
-    );
+    let application = gpui_platform::application()
+        .with_assets(butter_paper_gpui_migration::application_assets::ApplicationAssets);
     application.on_open_urls({
         let native_ingress = native_ingress.clone();
         move |urls| {
@@ -1447,23 +1849,10 @@ fn main() {
         let native_ingress = native_ingress.clone();
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
-                window.set_window_title(APPLICATION_TITLE);
-                let surface_root = perf.as_ref().map_or_else(
-                    || std::env::temp_dir().join("butter-paper-document-workspace"),
-                    |perf| perf.config.cache_directory.join("document-workspace"),
-                );
+                window.set_window_title(application_title);
                 let application_preferences =
-                    ApplicationShellPreferencesStore::new(if perf.is_some() {
-                        surface_root.join("application-state")
-                    } else {
-                        application_data_directory().unwrap_or_else(|| {
-                            std::env::temp_dir().join("butter-paper-gpui-migration")
-                        })
-                    });
-                let preferences = application_preferences.load().unwrap_or_else(|error| {
-                    eprintln!("unable to load GPUI Migration application preferences: {error}");
-                    ApplicationShellPreferences::default()
-                });
+                    ApplicationShellPreferencesStore::new(storage_layout.preferences_root());
+                let preferences = startup_preferences;
                 let ui_zoom_level = Rc::new(Cell::new(preferences.ui_zoom_level()));
                 let ui_zoom_base_font_size = Rc::new(Cell::new(cx.theme().font_size));
                 let system_theme_subscription = follow_window_appearance_with_application_zoom(
@@ -1494,15 +1883,16 @@ fn main() {
                     |perf| perf.config.pdfium_library.clone(),
                 );
                 let generated_store =
-                    GeneratedDocumentStore::new(surface_root.join("generated-documents"))
+                    GeneratedDocumentStore::new(storage_layout.generated_documents_root())
                         .expect("the experiment-owned generated-document store must initialize");
-                let template_manager_root = surface_root.join("template-library");
-                let session_state_root = surface_root.join("session-state");
-                let (session_store, launch_resolution) = if session_source.requires_store() {
+                let template_manager_root = storage_layout.template_library_root();
+                let session_state_root = storage_layout.session_state_root();
+                let (session_store, launch_resolution, recovery_marker) =
+                    if session_source.requires_store() {
                     let opened = std::fs::create_dir_all(&session_state_root)
                         .map_err(|error| error.to_string())
                         .and_then(|()| {
-                            SessionManifestStore::open(session_state_root)
+                            SessionManifestStore::open(session_state_root.clone())
                                 .map_err(|error| format!("{error:?}"))
                         });
                     match opened {
@@ -1513,12 +1903,40 @@ fn main() {
                             } else {
                                 Ok(None)
                             };
-                            (Some(store), session_source.clone().resolve(loaded))
+                            let recovery_marker = store
+                                .load_recovery_marker()
+                                .map_err(|error| format!("{error:?}"));
+                            (
+                                Some(store),
+                                session_source.clone().resolve(loaded),
+                                recovery_marker,
+                            )
                         }
-                        Err(error) => (None, session_source.clone().resolve(Err(error))),
+                        Err(error) => (
+                            None,
+                            session_source.clone().resolve(Err(error.clone())),
+                            Err(error),
+                        ),
                     }
                 } else {
-                    (None, session_source.clone().resolve(Ok(None)))
+                    (
+                        None,
+                        session_source.clone().resolve(Ok(None)),
+                        Ok(None),
+                    )
+                };
+                let document_recovery_store = if perf.is_none() {
+                    Some(
+                        std::fs::create_dir_all(&session_state_root)
+                            .map_err(|error| error.to_string())
+                            .and_then(|()| {
+                                DocumentRecoveryStore::open(&session_state_root)
+                                    .map(std::sync::Arc::new)
+                                    .map_err(|error| error.to_string())
+                            }),
+                    )
+                } else {
+                    None
                 };
                 if let Some(NativeLaunchWarning::SessionStateUnavailable(message)) =
                     launch_resolution.warning.as_ref()
@@ -1528,7 +1946,7 @@ fn main() {
                 let opener = std::sync::Arc::new(PdfiumWorkerBackend::new(
                     worker_executable,
                     pdfium_library,
-                    surface_root,
+                    storage_layout.surface_root().to_owned(),
                 ));
                 let saver = std::sync::Arc::new(PdfDocumentSaver::new(opener.clone()));
                 let document_workspace = cx.new(|cx| {
@@ -1537,33 +1955,139 @@ fn main() {
                         generated_store.clone(),
                         cx,
                     );
-                    // Migration-only identity. Never consult Electron's production store.
-                    // Construction performs no credential or filesystem IO on the UI thread.
-                    if perf.is_none() {
-                        if let Some(directory) = application_data_directory() {
-                            workspace.bind_recent_signature_store(std::sync::Arc::new(
-                                RecentSignatureStore::new(
-                                    directory.join(RECENT_SIGNATURES_FILE_NAME),
-                                    std::sync::Arc::new(PlatformSignatureKeyStore::new(
-                                        "com.butterpaper.gpui-migration.recent-signatures",
-                                        "encryption-key-v1",
-                                    )),
-                                ),
-                            ));
+                    if let Some(store) = &document_recovery_store {
+                        match store {
+                            Ok(store) => workspace.bind_document_recovery_store(store.clone()),
+                            Err(error) => {
+                                workspace.bind_document_recovery_store_error(error.clone())
+                            }
                         }
+                    }
+                    // Construction performs no credential or filesystem IO on the UI thread.
+                    // Production binds this service to the authenticated stable/beta channel.
+                    if perf.is_none() {
+                        let directory = storage_layout.preferences_root();
+                        workspace.bind_recent_signature_store(std::sync::Arc::new(
+                            RecentSignatureStore::new(
+                                directory.join(RECENT_SIGNATURES_FILE_NAME),
+                                std::sync::Arc::new(PlatformSignatureKeyStore::new(
+                                    signature_keychain_service,
+                                    "encryption-key-v1",
+                                )),
+                            ),
+                        ));
                     }
                     workspace
                 });
-                match launch_resolution.action.clone() {
-                    NativeLaunchAction::None => {}
-                    NativeLaunchAction::OpenExplicit(request) => {
+                document_workspace.update(cx, |workspace, cx| match &recovery_marker {
+                    Ok(Some(snapshot)) => workspace.show_session_recovery_warning(snapshot, cx),
+                    Ok(None) => {}
+                    Err(error) => workspace.show_session_recovery_warning_message(
+                        format!(
+                            "Butter Paper could not inspect the previous unsaved-change marker. Verify your documents before continuing. Details: {error}"
+                        ),
+                        cx,
+                    ),
+                });
+                let launch_action = launch_resolution.action.clone();
+                match document_recovery_store.as_ref() {
+                    Some(Ok(store)) => {
                         document_workspace.update(cx, |workspace, cx| {
-                            workspace.open_documents(request, cx);
+                            workspace.defer_startup_open(deferred_startup_open(
+                                launch_action.clone(),
+                            ));
+                            workspace.begin_startup_recovery_inspection(cx);
                         });
+                        let store = store.clone();
+                        let workspace = document_workspace.downgrade();
+                        let task = cx.background_executor().spawn(async move {
+                            let ids = store.active_document_ids().map_err(|error| error.to_string())?;
+                            let mut items = Vec::new();
+                            for id in ids {
+                                match store.load(id) {
+                                    Ok(Some(recovered))
+                                        if recovered.current_revision == recovered.saved_revision
+                                            && !recovered.requires_save_as =>
+                                    {
+                                        if let Err(error) =
+                                            store.clear_authority(&recovered.authority)
+                                        {
+                                            items.push(StartupRecoveryItem {
+                                                id,
+                                                authority: Some(recovered.authority),
+                                                source_path: Some(recovered.source_path),
+                                                current_revision: Some(recovered.current_revision),
+                                                saved_revision: Some(recovered.saved_revision),
+                                                availability: StartupRecoveryAvailability::Unavailable(
+                                                    format!(
+                                                        "the clean checkpoint could not be retired safely: {error}"
+                                                    ),
+                                                ),
+                                            });
+                                        }
+                                    }
+                                    Ok(Some(recovered)) => items.push(StartupRecoveryItem {
+                                        id,
+                                        authority: Some(recovered.authority),
+                                        source_path: Some(recovered.source_path),
+                                        current_revision: Some(recovered.current_revision),
+                                        saved_revision: Some(recovered.saved_revision),
+                                        availability: match recovered.source_kind {
+                                            RecoverySourceKind::Opened => {
+                                                StartupRecoveryAvailability::OpenedSourceNeedsVerification
+                                            }
+                                            RecoverySourceKind::Generated => {
+                                                StartupRecoveryAvailability::GeneratedCopyRequired
+                                            }
+                                        },
+                                    }),
+                                    Ok(None) => {}
+                                    Err(error) => items.push(StartupRecoveryItem {
+                                        id,
+                                        authority: None,
+                                        source_path: None,
+                                        current_revision: None,
+                                        saved_revision: None,
+                                        availability: StartupRecoveryAvailability::Unavailable(
+                                            error.to_string(),
+                                        ),
+                                    }),
+                                }
+                            }
+                            Ok::<_, String>(items)
+                        });
+                        cx.spawn(async move |cx| {
+                            match task.await {
+                                Ok(items) => {
+                                    let should_launch = items.is_empty();
+                                    let _ = workspace.update(cx, |workspace, cx| {
+                                        workspace.finish_startup_recovery_inspection(items, cx);
+                                        if should_launch {
+                                            if let Some(open) =
+                                                workspace.take_deferred_startup_open()
+                                            {
+                                                apply_deferred_startup_open(workspace, open, cx);
+                                            }
+                                        }
+                                    });
+                                }
+                                Err(error) => {
+                                    let _ = workspace.update(cx, |workspace, cx| {
+                                        workspace.show_session_recovery_warning_message(
+                                            format!(
+                                                "Butter Paper could not inspect recoverable unsaved changes. Opening documents is paused to protect them. Details: {error}"
+                                            ),
+                                            cx,
+                                        );
+                                    });
+                                }
+                            }
+                        })
+                        .detach();
                     }
-                    NativeLaunchAction::Restore(plan) => {
+                    _ => {
                         document_workspace.update(cx, |workspace, cx| {
-                            workspace.restore_session(plan, cx);
+                            apply_launch_action(workspace, launch_action, cx);
                         });
                     }
                 }
@@ -1630,7 +2154,9 @@ fn main() {
                         ui_zoom_level,
                         ui_zoom_base_font_size,
                         template_manager,
+                        session_store.clone(),
                         perf,
+                        application_title,
                         system_theme_subscription,
                         window,
                         cx,

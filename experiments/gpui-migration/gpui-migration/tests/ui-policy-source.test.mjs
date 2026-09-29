@@ -36,8 +36,9 @@ test('native inspectors, defaults panels, viewer toolbar and system theme use to
 
 test('the shared interaction chrome is the single authored canvas colour source', async () => {
   const source = await readFile(new URL('interaction_chrome.rs', sourceDirectory), 'utf8');
+  // Pale yellow is Electron's hover-handle fill; keep it owned by the shared painter.
   const allowed = [
-    'rgb(0x2563eb', 'rgb(0xfacc15', 'rgb(0x111827', 'rgb(0xffffff', 'rgb(0x94a3b8', 'rgb(0x93c5fd', 'rgb(0x1d4ed8', 'rgb(0x0f766e', 'rgb(0x22c55e',
+    'rgb(0x2563eb', 'rgb(0xfacc15', 'rgb(0x111827', 'rgb(0xffffff', 'rgb(0x94a3b8', 'rgb(0x93c5fd', 'rgb(0x1d4ed8', 'rgb(0x0f766e', 'rgb(0xfef08a', 'rgb(0x22c55e',
   ];
   const used = literalColourCalls(source);
   assert.deepEqual(used, allowed);

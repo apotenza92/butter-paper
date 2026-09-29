@@ -54,6 +54,7 @@ pub const DIRTY_CLOSE_DESCRIPTION: &str =
 /// dirty `structural-details` label. Electron requests truncation but declares
 /// no per-tab pixel cap, so this is an explicit reversible native mapping.
 pub const DOCUMENT_TAB_MAX_WIDTH: f32 = 190.;
+const DOCUMENT_TAB_CLOSE_SIZE: f32 = 24.;
 pub const DOCUMENT_TAB_HOVER_MASK_WIDTH: f32 = 34.;
 pub const DOCUMENT_TAB_HOVER_MASK_SOLID_TAIL: f32 = 14.;
 pub const DOCUMENT_TAB_CLOSE_FOCUS_MASK_GAP: &str =
@@ -985,9 +986,7 @@ impl DocumentTabBarTemplateSeam {
         position: Point<Pixels>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !self.tabs.iter().any(|tab| tab.id == tab_id)
-            || self.hovered_close_tab_id.as_deref() == Some(tab_id)
-        {
+        if !self.tabs.iter().any(|tab| tab.id == tab_id) {
             return false;
         }
         self.suppress_pointer_click_tab_id = None;
@@ -1262,6 +1261,7 @@ impl Render for DocumentTabBarTemplateSeam {
                 .get(&tab.id)
                 .expect("every retained document tab must own a bounds cell")
                 .clone();
+            let pointer_down_bounds = tab_bounds_cell.clone();
             let tab_focus = self
                 .tab_focus_handles
                 .get(&tab.id)
@@ -1278,7 +1278,7 @@ impl Render for DocumentTabBarTemplateSeam {
             let dirty = tab.dirty;
             let close_label = document_tab_close_accessible_label(&tab.name);
             let close = Button::new(close_selector)
-                .xsmall()
+                .small()
                 .ghost()
                 .debug_selector(move || close_debug_selector.clone().into())
                 .accessibility_id(close_accessibility_id)
@@ -1531,6 +1531,9 @@ impl Render for DocumentTabBarTemplateSeam {
             let pointer_control = cx.entity().downgrade();
             let pointer_tab_id = tab.id.clone();
             let pointer_focus = tab_focus.clone();
+            let pointer_down_control = cx.entity().downgrade();
+            let pointer_down_tab_id = tab.id.clone();
+            let pointer_down_focus = tab_focus.clone();
             let hover_control = cx.entity().downgrade();
             let hover_tab_id = tab.id.clone();
             let keyboard_control = cx.entity().downgrade();
@@ -1548,6 +1551,12 @@ impl Render for DocumentTabBarTemplateSeam {
             } else {
                 visual_label.to_owned()
             };
+            let compact_visual_label = gpui::div()
+                .min_w_0()
+                .mx(px(-3.))
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(visual_label);
             let label_debug_selector = label_selector.clone();
             // The pinned Tab does not expose an ID for its internal text box.
             // This zero-impact tracer follows the allocated label region while
@@ -1625,8 +1634,8 @@ impl Render for DocumentTabBarTemplateSeam {
                 .accessibility_id(accessibility_id)
                 .aria_description(DOCUMENT_TAB_REORDER_DESCRIPTION)
                 .aria_keyshortcuts(DOCUMENT_TAB_REORDER_KEYSHORTCUTS)
-                .label(visual_label)
                 .aria_label(accessibility_label)
+                .child(compact_visual_label)
                 .child(label_trace)
                 .child(bounds_trace)
                 .children(drag_trace)
@@ -1647,6 +1656,27 @@ impl Render for DocumentTabBarTemplateSeam {
                     this.relative().left(drag_shift)
                 })
                 .track_focus(&tab_focus.tab_stop(is_active))
+                .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                    let bounds = pointer_down_bounds.get();
+                    let close_half = px(DOCUMENT_TAB_CLOSE_SIZE / 2.);
+                    let pointer_over_close = event.position.x
+                        >= bounds.right() - px(DOCUMENT_TAB_CLOSE_SIZE)
+                        && (event.position.y - bounds.center().y).abs() <= close_half;
+                    if pointer_over_close {
+                        return;
+                    }
+                    let armed = pointer_down_control
+                        .update(cx, |control, cx| {
+                            if control.pointer_drag.is_some() {
+                                return false;
+                            }
+                            control.begin_pointer_drag(&pointer_down_tab_id, event.position, cx)
+                        })
+                        .unwrap_or(false);
+                    if armed {
+                        pointer_down_focus.focus(window, cx);
+                    }
+                })
                 .on_hover(move |hovered, _, cx| {
                     let _ = hover_control.update(cx, |control, cx| {
                         if *hovered {
@@ -1784,10 +1814,12 @@ impl Render for DocumentTabBarTemplateSeam {
                         .update(cx, |control, cx| {
                             let tab_id = control.tabs.iter().find_map(|tab| {
                                 let bounds = control.tab_bounds.get(&tab.id)?.get();
-                                (bounds.contains(&event.position)
-                                    && control.hovered_close_tab_id.as_deref()
-                                        != Some(tab.id.as_str()))
-                                .then(|| tab.id.clone())
+                                let close_half = px(DOCUMENT_TAB_CLOSE_SIZE / 2.);
+                                let pointer_over_close = event.position.x
+                                    >= bounds.right() - px(DOCUMENT_TAB_CLOSE_SIZE)
+                                    && (event.position.y - bounds.center().y).abs() <= close_half;
+                                (bounds.contains(&event.position) && !pointer_over_close)
+                                    .then(|| tab.id.clone())
                             });
                             let tab_id = tab_id?;
                             let focus = control.tab_focus_handles.get(&tab_id).cloned();
@@ -1859,6 +1891,7 @@ impl Render for DocumentTabBarTemplateSeam {
                 }
             })
             .p_2()
+            .child(pointer_event_bridge)
             .child(
                 h_flex()
                     .id(DOCUMENT_TAB_SURFACE_ID)
@@ -1888,6 +1921,5 @@ impl Render for DocumentTabBarTemplateSeam {
                     ),
             )
             .child(reorder_status)
-            .child(pointer_event_bridge)
     }
 }

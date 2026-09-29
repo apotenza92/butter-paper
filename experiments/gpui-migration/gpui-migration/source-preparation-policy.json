@@ -22,7 +22,7 @@
   },
   "prepared": {
     "directory": ".prepared/gpui-component-c27f5d5c",
-    "treeSha256": "35254d5f899bb03514766c834996cc9025f16e06ad19ffd4fcfb3e32c105dd69"
+    "treeSha256": "45c28a70a6a33e4e5bf6ed183199c66a81a231c4d3310d0b3df5965fa3f6ad66"
   },
   "tabStatePatch": {
     "path": "patches/gpui-component-tab-button-states.patch",
@@ -34,30 +34,31 @@
     "sha256": "edb528d89356bf30a6c7cb831d1166a68d4e6f1d663c0b42445685be132f89af",
     "purpose": "Reviewed menu-row AccessKit disabled and checked state exposure; not an upstream backport"
   },
-  "forbiddenFeatures": [
-    "profiler",
-    "runtime_shaders",
-    "screen-capture"
-  ],
+  "textareaPaddingPatch": {
+    "path": "patches/gpui-component-textarea-padding.patch",
+    "sha256": "1b6b72550d8933244b4e4edc231eb207d2234397483de0403850c5f916398973",
+    "purpose": "Reviewed opt-in multiline editor padding needed to align in-canvas annotation text with saved PDF geometry"
+  },
+  "textareaRotationPatch": {
+    "path": "patches/gpui-component-textarea-rotation.patch",
+    "sha256": "56443df37718f972ebcac99e33a0256f66d86a8a7d8dbb5fd02035a897096345",
+    "purpose": "Reviewed rotation-only Textarea geometry, committed glyph, caret, selection, text decoration, inverse pointer mapping and AccessKit text-range contract"
+  },
+  "forbiddenFeatures": ["profiler", "runtime_shaders", "screen-capture"],
   "forbiddenReleaseFeatures": [
     "profiler",
     "runtime_shaders",
     "screen-capture",
     "test-support"
   ],
-  "forbiddenPackages": [
-    "zlog",
-    "ztracing_macro"
-  ],
+  "forbiddenPackages": ["zlog", "ztracing_macro"],
   "replacementPackages": {
     "ztracing": {
       "license": "Apache-2.0",
       "source": null
     }
   },
-  "rejectedLicenseExpressions": [
-    "GPL-3.0-or-later"
-  ],
+  "rejectedLicenseExpressions": ["GPL-3.0-or-later"],
   "licenseClarifications": {
     "gpui_shared_string": {
       "revision": "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc",
@@ -85,11 +86,19 @@
   "sharedExperimentSources": [
     {
       "path": "../gpui-migration/Cargo.toml",
-      "sha256": "8ed221ef48fe77be6bddfdb5b03a5b2b85c9a179d9b32fb1eb04d5c4566d8f17"
+      "sha256": "6a5607dc0e4c1ebe3ae471f54f021b47deb1d9fe11590c54cd7b5980881ce4ae"
     },
     {
       "path": "../gpui-migration/src/lib.rs",
-      "sha256": "1da893d5fcfa94e6ff39489db49a2eab2dec59810719f0bbb0399ccffbb02221"
+      "sha256": "61ea2402e9d805bc038552a254931d88ccfb2d3c0aa873a7d525b9d454336076"
+    },
+    {
+      "path": "../gpui-migration/src/macos_process_lifecycle.rs",
+      "sha256": "8908d72a00051d9582604736e7e5c6b7a0ba10f7d139829133b5acb84c740538"
+    },
+    {
+      "path": "../gpui-migration/src/document_recovery_store.rs",
+      "sha256": "21475203320b7cc08811b3707833fde509288a322c5f03f2527b839fe95acbee"
     },
     {
       "path": "../gpui-migration/src/recent_signature_store.rs",
@@ -101,19 +110,19 @@
     },
     {
       "path": "../gpui-migration/src/template_library.rs",
-      "sha256": "b32b41061732a2161f342dcf89b87affd2c3c95c84a186e2c1df1998ac916fdd"
+      "sha256": "bc27f4f1227a40c2afb0be1145c091041b35e696b08780242db91035b7392fea"
     },
     {
       "path": "../gpui-migration/src/pdf_worker.rs",
-      "sha256": "5e7f8f4e2cf718c133efe24e49f3ef5b822914e43b3a4566181907f772bd824d"
+      "sha256": "d94dd90594588a49c2cbc65acf00f5b02da7aa8df014bd0f59eab1b4d506a9de"
     },
     {
       "path": "../gpui-migration/src/annotation_model.rs",
-      "sha256": "d9c428c6e980f961766d7f7a2cd879515c731a25a22892d3c6bb97667d7828a6"
+      "sha256": "6fc2f18c5ae6cdb65b14bddd3e32762bd637060bded73725fd49c5f7ce32aae9"
     },
     {
       "path": "../gpui-migration/src/highlight_compositor.rs",
-      "sha256": "71037f505aadf1dba88a6248c6c80a4d42137998fbd3c090d5d7bad6141dd09d"
+      "sha256": "cb25e5d7c01ae0c95b0f284e47c574992ebb21eb33fb115ddaf7111c45f98683"
     },
     {
       "path": "../gpui-migration/src/image_asset_decode.rs",
@@ -121,23 +130,23 @@
     },
     {
       "path": "../gpui-migration/src/annotation_adapter.rs",
-      "sha256": "be4cd02a9d726f3cee1d431bbacc1c1550086f1f99fa126ede7b876f688487bb"
+      "sha256": "7f52284e3eea7b0f84eaf60822c9c785d34ac2fc6028003a1c24fd3f3f8ef028"
     },
     {
       "path": "../gpui-migration/src/interaction_chrome.rs",
-      "sha256": "ec5bb008498a4cb20672a9cc22c05b19e4bd30c3bd24a9e866bde6ecfa746887"
+      "sha256": "7bff58132d03e1cdcf82a97078c53eb2271c571ee31b5214ff0dcff9a1f6e3b4"
     },
     {
       "path": "../gpui-migration/src/semantic_snapping.rs",
-      "sha256": "3809f3a217060ea8cff33820b7d31c4a806a8e741f78474c53f512f76e03eeb5"
+      "sha256": "f64ff8aeea4f1cf7b6e45c2def5874c361092ffc550babc0b1173dd37b3aa3a6"
     },
     {
       "path": "../gpui-migration/src/cloud_plus_routing.rs",
-      "sha256": "6cf8cde177fcfdf4fd275a1399b762bdac7930058274a6e5db2851172eb3efd2"
+      "sha256": "cd901955844b49512c7219b681ce38ceaaf5a40921a0c72292bcbbc3f548ce87"
     },
     {
       "path": "../gpui-migration/src/selection_geometry.rs",
-      "sha256": "c9a3d9be41e83b2a90922815e7c11cbad435424849d0445b8e915122a8eb8d54"
+      "sha256": "25ba356e03c5ca58e15f2d8073286b7c360e08286ff27560123786fe6c597c4e"
     },
     {
       "path": "../gpui-migration/src/density_fixture.rs",
@@ -149,7 +158,7 @@
     },
     {
       "path": "../gpui-migration/src/pdf_engine.rs",
-      "sha256": "3b5201a9aaf7b5530b8a0dc0432bac43f1bfb12b3fa3f54997eda72d6e324f0a"
+      "sha256": "869417b47ac1fa9be95ab4a3b095efebe32d8d06f30dbfe4c9d714c0f05d8c80"
     },
     {
       "path": "../gpui-migration/src/pdf_file_authority.rs",
@@ -161,7 +170,7 @@
     },
     {
       "path": "../gpui-migration/src/bin/butter-paper-pdf-worker.rs",
-      "sha256": "11ed394589dd9a9907a4760bebe7066db025d2bfa57bf715f4fe10cc4b5c5a1b"
+      "sha256": "70b37e25880d7526462eb63eef521452834083416800878abcd6e64bce7d8062"
     },
     {
       "path": "../gpui-migration/pdfium-development-binaries.json",
@@ -183,11 +192,161 @@
     "integrity": "sha512-WuvlsjngSk7TnTBJ1hsCy3ql9V9VOdcPkd3PKcSmM34vJD8KG6molxz7m7zbYFgICwsanQWmJ13JlYs4Zp7Arw==",
     "licenseSha256": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57"
   },
+  "annotationFonts": {
+    "packages": [
+      {
+        "name": "@expo-google-fonts/arimo",
+        "version": "0.4.3",
+        "license": "MIT AND OFL-1.1",
+        "licenseAsset": "assets/fonts/Arimo-OFL.txt",
+        "licenseSha256": "11cce536cd2f3864d767003af5dcd739e2e15818cf2279b6175edeadd3960992"
+      },
+      {
+        "name": "@expo-google-fonts/roboto-mono",
+        "version": "0.4.2",
+        "license": "MIT AND OFL-1.1",
+        "licenseAsset": "assets/fonts/RobotoMono-OFL.txt",
+        "licenseSha256": "50ab8dd54680d3473f649c9db86fece88434d097c7834475c1c72d2f8c429215"
+      },
+      {
+        "name": "@expo-google-fonts/tinos",
+        "version": "0.4.2",
+        "license": "MIT AND OFL-1.1",
+        "licenseAsset": "assets/fonts/Tinos-OFL.txt",
+        "licenseSha256": "cb3382d4643e8b02c12e322c220a3c76a5020d667e4fd4e7c75e744cca6caa6b"
+      }
+    ],
+    "wrapperLicense": {
+      "asset": "assets/fonts/Expo-Google-Fonts-MIT.txt",
+      "sha256": "f81a99a72ec5e64e3f74fad0db3df27ab69ab0edd4878368f83379d3e4fc9313"
+    },
+    "faces": [
+      {
+        "asset": "assets/fonts/Arimo-Regular.ttf",
+        "source": "node_modules/@expo-google-fonts/arimo/400Regular/Arimo_400Regular.ttf",
+        "bytes": 318320,
+        "sha256": "88cc899855d30f9c779b73c3319d0e077b098f927187aafce11ca029add707a6"
+      },
+      {
+        "asset": "assets/fonts/Arimo-Bold.ttf",
+        "source": "node_modules/@expo-google-fonts/arimo/700Bold/Arimo_700Bold.ttf",
+        "bytes": 318844,
+        "sha256": "ec96ac9fdd94766f66f6140c1375bf011577558f88d43f76b3b59307d2a6bca3"
+      },
+      {
+        "asset": "assets/fonts/Arimo-Italic.ttf",
+        "source": "node_modules/@expo-google-fonts/arimo/400Regular_Italic/Arimo_400Regular_Italic.ttf",
+        "bytes": 340984,
+        "sha256": "6bd2c6a6fa87f4566cf0a92c5834884597acbd7be9719e550837865ac4167a42"
+      },
+      {
+        "asset": "assets/fonts/Arimo-BoldItalic.ttf",
+        "source": "node_modules/@expo-google-fonts/arimo/700Bold_Italic/Arimo_700Bold_Italic.ttf",
+        "bytes": 342368,
+        "sha256": "b42b19c10bf5d526f00068303a643282c3df55a79c6fa2eea80b4a078a4a705a"
+      },
+      {
+        "asset": "assets/fonts/RobotoMono-Regular.ttf",
+        "source": "node_modules/@expo-google-fonts/roboto-mono/400Regular/RobotoMono_400Regular.ttf",
+        "bytes": 87540,
+        "sha256": "e4bf45837847d4abfa5a502b807a83393aa138727bdb9ea9c93fb17d53208d95"
+      },
+      {
+        "asset": "assets/fonts/RobotoMono-Bold.ttf",
+        "source": "node_modules/@expo-google-fonts/roboto-mono/700Bold/RobotoMono_700Bold.ttf",
+        "bytes": 87696,
+        "sha256": "92649d819cc4c20480b23a47aaa111769924eb31c66b6ecdcf6f573662558c83"
+      },
+      {
+        "asset": "assets/fonts/RobotoMono-Italic.ttf",
+        "source": "node_modules/@expo-google-fonts/roboto-mono/400Regular_Italic/RobotoMono_400Regular_Italic.ttf",
+        "bytes": 94836,
+        "sha256": "82629b0b8a721ce1a79942f68b39438512b406dad2a4a7476c94b72e7794b2f4"
+      },
+      {
+        "asset": "assets/fonts/RobotoMono-BoldItalic.ttf",
+        "source": "node_modules/@expo-google-fonts/roboto-mono/700Bold_Italic/RobotoMono_700Bold_Italic.ttf",
+        "bytes": 95100,
+        "sha256": "5bc2918abfd7399aff52e0a7ee22c97d544601f7ae8ff3b49ad176497acff1ed"
+      },
+      {
+        "asset": "assets/fonts/Tinos-Regular.ttf",
+        "source": "node_modules/@expo-google-fonts/tinos/400Regular/Tinos_400Regular.ttf",
+        "bytes": 508752,
+        "sha256": "924ef269e73da94c1803ff68877f5d998dd16605c5ffad82ee181034f8a1fffe"
+      },
+      {
+        "asset": "assets/fonts/Tinos-Bold.ttf",
+        "source": "node_modules/@expo-google-fonts/tinos/700Bold/Tinos_700Bold.ttf",
+        "bytes": 583484,
+        "sha256": "576a19b5dc026cafe6ae8fde4c849588dae6475cf5d912cebdf2827388c43ad9"
+      },
+      {
+        "asset": "assets/fonts/Tinos-Italic.ttf",
+        "source": "node_modules/@expo-google-fonts/tinos/400Regular_Italic/Tinos_400Regular_Italic.ttf",
+        "bytes": 549824,
+        "sha256": "4a52de5bcf70e37bd71949f8a85302b75795a1943aedffbbee4f2db7744e1c81"
+      },
+      {
+        "asset": "assets/fonts/Tinos-BoldItalic.ttf",
+        "source": "node_modules/@expo-google-fonts/tinos/700Bold_Italic/Tinos_700Bold_Italic.ttf",
+        "bytes": 563688,
+        "sha256": "10c90ef7896d758923c06a1485d7824cdb457466da0bf7d42f81c5228931281b"
+      }
+    ]
+  },
   "developmentFixtures": [
     {
       "path": "../performance/results/public-fixtures-v1/bp-image-checker-v1.png",
       "sha256": "fcc714d1ac60ed4b88abf7297830479c7557cb9d219033e7a5a5ad4d6ec18dda",
       "purpose": "checksum-locked regular PNG annotation journey"
     }
-  ]
+  ],
+  "zedPrepared": {
+    "directory": ".prepared/zed-8b1497d",
+    "patch": {
+      "path": "patches/gpui-opaque-path-multiply.patch",
+      "sha256": "76315cbecf73e6623ba6e42398ebc73f61f2a3cdb288c882a6bfa70ca86ef292"
+    },
+    "changedFiles": [
+      "Cargo.toml",
+      "crates/gpui/src/elements/img.rs",
+      "crates/gpui/src/path_builder.rs",
+      "crates/gpui/src/platform/test/window.rs",
+      "crates/gpui/src/scene.rs",
+      "crates/gpui/src/text_system/line.rs",
+      "crates/gpui/src/window.rs",
+      "crates/gpui_apple/src/metal_renderer.rs",
+      "crates/gpui_apple/src/shaders.metal",
+      "crates/gpui_linux/src/linux.rs",
+      "crates/gpui_linux/src/linux/wayland/client.rs",
+      "crates/gpui_wgpu/src/shaders.wgsl",
+      "crates/gpui_wgpu/src/shaders_webgl.wgsl",
+      "crates/gpui_wgpu/src/wgpu_renderer.rs",
+      "crates/gpui_windows/src/shaders.hlsl"
+    ],
+    "treeSha256": "804408c8f6cc18f84a03d7f31b65d527acb9c522792427a09b80848f33d926dd",
+    "packages": {
+      "collections": "crates/collections",
+      "derive_refineable": "crates/refineable/derive_refineable",
+      "gpui": "crates/gpui",
+      "gpui_apple": "crates/gpui_apple",
+      "gpui_linux": "crates/gpui_linux",
+      "gpui_macos": "crates/gpui_macos",
+      "gpui_macros": "crates/gpui_macros",
+      "gpui_platform": "crates/gpui_platform",
+      "gpui_shared_string": "crates/gpui_shared_string",
+      "gpui_util": "crates/gpui_util",
+      "gpui_web": "crates/gpui_web",
+      "gpui_wgpu": "crates/gpui_wgpu",
+      "gpui_windows": "crates/gpui_windows",
+      "http_client": "crates/http_client",
+      "media": "crates/media",
+      "perf": "tooling/perf",
+      "refineable": "crates/refineable",
+      "scheduler": "crates/scheduler",
+      "sum_tree": "crates/sum_tree",
+      "util_macros": "crates/util_macros"
+    }
+  }
 }

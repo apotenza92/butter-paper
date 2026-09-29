@@ -5,9 +5,8 @@
 
 use crate::annotation_model::{BlendMode, InkTool, MarkupId, PenAppearance};
 use crate::property_controls::{
-    PropertyInspectorPanel, PropertySliderInput, canonical_picker_opacity,
-    format_property_number, format_property_percentage, parse_property_percentage,
-    property_color_picker,
+    PropertyInspectorPanel, PropertySliderInput, canonical_picker_opacity, format_property_number,
+    format_property_percentage, parse_property_percentage, property_color_picker,
 };
 use gpui::{
     AnyElement, AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,

@@ -162,9 +162,7 @@ impl ToolProperties {
             }
             AnnotationTool::TextBox => TEXT_BOX_FIELDS,
             AnnotationTool::Snapshot | AnnotationTool::Image => OPACITY_FIELDS,
-            AnnotationTool::Select
-            | AnnotationTool::Redact
-            => NO_FIELDS,
+            AnnotationTool::Select | AnnotationTool::Redact => NO_FIELDS,
         }
     }
 
@@ -380,10 +378,7 @@ mod tests {
             ToolProperties::applicable_fields(AnnotationTool::TextBox),
             TEXT_BOX_FIELDS
         );
-        for unsupported in [
-            AnnotationTool::Select,
-            AnnotationTool::Redact,
-        ] {
+        for unsupported in [AnnotationTool::Select, AnnotationTool::Redact] {
             assert!(ToolProperties::applicable_fields(unsupported).is_empty());
         }
     }

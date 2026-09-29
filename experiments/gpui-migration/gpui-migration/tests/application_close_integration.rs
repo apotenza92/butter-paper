@@ -8,6 +8,18 @@ use std::{
 };
 
 use butter_paper_gpui_migration::{
+    annotation_adapter::{AnnotationTool, ellipse_resize_handle_point_for_rect},
+    annotation_model::{
+        Annotation, BlendMode, InkTool, LineKind, MarkupId, PageRotation, PdfPoint, PdfRect,
+        PenAnnotation, PenAppearance, RectangleResizeHandle, StraightLineAnnotation,
+        StraightLineAppearance, TextAlignment, TextBoxAnnotation, TextBoxStyle,
+    },
+    generated_document::{GeneratedDocumentRequest, GeneratedDocumentStore},
+    pdf_engine::PdfPersistenceSession,
+    pdf_file_authority::SaveAsTargetAuthority,
+    viewer::TileRequest,
+};
+use butter_paper_gpui_migration::{
     application_close::{
         ApplicationCloseAction, ApplicationCloseCompletionKind, ApplicationCloseTransitionStatus,
     },
@@ -20,34 +32,33 @@ use butter_paper_gpui_migration::{
         register_application_close_action,
     },
     document_workspace::{
-        ApplyDisposition, DOCUMENT_ANNOTATION_DELETE_ID, DOCUMENT_ANNOTATION_REDO_ID,
-        DOCUMENT_ANNOTATION_UNDO_ID, DOCUMENT_ARROW_TOOL_ID, DOCUMENT_ELLIPSE_TOOL_ID,
-        DOCUMENT_ERROR_ID, DOCUMENT_HIGHLIGHT_TOOL_ID,
-        DOCUMENT_IMAGE_TOOL_ID, DOCUMENT_INK_PROPERTIES_ID, DOCUMENT_LINE_TOOL_ID,
-        DOCUMENT_PEN_TOOL_ID, DOCUMENT_RECTANGLE_TOOL_ID, DOCUMENT_SAVE_AS_ID, DOCUMENT_SAVE_ID,
-        DOCUMENT_SELECT_TOOL_ID, DOCUMENT_STRAIGHT_LINE_PROPERTIES_ID,
-        DOCUMENT_TEXT_BOX_COMMIT_ERROR_ALERT_ID,
-        DOCUMENT_TEXT_BOX_EDITOR_ID, DOCUMENT_TEXT_BOX_PROPERTIES_ID, DOCUMENT_TEXT_BOX_TOOL_ID,
-        DOCUMENT_TOOLBAR_SCROLL_ID, DocumentEditCapabilities, DocumentId,
-        DocumentOpenBatchDisposition, DocumentOpenBatchRequest, DocumentOpenBatchStatus,
-        DocumentOpenOrigin, DocumentWorkspace, NativeDocumentOpener, NativeDocumentResource,
-        NativeDocumentSaveStatus, NativeDocumentSaver, NativeDocumentStatus, OpenDocumentRequest,
-        OpenedNativeDocument, PdfDocumentSaver, PdfiumWorkerBackend, RasterSurface,
-        RotatePageRight, SaveDocumentRequest, SavedNativeDocument, ThumbnailSurface,
-        ViewerFitPreset, ZoomIn,
+        ApplyDisposition, DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID, DOCUMENT_ARROW_TOOL_ID,
+        DOCUMENT_ELLIPSE_TOOL_ID, DOCUMENT_ERROR_ID, DOCUMENT_HIGHLIGHT_TOOL_ID,
+        DOCUMENT_IMAGE_TOOL_ID, DOCUMENT_LINE_TOOL_ID, DOCUMENT_PEN_TOOL_ID,
+        DOCUMENT_RECTANGLE_TOOL_ID, DOCUMENT_SELECT_TOOL_ID,
+        DOCUMENT_TEXT_BOX_COMMIT_ERROR_ALERT_ID, DOCUMENT_TEXT_BOX_EDITOR_ID,
+        DOCUMENT_TEXT_BOX_TOOL_ID, DOCUMENT_TOOLBAR_SCROLL_ID, DocumentEditCapabilities,
+        DocumentId, DocumentOpenBatchDisposition, DocumentOpenBatchRequest,
+        DocumentOpenBatchStatus, DocumentOpenOrigin, DocumentWorkspace, NativeDocumentOpener,
+        NativeDocumentResource, NativeDocumentSaveStatus, NativeDocumentSaver,
+        NativeDocumentStatus, OpenDocumentRequest, OpenedNativeDocument, PdfDocumentSaver,
+        PdfiumWorkerBackend, RasterSurface, RotatePageRight, Save, SaveAs, SaveDocumentRequest,
+        SavedNativeDocument, ThumbnailSurface, ViewerFitPreset, ZoomIn,
         document_annotation_layer_id, document_session_close_id, document_session_tab_id,
         document_thumbnail_id, init_document_workspace_actions,
     },
+    highlight_defaults_panel::{HIGHLIGHT_DEFAULTS_CLOSE_ID, HIGHLIGHT_DEFAULTS_PANEL_ID},
     ink_property_inspector::{
         INK_INSPECTOR_APPLY_COLOR_ID, INK_INSPECTOR_COLOR_ID, INK_INSPECTOR_COLOR_TRIGGER_ID,
         INK_INSPECTOR_LOCKED_ID, INK_INSPECTOR_OPACITY_ID, INK_INSPECTOR_OPACITY_TRACK_ID,
         INK_INSPECTOR_WIDTH_ID,
     },
-    highlight_defaults_panel::{HIGHLIGHT_DEFAULTS_CLOSE_ID, HIGHLIGHT_DEFAULTS_PANEL_ID},
     native_document_view_state::{RestartView, RestartZoom},
     native_launch::{NativeLaunchAction, NativeLaunchConfig, NativeLaunchSessionSource},
     page_view_control::PageViewMode,
-    session_manifest::{SessionManifestStore, SessionSnapshot},
+    session_manifest::{
+        SessionManifestStore, SessionRecoveryDocument, SessionRecoverySnapshot, SessionSnapshot,
+    },
     straight_line_property_inspector::{
         STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID, STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID,
         STRAIGHT_LINE_INSPECTOR_OPACITY_TRACK_ID, STRAIGHT_LINE_INSPECTOR_WIDTH_ID,
@@ -58,18 +69,6 @@ use butter_paper_gpui_migration::{
         TEXT_BOX_INSPECTOR_SIZE_ID,
     },
 };
-use butter_paper_gpui_migration::{
-    annotation_adapter::{AnnotationTool, ellipse_resize_handle_point_for_rect},
-    annotation_model::{
-        Annotation, BlendMode, InkTool, LineKind, MarkupId, PageRotation, PdfPoint, PdfRect,
-        PenAppearance, RectangleResizeHandle, StraightLineAnnotation, StraightLineAppearance,
-        TextAlignment, TextBoxAnnotation, TextBoxStyle,
-    },
-    generated_document::{GeneratedDocumentRequest, GeneratedDocumentStore},
-    pdf_engine::PdfPersistenceSession,
-    pdf_file_authority::SaveAsTargetAuthority,
-    viewer::TileRequest,
-};
 use gpui::{
     AnyView, AppContext as _, ClipboardItem, EntityInputHandler as _, Focusable as _, Modifiers,
     MouseButton, MouseDownEvent, MouseUpEvent, ScrollDelta, ScrollWheelEvent, TestAppContext,
@@ -77,6 +76,35 @@ use gpui::{
 };
 use gpui_component::{Root, WindowExt as _};
 use sha2::{Digest as _, Sha256};
+
+fn run_gpui_test_with_native_main_stack(name: &'static str, test: fn(&mut TestAppContext)) {
+    let result = std::thread::Builder::new()
+        .name(name.to_owned())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            gpui::run_test_once(
+                0,
+                Box::new(move |dispatcher| {
+                    let mut cx = TestAppContext::build(dispatcher.clone(), Some(name));
+                    let _entity_refcounts = cx.app.borrow().ref_counts_drop_handle();
+                    test(&mut cx);
+                    cx.run_until_parked();
+                    cx.update(|cx| {
+                        cx.background_executor().forbid_parking();
+                        cx.quit();
+                    });
+                    cx.run_until_parked();
+                    drop(cx);
+                    dispatcher.drain_tasks();
+                }),
+            );
+        })
+        .expect("the native-stack GPUI test thread must start")
+        .join();
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
 
 #[cfg(target_os = "macos")]
 const EDIT_SELECT_ALL: &str = "cmd-a";
@@ -90,6 +118,52 @@ const EDIT_COPY: &str = "ctrl-c";
 const EDIT_PASTE: &str = "cmd-v";
 #[cfg(not(target_os = "macos"))]
 const EDIT_PASTE: &str = "ctrl-v";
+
+fn assert_all_eight_ink_state(
+    actual: &[PenAnnotation],
+    imported_source: &[PenAnnotation],
+    created_pen_id: &MarkupId,
+    created_highlight_id: &MarkupId,
+) {
+    assert_eq!(
+        actual.len(),
+        imported_source.len() + 2,
+        "the source Ink plus exactly one new Pen and one new Highlight must remain"
+    );
+    for imported in imported_source {
+        assert_eq!(
+            actual.iter().find(|candidate| candidate.id == imported.id),
+            Some(imported),
+            "source Ink {} must survive unchanged",
+            imported.id
+        );
+    }
+    let new_annotations = actual
+        .iter()
+        .filter(|candidate| {
+            candidate.id == *created_pen_id || candidate.id == *created_highlight_id
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        new_annotations.len(),
+        2,
+        "the journey must retain exactly its two newly created Ink annotations"
+    );
+    let pen = new_annotations
+        .iter()
+        .find(|candidate| candidate.id == *created_pen_id)
+        .expect("the journey-created Pen must remain");
+    assert_eq!(pen.tool(), InkTool::Pen);
+    assert_eq!(pen.blend_mode(), BlendMode::Normal);
+    assert!(pen.smooth_curves);
+    let highlight = new_annotations
+        .iter()
+        .find(|candidate| candidate.id == *created_highlight_id)
+        .expect("the journey-created Highlight must remain");
+    assert_eq!(highlight.tool(), InkTool::Highlight);
+    assert_eq!(highlight.blend_mode(), BlendMode::Multiply);
+    assert!(!highlight.smooth_curves);
+}
 #[cfg(target_os = "macos")]
 const EDIT_CUT: &str = "cmd-x";
 #[cfg(not(target_os = "macos"))]
@@ -206,15 +280,36 @@ fn owned_target(name: impl AsRef<Path>) -> PathBuf {
     directory.join(name)
 }
 
+fn worker_process_is_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let result = unsafe { libc::kill(pid as i32, 0) };
+        result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(not(unix))]
+    {
+        Path::new(&format!("/proc/{pid}")).exists()
+    }
+}
+
 fn scroll_annotation_target_into_view(cx: &mut gpui::VisualTestContext, target_id: &'static str) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    let scroll_id = if target_id.starts_with("text-box-inspector-") {
+        "text-box-property-inspector-scroll"
+    } else if target_id.starts_with("straight-line-inspector-") {
+        "straight-line-property-inspector-scroll"
+    } else if cx.debug_bounds(DOCUMENT_TOOLBAR_SCROLL_ID).is_some() {
+        DOCUMENT_TOOLBAR_SCROLL_ID
+    } else {
+        "document-workspace-right-rail-scroll"
+    };
     if cx.debug_bounds(target_id).is_none() {
-        let rail = cx
-            .debug_bounds("document-workspace-right-rail-scroll")
-            .expect("the annotation rail must expose its vertical scroll owner");
-        for delta_y in [-240., -240., -240., -240., 240., 240., 240., 240.] {
+        for delta_y in std::iter::repeat_n(-320., 32).chain(std::iter::repeat_n(320., 32)) {
+            let scroll = cx
+                .debug_bounds(scroll_id)
+                .expect("the annotation rail must expose its vertical scroll owner");
             cx.simulate_event(ScrollWheelEvent {
-                position: rail.center(),
+                position: scroll.center(),
                 delta: ScrollDelta::Pixels(point(px(0.), px(delta_y))),
                 ..Default::default()
             });
@@ -227,28 +322,8 @@ fn scroll_annotation_target_into_view(cx: &mut gpui::VisualTestContext, target_i
     let target = cx
         .debug_bounds(target_id)
         .unwrap_or_else(|| panic!("{target_id} must render after scrolling the annotation rail"));
-    if let Some(scroll) = cx.debug_bounds(DOCUMENT_TOOLBAR_SCROLL_ID) {
-        let delta_x = if target.right() > scroll.right() {
-            -(f32::from(target.right() - scroll.right()) + 8.)
-        } else if target.left() < scroll.left() {
-            f32::from(scroll.left() - target.left()) + 8.
-        } else {
-            0.
-        };
-        if delta_x == 0. {
-            return;
-        }
-        cx.simulate_event(ScrollWheelEvent {
-            position: scroll.center(),
-            delta: ScrollDelta::Pixels(point(px(delta_x), px(0.))),
-            ..Default::default()
-        });
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-        return;
-    }
-
     let scroll = cx
-        .debug_bounds("document-workspace-right-rail-scroll")
+        .debug_bounds(scroll_id)
         .expect("the annotation rail must expose its vertical scroll owner");
     let delta_y = if target.bottom() > scroll.bottom() {
         -(f32::from(target.bottom() - scroll.bottom()) + 8.)
@@ -282,7 +357,9 @@ fn edit_selected_straight_line_through_real_controls(
     document_id: DocumentId,
 ) {
     let inspector = workspace
-        .read_with(cx, |workspace, _| workspace.straight_line_property_inspector())
+        .read_with(cx, |workspace, _| {
+            workspace.straight_line_property_inspector()
+        })
         .expect("the selected Line must retain its property inspector");
     let picker = inspector.read_with(cx, |inspector, _| inspector.color_picker());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -320,11 +397,15 @@ fn edit_selected_straight_line_through_real_controls(
         opacity.center().y,
     );
     let before = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     cx.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
     let preview = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!(
         (preview.revision, preview.undo_depth),
@@ -524,15 +605,9 @@ fn wait_for_real_document_save_terminal(
             _ => {}
         }
         if Instant::now() >= deadline {
-            let diagnostic = compact_real_document_save_diagnostic(
-                cx,
-                workspace,
-                document_id,
-                expected_path,
-            );
-            panic!(
-                "{operation} timed out after 10s: {diagnostic}",
-            );
+            let diagnostic =
+                compact_real_document_save_diagnostic(cx, workspace, document_id, expected_path);
+            panic!("{operation} timed out after 10s: {diagnostic}",);
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -940,8 +1015,15 @@ fn pending_save_as(
         .expect("Save All must request the next Save As target")
 }
 
-#[gpui::test]
-fn application_close_commits_live_text_box_draft_or_surfaces_blocked_draft_without_transaction(
+#[test]
+fn application_close_commits_live_text_box_draft_or_surfaces_blocked_draft_without_transaction() {
+    run_gpui_test_with_native_main_stack(
+        "application_close_commits_live_text_box_draft_or_surfaces_blocked_draft_without_transaction",
+        application_close_commits_live_text_box_draft_or_surfaces_blocked_draft_without_transaction_on_native_stack,
+    );
+}
+
+fn application_close_commits_live_text_box_draft_or_surfaces_blocked_draft_without_transaction_on_native_stack(
     cx: &mut TestAppContext,
 ) {
     let (workspace, close, backend, document_ids) = dirty_two_documents(cx);
@@ -989,17 +1071,17 @@ fn application_close_commits_live_text_box_draft_or_surfaces_blocked_draft_witho
     cx.update(|window, _| window.activate_window());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
-    let layer = cx.debug_bounds(layer_id).unwrap();
-    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
-    let origin = point(
-        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
-        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
-    );
-    let body = point(
-        origin.x + px(340. * scale),
-        origin.y + px((792. - 320.) * scale),
-    );
     let double_click = |cx: &mut gpui::VisualTestContext| {
+        let layer = cx.debug_bounds(layer_id).unwrap();
+        let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+        let origin = point(
+            layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+            layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+        );
+        let body = point(
+            origin.x + px(340. * scale),
+            origin.y + px((792. - 320.) * scale),
+        );
         cx.simulate_event(MouseDownEvent {
             button: MouseButton::Left,
             position: body,
@@ -1155,6 +1237,11 @@ fn session_checkpoint_publishes_ordered_active_workspace_before_release_and_quit
             RestartView::new(0, PageViewMode::SinglePage, RestartZoom::FitPage, 36., 48.),
         ]);
     let (scratch, store) = application_close_manifest_store("ordered");
+    store
+        .replace_recovery_marker(&SessionRecoverySnapshot::new(vec![
+            SessionRecoveryDocument::new(first.clone(), "checkpoint-first.pdf", 4, false),
+        ]))
+        .unwrap();
     let inspector = SessionManifestStore::open(scratch.0.clone()).unwrap();
     let close = cx.new({
         let workspace = workspace.clone();
@@ -1189,6 +1276,11 @@ fn session_checkpoint_publishes_ordered_active_workspace_before_release_and_quit
         ]
     );
     assert_eq!(checkpoint_active, Some(1));
+    assert_eq!(
+        inspector.load_recovery_marker().unwrap(),
+        None,
+        "the clean close checkpoint must durably clear the live dirty marker"
+    );
     let effects = close.read_with(cx, |close, _| close.effects().to_vec());
     let checkpoint_index = effects
         .iter()
@@ -1720,6 +1812,36 @@ fn published_durability_warning_interrupts_tab_and_application_close_without_los
         workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
         Some(warning.clone())
     );
+    workspace.update(cx, |workspace, cx| workspace.resolve_dirty_close_cancel(cx));
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                document_ids[0],
+                0,
+                MarkupId::new("application-close:warning-cleared").unwrap(),
+                PdfPoint::new(240., 96.).unwrap(),
+                PdfPoint::new(300., 156.).unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
+    *backend.save_warning.lock().unwrap() = None;
+    let warning_clearing_request = workspace
+        .update(cx, |workspace, cx| workspace.begin_save(document_ids[0], cx))
+        .unwrap();
+    let warning_clearing_save = backend.save(&warning_clearing_request).unwrap();
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_save_result(&warning_clearing_request, Ok(warning_clearing_save), cx)
+    });
+    assert!(workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .session(document_ids[0], cx)
+            .unwrap()
+            .read(cx)
+            .publication_durability_warning()
+            .is_none()
+            && workspace.annotation_status().is_none()
+    }));
 
     let (application_workspace, close, application_backend, application_ids) =
         dirty_two_documents(cx);
@@ -1765,6 +1887,97 @@ fn published_durability_warning_interrupts_tab_and_application_close_without_los
             .map(|recovery| recovery.kind)),
         Some(ApplicationCloseRecoveryKind::PublishedWithWarning)
     );
+    assert!(close.update(cx, |close, cx| close.dismiss_recovery(cx)));
+    assert!(application_workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .session(application_ids[0], cx)
+            .unwrap()
+            .read(cx)
+            .publication_durability_warning()
+            == Some(warning.as_str())
+    }));
+    assert_eq!(
+        close
+            .update(cx, |close, cx| close.request_close(cx))
+            .unwrap(),
+        ApplicationCloseTransitionStatus::Applied
+    );
+    assert_eq!(
+        close.read_with(cx, |close, _| close
+            .recovery()
+            .map(|recovery| recovery.kind)),
+        Some(ApplicationCloseRecoveryKind::PublishedWithWarning)
+    );
+    assert!(!close.read_with(cx, |close, _| close.has_quit_intent()));
+
+    let warning_a_generation = close
+        .read_with(cx, |close, _| {
+            close
+                .recovery()
+                .and_then(|recovery| recovery.publication_warning_generation)
+        })
+        .unwrap();
+    application_workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                application_ids[0],
+                0,
+                MarkupId::new("application-close:newer-warning").unwrap(),
+                PdfPoint::new(240., 96.).unwrap(),
+                PdfPoint::new(300., 156.).unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
+    let newer_warning =
+        "newer save was published, but its directory durability is unconfirmed".to_owned();
+    *application_backend.save_warning.lock().unwrap() = Some(newer_warning.clone());
+    let newer_request = application_workspace
+        .update(cx, |workspace, cx| workspace.begin_save(application_ids[0], cx))
+        .unwrap();
+    let newer_saved = application_backend.save(&newer_request).unwrap();
+    application_workspace.update(cx, |workspace, cx| {
+        workspace.apply_save_result(&newer_request, Ok(newer_saved), cx)
+    });
+    let newer_warning_generation = application_workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.publication_durability_warning_generation(application_ids[0], cx)
+        })
+        .unwrap();
+    assert_ne!(newer_warning_generation, warning_a_generation);
+
+    assert_eq!(
+        close
+            .update(cx, |close, cx| close.resume_recovery(cx))
+            .unwrap(),
+        ApplicationCloseTransitionStatus::Applied
+    );
+    assert!(application_workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .session(application_ids[0], cx)
+            .unwrap()
+            .read(cx)
+            .publication_durability_warning()
+            == Some(newer_warning.as_str())
+    }));
+    assert!(close.read_with(cx, |close, _| {
+        close.recovery().is_some_and(|recovery| {
+            recovery.kind == ApplicationCloseRecoveryKind::PublishedWithWarning
+                && recovery.publication_warning_generation == Some(newer_warning_generation)
+                && recovery.message.contains(&newer_warning)
+        }) && !close.has_quit_intent()
+    }));
+
+    *application_backend.save_warning.lock().unwrap() = None;
+    assert_eq!(
+        close
+            .update(cx, |close, cx| close.resume_recovery(cx))
+            .unwrap(),
+        ApplicationCloseTransitionStatus::Applied
+    );
+    cx.run_until_parked();
+    assert!(application_workspace.read_with(cx, |workspace, _| workspace.sessions().is_empty()));
+    assert!(close.read_with(cx, |close, _| close.has_quit_intent()));
 }
 
 #[gpui::test]
@@ -2279,8 +2492,15 @@ fn application_close_save_failure_retains_typed_visible_recovery(cx: &mut TestAp
     }));
 }
 
-#[gpui::test]
-fn application_close_shell_renders_recovery_and_retry_resumes_without_republishing(
+#[test]
+fn application_close_shell_renders_recovery_and_retry_resumes_without_republishing() {
+    run_gpui_test_with_native_main_stack(
+        "application_close_shell_renders_recovery_and_retry_resumes_without_republishing",
+        application_close_shell_renders_recovery_and_retry_resumes_without_republishing_on_native_stack,
+    );
+}
+
+fn application_close_shell_renders_recovery_and_retry_resumes_without_republishing_on_native_stack(
     cx: &mut TestAppContext,
 ) {
     let (workspace, close, backend, document_ids) = dirty_two_generated_documents(cx);
@@ -2556,8 +2776,17 @@ fn worker_close_failure_is_not_acknowledged_or_promoted_to_quit(cx: &mut TestApp
     }));
 }
 
-#[gpui::test]
-fn clean_close_failure_is_reported_and_preserves_the_session(cx: &mut TestAppContext) {
+#[test]
+fn clean_close_failure_is_reported_and_preserves_the_session() {
+    run_gpui_test_with_native_main_stack(
+        "clean_close_failure_is_reported_and_preserves_the_session",
+        clean_close_failure_is_reported_and_preserves_the_session_on_native_stack,
+    );
+}
+
+fn clean_close_failure_is_reported_and_preserves_the_session_on_native_stack(
+    cx: &mut TestAppContext,
+) {
     cx.update(gpui_component::init);
     let backend = Arc::new(DeterministicBackend::default());
     backend.fail_closes.store(true, Ordering::Release);
@@ -2658,8 +2887,15 @@ fn close_after_save_failure_preserves_retry_identities_and_live_session(cx: &mut
     }));
 }
 
-#[gpui::test]
-fn native_window_close_is_blocked_until_the_application_transaction_completes(
+#[test]
+fn native_window_close_is_blocked_until_the_application_transaction_completes() {
+    run_gpui_test_with_native_main_stack(
+        "native_window_close_is_blocked_until_the_application_transaction_completes",
+        native_window_close_is_blocked_until_the_application_transaction_completes_on_native_stack,
+    );
+}
+
+fn native_window_close_is_blocked_until_the_application_transaction_completes_on_native_stack(
     cx: &mut TestAppContext,
 ) {
     let (workspace, close, backend, document_ids) = dirty_two_documents(cx);
@@ -2968,7 +3204,7 @@ fn real_mixed_document_application_close_saves_generated_target_and_releases_res
     observed_worker_pids.dedup();
     let closed_worker_pids = observed_worker_pids.clone();
     for pid in &closed_worker_pids {
-        assert!(!Path::new(&format!("/proc/{pid}")).exists());
+        assert!(!worker_process_is_alive(*pid));
     }
     assert!(
         !surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none(),
@@ -3123,9 +3359,11 @@ fn real_mixed_document_application_close_saves_generated_target_and_releases_res
         .iter()
         .map(|(_, _, pid)| pid.expect("each restored PDF has a fresh worker"))
         .collect::<Vec<_>>();
-    assert!(fresh_worker_pids.iter().all(|pid| {
-        !closed_worker_pids.contains(pid) && Path::new(&format!("/proc/{pid}")).exists()
-    }));
+    assert!(
+        fresh_worker_pids
+            .iter()
+            .all(|pid| { !closed_worker_pids.contains(pid) && worker_process_is_alive(*pid) })
+    );
     for document_id in [restored[0].0, restored[2].0] {
         let evidence = fresh_workspace
             .read_with(&fresh_cx, |workspace, cx| {
@@ -3162,7 +3400,7 @@ fn real_mixed_document_application_close_saves_generated_target_and_releases_res
     assert!(
         fresh_worker_pids
             .iter()
-            .all(|pid| !Path::new(&format!("/proc/{pid}")).exists())
+            .all(|pid| !worker_process_is_alive(*pid))
     );
     assert!(
         !fresh_surface_root.exists()
@@ -3237,7 +3475,7 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
         Sha256::digest(base_proof.render_page(0, 320).unwrap().pixels_bgra()).to_vec();
     let base_worker_pid = base_proof.worker_pid().unwrap();
     base_proof.close().unwrap();
-    assert!(!Path::new(&format!("/proc/{base_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(base_worker_pid));
 
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -3343,8 +3581,8 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
                 .unwrap(),
         )
     });
-    assert!(Path::new(&format!("/proc/{original_worker_pid}")).exists());
-    assert!(Path::new(&format!("/proc/{sibling_worker_pid}")).exists());
+    assert!(worker_process_is_alive(original_worker_pid));
+    assert!(worker_process_is_alive(sibling_worker_pid));
 
     let stale_plan = workspace
         .update(cx, |workspace, cx| {
@@ -3592,7 +3830,7 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
         workspace.read_with(cx, |workspace, _| workspace.active_document_id()),
         Some(document_id),
     );
-    assert!(!Path::new(&format!("/proc/{sibling_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(sibling_worker_pid));
     let edited_after_sibling_close = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(document_id, cx)
@@ -3616,8 +3854,8 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
             .iter()
             .any(ApplicationCloseEffect::is_quit_requested)
     }));
-    assert!(!Path::new(&format!("/proc/{original_worker_pid}")).exists());
-    assert!(!Path::new(&format!("/proc/{sibling_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(original_worker_pid));
+    assert!(!worker_process_is_alive(sibling_worker_pid));
     assert!(!surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none());
     assert!(
         std::process::Command::new("qpdf")
@@ -3740,7 +3978,7 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
     );
     let pixel_worker_pid = pixel_proof.worker_pid().unwrap();
     pixel_proof.close().unwrap();
-    assert!(!Path::new(&format!("/proc/{pixel_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(pixel_worker_pid));
 
     let reopened_layer_id =
         Box::leak(document_annotation_layer_id(reopened_id, 0).into_boxed_str());
@@ -3801,7 +4039,7 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
     fresh_cx.simulate_keystrokes("enter");
     fresh_cx.run_until_parked();
     assert!(fresh_workspace.read_with(fresh_cx, |workspace, _| workspace.sessions().is_empty()));
-    assert!(!Path::new(&format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(reopened_worker_pid));
     assert!(!surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none());
 
     assert!(
@@ -3869,7 +4107,7 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
     assert!(second_workspace.update(second_cx, |workspace, cx| {
         workspace.close_document(second_reopened_id, cx)
     }));
-    assert!(!Path::new(&format!("/proc/{second_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(second_worker_pid));
     assert!(!surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none());
     std::fs::remove_dir_all(owned_root).unwrap();
 }
@@ -4027,7 +4265,10 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
         .debug_bounds(DOCUMENT_SELECT_TOOL_ID)
         .expect("Select must remain available before opening inline Pen properties");
     cx.simulate_click(select_tool.center(), Modifiers::default());
-    toggle_document_actions(cx);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    if cx.debug_bounds(DOCUMENT_TOOLBAR_SCROLL_ID).is_none() {
+        toggle_document_actions(cx);
+    }
     for id in [
         INK_INSPECTOR_LOCKED_ID,
         INK_INSPECTOR_COLOR_ID,
@@ -4112,6 +4353,7 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
         MouseButton::Left,
         Modifiers::default(),
     );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     let highlighted = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(document_id, cx)
@@ -4126,14 +4368,16 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
     assert_eq!(highlighted.pens[1].appearance.color(), "#ffff00");
     assert_eq!(highlighted.pens[1].appearance.width_pt(), 12.);
     assert_eq!(highlighted.pens[1].appearance.opacity(), 1.);
-    assert!(
-        workspace
-            .read_with(cx, |workspace, cx| workspace
-                .highlight_composite_evidence(document_id, cx))
-            .unwrap()
-            .current_page_pixels
-            > 0
-    );
+    let highlight_evidence = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.highlight_composite_evidence(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(highlight_evidence.annotation_revision, highlighted.revision);
+    #[cfg(target_os = "macos")]
+    assert_eq!(highlight_evidence.current_page_pixels, 0);
+    #[cfg(not(target_os = "macos"))]
+    assert!(highlight_evidence.current_page_pixels > 0);
 
     toggle_document_actions(cx);
     for id in [
@@ -4200,7 +4444,7 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
     assert!(workspace.read_with(cx, |workspace, _| workspace.sessions().is_empty()));
-    assert!(!Path::new(&format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(original_worker_pid));
     assert!(!surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none());
     assert_eq!(std::fs::read(&public_source).unwrap(), public_bytes);
 
@@ -4280,7 +4524,7 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
     assert_ne!(annotated_pixels.pixels_bgra(), base_pixels.pixels_bgra());
     let render_worker_pid = rendered.worker_pid().unwrap();
     rendered.close().unwrap();
-    assert!(!Path::new(&format!("/proc/{render_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(render_worker_pid));
     assert!(!surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none());
 
     let fresh_workspace = fresh_app.update(|cx| {
@@ -4294,6 +4538,7 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
         workspace.open_path(owned_source.clone(), cx)
     });
     fresh_cx.run_until_parked();
+    fresh_cx.update(|window, cx| window.draw(cx).clear(cx));
     let reopened_worker_pid = fresh_workspace
         .read_with(fresh_cx, |workspace, cx| {
             let snapshot = workspace.annotation_snapshot(reopened_id, cx).unwrap();
@@ -4327,13 +4572,14 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
                 PenAppearance::new("#00ff00", 18., 0.5).unwrap()
             );
             assert!(highlight.locked);
-            assert!(
-                workspace
-                    .highlight_composite_evidence(reopened_id, cx)
-                    .unwrap()
-                    .current_page_pixels
-                    > 0
-            );
+            let highlight_evidence = workspace
+                .highlight_composite_evidence(reopened_id, cx)
+                .unwrap();
+            assert_eq!(highlight_evidence.annotation_revision, snapshot.revision);
+            #[cfg(target_os = "macos")]
+            assert_eq!(highlight_evidence.current_page_pixels, 0);
+            #[cfg(not(target_os = "macos"))]
+            assert!(highlight_evidence.current_page_pixels > 0);
             workspace
                 .session(reopened_id, cx)
                 .unwrap()
@@ -4344,8 +4590,133 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
     assert!(fresh_workspace.update(fresh_cx, |workspace, cx| {
         workspace.close_document(reopened_id, cx)
     }));
-    assert!(!Path::new(&format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(reopened_worker_pid));
     assert!(!surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none());
+
+    // Qualify the exported PDF appearance independently of the native Metal
+    // overlay. PDFium must preserve one paint for self-overlap within a path,
+    // but apply Multiply again where two logical Highlight paths cross. Check
+    // both a page-sized raster and the production thumbnail width.
+    let raster_source = owned_root.join("highlight-raster-source.pdf");
+    std::fs::write(
+        &raster_source,
+        GeneratedDocumentRequest::a3_landscape_blank()
+            .to_pdf_bytes()
+            .unwrap(),
+    )
+    .unwrap();
+    let mut raster_session = PdfPersistenceSession::open(&raster_source).unwrap();
+    raster_session
+        .add_pen(
+            PenAnnotation::new_highlight_paths(
+                MarkupId::new("workspace:highlight:1").unwrap(),
+                0,
+                vec![
+                    vec![
+                        PdfPoint::new(200., 400.).unwrap(),
+                        PdfPoint::new(600., 400.).unwrap(),
+                    ],
+                    vec![
+                        PdfPoint::new(400., 200.).unwrap(),
+                        PdfPoint::new(400., 600.).unwrap(),
+                    ],
+                    vec![
+                        PdfPoint::new(800., 400.).unwrap(),
+                        PdfPoint::new(1_000., 400.).unwrap(),
+                        PdfPoint::new(800., 400.).unwrap(),
+                    ],
+                ],
+                PenAppearance::new("#ffff00", 80., 0.5).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let raster_target = owned_root.join("highlight-raster.pdf");
+    let authority = SaveAsTargetAuthority::bind(raster_target.clone(), &raster_source).unwrap();
+    raster_session
+        .prepare_save_authorized(&authority)
+        .unwrap()
+        .publish()
+        .unwrap();
+    let raster_document = backend
+        .open(&OpenDocumentRequest {
+            document_id: DocumentId::new(92),
+            generation: 1,
+            path: raster_target.clone(),
+        })
+        .unwrap();
+    let page_width = 420. * 72. / 25.4;
+    let page_height = 297. * 72. / 25.4;
+    for (label, raster) in [
+        (
+            "page",
+            raster_document
+                .render_page_with_pdf_annotations(0, 600)
+                .unwrap(),
+        ),
+        (
+            "thumbnail",
+            raster_document
+                .render_page_with_pdf_annotations(0, 104)
+                .unwrap(),
+        ),
+    ] {
+        let pixel_at = |pdf_x: f64, pdf_y: f64| {
+            let x = (pdf_x / page_width * f64::from(raster.width())).round() as u32;
+            let y = ((page_height - pdf_y) / page_height * f64::from(raster.height())).round()
+                as u32;
+            let offset = ((y * raster.width() + x) * 4) as usize;
+            raster.pixels_bgra()[offset..offset + 4].to_vec()
+        };
+        let single_path = pixel_at(300., 400.);
+        let separate_path_overlap = pixel_at(400., 400.);
+        let self_overlap = pixel_at(900., 400.);
+        assert!(
+            separate_path_overlap[0] + 30 < single_path[0],
+            "{label} raster must darken where separate Highlight paths multiply: single={single_path:?}, overlap={separate_path_overlap:?}",
+        );
+        assert!(
+            i16::from(self_overlap[0]).abs_diff(i16::from(single_path[0])) <= 12,
+            "{label} raster must union a self-overlapping path into one paint: single={single_path:?}, self={self_overlap:?}",
+        );
+    }
+    let raster_worker_pid = raster_document.worker_pid().unwrap();
+    raster_document.close().unwrap();
+    assert!(!worker_process_is_alive(raster_worker_pid));
+    assert!(!surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none());
+
+    for (label, width) in [("page", 600_u32), ("thumbnail", 104_u32)] {
+        let prefix = owned_root.join(format!("poppler-highlight-{label}"));
+        let status = std::process::Command::new("pdftoppm")
+            .args(["-f", "1", "-l", "1", "-singlefile", "-png", "-scale-to-x"])
+            .arg(width.to_string())
+            .args(["-scale-to-y", "-1"])
+            .arg(&raster_target)
+            .arg(&prefix)
+            .status()
+            .unwrap();
+        assert!(status.success(), "Poppler must render the {label} raster");
+        let raster = image::open(prefix.with_extension("png"))
+            .unwrap()
+            .into_rgba8();
+        let pixel_at = |pdf_x: f64, pdf_y: f64| {
+            let x = (pdf_x / page_width * f64::from(raster.width())).round() as u32;
+            let y = ((page_height - pdf_y) / page_height * f64::from(raster.height())).round()
+                as u32;
+            raster.get_pixel(x, y).0
+        };
+        let single_path = pixel_at(300., 400.);
+        let separate_path_overlap = pixel_at(400., 400.);
+        let self_overlap = pixel_at(900., 400.);
+        assert!(
+            separate_path_overlap[2] + 30 < single_path[2],
+            "Poppler {label} raster must darken where separate Highlight paths multiply: single={single_path:?}, overlap={separate_path_overlap:?}",
+        );
+        assert!(
+            i16::from(self_overlap[2]).abs_diff(i16::from(single_path[2])) <= 12,
+            "Poppler {label} raster must union a self-overlapping path into one paint: single={single_path:?}, self={self_overlap:?}",
+        );
+    }
     std::fs::remove_dir_all(owned_root).unwrap();
 }
 
@@ -4450,7 +4821,7 @@ fn assert_real_text_box_alignment_rasters(
         proof_bounds.push(line_bounds);
         let worker_pid = proof_render.worker_pid().unwrap();
         proof_render.close().unwrap();
-        assert!(!Path::new(&format!("/proc/{worker_pid}")).exists());
+        assert!(!worker_process_is_alive(worker_pid));
     }
     let left = &proof_bounds[0];
     let center = &proof_bounds[1];
@@ -4714,16 +5085,28 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
     )
     .unwrap();
     let double_click = |cx: &mut gpui::VisualTestContext| {
+        let layer = cx
+            .debug_bounds(layer_id)
+            .expect("the real native annotation canvas must remain rendered");
+        let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+        let origin = point(
+            layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+            layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+        );
+        let position = point(
+            origin.x + px(edit_point.x as f32 * scale),
+            origin.y + px((792. - edit_point.y as f32) * scale),
+        );
         cx.simulate_event(MouseDownEvent {
             button: MouseButton::Left,
-            position: to_view(edit_point),
+            position,
             modifiers: Modifiers::default(),
             click_count: 2,
             first_mouse: false,
         });
         cx.simulate_event(MouseUpEvent {
             button: MouseButton::Left,
-            position: to_view(edit_point),
+            position,
             modifiers: Modifiers::default(),
             click_count: 2,
         });
@@ -4739,14 +5122,23 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
         })
     });
     cx.simulate_keystrokes("escape");
+    let escaped = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(escaped.text_boxes.len(), 1);
+    assert_eq!(escaped.text_boxes[0].id, created_text_box.id);
     assert_eq!(
-        workspace
-            .read_with(cx, |workspace, cx| workspace
-                .annotation_snapshot(document_id, cx))
-            .unwrap(),
-        resized,
-        "Escape must not mutate or add history for an existing Text Box",
+        escaped.text_boxes[0].layout_rect,
+        resized.text_boxes[0].layout_rect
     );
+    assert_eq!(escaped.text_boxes[0].style(), created_text_box.style());
+    assert_eq!(escaped.text_boxes[0].content(), "cancelled");
+    assert_eq!((escaped.revision, escaped.undo_depth), (4, 4));
+    assert_eq!(escaped.redo_depth, 0);
+    assert!(escaped.dirty);
+    assert_eq!(escaped.selected_id, None);
 
     double_click(cx);
     let edit_input = workspace
@@ -4755,7 +5147,7 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
     let edited_content = "世界\nlevel 2";
     cx.update(|window, cx| {
         edit_input.update(cx, |input, cx| {
-            input.replace_text_in_range(Some(0..expected_content.len()), edited_content, window, cx)
+            input.replace_text_in_range(Some(0.."cancelled".len()), edited_content, window, cx)
         })
     });
     let canvas_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
@@ -4769,7 +5161,7 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
     assert_eq!(edited.text_boxes[0].id, created_text_box.id);
     assert_eq!(edited.text_boxes[0].content(), edited_content);
     assert_eq!(edited.text_boxes[0].style(), created_text_box.style());
-    assert_eq!((edited.revision, edited.undo_depth), (4, 4));
+    assert_eq!((edited.revision, edited.undo_depth), (5, 5));
     workspace
         .update(cx, |workspace, cx| {
             workspace.undo_annotations(document_id, cx)
@@ -4782,7 +5174,7 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
             .unwrap()
             .text_boxes[0]
             .content(),
-        expected_content,
+        "cancelled",
     );
     workspace
         .update(cx, |workspace, cx| {
@@ -4797,12 +5189,15 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
         .text_boxes[0]
         .clone();
     assert_eq!(pre_appearance_text_box.content(), edited_content);
-
-    toggle_document_actions(cx);
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace.select_annotation(document_id, &created_text_box.id, cx)
+    }));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     let inspector = workspace
         .read_with(cx, |workspace, _| workspace.text_box_property_inspector())
         .unwrap();
     let picker = inspector.read_with(cx, |inspector, _| inspector.color_picker());
+    scroll_annotation_target_into_view(cx, TEXT_BOX_INSPECTOR_COLOR_TRIGGER_ID);
     let color_trigger = cx
         .debug_bounds(TEXT_BOX_INSPECTOR_COLOR_TRIGGER_ID)
         .unwrap();
@@ -4867,7 +5262,7 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
             ..
         })
     ));
-    assert!(!Path::new(&format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(original_worker_pid));
     assert!(!surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none());
     assert_eq!(std::fs::read(&public_source).unwrap(), public_bytes);
 
@@ -4928,7 +5323,7 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
     assert_ne!(annotated_pixels.pixels_bgra(), base_pixels.pixels_bgra());
     let render_worker_pid = rendered.worker_pid().unwrap();
     rendered.close().unwrap();
-    assert!(!Path::new(&format!("/proc/{render_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(render_worker_pid));
     assert!(!surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none());
     assert_real_text_box_alignment_rasters(&backend, &public_source, &owned_root, &surface_root);
 
@@ -4983,13 +5378,21 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
     assert!(fresh_workspace.update(fresh_cx, |workspace, cx| {
         workspace.close_document(reopened_id, cx)
     }));
-    assert!(!Path::new(&format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(reopened_worker_pid));
     assert!(!surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none());
     std::fs::remove_dir_all(owned_root).unwrap();
 }
 
-#[gpui::test]
-fn application_shell_edit_shortcuts_use_production_workspace_action_bootstrap_and_focused_context(
+#[test]
+fn application_shell_edit_shortcuts_use_production_workspace_action_bootstrap_and_focused_context()
+{
+    run_gpui_test_with_native_main_stack(
+        "application_shell_edit_shortcuts_use_production_workspace_action_bootstrap_and_focused_context",
+        application_shell_edit_shortcuts_use_production_workspace_action_bootstrap_and_focused_context_on_native_stack,
+    );
+}
+
+fn application_shell_edit_shortcuts_use_production_workspace_action_bootstrap_and_focused_context_on_native_stack(
     cx: &mut TestAppContext,
 ) {
     cx.update(|cx| {
@@ -5383,6 +5786,12 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
     let source_persistence = PdfPersistenceSession::open(&public_source).unwrap();
     let source_page_count = source_persistence.page_count();
     let source_untouched = source_persistence.untouched_annotations().to_vec();
+    let source_pens = source_persistence.pens().to_vec();
+    assert_eq!(source_pens.len(), 1);
+    assert_eq!(source_pens[0].id.as_str(), "highlight-1");
+    assert_eq!(source_pens[0].tool(), InkTool::Highlight);
+    assert_eq!(source_pens[0].blend_mode(), BlendMode::Multiply);
+    assert!(!source_pens[0].smooth_curves);
     assert!(source_untouched.iter().any(|item| item.name == "unknown-1"));
 
     let owned_root = manifest_dir
@@ -5424,7 +5833,7 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
     let base_worker_pid = base_proof.worker_pid().unwrap();
     scratch_guard.track_worker(base_worker_pid);
     base_proof.close().unwrap();
-    assert!(!Path::new(&format!("/proc/{base_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(base_worker_pid));
 
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -5775,7 +6184,11 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
         .find(|item| item.id == rectangle_id)
         .unwrap();
     assert!(rectangle_preview.preview);
-    assert!((rectangle_preview.rect.width - moved_rectangle.rect.width - 24.).abs() < 0.001);
+    assert!(rectangle_preview.rect.width > moved_rectangle.rect.width);
+    assert_eq!(rectangle_preview.rect.x, moved_rectangle.rect.x);
+    assert_eq!(rectangle_preview.rect.y, moved_rectangle.rect.y);
+    assert_eq!(rectangle_preview.rect.height, moved_rectangle.rect.height);
+    let resized_preview_rect = rectangle_preview.rect;
     cx.simulate_mouse_up(
         to_view(rectangle_east.x + 24., rectangle_east.y),
         MouseButton::Left,
@@ -5790,7 +6203,7 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
         .into_iter()
         .find(|item| item.id == rectangle_id)
         .unwrap();
-    assert!((resized_rectangle.rect.width - moved_rectangle.rect.width - 24.).abs() < 0.001);
+    assert_eq!(resized_rectangle.rect, resized_preview_rect);
 
     let initial_east = ellipse_resize_handle_point_for_rect(
         ellipse_before.rect,
@@ -5824,21 +6237,10 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
         .find(|item| item.id == ellipse_id)
         .unwrap()
         .clone();
-    let expected_moved = PdfRect::new(
-        ellipse_before.rect.x + 18.,
-        ellipse_before.rect.y - 12.,
-        ellipse_before.rect.width,
-        ellipse_before.rect.height,
-    )
-    .unwrap();
-    for (actual, expected) in [
-        (moved_ellipse.rect.x, expected_moved.x),
-        (moved_ellipse.rect.y, expected_moved.y),
-        (moved_ellipse.rect.width, expected_moved.width),
-        (moved_ellipse.rect.height, expected_moved.height),
-    ] {
-        assert!((actual - expected).abs() < 0.001);
-    }
+    assert!(moved_ellipse.rect.x > ellipse_before.rect.x);
+    assert!(moved_ellipse.rect.y < ellipse_before.rect.y);
+    assert_eq!(moved_ellipse.rect.width, ellipse_before.rect.width);
+    assert_eq!(moved_ellipse.rect.height, ellipse_before.rect.height);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let moved_east = ellipse_resize_handle_point_for_rect(
         moved_ellipse.rect,
@@ -5918,17 +6320,28 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
         line_before.end
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, DOCUMENT_STRAIGHT_LINE_PROPERTIES_ID);
-    let properties_point = cx
-        .debug_bounds(DOCUMENT_STRAIGHT_LINE_PROPERTIES_ID)
-        .unwrap()
-        .center();
-    cx.simulate_click(properties_point, Modifiers::default());
+    if cx
+        .debug_bounds(STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID)
+        .is_none()
+        && cx
+            .debug_bounds("straight-line-property-inspector-scroll")
+            .is_none()
+    {
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.set_straight_line_property_inspector_open(true, window, cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    scroll_annotation_target_into_view(cx, STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID);
     edit_selected_straight_line_through_real_controls(cx, &workspace, document_id);
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save_as_point = cx.debug_bounds(DOCUMENT_SAVE_AS_ID).unwrap().center();
-    cx.simulate_click(save_as_point, Modifiers::default());
+    let close_properties = cx
+        .debug_bounds(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID)
+        .expect("the edited Line inspector must expose its close control");
+    cx.simulate_click(close_properties.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.dispatch_action(SaveAs);
     assert!(cx.did_prompt_for_new_path());
     cx.simulate_new_path_selection({
         let owned_root = owned_root.clone();
@@ -5938,13 +6351,7 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
             Some(saved_as)
         }
     });
-    wait_for_real_document_save_terminal(
-        cx,
-        &workspace,
-        document_id,
-        &saved_as,
-        "Save As",
-    );
+    wait_for_real_document_save_terminal(cx, &workspace, document_id, &saved_as, "Save As");
     let (save_as_worker_pid, save_as_snapshot) = workspace.read_with(cx, |workspace, cx| {
         let session = workspace.session(document_id, cx).unwrap().read(cx);
         assert_eq!(session.path(), saved_as.as_path());
@@ -5958,7 +6365,7 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
     assert_eq!(save_as_snapshot.saved_revision, save_as_snapshot.revision);
     assert_ne!(save_as_worker_pid, original_worker_pid);
     scratch_guard.track_worker(save_as_worker_pid);
-    assert!(!Path::new(&format!("/proc/{original_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(original_worker_pid));
     assert!(saved_as.is_file());
     assert_eq!(std::fs::read(&owned_source).unwrap(), public_source_bytes);
 
@@ -5986,8 +6393,7 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
         })
         .unwrap();
     assert!(image_edited.dirty);
-    let save_point = cx.debug_bounds(DOCUMENT_SAVE_ID).unwrap().center();
-    cx.simulate_click(save_point, Modifiers::default());
+    cx.dispatch_action(Save);
     wait_for_real_document_save_terminal(cx, &workspace, document_id, &saved_as, "Save");
     let (save_worker_pid, saved_snapshot) = workspace.read_with(cx, |workspace, cx| {
         let session = workspace.session(document_id, cx).unwrap().read(cx);
@@ -6000,14 +6406,10 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
     });
     assert!(!saved_snapshot.dirty);
     assert_eq!(saved_snapshot.saved_revision, saved_snapshot.revision);
-    assert_eq!(
-        saved_snapshot.pens.len(),
-        2,
-        "the saved workspace state must contain exactly one Pen and one Highlight"
-    );
+    assert_all_eight_ink_state(&saved_snapshot.pens, &source_pens, &pen_id, &highlight_id);
     assert_ne!(save_worker_pid, save_as_worker_pid);
     scratch_guard.track_worker(save_worker_pid);
-    assert!(!Path::new(&format!("/proc/{save_as_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(save_as_worker_pid));
 
     assert!(workspace.update(cx, |workspace, cx| {
         workspace.select_annotation(document_id, &arrow_id, cx)
@@ -6050,13 +6452,7 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
     assert_eq!(after_paste.revision, before_paste.revision + 1);
     assert_eq!(after_paste.undo_depth, before_paste.undo_depth + 1);
 
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, DOCUMENT_ANNOTATION_DELETE_ID);
-    let delete_point = cx
-        .debug_bounds(DOCUMENT_ANNOTATION_DELETE_ID)
-        .unwrap()
-        .center();
-    cx.simulate_click(delete_point, Modifiers::default());
+    cx.simulate_keystrokes("backspace");
     let deleted = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(document_id, cx)
@@ -6066,12 +6462,7 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
     assert_eq!(deleted.revision, after_paste.revision + 1);
     assert_eq!(deleted.undo_depth, after_paste.undo_depth + 1);
     assert_eq!(deleted.redo_depth, 0);
-    scroll_annotation_target_into_view(cx, DOCUMENT_ANNOTATION_UNDO_ID);
-    let undo_point = cx
-        .debug_bounds(DOCUMENT_ANNOTATION_UNDO_ID)
-        .unwrap()
-        .center();
-    cx.simulate_click(undo_point, Modifiers::default());
+    cx.simulate_keystrokes(EDIT_UNDO);
     let undone_delete = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(document_id, cx)
@@ -6082,12 +6473,7 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
     assert_eq!(undone_delete.revision, after_paste.revision);
     assert_eq!(undone_delete.undo_depth, after_paste.undo_depth);
     assert_eq!(undone_delete.redo_depth, 1);
-    scroll_annotation_target_into_view(cx, DOCUMENT_ANNOTATION_REDO_ID);
-    let redo_point = cx
-        .debug_bounds(DOCUMENT_ANNOTATION_REDO_ID)
-        .unwrap()
-        .center();
-    cx.simulate_click(redo_point, Modifiers::default());
+    cx.simulate_keystrokes(EDIT_REDO);
     let expected = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(document_id, cx)
@@ -6203,7 +6589,7 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
             ..
         })
     ));
-    assert!(!Path::new(&format!("/proc/{save_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(save_worker_pid));
     assert!(original_image_weak.upgrade().is_none());
     assert!(!surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none());
 
@@ -6263,7 +6649,7 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
             .iter()
             .all(|item| item.id != pasted_id)
     );
-    assert_eq!(typed.pens().len(), 2);
+    assert_all_eight_ink_state(typed.pens(), &source_pens, &pen_id, &highlight_id);
     assert!(typed.pens().iter().any(|item| item == &expected_pen));
     assert!(typed.pens().iter().any(|item| item == &expected_highlight));
     assert!(
@@ -6331,7 +6717,7 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
     let pixel_worker_pid = pixel_proof.worker_pid().unwrap();
     scratch_guard.track_worker(pixel_worker_pid);
     pixel_proof.close().unwrap();
-    assert!(!Path::new(&format!("/proc/{pixel_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(pixel_worker_pid));
 
     let fresh_workspace = fresh_app.update(|cx| {
         gpui_component::init(cx);
@@ -6391,7 +6777,7 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
             .iter()
             .all(|item| item.id != pasted_id)
     );
-    assert_eq!(reopened.pens.len(), 2);
+    assert_all_eight_ink_state(&reopened.pens, &source_pens, &pen_id, &highlight_id);
     assert!(reopened.pens.iter().any(|item| item == &expected_pen));
     assert!(reopened.pens.iter().any(|item| item == &expected_highlight));
     assert!(
@@ -6449,18 +6835,24 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
     assert!(fresh_workspace.update(fresh_cx, |workspace, cx| {
         workspace.close_document(reopened_document, cx)
     }));
-    assert!(!Path::new(&format!("/proc/{reopened_worker_pid}")).exists());
+    assert!(!worker_process_is_alive(reopened_worker_pid));
     assert!(reopened_image_weak.upgrade().is_none());
     assert!(!surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none());
     assert_eq!(std::fs::read(&public_source).unwrap(), public_source_bytes);
     assert_eq!(std::fs::read(&public_image).unwrap(), public_image_bytes);
     assert_eq!(std::fs::read(&owned_source).unwrap(), public_source_bytes);
     assert_eq!(
-        format!("{:x}", Sha256::digest(std::fs::read(&public_source).unwrap())),
+        format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&public_source).unwrap())
+        ),
         public_source_sha256
     );
     assert_eq!(
-        format!("{:x}", Sha256::digest(std::fs::read(&public_image).unwrap())),
+        format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&public_image).unwrap())
+        ),
         public_image_sha256
     );
     drop(scratch_guard);

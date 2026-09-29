@@ -14,7 +14,8 @@ use butter_paper_gpui_migration::native_launch::{
 };
 use butter_paper_gpui_migration::session_manifest::{
     SessionManifestCorruptionError, SessionManifestError, SessionManifestOperationError,
-    SessionManifestStore, SessionManifestValidationError, SessionSnapshot,
+    SessionManifestStore, SessionManifestValidationError, SessionRecoveryDocument,
+    SessionRecoverySnapshot, SessionSnapshot,
 };
 
 static SCRATCH_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -269,6 +270,94 @@ fn session_manifest_missing_roundtrips_order_and_replaces_atomically() {
             .map(|entry| entry.unwrap().file_name())
             .collect::<Vec<_>>(),
         [OsString::from("session-manifest.json")]
+    );
+}
+
+#[test]
+fn dirty_session_marker_roundtrips_generated_state_and_clean_close_stops_late_writes() {
+    let root = ScratchRoot::new("dirty-recovery-roundtrip");
+    let store = SessionManifestStore::open(root.path().to_path_buf()).unwrap();
+    let first = SessionRecoverySnapshot::new(vec![
+        SessionRecoveryDocument::new(manifest_pdf("Opened.pdf"), "Opened.pdf", 7, false),
+        SessionRecoveryDocument::new(
+            manifest_pdf("generated-original.pdf"),
+            "Untitled PDF",
+            3,
+            true,
+        ),
+    ]);
+
+    assert_eq!(store.load_recovery_marker().unwrap(), None);
+    store.replace_recovery_marker(&first).unwrap();
+    assert_eq!(store.load_recovery_marker().unwrap(), Some(first.clone()));
+    assert_eq!(
+        std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>(),
+        [OsString::from("session-recovery.json")],
+        "atomic publication must not leave a temporary marker behind",
+    );
+
+    store.clear_recovery_marker_and_stop_live_writes().unwrap();
+    assert_eq!(store.load_recovery_marker().unwrap(), None);
+    store
+        .replace_recovery_marker(&SessionRecoverySnapshot::new(vec![
+            SessionRecoveryDocument::new(manifest_pdf("late.pdf"), "late.pdf", 9, false),
+        ]))
+        .unwrap();
+    assert_eq!(
+        store.load_recovery_marker().unwrap(),
+        None,
+        "a delayed live publication must not recreate the marker after clean close",
+    );
+}
+
+#[test]
+fn failed_dirty_session_marker_clear_still_stops_late_live_writes() {
+    let root = ScratchRoot::new("dirty-session-marker-failed-clear-stop");
+    let store = SessionManifestStore::open(root.path().to_path_buf()).unwrap();
+    let marker = root.path().join("session-recovery.json");
+    std::fs::create_dir(&marker).unwrap();
+
+    assert!(store.clear_recovery_marker_and_stop_live_writes().is_err());
+
+    let late = SessionRecoverySnapshot::new(vec![SessionRecoveryDocument::new(
+        root.path().join("late.pdf"),
+        "late.pdf",
+        9,
+        false,
+    )]);
+    store.replace_recovery_marker(&late).unwrap();
+    assert!(
+        marker.is_dir(),
+        "a delayed live write must remain disabled after a failed clean-close clear"
+    );
+
+    std::fs::remove_dir(&marker).unwrap();
+}
+
+#[test]
+fn dirty_session_marker_rejects_corruption_and_invalid_titles() {
+    let root = ScratchRoot::new("dirty-recovery-validation");
+    let store = SessionManifestStore::open(root.path().to_path_buf()).unwrap();
+    assert_eq!(
+        store
+            .replace_recovery_marker(&SessionRecoverySnapshot::new(vec![
+                SessionRecoveryDocument::new(manifest_pdf("empty-title.pdf"), "", 1, false),
+            ]))
+            .unwrap_err(),
+        SessionManifestError::Validation(SessionManifestValidationError::RecoveryTitleEmpty),
+    );
+
+    std::fs::write(
+        root.path().join("session-recovery.json"),
+        b"{\"version\":1,\"documents\":[{\"unexpected\":true}]}\n",
+    )
+    .unwrap();
+    assert_eq!(
+        store.load_recovery_marker().unwrap_err(),
+        SessionManifestError::Corruption(SessionManifestCorruptionError::UnknownField),
     );
 }
 

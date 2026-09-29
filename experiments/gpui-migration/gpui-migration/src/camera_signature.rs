@@ -91,6 +91,11 @@ mod tests {
     use super::*;
     use image::ImageEncoder;
     use std::os::unix::fs::PermissionsExt;
+
+    fn process_exists(pid: i32) -> bool {
+        let result = unsafe { libc::kill(pid, 0) };
+        result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
     #[test]
     fn camera_pipe_sanitizes_image_and_handles_failure_and_cancel() {
         let root = std::env::temp_dir().join(format!("bp-camera-pipe-test-{}", std::process::id()));
@@ -130,6 +135,44 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
         signal.store(true, Ordering::Release);
         assert!(task.join().unwrap().unwrap().is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellation_kills_and_reaps_the_camera_helper() {
+        let root = std::env::temp_dir().join(format!("bp-camera-reap-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let helper = root.join("capture");
+        let pid_file = root.join("pid");
+        std::fs::write(
+            &helper,
+            format!(
+                "#!/bin/sh\nprintf '%s' $$ > '{}'\nexec /bin/sleep 30\n",
+                pid_file.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let signal = cancelled.clone();
+        let task = std::thread::spawn(move || capture_from(helper, cancelled));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let pid = loop {
+            if let Ok(contents) = std::fs::read_to_string(&pid_file)
+                && let Ok(pid) = contents.parse::<i32>()
+            {
+                break pid;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "camera helper did not publish its PID"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        signal.store(true, Ordering::Release);
+        assert!(task.join().unwrap().unwrap().is_none());
+        assert!(!process_exists(pid), "the camera helper must be reaped");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

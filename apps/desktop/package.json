@@ -1,6 +1,6 @@
 {
   "name": "@butter-paper/desktop",
-  "version": "0.0.25",
+  "version": "0.0.26",
   "private": true,
   "license": "MIT",
   "description": "Cross-platform PDF review and markup for architecture, engineering, and construction.",

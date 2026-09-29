@@ -17,7 +17,10 @@ pub(crate) fn accessible_disclosure_button(
     label: impl Into<SharedString>,
     expanded: bool,
 ) -> Button {
-    AccessibleButton(button).aria_label(label).aria_expanded(expanded).0
+    AccessibleButton(button)
+        .aria_label(label)
+        .aria_expanded(expanded)
+        .0
 }
 
 impl InteractiveElement for AccessibleButton {

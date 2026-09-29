@@ -1,0 +1,1333 @@
+diff --git a/crates/gpui/src/elements/img.rs b/crates/gpui/src/elements/img.rs
+index 2c77e5f32a..9d020413db 100644
+--- a/crates/gpui/src/elements/img.rs
++++ b/crates/gpui/src/elements/img.rs
+@@ -802,7 +802,9 @@ impl From<image::ImageError> for ImageCacheError {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use crate::{ParentElement as _, TestAppContext, canvas, div, point, px, size};
++    use crate::{
++        ParentElement as _, TestAppContext, TransformationMatrix, canvas, div, point, px, size,
++    };
+     use image::{Frame, ImageBuffer, Rgba};
+ 
+     const TEST_IMG_ID: &str = "test-img";
+@@ -898,6 +900,47 @@ mod tests {
+         );
+     }
+ 
++    #[gpui::test]
++    fn transformed_image_retains_crop_tile_and_records_matrix(cx: &mut TestAppContext) {
++        let window = cx.add_empty_window();
++        let image = test_image_with_size(200, 100);
++        let transformation = TransformationMatrix {
++            rotation_scale: [[0., -1.], [1., 0.]],
++            translation: [140., 20.],
++        };
++        window.draw(point(px(0.), px(0.)), size(px(200.), px(200.)), |_, _| {
++            canvas(
++                |_, _, _| (),
++                move |_, _, window, _| {
++                    window
++                        .paint_image_transformed(
++                            Bounds::new(point(px(25.), px(0.)), size(px(50.), px(100.))),
++                            Bounds::new(point(px(0.), px(0.)), size(px(100.), px(100.))),
++                            Default::default(),
++                            image.clone(),
++                            0,
++                            false,
++                            transformation,
++                        )
++                        .unwrap();
++                },
++            )
++            .into_any_element()
++        });
++
++        window.update(|window, _| {
++            let sprite = window
++                .rendered_frame
++                .scene
++                .polychrome_sprites
++                .last()
++                .expect("transformed image should paint a sprite");
++            assert_eq!(sprite.transformation, transformation);
++            assert_eq!(sprite.tile.bounds.size.width.0, 100);
++            assert_eq!(sprite.tile.bounds.size.height.0, 100);
++        });
++    }
++
+     #[gpui::test]
+     fn explicit_aspect_ratio_is_not_overridden_by_intrinsic_ratio(cx: &mut TestAppContext) {
+         let window = cx.add_empty_window();
+diff --git a/crates/gpui/src/path_builder.rs b/crates/gpui/src/path_builder.rs
+index 40a6e71e0a..65b7adb343 100644
+--- a/crates/gpui/src/path_builder.rs
++++ b/crates/gpui/src/path_builder.rs
+@@ -9,7 +9,7 @@ use lyon::tessellation::{
+ };
+ 
+ pub use lyon::math::Transform;
+-pub use lyon::tessellation::{FillOptions, FillRule, StrokeOptions};
++pub use lyon::tessellation::{FillOptions, FillRule, LineCap, LineJoin, StrokeOptions};
+ 
+ use crate::{Path, Pixels, Point, point, px};
+ 
+diff --git a/crates/gpui/src/platform/test/window.rs b/crates/gpui/src/platform/test/window.rs
+index dc96e43dfe..b39d4acba1 100644
+--- a/crates/gpui/src/platform/test/window.rs
++++ b/crates/gpui/src/platform/test/window.rs
+@@ -52,7 +52,7 @@ impl HasWindowHandle for TestWindow {
+     fn window_handle(
+         &self,
+     ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+-        unimplemented!("Test Windows are not backed by a real platform window")
++        Err(raw_window_handle::HandleError::NotSupported)
+     }
+ }
+ 
+@@ -60,7 +60,7 @@ impl HasDisplayHandle for TestWindow {
+     fn display_handle(
+         &self,
+     ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+-        unimplemented!("Test Windows are not backed by a real platform window")
++        Err(raw_window_handle::HandleError::NotSupported)
+     }
+ }
+ 
+diff --git a/crates/gpui/src/scene.rs b/crates/gpui/src/scene.rs
+index ea0f5d7e31..e0c707ea22 100644
+--- a/crates/gpui/src/scene.rs
++++ b/crates/gpui/src/scene.rs
+@@ -755,6 +755,7 @@ pub struct PolychromeSprite {
+     pub content_mask: ContentMask<ScaledPixels>,
+     pub corner_radii: Corners<ScaledPixels>,
+     pub tile: AtlasTile,
++    pub transformation: TransformationMatrix,
+ }
+ 
+ impl From<PolychromeSprite> for Primitive {
+@@ -796,6 +797,22 @@ pub struct Path<P: Clone + Debug + Default + PartialEq> {
+     start: Point<P>,
+     current: Point<P>,
+     contour_count: usize,
++    #[cfg(target_os = "macos")]
++    multiply_over_opaque: bool,
++}
++
++#[cfg(target_os = "macos")]
++impl<P: Clone + Debug + Default + PartialEq> Path<P> {
++    /// Whether Metal must multiply this path over an already opaque backdrop.
++    ///
++    /// Panics if a marked path has a non-solid background.
++    pub fn multiplies_over_opaque(&self) -> bool {
++        assert!(
++            !self.multiply_over_opaque || self.color.tag == crate::color::BackgroundTag::Solid,
++            "opaque multiply paths require a solid background"
++        );
++        self.multiply_over_opaque
++    }
+ }
+ 
+ impl Path<Pixels> {
+@@ -814,9 +831,25 @@ impl Path<Pixels> {
+             content_mask: Default::default(),
+             color: Default::default(),
+             contour_count: 0,
++            #[cfg(target_os = "macos")]
++            multiply_over_opaque: false,
+         }
+     }
+ 
++    /// Multiply this path over an already opaque backdrop in the Metal renderer.
++    ///
++    /// Every covered pixel must already have destination alpha 1. This is not
++    /// general multiply compositing over a transparent surface. Each marked path
++    /// composites separately, including when consecutive paths overlap. Within
++    /// a path, triangle coverage is unioned, so joints/self-intersections receive
++    /// opacity once. The colour supplied to `Window::paint_path` must be solid;
++    /// rendering a marked path with a gradient or pattern panics.
++    #[cfg(target_os = "macos")]
++    pub fn with_multiply_over_opaque(mut self) -> Self {
++        self.multiply_over_opaque = true;
++        self
++    }
++
+     /// Scale this path by the given factor.
+     pub fn scale(&self, factor: f32) -> Path<ScaledPixels> {
+         Path {
+@@ -832,6 +865,8 @@ impl Path<Pixels> {
+             start: self.start.map(|start| start.scale(factor)),
+             current: self.current.scale(factor),
+             contour_count: self.contour_count,
++            #[cfg(target_os = "macos")]
++            multiply_over_opaque: self.multiply_over_opaque,
+             color: self.color,
+         }
+     }
+@@ -947,3 +982,37 @@ impl PathVertex<Pixels> {
+         }
+     }
+ }
++
++#[cfg(all(test, target_os = "macos"))]
++mod opaque_path_tests {
++    use super::*;
++    use crate::{px, size};
++
++    #[test]
++    #[should_panic(expected = "opaque multiply paths require a solid background")]
++    fn opaque_multiply_rejects_non_solid_background() {
++        let mut path = Path::new(point(px(0.), px(0.))).with_multiply_over_opaque();
++        path.color.tag = crate::color::BackgroundTag::LinearGradient;
++        path.scale(2.).multiplies_over_opaque();
++    }
++
++    #[test]
++    fn opaque_multiply_survives_scaling_and_scene_insertion() {
++        let mut path = Path::new(point(px(2.), px(3.))).with_multiply_over_opaque();
++        path.line_to(point(px(12.), px(3.)));
++        path.line_to(point(px(12.), px(13.)));
++        path.content_mask.bounds = Bounds::new(point(px(0.), px(0.)), size(px(20.), px(20.)));
++        let scaled = path.scale(2.);
++        assert!(scaled.multiplies_over_opaque());
++        assert_eq!(scaled.bounds, path.bounds.scale(2.));
++        let mut scene = Scene::default();
++        scene.insert_primitive(scaled);
++        assert_eq!(scene.paths.len(), 1);
++        assert!(scene.paths[0].multiplies_over_opaque());
++        assert!(
++            !Path::new(point(px(0.), px(0.)))
++                .scale(2.)
++                .multiplies_over_opaque()
++        );
++    }
++}
+diff --git a/crates/gpui/src/text_system/line.rs b/crates/gpui/src/text_system/line.rs
+index cb66359206..e6ff80b73b 100644
+--- a/crates/gpui/src/text_system/line.rs
++++ b/crates/gpui/src/text_system/line.rs
+@@ -1,7 +1,7 @@
+ use crate::{
+     App, Bounds, DevicePixels, Half, Hsla, LineLayout, Pixels, Point, RenderGlyphParams, Result,
+-    ShapedGlyph, ShapedRun, SharedString, StrikethroughStyle, TextAlign, UnderlineStyle, Window,
+-    WrapBoundary, WrappedLineLayout, black, fill, point, px, size,
++    ShapedGlyph, ShapedRun, SharedString, StrikethroughStyle, TextAlign, TransformationMatrix,
++    UnderlineStyle, Window, WrapBoundary, WrappedLineLayout, black, fill, point, px, size,
+ };
+ use derive_more::{Deref, DerefMut};
+ use smallvec::SmallVec;
+@@ -97,6 +97,7 @@ impl ShapedLine {
+             align_width,
+             &self.decoration_runs,
+             &[],
++            TransformationMatrix::unit(),
+             window,
+             cx,
+         )?;
+@@ -104,6 +105,43 @@ impl ShapedLine {
+         Ok(())
+     }
+ 
++    /// Paint the glyph sprites in this line with a device-pixel transformation.
++    ///
++    /// Text shaping and alignment remain in the line's untransformed coordinate space. Text
++    /// decorations are intentionally not transformed; callers that use this API should supply
++    /// runs without backgrounds, underlines, or strikethroughs.
++    pub fn paint_transformed(
++        &self,
++        origin: Point<Pixels>,
++        line_height: Pixels,
++        align: TextAlign,
++        align_width: Option<Pixels>,
++        transformation: TransformationMatrix,
++        window: &mut Window,
++        cx: &mut App,
++    ) -> Result<()> {
++        anyhow::ensure!(
++            self.decoration_runs
++                .iter()
++                .all(|run| run.background_color.is_none()
++                    && run.underline.is_none()
++                    && run.strikethrough.is_none()),
++            "transformed shaped lines do not support text decoration geometry"
++        );
++        paint_line(
++            origin,
++            &self.layout,
++            line_height,
++            align,
++            align_width,
++            &self.decoration_runs,
++            &[],
++            transformation,
++            window,
++            cx,
++        )
++    }
++
+     /// Paint the background of the line to the window.
+     pub fn paint_background(
+         &self,
+@@ -293,6 +331,7 @@ impl WrappedLine {
+             align_width,
+             &self.decoration_runs,
+             &self.wrap_boundaries,
++            TransformationMatrix::unit(),
+             window,
+             cx,
+         )?;
+@@ -339,6 +378,7 @@ fn paint_line(
+     align_width: Option<Pixels>,
+     decoration_runs: &[DecorationRun],
+     wrap_boundaries: &[WrapBoundary],
++    transformation: TransformationMatrix,
+     window: &mut Window,
+     cx: &mut App,
+ ) -> Result<()> {
+@@ -349,7 +389,14 @@ fn paint_line(
+             line_height * (wrap_boundaries.len() as f32 + 1.),
+         ),
+     );
+-    window.paint_layer(line_bounds, |window| {
++    let layer_bounds = if transformation == TransformationMatrix::unit() {
++        line_bounds
++    } else {
++        // The matrix is expressed in device pixels, so the untransformed logical bounds are not a
++        // safe layer bound. Clipping remains exact in the transformed sprite shader.
++        window.content_mask().bounds
++    };
++    window.paint_layer(layer_bounds, |window| {
+         let padding_top = (line_height - layout.ascent - layout.descent) / 2.;
+         let baseline_offset = point(px(0.), padding_top + layout.ascent);
+         let mut decoration_runs = decoration_runs.iter();
+@@ -522,22 +569,26 @@ fn paint_line(
+                 };
+ 
+                 let content_mask = window.content_mask();
+-                if max_glyph_bounds.intersects(&content_mask.bounds) {
++                if transformation != TransformationMatrix::unit()
++                    || max_glyph_bounds.intersects(&content_mask.bounds)
++                {
+                     let vertical_offset = point(px(0.0), glyph.position.y);
+                     if glyph.is_emoji {
+-                        window.paint_emoji(
++                        window.paint_emoji_transformed(
+                             glyph_origin + baseline_offset + vertical_offset,
+                             run.font_id,
+                             glyph.id,
+                             layout.font_size,
++                            transformation,
+                         )?;
+                     } else {
+-                        window.paint_glyph(
++                        window.paint_glyph_transformed(
+                             glyph_origin + baseline_offset + vertical_offset,
+                             run.font_id,
+                             glyph.id,
+                             layout.font_size,
+                             color,
++                            transformation,
+                         )?;
+                     }
+                 }
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index 657e9bd7c1..b68b679d11 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -4186,6 +4186,30 @@ impl Window {
+         glyph_id: GlyphId,
+         font_size: Pixels,
+         color: Hsla,
++    ) -> Result<()> {
++        self.paint_glyph_transformed(
++            origin,
++            font_id,
++            glyph_id,
++            font_size,
++            color,
++            TransformationMatrix::unit(),
++        )
++    }
++
++    /// Paints a monochrome glyph with a device-pixel transformation.
++    ///
++    /// The transformation affects the rendered sprite and clipping only. It does not affect text
++    /// shaping, layout, or hit testing. Callers should normally use
++    /// [`ShapedLine::paint_transformed`](crate::ShapedLine::paint_transformed).
++    pub fn paint_glyph_transformed(
++        &mut self,
++        origin: Point<Pixels>,
++        font_id: FontId,
++        glyph_id: GlyphId,
++        font_size: Pixels,
++        color: Hsla,
++        transformation: TransformationMatrix,
+     ) -> Result<()> {
+         self.invalidator.debug_assert_paint();
+ 
+@@ -4240,7 +4264,7 @@ impl Window {
+                     content_mask,
+                     color: color.opacity(element_opacity),
+                     tile,
+-                    transformation: TransformationMatrix::unit(),
++                    transformation,
+                 });
+             } else {
+                 self.next_frame.scene.insert_primitive(MonochromeSprite {
+@@ -4250,7 +4274,7 @@ impl Window {
+                     content_mask,
+                     color: color.opacity(element_opacity),
+                     tile,
+-                    transformation: TransformationMatrix::unit(),
++                    transformation,
+                 });
+             }
+         }
+@@ -4290,6 +4314,27 @@ impl Window {
+         font_id: FontId,
+         glyph_id: GlyphId,
+         font_size: Pixels,
++    ) -> Result<()> {
++        self.paint_emoji_transformed(
++            origin,
++            font_id,
++            glyph_id,
++            font_size,
++            TransformationMatrix::unit(),
++        )
++    }
++
++    /// Paints an emoji glyph with a device-pixel transformation.
++    ///
++    /// The transformation affects the rendered sprite and clipping only. It does not affect text
++    /// shaping, layout, or hit testing.
++    pub fn paint_emoji_transformed(
++        &mut self,
++        origin: Point<Pixels>,
++        font_id: FontId,
++        glyph_id: GlyphId,
++        font_size: Pixels,
++        transformation: TransformationMatrix,
+     ) -> Result<()> {
+         self.invalidator.debug_assert_paint();
+ 
+@@ -4333,6 +4378,7 @@ impl Window {
+                 content_mask,
+                 tile,
+                 opacity,
++                transformation,
+             });
+         }
+         Ok(())
+@@ -4419,6 +4465,31 @@ impl Window {
+         data: Arc<RenderImage>,
+         frame_index: usize,
+         grayscale: bool,
++    ) -> Result<()> {
++        self.paint_image_transformed(
++            bounds,
++            image_bounds,
++            corner_radii,
++            data,
++            frame_index,
++            grayscale,
++            TransformationMatrix::unit(),
++        )
++    }
++
++    /// Paints an image with a device-pixel transformation.
++    ///
++    /// The transformation affects the rendered sprite and clipping only. The source tile is still
++    /// selected from the untransformed `bounds` and `image_bounds`, preserving crop coordinates.
++    pub fn paint_image_transformed(
++        &mut self,
++        bounds: Bounds<Pixels>,
++        image_bounds: Bounds<Pixels>,
++        corner_radii: Corners<Pixels>,
++        data: Arc<RenderImage>,
++        frame_index: usize,
++        grayscale: bool,
++        transformation: TransformationMatrix,
+     ) -> Result<()> {
+         self.invalidator.debug_assert_paint();
+ 
+@@ -4505,6 +4576,7 @@ impl Window {
+             corner_radii,
+             tile: sub_tile,
+             opacity,
++            transformation,
+         });
+         Ok(())
+     }
+diff --git a/crates/gpui_apple/src/metal_renderer.rs b/crates/gpui_apple/src/metal_renderer.rs
+index 0f41297297..07e1fb2c14 100644
+--- a/crates/gpui_apple/src/metal_renderer.rs
++++ b/crates/gpui_apple/src/metal_renderer.rs
+@@ -119,7 +119,9 @@ pub struct MetalRenderer {
+     opaque: bool,
+     command_queue: CommandQueue,
+     paths_rasterization_pipeline_state: metal::RenderPipelineState,
++    opaque_multiply_paths_rasterization_pipeline_state: metal::RenderPipelineState,
+     path_sprites_pipeline_state: metal::RenderPipelineState,
++    opaque_multiply_path_sprites_pipeline_state: metal::RenderPipelineState,
+     shadows_pipeline_state: metal::RenderPipelineState,
+     quads_pipeline_state: metal::RenderPipelineState,
+     underlines_pipeline_state: metal::RenderPipelineState,
+@@ -266,7 +268,19 @@ impl MetalRenderer {
+             "path_rasterization_fragment",
+             MTLPixelFormat::BGRA8Unorm,
+             PATH_SAMPLE_COUNT,
++            false,
+         );
++        let opaque_multiply_paths_rasterization_pipeline_state =
++            build_path_rasterization_pipeline_state(
++                &device,
++                &library,
++                "opaque_multiply_paths_rasterization",
++                "path_rasterization_vertex",
++                "path_rasterization_fragment",
++                MTLPixelFormat::BGRA8Unorm,
++                PATH_SAMPLE_COUNT,
++                true,
++            );
+         let path_sprites_pipeline_state = build_path_sprite_pipeline_state(
+             &device,
+             &library,
+@@ -274,6 +288,16 @@ impl MetalRenderer {
+             "path_sprite_vertex",
+             "path_sprite_fragment",
+             MTLPixelFormat::BGRA8Unorm,
++            false,
++        );
++        let opaque_multiply_path_sprites_pipeline_state = build_path_sprite_pipeline_state(
++            &device,
++            &library,
++            "opaque_multiply_path_sprites",
++            "path_sprite_vertex",
++            "path_sprite_fragment",
++            MTLPixelFormat::BGRA8Unorm,
++            true,
+         );
+         let shadows_pipeline_state = build_pipeline_state(
+             &device,
+@@ -338,7 +362,9 @@ impl MetalRenderer {
+             opaque,
+             command_queue,
+             paths_rasterization_pipeline_state,
++            opaque_multiply_paths_rasterization_pipeline_state,
+             path_sprites_pipeline_state,
++            opaque_multiply_path_sprites_pipeline_state,
+             shadows_pipeline_state,
+             quads_pipeline_state,
+             underlines_pipeline_state,
+@@ -676,32 +702,33 @@ impl MetalRenderer {
+                     self.draw_quads(range, instance_bindings, viewport_size, command_encoder)
+                 }
+                 PrimitiveBatch::Paths(range) => {
+-                    let paths = &scene.paths[range];
+-                    command_encoder.end_encoding();
+-
+-                    let did_draw = self.draw_paths_to_intermediate(
+-                        paths,
+-                        writer,
+-                        viewport_size,
+-                        command_buffer,
+-                    )?;
+-
+-                    command_encoder = new_command_encoder_for_texture(
+-                        command_buffer,
+-                        texture,
+-                        viewport_size,
+-                        None,
+-                    );
++                    for paths in path_composite_runs(&scene.paths[range]) {
++                        command_encoder.end_encoding();
+ 
+-                    if did_draw {
+-                        if let Err(error) = self.draw_paths_from_intermediate(
++                        let did_draw = self.draw_paths_to_intermediate(
+                             paths,
+                             writer,
+                             viewport_size,
+-                            command_encoder,
+-                        ) {
+-                            command_encoder.end_encoding();
+-                            return Err(error);
++                            command_buffer,
++                        )?;
++
++                        command_encoder = new_command_encoder_for_texture(
++                            command_buffer,
++                            texture,
++                            viewport_size,
++                            None,
++                        );
++
++                        if did_draw {
++                            if let Err(error) = self.draw_paths_from_intermediate(
++                                paths,
++                                writer,
++                                viewport_size,
++                                command_encoder,
++                            ) {
++                                command_encoder.end_encoding();
++                                return Err(error);
++                            }
+                         }
+                     }
+                 }
+@@ -784,7 +811,11 @@ impl MetalRenderer {
+         }
+ 
+         let command_encoder = command_buffer.new_render_command_encoder(render_pass_descriptor);
+-        command_encoder.set_render_pipeline_state(&self.paths_rasterization_pipeline_state);
++        command_encoder.set_render_pipeline_state(if paths[0].multiplies_over_opaque() {
++            &self.opaque_multiply_paths_rasterization_pipeline_state
++        } else {
++            &self.paths_rasterization_pipeline_state
++        });
+         command_encoder.set_vertex_buffer(
+             PathRasterizationInputIndex::Vertices as u64,
+             Some(&vertex_instance_bindings.buffer),
+@@ -909,7 +940,11 @@ impl MetalRenderer {
+             .as_ref()
+             .context("missing path intermediate texture")?;
+ 
+-        command_encoder.set_render_pipeline_state(&self.path_sprites_pipeline_state);
++        command_encoder.set_render_pipeline_state(if first_path.multiplies_over_opaque() {
++            &self.opaque_multiply_path_sprites_pipeline_state
++        } else {
++            &self.path_sprites_pipeline_state
++        });
+         command_encoder.set_vertex_buffer(
+             SpriteInputIndex::Vertices as u64,
+             Some(&self.unit_vertices),
+@@ -1307,6 +1342,7 @@ fn build_path_sprite_pipeline_state(
+     vertex_fn_name: &str,
+     fragment_fn_name: &str,
+     pixel_format: metal::MTLPixelFormat,
++    multiply_over_opaque: bool,
+ ) -> metal::RenderPipelineState {
+     let vertex_fn = library
+         .get_function(vertex_fn_name, None)
+@@ -1324,10 +1360,14 @@ fn build_path_sprite_pipeline_state(
+     color_attachment.set_blending_enabled(true);
+     color_attachment.set_rgb_blend_operation(metal::MTLBlendOperation::Add);
+     color_attachment.set_alpha_blend_operation(metal::MTLBlendOperation::Add);
+-    color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::One);
++    // Intermediate pixels are premultiplied. For opaque Cd, multiplying with
++    // source Cs at alpha As is Cd * (1 - As + Cs * As).
++    let (source_rgb, destination_rgb, destination_alpha) =
++        path_sprite_blend_factors(multiply_over_opaque);
++    color_attachment.set_source_rgb_blend_factor(source_rgb);
+     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
+-    color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
+-    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::One);
++    color_attachment.set_destination_rgb_blend_factor(destination_rgb);
++    color_attachment.set_destination_alpha_blend_factor(destination_alpha);
+ 
+     device
+         .new_render_pipeline_state(&descriptor)
+@@ -1342,6 +1382,7 @@ fn build_path_rasterization_pipeline_state(
+     fragment_fn_name: &str,
+     pixel_format: metal::MTLPixelFormat,
+     path_sample_count: u32,
++    union_coverage: bool,
+ ) -> metal::RenderPipelineState {
+     let vertex_fn = library
+         .get_function(vertex_fn_name, None)
+@@ -1361,8 +1402,12 @@ fn build_path_rasterization_pipeline_state(
+     let color_attachment = descriptor.color_attachments().object_at(0).unwrap();
+     color_attachment.set_pixel_format(pixel_format);
+     color_attachment.set_blending_enabled(true);
+-    color_attachment.set_rgb_blend_operation(metal::MTLBlendOperation::Add);
+-    color_attachment.set_alpha_blend_operation(metal::MTLBlendOperation::Add);
++    // For a single solid-colour path, maximum premultiplied RGB and alpha
++    // unions triangle coverage instead of darkening joints/self-intersections.
++    // Metal Max ignores the blend factors below (used by ordinary Add paths).
++    let operation = path_rasterization_blend_operation(union_coverage);
++    color_attachment.set_rgb_blend_operation(operation);
++    color_attachment.set_alpha_blend_operation(operation);
+     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::One);
+     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
+     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
+@@ -1624,3 +1669,266 @@ impl gpui::PlatformHeadlessRenderer for MetalHeadlessRenderer {
+         self.renderer.sprite_atlas().clone()
+     }
+ }
++
++// Keep normal path batches intact, but never flatten two multiply paths (or a
++// multiply path and an ordinary path) with source-over in the intermediate.
++fn path_composite_runs(
++    mut paths: &[Path<ScaledPixels>],
++) -> impl Iterator<Item = &[Path<ScaledPixels>]> {
++    std::iter::from_fn(move || {
++        let first = paths.first()?;
++        let count = if first.multiplies_over_opaque() {
++            1
++        } else {
++            paths
++                .iter()
++                .position(Path::multiplies_over_opaque)
++                .unwrap_or(paths.len())
++        };
++        let (run, remaining) = paths.split_at(count);
++        paths = remaining;
++        Some(run)
++    })
++}
++
++#[cfg(test)]
++mod opaque_path_tests {
++    use super::*;
++    use gpui::px;
++
++    #[test]
++    #[ignore = "requires a real macOS Metal device; run explicitly with --ignored"]
++    fn opaque_multiply_gpu_pixels_cover_union_order_alpha_and_edges() {
++        use gpui::{PlatformHeadlessRenderer, rgba};
++
++        fn triangle(colour: u32, multiply: bool, copies: usize) -> Path<ScaledPixels> {
++            let mut path = Path::new(point(px(4.25), px(4.25)));
++            for _ in 0..copies {
++                path.push_triangle(
++                    (
++                        point(px(4.25), px(4.25)),
++                        point(px(28.25), px(4.25)),
++                        point(px(4.25), px(28.25)),
++                    ),
++                    (point(0., 1.), point(0., 1.), point(0., 1.)),
++                );
++            }
++            path.content_mask.bounds = Bounds::new(point(px(0.), px(0.)), size(px(32.), px(32.)));
++            path.color = rgba(colour).into();
++            if multiply {
++                path = path.with_multiply_over_opaque();
++            }
++            path.scale(1.)
++        }
++
++        fn backdrop(colour: u32) -> Path<ScaledPixels> {
++            let mut path = Path::new(point(px(0.), px(0.)));
++            path.line_to(point(px(32.), px(0.)));
++            path.line_to(point(px(32.), px(32.)));
++            path.line_to(point(px(0.), px(32.)));
++            path.content_mask.bounds = Bounds::new(point(px(0.), px(0.)), size(px(32.), px(32.)));
++            path.color = rgba(colour).into();
++            path.scale(1.)
++        }
++
++        fn render(
++            renderer: &mut MetalHeadlessRenderer,
++            paths: Vec<Path<ScaledPixels>>,
++        ) -> image::RgbaImage {
++            let mut scene = Scene::default();
++            scene.insert_primitive(backdrop(0x3366ccff));
++            for path in paths {
++                scene.insert_primitive(path);
++            }
++            scene.finish();
++            renderer
++                .render_scene_to_image(&scene, size(DevicePixels(32), DevicePixels(32)))
++                .unwrap()
++        }
++
++        fn assert_pixel(image: &image::RgbaImage, expected: [u8; 4]) {
++            let actual = image.get_pixel(8, 8).0;
++            assert!(
++                actual.iter().zip(expected).all(|(a, e)| a.abs_diff(e) <= 2),
++                "{actual:?} != {expected:?}"
++            );
++        }
++
++        let mut renderer = MetalHeadlessRenderer::new();
++        let single = render(&mut renderer, vec![triangle(0xffff0080, true, 1)]);
++        assert_pixel(&single, [51, 102, 102, 255]);
++        let self_overlap = render(&mut renderer, vec![triangle(0xffff0080, true, 3)]);
++        assert_eq!(
++            single.as_raw(),
++            self_overlap.as_raw(),
++            "one path must union its own coverage, including antialiased edges"
++        );
++        let separate = render(
++            &mut renderer,
++            vec![triangle(0xffff0080, true, 1), triangle(0xffff0080, true, 1)],
++        );
++        assert_pixel(&separate, [51, 102, 51, 255]);
++        assert_pixel(
++            &render(&mut renderer, vec![triangle(0xffff0000, true, 1)]),
++            [51, 102, 204, 255],
++        );
++        assert_pixel(
++            &render(&mut renderer, vec![triangle(0xffff00ff, true, 1)]),
++            [51, 102, 0, 255],
++        );
++        assert_pixel(
++            &render(
++                &mut renderer,
++                vec![
++                    triangle(0xffff0080, true, 1),
++                    triangle(0xff0000ff, false, 1),
++                ],
++            ),
++            [255, 0, 0, 255],
++        );
++        assert_pixel(
++            &render(
++                &mut renderer,
++                vec![
++                    triangle(0xff0000ff, false, 1),
++                    triangle(0x00ffff80, true, 1),
++                ],
++            ),
++            [127, 0, 0, 255],
++        );
++        assert_eq!(single.get_pixel(0, 0).0, [51, 102, 204, 255]);
++        let edges: Vec<_> = single
++            .pixels()
++            .filter(|pixel| pixel[2] > 105 && pixel[2] < 200)
++            .collect();
++        assert!(
++            !edges.is_empty(),
++            "fixture must exercise fractional edge coverage"
++        );
++        for pixel in edges {
++            assert_eq!(pixel[0], 51);
++            assert_eq!(pixel[1], 102);
++            assert_eq!(pixel[3], 255);
++        }
++    }
++
++    #[test]
++    fn opaque_multiply_unions_self_intersection_coverage_once() {
++        assert_eq!(
++            path_rasterization_blend_operation(false),
++            metal::MTLBlendOperation::Add
++        );
++        let operation = path_rasterization_blend_operation(true);
++        assert_eq!(operation, metal::MTLBlendOperation::Max);
++        let source = [0.9_f64, 0.7, 0.1, 1.];
++        let opacity = 0.4;
++        let mut intermediate = [0_f64; 4];
++        for coverage in [0.25_f64, 1., 0.5, 1.] {
++            for channel in 0..4 {
++                let fragment = source[channel] * opacity * coverage;
++                intermediate[channel] = match operation {
++                    metal::MTLBlendOperation::Max => intermediate[channel].max(fragment),
++                    _ => panic!("self-intersections require maximum coverage"),
++                };
++            }
++        }
++        assert_eq!(intermediate, source.map(|channel| channel * opacity));
++    }
++
++    #[test]
++    fn opaque_multiply_pipeline_matches_reference_for_alpha_and_overlap() {
++        use metal::MTLBlendFactor::{DestinationColor, One, OneMinusSourceAlpha};
++        assert_eq!(
++            path_sprite_blend_factors(false),
++            (One, OneMinusSourceAlpha, One)
++        );
++        let factors = path_sprite_blend_factors(true);
++        assert_eq!(
++            factors,
++            (DestinationColor, OneMinusSourceAlpha, OneMinusSourceAlpha)
++        );
++        let factor = |blend, source_alpha: f64, destination: f64| match blend {
++            DestinationColor => destination,
++            One => 1.,
++            OneMinusSourceAlpha => 1. - source_alpha,
++            _ => panic!("unexpected path blend factor"),
++        };
++        // Evaluate the actual pipeline factors, with premultiplied intermediate
++        // pixels, against the independent opaque multiply equation.
++        for background in [[1., 1., 1.], [0.2, 0.4, 0.8], [0., 0., 0.]] {
++            for alpha in [0., 0.25, 0.7, 1.] {
++                let mut actual = background;
++                let mut expected = background;
++                for source in [[1., 0.8, 0.1], [0.2, 0.6, 1.]] {
++                    for channel in 0..3 {
++                        actual[channel] =
++                            source[channel] * alpha * factor(factors.0, alpha, actual[channel])
++                                + actual[channel] * factor(factors.1, alpha, actual[channel]);
++                        expected[channel] *= 1. - alpha + source[channel] * alpha;
++                        assert!((actual[channel] - expected[channel]).abs() < 1e-12);
++                    }
++                    assert_eq!(alpha + factor(factors.2, alpha, 1.), 1.);
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn opaque_multiply_isolates_each_path_without_splitting_normal_runs() {
++        let paths: Vec<_> = [false, false, true, true, false, false, true]
++            .into_iter()
++            .enumerate()
++            .map(|(index, multiply)| {
++                let path = Path::new(point(px(index as f32), px(0.)));
++                (if multiply {
++                    path.with_multiply_over_opaque()
++                } else {
++                    path
++                })
++                .scale(1.)
++            })
++            .collect();
++        let runs: Vec<_> = path_composite_runs(&paths).collect();
++        assert_eq!(
++            runs.iter().map(|run| run.len()).collect::<Vec<_>>(),
++            [2, 1, 1, 2, 1]
++        );
++        let actual: Vec<_> = runs
++            .iter()
++            .flat_map(|run| run.iter())
++            .map(|path| path.bounds.origin.x)
++            .collect();
++        assert_eq!(
++            actual,
++            paths
++                .iter()
++                .map(|path| path.bounds.origin.x)
++                .collect::<Vec<_>>()
++        );
++        assert_eq!(path_composite_runs(&paths[..2]).count(), 1);
++        assert_eq!(path_composite_runs(&[]).count(), 0);
++    }
++}
++
++fn path_sprite_blend_factors(
++    multiply_over_opaque: bool,
++) -> (
++    metal::MTLBlendFactor,
++    metal::MTLBlendFactor,
++    metal::MTLBlendFactor,
++) {
++    use metal::MTLBlendFactor::{DestinationColor, One, OneMinusSourceAlpha};
++    if multiply_over_opaque {
++        (DestinationColor, OneMinusSourceAlpha, OneMinusSourceAlpha)
++    } else {
++        (One, OneMinusSourceAlpha, One)
++    }
++}
++
++fn path_rasterization_blend_operation(union_coverage: bool) -> metal::MTLBlendOperation {
++    if union_coverage {
++        metal::MTLBlendOperation::Max
++    } else {
++        metal::MTLBlendOperation::Add
++    }
++}
+diff --git a/crates/gpui_apple/src/shaders.metal b/crates/gpui_apple/src/shaders.metal
+index 2b52bb9ecc..9d46fb7d21 100644
+--- a/crates/gpui_apple/src/shaders.metal
++++ b/crates/gpui_apple/src/shaders.metal
+@@ -675,6 +675,7 @@ fragment float4 monochrome_sprite_fragment(
+ struct PolychromeSpriteVertexOutput {
+   float4 position [[position]];
+   float2 tile_position;
++  float2 local_position;
+   uint sprite_id [[flat]];
+   float clip_distance [[clip_distance]][4];
+ };
+@@ -682,6 +683,7 @@ struct PolychromeSpriteVertexOutput {
+ struct PolychromeSpriteFragmentInput {
+   float4 position [[position]];
+   float2 tile_position;
++  float2 local_position;
+   uint sprite_id [[flat]];
+ };
+ 
+@@ -697,13 +699,19 @@ vertex PolychromeSpriteVertexOutput polychrome_sprite_vertex(
+   float2 unit_vertex = unit_vertices[unit_vertex_id];
+   PolychromeSprite sprite = sprites[sprite_id];
+   float4 device_position =
+-      to_device_position(unit_vertex, sprite.bounds, viewport_size);
+-  float4 clip_distance = distance_from_clip_rect(unit_vertex, sprite.bounds,
+-                                                 sprite.content_mask.bounds);
++      to_device_position_transformed(unit_vertex, sprite.bounds,
++                                     sprite.transformation, viewport_size);
++  float4 clip_distance = distance_from_clip_rect_transformed(
++      unit_vertex, sprite.bounds, sprite.content_mask.bounds,
++      sprite.transformation);
+   float2 tile_position = to_tile_position(unit_vertex, sprite.tile, atlas_size);
++  float2 local_position =
++      unit_vertex * float2(sprite.bounds.size.width, sprite.bounds.size.height) +
++      float2(sprite.bounds.origin.x, sprite.bounds.origin.y);
+   return PolychromeSpriteVertexOutput{
+       device_position,
+       tile_position,
++      local_position,
+       sprite_id,
+       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
+ }
+@@ -718,7 +726,7 @@ fragment float4 polychrome_sprite_fragment(
+   float4 sample =
+       atlas_texture.sample(atlas_texture_sampler, input.tile_position);
+   float distance =
+-      quad_sdf(input.position.xy, sprite.bounds, sprite.corner_radii);
++      quad_sdf(input.local_position, sprite.bounds, sprite.corner_radii);
+ 
+   float4 color = sample;
+   if (sprite.grayscale) {
+diff --git a/crates/gpui_linux/src/linux.rs b/crates/gpui_linux/src/linux.rs
+index 33393f7e9e..711b013cc3 100644
+--- a/crates/gpui_linux/src/linux.rs
++++ b/crates/gpui_linux/src/linux.rs
+@@ -39,9 +39,22 @@ pub fn current_platform(headless: bool) -> Rc<dyn gpui::Platform> {
+ 
+     match gpui::guess_compositor() {
+         #[cfg(feature = "wayland")]
+-        "Wayland" => Rc::new(LinuxPlatform {
+-            inner: WaylandClient::new(),
+-        }),
++        "Wayland" => match WaylandClient::new() {
++            Ok(client) => Rc::new(LinuxPlatform { inner: client }),
++            Err(error) => {
++                #[cfg(feature = "x11")]
++                {
++                    log::warn!("Wayland initialisation failed ({error:#}); falling back to X11");
++                    Rc::new(LinuxPlatform {
++                        inner: X11Client::new()
++                            .context("Failed to initialize X11 client after Wayland failure.")
++                            .unwrap(),
++                    })
++                }
++                #[cfg(not(feature = "x11"))]
++                panic!("Failed to initialize Wayland client: {error:#}");
++            }
++        },
+ 
+         #[cfg(feature = "x11")]
+         "X11" => Rc::new(LinuxPlatform {
+diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/src/linux/wayland/client.rs
+index 3d5f9029aa..ebd62560af 100644
+--- a/crates/gpui_linux/src/linux/wayland/client.rs
++++ b/crates/gpui_linux/src/linux/wayland/client.rs
+@@ -7,6 +7,7 @@ use std::{
+     time::{Duration, Instant},
+ };
+ 
++use anyhow::Context as _;
+ use ashpd::WindowIdentifier;
+ use calloop::{
+     EventLoop, LoopHandle,
+@@ -669,19 +670,13 @@ impl Drop for WaylandClient {
+ 
+ const WL_DATA_DEVICE_MANAGER_VERSION: u32 = 3;
+ 
+-fn wl_seat_version(version: u32) -> u32 {
++fn wl_seat_version(version: u32) -> Option<u32> {
+     // We rely on the wl_pointer.frame event
+     const WL_SEAT_MIN_VERSION: u32 = 5;
+     const WL_SEAT_MAX_VERSION: u32 = 9;
+ 
+-    if version < WL_SEAT_MIN_VERSION {
+-        panic!(
+-            "wl_seat below required version: {} < {}",
+-            version, WL_SEAT_MIN_VERSION
+-        );
+-    }
+-
+-    version.clamp(WL_SEAT_MIN_VERSION, WL_SEAT_MAX_VERSION)
++    (version >= WL_SEAT_MIN_VERSION)
++        .then(|| version.clamp(WL_SEAT_MIN_VERSION, WL_SEAT_MAX_VERSION))
+ }
+ 
+ fn wl_output_version(version: u32) -> u32 {
+@@ -698,12 +693,20 @@ fn wl_output_version(version: u32) -> u32 {
+     version.clamp(WL_OUTPUT_MIN_VERSION, WL_OUTPUT_MAX_VERSION)
+ }
+ 
++fn require_wl_seat<T>(seat: Option<T>) -> anyhow::Result<T> {
++    seat.ok_or_else(|| {
++        anyhow::anyhow!("Wayland compositor did not advertise the required wl_seat global")
++    })
++}
++
+ impl WaylandClient {
+-    pub(crate) fn new() -> Self {
++    pub(crate) fn new() -> anyhow::Result<Self> {
+         let startup_activation_token = take_startup_activation_token_from_environment();
+-        let conn = Connection::connect_to_env().unwrap();
++        let conn =
++            Connection::connect_to_env().context("failed to connect to Wayland compositor")?;
+ 
+-        let (globals, event_queue) = registry_queue_init::<WaylandClientStatePtr>(&conn).unwrap();
++        let (globals, event_queue) = registry_queue_init::<WaylandClientStatePtr>(&conn)
++            .context("failed to initialise Wayland registry")?;
+         let qh = event_queue.handle();
+ 
+         let mut seat: Option<wl_seat::WlSeat> = None;
+@@ -715,12 +718,14 @@ impl WaylandClient {
+             for global in list {
+                 match &global.interface[..] {
+                     "wl_seat" => {
+-                        seat = Some(globals.registry().bind::<wl_seat::WlSeat, _, _>(
+-                            global.name,
+-                            wl_seat_version(global.version),
+-                            &qh,
+-                            (),
+-                        ));
++                        if let Some(version) = wl_seat_version(global.version) {
++                            seat = Some(globals.registry().bind::<wl_seat::WlSeat, _, _>(
++                                global.name,
++                                version,
++                                &qh,
++                                (),
++                            ));
++                        }
+                     }
+                     "wl_output" => {
+                         let output = globals.registry().bind::<wl_output::WlOutput, _, _>(
+@@ -737,7 +742,8 @@ impl WaylandClient {
+             }
+         });
+ 
+-        let event_loop = EventLoop::<WaylandClientStatePtr>::try_new().unwrap();
++        let event_loop = EventLoop::<WaylandClientStatePtr>::try_new()
++            .context("failed to create Wayland event loop")?;
+ 
+         let (common, main_receiver, wake_receiver) = LinuxCommon::new(event_loop.get_signal());
+ 
+@@ -757,7 +763,9 @@ impl WaylandClient {
+                     }
+                 }
+             })
+-            .unwrap();
++            .map_err(|error| {
++                anyhow::anyhow!("failed to register Wayland main receiver: {error}")
++            })?;
+ 
+         handle
+             .insert_source(
+@@ -768,12 +776,14 @@ impl WaylandClient {
+                     }
+                 },
+             )
+-            .unwrap();
++            .map_err(|error| {
++                anyhow::anyhow!("failed to register Wayland wake receiver: {error}")
++            })?;
+ 
+         let compositor_gpu = detect_compositor_gpu();
+         let gpu_context = Rc::new(RefCell::new(None));
+ 
+-        let seat = seat.unwrap();
++        let seat = require_wl_seat(seat)?;
+         let globals = Globals::new(
+             globals,
+             common.foreground_executor.clone(),
+@@ -834,7 +844,9 @@ impl WaylandClient {
+                     }
+                 }
+             })
+-            .unwrap();
++            .map_err(|error| {
++                anyhow::anyhow!("failed to register Wayland desktop portal event source: {error}")
++            })?;
+ 
+         let state = Rc::new(RefCell::new(WaylandClientState {
+             serial_tracker: SerialTracker::new(),
+@@ -914,9 +926,11 @@ impl WaylandClient {
+ 
+         WaylandSource::new(conn, event_queue)
+             .insert(handle)
+-            .unwrap();
++            .map_err(|error| {
++                anyhow::anyhow!("failed to register Wayland connection event source: {error}")
++            })?;
+ 
+-        Self(state)
++        Ok(Self(state))
+     }
+ }
+ 
+@@ -1321,19 +1335,19 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandClientStat
+                 version,
+             } => match &interface[..] {
+                 "wl_seat" => {
+-                    if let Some(wl_pointer) = state.wl_pointer.take() {
+-                        wl_pointer.release();
+-                    }
+-                    if let Some(wl_keyboard) = state.wl_keyboard.take() {
+-                        wl_keyboard.release();
++                    if let Some(version) = wl_seat_version(version) {
++                        if let Some(wl_pointer) = state.wl_pointer.take() {
++                            wl_pointer.release();
++                        }
++                        if let Some(wl_keyboard) = state.wl_keyboard.take() {
++                            wl_keyboard.release();
++                        }
++                        state.wl_seat.release();
++                        state.wl_seat =
++                            registry.bind::<wl_seat::WlSeat, _, _>(name, version, qh, ());
++                    } else {
++                        log::warn!("ignoring wl_seat global below required version 5: {version}");
+                     }
+-                    state.wl_seat.release();
+-                    state.wl_seat = registry.bind::<wl_seat::WlSeat, _, _>(
+-                        name,
+-                        wl_seat_version(version),
+-                        qh,
+-                        (),
+-                    );
+                 }
+                 "wl_output" => {
+                     let output = registry.bind::<wl_output::WlOutput, _, _>(
+@@ -2859,6 +2873,22 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn requires_a_wayland_seat_before_client_initialisation() {
++        assert_eq!(require_wl_seat(Some(42_u8)).unwrap(), 42);
++        assert_eq!(
++            require_wl_seat::<u8>(None).unwrap_err().to_string(),
++            "Wayland compositor did not advertise the required wl_seat global"
++        );
++    }
++
++    #[test]
++    fn rejects_unsupported_wayland_seats_without_panicking() {
++        assert_eq!(wl_seat_version(4), None);
++        assert_eq!(wl_seat_version(5), Some(5));
++        assert_eq!(wl_seat_version(12), Some(9));
++    }
++
+     #[test]
+     fn builds_terminated_uri_list_for_each_dragged_path() {
+         let paths = FileDragPaths::new([
+diff --git a/crates/gpui_wgpu/src/shaders.wgsl b/crates/gpui_wgpu/src/shaders.wgsl
+index 718cb7595d..b5aacc4a29 100644
+--- a/crates/gpui_wgpu/src/shaders.wgsl
++++ b/crates/gpui_wgpu/src/shaders.wgsl
+@@ -1268,6 +1268,7 @@ struct PolychromeSprite {
+     content_mask: Bounds,
+     corner_radii: Corners,
+     tile: AtlasTile,
++    transformation: TransformationMatrix,
+ }
+ 
+ 
+@@ -1275,6 +1276,7 @@ struct PolySpriteVarying {
+     @builtin(position) position: vec4<f32>,
+     @location(0) tile_position: vec2<f32>,
+     @location(1) @interpolate(flat) sprite_id: u32,
++    @location(2) local_position: vec2<f32>,
+     @location(3) clip_distances: vec4<f32>,
+ }
+ 
+@@ -1284,10 +1286,11 @@ fn vs_poly_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
+     let sprite = load_poly_sprite(instance_id);
+ 
+     var out = PolySpriteVarying();
+-    out.position = to_device_position(unit_vertex, sprite.bounds);
++    out.position = to_device_position_transformed(unit_vertex, sprite.bounds, sprite.transformation);
+     out.tile_position = to_tile_position(unit_vertex, sprite.tile);
+     out.sprite_id = instance_id;
+-    out.clip_distances = distance_from_clip_rect(unit_vertex, sprite.bounds, sprite.content_mask);
++    out.local_position = sprite.bounds.origin + unit_vertex * vec2<f32>(sprite.bounds.size);
++    out.clip_distances = distance_from_clip_rect_transformed(unit_vertex, sprite.bounds, sprite.content_mask, sprite.transformation);
+     return out;
+ }
+ 
+@@ -1300,7 +1303,7 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
+     }
+ 
+     let sprite = load_poly_sprite(input.sprite_id);
+-    let distance = quad_sdf(input.position.xy, sprite.bounds, sprite.corner_radii);
++    let distance = quad_sdf(input.local_position, sprite.bounds, sprite.corner_radii);
+ 
+     var color = sample;
+     if (sprite.grayscale != 0u) {
+diff --git a/crates/gpui_wgpu/src/shaders_webgl.wgsl b/crates/gpui_wgpu/src/shaders_webgl.wgsl
+index 0c9c217a69..b773a68e96 100644
+--- a/crates/gpui_wgpu/src/shaders_webgl.wgsl
++++ b/crates/gpui_wgpu/src/shaders_webgl.wgsl
+@@ -207,7 +207,7 @@ fn load_mono_sprite(instance_id: u32) -> MonochromeSprite {
+ }
+ 
+ fn load_poly_sprite(instance_id: u32) -> PolychromeSprite {
+-    var cursor = instance_cursor(instance_id * 24u);
++    var cursor = instance_cursor(instance_id * 30u);
+     return PolychromeSprite(
+         read_word(&cursor),
+         read_word(&cursor),
+@@ -217,5 +217,6 @@ fn load_poly_sprite(instance_id: u32) -> PolychromeSprite {
+         read_bounds(&cursor),
+         read_corners(&cursor),
+         read_atlas_tile(&cursor),
++        read_transformation(&cursor),
+     );
+ }
+diff --git a/crates/gpui_wgpu/src/wgpu_renderer.rs b/crates/gpui_wgpu/src/wgpu_renderer.rs
+index b0cd40a767..625553658e 100644
+--- a/crates/gpui_wgpu/src/wgpu_renderer.rs
++++ b/crates/gpui_wgpu/src/wgpu_renderer.rs
+@@ -2238,6 +2238,6 @@ mod tests {
+         assert_eq!(std::mem::size_of::<Underline>(), 16 * 4);
+         assert_eq!(std::mem::size_of::<MonochromeSprite>(), 28 * 4);
+         assert_eq!(std::mem::size_of::<SubpixelSprite>(), 28 * 4);
+-        assert_eq!(std::mem::size_of::<PolychromeSprite>(), 24 * 4);
++        assert_eq!(std::mem::size_of::<PolychromeSprite>(), 30 * 4);
+     }
+ }
+diff --git a/crates/gpui_windows/src/shaders.hlsl b/crates/gpui_windows/src/shaders.hlsl
+index d20cb317db..900f7deec9 100644
+--- a/crates/gpui_windows/src/shaders.hlsl
++++ b/crates/gpui_windows/src/shaders.hlsl
+@@ -1219,12 +1219,14 @@ struct PolychromeSprite {
+     Bounds content_mask;
+     Corners corner_radii;
+     AtlasTile tile;
++    TransformationMatrix transformation;
+ };
+ 
+ struct PolychromeSpriteVertexOutput {
+     nointerpolation uint sprite_id: TEXCOORD0;
+     float4 position: SV_Position;
+     float2 tile_position: POSITION;
++    float2 local_position: TEXCOORD1;
+     float4 clip_distance: SV_ClipDistance;
+ };
+ 
+@@ -1232,6 +1234,7 @@ struct PolychromeSpriteFragmentInput {
+     nointerpolation uint sprite_id: TEXCOORD0;
+     float4 position: SV_Position;
+     float2 tile_position: POSITION;
++    float2 local_position: TEXCOORD1;
+ };
+ 
+ StructuredBuffer<PolychromeSprite> poly_sprites: register(t1);
+@@ -1240,14 +1243,16 @@ PolychromeSpriteVertexOutput polychrome_sprite_vertex(uint vertex_id: SV_VertexI
+     float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
+     uint sprite_id = batch_start_index + instance_id;
+     PolychromeSprite sprite = poly_sprites[sprite_id];
+-    float4 device_position = to_device_position(unit_vertex, sprite.bounds);
+-    float4 clip_distance = distance_from_clip_rect(unit_vertex, sprite.bounds,
+-                                                    sprite.content_mask);
++    float4 device_position = to_device_position_transformed(
++        unit_vertex, sprite.bounds, sprite.transformation);
++    float4 clip_distance = distance_from_clip_rect_transformed(
++        unit_vertex, sprite.bounds, sprite.content_mask, sprite.transformation);
+     float2 tile_position = to_tile_position(unit_vertex, sprite.tile);
+ 
+     PolychromeSpriteVertexOutput output;
+     output.position = device_position;
+     output.tile_position = tile_position;
++    output.local_position = unit_vertex * sprite.bounds.size + sprite.bounds.origin;
+     output.sprite_id = sprite_id;
+     output.clip_distance = clip_distance;
+     return output;
+@@ -1256,7 +1261,7 @@ PolychromeSpriteVertexOutput polychrome_sprite_vertex(uint vertex_id: SV_VertexI
+ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Target {
+     PolychromeSprite sprite = poly_sprites[input.sprite_id];
+     float4 sample = t_sprite.Sample(s_sprite, input.tile_position);
+-    float distance = quad_sdf(input.position.xy, sprite.bounds, sprite.corner_radii);
++    float distance = quad_sdf(input.local_position, sprite.bounds, sprite.corner_radii);
+ 
+     float4 color = sample;
+     if (sprite.grayscale != 0u) {

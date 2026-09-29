@@ -9,6 +9,7 @@ import type {
   ApplicationMenuCommand,
   ApplicationMenuState,
   BlankPdfCreateRequest,
+  ElectronMigrationExportRequest,
   PageGeometryRequest,
   PdfDocumentAccessRequest,
   SaveDocumentRequest,
@@ -24,6 +25,7 @@ import {
   updateCheckMenuLabel,
 } from '../shared/applicationMenu';
 import { resolveApplicationMetadata } from './applicationMetadata';
+import { createElectronMigrationExportPlan, installDownloadedAfterMigration, publishElectronMigrationExport } from './electronDataMigration';
 import { ancestorFileCandidates } from './applicationPaths';
 import type { BlankPdfTemporaryStore } from './blankPdfTemporaryStore';
 import type { PdfTemplateStore } from './pdfTemplateStore';
@@ -57,11 +59,14 @@ const defaultSamplePdfPath = join(moduleDir, '../../../..', 'tests/fixtures/gene
 let mainWindow: BrowserWindowInstance | null = null;
 let themeListenerRegistered = false;
 let updaterServicePromise: Promise<DesktopUpdaterService> | null = null;
+let updaterStartupError: unknown = null;
 let unsubscribeUpdaterStatus: (() => void) | null = null;
 let blankPdfTemporaryStore: BlankPdfTemporaryStore | null = null;
 let blankPdfTemporaryStorePromise: Promise<BlankPdfTemporaryStore> | null = null;
 let pdfTemplateStore: PdfTemplateStore | null = null;
 let pdfTemplateStorePromise: Promise<PdfTemplateStore> | null = null;
+let pdfTemplateMutationQueue: Promise<void> = Promise.resolve();
+let pdfTemplateMutationsBlockedForUpdate = false;
 let pdfSessionModulePromise: Promise<typeof import('./pdfSession')> | null = null;
 let applicationQuitRequested = false;
 let applicationMenuBarVisible = true;
@@ -855,9 +860,17 @@ export function registerIpcHandlers(): void {
     return service.getStatus();
   });
 
-  ipcMain.handle(ipcChannels.updatesInstallDownloaded, async () => {
-    if (!await (await requireUpdaterService()).installDownloaded()) {
-      throw new Error('No downloaded Butter Paper update is ready to install.');
+  ipcMain.handle(ipcChannels.updatesInstallDownloaded, async (event, request: ElectronMigrationExportRequest) => {
+    assertApplicationWindowSender(event);
+    pdfTemplateMutationsBlockedForUpdate = true;
+    try {
+      await installDownloadedAfterMigration(
+        async () => exportElectronMigrationData(request, true),
+        async (publication) => (await requireUpdaterService()).installDownloaded(publication),
+      );
+    } catch (error) {
+      pdfTemplateMutationsBlockedForUpdate = false;
+      throw error;
     }
   });
 
@@ -937,23 +950,26 @@ export function registerIpcHandlers(): void {
           filters: [{ name: 'PDF', extensions: ['pdf'] }],
         });
     if (result.canceled || result.filePaths.length === 0) return null;
-    return (await requirePdfTemplateStore()).importPdf(result.filePaths[0]);
+    return runPdfTemplateMutation(async () => (await requirePdfTemplateStore()).importPdf(result.filePaths[0]));
   });
 
   ipcMain.handle(ipcChannels.templateRemove, async (event, templateId: string) => {
     assertApplicationWindowSender(event);
-    await (await requirePdfTemplateStore()).remove(templateId);
+    await runPdfTemplateMutation(async () => (await requirePdfTemplateStore()).remove(templateId));
   });
 
   ipcMain.handle(ipcChannels.templateImportDocument, async (event, request: PdfDocumentAccessRequest & { name: string }) => {
     assertPdfDocumentAccessRequest(request, ['name']);
     if (typeof request.name !== 'string') throw new TypeError('Template name is invalid.');
     const source = await desktopPdfAccessRegistry.resolveDocument(event.sender.id, request.documentHandle);
-    return (await requirePdfTemplateStore()).importBytes(readFileSync(source.sourcePath), request.name);
+    return runPdfTemplateMutation(async () => (
+      (await requirePdfTemplateStore()).importBytes(readFileSync(source.sourcePath), request.name)
+    ));
   });
 
   ipcMain.handle(ipcChannels.templateCreateDocument, async (event, templateId: string) => {
     assertApplicationWindowSender(event);
+    await pdfTemplateMutationQueue;
     const bytes = await (await requirePdfTemplateStore()).readSource(templateId);
     const blankStore = await requireBlankPdfTemporaryStore();
     const temporaryDocument = await blankStore.createFromBytes(bytes);
@@ -964,6 +980,11 @@ export function registerIpcHandlers(): void {
       await blankStore.release(temporaryDocument.temporarySourcePath).catch(() => undefined);
       throw error;
     }
+  });
+
+  ipcMain.handle(ipcChannels.migrationExportElectronData, async (event, request: ElectronMigrationExportRequest) => {
+    assertApplicationWindowSender(event);
+    return await exportElectronMigrationData(request);
   });
 
   ipcMain.handle(ipcChannels.signaturePhoneStart, async (event, mode: unknown) => {
@@ -1262,6 +1283,38 @@ function requirePdfTemplateStore(): Promise<PdfTemplateStore> {
   return pdfTemplateStorePromise;
 }
 
+function runPdfTemplateMutation<T>(operation: () => Promise<T>, allowWhileUpdateBlocked = false): Promise<T> {
+  if (pdfTemplateMutationsBlockedForUpdate && !allowWhileUpdateBlocked) {
+    return Promise.reject(new Error('Template changes are blocked while the downloaded update is prepared.'));
+  }
+  const result = pdfTemplateMutationQueue.then(operation);
+  pdfTemplateMutationQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+function exportElectronMigrationData(request: ElectronMigrationExportRequest, allowWhileUpdateBlocked = false) {
+  return runPdfTemplateMutation(async () => {
+    const imported = await (await requirePdfTemplateStore()).snapshotForMigration();
+    if (updaterStartupError != null) {
+      throw new Error('Updater settings could not be loaded for native migration.', {
+        cause: updaterStartupError,
+      });
+    }
+    const updateStatus = (await requireUpdaterService()).getStatus();
+    const plan = createElectronMigrationExportPlan({
+      metadata: getApplicationMetadata(),
+      renderer: request,
+      imported,
+      updateSettings: {
+        frequency: updateStatus.frequency,
+        lastSuccessfulCheckAt: updateStatus.lastSuccessfulCheckAt,
+      },
+      createdAt: new Date().toISOString(),
+    });
+    return await publishElectronMigrationExport(app.getPath('userData'), plan);
+  }, allowWhileUpdateBlocked);
+}
+
 function requirePdfSessionModule(): Promise<typeof import('./pdfSession')> {
   pdfSessionModulePromise ??= import('./pdfSession');
   return pdfSessionModulePromise;
@@ -1349,9 +1402,12 @@ async function initializeUpdaterService(): Promise<DesktopUpdaterService> {
       }
     }
   });
-  void service.start().catch((error) => {
+  try {
+    await service.start();
+  } catch (error) {
+    updaterStartupError = error;
     console.warn('Unable to start the Butter Paper updater.', error);
-  });
+  }
   return service;
 }
 

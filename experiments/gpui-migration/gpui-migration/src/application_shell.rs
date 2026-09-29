@@ -11,7 +11,7 @@ use gpui_component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 use serde::{Deserialize, Serialize};
 
 const APPLICATION_DATA_DIRECTORY_ENV: &str = "BP_GPUI_DATA_DIR";
-const PREFERENCES_FILE_NAME: &str = "application-shell.json";
+pub(crate) const PREFERENCES_FILE_NAME: &str = "application-shell.json";
 const DEFAULT_FONT_SIZE: Pixels = px(16.);
 const UI_ZOOM_STEP: f32 = 1.2;
 static TEMPORARY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -260,6 +260,12 @@ pub fn init_application_shell_actions(cx: &mut App) {
             crate::application_close_workspace::RequestApplicationQuit,
             None,
         ),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new(
+            "ctrl-q",
+            crate::application_close_workspace::RequestApplicationQuit,
+            None,
+        ),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-shift-=", MakeInterfaceBigger, None),
         #[cfg(not(target_os = "macos"))]
@@ -318,6 +324,24 @@ mod tests {
             )]);
             init_application_shell_actions(cx);
             let expected = KeyBinding::new("cmd-q", RequestApplicationQuit, None);
+            let bindings = cx.key_bindings();
+            let bindings = bindings.borrow();
+            let quit_bindings = bindings
+                .bindings_for_action(&RequestApplicationQuit)
+                .collect::<Vec<_>>();
+            assert_eq!(quit_bindings.len(), 1);
+            assert_eq!(quit_bindings[0].keystrokes(), expected.keystrokes());
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn linux_quit_shortcut_uses_ctrl_q(cx: &mut gpui::TestAppContext) {
+        use crate::application_close_workspace::RequestApplicationQuit;
+
+        cx.update(|cx| {
+            init_application_shell_actions(cx);
+            let expected = KeyBinding::new("ctrl-q", RequestApplicationQuit, None);
             let bindings = cx.key_bindings();
             let bindings = bindings.borrow();
             let quit_bindings = bindings
@@ -408,6 +432,18 @@ mod tests {
         let preferences = store.load().unwrap();
         assert!(!preferences.menu_bar_visible());
         assert_eq!(preferences.ui_zoom_level(), APPLICATION_UI_ZOOM_MAX_LEVEL);
+    }
+
+    #[test]
+    fn malformed_preferences_fail_without_replacing_the_existing_bytes() {
+        let directory = ScratchDirectory::new();
+        let store = ApplicationShellPreferencesStore::new(&directory.0);
+        let malformed = br#"{"menu_bar_visible":false,"ui_zoom_level":"broken"}"#;
+        fs::write(store.path(), malformed).unwrap();
+
+        let error = store.load().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(store.path()).unwrap(), malformed);
     }
 
     #[test]

@@ -45,6 +45,7 @@ export const ipcChannels = {
   templateImportDocument: 'template:import-document',
   templateRemove: 'template:remove',
   templateCreateDocument: 'template:create-document',
+  migrationExportElectronData: 'migration:export-electron-data',
   pdfReleaseDocument: 'pdf:release-document',
   pdfLoadDocument: 'pdf:load-document',
   pdfGetPageGeometry: 'pdf:get-page-geometry',

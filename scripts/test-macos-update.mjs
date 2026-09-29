@@ -19,6 +19,11 @@ import {
 const SCENARIOS = new Set(['valid', 'channel', 'corrupt', 'signature']);
 const CHANNELS = new Set(['stable', 'beta']);
 const UPDATE_TIMEOUT_MS = 180_000;
+const CLEAN_MIGRATION_REQUEST = Object.freeze({
+  menuBarVisible: true,
+  lastTemplateId: 'built-in-blank',
+  generatedTemplates: Object.freeze([]),
+});
 
 function trustExpectations({ prior = false } = {}) {
   const currentFingerprint = process.env.APPLE_SIGNING_CERTIFICATE_SHA256?.trim()
@@ -318,7 +323,10 @@ async function main() {
       }
 
       if (options.scenario === 'signature') {
-        await page.evaluate(() => window.butterPaper.updates.installDownloaded());
+        await page.evaluate(
+          request => window.butterPaper.updates.installDownloaded(request),
+          CLEAN_MIGRATION_REQUEST,
+        );
         const rejection = await waitForUpdateStatus(page, status => status.phase === 'error');
         assertRejected(rejection, 'invalid signature', /code.?sign|signature|signed/i);
         await assertAppUnchanged(app, installedApp, priorVersion);
@@ -326,7 +334,10 @@ async function main() {
         const originalPid = app.process().pid;
         const automaticRelaunch = waitForRelaunchedProcess(executablePath, originalPid, UPDATE_TIMEOUT_MS);
         const exitPromise = waitForExit(app.process(), UPDATE_TIMEOUT_MS);
-        await page.evaluate(() => window.butterPaper.updates.installDownloaded()).catch(error => {
+        await page.evaluate(
+          request => window.butterPaper.updates.installDownloaded(request),
+          CLEAN_MIGRATION_REQUEST,
+        ).catch(error => {
           if (!String(error).includes('Target page, context or browser has been closed')) {
             throw error;
           }

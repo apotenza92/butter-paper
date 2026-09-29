@@ -5,6 +5,8 @@ probe_dir=$(cd "$(dirname "$0")/.." && pwd)
 migration_dir=$(cd "$probe_dir/.." && pwd)
 target_dir="$migration_dir/.build-targets/gpui-migration"
 guard="$probe_dir/scripts/build-guard.mjs"
+# Attest the same patched renderer source as production before any Cargo work.
+node "$probe_dir/scripts/verify-cargo-graph.mjs" || exit $?
 evidence_dir="$probe_dir/.prepared/evidence"
 run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 raw_log="$evidence_dir/button-probe-$run_id.raw.log"

@@ -683,4 +683,143 @@ mod tests {
             point(72., 0.)
         );
     }
+
+    #[test]
+    fn cloud_plus_initial_placement_stays_on_page_near_the_right_edge() {
+        let control = vec![
+            point(500., 320.),
+            point(590., 320.),
+            point(590., 390.),
+            point(500., 390.),
+        ];
+        let mut visible = control.clone();
+        visible.push(control[0]);
+        let placement = place_initial_cloud_plus_text_box(
+            &control,
+            &visible,
+            150.,
+            44.,
+            24.,
+            &CloudPlusRoutingContext {
+                page_bounds: Some(rect(0., 0., 612., 792.)),
+                obstacles: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        assert!(placement.text_box.x < 500.);
+        assert!(placement.text_box.x >= 0.);
+        assert!(placement.text_box.x + placement.text_box.width <= 612.);
+        assert_eq!(placement.leader.side, Some(CloudPlusLeaderSide::Right));
+    }
+
+    #[test]
+    fn cloud_plus_routing_uses_a_knee_detour_for_a_blocking_line() {
+        let control = vec![
+            point(10., 10.),
+            point(90., 10.),
+            point(90., 70.),
+            point(10., 70.),
+        ];
+        let mut visible = control.clone();
+        visible.push(control[0]);
+        let text_box = rect(180., 18., 150., 44.);
+        let unobstructed = route_cloud_plus_leader(
+            &control,
+            &visible,
+            text_box,
+            &[],
+            &CloudPlusRoutingContext::default(),
+        )
+        .unwrap();
+        let rerouted = route_cloud_plus_leader(
+            &control,
+            &visible,
+            text_box,
+            &[],
+            &CloudPlusRoutingContext {
+                page_bounds: Some(rect(-300., -300., 1_000., 1_000.)),
+                obstacles: vec![CloudPlusObstacle::Polyline {
+                    id: Some("blocking-line".into()),
+                    points: vec![point(130., 0.), point(130., 100.)],
+                }],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(unobstructed.points[1].y, unobstructed.points[2].y);
+        assert_ne!(rerouted.points[1].y, rerouted.points[2].y);
+    }
+
+    #[test]
+    fn cloud_plus_routing_is_translation_invariant_with_page_and_obstacles() {
+        let control = vec![
+            point(10., 10.),
+            point(90., 10.),
+            point(90., 70.),
+            point(10., 70.),
+        ];
+        let mut visible = control.clone();
+        visible.push(control[0]);
+        let text_box = rect(180., 18., 150., 44.);
+        let obstacle = rect(115., 20., 18., 40.);
+        let original = route_cloud_plus_leader(
+            &control,
+            &visible,
+            text_box,
+            &[],
+            &CloudPlusRoutingContext {
+                page_bounds: Some(rect(-200., -200., 700., 700.)),
+                obstacles: vec![CloudPlusObstacle::Rect {
+                    id: Some("obstacle".into()),
+                    rect: obstacle,
+                }],
+            },
+        )
+        .unwrap();
+        let delta = point(57., -31.);
+        let translate_point = |value: PdfPoint| point(value.x + delta.x, value.y + delta.y);
+        let translate_rect = |value: PdfRect| {
+            rect(
+                value.x + delta.x,
+                value.y + delta.y,
+                value.width,
+                value.height,
+            )
+        };
+        let translated = route_cloud_plus_leader(
+            &control
+                .iter()
+                .copied()
+                .map(translate_point)
+                .collect::<Vec<_>>(),
+            &visible
+                .iter()
+                .copied()
+                .map(translate_point)
+                .collect::<Vec<_>>(),
+            translate_rect(text_box),
+            &[],
+            &CloudPlusRoutingContext {
+                page_bounds: Some(translate_rect(rect(-200., -200., 700., 700.))),
+                obstacles: vec![CloudPlusObstacle::Rect {
+                    id: Some("obstacle".into()),
+                    rect: translate_rect(obstacle),
+                }],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(translated.side, original.side);
+        assert_eq!(
+            translated.points,
+            original
+                .points
+                .iter()
+                .copied()
+                .map(translate_point)
+                .collect::<Vec<_>>()
+        );
+        assert!((translated.score - original.score).abs() <= EPSILON);
+    }
 }

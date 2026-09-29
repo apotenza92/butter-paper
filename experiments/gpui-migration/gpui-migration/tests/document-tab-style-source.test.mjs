@@ -25,7 +25,7 @@ test("close controls overlay naturally sized labels without a reserved suffix", 
   assert.equal([...source.matchAll(/\.child\(\s*session_tab_close_lane\(\)/g)].length, 2);
   assert.equal([...source.matchAll(/\.child\(session_tab_overlay_label\(/g)].length, 2);
   const label = source.slice(source.indexOf("fn session_tab_overlay_label"), source.indexOf("impl Render for DocumentWorkspace"));
-  assert.match(label, /\.opacity\(0\.\)\.child\(label\.clone\(\)\)/);
+  assert.match(label, /\.opacity\(0\.\)\s*\.child\(label\.clone\(\)\)/);
   assert.match(label, /\.when\(revealed, \|this\| this\.pr_6\(\)\)/);
   assert.doesNotMatch(label, /\.group_hover\(/);
 });
@@ -41,7 +41,7 @@ test("close fills blend with their tab until the close target itself is hovered"
   const closes = [...source.matchAll(/Button::new\(close_id\)([\s\S]*?)\.small\(\)/g)];
   assert.equal(closes.length, 2);
   for (const [, style] of closes) {
-    assert.match(style, /\.color\(cx.theme\(\).transparent\).hover\(cx.theme\(\).background\)/);
+    assert.match(style, /\.color\(cx.theme\(\).transparent\)\s*\.hover\(cx.theme\(\).background\)/);
     assert.match(style, /\.bg\(cx.theme\(\).transparent\)/);
     assert.match(style, /\.border_color\(cx.theme\(\).transparent\)/);
   }

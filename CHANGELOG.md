@@ -2,6 +2,25 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.26]
+
+### Native desktop application
+
+- Rebuilt Butter Paper as a native GPUI application for macOS, Windows, and
+  Linux, with packages for both ARM64 and x64 systems.
+- Preserved the core PDF editing workflow, including annotation tools,
+  properties, templates, signatures, safe saving, recovery, and Electron data
+  migration.
+
+### Rendering and release delivery
+
+- Added isolated PDF rendering workers, production PDFium preparation, and
+  deterministic cross-platform package verification.
+- Added signed and notarised macOS packages plus integrity-verified unsigned
+  Windows and Linux packages for this first native release.
+- Optically lowered the butterfly glyph within the application icon for more
+  balanced platform presentation.
+
 ## [0.0.25]
 
 ### Startup performance

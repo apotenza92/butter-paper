@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import {
   mkdir,
+  mkdtemp,
   readFile,
   readdir,
   rm,
@@ -18,9 +19,10 @@ import {
   platform,
   release,
   totalmem,
+  tmpdir,
   type,
 } from "node:os";
-import { basename, dirname, extname, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
@@ -104,6 +106,15 @@ const defaultBinary = resolve(
 const sampleIntervalMs = 100;
 const defaultTimeoutMs = 120_000;
 const stderrLimitBytes = 1_000_000;
+const macosLifecycleSampleIntervalMs = 10;
+const macosLifecycleMaximumGapMs = 100;
+const macosLifecycleRecordLimit = 25_000;
+const macosLifecycleLineLimitBytes = 1_000_000;
+const macosAppRootLifecycleToken = "app-root";
+const macosLibprocSource = resolve(
+  performanceDirectory,
+  "macos-libproc-accounting.c",
+);
 const v6ManifestId = "bp-perf-v6-decision-2";
 const v6WorkloadByteSha256 =
   "fc7e3cb6f09b74e004a24b01a9f5ccbb444d98feb9ae6489885e27329a442147";
@@ -154,6 +165,391 @@ export function nativeEvidenceTimeoutMs(scenario, processTimeoutMs) {
   return Math.min(processTimeoutMs, evidenceBudgetMs);
 }
 
+export function macosWorkerLifecycleEnvironment(
+  receiptDirectory,
+  platformName = platform(),
+) {
+  if (platformName !== "darwin") return {};
+  if (!receiptDirectory || !isAbsolute(receiptDirectory)) {
+    throw new Error(
+      "macOS worker lifecycle receipts require an absolute directory",
+    );
+  }
+  return {
+    BP_MACOS_WORKER_LIFECYCLE: "1",
+    BP_MACOS_WORKER_LIFECYCLE_RECEIPT_DIR: resolve(receiptDirectory),
+    BP_MACOS_APP_LIFECYCLE_TOKEN: macosAppRootLifecycleToken,
+  };
+}
+
+function processIdentity(entry) {
+  return `${entry.pid}:${entry.start_abstime}`;
+}
+
+export function assessGpuiMacosWorkerLifecycle({
+  platformName = platform(),
+  rootPid,
+  helperOutcome,
+  invalidHelperLines = [],
+  outputTruncated = false,
+  records = [],
+  receipts = [],
+  receiptErrors = [],
+  expectedWorkerPids = [],
+}) {
+  const blockers = [...receiptErrors];
+  const samples = records.filter((record) => record?.type === "sample");
+  const identities = new Map();
+  let simultaneousPeakBytes = 0;
+  for (const sample of samples) {
+    let simultaneousBytes = 0;
+    for (const processEntry of sample.processes ?? []) {
+      if (
+        !Number.isInteger(processEntry?.pid) ||
+        !Number.isInteger(processEntry?.ppid) ||
+        !Number.isInteger(processEntry?.start_abstime) ||
+        processEntry.start_abstime <= 0
+      ) {
+        blockers.push("libproc returned a process without a stable identity");
+        continue;
+      }
+      simultaneousBytes += processEntry.phys_footprint_bytes ?? 0;
+      const identity = processIdentity(processEntry);
+      const previous = identities.get(identity);
+      identities.set(identity, {
+        ...processEntry,
+        maximum_sampled_phys_footprint_bytes: Math.max(
+          previous?.maximum_sampled_phys_footprint_bytes ?? 0,
+          processEntry.phys_footprint_bytes ?? 0,
+        ),
+        lifetime_max_phys_footprint_bytes: Math.max(
+          previous?.lifetime_max_phys_footprint_bytes ?? 0,
+          processEntry.lifetime_max_phys_footprint_bytes ?? 0,
+        ),
+      });
+    }
+    simultaneousPeakBytes = Math.max(simultaneousPeakBytes, simultaneousBytes);
+  }
+
+  const gaps = samples
+    .slice(1)
+    .map(
+      (sample, index) =>
+        (sample.monotonic_ns - samples[index].monotonic_ns) / 1_000_000,
+    );
+  const maximumObservedGapMs = gaps.length > 0 ? Math.max(...gaps) : null;
+  const receiptTokens = new Set();
+  const receiptIdentities = new Set();
+  const receiptPids = new Set();
+  let registeredWorkerSelfCpuNs = 0;
+  const registeredWorkerLifetime = {};
+  const appRootReceipts = receipts.filter(
+    (receipt) => receipt?.type === "app-root-lifecycle-final",
+  );
+  const workerReceipts = receipts.filter(
+    (receipt) => receipt?.type !== "app-root-lifecycle-final",
+  );
+  let rootReceiptSelfCpuNs = 0;
+  let rootReceiptLifetimeMaximumBytes = 0;
+  let rootReceiptIdentity = null;
+
+  if (appRootReceipts.length !== 1) {
+    blockers.push(
+      "candidate root did not publish exactly one lifecycle receipt",
+    );
+  } else {
+    const receipt = appRootReceipts[0];
+    const exactKeys = [
+      "clean_exit",
+      "exit_code",
+      "lifetime_max_phys_footprint_bytes",
+      "pid",
+      "schema_version",
+      "start_abstime",
+      "system_ns",
+      "token",
+      "type",
+      "user_ns",
+    ];
+    const valid =
+      Object.keys(receipt ?? {})
+        .sort()
+        .join("\0") === exactKeys.join("\0") &&
+      receipt.schema_version === 1 &&
+      receipt.type === "app-root-lifecycle-final" &&
+      receipt.token === macosAppRootLifecycleToken &&
+      receipt.pid === rootPid &&
+      Number.isSafeInteger(receipt.start_abstime) &&
+      receipt.start_abstime > 0 &&
+      Number.isSafeInteger(receipt.user_ns) &&
+      receipt.user_ns >= 0 &&
+      Number.isSafeInteger(receipt.system_ns) &&
+      receipt.system_ns >= 0 &&
+      receipt.user_ns + receipt.system_ns > 0 &&
+      Number.isSafeInteger(receipt.lifetime_max_phys_footprint_bytes) &&
+      receipt.lifetime_max_phys_footprint_bytes > 0 &&
+      receipt.clean_exit === true &&
+      receipt.exit_code === 0;
+    if (!valid) {
+      blockers.push("candidate root lifecycle receipt was malformed");
+    } else {
+      rootReceiptIdentity = processIdentity(receipt);
+      rootReceiptSelfCpuNs = receipt.user_ns + receipt.system_ns;
+      rootReceiptLifetimeMaximumBytes =
+        receipt.lifetime_max_phys_footprint_bytes;
+      receiptTokens.add(receipt.token);
+      receiptIdentities.add(rootReceiptIdentity);
+      receiptPids.add(receipt.pid);
+    }
+  }
+
+  if (workerReceipts.length === 0)
+    blockers.push("no PDF worker lifecycle receipt was published");
+  for (const receipt of workerReceipts) {
+    const exactKeys = [
+      "clean_reap",
+      "exit_code",
+      "lifetime_max_phys_footprint_bytes",
+      "pid",
+      "schema_version",
+      "start_abstime",
+      "system_ns",
+      "token",
+      "type",
+      "user_ns",
+    ];
+    const valid =
+      Object.keys(receipt ?? {})
+        .sort()
+        .join("\0") === exactKeys.join("\0") &&
+      receipt?.schema_version === 1 &&
+      receipt?.type === "pdf-worker-lifecycle-final" &&
+      typeof receipt.token === "string" &&
+      /^[A-Za-z0-9_-]{1,128}$/.test(receipt.token) &&
+      Number.isInteger(receipt.pid) &&
+      receipt.pid > 0 &&
+      Number.isInteger(receipt.start_abstime) &&
+      receipt.start_abstime > 0 &&
+      Number.isSafeInteger(receipt.user_ns) &&
+      receipt.user_ns >= 0 &&
+      Number.isSafeInteger(receipt.system_ns) &&
+      receipt.system_ns >= 0 &&
+      receipt.user_ns + receipt.system_ns > 0 &&
+      Number.isSafeInteger(receipt.lifetime_max_phys_footprint_bytes) &&
+      receipt.lifetime_max_phys_footprint_bytes > 0 &&
+      receipt.clean_reap === true &&
+      receipt.exit_code === 0;
+    if (!valid) {
+      blockers.push(
+        "a PDF worker lifecycle receipt was malformed or not a clean reap",
+      );
+      continue;
+    }
+    const identity = processIdentity(receipt);
+    if (receiptTokens.has(receipt.token) || receiptIdentities.has(identity)) {
+      blockers.push(
+        "a PDF worker lifecycle token or process identity was duplicated",
+      );
+      continue;
+    }
+    receiptTokens.add(receipt.token);
+    receiptIdentities.add(identity);
+    receiptPids.add(receipt.pid);
+    const sampled = identities.get(identity);
+    if (!sampled) {
+      blockers.push(
+        `registered PDF worker ${identity} was missed by libproc sampling`,
+      );
+      continue;
+    }
+    if (sampled.ppid !== rootPid) {
+      blockers.push(
+        `registered PDF worker ${identity} did not belong to the candidate root`,
+      );
+      continue;
+    }
+    if (
+      receipt.lifetime_max_phys_footprint_bytes <
+      sampled.maximum_sampled_phys_footprint_bytes
+    ) {
+      blockers.push(
+        `registered PDF worker ${identity} lifetime maximum was inconsistent`,
+      );
+      continue;
+    }
+    registeredWorkerSelfCpuNs += receipt.user_ns + receipt.system_ns;
+    registeredWorkerLifetime[identity] =
+      receipt.lifetime_max_phys_footprint_bytes;
+  }
+
+  const rootIdentities = [...identities.keys()].filter((identity) =>
+    identity.startsWith(`${rootPid}:`),
+  );
+  const sampledDescendants = [...identities.keys()].filter(
+    (identity) => !rootIdentities.includes(identity),
+  );
+  const unregistered = sampledDescendants.filter(
+    (identity) => !receiptIdentities.has(identity),
+  );
+  const missingExpectedWorkerPids = [
+    ...new Set(expectedWorkerPids.filter(Number.isInteger)),
+  ].filter((pid) => !receiptPids.has(pid));
+  const rootEntries = rootIdentities.map((identity) =>
+    identities.get(identity),
+  );
+  const rootSelfCpuNs =
+    rootEntries.length === 1
+      ? (rootEntries[0].user_ns ?? 0) + (rootEntries[0].system_ns ?? 0)
+      : 0;
+  const rootEntry = rootEntries.length === 1 ? rootEntries[0] : null;
+  // AppKit's terminate path invokes the normal-exit publisher immediately
+  // before libc completes process teardown. A final libproc sample can
+  // therefore observe a small amount of later CPU. Use the larger exact
+  // observation so accounting is conservative; keep both raw values in the
+  // receipt for auditability.
+  const rootFinalSelfCpuNs = Math.max(rootReceiptSelfCpuNs, rootSelfCpuNs);
+  const rootLifetimeMaximumBytes = Math.max(
+    rootReceiptLifetimeMaximumBytes,
+    rootEntry?.lifetime_max_phys_footprint_bytes ?? 0,
+    rootEntry?.maximum_sampled_phys_footprint_bytes ?? 0,
+  );
+  if (platformName !== "darwin")
+    blockers.push("macOS libproc accounting was not available");
+  if (helperOutcome?.code !== 0)
+    blockers.push(
+      `libproc helper exited ${helperOutcome?.code ?? "without code"}`,
+    );
+  if (invalidHelperLines.length > 0)
+    blockers.push("libproc helper emitted invalid JSON lines");
+  if (outputTruncated)
+    blockers.push("libproc evidence exceeded its bounded capture limits");
+  if (rootIdentities.length !== 1)
+    blockers.push(
+      "candidate root did not have exactly one sampled process identity",
+    );
+  if (rootReceiptIdentity && rootIdentities[0] !== rootReceiptIdentity)
+    blockers.push(
+      "candidate root final receipt identity did not match libproc sampling",
+    );
+  if (!records.some((record) => record?.type === "root-exited"))
+    blockers.push("libproc did not confirm candidate root exit");
+  if (samples.length < 2)
+    blockers.push("fewer than two candidate resource samples were recorded");
+  if (
+    maximumObservedGapMs === null ||
+    maximumObservedGapMs > macosLifecycleMaximumGapMs
+  )
+    blockers.push(
+      `candidate resource sample gap exceeded ${macosLifecycleMaximumGapMs} ms`,
+    );
+  if (unregistered.length > 0)
+    blockers.push("a sampled candidate descendant lacked a lifecycle receipt");
+  if (missingExpectedWorkerPids.length > 0)
+    blockers.push(
+      "an application-declared PDF worker lacked a lifecycle receipt",
+    );
+
+  return {
+    protocol: "bp-macos-app-and-worker-lifecycle-v2",
+    requested: platformName === "darwin",
+    passed: blockers.length === 0,
+    release_qualified: blockers.length === 0,
+    sample_interval_requested_ms: macosLifecycleSampleIntervalMs,
+    maximum_sample_gap_budget_ms: macosLifecycleMaximumGapMs,
+    maximum_observed_sample_gap_ms: maximumObservedGapMs,
+    sampled_simultaneous_tree_phys_footprint_peak_bytes: simultaneousPeakBytes,
+    candidate_root_sampled_self_cpu_ns: rootSelfCpuNs,
+    candidate_root_receipt_self_cpu_ns: rootReceiptSelfCpuNs,
+    candidate_root_final_self_cpu_ns: rootFinalSelfCpuNs,
+    candidate_root_receipt_lifetime_max_phys_footprint_bytes:
+      rootReceiptLifetimeMaximumBytes,
+    candidate_root_lifetime_max_phys_footprint_bytes: rootLifetimeMaximumBytes,
+    candidate_root_identity: rootReceiptIdentity,
+    registered_worker_self_cpu_ns: registeredWorkerSelfCpuNs,
+    accounted_process_self_cpu_ns:
+      rootFinalSelfCpuNs + registeredWorkerSelfCpuNs,
+    registered_worker_lifetime_max_phys_footprint_bytes:
+      registeredWorkerLifetime,
+    registered_worker_identities: [...receiptIdentities].filter(
+      (identity) => identity !== rootReceiptIdentity,
+    ),
+    unregistered_sampled_descendant_identities: unregistered,
+    missing_expected_worker_pids: missingExpectedWorkerPids,
+    blockers,
+  };
+}
+
+export function summarizeGpuiMacosWorkerLifecycle(iterations) {
+  const assessments = iterations
+    .map((iteration) => iteration.macos_worker_lifecycle)
+    .filter(Boolean);
+  if (assessments.length === 0) return null;
+  const lifetimeMaxima = assessments.flatMap((assessment) =>
+    Object.values(
+      assessment.registered_worker_lifetime_max_phys_footprint_bytes ?? {},
+    ),
+  );
+  return {
+    protocol: "bp-macos-app-and-worker-lifecycle-v2",
+    requested_iterations: assessments.length,
+    qualified_iterations: assessments.filter(
+      (assessment) => assessment.passed === true,
+    ).length,
+    all_iterations_qualified: assessments.every(
+      (assessment) => assessment.passed === true,
+    ),
+    sampled_simultaneous_tree_phys_footprint_peak_bytes: numericSummary(
+      assessments.map(
+        (assessment) =>
+          assessment.sampled_simultaneous_tree_phys_footprint_peak_bytes,
+      ),
+    ),
+    registered_worker_self_cpu_ns: numericSummary(
+      assessments.map((assessment) => assessment.registered_worker_self_cpu_ns),
+    ),
+    candidate_root_final_self_cpu_ns: numericSummary(
+      assessments.map(
+        (assessment) => assessment.candidate_root_final_self_cpu_ns,
+      ),
+    ),
+    candidate_root_lifetime_max_phys_footprint_bytes: numericSummary(
+      assessments.map(
+        (assessment) =>
+          assessment.candidate_root_lifetime_max_phys_footprint_bytes,
+      ),
+    ),
+    accounted_process_self_cpu_ns: numericSummary(
+      assessments.map((assessment) => assessment.accounted_process_self_cpu_ns),
+    ),
+    registered_worker_lifetime_max_phys_footprint_bytes:
+      numericSummary(lifetimeMaxima),
+    blockers_by_iteration: assessments.flatMap((assessment, index) =>
+      (assessment.blockers ?? []).map((blocker) => ({
+        iteration: index + 1,
+        blocker,
+      })),
+    ),
+  };
+}
+
+// This status describes only the semantic application run. Qualification still
+// requires the unchanged native crop, input and resource-accounting gates.
+export function diagnosticCompatExecution(
+  applicationSucceeded,
+  eventValidation,
+) {
+  return {
+    application_completed:
+      applicationSucceeded === true && eventValidation?.passed === true,
+    evidence_class: "semantic-diagnostic-only",
+    decision_timing_eligible: false,
+    release_performance_eligible: false,
+    native_input_to_present_ms: null,
+    reason:
+      "No independent native input/presentation observer or qualified process-tree accounting; successful application completion does not qualify performance.",
+  };
+}
+
 export function compatEvidenceValidationForIteration(
   compatProfile,
   events,
@@ -170,6 +566,7 @@ export function compatResourceCleanupForIteration(
   compatProfile,
   events,
   cgroupCleanup,
+  { hostPlatform = platform(), macosWorkerLifecycle = null } = {},
 ) {
   if (compatProfile === undefined || compatProfile === null) return null;
   if (compatProfile !== longbridgeCompatProfile) {
@@ -188,7 +585,12 @@ export function compatResourceCleanupForIteration(
       "expected one verified worker and mapped-surface cleanup receipt",
     );
   }
-  if (cgroupCleanup?.removed !== true) {
+  if (hostPlatform === "darwin" && macosWorkerLifecycle?.passed !== true) {
+    errors.push(
+      macosWorkerLifecycle?.blockers?.join("; ") ??
+        "the macOS worker lifecycle receipt did not qualify",
+    );
+  } else if (hostPlatform !== "darwin" && cgroupCleanup?.removed !== true) {
     errors.push(
       cgroupCleanup?.reason ?? "the benchmark child cgroup was not removed",
     );
@@ -299,6 +701,8 @@ Options:
   --input-lane <lane>     semantic-diagnostic (default) or native-x11-xtest
   --v4-scenario <name>    Parent v4 representative journey for this component
   --v6-scenario <name>    Require the v6 common server-side XDamage boundary
+  --diagnostic-compat-open
+                          Opt into unqualified semantic small-open diagnostics
   --compat-profile <name> Enable a reviewed candidate-specific evidence policy
   --evidence-directory <directory>
                           Retain persistence PDFs/crops outside disposable cache
@@ -331,6 +735,10 @@ export function parseArguments(argv) {
     const option = argv[index];
     if (option === "-h" || option === "--help") {
       options.help = true;
+      continue;
+    }
+    if (option === "--diagnostic-compat-open") {
+      options.diagnosticCompatOpen = true;
       continue;
     }
     const valueOptions = new Set([
@@ -433,8 +841,22 @@ export function parseArguments(argv) {
     );
   }
   if (
+    options.diagnosticCompatOpen &&
+    (options.inputLane !== semanticDiagnosticInputLane ||
+      options.compatProfile !== longbridgeCompatProfile ||
+      options.scenario !== "open-pdf" ||
+      options.v4Scenario !== "small-shell-open" ||
+      options.v6Scenario ||
+      !options.evidenceDirectory)
+  ) {
+    throw new Error(
+      "--diagnostic-compat-open requires semantic-diagnostic, the Longbridge profile, open-pdf, --v4-scenario small-shell-open, --evidence-directory, and no v6 scenario",
+    );
+  }
+  if (
     options.compatProfile === longbridgeCompatProfile &&
-    (options.inputLane !== nativeX11InputLane ||
+    ((!options.diagnosticCompatOpen &&
+      options.inputLane !== nativeX11InputLane) ||
       options.v4Scenario !== "small-shell-open" ||
       !options.evidenceDirectory)
   ) {
@@ -1985,6 +2407,155 @@ async function sampleProcessTree(rootPid) {
   };
 }
 
+async function prepareMacosLibprocHelper() {
+  if (platform() !== "darwin") return null;
+  const directory = await mkdtemp(resolve(tmpdir(), "bp-gpui-libproc-"));
+  const executable = resolve(directory, "macos-libproc-accounting");
+  try {
+    await execFileAsync(
+      "/usr/bin/xcrun",
+      [
+        "--sdk",
+        "macosx",
+        "clang",
+        "-std=c11",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        macosLibprocSource,
+        "-o",
+        executable,
+      ],
+      { timeout: 10_000, maxBuffer: stderrLimitBytes },
+    );
+    return { directory, executable };
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function startMacosLibprocSampler(executable, rootPid, timeoutMs) {
+  if (!executable) return null;
+  const child = spawn(
+    executable,
+    [
+      String(rootPid),
+      String(macosLifecycleSampleIntervalMs),
+      String(Math.min(Math.max(timeoutMs + 5_000, 15_000), 180_000)),
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  const records = [];
+  const invalidLines = [];
+  let stdoutBuffer = "";
+  let stderr = "";
+  let outputTruncated = false;
+  const consumeLine = (line) => {
+    if (!line.trim()) return;
+    if (Buffer.byteLength(line) > macosLifecycleLineLimitBytes) {
+      outputTruncated = true;
+      return;
+    }
+    try {
+      if (records.length >= macosLifecycleRecordLimit) {
+        outputTruncated = true;
+        return;
+      }
+      records.push(JSON.parse(line));
+    } catch {
+      invalidLines.push(line.slice(0, 512));
+    }
+  };
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdoutBuffer += chunk;
+    for (;;) {
+      const newline = stdoutBuffer.indexOf("\n");
+      if (newline < 0) break;
+      consumeLine(stdoutBuffer.slice(0, newline));
+      stdoutBuffer = stdoutBuffer.slice(newline + 1);
+    }
+    if (Buffer.byteLength(stdoutBuffer) > macosLifecycleLineLimitBytes) {
+      outputTruncated = true;
+      stdoutBuffer = "";
+    }
+  });
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => {
+    if (stderr.length < stderrLimitBytes)
+      stderr += chunk.slice(0, stderrLimitBytes - stderr.length);
+    else outputTruncated = true;
+  });
+  const completed = new Promise((resolvePromise) => {
+    let settled = false;
+    const finish = (outcome) => {
+      if (settled) return;
+      settled = true;
+      if (stdoutBuffer) consumeLine(stdoutBuffer);
+      resolvePromise({
+        ...outcome,
+        records,
+        invalidLines,
+        outputTruncated,
+        stderr: stderr.trim() || undefined,
+      });
+    };
+    child.once("error", (error) =>
+      finish({ code: null, signal: null, error: error.message }),
+    );
+    child.once("close", (code, signal) =>
+      finish({ code, signal, error: null }),
+    );
+  });
+  return { child, completed };
+}
+
+export async function readMacosWorkerLifecycleReceipts(directory) {
+  const receipts = [];
+  const errors = [];
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    return {
+      receipts,
+      errors: [`could not read lifecycle receipt directory: ${error.message}`],
+    };
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^[A-Za-z0-9_-]{1,128}\.json$/.test(entry.name)) {
+      errors.push(`unexpected lifecycle receipt entry ${entry.name}`);
+      continue;
+    }
+    try {
+      const receiptPath = resolve(directory, entry.name);
+      const before = await stat(receiptPath);
+      const bytes = await readFile(receiptPath, "utf8");
+      const after = await stat(receiptPath);
+      if (
+        !before.isFile() ||
+        before.dev !== after.dev ||
+        before.ino !== after.ino ||
+        before.size !== after.size ||
+        before.size > macosLifecycleLineLimitBytes
+      ) {
+        throw new Error(
+          "receipt identity or bounded size changed while reading",
+        );
+      }
+      const receipt = JSON.parse(bytes);
+      if (`${receipt.token}.json` !== entry.name)
+        throw new Error("receipt filename did not match its token");
+      receipts.push(receipt);
+    } catch (error) {
+      errors.push(`invalid lifecycle receipt ${entry.name}: ${error.message}`);
+    }
+  }
+  return { receipts, errors };
+}
+
 function terminateProcessGroup(pid, signal) {
   try {
     process.kill(-pid, signal);
@@ -2014,6 +2585,10 @@ async function runIteration(options, iteration) {
     ".gpui-cold-cache",
     `${Date.now()}-${process.pid}-${iteration}`,
   );
+  const lifecycleReceiptDirectory = resolve(
+    cacheDirectory,
+    "worker-lifecycle-receipts",
+  );
   const evidenceDirectory = options.evidenceDirectory
     ? resolve(
         options.evidenceDirectory,
@@ -2025,6 +2600,9 @@ async function runIteration(options, iteration) {
       ? dynamicArtifactDirectoryForOutput(options.output, iteration)
       : null;
   await mkdir(cacheDirectory, { recursive: true });
+  if (platform() === "darwin") {
+    await mkdir(lifecycleReceiptDirectory, { mode: 0o700 });
+  }
   if (dynamicArtifactDirectory) {
     await prepareFreshArtifactDirectory(dynamicArtifactDirectory);
   }
@@ -2081,6 +2659,7 @@ async function runIteration(options, iteration) {
         : {}),
       BP_PDF_WORKER_EXE: options.pdfRuntime.worker,
       BP_PDFIUM_LIBRARY: options.pdfRuntime.library,
+      ...macosWorkerLifecycleEnvironment(lifecycleReceiptDirectory),
     },
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
@@ -2098,6 +2677,13 @@ async function runIteration(options, iteration) {
       resolvePromise({ exit_code: code, signal }),
     );
   });
+  const macosLibprocSampler = Number.isInteger(child.pid)
+    ? startMacosLibprocSampler(
+        options.macosLibprocHelper?.executable,
+        child.pid,
+        options.timeoutMs,
+      )
+    : null;
 
   const parseLine = (line) => {
     if (!line.trim()) return;
@@ -2205,9 +2791,10 @@ async function runIteration(options, iteration) {
   }, options.timeoutMs);
   timeoutTimer.unref();
 
-  const [outcome, rawNativeReplay] = await Promise.all([
+  const [outcome, rawNativeReplay, macosLibprocOutput] = await Promise.all([
     outcomePromise,
     nativeReplayPromise,
+    macosLibprocSampler ? macosLibprocSampler.completed : Promise.resolve(null),
   ]);
   let nativeReplay = rawNativeReplay;
   if (requireCommonDamageObserver) {
@@ -2250,6 +2837,29 @@ async function runIteration(options, iteration) {
   cgroupCleanup = await removeLinuxCgroup(cgroup);
   gpuMetrics = await gpuSampler.stop();
 
+  const lifecycleReceiptRead =
+    platform() === "darwin"
+      ? await readMacosWorkerLifecycleReceipts(lifecycleReceiptDirectory)
+      : { receipts: [], errors: [] };
+  const macosWorkerLifecycle =
+    platform() === "darwin"
+      ? assessGpuiMacosWorkerLifecycle({
+          rootPid: child.pid,
+          helperOutcome: macosLibprocOutput,
+          invalidHelperLines: macosLibprocOutput?.invalidLines ?? [],
+          outputTruncated: macosLibprocOutput?.outputTruncated,
+          records: macosLibprocOutput?.records ?? [],
+          receipts: lifecycleReceiptRead.receipts,
+          receiptErrors: lifecycleReceiptRead.errors,
+          expectedWorkerPids: events
+            .map((event) => event.worker_pid)
+            .filter(Number.isInteger),
+        })
+      : null;
+  if (platform() === "darwin") {
+    await rm(lifecycleReceiptDirectory, { recursive: true, force: true });
+  }
+
   const endedAt = new Date();
   const elapsedMs = Number(process.hrtime.bigint() - startedMonotonic) / 1e6;
   const validSamples = samples.filter((entry) => !entry.sample_error);
@@ -2291,6 +2901,7 @@ async function runIteration(options, iteration) {
     options.compatProfile,
     events,
     cgroupCleanup,
+    { macosWorkerLifecycle },
   );
   const applicationSuccess =
     baseApplicationSuccess &&
@@ -2347,10 +2958,19 @@ async function runIteration(options, iteration) {
     persistenceReceiptSuccess &&
     gpuiGpuEvidencePassed(gpuMetrics) &&
     activeGpuPassed &&
+    (macosWorkerLifecycle === null || macosWorkerLifecycle.passed === true) &&
     (v4ComponentReceipts === null || v4ComponentReceipts.passed === true) &&
     (v5ComponentEvidence === null || v5ComponentEvidence.passed === true);
 
   return {
+    ...(options.diagnosticCompatOpen
+      ? {
+          diagnostic_execution: diagnosticCompatExecution(
+            baseApplicationSuccess,
+            compatEvidenceValidation,
+          ),
+        }
+      : {}),
     iteration,
     started_at: startedAt.toISOString(),
     ended_at: endedAt.toISOString(),
@@ -2395,6 +3015,7 @@ async function runIteration(options, iteration) {
     cgroup: cgroupMetrics,
     cgroup_cleanup: cgroupCleanup,
     gpu: gpuMetrics,
+    macos_worker_lifecycle: macosWorkerLifecycle,
     gpu_evidence_blocker: gpuiGpuEvidencePassed(gpuMetrics)
       ? activeGpuPassed
         ? null
@@ -2546,6 +3167,7 @@ function summarizeReport(iterations) {
         iterations.map((iteration) => iteration.cgroup?.memory_peak_bytes),
       ),
     },
+    process_lifecycle: summarizeGpuiMacosWorkerLifecycle(iterations),
     ...summarizeNvidiaIterations(iterations),
   };
 }
@@ -2671,6 +3293,7 @@ async function main() {
         ? true
         : runnerComparisonMetadata(comparisonWorkload, "gpui", options.scenario)
             .feature_coverage.ready;
+    options.macosLibprocHelper = await prepareMacosLibprocHelper();
   } catch (error) {
     fail(
       formatFixtureAccessError(
@@ -2683,11 +3306,20 @@ async function main() {
   }
 
   const iterations = [];
-  for (let iteration = 1; iteration <= options.iterations; iteration += 1) {
-    process.stderr.write(
-      `GPUI ${options.scenario}: iteration ${iteration}/${options.iterations}\n`,
-    );
-    iterations.push(await runIteration(options, iteration));
+  try {
+    for (let iteration = 1; iteration <= options.iterations; iteration += 1) {
+      process.stderr.write(
+        `GPUI ${options.scenario}: iteration ${iteration}/${options.iterations}\n`,
+      );
+      iterations.push(await runIteration(options, iteration));
+    }
+  } finally {
+    if (options.macosLibprocHelper?.directory) {
+      await rm(options.macosLibprocHelper.directory, {
+        recursive: true,
+        force: true,
+      });
+    }
   }
 
   const report = {
@@ -2699,6 +3331,9 @@ async function main() {
     implementation: "gpui",
     scenario: options.scenario,
     ...(options.compatProfile ? { compat_profile: options.compatProfile } : {}),
+    ...(options.diagnosticCompatOpen
+      ? { diagnostic_only: true, diagnostic_qualification_expected: false }
+      : {}),
     requested_iterations: options.iterations,
     timeout_ms_per_iteration: options.timeoutMs,
     cache_class: "app-cold",

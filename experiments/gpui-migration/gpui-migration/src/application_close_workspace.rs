@@ -33,7 +33,10 @@ use crate::{
     session_manifest::{SessionManifestError, SessionManifestStore, SessionSnapshot},
 };
 
-gpui::actions!(application_close_shell, [RequestApplicationClose, RequestApplicationQuit]);
+gpui::actions!(
+    application_close_shell,
+    [RequestApplicationClose, RequestApplicationQuit]
+);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PendingApplicationSaveAs {
@@ -102,15 +105,34 @@ impl ApplicationCloseCheckpointPublisher for SessionManifestStore {
         snapshot: &SessionSnapshot,
     ) -> Result<ApplicationCloseCheckpointPublication, String> {
         match self.replace(snapshot) {
-            Ok(()) => Ok(ApplicationCloseCheckpointPublication::Published {
-                document_count: self.load().ok().map(|plan| plan.into_parts().0.len()),
-            }),
-            Err(SessionManifestError::PublishedButDirectorySyncFailed { kind }) => Ok(
-                ApplicationCloseCheckpointPublication::PublishedWithDurabilityWarning {
+            Ok(()) => match self.clear_recovery_marker_and_stop_live_writes() {
+                Ok(()) => Ok(ApplicationCloseCheckpointPublication::Published {
                     document_count: self.load().ok().map(|plan| plan.into_parts().0.len()),
-                    message: format!("session checkpoint directory sync failed: {kind}"),
-                },
-            ),
+                }),
+                Err(error) => Ok(
+                    ApplicationCloseCheckpointPublication::PublishedWithDurabilityWarning {
+                        document_count: self.load().ok().map(|plan| plan.into_parts().0.len()),
+                        message: format!(
+                            "session checkpoint was published, but its dirty-session marker could not be cleared: {error:?}"
+                        ),
+                    },
+                ),
+            },
+            Err(SessionManifestError::PublishedButDirectorySyncFailed { kind }) => {
+                let marker_warning = self
+                    .clear_recovery_marker_and_stop_live_writes()
+                    .err()
+                    .map(|error| format!("; dirty-session marker clear also failed: {error:?}"))
+                    .unwrap_or_default();
+                Ok(
+                    ApplicationCloseCheckpointPublication::PublishedWithDurabilityWarning {
+                        document_count: self.load().ok().map(|plan| plan.into_parts().0.len()),
+                        message: format!(
+                            "session checkpoint directory sync failed: {kind}{marker_warning}"
+                        ),
+                    },
+                )
+            }
             Err(error) => Err(format!("session checkpoint publication failed: {error:?}")),
         }
     }
@@ -125,6 +147,7 @@ pub struct ApplicationCloseRecovery {
     pub title: String,
     pub message: String,
     pub primary_label: String,
+    pub publication_warning_generation: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -313,6 +336,18 @@ impl ApplicationCloseWorkspace {
             cx.notify();
             return Ok(status);
         }
+        if recovery.kind == ApplicationCloseRecoveryKind::PublishedWithWarning
+            && let Some(document_id) = self.document_ids.get(&recovery.document_id).copied()
+            && let Some(warning_generation) = recovery.publication_warning_generation
+        {
+            self.workspace.update(cx, |workspace, cx| {
+                workspace.acknowledge_publication_durability_warning(
+                    document_id,
+                    warning_generation,
+                    cx,
+                );
+            });
+        }
         let status = self.request_close(cx)?;
         if recovery.kind != ApplicationCloseRecoveryKind::ReleaseFailed && self.dialog().is_some() {
             self.choose(ApplicationCloseAction::SaveAll, cx);
@@ -347,6 +382,28 @@ impl ApplicationCloseWorkspace {
             })
             .map_err(ApplicationCloseContractError::DraftCommitBlocked)?;
         let (snapshot, document_ids) = self.capture_snapshot(cx);
+        let publication_warning = self.workspace.read_with(cx, |workspace, cx| {
+            workspace.first_publication_durability_warning(cx)
+        });
+        if self.dialog().is_none()
+            && let Some((document_id, warning_generation, warning)) = publication_warning
+        {
+            let stable_id = document_id.to_string();
+            self.next_save_failure_kind = None;
+            self.close_snapshot = Some(snapshot);
+            self.document_ids = document_ids;
+            self.set_recovery(
+                ApplicationCloseRecoveryKind::PublishedWithWarning,
+                0,
+                &stable_id,
+                warning,
+            );
+            if let Some(recovery) = self.recovery.as_mut() {
+                recovery.publication_warning_generation = Some(warning_generation);
+            }
+            cx.notify();
+            return Ok(ApplicationCloseTransitionStatus::Applied);
+        }
         let transition = self.coordinator.request_close(snapshot.clone())?;
         if transition.status == ApplicationCloseTransitionStatus::Applied {
             self.recovery = None;
@@ -975,6 +1032,14 @@ impl ApplicationCloseWorkspace {
                         &document_id,
                         message.clone(),
                     );
+                    if let Some(native_id) = self.document_ids.get(&document_id).copied() {
+                        let warning_generation = self.workspace.read_with(cx, |workspace, cx| {
+                            workspace.publication_durability_warning_generation(native_id, cx)
+                        });
+                        if let Some(recovery) = self.recovery.as_mut() {
+                            recovery.publication_warning_generation = warning_generation;
+                        }
+                    }
                     self.effects
                         .push(ApplicationCloseEffect::SaveWarningReported {
                             transaction_id,
@@ -1083,6 +1148,7 @@ impl ApplicationCloseWorkspace {
             title,
             message,
             primary_label: primary_label.to_owned(),
+            publication_warning_generation: None,
         });
     }
 

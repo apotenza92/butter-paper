@@ -7,6 +7,7 @@ import {
   lastTemplate,
   loadTemplateLibrary,
   removeTemplate,
+  readRendererMigrationSnapshot,
   saveTemplateLibrary,
   useTemplate,
   withImportedTemplates,
@@ -58,5 +59,68 @@ describe('template library', () => {
     const reloaded = loadTemplateLibrary(memory);
     expect(reloaded.lastTemplateId).toBe('imported-00000000-0000-4000-8000-000000000000');
     expect(lastTemplate(withImportedTemplates(reloaded, merged.importedTemplates)).name).toBe('Site Form');
+  });
+
+  it('creates a resolved fail-closed migration snapshot from current renderer state', () => {
+    const memory = storage();
+    const added = addGeneratedTemplate(
+      loadTemplateLibrary(memory),
+      'Site Grid',
+      { ...DEFAULT_BLANK_PDF_SETTINGS, patternType: 'grid' },
+      'site-grid',
+    );
+    saveTemplateLibrary(memory, added);
+
+    expect(readRendererMigrationSnapshot(memory, false)).toEqual({
+      menuBarVisible: false,
+      lastTemplateId: 'custom-site-grid',
+      generatedTemplates: [{
+        id: 'custom-site-grid',
+        name: 'Site Grid',
+        title: 'Untitled',
+        request: {
+          widthMm: 420,
+          heightMm: 297,
+          pattern: { type: 'grid', spacingMm: 10, color: '#d1d5db' },
+        },
+      }],
+    });
+    saveTemplateLibrary(memory, { ...added, lastTemplateId: 'imported-01234567-89ab-cdef-0123-456789abcdef' });
+    expect(readRendererMigrationSnapshot(memory, false).lastTemplateId)
+      .toBe('imported-01234567-89ab-cdef-0123-456789abcdef');
+  });
+
+  it('strictly migrates the legacy blank-paper preference when no library exists', () => {
+    const memory = storage({
+      'butter-paper.blank-pdf-settings.v1': JSON.stringify({
+        ...DEFAULT_BLANK_PDF_SETTINGS,
+        preset: 'custom',
+        customWidth: '300',
+        customHeight: '200',
+      }),
+    });
+    expect(readRendererMigrationSnapshot(memory, true)).toMatchObject({
+      menuBarVisible: true,
+      lastTemplateId: 'custom-migrated-blank-pdf-default',
+      generatedTemplates: [{ request: { widthMm: 300, heightMm: 200 } }],
+    });
+  });
+
+  it('refuses malformed, lossy, duplicate or unrecognised migration state', () => {
+    expect(() => readRendererMigrationSnapshot(storage({
+      'butter-paper.template-library.v1': '{',
+    }), true)).toThrow(/invalid JSON/);
+    expect(() => readRendererMigrationSnapshot(storage({
+      'butter-paper.template-library.v1': JSON.stringify({ version: 1, customTemplates: [], lastTemplateId: 'built-in-blank', extra: true }),
+    }), true)).toThrow(/unrecognised fields/);
+    const duplicate = {
+      id: 'custom-same', name: 'Same', kind: 'generated', builtIn: false, settings: DEFAULT_BLANK_PDF_SETTINGS,
+    };
+    expect(() => readRendererMigrationSnapshot(storage({
+      'butter-paper.template-library.v1': JSON.stringify({ version: 1, customTemplates: [duplicate, duplicate], lastTemplateId: duplicate.id }),
+    }), true)).toThrow(/duplicate/);
+    expect(() => readRendererMigrationSnapshot(storage({
+      'butter-paper.blank-pdf-settings.v1': '{',
+    }), true)).toThrow(/invalid JSON/);
   });
 });

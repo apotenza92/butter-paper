@@ -8,12 +8,15 @@ use butter_paper_gpui_migration::continuous_view_control::{
 };
 use butter_paper_gpui_migration::system_theme::apply_window_appearance;
 use gpui::{
-    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, Modifiers, Render,
-    TestAppContext, Window, WindowAppearance, point, px,
+    AppContext as _, Bounds, Context, Entity, EntityInputHandler as _, HighlightStyle,
+    InteractiveElement as _, IntoElement, Modifiers, ParentElement as _, Render,
+    StrikethroughStyle, Styled as _, TestAppContext, UnderlineStyle, Window, WindowAppearance, div,
+    point, px, radians, size,
 };
 use gpui_component::{
     Root, Selectable as _, Theme, ThemeMode,
     button::{Button, ButtonGroup},
+    input::{EditorState, TextDecoration, Textarea, TextareaRotation, TextareaState},
 };
 
 #[gpui::test]
@@ -90,6 +93,16 @@ struct ButtonGroupCompatibilityView {
     selections: Rc<RefCell<Vec<Vec<usize>>>>,
 }
 
+struct RotatedTextareaCompatibilityView {
+    input: Entity<TextareaState>,
+    rotation: TextareaRotation,
+}
+
+struct RotatedDecoratedEditorCompatibilityView {
+    input: Entity<EditorState>,
+    rotation: TextareaRotation,
+}
+
 impl Render for CompatibilityView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let clicks = self.clicks.clone();
@@ -116,6 +129,36 @@ impl Render for ButtonGroupCompatibilityView {
                     .selected(true),
             )
             .on_click(move |selected, _, _| selections.borrow_mut().push(selected.clone()))
+    }
+}
+
+impl Render for RotatedTextareaCompatibilityView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let frame = self.rotation.frame_size();
+        div()
+            .id("rotated-textarea-platform-input")
+            .debug_selector(|| "rotated-textarea-platform-input".into())
+            .w(frame.width)
+            .h(frame.height)
+            .child(
+                Textarea::new(&self.input)
+                    .appearance(false)
+                    .bordered(false)
+                    .rotation(self.rotation)
+                    .size_full(),
+            )
+    }
+}
+
+impl Render for RotatedDecoratedEditorCompatibilityView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let frame = self.rotation.frame_size();
+        div()
+            .id("rotated-decorated-editor")
+            .debug_selector(|| "rotated-decorated-editor".into())
+            .w(frame.width)
+            .h(frame.height)
+            .child(self.input.clone())
     }
 }
 
@@ -166,6 +209,157 @@ fn button_group_renders_and_reports_single_selection(cx: &mut TestAppContext) {
 
     cx.simulate_click(single_page.center(), Modifiers::default());
     assert_eq!(selections.borrow().as_slice(), &[vec![0]]);
+}
+
+#[gpui::test]
+fn rotated_textarea_platform_range_and_point_geometry_round_trip(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let input_slot = Rc::new(RefCell::new(None::<Entity<TextareaState>>));
+    let rotation = TextareaRotation::new(
+        radians(std::f32::consts::FRAC_PI_6),
+        size(px(160.), px(60.)),
+    );
+    let (_, cx) = cx.add_window_view({
+        let input_slot = input_slot.clone();
+        move |window, cx| {
+            let input = cx.new(|cx| TextareaState::new(window, cx).default_value("abc"));
+            input_slot.replace(Some(input.clone()));
+            let view = cx.new(|_| RotatedTextareaCompatibilityView { input, rotation });
+            Root::new(view, window, cx)
+        }
+    });
+    let input = input_slot
+        .borrow_mut()
+        .take()
+        .expect("the rotated Textarea state must be retained");
+
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let frame = cx
+        .debug_bounds("rotated-textarea-platform-input")
+        .expect("the rotated Textarea frame must participate in layout");
+    let content = Bounds::new(
+        point(
+            frame.center().x - rotation.content_size().width / 2.,
+            frame.center().y - rotation.content_size().height / 2.,
+        ),
+        rotation.content_size(),
+    );
+    let (public_bounds, platform_bounds, mapped_index) = cx.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            let public_bounds = input.range_to_bounds(&(1..1));
+            let platform_bounds = input.bounds_for_range(1..1, content, window, cx);
+            let mapped_index = platform_bounds
+                .and_then(|bounds| input.character_index_for_point(bounds.center(), window, cx));
+            (public_bounds, platform_bounds, mapped_index)
+        })
+    });
+    let public_bounds = public_bounds.expect("the public rotated caret range must be laid out");
+    let platform_bounds =
+        platform_bounds.expect("the platform rotated caret range must be laid out");
+    assert_eq!(platform_bounds, public_bounds);
+    assert!(platform_bounds.size.width > px(1.));
+    assert!(platform_bounds.size.height > platform_bounds.size.width);
+    assert_eq!(mapped_index, Some(1));
+}
+
+#[gpui::test]
+fn rotated_editor_strikethrough_paints_through_app_graph(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let rotation = TextareaRotation::new(
+        radians(std::f32::consts::FRAC_PI_6),
+        size(px(120.), px(80.)),
+    );
+    let value = "wrapped strikethrough decoration crosses visual rows";
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let input = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .default_value(value)
+                .soft_wrap(true)
+        });
+        input.update(cx, |input, cx| {
+            input.set_textarea_rotation(Some(rotation));
+            input.create_decorations_collection(
+                vec![TextDecoration::new(
+                    0..value.len(),
+                    HighlightStyle {
+                        strikethrough: Some(StrikethroughStyle {
+                            thickness: px(2.),
+                            color: None,
+                        }),
+                        ..Default::default()
+                    },
+                )],
+                cx,
+            );
+        });
+        let view = cx.new(|_| RotatedDecoratedEditorCompatibilityView { input, rotation });
+        Root::new(view, window, cx)
+    });
+
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let frame = cx
+        .debug_bounds("rotated-decorated-editor")
+        .expect("the rotated decorated editor must participate in layout");
+    let expected = rotation.frame_size();
+    assert!((frame.size.width - expected.width).abs() <= px(0.5));
+    assert!((frame.size.height - expected.height).abs() <= px(0.5));
+}
+
+#[gpui::test]
+fn rotated_editor_wavy_underline_paints_through_app_graph(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let rotation = TextareaRotation::new(
+        radians(std::f32::consts::FRAC_PI_6),
+        size(px(120.), px(80.)),
+    );
+    let value = "wrapped wavy underline decoration crosses visual rows";
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let input = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .default_value(value)
+                .soft_wrap(true)
+        });
+        input.update(cx, |input, cx| {
+            input.set_textarea_rotation(Some(rotation));
+            let split = "wrapped wavy".len();
+            let underline = UnderlineStyle {
+                thickness: px(1.4),
+                color: Some(gpui::red()),
+                wavy: true,
+            };
+            input.create_decorations_collection(
+                vec![
+                    TextDecoration::new(
+                        0..split,
+                        HighlightStyle {
+                            color: Some(gpui::black()),
+                            underline: Some(underline),
+                            ..Default::default()
+                        },
+                    ),
+                    TextDecoration::new(
+                        split..value.len(),
+                        HighlightStyle {
+                            color: Some(gpui::blue()),
+                            underline: Some(underline),
+                            ..Default::default()
+                        },
+                    ),
+                ],
+                cx,
+            );
+        });
+        let view = cx.new(|_| RotatedDecoratedEditorCompatibilityView { input, rotation });
+        Root::new(view, window, cx)
+    });
+
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let frame = cx
+        .debug_bounds("rotated-decorated-editor")
+        .expect("the rotated decorated editor must participate in layout");
+    let expected = rotation.frame_size();
+    assert!((frame.size.width - expected.width).abs() <= px(0.5));
+    assert!((frame.size.height - expected.height).abs() <= px(0.5));
 }
 
 #[gpui::test]

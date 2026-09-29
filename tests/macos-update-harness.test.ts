@@ -238,6 +238,9 @@ describe('macOS updater integration harness', () => {
     const harness = readFileSync(resolve('scripts/test-macos-update.mjs'), 'utf8');
     expect(harness).toContain('trustExpectations({ prior: true })');
     expect(harness).toContain('...trustExpectations()');
+    expect(harness).toContain('CLEAN_MIGRATION_REQUEST');
+    expect(harness).toContain('request => window.butterPaper.updates.installDownloaded(request)');
+    expect(harness).not.toContain('window.butterPaper.updates.installDownloaded()');
   });
 
   it('makes the verified release public before sealing its update-feed bundle', () => {

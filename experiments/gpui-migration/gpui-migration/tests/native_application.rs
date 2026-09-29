@@ -17,12 +17,14 @@ use butter_paper_gpui_migration::{
         ToggleApplicationMenuBar,
     },
     document_workspace::{
-        ActualSize, CloseDocument, ContinuousView, DocumentOpenBatchRequest, DocumentOpenOrigin,
-        DocumentWorkspace, FitPage, FitWidth, NativeDocumentOpener, NativeDocumentResource,
-        NativeDocumentSaver, NavigateNextPage, NavigatePreviousPage, NewFromTemplate,
-        OpenDocumentRequest, OpenPdf, OpenedNativeDocument, RasterSurface, RotatePageLeft,
-        RotatePageRight, Save, SaveAs, SaveDocumentAsTemplate, SaveDocumentRequest,
-        SavedNativeDocument, SinglePageView, ThumbnailSurface, ZoomIn, ZoomOut,
+        ActualSize, CloseDocument, ContinuousView, DOCUMENT_OPEN_PROGRESS_ID,
+        DOCUMENT_OPEN_STATUS_ID, DocumentOpenBatchDisposition, DocumentOpenBatchRequest,
+        DocumentOpenBatchStatus, DocumentOpenOrigin, DocumentWorkspace, FitPage, FitWidth,
+        NativeDocumentOpener, NativeDocumentResource, NativeDocumentSaver, NavigateNextPage,
+        NavigatePreviousPage, NewFromTemplate, OpenDocumentRequest, OpenPdf,
+        OpenedNativeDocument, RasterSurface, RotatePageLeft, RotatePageRight, Save, SaveAs,
+        SaveDocumentAsTemplate, SaveDocumentRequest, SavedNativeDocument, SinglePageView,
+        ThumbnailSurface, ZoomIn, ZoomOut,
     },
     native_application::{
         ApplicationMenuShellState, NativeApplicationMenuState, NativeDocumentIngress,
@@ -30,6 +32,7 @@ use butter_paper_gpui_migration::{
         build_native_application_menus_with_shell,
     },
     viewer::TileRequest,
+    viewer_toolbar_strip::VIEWER_TOOLBAR_CONTENT_ID,
 };
 use gpui::{
     Action, AppContext as _, ExternalPaths, FileDropEvent, Menu, MenuItem, TestAppContext, point,
@@ -549,6 +552,10 @@ fn native_application_root_accepts_real_external_pdf_drops_and_preserves_drop_or
         let backend = backend.clone();
         move |cx| DocumentWorkspace::with_opener(backend, cx)
     });
+    workspace.update(cx, |workspace, cx| {
+        workspace.open_path(PathBuf::from("/tmp/already-open.pdf"), cx)
+    });
+    cx.run_until_parked();
     let close = cx.new({
         let workspace = workspace.clone();
         let backend = backend.clone();
@@ -560,26 +567,139 @@ fn native_application_root_accepts_real_external_pdf_drops_and_preserves_drop_or
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
-    let dropped = PathBuf::from("/tmp/drop-fixture.pdf");
-    for expected_sessions in [1, 2] {
-        cx.simulate_event(FileDropEvent::Entered {
-            position: point(px(20.), px(20.)),
-            paths: ExternalPaths(
-                [dropped.clone(), PathBuf::from("/tmp/notes.txt")]
-                    .into_iter()
-                    .collect(),
+    let first = PathBuf::from("/tmp/drop-first.pdf");
+    let second = PathBuf::from("/tmp/drop-second.PDF");
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| workspace.open_documents(
+            DocumentOpenBatchRequest::new(
+                DocumentOpenOrigin::Drop,
+                [
+                    first.clone(),
+                    PathBuf::from("/tmp/notes.txt"),
+                    second.clone(),
+                ],
             ),
-        });
-        cx.simulate_event(FileDropEvent::Submit {
-            position: point(px(20.), px(20.)),
-        });
-        cx.run_until_parked();
-        assert_eq!(
-            workspace.read_with(cx, |workspace, _| workspace.sessions().len()),
-            expected_sessions,
-            "a separate drop of the same PDF must force a new document tab"
-        );
+            cx,
+        )),
+        DocumentOpenBatchDisposition::Started {
+            batch_id: 1,
+            candidate_count: 2,
+        }
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.active_document_open_batches()),
+        1
+    );
+    assert!(matches!(
+        workspace.read_with(cx, |workspace, _| workspace.document_open_status().clone()),
+        DocumentOpenBatchStatus::Opening {
+            origin: DocumentOpenOrigin::Drop,
+            candidate_count: 2,
+            ..
+        }
+    ));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds(DOCUMENT_OPEN_STATUS_ID).is_some());
+    assert!(cx.debug_bounds(DOCUMENT_OPEN_PROGRESS_ID).is_some());
+
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.active_document_open_batches()),
+        0
+    );
+    assert!(cx.debug_bounds(DOCUMENT_OPEN_STATUS_ID).is_none());
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .sessions()
+                .iter()
+                .map(|session| session.read(cx).path().to_owned())
+                .collect::<Vec<_>>()
+        }),
+        [
+            PathBuf::from("/tmp/already-open.pdf"),
+            first.clone(),
+            second,
+        ]
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .session(workspace.active_document_id().unwrap(), cx)
+                .unwrap()
+                .read(cx)
+                .path()
+                .to_owned()
+        }),
+        first
+    );
+
+    for path in [
+        PathBuf::from("/tmp/drop-first.pdf"),
+        PathBuf::from("/tmp/drop-third.pdf"),
+    ] {
+        assert!(matches!(
+            workspace.update(cx, |workspace, cx| workspace.open_documents(
+                DocumentOpenBatchRequest::new(DocumentOpenOrigin::Drop, [path]),
+                cx,
+            )),
+            DocumentOpenBatchDisposition::Started { .. }
+        ));
     }
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.active_document_open_batches()),
+        2,
+        "overlapping drops must retain one busy claim per accepted request"
+    );
+    cx.run_until_parked();
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.sessions().len()),
+        5,
+        "a separate drop of the same PDF must force a new document tab"
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.active_document_open_batches()),
+        0
+    );
+
+    cx.simulate_event(FileDropEvent::Entered {
+        position: point(px(20.), px(20.)),
+        paths: ExternalPaths(
+            [
+                PathBuf::from("/tmp/root-drop.pdf"),
+                PathBuf::from("/tmp/root-notes.txt"),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+    });
+    cx.simulate_event(FileDropEvent::Submit {
+        position: point(px(20.), px(20.)),
+    });
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.sessions().len()),
+        6,
+        "one real Submit must deliver its accepted PDF exactly once"
+    );
+
+    cx.simulate_event(FileDropEvent::Entered {
+        position: point(px(20.), px(20.)),
+        paths: ExternalPaths([PathBuf::from("/tmp/notes-only.txt")].into_iter().collect()),
+    });
+    cx.simulate_event(FileDropEvent::Submit {
+        position: point(px(20.), px(20.)),
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.sessions().len()),
+        6,
+        "a non-PDF-only drop must be a silent no-op"
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.active_document_open_batches()),
+        0
+    );
 
     let ids = workspace.read_with(cx, |workspace, app| {
         workspace
@@ -789,20 +909,35 @@ fn workspace_integration_sidebar_matrix_preserves_canvas_boundaries(cx: &mut Tes
             assert_eq!(right.right(), px(width));
             let first = cx.debug_bounds("viewer-zoom-controls").unwrap();
             let last = cx.debug_bounds("single-page-view-split").unwrap();
-            if last.right() - first.left() <= toolbar.size.width {
+            let content = cx.debug_bounds(VIEWER_TOOLBAR_CONTENT_ID).unwrap();
+            if content.size.width <= toolbar.size.width {
                 let centre = (first.left() + last.right()) / 2.;
-                assert!((centre - toolbar.center().x).abs() <= px(0.5), "toolbar controls not centred at width {width}");
+                assert!(
+                    (centre - toolbar.center().x).abs() <= px(0.5),
+                    "toolbar controls not centred at width {width}: toolbar={toolbar:?}, content={content:?}, first={first:?}, last={last:?}",
+                );
             } else {
+                let reveal_delta = (last.right() - toolbar.right()).max(px(0.));
                 cx.simulate_event(gpui::ScrollWheelEvent {
                     position: toolbar.center(),
-                    delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-1000.))),
+                    delta: gpui::ScrollDelta::Pixels(point(
+                        px(0.),
+                        px(-f32::from(reveal_delta) - 1.),
+                    )),
                     modifiers: gpui::Modifiers::default(),
                     touch_phase: gpui::TouchPhase::Moved,
                 });
                 cx.update(|window, cx| window.draw(cx).clear(cx));
                 let revealed = cx.debug_bounds("single-page-view-split").unwrap();
-                assert!(revealed.right() <= toolbar.right(), "vertical wheel must reveal final toolbar dropdown at width {width}");
-                assert!(revealed.left() >= toolbar.left());
+                let scroll = cx.debug_bounds("viewer-toolbar-scroll").unwrap();
+                assert!(
+                    revealed.right() <= toolbar.right(),
+                    "vertical wheel must reveal final toolbar dropdown at width {width}: toolbar={toolbar:?}, scroll={scroll:?}, content={content:?}, revealed={revealed:?}",
+                );
+                assert!(
+                    revealed.left() >= toolbar.left(),
+                    "revealed toolbar control escaped the leading edge at width {width}: toolbar={toolbar:?}, scroll={scroll:?}, content={content:?}, revealed={revealed:?}",
+                );
             }
             assert_eq!(observed.read_with(cx, |workspace, _| workspace.active_document_id()), Some(id));
             assert_eq!(observed.read_with(cx, |workspace, cx| workspace.annotation_snapshot(id, cx).unwrap().revision), revision);

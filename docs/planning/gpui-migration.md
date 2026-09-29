@@ -22,11 +22,11 @@ Integration must verify which regions abut or intersect, continuity and ownershi
 
 ## Current state
 
-Numbered task status lives in [migration-todo.md](migration-todo.md); this file owns the Phase detail. Region briefs own their gates and evidence.
+Numbered task status and the ordered release queue live in [migration-todo.md](migration-todo.md); this file owns the Phase detail. Region briefs own their gates and evidence. The accepted Phase 1 checkpoint supersedes earlier pending-acceptance notes for that baseline. Outstanding test/device coverage remains qualification work; it does not revoke recorded acceptance. Historical test counts below are prior-run evidence, not a current-candidate certification.
 
 | Region | State | Next action |
 | --- | --- | --- |
-| Comparison baseline and ownership | Agreed | Reuse frozen evidence; refresh deliberately if it becomes unavailable |
+| Comparison baseline and ownership | Ownership agreed; final source freeze open | Existing fixtures have receipts; task 5.1 must freeze both dirty checkouts for release parity |
 | Title bar | Native macOS behaviour implemented; visual acceptance open | AppKit owns macOS chrome and gestures; retain the stock component row on Windows/Linux |
 | Application menu | Phase 1 accepted; production actions deferred | Preserve [menu.md](menu.md) semantics and the reviewed accessibility patch |
 | Document tabs | Phase 1 accepted | Preserve actual-workspace tab regressions; keep the legacy seam audit in tabs.md |
@@ -107,7 +107,7 @@ Paths below are relative to the repository root. Electron sources provide the be
 - `apps/desktop/src/renderer/src/App.tsx` and `utils/toolShortcuts.ts`: holding Space temporarily pans and release restores the previous tool; double-tapping within 300 ms toggles persistent Pan/Select. Key repeat is ignored. Tool switching clears held-pan restoration. Inputs and interactive controls have distinct shortcut guards; macOS native menus own command accelerators to prevent duplicate execution.
 - `AnnotationLayer.simplePlacement.test.ts`, `.vertexPath.test.ts`, `.arcPlacement.test.ts`, `.overlap.test.ts`, `.toolCursor.test.ts` and `.snapping.test.ts`: existing deterministic evidence for click/drag creation, Shift circles, node completion, overlap targeting, locked selection, cancellation and tool cursors.
 - Native implementation owners: `experiments/gpui-migration/gpui-migration/src/document_workspace.rs` (input dispatch and painting), `annotation_adapter.rs` (gesture state), `annotation_model.rs` (selection/history), `selection_geometry.rs` (marquee geometry), `semantic_snapping.rs`, `tool_properties.rs` and individual inspectors. Native box/lasso state already exists; this is an audit and correction, not a new engine.
-- **Confirmed painting gap:** native `selection_color` currently comes from `cx.theme().primary`. Its marquee painter uses one colour, a dashed box outline and an unfilled lasso path without branching on containment/crossing. That does not reproduce the reference selection palette or region treatments. All remaining rows below require source comparison and rendered interaction qualification; existing implementation is not a blanket parity pass.
+- **Original painting defect, partly addressed:** the earlier generic-primary selection and single-style marquee have been replaced by `interaction_chrome.rs` roles and containment/crossing treatments. Hover/focus/draft roles and marquee candidate feedback across the family painters are implemented. Applying the full stroke/dash/halo/handle geometry and real Mac visual acceptance remains open in [phase-4-interactions.md](phase-4-interactions.md). A style table alone does not prove each painter uses it.
 
 #### Interaction inventory and acceptance matrix
 
@@ -175,7 +175,7 @@ The native gate now also prevents interaction colours from escaping the shared `
 4. **Integrated input:** qualify snapping, text/IME, navigation, context menus, inspectors, keyboard focus and interruption across pages/tabs/windows.
 5. **Acceptance:** each row needs deterministic behaviour checks and representative real Mac input/visual evidence. Include light/dark, Retina and fractional scale, a constrained window, rotated page, overlapping and locked objects. Save/reopen representative edited documents and prove interaction chrome never enters PDF content. Run the focused native suites and `pnpm check`; inspect the final captures separately for contradictions. User visual acceptance and physical-device checks remain explicit; do not infer them from green tests.
 
-Next action now: reference and contracts are recorded in [phase-4-interactions.md](phase-4-interactions.md) (Electron behaviour tables plus native assessment and ten implementation gaps). Continue in gap order there: shared hover/focus/draft roles, hold/click behaviour and tool persistence, then per-family placement and modifier corrections. Capture Electron/current GPUI interaction crops and short gesture recordings for the canvas region before implementing. Record the exact visible-state evidence and the passing/failing runner modes in the Phase 4 status; do not treat the existing synthetic and source checks as visual parity.
+Next action: finish the interrupted ordered Highlight slice (task 4.14), starting with the explicit [Phase 4 resume checkpoint](phase-4-interactions.md#ordered-highlight-resume-checkpoint--implementing-not-verified). Then follow [migration-todo.md](migration-todo.md), the sole ordered execution queue. The Phase 4 brief retains the twelve gap contracts and visual evidence; prior role/Space/placement fixes must not be restarted from this historical delivery order.
 
 ### Approved region crops
 

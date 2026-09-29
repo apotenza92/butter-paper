@@ -1,8 +1,8 @@
 use gpui::{
-    div, px, InteractiveElement as _, IntoElement, ParentElement as _, SharedString, Styled as _,
-    WindowOptions,
+    InteractiveElement as _, IntoElement, ParentElement as _, SharedString, Styled as _,
+    WindowOptions, div, px,
 };
-use gpui_component::{h_flex, TitleBar};
+use gpui_component::{TitleBar, h_flex};
 
 pub const APPLICATION_TITLE: &str = "GPUI Migration";
 #[cfg(target_os = "macos")]
@@ -14,14 +14,22 @@ pub const MACOS_TITLE_BAR_CONTROL_INSET: gpui::Pixels = px(80.);
 /// Formats the window title from the active document and the number of open
 /// documents. The document tab remains the owner of dirty-state presentation.
 pub fn format_window_title(active_document_name: Option<&str>, document_count: usize) -> String {
+    format_window_title_for_application(active_document_name, document_count, APPLICATION_TITLE)
+}
+
+pub fn format_window_title_for_application(
+    active_document_name: Option<&str>,
+    document_count: usize,
+    application_title: &str,
+) -> String {
     let Some(active_document_name) = active_document_name else {
-        return APPLICATION_TITLE.to_owned();
+        return application_title.to_owned();
     };
     let other_document_count = document_count.saturating_sub(1);
     if other_document_count == 0 {
-        format!("{active_document_name} — {APPLICATION_TITLE}")
+        format!("{active_document_name} — {application_title}")
     } else {
-        format!("{active_document_name} (+{other_document_count}) — {APPLICATION_TITLE}")
+        format!("{active_document_name} (+{other_document_count}) — {application_title}")
     }
 }
 

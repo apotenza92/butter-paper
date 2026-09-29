@@ -3,11 +3,11 @@ mod interaction_chrome;
 #[path = "space_pan.rs"]
 mod space_pan;
 
-use gpui_component::FocusTrapElement as _;
 use gpui_component::ElementExt as _;
+use gpui_component::FocusTrapElement as _;
 use std::{
     cell::Cell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ops::Range,
     path::{Path, PathBuf},
     rc::Rc,
@@ -22,10 +22,10 @@ pub use crate::document_resource::{
     PdfiumWorkerBackend, RasterSurface, ThumbnailSurface,
 };
 pub use crate::document_session::{
-    DocumentSaveFailure, DocumentSaveFailureOperation, DocumentSaveRoute,
-    HighlightCompositeEvidence, NativeDocumentSaveStatus, NativeDocumentSession,
-    NativeDocumentStatus, PenAnnotationDefaults, SaveDestination, SaveDocumentRequest,
-    SavedNativeDocument, resolve_document_save_route,
+    DocumentRecoveryPreparation, DocumentSaveFailure, DocumentSaveFailureKind,
+    DocumentSaveFailureOperation, DocumentSaveRoute, HighlightCompositeEvidence,
+    NativeDocumentSaveStatus, NativeDocumentSession, NativeDocumentStatus, PenAnnotationDefaults,
+    SaveDestination, SaveDocumentRequest, SavedNativeDocument, resolve_document_save_route,
 };
 pub use crate::document_viewer::{DocumentViewerSnapshot, ViewerFitPreset, ViewerRenderQuality};
 use crate::viewer::CadOrganisation as PlannerCadOrganisation;
@@ -38,7 +38,14 @@ use crate::{
         DimensionPropertyEvent, DimensionPropertyInspector, DimensionPropertyPatch,
         DimensionPropertySnapshot,
     },
-    document_session::{ThumbnailPresentation, annotation_image_cache_key},
+    document_recovery_store::{
+        DocumentRecoveryStore, DocumentRecoveryStoreError, RecoveredDocument, RecoveryAuthority,
+        RecoveryDocumentId, RecoverySourceKind, StagedRecoveryPublication,
+    },
+    document_session::{
+        PageContentGeometryRequestState, PublicationDurabilityWarning, ThumbnailPresentation,
+        annotation_image_cache_key,
+    },
     document_tab_bar::{
         DOCUMENT_TAB_OPEN_ID, DOCUMENT_TAB_POINTER_DRAG_THRESHOLD,
         DOCUMENT_TAB_REORDER_DESCRIPTION, DOCUMENT_TAB_REORDER_KEYSHORTCUTS,
@@ -74,7 +81,10 @@ use crate::{
         EllipsePropertyInspector, RectanglePropertyEvent, RectanglePropertyInspector,
         RectanglePropertyPatch, RectanglePropertySnapshot, RectangularShapePropertyKind,
     },
-    session_manifest::{SessionRestorePlan, SessionSnapshot, normalized_path_key},
+    session_manifest::{
+        SessionRecoveryDocument, SessionRecoverySnapshot, SessionRestorePlan, SessionSnapshot,
+        normalized_path_key,
+    },
     straight_line_property_inspector::{
         StraightLinePropertyEvent, StraightLinePropertyInspector, StraightLinePropertyPatch,
         StraightLinePropertySnapshot,
@@ -97,19 +107,20 @@ use crate::{
     annotation_adapter::{
         AnnotationAdapter, AnnotationTool, CALLOUT_BODY_ID, CALLOUT_TEXT_BOX_ID, CLOUD_BODY_ID,
         DIMENSION_BODY_ID, DIMENSION_END_HANDLE_ID, DIMENSION_OFFSET_HANDLE_ID,
-        DIMENSION_START_HANDLE_ID, LENGTH_SCALE_REQUIRED_MESSAGE, PointerInputModifiers,
-        PointerPhaseOutcome, StraightLinePropertyEdit, VertexPathPropertyEdit,
-        ellipse_resize_handle_point_for_rect, ellipse_rotation_handle_point_for_rect,
-        redact_resize_handle_id, snapshot_resize_handle_id,
+        DIMENSION_START_HANDLE_ID, LENGTH_SCALE_REQUIRED_MESSAGE, NATURAL_IMAGE_MAX_PAGE_FRACTION,
+        PendingImagePreview, PointerInputModifiers, PointerPhaseOutcome, StraightLinePropertyEdit,
+        VertexPathPropertyEdit, callout_resize_handle_id, ellipse_resize_handle_point_for_rect,
+        ellipse_rotation_handle_point_for_rect, redact_resize_handle_id, snapshot_resize_handle_id,
     },
     annotation_model::{
-        Annotation, AnnotationEdit, AnnotationError, AnnotationKind, AnnotationScene, AnnotationSnapshot,
-        ArcControlPoint, DimensionAppearance, InkTool, LengthCalibration, LengthEndpoint, LineKind,
-        MarkupId, MeasurementPathKind, PENDING_REDACTION_STATUS, PageRotation,
-        PageRotationDirection, PageScale, PageScaleApplyTarget, PageTransform, PdfPoint, PdfRect,
-        PenAppearance, PointerCancelReason, RectangleAppearance, RectangleResizeHandle,
-        ScalePreset, SceneArc, SceneCloudPlus, SceneDimension, SceneRectangle, SceneRedact,
-        StraightLineAppearance, StrokeStyle, TextAlignment, TextBoxAnnotation, TextBoxStyle, built_in_scale_presets,
+        Annotation, AnnotationEdit, AnnotationError, AnnotationKind, AnnotationScene,
+        AnnotationSnapshot, ArcControlPoint, DimensionAppearance, HitTarget, InkTool,
+        LengthCalibration, LengthEndpoint, LineKind, MarkupId, MeasurementPathKind,
+        PENDING_REDACTION_STATUS, PageRotation, PageRotationDirection, PageScale,
+        PageScaleApplyTarget, PageTransform, PdfPoint, PdfRect, PenAppearance, PointerCancelReason,
+        RectangleAppearance, RectangleResizeHandle, ScalePreset, SceneArc, SceneCloudPlus,
+        SceneDimension, SceneRectangle, SceneRedact, StraightLineAppearance, StrokeStyle,
+        TextAlignment, TextBoxAnnotation, TextBoxRichTextRun, TextBoxStyle, built_in_scale_presets,
         ellipse_cubic_bezier_points, rectangle_world_corners,
     },
     annotation_paint_path::{InkPaintPathSegment, build_ink_paint_path},
@@ -122,25 +133,28 @@ use crate::{
     page_geometry::PageCoordinateSpace,
     pdf_engine::{InPlacePublicationCapability, PdfPersistenceSession, PdfPublicationOutcome},
     pdf_file_authority::{SaveAsTargetAuthority, SaveTargetErrorKind},
-    selection_geometry::{SelectionMarquee, SelectionPoint},
-    semantic_snapping::{
-        SemanticSnapDecision, SemanticSnapGuideType, SemanticSnapRole, SemanticSnapSettings,
-        SemanticSnapSource, SemanticSnapTarget,
-    },
     recent_signature_store::{
         RecentSignature, RecentSignatureSource, RecentSignatureStore, RecentSignaturesSnapshot,
+    },
+    selection_geometry::{SelectionMarquee, SelectionPoint},
+    semantic_snapping::{
+        EqualSpacingPlacement, ObjectSnapTrackingResult, OrthogonalAxis, RelationshipSnapGuide,
+        SemanticSnapDecision, SemanticSnapGuideType, SemanticSnapRole, SemanticSnapSettings,
+        SemanticSnapSource, SemanticSnapTarget,
     },
     viewer::{PageLayout, TileRequest},
 };
 use gpui::{
     Anchor, App, AppContext as _, BorderStyle, Bounds, ClickEvent, ContentMask, Context,
-    DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable as _, InteractiveElement as _,
-    IntoElement, KeyBinding, KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent,
-    MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement as _, PathBuilder, PathPromptOptions,
-    Pixels, Point, Render, RenderImage, Role, ScrollHandle, ScrollStrategy, ScrollWheelEvent,
+    CursorStyle, DispatchPhase, Edges, Entity, EventEmitter, FocusHandle, Focusable as _,
+    FontStyle, FontWeight, InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent,
+    KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
+    MouseUpEvent, ObjectFit, ParentElement as _, PathBuilder, PathPromptOptions, Pixels, Point,
+    Render, RenderImage, Role, ScrollHandle, ScrollStrategy, ScrollWheelEvent, ShapedLine,
     SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription,
-    Task, TextAlign, TextRun, UniformListScrollHandle, WeakEntity, Window, accesskit::Live, canvas,
-    fill, font, img, outline, point, prelude::FluentBuilder as _, px, relative, size, uniform_list,
+    Task, TextAlign, TextRun, TransformationMatrix, UniformListScrollHandle, WeakEntity, Window,
+    accesskit::Live, canvas, fill, font, img, outline, point, prelude::FluentBuilder as _, px,
+    radians, relative, size, uniform_list,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, StyledExt as _,
@@ -148,14 +162,14 @@ use gpui_component::{
     alert::Alert,
     button::{Button, ButtonGroup, ButtonVariants as _},
     checkbox::Checkbox,
-    dialog::{DialogAction, DialogClose, DialogFooter},
+    dialog::{DialogAction, DialogFooter},
     h_flex,
     input::{
         Copy, Cut, Delete, Escape, Input, InputEvent, InputState, NumberInput, Paste, Redo,
         SelectAll, Textarea, TextareaState, Undo,
     },
-    popover::Popover,
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
+    popover::Popover,
     progress::Progress,
     resizable::{ResizableState, h_resizable, resizable_panel},
     scroll::ScrollableElement as _,
@@ -163,7 +177,6 @@ use gpui_component::{
     tab::{Tab, TabBar},
     try_parse_color, v_flex,
 };
-use image::{Frame, ImageBuffer, Rgba};
 
 gpui::actions!(
     document_workspace,
@@ -194,6 +207,12 @@ gpui::actions!(
         ContinuousView,
         SinglePageView,
         SelectTool,
+        SelectTextBoxTool,
+        SelectRectangleTool,
+        SelectEllipseTool,
+        SelectPenTool,
+        SelectCloudTool,
+        SelectCalloutTool,
         PanTool,
         SetPageScale,
         SelectLineTool,
@@ -214,6 +233,8 @@ gpui::actions!(
 );
 
 const DOCUMENT_WORKSPACE_CONTEXT: &str = "DocumentWorkspace";
+// Tool letters must reach focused text fields rather than matching their workspace ancestor.
+const DOCUMENT_TOOL_SHORTCUT_CONTEXT: &str = "DocumentWorkspace && !Input";
 
 pub fn init_document_workspace_actions(cx: &mut App) {
     cx.bind_keys([
@@ -275,42 +296,69 @@ pub fn init_document_workspace_actions(cx: &mut App) {
         KeyBinding::new("cmd-0", ActualSize, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-0", ActualSize, Some(DOCUMENT_WORKSPACE_CONTEXT)),
-        KeyBinding::new("l", SelectLineTool, Some(DOCUMENT_WORKSPACE_CONTEXT)),
-        KeyBinding::new("shift-c", SelectArcTool, Some(DOCUMENT_WORKSPACE_CONTEXT)),
-        KeyBinding::new("a", SelectArrowTool, Some(DOCUMENT_WORKSPACE_CONTEXT)),
+        KeyBinding::new("v", SelectTool, Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT)),
+        KeyBinding::new("t", SelectTextBoxTool, Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT)),
+        KeyBinding::new(
+            "r",
+            SelectRectangleTool,
+            Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
+        ),
+        KeyBinding::new("e", SelectEllipseTool, Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT)),
+        KeyBinding::new("p", SelectPenTool, Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT)),
+        KeyBinding::new("c", SelectCloudTool, Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT)),
+        KeyBinding::new("q", SelectCalloutTool, Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT)),
+        KeyBinding::new("l", SelectLineTool, Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT)),
+        KeyBinding::new(
+            "shift-c",
+            SelectArcTool,
+            Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
+        ),
+        KeyBinding::new("a", SelectArrowTool, Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT)),
         KeyBinding::new(
             "shift-n",
             SelectPolylineTool,
-            Some(DOCUMENT_WORKSPACE_CONTEXT),
+            Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
         ),
         KeyBinding::new(
             "shift-p",
             SelectPolygonTool,
-            Some(DOCUMENT_WORKSPACE_CONTEXT),
+            Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
         ),
         KeyBinding::new(
             "shift-alt-q",
             SelectPolylengthTool,
-            Some(DOCUMENT_WORKSPACE_CONTEXT),
+            Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
         ),
         KeyBinding::new(
             "shift-alt-a",
             SelectAreaTool,
-            Some(DOCUMENT_WORKSPACE_CONTEXT),
+            Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
         ),
-        KeyBinding::new("h", SelectHighlightTool, Some(DOCUMENT_WORKSPACE_CONTEXT)),
-        KeyBinding::new("k", SelectCloudPlusTool, Some(DOCUMENT_WORKSPACE_CONTEXT)),
+        KeyBinding::new(
+            "h",
+            SelectHighlightTool,
+            Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
+        ),
+        KeyBinding::new(
+            "k",
+            SelectCloudPlusTool,
+            Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
+        ),
         KeyBinding::new(
             "shift-l",
             SelectDimensionTool,
-            Some(DOCUMENT_WORKSPACE_CONTEXT),
+            Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
         ),
-        KeyBinding::new("i", SelectImageTool, Some(DOCUMENT_WORKSPACE_CONTEXT)),
-        KeyBinding::new("g", SelectSnapshotTool, Some(DOCUMENT_WORKSPACE_CONTEXT)),
+        KeyBinding::new("i", SelectImageTool, Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT)),
+        KeyBinding::new(
+            "g",
+            SelectSnapshotTool,
+            Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
+        ),
         KeyBinding::new(
             "shift-alt-l",
             SelectLengthTool,
-            Some(DOCUMENT_WORKSPACE_CONTEXT),
+            Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
         ),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-a", SelectAll, Some(DOCUMENT_WORKSPACE_CONTEXT)),
@@ -463,8 +511,10 @@ pub const DOCUMENT_SNAP_SETTINGS_ID: &str = "viewer-snap-target-menu";
 pub const DOCUMENT_SNAP_POPOVER_ID: &str = "viewer-snap-popover";
 pub const DOCUMENT_SNAP_MARKUP_ID: &str = "viewer-snap-markup";
 pub const DOCUMENT_SNAP_CONSTRUCTION_GRID_ID: &str = "viewer-snap-construction-grid";
-pub const DOCUMENT_SNAP_CONSTRUCTION_GRID_VISIBLE_ID: &str = "viewer-snap-construction-grid-visible";
-pub const DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID: &str = "viewer-snap-construction-grid-spacing";
+pub const DOCUMENT_SNAP_CONSTRUCTION_GRID_VISIBLE_ID: &str =
+    "viewer-snap-construction-grid-visible";
+pub const DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID: &str =
+    "viewer-snap-construction-grid-spacing";
 pub const DOCUMENT_SNAP_DIMENSION_INCREMENT_ID: &str = "viewer-snap-dimension-increment";
 pub const DOCUMENT_SNAP_DIMENSION_INCREMENT_VALUE_ID: &str =
     "viewer-snap-dimension-increment-value";
@@ -510,6 +560,13 @@ pub const DOCUMENT_SAVE_ERROR_ALERT_ID: &str = "document-workspace-save-error-al
 pub const DOCUMENT_SAVE_ERROR_RETRY_ID: &str = "document-workspace-save-error-retry";
 pub const DOCUMENT_SAVE_ERROR_SAVE_AS_ID: &str = "document-workspace-save-error-save-as";
 pub const DOCUMENT_SAVE_ERROR_DISMISS_ID: &str = "document-workspace-save-error-dismiss";
+pub const DOCUMENT_RECOVERY_PREPARATION_ALERT_ID: &str =
+    "document-workspace-recovery-preparation-alert";
+pub const DOCUMENT_RECOVERY_PREPARATION_RETRY_ID: &str =
+    "document-workspace-recovery-preparation-retry";
+pub const DOCUMENT_RECOVERY_PREPARATION_CONFIRM_ID: &str =
+    "document-workspace-recovery-preparation-confirm";
+pub const DOCUMENT_RECOVERY_REBASE_RETRY_ID: &str = "document-workspace-recovery-rebase-retry";
 pub const DOCUMENT_ROTATE_LEFT_ID: &str = "document-workspace-rotate-left";
 pub const DOCUMENT_ROTATE_RIGHT_ID: &str = "document-workspace-rotate-right";
 pub const DOCUMENT_SESSION_TABS_ID: &str = "document-workspace-session-tabs";
@@ -517,11 +574,150 @@ pub const DOCUMENT_DIRTY_CLOSE_ID: &str = "document-workspace-dirty-close";
 pub const DOCUMENT_DIRTY_CLOSE_CANCEL_ID: &str = "document-workspace-dirty-close-cancel";
 pub const DOCUMENT_DIRTY_CLOSE_DISCARD_ID: &str = "document-workspace-dirty-close-discard";
 pub const DOCUMENT_DIRTY_CLOSE_SAVE_ID: &str = "document-workspace-dirty-close-save";
+pub const DOCUMENT_PUBLICATION_WARNING_CLOSE_ID: &str =
+    "document-workspace-publication-warning-close";
+pub const DOCUMENT_PUBLICATION_WARNING_CLOSE_CANCEL_ID: &str =
+    "document-workspace-publication-warning-close-cancel";
+pub const DOCUMENT_PUBLICATION_WARNING_CLOSE_CONTINUE_ID: &str =
+    "document-workspace-publication-warning-close-continue";
 pub const DOCUMENT_EMPTY_ID: &str = "document-workspace-empty";
 pub const DOCUMENT_ERROR_ID: &str = "document-workspace-error";
 pub const DOCUMENT_OPEN_ERROR_ALERT_ID: &str = "document-workspace-open-feedback-alert";
 pub const DOCUMENT_OPEN_ERROR_DISMISS_ID: &str = "document-workspace-open-feedback-dismiss";
+pub const DOCUMENT_RECOVERY_WARNING_ALERT_ID: &str = "document-workspace-recovery-warning-alert";
+pub const DOCUMENT_RECOVERY_WARNING_DISMISS_ID: &str =
+    "document-workspace-recovery-warning-dismiss";
+pub const DOCUMENT_RECOVERY_AVAILABLE_ALERT_ID: &str =
+    "document-workspace-recovery-available-alert";
+pub const DOCUMENT_RECOVERY_DISCARD_CANCEL_ID: &str = "document-workspace-recovery-discard-cancel";
+pub const DOCUMENT_RECOVERY_DISCARD_CONFIRM_ID: &str =
+    "document-workspace-recovery-discard-confirm";
 pub const VIEWPORT_OPEN_DOCUMENT_ID: &str = "viewport-open-document";
+
+/// Cursor policy for the document viewport. Calibration and marquee gestures
+/// own the crosshair even when Space-pan is armed; otherwise Pan mirrors the
+/// reference viewport's open/closed hand and annotation tools use their
+/// placement crosshair.
+pub fn document_viewport_cursor_style(
+    tool: AnnotationTool,
+    pan_active: bool,
+    pan_drag_active: bool,
+    calibration_pick_active: bool,
+    selection_marquee_active: bool,
+    select_hover_cursor: Option<CursorStyle>,
+) -> CursorStyle {
+    if calibration_pick_active || selection_marquee_active {
+        CursorStyle::Crosshair
+    } else if pan_active {
+        if pan_drag_active {
+            CursorStyle::ClosedHand
+        } else {
+            CursorStyle::OpenHand
+        }
+    } else if tool.uses_crosshair() {
+        CursorStyle::Crosshair
+    } else if tool == AnnotationTool::Select {
+        select_hover_cursor.unwrap_or(CursorStyle::Arrow)
+    } else {
+        CursorStyle::Arrow
+    }
+}
+
+/// GPUI cannot install Electron's arbitrary-angle SVG resize cursor. Preserve
+/// its handle-plus-annotation orientation with the nearest native macOS resize
+/// axis instead of silently presenting an unrelated arrow.
+pub fn rectangle_resize_cursor_style(
+    handle: RectangleResizeHandle,
+    rotation_degrees: f64,
+) -> CursorStyle {
+    let base_degrees = match handle {
+        RectangleResizeHandle::East | RectangleResizeHandle::West => 0.,
+        RectangleResizeHandle::NorthWest | RectangleResizeHandle::SouthEast => 45.,
+        RectangleResizeHandle::North | RectangleResizeHandle::South => 90.,
+        RectangleResizeHandle::NorthEast | RectangleResizeHandle::SouthWest => -45.,
+    };
+    match (((base_degrees + rotation_degrees).rem_euclid(180.) / 45.).round() as i32).rem_euclid(4)
+    {
+        0 => CursorStyle::ResizeLeftRight,
+        1 => CursorStyle::ResizeUpLeftDownRight,
+        2 => CursorStyle::ResizeUpDown,
+        _ => CursorStyle::ResizeUpRightDownLeft,
+    }
+}
+
+/// Resolves only native-representable resize cursors. Point, rotation and
+/// snapped-hidden cursors remain Arrow because GPUI has no equivalent for the
+/// Electron SVG move/rotate/hidden cursors.
+pub fn annotation_resize_cursor_style(
+    scene: &AnnotationScene,
+    id: &MarkupId,
+    index: usize,
+) -> Option<CursorStyle> {
+    let (handle, rotation_degrees) = if let Some(annotation) = scene
+        .rectangles
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        (
+            RectangleResizeHandle::ALL.get(index).copied(),
+            annotation.rotation_degrees,
+        )
+    } else if let Some(annotation) = scene
+        .ellipses
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        (
+            RectangleResizeHandle::ALL.get(index).copied(),
+            annotation.rotation_degrees,
+        )
+    } else if scene.redacts.iter().any(|annotation| &annotation.id == id) {
+        (RectangleResizeHandle::ALL.get(index).copied(), 0.)
+    } else if let Some(annotation) = scene
+        .snapshots
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        (
+            RectangleResizeHandle::ALL.get(index).copied(),
+            annotation.rotation_degrees,
+        )
+    } else if let Some(annotation) = scene
+        .text_boxes
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        (
+            RectangleResizeHandle::ALL.get(index).copied(),
+            annotation.rotation_degrees,
+        )
+    } else if let Some(annotation) = scene.images.iter().find(|annotation| &annotation.id == id) {
+        let handle = match index {
+            0 => Some(RectangleResizeHandle::SouthWest),
+            1 => Some(RectangleResizeHandle::South),
+            2 => Some(RectangleResizeHandle::SouthEast),
+            3 => Some(RectangleResizeHandle::East),
+            4 => Some(RectangleResizeHandle::NorthEast),
+            5 => Some(RectangleResizeHandle::North),
+            6 => Some(RectangleResizeHandle::NorthWest),
+            7 => Some(RectangleResizeHandle::West),
+            _ => None,
+        };
+        (handle, annotation.rotation_degrees)
+    } else if scene.callouts.iter().any(|annotation| &annotation.id == id) {
+        (RectangleResizeHandle::ALL.get(index).copied(), 0.)
+    } else if let Some(annotation) = scene
+        .cloud_pluses
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        let resize_index = index.checked_sub(annotation.cloud_points.len())?;
+        (RectangleResizeHandle::ALL.get(resize_index).copied(), 0.)
+    } else {
+        (None, 0.)
+    };
+    handle.map(|handle| rectangle_resize_cursor_style(handle, rotation_degrees))
+}
 
 fn is_pdf_path(path: &Path) -> bool {
     path.extension()
@@ -585,6 +781,7 @@ impl DocumentOpenBatchRequest {
 pub enum DocumentOpenBatchDisposition {
     Cancelled,
     NoAcceptedPaths,
+    DeferredForRecovery,
     Started {
         batch_id: u64,
         candidate_count: usize,
@@ -622,6 +819,58 @@ impl DocumentOpenFailure {
             .unwrap_or_else(|| self.path.as_os_str())
             .to_string_lossy();
         format!("{name}: {}", self.message)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StartupRecoveryAvailability {
+    OpenedSourceNeedsVerification,
+    GeneratedCopyRequired,
+    Unavailable(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StartupRecoveryItem {
+    pub id: RecoveryDocumentId,
+    pub authority: Option<RecoveryAuthority>,
+    pub source_path: Option<PathBuf>,
+    pub current_revision: Option<u64>,
+    pub saved_revision: Option<u64>,
+    pub availability: StartupRecoveryAvailability,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DeferredStartupOpen {
+    None,
+    Explicit(DocumentOpenBatchRequest),
+    Restore(SessionRestorePlan),
+}
+
+enum StartupRecoveryDiscardResult {
+    Discarded,
+    Refreshed(StartupRecoveryItem),
+    Failed(String),
+}
+
+enum StartupRecoveryCopyResult {
+    Ready {
+        recovered: RecoveredDocument,
+        store: GeneratedDocumentStore,
+        source: OwnedGeneratedDocument,
+    },
+    Refreshed(StartupRecoveryItem),
+    Missing,
+    Failed(String),
+}
+
+impl StartupRecoveryItem {
+    pub fn title(&self) -> String {
+        self.source_path
+            .as_deref()
+            .and_then(Path::file_name)
+            .unwrap_or_else(|| std::ffi::OsStr::new("Recovered document"))
+            .to_string_lossy()
+            .into_owned()
     }
 }
 
@@ -866,6 +1115,14 @@ pub struct DocumentCommandState {
 
 pub trait NativeDocumentSaver: Send + Sync {
     fn save(&self, request: &SaveDocumentRequest) -> Result<SavedNativeDocument, String>;
+
+    fn save_from_recovery_base(
+        &self,
+        _request: &SaveDocumentRequest,
+        _base_pdf: &[u8],
+    ) -> Result<SavedNativeDocument, String> {
+        Err("the configured document saver cannot save from a recovery base".into())
+    }
 }
 
 pub struct PdfDocumentSaver {
@@ -876,24 +1133,39 @@ impl PdfDocumentSaver {
     pub fn new(opener: Arc<dyn NativeDocumentOpener>) -> Self {
         Self { opener }
     }
-}
 
-impl NativeDocumentSaver for PdfDocumentSaver {
-    fn save(&self, request: &SaveDocumentRequest) -> Result<SavedNativeDocument, String> {
+    fn save_with_recovery_base(
+        &self,
+        request: &SaveDocumentRequest,
+        recovery_base_pdf: Option<&[u8]>,
+    ) -> Result<SavedNativeDocument, String> {
         if request.is_in_place()
             && PdfPersistenceSession::in_place_publication_capability()
                 == InPlacePublicationCapability::NewTargetRequired
         {
             return Err("in-place Save requires a new target on this platform".into());
         }
-        let mut persistence = match request.expected_source_sha256 {
-            Some(expected) => {
+        let mut persistence = match (recovery_base_pdf, request.expected_source_sha256) {
+            (Some(_), _) if request.is_in_place() => {
+                return Err("a recovery base may only be published to a new Save As target".into());
+            }
+            (Some(base_pdf), Some(expected)) => {
+                PdfPersistenceSession::open_recovery_base_for_save_as(
+                    &request.source_path,
+                    base_pdf,
+                    expected,
+                )
+            }
+            (Some(_), None) => {
+                return Err("a recovery-base Save As requires a verified source digest".into());
+            }
+            (None, Some(expected)) => {
                 PdfPersistenceSession::open_for_update(&request.source_path, expected)
             }
-            None if request.is_in_place() => {
+            (None, None) if request.is_in_place() => {
                 return Err("in-place Save requires a verified source digest".into());
             }
-            None => PdfPersistenceSession::open(&request.source_path),
+            (None, None) => PdfPersistenceSession::open(&request.source_path),
         }
         .map_err(|error| error.to_string())?;
         let deleted_snapshot_ids = persistence
@@ -1042,11 +1314,16 @@ impl NativeDocumentSaver for PdfDocumentSaver {
                 .map_err(|error| error.to_string())?;
         }
         for arc in &request.annotations.arcs {
-            if persistence
+            if let Some(imported) = persistence
                 .arcs()
                 .iter()
-                .any(|imported| imported.id == arc.id)
+                .find(|imported| imported.id == arc.id)
             {
+                if imported.same_persisted_state_as(arc)
+                    && persistence.arc_has_canonical_native_identity(&arc.id)
+                {
+                    continue;
+                }
                 persistence
                     .replace_arc(arc.clone())
                     .map_err(|error| error.to_string())?;
@@ -2016,31 +2293,19 @@ impl NativeDocumentSaver for PdfDocumentSaver {
                     expected.id
                 ));
             }
-            let geometry_matches = [
-                (actual.rect.x, expected.rect.x),
-                (actual.rect.y, expected.rect.y),
-                (actual.rect.width, expected.rect.width),
-                (actual.rect.height, expected.rect.height),
-            ]
-            .into_iter()
-            .all(|(actual, expected)| (actual - expected).abs() <= 0.000_1);
-            if actual.id != expected.id
-                || actual.page_index != expected.page_index
-                || !geometry_matches
-                || actual.asset() != expected.asset()
-                || actual.aspect_locked != expected.aspect_locked
-                || actual.locked != expected.locked
-            {
+            if !actual.same_persisted_state_as(expected) {
                 return Err(format!(
-                    "saved PDF image {} failed typed reopen validation: expected page {} rect {:?} asset {} aspect_locked={} locked={}; reopened page {} rect {:?} asset {} aspect_locked={} locked={}",
+                    "saved PDF image {} failed typed reopen validation: expected page {} rect {:?} rotation={} asset {} aspect_locked={} locked={}; reopened page {} rect {:?} rotation={} asset {} aspect_locked={} locked={}",
                     expected.id,
                     expected.page_index,
                     expected.rect,
+                    expected.rotation_degrees(),
                     expected.asset().id().as_str(),
                     expected.aspect_locked,
                     expected.locked,
                     actual.page_index,
                     actual.rect,
+                    actual.rotation_degrees(),
                     actual.asset().id().as_str(),
                     actual.aspect_locked,
                     actual.locked,
@@ -2106,6 +2371,20 @@ impl NativeDocumentSaver for PdfDocumentSaver {
     }
 }
 
+impl NativeDocumentSaver for PdfDocumentSaver {
+    fn save(&self, request: &SaveDocumentRequest) -> Result<SavedNativeDocument, String> {
+        self.save_with_recovery_base(request, None)
+    }
+
+    fn save_from_recovery_base(
+        &self,
+        request: &SaveDocumentRequest,
+        base_pdf: &[u8],
+    ) -> Result<SavedNativeDocument, String> {
+        self.save_with_recovery_base(request, Some(base_pdf))
+    }
+}
+
 #[derive(Clone, Copy)]
 enum ActiveInspectorKind {
     Rectangle,
@@ -2143,9 +2422,18 @@ pub struct DocumentWorkspace {
     next_generation: u64,
     next_open_batch_id: u64,
     latest_open_batch_id: Option<u64>,
+    active_document_open_batches: usize,
     pending_session_restore: Option<PendingSessionRestore>,
     document_open_status: DocumentOpenBatchStatus,
     document_open_failures: Vec<DocumentOpenFailure>,
+    session_recovery_warning: Option<String>,
+    startup_recovery_inspecting: bool,
+    startup_recovery_items: Vec<StartupRecoveryItem>,
+    startup_recovery_operation: Option<RecoveryDocumentId>,
+    deferred_startup_open: Option<DeferredStartupOpen>,
+    document_recovery_store: Option<Arc<DocumentRecoveryStore>>,
+    document_recovery_store_error: Option<String>,
+    recovery_confirmation_pending: HashSet<DocumentId>,
     next_annotation_sequence: u64,
     annotation_clipboard: Vec<Annotation>,
     annotation_paste_sequence: u64,
@@ -2155,7 +2443,9 @@ pub struct DocumentWorkspace {
     last_painted_page_evidence: HashMap<(DocumentId, u32), PaintedPageEvidence>,
     viewport_bounds: HashMap<DocumentId, Bounds<Pixels>>,
     active_annotation_pointer: Option<ActiveAnnotationPointer>,
+    properties_click_candidate: Option<PropertiesClickCandidate>,
     pending_close_document_id: Option<DocumentId>,
+    pending_publication_warning_generation: Option<u64>,
     close_after_save_document_id: Option<DocumentId>,
     session_tab_focus_handles: HashMap<DocumentId, FocusHandle>,
     session_tab_bounds: HashMap<DocumentId, Rc<Cell<Bounds<Pixels>>>>,
@@ -2164,6 +2454,9 @@ pub struct DocumentWorkspace {
     session_tab_last_active: Option<DocumentId>,
     session_tab_hovered: Option<DocumentId>,
     hovered_annotation: Option<(DocumentId, u32, MarkupId)>,
+    hot_annotation_handle: Option<(DocumentId, u32, MarkupId, usize)>,
+    select_hover_hit: Option<(DocumentId, u32, HitTarget)>,
+    pending_image_hover: Option<(DocumentId, u32, PdfPoint)>,
     session_tab_scroll: ScrollHandle,
     session_tab_close_bounds: HashMap<DocumentId, Rc<Cell<Bounds<Pixels>>>>,
     session_tab_pointer_drag: Option<DocumentSessionTabPointerDragState>,
@@ -2218,7 +2511,8 @@ pub struct DocumentWorkspace {
     ellipse_property_subscription: Option<Subscription>,
     rectangular_shape_property_inspector_open: bool,
     ink_property_inspector: Option<Entity<InkPropertyInspector>>,
-    highlight_defaults_panel: Option<Entity<crate::highlight_defaults_panel::HighlightDefaultsPanel>>,
+    highlight_defaults_panel:
+        Option<Entity<crate::highlight_defaults_panel::HighlightDefaultsPanel>>,
     highlight_defaults_subscription: Option<Subscription>,
     tool_defaults_panel: Option<Entity<crate::tool_defaults_panel::ToolDefaultsPanel>>,
     tool_defaults_subscription: Option<Subscription>,
@@ -2279,6 +2573,7 @@ impl EventEmitter<DocumentWorkspaceTemplateCommand> for DocumentWorkspace {}
 struct PageInteraction {
     document_id: DocumentId,
     page_index: u32,
+    container_bounds: Bounds<Pixels>,
     bounds: Bounds<Pixels>,
     transform: PageTransform,
     painted_evidence: Option<PaintedPageEvidence>,
@@ -2300,6 +2595,14 @@ struct ActiveAnnotationPointer {
     placement_pending: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PropertiesClickCandidate {
+    document_id: DocumentId,
+    page_index: u32,
+    markup_id: MarkupId,
+    was_selected: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct DocumentSessionTabPointerDragState {
     document_id: DocumentId,
@@ -2314,6 +2617,769 @@ struct ImagePrepareAuthority {
     document_id: DocumentId,
     document_generation: u64,
     prepare_generation: u64,
+}
+
+fn apply_recovery_preparation_result(
+    preparation: Option<&mut DocumentRecoveryPreparation>,
+    generation: u64,
+    result: Result<ReconciledRecoveryAuthority, String>,
+) -> Option<crate::document_recovery_store::RecoveryAuthority> {
+    let published_authority = result.as_ref().ok().map(|outcome| match outcome {
+        ReconciledRecoveryAuthority::Durable(authority)
+        | ReconciledRecoveryAuthority::PublishedButUnconfirmed { authority, .. } => *authority,
+        ReconciledRecoveryAuthority::Conflict { .. } => {
+            unreachable!("initial recovery publication cannot conflict")
+        }
+    });
+    let Some(preparation) = preparation else {
+        return published_authority;
+    };
+    let DocumentRecoveryPreparation::Pending {
+        generation: expected,
+        source_kind,
+    } = preparation
+    else {
+        return published_authority;
+    };
+    if *expected != generation {
+        return published_authority;
+    }
+    let source_kind = *source_kind;
+    match result {
+        Ok(ReconciledRecoveryAuthority::Durable(authority)) => {
+            *preparation = DocumentRecoveryPreparation::Ready {
+                generation,
+                authority,
+                source_kind,
+            };
+        }
+        Ok(ReconciledRecoveryAuthority::PublishedButUnconfirmed { authority, message }) => {
+            *preparation = DocumentRecoveryPreparation::Ambiguous {
+                generation,
+                authority,
+                source_kind,
+                message,
+            };
+        }
+        Ok(ReconciledRecoveryAuthority::Conflict { message }) => {
+            *preparation = DocumentRecoveryPreparation::Failed {
+                generation,
+                source_kind,
+                message,
+            };
+        }
+        Err(message) => {
+            *preparation = DocumentRecoveryPreparation::Failed {
+                generation,
+                source_kind,
+                message,
+            };
+        }
+    }
+    None
+}
+
+fn apply_recovery_confirmation_result(
+    preparation: &mut DocumentRecoveryPreparation,
+    expected_generation: u64,
+    expected_authority: RecoveryAuthority,
+    result: Result<RecoveryAuthority, String>,
+) -> bool {
+    let DocumentRecoveryPreparation::Ambiguous {
+        generation,
+        authority,
+        source_kind,
+        ..
+    } = preparation
+    else {
+        return false;
+    };
+    if *generation != expected_generation || *authority != expected_authority {
+        return false;
+    }
+    match result {
+        Ok(confirmed) if confirmed == expected_authority => {
+            *preparation = DocumentRecoveryPreparation::Ready {
+                generation: expected_generation,
+                authority: confirmed,
+                source_kind: *source_kind,
+            };
+        }
+        Ok(_) => {
+            if let DocumentRecoveryPreparation::Ambiguous { message, .. } = preparation {
+                *message = "the recovery store confirmed a different authority".into();
+            }
+        }
+        Err(error) => {
+            if let DocumentRecoveryPreparation::Ambiguous { message, .. } = preparation {
+                *message = format!("the recovery checkpoint is still unconfirmed: {error}");
+            }
+        }
+    }
+    true
+}
+
+fn apply_saved_recovery_rebase_retry_result(
+    preparation: &mut DocumentRecoveryPreparation,
+    expected_generation: u64,
+    expected_authority: RecoveryAuthority,
+    expected_target_path: &Path,
+    expected_target_sha256: [u8; 32],
+    expected_saved_revision: u64,
+    result: Result<ReconciledRecoveryAuthority, String>,
+) -> bool {
+    let DocumentRecoveryPreparation::RebaseFailed {
+        generation,
+        authority,
+        source_kind,
+        target_path,
+        target_sha256,
+        saved_revision,
+        ..
+    } = preparation
+    else {
+        return false;
+    };
+    if *generation != expected_generation
+        || *authority != expected_authority
+        || target_path != expected_target_path
+        || *target_sha256 != expected_target_sha256
+        || *saved_revision != expected_saved_revision
+    {
+        return false;
+    }
+    let source_kind = *source_kind;
+    match result {
+        Ok(ReconciledRecoveryAuthority::Durable(authority)) => {
+            *preparation = DocumentRecoveryPreparation::Ready {
+                generation: expected_generation,
+                authority,
+                source_kind,
+            };
+        }
+        Ok(ReconciledRecoveryAuthority::PublishedButUnconfirmed { authority, message }) => {
+            *preparation = DocumentRecoveryPreparation::Ambiguous {
+                generation: expected_generation,
+                authority,
+                source_kind,
+                message,
+            };
+        }
+        Ok(ReconciledRecoveryAuthority::Conflict { message }) | Err(message) => {
+            if let DocumentRecoveryPreparation::RebaseFailed {
+                message: current, ..
+            } = preparation
+            {
+                *current = format!("the saved recovery checkpoint still needs repair: {message}");
+            }
+        }
+    }
+    true
+}
+
+enum ReconciledRecoveryAuthority {
+    Durable(RecoveryAuthority),
+    PublishedButUnconfirmed {
+        authority: RecoveryAuthority,
+        message: String,
+    },
+    Conflict {
+        message: String,
+    },
+}
+
+fn replace_recovery_timeline_reconciled(
+    store: &DocumentRecoveryStore,
+    expected: &RecoveryAuthority,
+    publication: &StagedRecoveryPublication<'_>,
+) -> Result<ReconciledRecoveryAuthority, String> {
+    for attempt in 0..3 {
+        match store.replace_timeline(expected, publication) {
+            Ok(authority) => return Ok(ReconciledRecoveryAuthority::Durable(authority)),
+            Err(DocumentRecoveryStoreError::PublishedButDirectorySyncFailed { .. }) => {
+                let observed = store
+                    .load(expected.document_id())
+                    .map_err(|error| format!("could not reconcile recovery authority: {error}"))?
+                    .ok_or_else(|| {
+                        "recovery authority disappeared while reconciling publication".to_owned()
+                    })?;
+                let desired_is_observable = observed.timeline == publication.timeline
+                    && observed.source_path == publication.source_path
+                    && observed.source_kind == publication.source_kind
+                    && observed.current_revision == publication.current_revision
+                    && observed.saved_revision == publication.saved_revision
+                    && observed.requires_save_as == publication.requires_save_as;
+                if desired_is_observable {
+                    let mut last_error = None;
+                    for _ in 0..3 {
+                        match store.confirm_authority_durable(&observed.authority) {
+                            Ok(authority) => {
+                                return Ok(ReconciledRecoveryAuthority::Durable(authority));
+                            }
+                            Err(error) => last_error = Some(error),
+                        }
+                    }
+                    return Ok(ReconciledRecoveryAuthority::PublishedButUnconfirmed {
+                        authority: observed.authority,
+                        message: format!(
+                            "the desired recovery checkpoint is observable but could not be confirmed durable: {}",
+                            last_error.expect("confirmation was attempted")
+                        ),
+                    });
+                }
+                if observed.authority == *expected && attempt < 2 {
+                    continue;
+                }
+                return Err(
+                    "recovery publication durability was ambiguous and the desired checkpoint is not authoritative"
+                        .into(),
+                );
+            }
+            Err(DocumentRecoveryStoreError::StaleAuthority { .. }) => {
+                return Ok(ReconciledRecoveryAuthority::Conflict {
+                    message: "document recovery changed outside this session; further edits are blocked to avoid overwriting the newer checkpoint".into(),
+                });
+            }
+            Err(error) => return Err(format!("could not publish document recovery: {error}")),
+        }
+    }
+    Err("could not reconcile recovery publication after three attempts".into())
+}
+
+fn stage_recovery_authority_reconciled(
+    store: &DocumentRecoveryStore,
+    expected_sha256: [u8; 32],
+    publication: &StagedRecoveryPublication<'_>,
+) -> Result<ReconciledRecoveryAuthority, String> {
+    match store.stage_and_publish_new(expected_sha256, publication) {
+        Ok(authority) => Ok(ReconciledRecoveryAuthority::Durable(authority)),
+        Err(DocumentRecoveryStoreError::PublishedButDirectorySyncFailed {
+            document_id, ..
+        }) => {
+            let observed = store.load(document_id).map_err(|error| {
+                format!("could not reconcile initial recovery authority: {error}")
+            })?;
+            let Some(observed) = observed else {
+                return Err(
+                    "initial recovery publication was ambiguous and is not authoritative".into(),
+                );
+            };
+            let desired_is_observable = observed.timeline == publication.timeline
+                && observed.source_path == publication.source_path
+                && observed.source_kind == publication.source_kind
+                && observed.source_sha256 == expected_sha256
+                && observed.current_revision == publication.current_revision
+                && observed.saved_revision == publication.saved_revision
+                && observed.requires_save_as == publication.requires_save_as;
+            if !desired_is_observable {
+                let _ = store.clear(document_id);
+                return Err(
+                    "initial recovery publication was ambiguous and did not match the desired checkpoint"
+                        .into(),
+                );
+            }
+            let mut last_error = None;
+            for _ in 0..3 {
+                match store.confirm_authority_durable(&observed.authority) {
+                    Ok(authority) => {
+                        return Ok(ReconciledRecoveryAuthority::Durable(authority));
+                    }
+                    Err(error) => last_error = Some(error),
+                }
+            }
+            Ok(ReconciledRecoveryAuthority::PublishedButUnconfirmed {
+                authority: observed.authority,
+                message: format!(
+                    "the initial recovery checkpoint is observable but could not be confirmed durable: {}",
+                    last_error.expect("confirmation was attempted")
+                ),
+            })
+        }
+        Err(error) => Err(format!("could not prepare document recovery: {error}")),
+    }
+}
+
+fn rebase_recovery_after_save_reconciled(
+    store: &DocumentRecoveryStore,
+    expected: &RecoveryAuthority,
+    expected_sha256: [u8; 32],
+    publication: &StagedRecoveryPublication<'_>,
+) -> Result<ReconciledRecoveryAuthority, String> {
+    match store.rebase_after_save(expected, expected_sha256, publication) {
+        Ok(authority) => Ok(ReconciledRecoveryAuthority::Durable(authority)),
+        Err(DocumentRecoveryStoreError::PublishedButDirectorySyncFailed { .. }) => {
+            let observed = store
+                .load(expected.document_id())
+                .map_err(|error| format!("could not reconcile saved recovery authority: {error}"))?
+                .ok_or_else(|| {
+                    "saved recovery authority disappeared while reconciling publication".to_owned()
+                })?;
+            let desired_is_observable = observed.timeline == publication.timeline
+                && observed.source_path == publication.source_path
+                && observed.source_kind == publication.source_kind
+                && observed.source_sha256 == expected_sha256
+                && observed.current_revision == publication.current_revision
+                && observed.saved_revision == publication.saved_revision
+                && observed.requires_save_as == publication.requires_save_as;
+            if !desired_is_observable {
+                return Err(
+                    "saved recovery publication was ambiguous and the desired checkpoint is not authoritative"
+                        .into(),
+                );
+            }
+            let mut last_error = None;
+            for _ in 0..3 {
+                match store.confirm_authority_durable(&observed.authority) {
+                    Ok(authority) => {
+                        return Ok(ReconciledRecoveryAuthority::Durable(authority));
+                    }
+                    Err(error) => last_error = Some(error),
+                }
+            }
+            Ok(ReconciledRecoveryAuthority::PublishedButUnconfirmed {
+                authority: observed.authority,
+                message: format!(
+                    "the saved recovery checkpoint is observable but could not be confirmed durable: {}",
+                    last_error.expect("confirmation was attempted")
+                ),
+            })
+        }
+        Err(DocumentRecoveryStoreError::StaleAuthority { .. }) => {
+            Ok(ReconciledRecoveryAuthority::Conflict {
+                message: "document recovery changed outside this session; the saved checkpoint cannot replace the newer authority".into(),
+            })
+        }
+        Err(error) => Err(format!("could not rebase document recovery after saving: {error}")),
+    }
+}
+
+fn commit_saved_recovery_rebase(
+    session: &mut NativeDocumentSession,
+    store: Option<&Arc<DocumentRecoveryStore>>,
+    document_id: DocumentId,
+    target_path: &Path,
+    source_sha256: Option<[u8; 32]>,
+    saved_revision: u64,
+    cx: &mut Context<NativeDocumentSession>,
+) -> Result<Option<String>, String> {
+    let snapshot = session
+        .annotations
+        .snapshot(document_id.value())
+        .ok_or_else(|| "the annotation timeline is unavailable after saving".to_owned())?;
+    if snapshot.revision != saved_revision {
+        return Err("the saved result no longer matches the current annotation revision".into());
+    }
+    let prior_authority = match session.recovery_preparation {
+        DocumentRecoveryPreparation::Ready { authority, .. } => Some(authority),
+        DocumentRecoveryPreparation::Unbound => None,
+        DocumentRecoveryPreparation::Pending { .. }
+        | DocumentRecoveryPreparation::Failed { .. }
+        | DocumentRecoveryPreparation::Ambiguous { .. }
+        | DocumentRecoveryPreparation::RebaseFailed { .. } => {
+            return Err(session.recovery_preparation.edit_guard().unwrap_err());
+        }
+    };
+    session
+        .annotations
+        .mark_saved(document_id.value())
+        .map_err(|error| error.to_string())?;
+    let Some(prior_authority) = prior_authority else {
+        return Ok(None);
+    };
+    let source_sha256 = source_sha256
+        .ok_or_else(|| "the validated saved-source digest is unavailable".to_owned())?;
+    let clean_timeline = session
+        .annotations
+        .encode_document_recovery_timeline(document_id.value())
+        .map_err(|error| error.to_string())?;
+    let publication = StagedRecoveryPublication {
+        source_path: target_path,
+        source_kind: RecoverySourceKind::Opened,
+        timeline: &clean_timeline,
+        current_revision: saved_revision,
+        saved_revision,
+        requires_save_as: false,
+    };
+    let rebase = match store {
+        Some(store) => rebase_recovery_after_save_reconciled(
+            store,
+            &prior_authority,
+            source_sha256,
+            &publication,
+        ),
+        None => Err("the document recovery store is unavailable".into()),
+    };
+    match rebase {
+        Ok(ReconciledRecoveryAuthority::Durable(authority)) => {
+            let (generation, _) = match session.recovery_preparation {
+                DocumentRecoveryPreparation::Ready {
+                    generation,
+                    source_kind,
+                    ..
+                } => (generation, source_kind),
+                _ => unreachable!("the recovery authority was Ready before save rebasing"),
+            };
+            session.recovery_preparation = DocumentRecoveryPreparation::Ready {
+                generation,
+                authority,
+                source_kind: RecoverySourceKind::Opened,
+            };
+            Ok(None)
+        }
+        Ok(ReconciledRecoveryAuthority::PublishedButUnconfirmed { authority, message }) => {
+            let generation = match session.recovery_preparation {
+                DocumentRecoveryPreparation::Ready { generation, .. } => generation,
+                _ => unreachable!("the recovery authority was Ready before save rebasing"),
+            };
+            session.recovery_preparation = DocumentRecoveryPreparation::Ambiguous {
+                generation,
+                authority,
+                source_kind: RecoverySourceKind::Opened,
+                message,
+            };
+            Ok(None)
+        }
+        Ok(ReconciledRecoveryAuthority::Conflict { message }) => {
+            let generation = match session.recovery_preparation {
+                DocumentRecoveryPreparation::Ready { generation, .. } => generation,
+                _ => unreachable!("the recovery authority was Ready before save rebasing"),
+            };
+            session.recovery_preparation = DocumentRecoveryPreparation::RebaseFailed {
+                generation,
+                authority: prior_authority,
+                source_kind: RecoverySourceKind::Opened,
+                target_path: target_path.to_path_buf(),
+                target_sha256: source_sha256,
+                saved_revision,
+                message: message.clone(),
+            };
+            cx.notify();
+            Ok(Some(message))
+        }
+        Err(message) => {
+            let generation = match session.recovery_preparation {
+                DocumentRecoveryPreparation::Ready { generation, .. } => generation,
+                _ => unreachable!("the recovery authority was Ready before save rebasing"),
+            };
+            session.recovery_preparation = DocumentRecoveryPreparation::RebaseFailed {
+                generation,
+                authority: prior_authority,
+                source_kind: RecoverySourceKind::Opened,
+                target_path: target_path.to_path_buf(),
+                target_sha256: source_sha256,
+                saved_revision,
+                message: message.clone(),
+            };
+            cx.notify();
+            Ok(Some(message))
+        }
+    }
+}
+
+fn refresh_session_after_recovery_change(
+    session: &mut NativeDocumentSession,
+    document_id: DocumentId,
+    rotations_changed: bool,
+    cx: &mut Context<NativeDocumentSession>,
+) -> Result<(), String> {
+    if rotations_changed {
+        session.sync_rotation_geometry();
+    }
+    let removed = session.sync_image_assets()?;
+    defer_drop_images(removed, cx);
+    if rotations_changed {
+        session.refresh_rotation_presentations()?;
+    }
+    session.rebuild_stable_highlight_presentations()?;
+    let _ = document_id;
+    Ok(())
+}
+
+fn rollback_recovery_guarded_change(
+    session: &mut NativeDocumentSession,
+    document_id: DocumentId,
+    before_timeline: &[u8],
+    before_selection: &[MarkupId],
+    error: String,
+    cx: &mut Context<NativeDocumentSession>,
+) -> String {
+    if let Err(rollback) = session
+        .annotations
+        .restore_document_recovery_timeline(document_id.value(), before_timeline)
+    {
+        return format!("{error}; recovery rollback failed: {rollback}");
+    }
+    session.annotations.clear_selection(document_id.value());
+    for (index, id) in before_selection.iter().enumerate() {
+        let restored = if index == 0 {
+            session.annotations.select_id(document_id.value(), id)
+        } else {
+            session
+                .annotations
+                .toggle_selection(document_id.value(), id)
+        };
+        if !restored {
+            return format!(
+                "{error}; recovery rollback failed: selected annotation {id} is unavailable"
+            );
+        }
+    }
+    if let Err(rollback) = refresh_session_after_recovery_change(session, document_id, true, cx) {
+        return format!("{error}; presentation rollback failed: {rollback}");
+    }
+    error
+}
+
+fn block_recovery_after_authority_conflict(
+    preparation: &mut DocumentRecoveryPreparation,
+    message: String,
+) {
+    let (generation, source_kind) = match *preparation {
+        DocumentRecoveryPreparation::Ready {
+            generation,
+            source_kind,
+            ..
+        } => (generation, source_kind),
+        _ => return,
+    };
+    *preparation = DocumentRecoveryPreparation::Failed {
+        generation,
+        source_kind,
+        message,
+    };
+}
+
+fn commit_recovery_guarded_annotation_change<T>(
+    session: &mut NativeDocumentSession,
+    store: Option<&Arc<DocumentRecoveryStore>>,
+    document_id: DocumentId,
+    refresh_presentations: bool,
+    cx: &mut Context<NativeDocumentSession>,
+    command: impl FnOnce(&mut NativeDocumentSession) -> Result<T, String>,
+) -> Result<T, String> {
+    session.recovery_preparation.edit_guard()?;
+    let before_snapshot = session
+        .annotations
+        .snapshot(document_id.value())
+        .ok_or_else(|| "the annotation timeline is unavailable".to_owned())?;
+    let prior_authority = match session.recovery_preparation {
+        DocumentRecoveryPreparation::Ready { authority, .. } => Some(authority),
+        DocumentRecoveryPreparation::Unbound => None,
+        DocumentRecoveryPreparation::Pending { .. }
+        | DocumentRecoveryPreparation::Failed { .. }
+        | DocumentRecoveryPreparation::Ambiguous { .. }
+        | DocumentRecoveryPreparation::RebaseFailed { .. } => unreachable!("edit guard rejected"),
+    };
+    let before_timeline = prior_authority
+        .map(|_| {
+            session
+                .annotations
+                .encode_document_recovery_timeline(document_id.value())
+                .map_err(|error| error.to_string())
+        })
+        .transpose()?;
+    let before_selection = session
+        .annotations
+        .selected_ids(document_id.value())
+        .to_vec();
+
+    let result = match command(session) {
+        Ok(result) => result,
+        Err(error) => {
+            return Err(if let Some(before_timeline) = before_timeline.as_deref() {
+                rollback_recovery_guarded_change(
+                    session,
+                    document_id,
+                    before_timeline,
+                    &before_selection,
+                    error,
+                    cx,
+                )
+            } else {
+                error
+            });
+        }
+    };
+    let after_snapshot = match session.annotations.snapshot(document_id.value()) {
+        Some(snapshot) => snapshot,
+        None => {
+            let error = "the annotation timeline disappeared after editing".to_owned();
+            return Err(if let Some(before_timeline) = before_timeline.as_deref() {
+                rollback_recovery_guarded_change(
+                    session,
+                    document_id,
+                    before_timeline,
+                    &before_selection,
+                    error,
+                    cx,
+                )
+            } else {
+                error
+            });
+        }
+    };
+    if before_snapshot.revision == after_snapshot.revision {
+        return Ok(result);
+    }
+    let rotations_changed = before_snapshot.page_rotations != after_snapshot.page_rotations;
+    let refresh_result = if refresh_presentations {
+        refresh_session_after_recovery_change(session, document_id, rotations_changed, cx)
+    } else {
+        session.sync_rotation_geometry();
+        Ok(())
+    };
+    if let Err(error) = refresh_result {
+        if let Some(before_timeline) = before_timeline.as_deref() {
+            return Err(rollback_recovery_guarded_change(
+                session,
+                document_id,
+                before_timeline,
+                &before_selection,
+                error,
+                cx,
+            ));
+        }
+        return Err(error);
+    }
+    let Some(prior_authority) = prior_authority else {
+        return Ok(result);
+    };
+    let before_timeline = before_timeline
+        .as_deref()
+        .expect("Ready recovery preparation captured a rollback timeline");
+    let store = match store {
+        Some(store) => store,
+        None => {
+            return Err(rollback_recovery_guarded_change(
+                session,
+                document_id,
+                before_timeline,
+                &before_selection,
+                "the document recovery store is unavailable".into(),
+                cx,
+            ));
+        }
+    };
+    let post_timeline = match session
+        .annotations
+        .encode_document_recovery_timeline(document_id.value())
+    {
+        Ok(timeline) => timeline,
+        Err(error) => {
+            return Err(rollback_recovery_guarded_change(
+                session,
+                document_id,
+                before_timeline,
+                &before_selection,
+                error.to_string(),
+                cx,
+            ));
+        }
+    };
+    let source_kind = match (session.temporary_source.is_some(), session.save_as_required) {
+        (false, false) => RecoverySourceKind::Opened,
+        (true, true) => RecoverySourceKind::Generated,
+        _ => {
+            return Err(rollback_recovery_guarded_change(
+                session,
+                document_id,
+                before_timeline,
+                &before_selection,
+                "document source and Save-As state are inconsistent".into(),
+                cx,
+            ));
+        }
+    };
+    let publication = StagedRecoveryPublication {
+        source_path: &session.path,
+        source_kind,
+        timeline: &post_timeline,
+        current_revision: after_snapshot.revision,
+        saved_revision: after_snapshot.saved_revision,
+        requires_save_as: session.save_as_required,
+    };
+    match replace_recovery_timeline_reconciled(store, &prior_authority, &publication) {
+        Ok(ReconciledRecoveryAuthority::Durable(authority)) => {
+            if let DocumentRecoveryPreparation::Ready {
+                authority: current, ..
+            } = &mut session.recovery_preparation
+            {
+                *current = authority;
+            }
+            Ok(result)
+        }
+        Ok(ReconciledRecoveryAuthority::PublishedButUnconfirmed { authority, message }) => {
+            let (generation, source_kind) = match session.recovery_preparation {
+                DocumentRecoveryPreparation::Ready {
+                    generation,
+                    source_kind,
+                    ..
+                } => (generation, source_kind),
+                _ => unreachable!("the recovery authority was Ready before publication"),
+            };
+            session.recovery_preparation = DocumentRecoveryPreparation::Ambiguous {
+                generation,
+                authority,
+                source_kind,
+                message: message.clone(),
+            };
+            cx.notify();
+            Err(message)
+        }
+        Ok(ReconciledRecoveryAuthority::Conflict { message }) => {
+            let error = rollback_recovery_guarded_change(
+                session,
+                document_id,
+                before_timeline,
+                &before_selection,
+                message,
+                cx,
+            );
+            block_recovery_after_authority_conflict(
+                &mut session.recovery_preparation,
+                error.clone(),
+            );
+            cx.notify();
+            Err(error)
+        }
+        Err(error) => Err(rollback_recovery_guarded_change(
+            session,
+            document_id,
+            before_timeline,
+            &before_selection,
+            error,
+            cx,
+        )),
+    }
+}
+
+fn rollback_failed_page_rotation(
+    session: &mut NativeDocumentSession,
+    store: Option<&Arc<DocumentRecoveryStore>>,
+    document_id: DocumentId,
+    presentation_error: String,
+    cx: &mut Context<NativeDocumentSession>,
+) -> String {
+    match commit_recovery_guarded_annotation_change(
+        session,
+        store,
+        document_id,
+        true,
+        cx,
+        |session| {
+            session
+                .annotations
+                .undo(document_id.value())
+                .map_err(|error| error.to_string())
+        },
+    ) {
+        Ok(()) => presentation_error,
+        Err(rollback_error) => {
+            format!(
+                "{presentation_error}; could not durably roll back page rotation: {rollback_error}"
+            )
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -2373,6 +3439,17 @@ struct PendingTextBoxEditor {
 }
 
 #[derive(Clone)]
+struct PendingTextBoxPresentation {
+    document_id: DocumentId,
+    page_index: u32,
+    rect: PdfRect,
+    style: TextBoxStyle,
+    input: Entity<TextareaState>,
+    editor_bounds: Option<Bounds<Pixels>>,
+    display_scale: f32,
+}
+
+#[derive(Clone)]
 struct PendingTextEditorAuthority {
     resource_generation: u64,
     baseline_revision: u64,
@@ -2404,12 +3481,214 @@ fn validate_existing_text_editor_authority(
 }
 
 enum PendingTextEditorTarget {
-    NewTextBox { id: MarkupId, anchor: PdfPoint },
-    ExistingTextBox { id: MarkupId },
-    Callout { id: MarkupId },
-    CloudPlus { id: MarkupId },
-    NewDimension { id: MarkupId },
-    ExistingDimension { id: MarkupId },
+    NewTextBox {
+        id: MarkupId,
+        rect: PdfRect,
+        style: TextBoxStyle,
+        interaction: PageInteraction,
+    },
+    ExistingTextBox {
+        id: MarkupId,
+    },
+    Callout {
+        id: MarkupId,
+    },
+    NewCloudPlus {
+        id: MarkupId,
+    },
+    ExistingCloudPlus {
+        id: MarkupId,
+    },
+    NewDimension {
+        id: MarkupId,
+    },
+    ExistingDimension {
+        id: MarkupId,
+    },
+}
+
+fn display_annotation_font_family(font_family: &str) -> &str {
+    match font_family {
+        "Arimo" => "Arial",
+        "Tinos" => "Times New Roman",
+        "Roboto Mono" => "Courier New",
+        family => family,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TextBoxRichLineFragment<'a> {
+    text: &'a str,
+    run: &'a TextBoxRichTextRun,
+}
+
+fn split_text_box_rich_lines(runs: &[TextBoxRichTextRun]) -> Vec<Vec<TextBoxRichLineFragment<'_>>> {
+    let mut lines = vec![Vec::new()];
+    for run in runs {
+        for (segment_index, segment) in run.text().split('\n').enumerate() {
+            if segment_index > 0 {
+                lines.push(Vec::new());
+            }
+            if !segment.is_empty() {
+                lines
+                    .last_mut()
+                    .expect("rich text always has a current line")
+                    .push(TextBoxRichLineFragment { text: segment, run });
+            }
+        }
+    }
+    lines
+}
+
+struct ShapedTextBoxRichFragment {
+    line: ShapedLine,
+}
+
+struct ShapedTextBoxRichLine {
+    fragments: Vec<ShapedTextBoxRichFragment>,
+    width: Pixels,
+    height: Pixels,
+    baseline: Pixels,
+}
+
+fn shape_text_box_rich_lines(
+    runs: &[TextBoxRichTextRun],
+    style: &TextBoxStyle,
+    scale: f32,
+    fallback_color: gpui::Hsla,
+    text_system: &gpui::WindowTextSystem,
+) -> Vec<ShapedTextBoxRichLine> {
+    let base_line_height = px(style.font_size_pt() as f32 * 1.15 * scale);
+    split_text_box_rich_lines(runs)
+        .into_iter()
+        .map(|fragments| {
+            let mut width = px(0.);
+            let mut height = base_line_height;
+            let mut max_ascent = px(0.);
+            let mut max_descent = px(0.);
+            let fragments = fragments
+                .into_iter()
+                .map(|fragment| {
+                    let font_size_pt = fragment
+                        .run
+                        .font_size_pt()
+                        .unwrap_or_else(|| style.font_size_pt());
+                    let font_size = px(font_size_pt as f32 * scale);
+                    height = height.max(font_size * 1.15);
+                    let fragment_family = fragment
+                        .run
+                        .font_family()
+                        .unwrap_or_else(|| style.font_family());
+                    let mut fragment_font =
+                        font(display_annotation_font_family(fragment_family).to_owned());
+                    fragment_font.weight = if fragment.run.bold() {
+                        FontWeight(700.)
+                    } else {
+                        FontWeight(400.)
+                    };
+                    if fragment.run.italic() {
+                        fragment_font.style = FontStyle::Italic;
+                    }
+                    let text: SharedString = fragment.text.to_owned().into();
+                    let color = fragment
+                        .run
+                        .color()
+                        .and_then(|color| try_parse_color(color).ok())
+                        .or_else(|| try_parse_color(style.color()).ok())
+                        .unwrap_or(fallback_color)
+                        .opacity(style.opacity() as f32);
+                    let run = TextRun {
+                        len: text.len(),
+                        font: fragment_font,
+                        color,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    let line = text_system.shape_line(text, font_size, &[run], None);
+                    width += line.width();
+                    max_ascent = max_ascent.max(line.ascent);
+                    max_descent = max_descent.max(line.descent);
+                    ShapedTextBoxRichFragment { line }
+                })
+                .collect();
+            let baseline = (height - max_ascent - max_descent) / 2. + max_ascent;
+            ShapedTextBoxRichLine {
+                fragments,
+                width,
+                height,
+                baseline,
+            }
+        })
+        .collect()
+}
+
+fn text_box_rich_line_x(
+    content_bounds: Bounds<Pixels>,
+    line_width: Pixels,
+    alignment: TextAlignment,
+) -> Pixels {
+    match alignment {
+        TextAlignment::Left => content_bounds.origin.x,
+        TextAlignment::Center => {
+            content_bounds.origin.x + (content_bounds.size.width - line_width) / 2.
+        }
+        TextAlignment::Right => content_bounds.right() - line_width,
+    }
+}
+
+fn pending_text_box_size(
+    content: &str,
+    style: &TextBoxStyle,
+    text_system: &gpui::WindowTextSystem,
+) -> (f64, f64) {
+    let font_size = style.font_size_pt();
+    let line_height = style.line_height_pt();
+    let font_size_px = px(font_size as f32);
+    let display_family = display_annotation_font_family(style.font_family()).to_owned();
+    let widest = content
+        .split('\n')
+        .map(|line| {
+            let text: SharedString = line.to_owned().into();
+            let run = TextRun {
+                len: text.len(),
+                font: font(display_family.clone()),
+                color: gpui::black(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            f64::from(f32::from(
+                text_system
+                    .shape_line(text, font_size_px, &[run], None)
+                    .width(),
+            ))
+        })
+        .fold(0., f64::max);
+    let width = (widest + 10.).max(font_size / 12. + 10.);
+    let line_count = content.split('\n').count().max(1) as f64;
+    let vertical_inset = ((font_size * 1.5 - line_height) / 2.).max(0.);
+    (width, line_count * line_height + vertical_inset * 2.)
+}
+
+fn initial_pending_text_box_rect(
+    anchor: PdfPoint,
+    style: &TextBoxStyle,
+    text_system: &gpui::WindowTextSystem,
+) -> Result<PdfRect, AnnotationError> {
+    let (width, height) = pending_text_box_size("", style, text_system);
+    PdfRect::new(anchor.x - width / 2., anchor.y - height / 2., width, height)
+}
+
+fn resized_pending_text_box_rect(
+    current: PdfRect,
+    content: &str,
+    style: &TextBoxStyle,
+    text_system: &gpui::WindowTextSystem,
+) -> Result<PdfRect, AnnotationError> {
+    let top = current.y + current.height;
+    let (width, height) = pending_text_box_size(content, style, text_system);
+    PdfRect::new(current.x, top - height, width, height)
 }
 
 fn defer_drop_images(images: Vec<Arc<RenderImage>>, cx: &mut App) {
@@ -2427,7 +3706,8 @@ fn session_tab_strip_overflows(bounds: &[Bounds<Pixels>], available_width: Pixel
     let visible = bounds.iter().filter(|bounds| bounds.size.width > px(0.));
     let left = visible.clone().map(|bounds| bounds.left()).min();
     let right = visible.map(|bounds| bounds.right()).max();
-    left.zip(right).is_some_and(|(left, right)| right - left > available_width)
+    left.zip(right)
+        .is_some_and(|(left, right)| right - left > available_width)
 }
 
 #[cfg(test)]
@@ -2436,11 +3716,26 @@ mod tab_overflow_tests {
 
     #[test]
     fn both_wheel_axes_scroll_and_clamp_without_diagonal_double_counting() {
-        assert_eq!(session_tab_wheel_offset(px(-50.), px(200.), point(px(0.), px(-30.))), px(-80.));
-        assert_eq!(session_tab_wheel_offset(px(-50.), px(200.), point(px(-30.), px(0.))), px(-80.));
-        assert_eq!(session_tab_wheel_offset(px(-50.), px(200.), point(px(70.), px(20.))), px(0.));
-        assert_eq!(session_tab_wheel_offset(px(-50.), px(200.), point(px(-300.), px(-100.))), px(-200.));
-        assert_eq!(session_tab_wheel_offset(px(0.), px(0.), point(px(0.), px(-30.))), px(0.));
+        assert_eq!(
+            session_tab_wheel_offset(px(-50.), px(200.), point(px(0.), px(-30.))),
+            px(-80.)
+        );
+        assert_eq!(
+            session_tab_wheel_offset(px(-50.), px(200.), point(px(-30.), px(0.))),
+            px(-80.)
+        );
+        assert_eq!(
+            session_tab_wheel_offset(px(-50.), px(200.), point(px(70.), px(20.))),
+            px(0.)
+        );
+        assert_eq!(
+            session_tab_wheel_offset(px(-50.), px(200.), point(px(-300.), px(-100.))),
+            px(-200.)
+        );
+        assert_eq!(
+            session_tab_wheel_offset(px(0.), px(0.), point(px(0.), px(-30.))),
+            px(0.)
+        );
     }
 
     #[test]
@@ -2458,12 +3753,21 @@ mod tab_overflow_tests {
 }
 
 fn session_tab_wheel_offset(offset: Pixels, max: Pixels, delta: Point<Pixels>) -> Pixels {
-    let delta = if delta.x.abs() > delta.y.abs() { delta.x } else { delta.y };
+    let delta = if delta.x.abs() > delta.y.abs() {
+        delta.x
+    } else {
+        delta.y
+    };
     (offset + delta).clamp(-max, px(0.))
 }
 
 impl DocumentWorkspace {
-    fn render_left_rail(&self, enabled: bool, thumbnails_fit: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_left_rail(
+        &self,
+        enabled: bool,
+        thumbnails_fit: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let expanded = enabled && thumbnails_fit && self.pages_panel_open;
         v_flex()
             .id("document-left-rail")
@@ -2481,14 +3785,19 @@ impl DocumentWorkspace {
             .child(accessible_disclosure_button(
                 Button::new("document-left-rail-pages")
                     .debug_selector(|| "document-left-rail-pages".into())
-                    .icon(gpui_component::Icon::default().path(crate::application_assets::PAGE_THUMBNAILS_ICON))
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path(crate::application_assets::PAGE_THUMBNAILS_ICON),
+                    )
                     .ghost()
                     .selected(expanded)
                     .toggled(expanded)
                     .disabled(!enabled || !thumbnails_fit)
                     .tooltip(if enabled && !thumbnails_fit {
                         "Page Thumbnails — widen the window or close properties"
-                    } else { "Page Thumbnails" })
+                    } else {
+                        "Page Thumbnails"
+                    })
                     .on_click(cx.listener(|workspace, _, _, cx| {
                         workspace.pages_panel_open = !workspace.pages_panel_open;
                         cx.notify();
@@ -2552,9 +3861,18 @@ impl DocumentWorkspace {
             next_generation: 1,
             next_open_batch_id: 1,
             latest_open_batch_id: None,
+            active_document_open_batches: 0,
             pending_session_restore: None,
             document_open_status: DocumentOpenBatchStatus::Idle,
             document_open_failures: Vec::new(),
+            session_recovery_warning: None,
+            startup_recovery_inspecting: false,
+            startup_recovery_items: Vec::new(),
+            startup_recovery_operation: None,
+            deferred_startup_open: None,
+            document_recovery_store: None,
+            document_recovery_store_error: None,
+            recovery_confirmation_pending: HashSet::new(),
             next_annotation_sequence: 1,
             annotation_clipboard: Vec::new(),
             annotation_paste_sequence: 0,
@@ -2564,7 +3882,9 @@ impl DocumentWorkspace {
             last_painted_page_evidence: HashMap::new(),
             viewport_bounds: HashMap::new(),
             active_annotation_pointer: None,
+            properties_click_candidate: None,
             pending_close_document_id: None,
+            pending_publication_warning_generation: None,
             close_after_save_document_id: None,
             session_tab_focus_handles: HashMap::new(),
             session_tab_bounds: HashMap::new(),
@@ -2573,6 +3893,9 @@ impl DocumentWorkspace {
             session_tab_last_active: None,
             session_tab_hovered: None,
             hovered_annotation: None,
+            hot_annotation_handle: None,
+            select_hover_hit: None,
+            pending_image_hover: None,
             session_tab_scroll: ScrollHandle::new(),
             session_tab_close_bounds: HashMap::new(),
             session_tab_pointer_drag: None,
@@ -2698,6 +4021,810 @@ impl DocumentWorkspace {
         self.recent_signature_store = Some(store);
     }
 
+    pub fn bind_document_recovery_store(&mut self, store: Arc<DocumentRecoveryStore>) {
+        self.document_recovery_store = Some(store);
+        self.document_recovery_store_error = None;
+    }
+
+    pub fn begin_startup_recovery_inspection(&mut self, cx: &mut Context<Self>) {
+        self.startup_recovery_inspecting = true;
+        self.startup_recovery_items.clear();
+        cx.notify();
+    }
+
+    pub fn defer_startup_open(&mut self, open: DeferredStartupOpen) {
+        self.deferred_startup_open = Some(open);
+    }
+
+    pub fn take_deferred_startup_open(&mut self) -> Option<DeferredStartupOpen> {
+        self.deferred_startup_open.take()
+    }
+
+    pub fn deferred_startup_open(&self) -> Option<&DeferredStartupOpen> {
+        self.deferred_startup_open.as_ref()
+    }
+
+    pub fn finish_startup_recovery_inspection(
+        &mut self,
+        items: Vec<StartupRecoveryItem>,
+        cx: &mut Context<Self>,
+    ) {
+        self.startup_recovery_inspecting = false;
+        self.startup_recovery_items = items;
+        cx.notify();
+    }
+
+    pub fn startup_recovery_items(&self) -> &[StartupRecoveryItem] {
+        &self.startup_recovery_items
+    }
+
+    pub const fn startup_recovery_inspecting(&self) -> bool {
+        self.startup_recovery_inspecting
+    }
+
+    pub fn startup_recovery_blocks_open(&self) -> bool {
+        self.startup_recovery_inspecting || !self.startup_recovery_items.is_empty()
+    }
+
+    pub const fn startup_recovery_operation(&self) -> Option<RecoveryDocumentId> {
+        self.startup_recovery_operation
+    }
+
+    fn resume_deferred_startup_open(&mut self, cx: &mut Context<Self>) {
+        let Some(open) = self.take_deferred_startup_open() else {
+            return;
+        };
+        match open {
+            DeferredStartupOpen::None => {}
+            DeferredStartupOpen::Explicit(request) => {
+                self.open_documents(request, cx);
+            }
+            DeferredStartupOpen::Restore(plan) => {
+                self.restore_session(plan, cx);
+            }
+        }
+    }
+
+    pub fn discard_startup_recovery(&mut self, id: RecoveryDocumentId, cx: &mut Context<Self>) {
+        if self.startup_recovery_operation.is_some() {
+            return;
+        }
+        let Some(authority) = self
+            .startup_recovery_items
+            .iter()
+            .find(|item| item.id == id)
+            .and_then(|item| item.authority)
+        else {
+            return;
+        };
+        let Some(store) = self.document_recovery_store.clone() else {
+            if let Some(item) = self
+                .startup_recovery_items
+                .iter_mut()
+                .find(|item| item.id == id)
+            {
+                item.availability = StartupRecoveryAvailability::Unavailable(
+                    "the recovery store is unavailable, so this checkpoint was not discarded"
+                        .into(),
+                );
+            }
+            cx.notify();
+            return;
+        };
+
+        self.startup_recovery_operation = Some(id);
+        cx.notify();
+        let task = cx.background_executor().spawn(async move {
+            match store.clear_authority(&authority) {
+                Ok(true) => StartupRecoveryDiscardResult::Discarded,
+                Ok(false) => StartupRecoveryDiscardResult::Failed(
+                    "the checkpoint was not present and could not be retired safely".into(),
+                ),
+                Err(DocumentRecoveryStoreError::StaleAuthority { .. }) => match store.load(id) {
+                    Ok(None) => StartupRecoveryDiscardResult::Discarded,
+                    Ok(Some(recovered)) => {
+                        StartupRecoveryDiscardResult::Refreshed(StartupRecoveryItem {
+                            id,
+                            authority: Some(recovered.authority),
+                            source_path: Some(recovered.source_path),
+                            current_revision: Some(recovered.current_revision),
+                            saved_revision: Some(recovered.saved_revision),
+                            availability: match recovered.source_kind {
+                                RecoverySourceKind::Opened => {
+                                    StartupRecoveryAvailability::OpenedSourceNeedsVerification
+                                }
+                                RecoverySourceKind::Generated => {
+                                    StartupRecoveryAvailability::GeneratedCopyRequired
+                                }
+                            },
+                        })
+                    }
+                    Err(error) => StartupRecoveryDiscardResult::Failed(format!(
+                        "the checkpoint changed and could not be inspected again: {error}"
+                    )),
+                },
+                Err(error) => StartupRecoveryDiscardResult::Failed(format!(
+                    "the checkpoint could not be discarded safely: {error}"
+                )),
+            }
+        });
+        cx.spawn(async move |workspace, cx| {
+            let result = task.await;
+            let _ = workspace.update(cx, |workspace, cx| {
+                if workspace.startup_recovery_operation != Some(id) {
+                    return;
+                }
+                workspace.startup_recovery_operation = None;
+                match result {
+                    StartupRecoveryDiscardResult::Discarded => {
+                        workspace
+                            .startup_recovery_items
+                            .retain(|item| item.id != id);
+                    }
+                    StartupRecoveryDiscardResult::Refreshed(refreshed) => {
+                        if let Some(item) = workspace
+                            .startup_recovery_items
+                            .iter_mut()
+                            .find(|item| item.id == id)
+                        {
+                            *item = refreshed;
+                        }
+                    }
+                    StartupRecoveryDiscardResult::Failed(message) => {
+                        if let Some(item) = workspace
+                            .startup_recovery_items
+                            .iter_mut()
+                            .find(|item| item.id == id)
+                        {
+                            item.availability = StartupRecoveryAvailability::Unavailable(message);
+                        }
+                    }
+                }
+                if workspace.startup_recovery_items.is_empty() {
+                    workspace.resume_deferred_startup_open(cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub fn recover_startup_opened_source(
+        &mut self,
+        id: RecoveryDocumentId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.startup_recovery_operation.is_some() {
+            return;
+        }
+        let Some(expected) = self
+            .startup_recovery_items
+            .iter()
+            .find(|item| {
+                item.id == id
+                    && matches!(
+                        item.availability,
+                        StartupRecoveryAvailability::OpenedSourceNeedsVerification
+                    )
+            })
+            .and_then(|item| item.authority)
+        else {
+            return;
+        };
+        let (Some(store), Some(opener)) =
+            (self.document_recovery_store.clone(), self.opener.clone())
+        else {
+            if let Some(item) = self
+                .startup_recovery_items
+                .iter_mut()
+                .find(|item| item.id == id)
+            {
+                item.availability = StartupRecoveryAvailability::Unavailable(
+                    "the recovery store or PDF opener is unavailable".into(),
+                );
+            }
+            cx.notify();
+            return;
+        };
+
+        self.startup_recovery_operation = Some(id);
+        cx.notify();
+        let background = cx.background_executor().clone();
+        let load = background.spawn(async move { store.load(id) });
+        cx.spawn(async move |workspace, cx| {
+            let recovered = load.await;
+            let open = workspace
+                .update(cx, |workspace, cx| {
+                    if workspace.startup_recovery_operation != Some(id) {
+                        return None;
+                    }
+                    match recovered {
+                        Ok(Some(recovered))
+                            if recovered.authority == expected
+                                && recovered.source_kind == RecoverySourceKind::Opened =>
+                        {
+                            let request = workspace.begin_open(recovered.source_path.clone(), cx);
+                            Some((request, recovered))
+                        }
+                        Ok(Some(recovered)) => {
+                            if let Some(item) = workspace
+                                .startup_recovery_items
+                                .iter_mut()
+                                .find(|item| item.id == id)
+                            {
+                                *item = StartupRecoveryItem {
+                                    id,
+                                    authority: Some(recovered.authority),
+                                    source_path: Some(recovered.source_path),
+                                    current_revision: Some(recovered.current_revision),
+                                    saved_revision: Some(recovered.saved_revision),
+                                    availability: match recovered.source_kind {
+                                        RecoverySourceKind::Opened => {
+                                            StartupRecoveryAvailability::OpenedSourceNeedsVerification
+                                        }
+                                        RecoverySourceKind::Generated => {
+                                            StartupRecoveryAvailability::GeneratedCopyRequired
+                                        }
+                                    },
+                                };
+                            }
+                            workspace.startup_recovery_operation = None;
+                            cx.notify();
+                            None
+                        }
+                        Ok(None) => {
+                            workspace.startup_recovery_items.retain(|item| item.id != id);
+                            workspace.startup_recovery_operation = None;
+                            if workspace.startup_recovery_items.is_empty() {
+                                workspace.resume_deferred_startup_open(cx);
+                            }
+                            cx.notify();
+                            None
+                        }
+                        Err(error) => {
+                            if let Some(item) = workspace
+                                .startup_recovery_items
+                                .iter_mut()
+                                .find(|item| item.id == id)
+                            {
+                                item.availability = StartupRecoveryAvailability::Unavailable(
+                                    format!("the recovery could not be loaded: {error}"),
+                                );
+                            }
+                            workspace.startup_recovery_operation = None;
+                            cx.notify();
+                            None
+                        }
+                    }
+                })
+                .ok()
+                .flatten();
+            let Some((request, recovered)) = open else {
+                return;
+            };
+            let open = background.spawn(async move {
+                let result = opener.open(&request);
+                (request, recovered, result)
+            });
+            let (request, recovered, result) = open.await;
+            let _ = workspace.update(cx, |workspace, cx| {
+                workspace.apply_open_result_with_startup_recovery(
+                    &request,
+                    result,
+                    Some(recovered),
+                    cx,
+                );
+            });
+        })
+        .detach();
+    }
+
+    pub fn recover_startup_copy(&mut self, id: RecoveryDocumentId, cx: &mut Context<Self>) {
+        if self.startup_recovery_operation.is_some() {
+            return;
+        }
+        let Some(expected) = self
+            .startup_recovery_items
+            .iter()
+            .find(|item| {
+                item.id == id
+                    && matches!(
+                        item.availability,
+                        StartupRecoveryAvailability::GeneratedCopyRequired
+                    )
+            })
+            .and_then(|item| item.authority)
+        else {
+            return;
+        };
+        let (Some(recovery_store), Some(generated_store), Some(opener)) = (
+            self.document_recovery_store.clone(),
+            self.generated_document_store.clone(),
+            self.opener.clone(),
+        ) else {
+            if let Some(item) = self
+                .startup_recovery_items
+                .iter_mut()
+                .find(|item| item.id == id)
+            {
+                item.availability = StartupRecoveryAvailability::Unavailable(
+                    "the recovery store, generated-document store or PDF opener is unavailable"
+                        .into(),
+                );
+            }
+            cx.notify();
+            return;
+        };
+
+        self.startup_recovery_operation = Some(id);
+        cx.notify();
+        let background = cx.background_executor().clone();
+        let task = background.spawn(async move {
+            let mut recovered = match recovery_store.load(id) {
+                Ok(Some(recovered)) if recovered.authority == expected => recovered,
+                Ok(Some(recovered)) => {
+                    return StartupRecoveryCopyResult::Refreshed(StartupRecoveryItem {
+                        id,
+                        authority: Some(recovered.authority),
+                        source_path: Some(recovered.source_path),
+                        current_revision: Some(recovered.current_revision),
+                        saved_revision: Some(recovered.saved_revision),
+                        availability: match recovered.source_kind {
+                            RecoverySourceKind::Opened => {
+                                StartupRecoveryAvailability::OpenedSourceNeedsVerification
+                            }
+                            RecoverySourceKind::Generated => {
+                                StartupRecoveryAvailability::GeneratedCopyRequired
+                            }
+                        },
+                    });
+                }
+                Ok(None) => return StartupRecoveryCopyResult::Missing,
+                Err(error) => {
+                    return StartupRecoveryCopyResult::Failed(format!(
+                        "the recovery could not be loaded: {error}"
+                    ));
+                }
+            };
+            let copy_id = match RecoveryDocumentId::generate() {
+                Ok(copy_id) => copy_id.to_hex(),
+                Err(error) => {
+                    return StartupRecoveryCopyResult::Failed(format!(
+                        "a private recovery-copy identity could not be created: {error}"
+                    ));
+                }
+            };
+            let source = match generated_store.create_from_pdf_bytes(
+                &format!("recovery-{copy_id}"),
+                &recovered.base_pdf,
+            ) {
+                Ok(source) => source,
+                Err(error) => {
+                    return StartupRecoveryCopyResult::Failed(format!(
+                        "the recovered PDF copy could not be created: {error}"
+                    ));
+                }
+            };
+            let publication = StagedRecoveryPublication {
+                source_path: source.path(),
+                source_kind: RecoverySourceKind::Generated,
+                timeline: &recovered.timeline,
+                current_revision: recovered.current_revision,
+                saved_revision: recovered.saved_revision,
+                requires_save_as: true,
+            };
+            let authority = match recovery_store.rebind_after_copy_recovery(
+                &expected,
+                recovered.source_sha256,
+                &publication,
+            ) {
+                Ok(authority) => authority,
+                Err(DocumentRecoveryStoreError::StaleAuthority { .. }) => {
+                    let _ = generated_store.release(&source);
+                    return match recovery_store.load(id) {
+                        Ok(Some(recovered)) => {
+                            StartupRecoveryCopyResult::Refreshed(StartupRecoveryItem {
+                                id,
+                                authority: Some(recovered.authority),
+                                source_path: Some(recovered.source_path),
+                                current_revision: Some(recovered.current_revision),
+                                saved_revision: Some(recovered.saved_revision),
+                                availability: match recovered.source_kind {
+                                    RecoverySourceKind::Opened => StartupRecoveryAvailability::OpenedSourceNeedsVerification,
+                                    RecoverySourceKind::Generated => StartupRecoveryAvailability::GeneratedCopyRequired,
+                                },
+                            })
+                        }
+                        Ok(None) => StartupRecoveryCopyResult::Missing,
+                        Err(error) => StartupRecoveryCopyResult::Failed(format!(
+                            "the changed recovery could not be inspected again: {error}"
+                        )),
+                    };
+                }
+                Err(error) => {
+                    match recovery_store.load(id) {
+                        Ok(Some(observed))
+                            if observed.source_kind == RecoverySourceKind::Generated
+                                && observed.source_path == source.path() =>
+                        {
+                            match recovery_store.confirm_authority_durable(&observed.authority) {
+                                Ok(_) => {
+                                    recovered = observed;
+                                    return StartupRecoveryCopyResult::Ready {
+                                        recovered,
+                                        store: generated_store,
+                                        source,
+                                    };
+                                }
+                                Err(_) => {
+                                    return StartupRecoveryCopyResult::Refreshed(
+                                        StartupRecoveryItem {
+                                            id,
+                                            authority: Some(observed.authority),
+                                            source_path: Some(observed.source_path),
+                                            current_revision: Some(observed.current_revision),
+                                            saved_revision: Some(observed.saved_revision),
+                                            availability: StartupRecoveryAvailability::Unavailable(
+                                                format!(
+                                                    "the recovered PDF copy may be authoritative but its durability could not be confirmed: {error}"
+                                                ),
+                                            ),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        Ok(Some(observed)) if observed.authority == expected => {
+                            let _ = generated_store.release(&source);
+                        }
+                        Ok(Some(observed)) => {
+                            let _ = generated_store.release(&source);
+                            return StartupRecoveryCopyResult::Refreshed(StartupRecoveryItem {
+                                id,
+                                authority: Some(observed.authority),
+                                source_path: Some(observed.source_path),
+                                current_revision: Some(observed.current_revision),
+                                saved_revision: Some(observed.saved_revision),
+                                availability: match observed.source_kind {
+                                    RecoverySourceKind::Opened => StartupRecoveryAvailability::OpenedSourceNeedsVerification,
+                                    RecoverySourceKind::Generated => StartupRecoveryAvailability::GeneratedCopyRequired,
+                                },
+                            });
+                        }
+                        Ok(None) => {
+                            let _ = generated_store.release(&source);
+                            return StartupRecoveryCopyResult::Missing;
+                        }
+                        Err(_) => {
+                            return StartupRecoveryCopyResult::Failed(format!(
+                                "the recovered PDF copy may be authoritative but the recovery store could not be inspected: {error}"
+                            ));
+                        }
+                    }
+                    return StartupRecoveryCopyResult::Failed(format!(
+                        "the recovered PDF copy could not become authoritative: {error}"
+                    ));
+                }
+            };
+            recovered.authority = authority;
+            recovered.source_path = source.path().to_owned();
+            recovered.source_kind = RecoverySourceKind::Generated;
+            recovered.requires_save_as = true;
+            StartupRecoveryCopyResult::Ready {
+                recovered,
+                store: generated_store,
+                source,
+            }
+        });
+        cx.spawn(async move |workspace, cx| {
+            let result = task.await;
+            let open = workspace
+                .update(cx, |workspace, cx| {
+                    if workspace.startup_recovery_operation != Some(id) {
+                        return None;
+                    }
+                    match result {
+                        StartupRecoveryCopyResult::Ready {
+                            recovered,
+                            store,
+                            source,
+                        } => {
+                            let request =
+                                workspace.begin_owned_generated_document(store, source, cx);
+                            Some((request, recovered))
+                        }
+                        StartupRecoveryCopyResult::Refreshed(refreshed) => {
+                            if let Some(item) = workspace
+                                .startup_recovery_items
+                                .iter_mut()
+                                .find(|item| item.id == id)
+                            {
+                                *item = refreshed;
+                            }
+                            workspace.startup_recovery_operation = None;
+                            cx.notify();
+                            None
+                        }
+                        StartupRecoveryCopyResult::Missing => {
+                            workspace
+                                .startup_recovery_items
+                                .retain(|item| item.id != id);
+                            workspace.startup_recovery_operation = None;
+                            if workspace.startup_recovery_items.is_empty() {
+                                workspace.resume_deferred_startup_open(cx);
+                            }
+                            cx.notify();
+                            None
+                        }
+                        StartupRecoveryCopyResult::Failed(message) => {
+                            workspace.fail_startup_recovery(id, message, cx);
+                            None
+                        }
+                    }
+                })
+                .ok()
+                .flatten();
+            let Some((request, recovered)) = open else {
+                return;
+            };
+            let open = background.spawn(async move {
+                let result = opener.open(&request);
+                (request, recovered, result)
+            });
+            let (request, recovered, result) = open.await;
+            let _ = workspace.update(cx, |workspace, cx| {
+                workspace.apply_open_result_with_startup_recovery(
+                    &request,
+                    result,
+                    Some(recovered),
+                    cx,
+                );
+            });
+        })
+        .detach();
+    }
+
+    fn confirm_discard_startup_recovery(
+        owner: WeakEntity<Self>,
+        id: RecoveryDocumentId,
+        title: String,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let owner = owner.clone();
+            alert
+                .close_button(false)
+                .title(format!("Discard changes to “{title}”?"))
+                .description(
+                    "This permanently removes Butter Paper’s recoverable unsaved changes. The last saved PDF is not changed.",
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new(DOCUMENT_RECOVERY_DISCARD_CANCEL_ID)
+                                .debug_selector(|| DOCUMENT_RECOVERY_DISCARD_CANCEL_ID.into())
+                                .outline()
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            DialogAction::new().child(
+                                Button::new(DOCUMENT_RECOVERY_DISCARD_CONFIRM_ID)
+                                    .debug_selector(|| {
+                                        DOCUMENT_RECOVERY_DISCARD_CONFIRM_ID.into()
+                                    })
+                                    .danger()
+                                    .label("Discard changes"),
+                            ),
+                        ),
+                )
+                .on_ok(move |_, _, cx| {
+                    owner
+                        .update(cx, |workspace, cx| {
+                            workspace.discard_startup_recovery(id, cx);
+                        })
+                        .is_ok()
+                })
+        });
+    }
+
+    fn startup_recovery_message(&self) -> Option<String> {
+        if self.startup_recovery_inspecting {
+            return Some("Checking for recoverable unsaved changes…".into());
+        }
+        let count = self.startup_recovery_items.len();
+        (count > 0).then(|| {
+            format!(
+                "Unsaved changes are available to recover for {count} {}. Opening documents is paused so the recovery data is not replaced.",
+                if count == 1 { "document" } else { "documents" }
+            )
+        })
+    }
+
+    fn fail_startup_recovery(
+        &mut self,
+        id: RecoveryDocumentId,
+        message: String,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(item) = self
+            .startup_recovery_items
+            .iter_mut()
+            .find(|item| item.id == id)
+        {
+            item.availability = StartupRecoveryAvailability::Unavailable(message);
+        }
+        self.startup_recovery_operation = None;
+        cx.notify();
+    }
+
+    fn render_startup_recovery_inbox(
+        &self,
+        message: String,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let owner = cx.entity().downgrade();
+        let operation = self.startup_recovery_operation;
+        self.startup_recovery_items.iter().cloned().fold(
+            v_flex()
+                .id(DOCUMENT_RECOVERY_AVAILABLE_ALERT_ID)
+                .debug_selector(|| DOCUMENT_RECOVERY_AVAILABLE_ALERT_ID.into())
+                .w_full()
+                .gap_2()
+                .child(
+                    Alert::warning(
+                        "document-workspace-recovery-available-message",
+                        message,
+                    )
+                    .title("Unsaved changes are available"),
+                ),
+            move |inbox, item| {
+                let id = item.id;
+                let id_hex = id.to_hex();
+                let title = item.title();
+                let detail = match &item.availability {
+                    StartupRecoveryAvailability::OpenedSourceNeedsVerification => format!(
+                        "Unsaved revision {} is available. Verify the source before recovering it.",
+                        item.current_revision.unwrap_or_default()
+                    ),
+                    StartupRecoveryAvailability::GeneratedCopyRequired => format!(
+                        "Unsaved revision {} needs to be recovered as a new PDF.",
+                        item.current_revision.unwrap_or_default()
+                    ),
+                    StartupRecoveryAvailability::Unavailable(error) => {
+                        format!("This recovery cannot be opened: {error}")
+                    }
+                };
+                let recover_owner = owner.clone();
+                let copy_owner = owner.clone();
+                let discard_owner = owner.clone();
+                let discard_title = title.clone();
+                let recover_id = format!("document-workspace-recovery-open-{id_hex}");
+                let copy_id = format!("document-workspace-recovery-copy-{id_hex}");
+                let discard_id = format!("document-workspace-recovery-discard-{id_hex}");
+                inbox.child(
+                    h_flex()
+                        .w_full()
+                        .items_start()
+                        .gap_3()
+                        .px_3()
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_1()
+                                .child(gpui::div().font_semibold().child(title))
+                                .child(
+                                    gpui::div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(detail),
+                                ),
+                        )
+                        .when(item.authority.is_some(), |row| {
+                            let selector = discard_id.clone();
+                            row.child(
+                                h_flex()
+                                    .gap_2()
+                                    .when(
+                                        matches!(
+                                            item.availability,
+                                            StartupRecoveryAvailability::OpenedSourceNeedsVerification
+                                        ),
+                                        |actions| {
+                                            let recover_selector = recover_id.clone();
+                                            actions.child(
+                                                Button::new(recover_id)
+                                                    .debug_selector(move || {
+                                                        recover_selector.clone().into()
+                                                    })
+                                                    .small()
+                                                    .disabled(operation.is_some())
+                                                    .label(if operation == Some(id) {
+                                                        "Working…"
+                                                    } else {
+                                                        "Recover"
+                                                    })
+                                                    .on_click(move |_, _, cx| {
+                                                        let _ = recover_owner.update(
+                                                            cx,
+                                                            |workspace, cx| {
+                                                                workspace
+                                                                    .recover_startup_opened_source(
+                                                                        id, cx,
+                                                                    );
+                                                            },
+                                                        );
+                                                    }),
+                                            )
+                                        },
+                                    )
+                                    .when(
+                                        matches!(
+                                            item.availability,
+                                            StartupRecoveryAvailability::GeneratedCopyRequired
+                                        ),
+                                        |actions| {
+                                            let copy_selector = copy_id.clone();
+                                            actions.child(
+                                                Button::new(copy_id)
+                                                    .debug_selector(move || {
+                                                        copy_selector.clone().into()
+                                                    })
+                                                    .small()
+                                                    .disabled(operation.is_some())
+                                                    .label(if operation == Some(id) {
+                                                        "Working…"
+                                                    } else {
+                                                        "Recover a copy"
+                                                    })
+                                                    .on_click(move |_, _, cx| {
+                                                        let _ = copy_owner.update(
+                                                            cx,
+                                                            |workspace, cx| {
+                                                                workspace
+                                                                    .recover_startup_copy(id, cx);
+                                                            },
+                                                        );
+                                                    }),
+                                            )
+                                        },
+                                    )
+                                    .child(
+                                        Button::new(discard_id)
+                                            .debug_selector(move || selector.clone().into())
+                                            .small()
+                                            .outline()
+                                            .danger()
+                                            .disabled(operation.is_some())
+                                            .label(if operation == Some(id) {
+                                                "Working…"
+                                            } else {
+                                                "Discard changes"
+                                            })
+                                            .on_click(move |_, window, cx| {
+                                                Self::confirm_discard_startup_recovery(
+                                                    discard_owner.clone(),
+                                                    id,
+                                                    discard_title.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }),
+                                    ),
+                            )
+                        }),
+                )
+            },
+        )
+    }
+
+    pub fn bind_document_recovery_store_error(&mut self, message: impl Into<String>) {
+        self.document_recovery_store = None;
+        self.document_recovery_store_error = Some(message.into());
+    }
+
     pub fn sessions(&self) -> &[Entity<NativeDocumentSession>] {
         &self.sessions
     }
@@ -2732,6 +4859,30 @@ impl DocumentWorkspace {
             restart_views.push(session.view_state.restart_view(session.current_page));
         }
         SessionSnapshot::new(paths, active_index).with_restart_views(restart_views)
+    }
+
+    /// Captures only committed in-memory edits that are not yet represented by
+    /// a durable PDF. This is a loss-warning marker, not a content-recovery
+    /// payload: annotation data and image bytes intentionally remain outside it.
+    pub fn session_recovery_snapshot(&self, cx: &App) -> SessionRecoverySnapshot {
+        SessionRecoverySnapshot::new(
+            self.sessions
+                .iter()
+                .filter_map(|session| {
+                    let session = session.read(cx);
+                    if !matches!(session.status, NativeDocumentStatus::Ready) {
+                        return None;
+                    }
+                    let dirty_revision = session.dirty_revision()?;
+                    Some(SessionRecoveryDocument::new(
+                        session.path.clone(),
+                        session.title.clone(),
+                        dirty_revision,
+                        session.save_as_required,
+                    ))
+                })
+                .collect(),
+        )
     }
 
     pub fn restore_session(
@@ -3065,6 +5216,58 @@ impl DocumentWorkspace {
         &self.document_open_status
     }
 
+    pub fn show_session_recovery_warning(
+        &mut self,
+        snapshot: &SessionRecoverySnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        if snapshot.is_empty() {
+            return;
+        }
+        let mut titles = snapshot
+            .documents()
+            .iter()
+            .map(|document| document.title().to_owned())
+            .collect::<Vec<_>>();
+        titles.sort();
+        titles.dedup();
+        let names = match titles.as_slice() {
+            [only] => only.clone(),
+            [first, second] => format!("{first} and {second}"),
+            [first, second, rest @ ..] => {
+                format!("{first}, {second} and {} other documents", rest.len())
+            }
+            [] => return,
+        };
+        self.session_recovery_warning = Some(format!(
+            "Butter Paper found evidence of unsaved edits to {names}. Review any available recovery before opening documents; without recovery, the PDFs contain the last successfully saved version."
+        ));
+        cx.notify();
+    }
+
+    pub fn show_session_recovery_warning_message(
+        &mut self,
+        message: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.session_recovery_warning = Some(message.into());
+        cx.notify();
+    }
+
+    pub fn session_recovery_warning(&self) -> Option<&str> {
+        self.session_recovery_warning.as_deref()
+    }
+
+    pub fn dismiss_session_recovery_warning(&mut self, cx: &mut Context<Self>) {
+        if self.session_recovery_warning.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    pub const fn active_document_open_batches(&self) -> usize {
+        self.active_document_open_batches
+    }
+
     pub fn last_document_open_failure(&self) -> Option<&DocumentOpenFailure> {
         self.document_open_failures.first()
     }
@@ -3296,11 +5499,11 @@ impl DocumentWorkspace {
                 return false;
             }
             session.save_generation = session.save_generation.saturating_add(1);
-            session.save_status = NativeDocumentSaveStatus::Failed(DocumentSaveFailure {
-                generation: session.save_generation,
+            session.save_status = NativeDocumentSaveStatus::Failed(DocumentSaveFailure::new(
+                session.save_generation,
                 operation,
                 message,
-            });
+            ));
             cx.notify();
             true
         });
@@ -3344,7 +5547,11 @@ impl DocumentWorkspace {
         if let Some(inspector) = &self.rectangle_property_inspector {
             return inspector.clone();
         }
-        let inspector = cx.new(|cx| { let mut inspector = RectanglePropertyInspector::new(window, cx); inspector.set_embedded(); inspector });
+        let inspector = cx.new(|cx| {
+            let mut inspector = RectanglePropertyInspector::new(window, cx);
+            inspector.set_embedded();
+            inspector
+        });
         let subscription = cx.subscribe(
             &inspector,
             |workspace, _, event: &RectanglePropertyEvent, cx| {
@@ -3369,7 +5576,11 @@ impl DocumentWorkspace {
         if let Some(inspector) = &self.ellipse_property_inspector {
             return inspector.clone();
         }
-        let inspector = cx.new(|cx| { let mut inspector = EllipsePropertyInspector::new_ellipse(window, cx); inspector.set_embedded(); inspector });
+        let inspector = cx.new(|cx| {
+            let mut inspector = EllipsePropertyInspector::new_ellipse(window, cx);
+            inspector.set_embedded();
+            inspector
+        });
         let subscription = cx.subscribe(
             &inspector,
             |workspace, _, event: &RectanglePropertyEvent, cx| {
@@ -3398,7 +5609,11 @@ impl DocumentWorkspace {
         if let Some(inspector) = &self.ink_property_inspector {
             return inspector.clone();
         }
-        let inspector = cx.new(|cx| { let mut inspector = InkPropertyInspector::new(window, cx); inspector.set_embedded(); inspector });
+        let inspector = cx.new(|cx| {
+            let mut inspector = InkPropertyInspector::new(window, cx);
+            inspector.set_embedded();
+            inspector
+        });
         let subscription =
             cx.subscribe(&inspector, |workspace, _, event: &InkPropertyEvent, cx| {
                 if let Err(error) = workspace.apply_ink_property_event(event, cx) {
@@ -3547,7 +5762,11 @@ impl DocumentWorkspace {
         if let Some(inspector) = &self.engineering_visual_property_inspector {
             return inspector.clone();
         }
-        let inspector = cx.new(|cx| { let mut inspector = EngineeringVisualPropertyInspector::new(window, cx); inspector.set_embedded(); inspector });
+        let inspector = cx.new(|cx| {
+            let mut inspector = EngineeringVisualPropertyInspector::new(window, cx);
+            inspector.set_embedded();
+            inspector
+        });
         let subscription = cx.subscribe(
             &inspector,
             |workspace, _, event: &EngineeringVisualPropertyEvent, cx| {
@@ -3752,8 +5971,7 @@ impl DocumentWorkspace {
             EngineeringVisualPropertyPatch::Opacity(opacity) if (0.0..=1.).contains(opacity) => {
                 if matches!(
                     event.expected_kind,
-                    EngineeringVisualPropertyKind::Image
-                        | EngineeringVisualPropertyKind::Snapshot
+                    EngineeringVisualPropertyKind::Image | EngineeringVisualPropertyKind::Snapshot
                 ) {
                     let annotation_id = event.annotation_id.clone();
                     let opacity = *opacity;
@@ -3766,11 +5984,7 @@ impl DocumentWorkspace {
                         event.document_id,
                         cx,
                         move |annotations, id| {
-                            annotations.edit_primary_selected_annotation(
-                                id,
-                                &annotation_id,
-                                edit,
-                            )
+                            annotations.edit_primary_selected_annotation(id, &annotation_id, edit)
                         },
                     )?;
                 } else {
@@ -3804,8 +6018,7 @@ impl DocumentWorkspace {
     ) -> Result<(), String> {
         self.update_annotation_history(document_id, cx, move |annotations, id| match kind {
             EngineeringVisualPropertyKind::Arc => {
-                let Some(Annotation::Arc(current)) =
-                    annotations.primary_selected_annotation(id)
+                let Some(Annotation::Arc(current)) = annotations.primary_selected_annotation(id)
                 else {
                     return Err(AnnotationError::NoSelection);
                 };
@@ -3839,7 +6052,11 @@ impl DocumentWorkspace {
         if let Some(inspector) = &self.straight_line_property_inspector {
             return inspector.clone();
         }
-        let inspector = cx.new(|cx| { let mut inspector = StraightLinePropertyInspector::new(window, cx); inspector.set_embedded(); inspector });
+        let inspector = cx.new(|cx| {
+            let mut inspector = StraightLinePropertyInspector::new(window, cx);
+            inspector.set_embedded();
+            inspector
+        });
         let subscription = cx.subscribe(
             &inspector,
             |workspace, _, event: &StraightLinePropertyEvent, cx| {
@@ -4019,7 +6236,11 @@ impl DocumentWorkspace {
         if let Some(inspector) = &self.vertex_path_property_inspector {
             return inspector.clone();
         }
-        let inspector = cx.new(|cx| { let mut inspector = VertexPathPropertyInspector::new(window, cx); inspector.set_embedded(); inspector });
+        let inspector = cx.new(|cx| {
+            let mut inspector = VertexPathPropertyInspector::new(window, cx);
+            inspector.set_embedded();
+            inspector
+        });
         let subscription = cx.subscribe(
             &inspector,
             |workspace, _, event: &VertexPathPropertyEvent, cx| {
@@ -4087,23 +6308,22 @@ impl DocumentWorkspace {
         else {
             return Ok(false);
         };
-        let (current_id, current_kind, appearance, locked, measurement_text_style) =
-            match primary {
-                Annotation::VertexPath(current) => (
-                    current.id,
-                    PathPropertyKind::from(current.kind),
-                    current.appearance,
-                    current.locked,
-                    None,
-                ),
-                Annotation::MeasurementPath(current) => (
-                    current.id.clone(),
-                    PathPropertyKind::from(current.kind),
-                    current.appearance.clone(),
-                    current.locked,
-                    Some(current.text_style().clone()),
-                ),
-                _ => return Ok(false),
+        let (current_id, current_kind, appearance, locked, measurement_text_style) = match primary {
+            Annotation::VertexPath(current) => (
+                current.id,
+                PathPropertyKind::from(current.kind),
+                current.appearance,
+                current.locked,
+                None,
+            ),
+            Annotation::MeasurementPath(current) => (
+                current.id.clone(),
+                PathPropertyKind::from(current.kind),
+                current.appearance.clone(),
+                current.locked,
+                Some(current.text_style().clone()),
+            ),
+            _ => return Ok(false),
         };
         if revision != event.expected_revision
             || current_id != event.annotation_id
@@ -4131,11 +6351,7 @@ impl DocumentWorkspace {
                     event.document_id,
                     cx,
                     move |annotations, document_id| {
-                        annotations.set_primary_selected_locked(
-                            document_id,
-                            &annotation_id,
-                            *value,
-                        )
+                        annotations.set_primary_selected_locked(document_id, &annotation_id, *value)
                     },
                 )?;
             }
@@ -4153,12 +6369,14 @@ impl DocumentWorkspace {
                 let (stroke_color, stroke_width, fill_color, opacity) = match patch {
                     VertexPathPropertyPatch::StrokeColorAndOpacity { color, opacity }
                         if opacity.is_finite() && (0.0..=1.).contains(opacity) =>
-                    (
-                        property_rgb(color.clone()),
-                        appearance.stroke_width_pt(),
-                        appearance.fill_color().map(str::to_owned),
-                        *opacity,
-                    ),
+                    {
+                        (
+                            property_rgb(color.clone()),
+                            appearance.stroke_width_pt(),
+                            appearance.fill_color().map(str::to_owned),
+                            *opacity,
+                        )
+                    }
                     VertexPathPropertyPatch::FillColorAndOpacity { color, opacity }
                         if opacity.is_finite() && (0.0..=1.).contains(opacity) =>
                     {
@@ -4230,15 +6448,11 @@ impl DocumentWorkspace {
                     ),
                     _ => return Ok(false),
                 };
-                let next_appearance = RectangleAppearance::new(
-                    stroke_color,
-                    stroke_width,
-                    fill_color,
-                    opacity,
-                )
-                .and_then(|value| value.with_fill_opacity(appearance.fill_opacity()))
-                .map(|value| value.with_stroke_style(appearance.stroke_style()))
-                .map_err(|error| error.to_string())?;
+                let next_appearance =
+                    RectangleAppearance::new(stroke_color, stroke_width, fill_color, opacity)
+                        .and_then(|value| value.with_fill_opacity(appearance.fill_opacity()))
+                        .map(|value| value.with_stroke_style(appearance.stroke_style()))
+                        .map_err(|error| error.to_string())?;
                 let measurement_text_style = measurement_text_style
                     .as_ref()
                     .map(|text| {
@@ -4250,6 +6464,9 @@ impl DocumentWorkspace {
                         )
                         .and_then(|style| {
                             style.with_weight_and_alignment(text.weight(), text.alignment())
+                        })
+                        .and_then(|style| {
+                            style.with_layout_metrics(text.line_height_pt(), text.inset_pt())
                         })
                     })
                     .transpose()
@@ -4290,7 +6507,11 @@ impl DocumentWorkspace {
         if let Some(inspector) = &self.text_box_property_inspector {
             return inspector.clone();
         }
-        let inspector = cx.new(|cx| { let mut inspector = TextBoxPropertyInspector::new(window, cx); inspector.set_embedded(); inspector });
+        let inspector = cx.new(|cx| {
+            let mut inspector = TextBoxPropertyInspector::new(window, cx);
+            inspector.set_embedded();
+            inspector
+        });
         let subscription = cx.subscribe(
             &inspector,
             |workspace, _, event: &TextBoxPropertyEvent, cx| {
@@ -4366,13 +6587,9 @@ impl DocumentWorkspace {
         match &event.patch {
             TextBoxPropertyPatch::Locked(locked) => {
                 let annotation_id = event.annotation_id.clone();
-                self.update_annotation_history(
-                    event.document_id,
-                    cx,
-                    move |annotations, id| {
-                        annotations.set_primary_selected_locked(id, &annotation_id, *locked)
-                    },
-                )?;
+                self.update_annotation_history(event.document_id, cx, move |annotations, id| {
+                    annotations.set_primary_selected_locked(id, &annotation_id, *locked)
+                })?;
             }
             TextBoxPropertyPatch::Style(style) => {
                 let annotation_id = event.annotation_id.clone();
@@ -4401,7 +6618,11 @@ impl DocumentWorkspace {
         if let Some(inspector) = &self.measurement_property_inspector {
             return inspector.clone();
         }
-        let inspector = cx.new(|_| { let mut inspector = MeasurementPropertyInspector::new(); inspector.set_embedded(); inspector });
+        let inspector = cx.new(|_| {
+            let mut inspector = MeasurementPropertyInspector::new();
+            inspector.set_embedded();
+            inspector
+        });
         let subscription = cx.subscribe_in(
             &inspector,
             window,
@@ -4498,9 +6719,9 @@ impl DocumentWorkspace {
                     return Err(format!("markup {} is locked", event.annotation_id));
                 }
                 let edit = match current_kind {
-                    AnnotationKind::Length => AnnotationEdit::SetLengthCalibration(
-                        calibration.with_show_caption(value),
-                    ),
+                    AnnotationKind::Length => {
+                        AnnotationEdit::SetLengthCalibration(calibration.with_show_caption(value))
+                    }
                     AnnotationKind::Polylength | AnnotationKind::Area => {
                         AnnotationEdit::SetMeasurementPathCalibration(
                             calibration.with_show_caption(value),
@@ -4597,14 +6818,18 @@ impl DocumentWorkspace {
         event: &RectanglePropertyEvent,
         cx: &mut Context<Self>,
     ) -> Result<bool, String> {
-        if self.active_document_id != Some(event.document_id) { return Ok(false); }
+        if self.active_document_id != Some(event.document_id) {
+            return Ok(false);
+        }
         let Some(session) = self.session(event.document_id, cx).cloned() else {
             return Ok(false);
         };
         let selected = session
             .read(cx)
             .annotations
-            .primary_selected_annotation(event.document_id.value()).into_iter().collect::<Vec<_>>();
+            .primary_selected_annotation(event.document_id.value())
+            .into_iter()
+            .collect::<Vec<_>>();
         let current = match selected.as_slice() {
             [Annotation::Rectangle(annotation)]
                 if event.expected_kind == RectangularShapePropertyKind::Rectangle =>
@@ -4654,11 +6879,15 @@ impl DocumentWorkspace {
             return Err(format!("markup {} is locked", event.annotation_id));
         }
 
-        session.update(cx, |session, cx| {
+        self.update_native_session_history_with_result(event.document_id, cx, move |session| {
             let annotations = &mut session.annotations;
             match &event.patch {
                 RectanglePropertyPatch::Locked(locked) => annotations
-                    .set_primary_selected_locked(event.document_id.value(), &event.annotation_id, *locked)
+                    .set_primary_selected_locked(
+                        event.document_id.value(),
+                        &event.annotation_id,
+                        *locked,
+                    )
                     .map_err(|error| error.to_string())?,
                 RectanglePropertyPatch::StrokeColorAndOpacity { color, opacity } => {
                     let appearance = RectangleAppearance::new(
@@ -4839,7 +7068,6 @@ impl DocumentWorkspace {
                     )?;
                 }
             }
-            cx.notify();
             Ok::<(), String>(())
         })?;
         self.annotation_statuses.remove(&event.document_id);
@@ -4900,6 +7128,35 @@ impl DocumentWorkspace {
             .map(|editor| editor.input.read(cx).value().to_string())
     }
 
+    pub fn pending_text_box_rect(&self) -> Option<PdfRect> {
+        let editor = self.pending_text_box_editor.as_ref()?;
+        let PendingTextEditorTarget::NewTextBox { rect, .. } = &editor.target else {
+            return None;
+        };
+        Some(*rect)
+    }
+
+    fn pending_new_text_box_editor_bounds(&self) -> Option<Bounds<Pixels>> {
+        let editor = self.pending_text_box_editor.as_ref()?;
+        let PendingTextEditorTarget::NewTextBox {
+            rect, interaction, ..
+        } = &editor.target
+        else {
+            return None;
+        };
+        let local = interaction.transform.rect_to_local_pixels(*rect);
+        Some(Bounds::new(
+            point(
+                interaction.bounds.origin.x + px(local.x as f32),
+                interaction.bounds.origin.y + px(local.y as f32),
+            ),
+            size(
+                px((local.width as f32).max(24.)),
+                px((local.height as f32).max(18.)),
+            ),
+        ))
+    }
+
     pub fn text_box_return_focus(&self) -> FocusHandle {
         self.text_box_return_focus.clone()
     }
@@ -4952,12 +7209,11 @@ impl DocumentWorkspace {
         if page_index as usize >= session.read(cx).page_sizes.len() {
             return Err("page scale target is outside the document".into());
         }
-        session.update(cx, |session, cx| {
+        self.update_native_session_history_with_result(document_id, cx, move |session| {
             session
                 .annotations
                 .set_document_page_length_calibration(document_id.value(), page_index, calibration)
                 .map_err(|error| error.to_string())?;
-            cx.notify();
             Ok::<(), String>(())
         })?;
         self.annotation_statuses.insert(
@@ -5054,12 +7310,13 @@ impl DocumentWorkspace {
         };
         let page_count = u32::try_from(session.read(cx).page_sizes.len())
             .map_err(|_| "document page count exceeds the page-scale limit".to_owned())?;
-        let changed = session.update(cx, |session, _| {
-            session
-                .annotations
-                .apply_document_page_scale(document_id.value(), scale, target, page_count)
-                .map_err(|error| error.to_string())
-        })?;
+        let changed =
+            self.update_native_session_history_with_result(document_id, cx, move |session| {
+                session
+                    .annotations
+                    .apply_document_page_scale(document_id.value(), scale, target, page_count)
+                    .map_err(|error| error.to_string())
+            })?;
         if changed {
             cx.notify();
         }
@@ -5079,18 +7336,19 @@ impl DocumentWorkspace {
         };
         let page_count = u32::try_from(session.read(cx).page_sizes.len())
             .map_err(|_| "document page count exceeds the page-scale limit".to_owned())?;
-        let changed = session.update(cx, |session, _| {
-            session
-                .annotations
-                .apply_document_page_scale_with_preset(
-                    document_id.value(),
-                    scale,
-                    target,
-                    page_count,
-                    saved_preset,
-                )
-                .map_err(|error| error.to_string())
-        })?;
+        let changed =
+            self.update_native_session_history_with_result(document_id, cx, move |session| {
+                session
+                    .annotations
+                    .apply_document_page_scale_with_preset(
+                        document_id.value(),
+                        scale,
+                        target,
+                        page_count,
+                        saved_preset,
+                    )
+                    .map_err(|error| error.to_string())
+            })?;
         if changed {
             cx.notify();
         }
@@ -5103,15 +7361,17 @@ impl DocumentWorkspace {
         preset_id: &str,
         cx: &mut Context<Self>,
     ) -> Result<bool, String> {
-        let Some(session) = self.session(document_id, cx).cloned() else {
+        let Some(_session) = self.session(document_id, cx).cloned() else {
             return Err("document session is closed".into());
         };
-        let changed = session.update(cx, |session, _| {
-            session
-                .annotations
-                .delete_document_scale_preset(document_id.value(), preset_id)
-                .map_err(|error| error.to_string())
-        })?;
+        let preset_id = preset_id.to_owned();
+        let changed =
+            self.update_native_session_history_with_result(document_id, cx, move |session| {
+                session
+                    .annotations
+                    .delete_document_scale_preset(document_id.value(), &preset_id)
+                    .map_err(|error| error.to_string())
+            })?;
         if changed {
             cx.notify();
         }
@@ -5120,12 +7380,13 @@ impl DocumentWorkspace {
 
     fn begin_pending_text_box(
         &mut self,
-        document_id: DocumentId,
-        page_index: u32,
+        interaction: PageInteraction,
         anchor: PdfPoint,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        let document_id = interaction.document_id;
+        let page_index = interaction.page_index;
         if self.pending_text_box_editor.is_some() {
             return false;
         }
@@ -5134,18 +7395,36 @@ impl DocumentWorkspace {
         let Ok(id) = MarkupId::new(format!("workspace:text:{sequence}")) else {
             return false;
         };
-        let input = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .rows(3)
-                .soft_wrap(false)
-                .placeholder("Text box content")
-        });
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return false;
+        };
+        let properties = session
+            .read(cx)
+            .annotations
+            .tool_properties(AnnotationTool::TextBox);
+        let Ok(style) = TextBoxStyle::new(
+            &properties.font_family,
+            properties.font_size_pt,
+            &properties.colour,
+            properties.opacity,
+        ) else {
+            return false;
+        };
+        let Ok(rect) = initial_pending_text_box_rect(anchor, &style, window.text_system()) else {
+            return false;
+        };
+        let input = cx.new(|cx| TextareaState::new(window, cx).rows(3).soft_wrap(false));
         self.text_box_commit_error = None;
         let input_subscription = cx.subscribe_in(
             &input,
             window,
-            |workspace, _, event: &InputEvent, _, cx| match event {
-                InputEvent::Change => cx.notify(),
+            |workspace, _, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    if let Err(error) = workspace.update_pending_text_box_rect(window, cx) {
+                        workspace.text_box_commit_error = Some(error);
+                    }
+                    cx.notify();
+                }
                 InputEvent::Blur => {
                     if let Err(error) = workspace.commit_pending_text_box(cx) {
                         workspace.text_box_commit_error = Some(error);
@@ -5159,7 +7438,12 @@ impl DocumentWorkspace {
         self.pending_text_box_editor = Some(PendingTextBoxEditor {
             document_id,
             page_index,
-            target: PendingTextEditorTarget::NewTextBox { id, anchor },
+            target: PendingTextEditorTarget::NewTextBox {
+                id,
+                rect,
+                style,
+                interaction,
+            },
             authority: None,
             input: input.clone(),
         });
@@ -5167,6 +7451,35 @@ impl DocumentWorkspace {
         input_focus.focus(window, cx);
         cx.notify();
         true
+    }
+
+    fn update_pending_text_box_rect(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let Some(editor) = self.pending_text_box_editor.as_ref() else {
+            return Ok(());
+        };
+        let PendingTextEditorTarget::NewTextBox { rect, style, .. } = &editor.target else {
+            return Ok(());
+        };
+        let next = resized_pending_text_box_rect(
+            *rect,
+            &editor.input.read(cx).value(),
+            style,
+            window.text_system(),
+        )
+        .map_err(|error| error.to_string())?;
+        let Some(editor) = self.pending_text_box_editor.as_mut() else {
+            return Ok(());
+        };
+        let PendingTextEditorTarget::NewTextBox { rect, .. } = &mut editor.target else {
+            return Ok(());
+        };
+        *rect = next;
+        self.text_box_commit_error = None;
+        Ok(())
     }
 
     fn begin_pending_composite_text_editor(
@@ -5197,10 +7510,11 @@ impl DocumentWorkspace {
                 .into_iter()
                 .find(|callout| &callout.id == id)
                 .map(|callout| callout.content().to_owned()),
-            PendingTextEditorTarget::CloudPlus { id } => snapshot
+            PendingTextEditorTarget::NewCloudPlus { id }
+            | PendingTextEditorTarget::ExistingCloudPlus { id } => snapshot
                 .cloud_pluses
                 .into_iter()
-                .find(|cloud_plus| &cloud_plus.id == id)
+                .find(|cloud_plus| &cloud_plus.id == id && !cloud_plus.locked)
                 .map(|cloud_plus| cloud_plus.content().to_owned()),
             PendingTextEditorTarget::NewDimension { id }
             | PendingTextEditorTarget::ExistingDimension { id } => snapshot
@@ -5223,12 +7537,15 @@ impl DocumentWorkspace {
                 .soft_wrap(false)
                 .default_value(content.clone())
         });
-        input.update(cx, |input, cx| input.set_submit_on_enter(true, cx));
+        let submit_on_enter = !matches!(&target, PendingTextEditorTarget::ExistingTextBox { .. });
+        input.update(cx, |input, cx| {
+            input.set_submit_on_enter(submit_on_enter, cx)
+        });
         self.text_box_commit_error = None;
         let input_subscription = cx.subscribe_in(
             &input,
             window,
-            |workspace, _, event: &InputEvent, window, cx| match event {
+            move |workspace, _, event: &InputEvent, window, cx| match event {
                 InputEvent::Change => cx.notify(),
                 InputEvent::Blur => {
                     if let Err(error) = workspace.commit_pending_text_box(cx) {
@@ -5236,7 +7553,7 @@ impl DocumentWorkspace {
                         cx.notify();
                     }
                 }
-                InputEvent::PressEnter { shift: false, .. } => {
+                InputEvent::PressEnter { shift: false, .. } if submit_on_enter => {
                     if let Err(error) = workspace.commit_pending_text_box_from_enter(cx) {
                         workspace.text_box_commit_error = Some(error);
                         cx.notify();
@@ -5244,7 +7561,7 @@ impl DocumentWorkspace {
                         workspace.workspace_focus.focus(window, cx);
                     }
                 }
-                InputEvent::Focus | InputEvent::PressEnter { shift: true, .. } => {}
+                InputEvent::Focus | InputEvent::PressEnter { .. } => {}
             },
         );
         let input_focus = input.read(cx).focus_handle(cx);
@@ -5274,9 +7591,9 @@ impl DocumentWorkspace {
         if !self.pending_text_box_editor.as_ref().is_some_and(|editor| {
             matches!(
                 editor.target,
-                PendingTextEditorTarget::ExistingTextBox { .. }
-                    | PendingTextEditorTarget::Callout { .. }
-                    | PendingTextEditorTarget::CloudPlus { .. }
+                PendingTextEditorTarget::Callout { .. }
+                    | PendingTextEditorTarget::NewCloudPlus { .. }
+                    | PendingTextEditorTarget::ExistingCloudPlus { .. }
                     | PendingTextEditorTarget::NewDimension { .. }
                     | PendingTextEditorTarget::ExistingDimension { .. }
             )
@@ -5289,12 +7606,7 @@ impl DocumentWorkspace {
             .expect("the checked composite editor remains retained");
         self.pending_text_box_subscriptions.clear();
         self.text_box_commit_error = None;
-        if !matches!(
-            editor.target,
-            PendingTextEditorTarget::ExistingTextBox { .. }
-                | PendingTextEditorTarget::ExistingDimension { .. }
-        ) && let Some(session) = self.session(editor.document_id, cx).cloned()
-        {
+        if let Some(session) = self.session(editor.document_id, cx).cloned() {
             session.update(cx, |session, cx| {
                 session
                     .annotations
@@ -5340,10 +7652,43 @@ impl DocumentWorkspace {
             return self.commit_pending_existing_dimension(trim_composite_submit_newline, cx);
         }
         if self.pending_text_box_editor.as_ref().is_some_and(|editor| {
+            matches!(
+                editor.target,
+                PendingTextEditorTarget::ExistingCloudPlus { .. }
+            )
+        }) {
+            return self.commit_pending_existing_cloud_plus(trim_composite_submit_newline, cx);
+        }
+        if self.pending_text_box_editor.as_ref().is_some_and(|editor| {
             matches!(editor.target, PendingTextEditorTarget::NewDimension { .. })
                 && !editor.input.read(cx).value().is_ascii()
         }) {
             return Err("Dimension captions currently support ASCII text only".into());
+        }
+        if let Some(editor) = self.pending_text_box_editor.as_ref()
+            && let PendingTextEditorTarget::NewTextBox {
+                id, rect, style, ..
+            } = &editor.target
+        {
+            let content = editor.input.read(cx).value().to_string();
+            if content.is_empty() {
+                self.pending_text_box_editor.take();
+                self.pending_text_box_subscriptions.clear();
+                cx.notify();
+                return Ok(false);
+            }
+            let annotation = TextBoxAnnotation::new(
+                id.clone(),
+                editor.page_index,
+                *rect,
+                content,
+                style.clone(),
+            )
+            .map_err(|error| error.to_string())?;
+            self.create_text_box(editor.document_id, annotation, cx)?;
+            self.pending_text_box_editor.take();
+            self.pending_text_box_subscriptions.clear();
+            return Ok(true);
         }
         let Some(editor) = self.pending_text_box_editor.take() else {
             return Ok(false);
@@ -5354,7 +7699,7 @@ impl DocumentWorkspace {
             && matches!(
                 &editor.target,
                 PendingTextEditorTarget::Callout { .. }
-                    | PendingTextEditorTarget::CloudPlus { .. }
+                    | PendingTextEditorTarget::NewCloudPlus { .. }
                     | PendingTextEditorTarget::NewDimension { .. }
                     | PendingTextEditorTarget::ExistingDimension { .. }
             )
@@ -5363,128 +7708,207 @@ impl DocumentWorkspace {
             content.pop();
         }
         match editor.target {
-            PendingTextEditorTarget::NewTextBox { id, anchor } => {
+            PendingTextEditorTarget::NewTextBox {
+                id, rect, style, ..
+            } => {
                 if content.is_empty() {
                     cx.notify();
                     return Ok(false);
                 }
-                let properties = self.session(editor.document_id, cx)
-                    .ok_or_else(|| "document session is closed".to_owned())?
-                    .read(cx).annotations.tool_properties(AnnotationTool::TextBox);
-                let lines = content.split('\n').collect::<Vec<_>>();
-                let widest = lines
-                    .iter()
-                    .map(|line| line.chars().count())
-                    .max()
-                    .unwrap_or(0) as f64;
-                let width = (widest * properties.font_size_pt * 0.6 + 10.).max(11.);
-                let height = lines.len().max(1) as f64 * properties.font_size_pt * 1.15 + 4.2;
-                let initial_left = anchor.x - 5.5;
-                let initial_top = anchor.y + 9.;
-                let annotation = TextBoxAnnotation::new(
-                    id,
-                    editor.page_index,
-                    PdfRect::new(initial_left, initial_top - height, width, height)
-                        .map_err(|error| error.to_string())?,
-                    content,
-                    TextBoxStyle::new(&properties.font_family, properties.font_size_pt, &properties.colour, properties.opacity)
-                        .map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())?;
+                let annotation =
+                    TextBoxAnnotation::new(id, editor.page_index, rect, content, style)
+                        .map_err(|error| error.to_string())?;
                 self.create_text_box(editor.document_id, annotation, cx)?;
                 Ok(true)
             }
             PendingTextEditorTarget::ExistingTextBox { id } => {
-                let Some(session) = self.session(editor.document_id, cx).cloned() else {
+                let Some(_session) = self.session(editor.document_id, cx).cloned() else {
                     return Err("document session is closed".into());
                 };
-                session.update(cx, |session, cx| {
-                    if !session
-                        .annotations
-                        .select_id(editor.document_id.value(), &id)
-                    {
-                        return Err("Text Box is no longer available".to_owned());
-                    }
-                    session
-                        .annotations
-                        .replace_selected_text(editor.document_id.value(), content)
-                        .map_err(|error| error.to_string())?;
-                    cx.notify();
-                    Ok::<(), String>(())
-                })?;
+                self.update_native_session_history_with_result(
+                    editor.document_id,
+                    cx,
+                    move |session| {
+                        if !session
+                            .annotations
+                            .select_id(editor.document_id.value(), &id)
+                        {
+                            return Err("Text Box is no longer available".to_owned());
+                        }
+                        session
+                            .annotations
+                            .replace_selected_text(editor.document_id.value(), content)
+                            .map_err(|error| error.to_string())?;
+                        Ok::<(), String>(())
+                    },
+                )?;
                 cx.notify();
                 Ok(true)
             }
             PendingTextEditorTarget::Callout { id } => {
-                let Some(session) = self.session(editor.document_id, cx).cloned() else {
+                let Some(_session) = self.session(editor.document_id, cx).cloned() else {
                     return Err("document session is closed".into());
                 };
-                session.update(cx, |session, cx| {
-                    session
-                        .annotations
-                        .replace_callout_text_in_create_transaction(
-                            editor.document_id.value(),
-                            &id,
-                            content,
-                        )
-                        .map_err(|error| error.to_string())?;
-                    session
-                        .annotations
-                        .clear_selection(editor.document_id.value());
-                    cx.notify();
-                    Ok::<(), String>(())
-                })?;
+                self.update_native_session_history_with_result(
+                    editor.document_id,
+                    cx,
+                    move |session| {
+                        session
+                            .annotations
+                            .replace_callout_text_in_create_transaction(
+                                editor.document_id.value(),
+                                &id,
+                                content,
+                            )
+                            .map_err(|error| error.to_string())?;
+                        session
+                            .annotations
+                            .clear_selection(editor.document_id.value());
+                        Ok::<(), String>(())
+                    },
+                )?;
                 cx.notify();
                 Ok(true)
             }
-            PendingTextEditorTarget::CloudPlus { id } => {
-                let Some(session) = self.session(editor.document_id, cx).cloned() else {
+            PendingTextEditorTarget::NewCloudPlus { id } => {
+                let Some(_session) = self.session(editor.document_id, cx).cloned() else {
                     return Err("document session is closed".into());
                 };
-                session.update(cx, |session, cx| {
-                    session
-                        .annotations
-                        .replace_cloud_plus_text_in_create_transaction(
-                            editor.document_id.value(),
-                            &id,
-                            content,
-                        )
-                        .map_err(|error| error.to_string())?;
-                    session
-                        .annotations
-                        .clear_selection(editor.document_id.value());
-                    cx.notify();
-                    Ok::<(), String>(())
-                })?;
+                let caption_supplement = self.annotation_caption_selection_paths(
+                    editor.document_id,
+                    editor.page_index,
+                    cx,
+                );
+                self.update_native_session_history_with_result(
+                    editor.document_id,
+                    cx,
+                    move |session| {
+                        session
+                            .annotations
+                            .replace_cloud_plus_text_in_create_transaction_with_routing_supplement(
+                                editor.document_id.value(),
+                                &id,
+                                content,
+                                &caption_supplement,
+                            )
+                            .map_err(|error| error.to_string())?;
+                        session
+                            .annotations
+                            .clear_selection(editor.document_id.value());
+                        Ok::<(), String>(())
+                    },
+                )?;
                 cx.notify();
                 Ok(true)
             }
             PendingTextEditorTarget::NewDimension { id } => {
-                let Some(session) = self.session(editor.document_id, cx).cloned() else {
+                let Some(_session) = self.session(editor.document_id, cx).cloned() else {
                     return Err("document session is closed".into());
                 };
-                session.update(cx, |session, cx| {
-                    session
-                        .annotations
-                        .replace_dimension_content_in_create_transaction(
-                            editor.document_id.value(),
-                            &id,
-                            content,
-                        )
-                        .map_err(|error| error.to_string())?;
-                    session
-                        .annotations
-                        .clear_selection(editor.document_id.value());
-                    cx.notify();
-                    Ok::<(), String>(())
-                })?;
+                self.update_native_session_history_with_result(
+                    editor.document_id,
+                    cx,
+                    move |session| {
+                        session
+                            .annotations
+                            .replace_dimension_content_in_create_transaction(
+                                editor.document_id.value(),
+                                &id,
+                                content,
+                            )
+                            .map_err(|error| error.to_string())?;
+                        session
+                            .annotations
+                            .clear_selection(editor.document_id.value());
+                        Ok::<(), String>(())
+                    },
+                )?;
                 cx.notify();
                 Ok(true)
             }
             PendingTextEditorTarget::ExistingDimension { .. } => {
                 unreachable!("existing Dimension captions commit through their authority path")
             }
+            PendingTextEditorTarget::ExistingCloudPlus { .. } => {
+                unreachable!("existing Cloud+ captions commit through their authority path")
+            }
         }
+    }
+
+    fn commit_pending_existing_cloud_plus(
+        &mut self,
+        trim_submit_newline: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, String> {
+        let Some(editor) = self.pending_text_box_editor.as_ref() else {
+            return Ok(false);
+        };
+        let PendingTextEditorTarget::ExistingCloudPlus { id } = &editor.target else {
+            return Ok(false);
+        };
+        let authority = editor
+            .authority
+            .as_ref()
+            .ok_or_else(|| "Cloud+ editor authority is missing".to_owned())?;
+        let document_id = editor.document_id;
+        let page_index = editor.page_index;
+        let id = id.clone();
+        let mut content = editor.input.read(cx).value().to_string();
+        if trim_submit_newline && content.ends_with('\n') {
+            content.pop();
+        }
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return Err("document session is closed".into());
+        };
+        {
+            let session = session.read(cx);
+            if !matches!(session.status, NativeDocumentStatus::Ready) {
+                return Err("document session is not ready".into());
+            }
+            if session.save_status == NativeDocumentSaveStatus::Saving {
+                return Err("document save is already in progress".into());
+            }
+            if session.pending_rotation_generation.is_some() {
+                return Err("page rotation pixels are still pending".into());
+            }
+            let snapshot = session
+                .annotations
+                .snapshot(document_id.value())
+                .ok_or_else(|| "document has no annotation state".to_owned())?;
+            let target = snapshot
+                .cloud_pluses
+                .iter()
+                .find(|cloud_plus| cloud_plus.id == id && cloud_plus.page_index == page_index);
+            validate_existing_text_editor_authority(
+                authority,
+                session.resource_epoch,
+                snapshot.revision,
+                target.map(|target| (target.content(), target.locked)),
+            )?;
+        }
+        if content == authority.baseline_text {
+            self.pending_text_box_editor = None;
+            self.pending_text_box_subscriptions.clear();
+            self.text_box_commit_error = None;
+            cx.notify();
+            return Ok(false);
+        }
+        let caption_supplement =
+            self.annotation_caption_selection_paths(document_id, page_index, cx);
+        self.update_annotation_history(document_id, cx, move |annotations, document_id| {
+            annotations.replace_cloud_plus_text_with_routing_supplement(
+                document_id,
+                &id,
+                content,
+                &caption_supplement,
+            )?;
+            Ok(())
+        })?;
+        self.pending_text_box_editor = None;
+        self.pending_text_box_subscriptions.clear();
+        self.text_box_commit_error = None;
+        cx.notify();
+        Ok(true)
     }
 
     fn commit_pending_existing_text_box(&mut self, cx: &mut Context<Self>) -> Result<bool, String> {
@@ -5532,21 +7956,22 @@ impl DocumentWorkspace {
             )?;
         }
         if content == authority.baseline_text {
+            session.update(cx, |session, cx| {
+                session.annotations.clear_selection(document_id.value());
+                cx.notify();
+            });
             self.pending_text_box_editor = None;
             self.pending_text_box_subscriptions.clear();
             cx.notify();
             return Ok(false);
         }
-        session.update(cx, |session, cx| {
-            if !session.annotations.select_id(document_id.value(), &id) {
-                return Err("Text Box is no longer available".to_owned());
+        self.update_annotation_history(document_id, cx, move |annotations, document_id| {
+            if !annotations.select_id(document_id, &id) {
+                return Err(AnnotationError::NoSelection);
             }
-            session
-                .annotations
-                .replace_selected_text(document_id.value(), content)
-                .map_err(|error| error.to_string())?;
-            cx.notify();
-            Ok::<(), String>(())
+            annotations.replace_selected_text(document_id, content)?;
+            annotations.clear_selection(document_id);
+            Ok(())
         })?;
         self.pending_text_box_editor = None;
         self.pending_text_box_subscriptions.clear();
@@ -5612,16 +8037,12 @@ impl DocumentWorkspace {
             cx.notify();
             return Ok(false);
         }
-        session.update(cx, |session, cx| {
-            if !session.annotations.select_id(document_id.value(), &id) {
-                return Err("Dimension is no longer available".to_owned());
+        self.update_annotation_history(document_id, cx, move |annotations, document_id| {
+            if !annotations.select_id(document_id, &id) {
+                return Err(AnnotationError::NoSelection);
             }
-            session
-                .annotations
-                .replace_selected_dimension_content(document_id.value(), content)
-                .map_err(|error| error.to_string())?;
-            cx.notify();
-            Ok::<(), String>(())
+            annotations.replace_selected_dimension_content(document_id, content)?;
+            Ok(())
         })?;
         self.pending_text_box_editor = None;
         self.pending_text_box_subscriptions.clear();
@@ -5648,18 +8069,11 @@ impl DocumentWorkspace {
         if annotation.page_index as usize >= session.read(cx).page_sizes.len() {
             return Err("text box page is outside the document".into());
         }
-        session.update(cx, |session, cx| {
-            session
-                .annotations
-                .create_text_box(document_id.value(), annotation)
-                .map_err(|error| error.to_string())?;
-            session.annotations.clear_selection(document_id.value());
-            session
-                .annotations
-                .set_tool(AnnotationTool::Select)
-                .map_err(|error| error.to_string())?;
-            cx.notify();
-            Ok::<(), String>(())
+        self.update_annotation_history(document_id, cx, move |annotations, document_id| {
+            annotations.create_text_box(document_id, annotation)?;
+            annotations.clear_selection(document_id);
+            annotations.set_tool(AnnotationTool::Select)?;
+            Ok(())
         })?;
         cx.notify();
         Ok(())
@@ -5744,7 +8158,197 @@ impl DocumentWorkspace {
                     .expect("controlled semantic snap settings are valid");
             });
         }
+        if settings.is_source_enabled(SemanticSnapSource::Content) {
+            let document_ids = self
+                .sessions
+                .iter()
+                .map(|session| session.read(cx).id)
+                .collect::<Vec<_>>();
+            for document_id in document_ids {
+                self.ensure_visible_page_content_snap_geometry(document_id, true, cx);
+            }
+        }
         cx.notify();
+    }
+
+    fn reset_page_content_snap_geometry(session: &mut NativeDocumentSession) {
+        session.page_content_geometry_requests.clear();
+        session.page_content_geometry_lru.clear();
+        session
+            .annotations
+            .clear_semantic_snap_page_content(session.id.value());
+    }
+
+    fn ensure_visible_page_content_snap_geometry(
+        &mut self,
+        document_id: DocumentId,
+        retry_failed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_document_id != Some(document_id) {
+            return;
+        }
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
+        let request = {
+            let state = session.read(cx);
+            if !matches!(state.status, NativeDocumentStatus::Ready)
+                || !state
+                    .annotations
+                    .semantic_snap_settings()
+                    .is_source_enabled(SemanticSnapSource::Content)
+            {
+                return;
+            }
+            let epoch = state.resource_epoch;
+            let Some(plan) = state.viewer.plan_snapshot() else {
+                return;
+            };
+            if state.viewer.viewport_in_motion()
+                || state
+                    .page_content_geometry_requests
+                    .values()
+                    .any(|request| {
+                        matches!(request, PageContentGeometryRequestState::Pending { epoch: pending } if *pending == epoch)
+                    })
+            {
+                return;
+            }
+            let current_page = state.current_page as usize;
+            let page_index = std::iter::once(current_page)
+                .chain(plan.visible_pages.iter().copied())
+                .filter(|page| plan.visible_pages.contains(page))
+                .find(|page| {
+                    let Ok(page) = u32::try_from(*page) else {
+                        return false;
+                    };
+                    !state
+                        .page_content_geometry_requests
+                        .get(&page)
+                        .is_some_and(|request| {
+                            request.epoch() == epoch
+                                && (matches!(
+                                    request,
+                                    PageContentGeometryRequestState::Ready { .. }
+                                ) || !retry_failed
+                                    && matches!(
+                                        request,
+                                        PageContentGeometryRequestState::Failed { .. }
+                                    ))
+                        })
+                });
+            let Some(page_index) = page_index.and_then(|page| u32::try_from(page).ok()) else {
+                return;
+            };
+            if state
+                .page_content_geometry_requests
+                .get(&page_index)
+                .is_some_and(|request| {
+                    request.epoch() == epoch
+                        && !matches!(request, PageContentGeometryRequestState::Failed { .. })
+                })
+            {
+                return;
+            }
+            let Some(resource) = state.resource.clone() else {
+                return;
+            };
+            (page_index, epoch, resource)
+        };
+        let (page_index, epoch, resource) = request;
+        session.update(cx, |state, cx| {
+            state.page_content_geometry_requests.insert(
+                page_index,
+                PageContentGeometryRequestState::Pending { epoch },
+            );
+            cx.notify();
+        });
+        let task = cx
+            .background_executor()
+            .spawn(async move { resource.page_snap_geometry(page_index) });
+        cx.spawn(async move |owner, cx| {
+            let result = task.await;
+            let _ = owner.update(cx, |workspace, cx| {
+                workspace.apply_page_content_snap_geometry_result(
+                    document_id,
+                    page_index,
+                    epoch,
+                    result,
+                    cx,
+                );
+            });
+        })
+        .detach();
+    }
+
+    fn apply_page_content_snap_geometry_result(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        epoch: u64,
+        result: Result<crate::pdf_content_geometry::PageSnapGeometry, String>,
+        cx: &mut Context<Self>,
+    ) -> ApplyDisposition {
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return ApplyDisposition::RejectedClosed;
+        };
+        let current = {
+            let state = session.read(cx);
+            state.resource_epoch == epoch
+                && state
+                    .page_content_geometry_requests
+                    .get(&page_index)
+                    .is_some_and(|request| {
+                        matches!(request, PageContentGeometryRequestState::Pending { epoch: pending } if *pending == epoch)
+                    })
+        };
+        if !current {
+            return ApplyDisposition::RejectedStale;
+        }
+        session.update(cx, |state, cx| {
+            let outcome = match result {
+                Ok(geometry) if geometry.page_index != page_index => Err(format!(
+                    "PDF-content geometry returned page {} for requested page {page_index}",
+                    geometry.page_index
+                )),
+                Ok(geometry) => state
+                    .annotations
+                    .set_semantic_snap_page_content(document_id.value(), geometry)
+                    .map_err(|error| {
+                        format!("PDF-content snap candidates were rejected: {error:?}")
+                    }),
+                Err(error) => Err(error),
+            };
+            let succeeded = outcome.is_ok();
+            let request_state = match outcome {
+                Ok(()) => PageContentGeometryRequestState::Ready { epoch },
+                Err(message) => PageContentGeometryRequestState::Failed { epoch, message },
+            };
+            state
+                .page_content_geometry_requests
+                .insert(page_index, request_state);
+            if succeeded {
+                const MAX_CACHED_CONTENT_SNAP_PAGES: usize = 8;
+                state
+                    .page_content_geometry_lru
+                    .retain(|page| *page != page_index);
+                state.page_content_geometry_lru.push_back(page_index);
+                while state.page_content_geometry_lru.len() > MAX_CACHED_CONTENT_SNAP_PAGES {
+                    if let Some(evicted_page) = state.page_content_geometry_lru.pop_front() {
+                        state.page_content_geometry_requests.remove(&evicted_page);
+                        state.annotations.clear_semantic_snap_page_content_page(
+                            document_id.value(),
+                            evicted_page,
+                        );
+                    }
+                }
+            }
+            cx.notify();
+        });
+        self.ensure_visible_page_content_snap_geometry(document_id, false, cx);
+        cx.notify();
+        ApplyDisposition::Applied
     }
 
     fn set_semantic_snap_annotations_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -5824,6 +8428,11 @@ impl DocumentWorkspace {
     }
 
     pub fn begin_open(&mut self, path: PathBuf, cx: &mut Context<Self>) -> OpenDocumentRequest {
+        // File panels and command-line launches can return an existing PDF through a
+        // filesystem alias (notably `/var` versus `/private/var` on macOS). Keep the
+        // session and worker on the resolved source identity so a later in-place Save
+        // can bind the same guarded file instead of failing only after the user edits.
+        let path = path.canonicalize().unwrap_or(path);
         let document_id = DocumentId::new(self.next_document_id);
         self.next_document_id = self.next_document_id.saturating_add(1);
         let generation = self.next_generation();
@@ -5877,6 +8486,9 @@ impl DocumentWorkspace {
         request: DocumentOpenBatchRequest,
         cx: &mut Context<Self>,
     ) -> DocumentOpenBatchDisposition {
+        if self.startup_recovery_blocks_open() {
+            return DocumentOpenBatchDisposition::DeferredForRecovery;
+        }
         if request.cancelled {
             return DocumentOpenBatchDisposition::Cancelled;
         }
@@ -5895,6 +8507,7 @@ impl DocumentWorkspace {
         let batch_id = self.next_open_batch_id;
         self.next_open_batch_id = self.next_open_batch_id.saturating_add(1);
         self.latest_open_batch_id = Some(batch_id);
+        self.active_document_open_batches = self.active_document_open_batches.saturating_add(1);
         self.document_open_status = DocumentOpenBatchStatus::Opening {
             batch_id,
             origin: request.origin,
@@ -6027,7 +8640,11 @@ impl DocumentWorkspace {
             }
 
             let _ = entity.update(cx, |workspace, cx| {
+                workspace.active_document_open_batches =
+                    workspace.active_document_open_batches.saturating_sub(1);
                 if workspace.latest_open_batch_id != Some(batch_id) {
+                    workspace.document_open_failures.extend(failures);
+                    cx.notify();
                     return;
                 }
                 let intended_path = workspace
@@ -6062,7 +8679,7 @@ impl DocumentWorkspace {
                 } else {
                     "Focused existing document".into()
                 };
-                workspace.document_open_failures = failures;
+                workspace.document_open_failures.extend(failures);
                 workspace.document_open_status = DocumentOpenBatchStatus::Completed {
                     batch_id,
                     opened,
@@ -6100,6 +8717,36 @@ impl DocumentWorkspace {
         source: OwnedGeneratedDocument,
         cx: &mut Context<Self>,
     ) -> Result<DocumentId, String> {
+        let open_request = self.begin_owned_generated_document(store, source, cx);
+        let document_id = open_request.document_id;
+        let Some(opener) = self.opener.clone() else {
+            let _ = self.apply_open_result(
+                &open_request,
+                Err("no document opener is configured".into()),
+                cx,
+            );
+            return Ok(document_id);
+        };
+        let task = cx.background_executor().spawn(async move {
+            let result = opener.open(&open_request);
+            (open_request, result)
+        });
+        cx.spawn(async move |entity, cx| {
+            let (request, result) = task.await;
+            let _ = entity.update(cx, |workspace, cx| {
+                workspace.apply_open_result(&request, result, cx);
+            });
+        })
+        .detach();
+        Ok(document_id)
+    }
+
+    fn begin_owned_generated_document(
+        &mut self,
+        store: GeneratedDocumentStore,
+        source: OwnedGeneratedDocument,
+        cx: &mut Context<Self>,
+    ) -> OpenDocumentRequest {
         let document_id = DocumentId::new(self.next_document_id);
         self.next_document_id = self.next_document_id.saturating_add(1);
         let generation = self.next_generation();
@@ -6123,26 +8770,7 @@ impl DocumentWorkspace {
             generation,
             path,
         };
-        let Some(opener) = self.opener.clone() else {
-            let _ = self.apply_open_result(
-                &open_request,
-                Err("no document opener is configured".into()),
-                cx,
-            );
-            return Ok(document_id);
-        };
-        let task = cx.background_executor().spawn(async move {
-            let result = opener.open(&open_request);
-            (open_request, result)
-        });
-        cx.spawn(async move |entity, cx| {
-            let (request, result) = task.await;
-            let _ = entity.update(cx, |workspace, cx| {
-                workspace.apply_open_result(&request, result, cx);
-            });
-        })
-        .detach();
-        Ok(document_id)
+        open_request
     }
 
     fn prompt_to_open_documents(&mut self, cx: &mut Context<Self>) {
@@ -6226,7 +8854,7 @@ impl DocumentWorkspace {
     fn retry_document_save_failure(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
         let operation = self
             .document_save_failure(document_id, cx)
-            .map(|failure| failure.operation);
+            .and_then(|failure| failure.can_retry().then_some(failure.operation));
         match operation {
             Some(DocumentSaveFailureOperation::InPlace) => {
                 if self.document_requires_save_as(document_id, cx) {
@@ -6478,8 +9106,70 @@ impl DocumentWorkspace {
             self.apply_save_result(&request, Err("no document saver is configured".into()), cx);
             return Err("no document saver is configured".into());
         };
+        let recovery_source = if request.is_in_place() {
+            None
+        } else {
+            let preparation = self
+                .session(request.document_id, cx)
+                .expect("a dispatched save request retains its document session")
+                .read(cx)
+                .recovery_preparation()
+                .clone();
+            match preparation {
+                DocumentRecoveryPreparation::Ready { authority, .. } => {
+                    let Some(store) = self.document_recovery_store.clone() else {
+                        let error = "the document recovery store is unavailable for safe Save As"
+                            .to_owned();
+                        self.apply_save_result(&request, Err(error.clone()), cx);
+                        return Err(error);
+                    };
+                    Some((store, authority))
+                }
+                DocumentRecoveryPreparation::Unbound => None,
+                preparation => {
+                    let error = preparation
+                        .edit_guard()
+                        .expect_err("non-ready recovery state must block Save As");
+                    self.apply_save_result(&request, Err(error.clone()), cx);
+                    return Err(error);
+                }
+            }
+        };
         let task = cx.background_executor().spawn(async move {
-            let result = saver.save(&request);
+            let result = if let Some((store, expected_authority)) = recovery_source {
+                match store.load(expected_authority.document_id()) {
+                    Ok(Some(recovered)) if recovered.authority == expected_authority => {
+                        if recovered.source_path != request.source_path {
+                            Err("the recovery base belongs to a different source PDF".into())
+                        } else if request.expected_source_sha256 != Some(recovered.source_sha256) {
+                            Err(
+                                "the recovery base source digest does not match the open document"
+                                    .into(),
+                            )
+                        } else if recovered.current_revision != request.annotation_revision
+                            || expected_authority.current_revision() != request.annotation_revision
+                        {
+                            Err(
+                                "the recovery base does not cover the saved annotation revision"
+                                    .into(),
+                            )
+                        } else {
+                            saver.save_from_recovery_base(&request, &recovered.base_pdf)
+                        }
+                    }
+                    Ok(Some(_)) => {
+                        Err("document recovery changed before Save As could begin".into())
+                    }
+                    Ok(None) => {
+                        Err("document recovery disappeared before Save As could begin".into())
+                    }
+                    Err(error) => Err(format!(
+                        "could not load the exact recovery base for Save As: {error}"
+                    )),
+                }
+            } else {
+                saver.save(&request)
+            };
             (request, result)
         });
         cx.spawn(async move |entity, cx| {
@@ -6510,6 +9200,16 @@ impl DocumentWorkspace {
         result: Result<OpenedNativeDocument, String>,
         cx: &mut Context<Self>,
     ) -> ApplyDisposition {
+        self.apply_open_result_with_startup_recovery(request, result, None, cx)
+    }
+
+    fn apply_open_result_with_startup_recovery(
+        &mut self,
+        request: &OpenDocumentRequest,
+        result: Result<OpenedNativeDocument, String>,
+        startup_recovery: Option<RecoveredDocument>,
+        cx: &mut Context<Self>,
+    ) -> ApplyDisposition {
         if self.pending_template_document_id == Some(request.document_id) {
             self.finish_template_creation(cx);
         }
@@ -6521,6 +9221,13 @@ impl DocumentWorkspace {
                     cx,
                 );
             }
+            if let Some(recovered) = startup_recovery {
+                self.fail_startup_recovery(
+                    recovered.id,
+                    "the recovery document closed before it finished opening".into(),
+                    cx,
+                );
+            }
             return ApplyDisposition::RejectedClosed;
         };
         let is_current = session.read(cx).generation == request.generation;
@@ -6528,11 +9235,45 @@ impl DocumentWorkspace {
             if let Ok(opened) = result {
                 self.record_detached_release("stale open result", opened.resource.close(), cx);
             }
+            if let Some(recovered) = startup_recovery {
+                self.fail_startup_recovery(
+                    recovered.id,
+                    "the recovery open request was superseded before it finished".into(),
+                    cx,
+                );
+            }
             return ApplyDisposition::RejectedStale;
         }
         match result {
             Ok(opened) => {
+                if let Some(recovered) = startup_recovery.as_ref()
+                    && opened.source_sha256 != Some(recovered.source_sha256)
+                {
+                    self.record_detached_release(
+                        "changed-source startup recovery",
+                        opened.resource.close(),
+                        cx,
+                    );
+                    session.update(cx, |session, cx| {
+                        session.status = NativeDocumentStatus::Failed(
+                            "The PDF changed after this recovery checkpoint. Recover the unsaved changes as a new PDF instead."
+                                .into(),
+                        );
+                        cx.notify();
+                    });
+                    if let Some(item) = self
+                        .startup_recovery_items
+                        .iter_mut()
+                        .find(|item| item.id == recovered.id)
+                    {
+                        item.availability = StartupRecoveryAvailability::GeneratedCopyRequired;
+                    }
+                    self.startup_recovery_operation = None;
+                    cx.notify();
+                    return ApplyDisposition::Applied;
+                }
                 let source_sha256 = opened.source_sha256;
+                let retained_annotation_obstacles = opened.retained_annotation_obstacles.clone();
                 let page_rotations = opened.page_rotations.clone();
                 let page_coordinate_spaces = opened.page_coordinate_spaces.clone();
                 self.next_annotation_sequence = self
@@ -6573,6 +9314,28 @@ impl DocumentWorkspace {
                                     .collect(),
                             )?;
                     }
+                    if let Some(recovered) = startup_recovery.as_ref() {
+                        session.annotations.restore_document_recovery_timeline(
+                            request.document_id.value(),
+                            &recovered.timeline,
+                        )?;
+                        let snapshot = session
+                            .annotations
+                            .snapshot(request.document_id.value())
+                            .ok_or(AnnotationError::NoSelection)?;
+                        if snapshot.revision != recovered.current_revision
+                            || snapshot.saved_revision != recovered.saved_revision
+                        {
+                            return Err(AnnotationError::InvalidGeometry(
+                                "recovery timeline revisions do not match the authoritative checkpoint"
+                                    .into(),
+                            ));
+                        }
+                    }
+                    session.annotations.set_retained_annotation_obstacles(
+                        request.document_id.value(),
+                        retained_annotation_obstacles,
+                    );
                     let removed = session
                         .sync_image_assets()
                         .map_err(AnnotationError::InvalidGeometry)?;
@@ -6588,9 +9351,17 @@ impl DocumentWorkspace {
                         session.status = NativeDocumentStatus::Failed(error.to_string());
                         cx.notify();
                     });
+                    if let Some(recovered) = startup_recovery.as_ref() {
+                        self.fail_startup_recovery(
+                            recovered.id,
+                            format!("the recovery timeline could not be restored: {error}"),
+                            cx,
+                        );
+                    }
                     cx.notify();
                     return ApplyDisposition::Applied;
                 }
+                let page_grid_definition = opened.page_grid_definition.clone();
                 let current_base_raster = opened.current_page;
                 let page_image = match current_base_raster.clone().into_render_image() {
                     Ok(image) => image,
@@ -6604,6 +9375,13 @@ impl DocumentWorkspace {
                             session.status = NativeDocumentStatus::Failed(error);
                             cx.notify();
                         });
+                        if let Some(recovered) = startup_recovery.as_ref() {
+                            self.fail_startup_recovery(
+                                recovered.id,
+                                "the recovered PDF preview could not be prepared".into(),
+                                cx,
+                            );
+                        }
                         cx.notify();
                         return ApplyDisposition::Applied;
                     }
@@ -6637,6 +9415,11 @@ impl DocumentWorkspace {
                             f64::from(width),
                             f64::from(height),
                         );
+                        session.annotations.set_semantic_snap_page_grid(
+                            session.id.value(),
+                            page_index as u32,
+                            page_grid_definition.clone(),
+                        );
                     }
                     session.sync_rotation_geometry();
                     session.presentation_error = None;
@@ -6647,6 +9430,7 @@ impl DocumentWorkspace {
                     session.thumbnails = thumbnails;
                     session.resource = Some(opened.resource);
                     session.resource_epoch = session.resource_epoch.saturating_add(1);
+                    Self::reset_page_content_snap_geometry(session);
                     session.source_sha256 = source_sha256;
                     session.status = NativeDocumentStatus::Ready;
                     if let Err(error) = session.rebuild_stable_highlight_presentations() {
@@ -6655,17 +9439,383 @@ impl DocumentWorkspace {
                     cx.notify();
                 });
                 self.active_document_id = Some(request.document_id);
+                if let Some(recovered) = startup_recovery {
+                    session.update(cx, |session, cx| {
+                        session.recovery_preparation_generation =
+                            session.recovery_preparation_generation.saturating_add(1);
+                        session.recovery_preparation = DocumentRecoveryPreparation::Ready {
+                            generation: session.recovery_preparation_generation,
+                            authority: recovered.authority,
+                            source_kind: recovered.source_kind,
+                        };
+                        cx.notify();
+                    });
+                    if let Some(snapshot) = session
+                        .read(cx)
+                        .annotations
+                        .snapshot(request.document_id.value())
+                    {
+                        self.next_annotation_sequence =
+                            self.next_annotation_sequence
+                                .max(next_workspace_markup_sequence(
+                                    snapshot.annotation_order.iter(),
+                                ));
+                    }
+                    self.startup_recovery_items
+                        .retain(|item| item.id != recovered.id);
+                    self.startup_recovery_operation = None;
+                    if self.startup_recovery_items.is_empty() {
+                        self.resume_deferred_startup_open(cx);
+                    }
+                } else {
+                    self.begin_document_recovery_preparation(request.document_id, cx);
+                }
             }
             Err(error) => {
+                let recovery_error = error.clone();
                 session.update(cx, |session, cx| {
                     session.status = NativeDocumentStatus::Failed(error);
                     cx.notify();
                 });
+                if let Some(recovered) = startup_recovery {
+                    self.fail_startup_recovery(
+                        recovered.id,
+                        format!("the source PDF could not be opened: {recovery_error}"),
+                        cx,
+                    );
+                }
             }
         }
+        self.ensure_visible_page_content_snap_geometry(request.document_id, true, cx);
         self.sync_active_viewer_toolbar(cx);
         cx.notify();
         ApplyDisposition::Applied
+    }
+
+    fn begin_document_recovery_preparation(
+        &mut self,
+        document_id: DocumentId,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
+        if !matches!(session.read(cx).status, NativeDocumentStatus::Ready) {
+            return;
+        }
+        if let Some(message) = self.document_recovery_store_error.clone() {
+            session.update(cx, |session, cx| {
+                session.recovery_preparation_generation =
+                    session.recovery_preparation_generation.saturating_add(1);
+                let generation = session.recovery_preparation_generation;
+                let source_kind = if session.temporary_source.is_some() {
+                    RecoverySourceKind::Generated
+                } else {
+                    RecoverySourceKind::Opened
+                };
+                session.recovery_preparation = DocumentRecoveryPreparation::Failed {
+                    generation,
+                    source_kind,
+                    message,
+                };
+                cx.notify();
+            });
+            return;
+        }
+        let Some(store) = self.document_recovery_store.clone() else {
+            return;
+        };
+        let preparation = session.update(cx, |session, cx| {
+            let source_kind = match (session.temporary_source.is_some(), session.save_as_required) {
+                (false, false) => RecoverySourceKind::Opened,
+                (true, true) => RecoverySourceKind::Generated,
+                _ => {
+                    session.recovery_preparation_generation =
+                        session.recovery_preparation_generation.saturating_add(1);
+                    let generation = session.recovery_preparation_generation;
+                    session.recovery_preparation = DocumentRecoveryPreparation::Failed {
+                        generation,
+                        source_kind: if session.save_as_required {
+                            RecoverySourceKind::Generated
+                        } else {
+                            RecoverySourceKind::Opened
+                        },
+                        message: "document source and Save-As state are inconsistent".into(),
+                    };
+                    cx.notify();
+                    return None;
+                }
+            };
+            let Some(source_sha256) = session.source_sha256 else {
+                session.recovery_preparation_generation =
+                    session.recovery_preparation_generation.saturating_add(1);
+                let generation = session.recovery_preparation_generation;
+                session.recovery_preparation = DocumentRecoveryPreparation::Failed {
+                    generation,
+                    source_kind,
+                    message: "the validated source digest is unavailable".into(),
+                };
+                cx.notify();
+                return None;
+            };
+            let snapshot = match session.annotations.snapshot(document_id.value()) {
+                Some(snapshot) => snapshot,
+                None => {
+                    session.recovery_preparation_generation =
+                        session.recovery_preparation_generation.saturating_add(1);
+                    let generation = session.recovery_preparation_generation;
+                    session.recovery_preparation = DocumentRecoveryPreparation::Failed {
+                        generation,
+                        source_kind,
+                        message: "the annotation timeline is unavailable".into(),
+                    };
+                    cx.notify();
+                    return None;
+                }
+            };
+            let timeline = match session
+                .annotations
+                .encode_document_recovery_timeline(document_id.value())
+            {
+                Ok(timeline) => timeline,
+                Err(error) => {
+                    session.recovery_preparation_generation =
+                        session.recovery_preparation_generation.saturating_add(1);
+                    let generation = session.recovery_preparation_generation;
+                    session.recovery_preparation = DocumentRecoveryPreparation::Failed {
+                        generation,
+                        source_kind,
+                        message: error.to_string(),
+                    };
+                    cx.notify();
+                    return None;
+                }
+            };
+            session.recovery_preparation_generation =
+                session.recovery_preparation_generation.saturating_add(1);
+            let generation = session.recovery_preparation_generation;
+            session.recovery_preparation = DocumentRecoveryPreparation::Pending {
+                generation,
+                source_kind,
+            };
+            cx.notify();
+            Some((
+                generation,
+                session.path.clone(),
+                source_kind,
+                source_sha256,
+                timeline,
+                snapshot.revision,
+                snapshot.saved_revision,
+                session.save_as_required,
+            ))
+        });
+        let Some((
+            generation,
+            source_path,
+            source_kind,
+            source_sha256,
+            timeline,
+            current_revision,
+            saved_revision,
+            requires_save_as,
+        )) = preparation
+        else {
+            return;
+        };
+        let background = cx.background_executor().clone();
+        let cleanup_store = store.clone();
+        let task = background.spawn(async move {
+            let publication = StagedRecoveryPublication {
+                source_path: &source_path,
+                source_kind,
+                timeline: &timeline,
+                current_revision,
+                saved_revision,
+                requires_save_as,
+            };
+            stage_recovery_authority_reconciled(&store, source_sha256, &publication)
+        });
+        cx.spawn(async move |workspace, cx| {
+            let result = task.await;
+            let published_authority = result.as_ref().ok().map(|outcome| match outcome {
+                ReconciledRecoveryAuthority::Durable(authority)
+                | ReconciledRecoveryAuthority::PublishedButUnconfirmed { authority, .. } => {
+                    *authority
+                }
+                ReconciledRecoveryAuthority::Conflict { .. } => {
+                    unreachable!("initial recovery publication cannot conflict")
+                }
+            });
+            let cleanup_id = match workspace.update(cx, |workspace, cx| {
+                let Some(session) = workspace.session(document_id, cx).cloned() else {
+                    return apply_recovery_preparation_result(None, generation, result);
+                };
+                session.update(cx, |session, cx| {
+                    let cleanup_id = apply_recovery_preparation_result(
+                        Some(&mut session.recovery_preparation),
+                        generation,
+                        result,
+                    );
+                    if cleanup_id.is_none() {
+                        cx.notify();
+                    }
+                    cleanup_id
+                })
+            }) {
+                Ok(cleanup_id) => cleanup_id,
+                Err(_) => published_authority,
+            };
+            if let Some(cleanup_authority) = cleanup_id {
+                background
+                    .spawn(async move {
+                        let _ = cleanup_store.clear(cleanup_authority.document_id());
+                    })
+                    .detach();
+            }
+        })
+        .detach();
+    }
+
+    pub fn retry_document_recovery_preparation(
+        &mut self,
+        document_id: DocumentId,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let Some(session) = self.session(document_id, cx) else {
+            return Err("The document is no longer open".into());
+        };
+        let preparation = session.read(cx).recovery_preparation().clone();
+        match preparation {
+            DocumentRecoveryPreparation::Failed { .. } => {
+                self.begin_document_recovery_preparation(document_id, cx);
+                return Ok(());
+            }
+            DocumentRecoveryPreparation::Pending { .. } => {
+                return Err("Crash recovery is already preparing for this document".into());
+            }
+            DocumentRecoveryPreparation::Ready { .. } => return Ok(()),
+            DocumentRecoveryPreparation::Unbound => {
+                return Err("Crash recovery is not configured for this document".into());
+            }
+            DocumentRecoveryPreparation::Ambiguous {
+                generation,
+                authority,
+                ..
+            } => {
+                if !self.recovery_confirmation_pending.insert(document_id) {
+                    return Err("Crash recovery confirmation is already in progress".into());
+                }
+                let Some(store) = self.document_recovery_store.clone() else {
+                    self.recovery_confirmation_pending.remove(&document_id);
+                    return Err("The document recovery store is unavailable".into());
+                };
+                let background = cx.background_executor().clone();
+                let task = background.spawn(async move {
+                    store
+                        .confirm_authority_durable(&authority)
+                        .map_err(|error| error.to_string())
+                });
+                cx.spawn(async move |workspace, cx| {
+                    let result = task.await;
+                    let _ = workspace.update(cx, |workspace, cx| {
+                        workspace.recovery_confirmation_pending.remove(&document_id);
+                        let Some(session) = workspace.session(document_id, cx).cloned() else {
+                            return;
+                        };
+                        session.update(cx, |session, cx| {
+                            if apply_recovery_confirmation_result(
+                                &mut session.recovery_preparation,
+                                generation,
+                                authority,
+                                result,
+                            ) {
+                                cx.notify();
+                            }
+                        });
+                        cx.notify();
+                    });
+                })
+                .detach();
+                return Ok(());
+            }
+            DocumentRecoveryPreparation::RebaseFailed {
+                generation,
+                authority,
+                target_path,
+                target_sha256,
+                saved_revision,
+                ..
+            } => {
+                let Some(store) = self.document_recovery_store.clone() else {
+                    return Err("The document recovery store is unavailable".into());
+                };
+                let retry = session.read(cx);
+                let snapshot = retry
+                    .annotations
+                    .snapshot(document_id.value())
+                    .ok_or_else(|| "The saved annotation timeline is unavailable".to_owned())?;
+                if snapshot.revision != saved_revision
+                    || snapshot.saved_revision != saved_revision
+                    || retry.path != target_path
+                    || retry.source_sha256 != Some(target_sha256)
+                {
+                    return Err(
+                        "The saved document changed before crash recovery could be repaired".into(),
+                    );
+                }
+                let timeline = retry
+                    .annotations
+                    .encode_document_recovery_timeline(document_id.value())
+                    .map_err(|error| error.to_string())?;
+                if !self.recovery_confirmation_pending.insert(document_id) {
+                    return Err("Crash recovery repair is already in progress".into());
+                }
+                let task_path = target_path.clone();
+                let background = cx.background_executor().clone();
+                let task = background.spawn(async move {
+                    let publication = StagedRecoveryPublication {
+                        source_path: &task_path,
+                        source_kind: RecoverySourceKind::Opened,
+                        timeline: &timeline,
+                        current_revision: saved_revision,
+                        saved_revision,
+                        requires_save_as: false,
+                    };
+                    rebase_recovery_after_save_reconciled(
+                        &store,
+                        &authority,
+                        target_sha256,
+                        &publication,
+                    )
+                });
+                cx.spawn(async move |workspace, cx| {
+                    let result = task.await;
+                    let _ = workspace.update(cx, |workspace, cx| {
+                        workspace.recovery_confirmation_pending.remove(&document_id);
+                        let Some(session) = workspace.session(document_id, cx).cloned() else {
+                            return;
+                        };
+                        session.update(cx, |session, cx| {
+                            if apply_saved_recovery_rebase_retry_result(
+                                &mut session.recovery_preparation,
+                                generation,
+                                authority,
+                                &target_path,
+                                target_sha256,
+                                saved_revision,
+                                result,
+                            ) {
+                                cx.notify();
+                            }
+                        });
+                        cx.notify();
+                    });
+                })
+                .detach();
+                return Ok(());
+            }
+        }
     }
 
     fn apply_restart_view(
@@ -6738,6 +9888,7 @@ impl DocumentWorkspace {
             session.viewer.set_scroll(scroll_x, scroll_y);
             cx.notify();
         });
+        self.ensure_visible_page_content_snap_geometry(document_id, true, cx);
         cx.notify();
     }
 
@@ -7581,7 +10732,10 @@ impl DocumentWorkspace {
             // Resolve explicit navigation against this frame's page geometry
             // before the continuous viewport chooses its current page.
             if let Some(target) = session.pending_navigation_scroll
-                && let Some(layout) = plan.page_layouts.iter().find(|layout| layout.page == target as usize)
+                && let Some(layout) = plan
+                    .page_layouts
+                    .iter()
+                    .find(|layout| layout.page == target as usize)
             {
                 scroll_y = layout.logical_rect.y.max(0.);
                 if cad_layout.is_some() {
@@ -7591,9 +10745,16 @@ impl DocumentWorkspace {
                 session.viewer.set_scroll(scroll_x, scroll_y);
                 session.pending_navigation_scroll = None;
                 plan = session.viewer.plan_at(
-                    document_id.value(), &session.page_sizes, &rotations,
-                    target as usize, viewport_width, viewport_height,
-                    scroll_x, scroll_y, device_scale, now,
+                    document_id.value(),
+                    &session.page_sizes,
+                    &rotations,
+                    target as usize,
+                    viewport_width,
+                    viewport_height,
+                    scroll_x,
+                    scroll_y,
+                    device_scale,
+                    now,
                 )?;
             }
             if session.view_state.mode() == PageViewMode::Continuous
@@ -7628,9 +10789,14 @@ impl DocumentWorkspace {
             Ok::<(), String>(())
         })?;
         let visible_page = session.read(cx).current_page;
-        if self.pages_panel_open && self.active_document_id == Some(document_id) && visible_page != previous_page {
-            self.thumbnail_scroll.scroll_to_item(visible_page as usize, ScrollStrategy::Nearest);
+        if self.pages_panel_open
+            && self.active_document_id == Some(document_id)
+            && visible_page != previous_page
+        {
+            self.thumbnail_scroll
+                .scroll_to_item(visible_page as usize, ScrollStrategy::Nearest);
         }
+        self.ensure_visible_page_content_snap_geometry(document_id, true, cx);
         self.dispatch_viewer_jobs(document_id, cx);
         self.arm_viewer_quality_timer(document_id, cx);
         // Planning can resolve a new fit zoom after viewport observation.
@@ -7707,11 +10873,12 @@ impl DocumentWorkspace {
         let Some(session) = self.session(document_id, cx).cloned() else {
             return;
         };
-        let (resource, page_sizes, coordinate_spaces, pens) = {
+        let Some(resource) = session.read(cx).resource.clone() else {
+            return;
+        };
+        #[cfg(not(target_os = "macos"))]
+        let (page_sizes, coordinate_spaces, pens) = {
             let session = session.read(cx);
-            let Some(resource) = session.resource.clone() else {
-                return;
-            };
             let pens = session
                 .annotations
                 .snapshot(document_id.value())
@@ -7723,40 +10890,45 @@ impl DocumentWorkspace {
             let Some(coordinate_spaces) = coordinate_spaces else {
                 return;
             };
-            (
-                resource,
-                session.page_sizes.clone(),
-                coordinate_spaces,
-                pens,
-            )
+            (session.page_sizes.clone(), coordinate_spaces, pens)
         };
         let jobs = session.update(cx, |session, _| session.viewer.claim_jobs());
         for job in jobs {
             let resource = resource.clone();
+            #[cfg(not(target_os = "macos"))]
             let page_sizes = page_sizes.clone();
+            #[cfg(not(target_os = "macos"))]
             let coordinate_spaces = coordinate_spaces.clone();
+            #[cfg(not(target_os = "macos"))]
             let pens = pens.clone();
             let request = job.raster;
             let task = cx.background_executor().spawn(async move {
-                let mut raster = resource.render_tile(request)?;
-                let page_size = *page_sizes
-                    .get(request.page)
-                    .ok_or_else(|| "viewer tile page geometry is unavailable".to_owned())?;
-                let zoom = f64::from(request.zoom_tenths) / 1_000.;
-                let device_scale = f64::from(request.device_scale_millis) / 1_000.;
-                let scale = zoom * device_scale;
-                let highlight_pixels = raster.precompose_highlights(
-                    u32::try_from(request.page)
-                        .map_err(|_| "viewer tile page index overflowed".to_owned())?,
-                    coordinate_spaces[request.page],
-                    request.crop.x as f64,
-                    request.crop.y as f64,
-                    (
-                        f64::from(page_size.0) * scale,
-                        f64::from(page_size.1) * scale,
-                    ),
-                    &pens,
-                )?;
+                let raster = resource.render_tile(request)?;
+                #[cfg(target_os = "macos")]
+                let highlight_pixels = 0;
+                #[cfg(not(target_os = "macos"))]
+                let (raster, highlight_pixels) = {
+                    let mut raster = raster;
+                    let page_size = *page_sizes
+                        .get(request.page)
+                        .ok_or_else(|| "viewer tile page geometry is unavailable".to_owned())?;
+                    let zoom = f64::from(request.zoom_tenths) / 1_000.;
+                    let device_scale = f64::from(request.device_scale_millis) / 1_000.;
+                    let scale = zoom * device_scale;
+                    let highlight_pixels = raster.precompose_highlights(
+                        u32::try_from(request.page)
+                            .map_err(|_| "viewer tile page index overflowed".to_owned())?,
+                        coordinate_spaces[request.page],
+                        request.crop.x as f64,
+                        request.crop.y as f64,
+                        (
+                            f64::from(page_size.0) * scale,
+                            f64::from(page_size.1) * scale,
+                        ),
+                        &pens,
+                    )?;
+                    (raster, highlight_pixels)
+                };
                 let bytes = raster.pixels_bgra().len();
                 let image = raster.into_render_image()?;
                 Ok::<_, String>((image, bytes, highlight_pixels))
@@ -7806,6 +10978,7 @@ impl DocumentWorkspace {
                     }
                 });
                 workspace.dispatch_viewer_jobs(document_id, cx);
+                workspace.ensure_visible_page_content_snap_geometry(document_id, false, cx);
                 workspace.arm_viewer_quality_timer(document_id, cx);
                 cx.notify();
             });
@@ -7903,31 +11076,38 @@ impl DocumentWorkspace {
                     cache_hits += 1;
                     continue;
                 }
-                let mut raster = resource.render_tile(*request)?;
-                let page_size = session.page_sizes[request.page];
-                let coordinate_space = session
-                    .annotation_page_coordinate_space(request.page as u32)
-                    .ok_or_else(|| "viewer tile coordinate space is unavailable".to_owned())?;
-                let scale = f64::from(request.zoom_tenths) / 1_000.
-                    * f64::from(request.device_scale_millis)
-                    / 1_000.;
-                let pens = session
-                    .annotations
-                    .snapshot(document_id.value())
-                    .map(|snapshot| snapshot.pens)
-                    .unwrap_or_default();
-                let highlight_pixels = raster.precompose_highlights(
-                    u32::try_from(request.page)
-                        .map_err(|_| "viewer tile page index overflowed".to_owned())?,
-                    coordinate_space,
-                    request.crop.x as f64,
-                    request.crop.y as f64,
-                    (
-                        f64::from(page_size.0) * scale,
-                        f64::from(page_size.1) * scale,
-                    ),
-                    &pens,
-                )?;
+                let raster = resource.render_tile(*request)?;
+                #[cfg(target_os = "macos")]
+                let highlight_pixels = 0;
+                #[cfg(not(target_os = "macos"))]
+                let (raster, highlight_pixels) = {
+                    let mut raster = raster;
+                    let page_size = session.page_sizes[request.page];
+                    let coordinate_space = session
+                        .annotation_page_coordinate_space(request.page as u32)
+                        .ok_or_else(|| "viewer tile coordinate space is unavailable".to_owned())?;
+                    let scale = f64::from(request.zoom_tenths) / 1_000.
+                        * f64::from(request.device_scale_millis)
+                        / 1_000.;
+                    let pens = session
+                        .annotations
+                        .snapshot(document_id.value())
+                        .map(|snapshot| snapshot.pens)
+                        .unwrap_or_default();
+                    let highlight_pixels = raster.precompose_highlights(
+                        u32::try_from(request.page)
+                            .map_err(|_| "viewer tile page index overflowed".to_owned())?,
+                        coordinate_space,
+                        request.crop.x as f64,
+                        request.crop.y as f64,
+                        (
+                            f64::from(page_size.0) * scale,
+                            f64::from(page_size.1) * scale,
+                        ),
+                        &pens,
+                    )?;
+                    (raster, highlight_pixels)
+                };
                 if raster.has_spatial_variation() {
                     non_uniform_tiles += 1;
                 }
@@ -8019,17 +11199,28 @@ impl DocumentWorkspace {
         if session.read(cx).save_status == NativeDocumentSaveStatus::Saving {
             return Err("document save is in progress".into());
         }
+        session.read(cx).recovery_preparation.edit_guard()?;
         let source_rotation = *session
             .read(cx)
             .source_page_rotations
             .get(page_index as usize)
             .ok_or_else(|| "page rotation target is outside the document".to_owned())?;
         let generation = self.next_generation();
+        let recovery_store = self.document_recovery_store.clone();
         let target_rotation = session.update(cx, |session, cx| {
-            let rotation = session
-                .annotations
-                .rotate_document_page(document_id.value(), page_index, direction)
-                .map_err(|error| error.to_string())?;
+            let rotation = commit_recovery_guarded_annotation_change(
+                session,
+                recovery_store.as_ref(),
+                document_id,
+                false,
+                cx,
+                |session| {
+                    session
+                        .annotations
+                        .rotate_document_page(document_id.value(), page_index, direction)
+                        .map_err(|error| error.to_string())
+                },
+            )?;
             session.generation = generation;
             session.pending_rotation_generation = Some(generation);
             session.requested_page = page_index;
@@ -8134,7 +11325,10 @@ impl DocumentWorkspace {
             let (request, result) = task.await;
             let _ = entity.update(cx, |workspace, cx| {
                 let succeeded = result.is_ok();
-                if workspace.apply_page_rotation_result(&request, result, cx) == ApplyDisposition::Applied && succeeded {
+                if workspace.apply_page_rotation_result(&request, result, cx)
+                    == ApplyDisposition::Applied
+                    && succeeded
+                {
                     workspace.activate_thumbnail_page(request.document_id, request.page_index, cx);
                 }
             });
@@ -8163,6 +11357,7 @@ impl DocumentWorkspace {
         if !is_current {
             return ApplyDisposition::RejectedStale;
         }
+        let recovery_store = self.document_recovery_store.clone();
         session.update(cx, |session, cx| {
             session.pending_rotation_generation = None;
             match result {
@@ -8184,42 +11379,39 @@ impl DocumentWorkspace {
                             }
                             session.presentation_error = None;
                             if let Err(error) = session.rebuild_stable_highlight_presentations() {
-                                if session
-                                    .annotations
-                                    .undo(request.document_id.value())
-                                    .is_ok()
-                                {
-                                    session.sync_rotation_geometry();
-                                    let _ = session.refresh_rotation_presentations();
-                                }
-                                session.presentation_error = Some(error);
+                                session.presentation_error = Some(rollback_failed_page_rotation(
+                                    session,
+                                    recovery_store.as_ref(),
+                                    request.document_id,
+                                    error,
+                                    cx,
+                                ));
                             }
                         }
                         (Err(error), _) | (_, Err(error)) => {
-                            if session
-                                .annotations
-                                .undo(request.document_id.value())
-                                .is_ok()
-                            {
-                                session.sync_rotation_geometry();
-                            }
-                            session.presentation_error = Some(error);
+                            session.presentation_error = Some(rollback_failed_page_rotation(
+                                session,
+                                recovery_store.as_ref(),
+                                request.document_id,
+                                error,
+                                cx,
+                            ));
                         }
                     }
                 }
                 Err(error) => {
-                    if session
-                        .annotations
-                        .undo(request.document_id.value())
-                        .is_ok()
-                    {
-                        session.sync_rotation_geometry();
-                    }
-                    session.presentation_error = Some(error);
+                    session.presentation_error = Some(rollback_failed_page_rotation(
+                        session,
+                        recovery_store.as_ref(),
+                        request.document_id,
+                        error,
+                        cx,
+                    ));
                 }
             }
             cx.notify();
         });
+        self.ensure_visible_page_content_snap_geometry(request.document_id, true, cx);
         cx.notify();
         ApplyDisposition::Applied
     }
@@ -8272,31 +11464,62 @@ impl DocumentWorkspace {
         retry: bool,
         cx: &mut Context<Self>,
     ) {
-        let Some(session) = self.session(document_id, cx).cloned() else { return; };
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
         let request = {
             let state = session.read(cx);
             if state.pending_rotation_generation.is_some()
-                || state.thumbnails.iter().any(|thumbnail| thumbnail.page_index == page_index)
-            { return; }
-            let Some(source_rotation) = state.source_page_rotations.get(page_index as usize).copied() else { return; };
-            let rotation = state.annotations.document_page_rotation(document_id.value(), page_index).unwrap_or(source_rotation);
+                || state
+                    .thumbnails
+                    .iter()
+                    .any(|thumbnail| thumbnail.page_index == page_index)
+            {
+                return;
+            }
+            let Some(source_rotation) = state
+                .source_page_rotations
+                .get(page_index as usize)
+                .copied()
+            else {
+                return;
+            };
+            let rotation = state
+                .annotations
+                .document_page_rotation(document_id.value(), page_index)
+                .unwrap_or(source_rotation);
             let epoch = state.resource_epoch;
-            if state.thumbnail_requests.get(&page_index).is_some_and(|request| {
-                request.epoch == epoch && request.rotation == rotation
-                    && (request.error.is_none() || !retry)
-            }) { return; }
-            let Some(resource) = state.resource.clone() else { return; };
+            if state
+                .thumbnail_requests
+                .get(&page_index)
+                .is_some_and(|request| {
+                    request.epoch == epoch
+                        && request.rotation == rotation
+                        && (request.error.is_none() || !retry)
+                })
+            {
+                return;
+            }
+            let Some(resource) = state.resource.clone() else {
+                return;
+            };
             (resource, epoch, source_rotation, rotation)
         };
         let (resource, epoch, source_rotation, rotation) = request;
         session.update(cx, |state, cx| {
-            state.thumbnail_requests.insert(page_index, crate::document_session::ThumbnailRequestState {
-                epoch, rotation, error: None,
-            });
+            state.thumbnail_requests.insert(
+                page_index,
+                crate::document_session::ThumbnailRequestState {
+                    epoch,
+                    rotation,
+                    error: None,
+                },
+            );
             cx.notify();
         });
         let task = cx.background_executor().spawn(async move {
-            resource.render_page(page_index, DEFAULT_THUMBNAIL_WIDTH)
+            resource
+                .render_page(page_index, DEFAULT_THUMBNAIL_WIDTH)
                 .and_then(|surface| surface.rotated(rotation.delta_from(source_rotation)))
                 .and_then(|surface| {
                     surface.clone().into_render_image()?;
@@ -8306,20 +11529,38 @@ impl DocumentWorkspace {
         cx.spawn(async move |owner, cx| {
             let result = task.await;
             let _ = owner.update(cx, |workspace, cx| {
-                let Some(session) = workspace.session(document_id, cx).cloned() else { return; };
+                let Some(session) = workspace.session(document_id, cx).cloned() else {
+                    return;
+                };
                 let current = {
                     let state = session.read(cx);
                     state.resource_epoch == epoch
-                        && state.annotations.document_page_rotation(document_id.value(), page_index).unwrap_or(source_rotation) == rotation
-                        && state.thumbnail_requests.get(&page_index).is_some_and(|request| request.epoch == epoch && request.rotation == rotation)
+                        && state
+                            .annotations
+                            .document_page_rotation(document_id.value(), page_index)
+                            .unwrap_or(source_rotation)
+                            == rotation
+                        && state
+                            .thumbnail_requests
+                            .get(&page_index)
+                            .is_some_and(|request| {
+                                request.epoch == epoch && request.rotation == rotation
+                            })
                 };
-                if !current { return; }
+                if !current {
+                    return;
+                }
                 match result {
                     Ok(surface) => {
-                        session.update(cx, |state, _| { state.thumbnail_requests.remove(&page_index); });
+                        session.update(cx, |state, _| {
+                            state.thumbnail_requests.remove(&page_index);
+                        });
                         let request = PageRenderRequest {
-                            document_id, page_index, generation: session.read(cx).generation,
-                            source_rotation, target_rotation: rotation,
+                            document_id,
+                            page_index,
+                            generation: session.read(cx).generation,
+                            source_rotation,
+                            target_rotation: rotation,
                         };
                         workspace.apply_navigation_thumbnail(&request, surface, cx);
                     }
@@ -8332,7 +11573,8 @@ impl DocumentWorkspace {
                 }
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
     }
 
     fn apply_navigation_thumbnail(
@@ -8461,6 +11703,7 @@ impl DocumentWorkspace {
         if page_applied {
             self.thumbnail_scroll
                 .scroll_to_item(request.page_index as usize, ScrollStrategy::Nearest);
+            self.ensure_visible_page_content_snap_geometry(request.document_id, true, cx);
         }
         cx.notify();
         ApplyDisposition::Applied
@@ -8758,6 +12001,7 @@ impl DocumentWorkspace {
             session.source_page_coordinate_spaces = opened.page_coordinate_spaces.clone();
             session.resource = Some(opened.resource);
             session.resource_epoch = session.resource_epoch.saturating_add(1);
+            Self::reset_page_content_snap_geometry(session);
             session.requested_page = session.current_page;
             session.recovery_generation = None;
             session.presentation_error = None;
@@ -8778,6 +12022,7 @@ impl DocumentWorkspace {
             .retain(|(owner, _), _| *owner != request.document_id);
         self.last_painted_page_evidence
             .retain(|(owner, _), _| *owner != request.document_id);
+        self.ensure_visible_page_content_snap_geometry(request.document_id, true, cx);
         cx.notify();
         ApplyDisposition::Applied
     }
@@ -8806,6 +12051,7 @@ impl DocumentWorkspace {
             if session_state.save_status == NativeDocumentSaveStatus::Saving {
                 return Err("document save is already in progress".into());
             }
+            session_state.recovery_preparation.edit_guard()?;
             if session_state.pending_rotation_generation.is_some() {
                 return Err("page rotation pixels are still pending; Save As is blocked".into());
             }
@@ -8931,15 +12177,16 @@ impl DocumentWorkspace {
             Ok(saved) => saved,
             Err(error) => {
                 session.update(cx, |session, cx| {
-                    session.save_status = NativeDocumentSaveStatus::Failed(DocumentSaveFailure {
-                        generation: request.generation,
-                        operation: if request.is_in_place() {
-                            DocumentSaveFailureOperation::InPlace
-                        } else {
-                            DocumentSaveFailureOperation::SaveAs
-                        },
-                        message: error,
-                    });
+                    session.save_status =
+                        NativeDocumentSaveStatus::Failed(DocumentSaveFailure::new(
+                            request.generation,
+                            if request.is_in_place() {
+                                DocumentSaveFailureOperation::InPlace
+                            } else {
+                                DocumentSaveFailureOperation::SaveAs
+                            },
+                            error,
+                        ));
                     cx.notify();
                 });
                 if self.close_after_save_document_id == Some(request.document_id) {
@@ -8957,23 +12204,76 @@ impl DocumentWorkspace {
                 cx,
             );
             session.update(cx, |session, cx| {
-                session.save_status = NativeDocumentSaveStatus::Failed(DocumentSaveFailure {
-                    generation: request.generation,
-                    operation: if request.is_in_place() {
+                session.save_status = NativeDocumentSaveStatus::Failed(DocumentSaveFailure::new(
+                    request.generation,
+                    if request.is_in_place() {
                         DocumentSaveFailureOperation::InPlace
                     } else {
                         DocumentSaveFailureOperation::SaveAs
                     },
-                    message: "saved document validation returned the wrong annotation revision"
-                        .into(),
-                });
+                    "saved document validation returned the wrong annotation revision",
+                ));
                 cx.notify();
             });
             cx.notify();
             return ApplyDisposition::Applied;
         }
+        let recovery_store = self.document_recovery_store.clone();
+        let saved_source_sha256 = saved.opened.source_sha256;
+        let recovery_rebase = session.update(cx, |session, cx| {
+            commit_saved_recovery_rebase(
+                session,
+                recovery_store.as_ref(),
+                request.document_id,
+                request.target_path(),
+                saved_source_sha256,
+                request.annotation_revision,
+                cx,
+            )
+        });
+        let recovery_repair_warning = match recovery_rebase {
+            Ok(warning) => warning,
+            Err(error) => {
+                self.record_detached_release(
+                    "recovery-rejected save result",
+                    saved.opened.resource.close(),
+                    cx,
+                );
+                session.update(cx, |session, cx| {
+                    session.save_status =
+                        NativeDocumentSaveStatus::Failed(DocumentSaveFailure::new(
+                            request.generation,
+                            if request.is_in_place() {
+                                DocumentSaveFailureOperation::InPlace
+                            } else {
+                                DocumentSaveFailureOperation::SaveAs
+                            },
+                            error,
+                        ));
+                    cx.notify();
+                });
+                if self.close_after_save_document_id == Some(request.document_id) {
+                    self.close_after_save_document_id = None;
+                    self.pending_close_document_id = Some(request.document_id);
+                }
+                cx.notify();
+                return ApplyDisposition::Applied;
+            }
+        };
+        let previous_publication_warning = session
+            .read(cx)
+            .publication_durability_warning()
+            .map(str::to_owned);
         let publication_warning = saved.publication_warning.take();
         let has_publication_warning = publication_warning.is_some();
+        let retained_publication_warning =
+            publication_warning
+                .clone()
+                .map(|message| PublicationDurabilityWarning {
+                    save_generation: request.generation,
+                    message,
+                });
+        let has_recovery_warning = recovery_repair_warning.is_some();
         let current_base_raster = saved.opened.current_page;
         let page_image = match current_base_raster.clone().into_render_image() {
             Ok(image) => image,
@@ -8984,15 +12284,16 @@ impl DocumentWorkspace {
                     cx,
                 );
                 session.update(cx, |session, cx| {
-                    session.save_status = NativeDocumentSaveStatus::Failed(DocumentSaveFailure {
-                        generation: request.generation,
-                        operation: if request.is_in_place() {
-                            DocumentSaveFailureOperation::InPlace
-                        } else {
-                            DocumentSaveFailureOperation::SaveAs
-                        },
-                        message: error,
-                    });
+                    session.save_status =
+                        NativeDocumentSaveStatus::Failed(DocumentSaveFailure::new(
+                            request.generation,
+                            if request.is_in_place() {
+                                DocumentSaveFailureOperation::InPlace
+                            } else {
+                                DocumentSaveFailureOperation::SaveAs
+                            },
+                            error,
+                        ));
                     cx.notify();
                 });
                 cx.notify();
@@ -9032,6 +12333,7 @@ impl DocumentWorkspace {
             session.generation = reopened_generation;
             session.pending_rotation_generation = None;
             session.resource_epoch = session.resource_epoch.saturating_add(1);
+            Self::reset_page_content_snap_geometry(session);
             session.current_page = request.current_page;
             session.requested_page = request.current_page;
             session.current_base_raster = Some(current_base_raster);
@@ -9044,14 +12346,8 @@ impl DocumentWorkspace {
             session.viewer.invalidate_raster();
             session.status = NativeDocumentStatus::Ready;
             session.save_status = NativeDocumentSaveStatus::Idle;
+            session.publication_durability_warning = retained_publication_warning;
             session.save_as_required = false;
-            if session
-                .annotations
-                .snapshot(request.document_id.value())
-                .is_some_and(|snapshot| snapshot.revision == request.annotation_revision)
-            {
-                let _ = session.annotations.mark_saved(request.document_id.value());
-            }
             if let Err(error) = session.rebuild_stable_highlight_presentations() {
                 session.status = NativeDocumentStatus::Failed(error);
             }
@@ -9077,16 +12373,32 @@ impl DocumentWorkspace {
         if let Some(warning) = publication_warning {
             self.annotation_statuses
                 .insert(request.document_id, warning);
+        } else if previous_publication_warning
+            .as_ref()
+            .is_some_and(|warning| {
+                self.annotation_statuses.get(&request.document_id) == Some(warning)
+            })
+        {
+            self.annotation_statuses.remove(&request.document_id);
+        }
+        if let Some(warning) = recovery_repair_warning {
+            self.annotation_statuses.insert(
+                request.document_id,
+                format!(
+                    "The PDF was saved, but crash recovery still needs repair before editing can continue: {warning}"
+                ),
+            );
         }
         self.page_interactions
             .retain(|(document_id, _), _| *document_id != request.document_id);
         self.last_painted_page_evidence
             .retain(|(document_id, _), _| *document_id != request.document_id);
+        self.ensure_visible_page_content_snap_geometry(request.document_id, true, cx);
         if self.close_after_save_document_id == Some(request.document_id) {
             let saved_current_revision = self
                 .annotation_snapshot(request.document_id, cx)
                 .is_some_and(|snapshot| !snapshot.dirty);
-            if saved_current_revision && !has_publication_warning {
+            if saved_current_revision && !has_publication_warning && !has_recovery_warning {
                 self.pending_close_document_id = Some(request.document_id);
                 self.close_document(request.document_id, cx);
             } else {
@@ -9120,7 +12432,7 @@ impl DocumentWorkspace {
             return Err("rectangle page is outside the document".into());
         }
 
-        session.update(cx, |session, cx| {
+        self.update_native_session_history_with_result(document_id, cx, move |session| {
             const POINTER_ID: u64 = 1;
             session
                 .annotations
@@ -9144,7 +12456,6 @@ impl DocumentWorkspace {
                     "rectangle gesture did not create the requested annotation: {outcome:?}"
                 ));
             }
-            cx.notify();
             Ok(())
         })?;
         cx.notify();
@@ -9174,7 +12485,7 @@ impl DocumentWorkspace {
             return Err("ellipse page is outside the document".into());
         }
 
-        session.update(cx, |session, cx| {
+        self.update_native_session_history_with_result(document_id, cx, move |session| {
             const POINTER_ID: u64 = 2;
             session
                 .annotations
@@ -9206,7 +12517,6 @@ impl DocumentWorkspace {
                     "ellipse gesture did not create the requested annotation: {outcome:?}"
                 ));
             }
-            cx.notify();
             Ok(())
         })?;
         cx.notify();
@@ -9221,16 +12531,15 @@ impl DocumentWorkspace {
         delta_y: f64,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let session = self
+        let _session = self
             .session(document_id, cx)
             .cloned()
             .ok_or_else(|| "document session is closed".to_owned())?;
-        session.update(cx, |session, cx| {
+        self.update_native_session_history_with_result(document_id, cx, move |session| {
             session
                 .annotations
                 .translate_ellipse(document_id.value(), id, delta_x, delta_y)
                 .map_err(|error| error.to_string())?;
-            cx.notify();
             Ok::<(), String>(())
         })?;
         cx.notify();
@@ -9244,16 +12553,15 @@ impl DocumentWorkspace {
         rect: PdfRect,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let session = self
+        let _session = self
             .session(document_id, cx)
             .cloned()
             .ok_or_else(|| "document session is closed".to_owned())?;
-        session.update(cx, |session, cx| {
+        self.update_native_session_history_with_result(document_id, cx, move |session| {
             session
                 .annotations
                 .set_ellipse_rect(document_id.value(), id, rect)
                 .map_err(|error| error.to_string())?;
-            cx.notify();
             Ok::<(), String>(())
         })?;
         cx.notify();
@@ -9267,16 +12575,15 @@ impl DocumentWorkspace {
         rotation_degrees: f64,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let session = self
+        let _session = self
             .session(document_id, cx)
             .cloned()
             .ok_or_else(|| "document session is closed".to_owned())?;
-        session.update(cx, |session, cx| {
+        self.update_native_session_history_with_result(document_id, cx, move |session| {
             session
                 .annotations
                 .set_ellipse_rotation(document_id.value(), id, rotation_degrees)
                 .map_err(|error| error.to_string())?;
-            cx.notify();
             Ok::<(), String>(())
         })?;
         cx.notify();
@@ -9289,16 +12596,15 @@ impl DocumentWorkspace {
         appearance: RectangleAppearance,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let session = self
+        let _session = self
             .session(document_id, cx)
             .cloned()
             .ok_or_else(|| "document session is closed".to_owned())?;
-        session.update(cx, |session, cx| {
+        self.update_native_session_history_with_result(document_id, cx, move |session| {
             session
                 .annotations
                 .set_selected_rectangle_appearance(document_id.value(), appearance)
                 .map_err(|error| error.to_string())?;
-            cx.notify();
             Ok::<(), String>(())
         })?;
         cx.notify();
@@ -9331,7 +12637,7 @@ impl DocumentWorkspace {
         if page_index as usize >= session.read(cx).page_sizes.len() {
             return Err("pen page is outside the document".into());
         }
-        session.update(cx, |session, cx| {
+        self.update_native_session_history_with_result(document_id, cx, move |session| {
             const POINTER_ID: u64 = 2;
             session
                 .annotations
@@ -9360,7 +12666,6 @@ impl DocumentWorkspace {
                     "pen gesture did not create the requested annotation: {outcome:?}"
                 ));
             }
-            cx.notify();
             Ok::<(), String>(())
         })?;
         cx.notify();
@@ -9393,7 +12698,7 @@ impl DocumentWorkspace {
             LineKind::Line => AnnotationTool::Line,
             LineKind::Arrow => AnnotationTool::Arrow,
         };
-        session.update(cx, |session, cx| {
+        self.update_native_session_history_with_result(document_id, cx, move |session| {
             const POINTER_ID: u64 = 5;
             session
                 .annotations
@@ -9425,7 +12730,6 @@ impl DocumentWorkspace {
                     "straight-line gesture did not create the requested annotation: {outcome:?}"
                 ));
             }
-            cx.notify();
             Ok::<(), String>(())
         })?;
         cx.notify();
@@ -9458,7 +12762,7 @@ impl DocumentWorkspace {
         if page_index as usize >= session.read(cx).page_sizes.len() {
             return Err("highlight page is outside the document".into());
         }
-        session.update(cx, |session, cx| {
+        self.update_native_session_history_with_result(document_id, cx, move |session| {
             const POINTER_ID: u64 = 4;
             session
                 .annotations
@@ -9487,8 +12791,6 @@ impl DocumentWorkspace {
                     "highlight gesture did not create the requested annotation: {outcome:?}"
                 ));
             }
-            session.rebuild_stable_highlight_presentations()?;
-            cx.notify();
             Ok::<(), String>(())
         })?;
         cx.notify();
@@ -9517,7 +12819,7 @@ impl DocumentWorkspace {
         if page_index as usize >= session.read(cx).page_sizes.len() {
             return Err("length page is outside the document".into());
         }
-        session.update(cx, |session, cx| {
+        self.update_native_session_history_with_result(document_id, cx, move |session| {
             session
                 .annotations
                 .set_tool(AnnotationTool::Length)
@@ -9539,7 +12841,6 @@ impl DocumentWorkspace {
                     "length gesture did not create the requested annotation: {outcome:?}"
                 ));
             }
-            cx.notify();
             Ok::<(), String>(())
         })?;
         cx.notify();
@@ -9606,12 +12907,11 @@ impl DocumentWorkspace {
         if session.read(cx).save_status == NativeDocumentSaveStatus::Saving {
             return Err("document save is in progress".into());
         }
-        session.update(cx, |session, cx| {
+        self.update_native_session_history_with_result(document_id, cx, move |session| {
             session
                 .annotations
                 .commit_selected_rectangle_stroke_width(document_id.value(), stroke_width_pt)
                 .map_err(|error| error.to_string())?;
-            cx.notify();
             Ok::<(), String>(())
         })?;
         cx.notify();
@@ -9704,24 +13004,36 @@ impl DocumentWorkspace {
         Ok(())
     }
 
-    pub fn highlight_defaults_panel(&self) -> Option<Entity<crate::highlight_defaults_panel::HighlightDefaultsPanel>> {
+    pub fn highlight_defaults_panel(
+        &self,
+    ) -> Option<Entity<crate::highlight_defaults_panel::HighlightDefaultsPanel>> {
         self.highlight_defaults_panel.clone()
     }
 
-    pub fn tool_defaults_panel(&self) -> Option<Entity<crate::tool_defaults_panel::ToolDefaultsPanel>> {
+    pub fn tool_defaults_panel(
+        &self,
+    ) -> Option<Entity<crate::tool_defaults_panel::ToolDefaultsPanel>> {
         self.tool_defaults_panel.clone()
     }
 
-    pub fn tool_properties(&self, document_id: DocumentId, tool: AnnotationTool, cx: &App)
-        -> Option<crate::tool_properties::ToolProperties>
-    {
-        self.session(document_id, cx).map(|session| session.read(cx).annotations.tool_properties(tool))
+    pub fn tool_properties(
+        &self,
+        document_id: DocumentId,
+        tool: AnnotationTool,
+        cx: &App,
+    ) -> Option<crate::tool_properties::ToolProperties> {
+        self.session(document_id, cx)
+            .map(|session| session.read(cx).annotations.tool_properties(tool))
     }
 
-    fn ensure_tool_defaults_panel(&mut self, window: &mut Window, cx: &mut Context<Self>)
-        -> Entity<crate::tool_defaults_panel::ToolDefaultsPanel>
-    {
-        if let Some(panel) = &self.tool_defaults_panel { return panel.clone(); }
+    fn ensure_tool_defaults_panel(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<crate::tool_defaults_panel::ToolDefaultsPanel> {
+        if let Some(panel) = &self.tool_defaults_panel {
+            return panel.clone();
+        }
         let panel = cx.new(|cx| crate::tool_defaults_panel::ToolDefaultsPanel::new(window, cx));
         self.tool_defaults_subscription = Some(cx.subscribe(&panel, |workspace, _, event, cx| {
             if let Err(error) = workspace.apply_tool_defaults_event(event, cx) {
@@ -9739,7 +13051,12 @@ impl DocumentWorkspace {
         cx: &mut Context<Self>,
     ) -> Result<bool, String> {
         use crate::tool_defaults_panel::ToolDefaultsEvent;
-        let ToolDefaultsEvent::Change { document_id, tool, properties } = event else {
+        let ToolDefaultsEvent::Change {
+            document_id,
+            tool,
+            properties,
+        } = event
+        else {
             self.right_rail_actions_open = false;
             cx.notify();
             return Ok(true);
@@ -9749,20 +13066,27 @@ impl DocumentWorkspace {
             || self.pending_close_document_id == Some(*document_id)
             || self.close_after_save_document_id == Some(*document_id)
             || self.pending_save_prompt_document_id() == Some(*document_id)
-        { return Ok(false); }
-        let Some(session) = self.session(*document_id, cx).cloned() else { return Ok(false); };
+        {
+            return Ok(false);
+        }
+        let Some(session) = self.session(*document_id, cx).cloned() else {
+            return Ok(false);
+        };
         {
             let session = session.read(cx);
             if !matches!(session.status, NativeDocumentStatus::Ready)
                 || session.save_status == NativeDocumentSaveStatus::Saving
                 || session.pending_rotation_generation.is_some()
                 || session.annotations.tool_properties(*tool) == *properties
-            { return Ok(false); }
+            {
+                return Ok(false);
+            }
         }
-        session.update(cx, |session, cx| {
-            session.annotations.set_tool_properties(*tool, properties.clone())
+        self.update_native_session_history_with_result(*document_id, cx, move |session| {
+            session
+                .annotations
+                .set_tool_properties(*tool, properties.clone())
                 .map_err(|error| error.to_string())?;
-            cx.notify();
             Ok::<(), String>(())
         })?;
         cx.notify();
@@ -9774,14 +13098,18 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<crate::highlight_defaults_panel::HighlightDefaultsPanel> {
-        if let Some(panel) = &self.highlight_defaults_panel { return panel.clone(); }
-        let panel = cx.new(|cx| crate::highlight_defaults_panel::HighlightDefaultsPanel::new(window, cx));
-        self.highlight_defaults_subscription = Some(cx.subscribe(&panel, |workspace, _, event, cx| {
-            if let Err(error) = workspace.apply_highlight_defaults_event(event, cx) {
-                workspace.last_file_error = Some(error);
-                cx.notify();
-            }
-        }));
+        if let Some(panel) = &self.highlight_defaults_panel {
+            return panel.clone();
+        }
+        let panel =
+            cx.new(|cx| crate::highlight_defaults_panel::HighlightDefaultsPanel::new(window, cx));
+        self.highlight_defaults_subscription =
+            Some(cx.subscribe(&panel, |workspace, _, event, cx| {
+                if let Err(error) = workspace.apply_highlight_defaults_event(event, cx) {
+                    workspace.last_file_error = Some(error);
+                    cx.notify();
+                }
+            }));
         self.highlight_defaults_panel = Some(panel.clone());
         panel
     }
@@ -9798,20 +13126,35 @@ impl DocumentWorkspace {
                 cx.notify();
                 Ok(true)
             }
-            HighlightDefaultsEvent::Change { document_id, defaults } => {
+            HighlightDefaultsEvent::Change {
+                document_id,
+                defaults,
+            } => {
                 if self.active_document_id != Some(*document_id)
                     || self.annotation_tool(*document_id, cx) != Some(AnnotationTool::Highlight)
                     || self.pending_close_document_id == Some(*document_id)
                     || self.close_after_save_document_id == Some(*document_id)
                     || self.pending_save_prompt_document_id() == Some(*document_id)
-                { return Ok(false); }
-                let Some(session) = self.session(*document_id, cx) else { return Ok(false); };
+                {
+                    return Ok(false);
+                }
+                let Some(session) = self.session(*document_id, cx) else {
+                    return Ok(false);
+                };
                 let session = session.read(cx);
                 if !matches!(session.status, NativeDocumentStatus::Ready)
                     || session.save_status == NativeDocumentSaveStatus::Saving
                     || session.pending_rotation_generation.is_some()
-                { return Ok(false); }
-                self.set_highlight_defaults(*document_id, &defaults.color, defaults.width_pt, defaults.opacity, cx)?;
+                {
+                    return Ok(false);
+                }
+                self.set_highlight_defaults(
+                    *document_id,
+                    &defaults.color,
+                    defaults.width_pt,
+                    defaults.opacity,
+                    cx,
+                )?;
                 Ok(true)
             }
         }
@@ -9862,11 +13205,35 @@ impl DocumentWorkspace {
         document_id: DocumentId,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        self.update_annotation_history(document_id, cx, |annotations, document_id| {
-            annotations
-                .delete_selected_unlocked(document_id)
-                .map(|_| ())
-        })
+        let deleted = self.update_annotation_history_with_result(
+            document_id,
+            cx,
+            |annotations, document_id| annotations.delete_selected_unlocked(document_id),
+        )?;
+        if deleted.is_empty() {
+            let selected_count = self.selected_annotation_ids(document_id, cx).len();
+            if selected_count > 0 {
+                self.annotation_statuses.insert(
+                    document_id,
+                    if selected_count == 1 {
+                        "Annotation is locked".into()
+                    } else {
+                        "Selected annotations are locked".into()
+                    },
+                );
+            }
+        } else {
+            self.annotation_statuses.insert(
+                document_id,
+                if deleted.len() == 1 {
+                    "Deleted annotation".into()
+                } else {
+                    format!("Deleted {} annotations", deleted.len())
+                },
+            );
+        }
+        cx.notify();
+        Ok(())
     }
 
     pub fn select_all_annotations_on_page(
@@ -9981,6 +13348,14 @@ impl DocumentWorkspace {
         if self.annotation_clipboard.is_empty() {
             return Err("annotation clipboard is empty".into());
         }
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return Err("document session is closed".into());
+        };
+        if session.read(cx).save_status == NativeDocumentSaveStatus::Saving {
+            return Err("document save is in progress".into());
+        }
+        let previous_paste_sequence = self.annotation_paste_sequence;
+        let previous_annotation_sequence = self.next_annotation_sequence;
         self.annotation_paste_sequence = self.annotation_paste_sequence.saturating_add(1);
         let offset = 12. * self.annotation_paste_sequence as f64;
         let mut pasted = Vec::with_capacity(self.annotation_clipboard.len());
@@ -10017,30 +13392,35 @@ impl DocumentWorkspace {
             };
             let sequence = self.next_annotation_sequence;
             self.next_annotation_sequence = self.next_annotation_sequence.saturating_add(1);
-            let id = MarkupId::new(format!("workspace:paste:{family}:{sequence}"))
-                .map_err(|error| error.to_string())?;
-            pasted.push(
-                source
-                    .translated_copy(id, page_index, offset, -offset)
-                    .map_err(|error| error.to_string())?,
-            );
+            let copied = MarkupId::new(format!("workspace:paste:{family}:{sequence}"))
+                .map_err(|error| error.to_string())
+                .and_then(|id| {
+                    source
+                        .translated_copy(id, page_index, offset, -offset)
+                        .map_err(|error| error.to_string())
+                });
+            match copied {
+                Ok(annotation) => pasted.push(annotation),
+                Err(error) => {
+                    self.annotation_paste_sequence = previous_paste_sequence;
+                    self.next_annotation_sequence = previous_annotation_sequence;
+                    return Err(error);
+                }
+            }
         }
-        let Some(session) = self.session(document_id, cx).cloned() else {
-            return Err("document session is closed".into());
+        let inserted = self.update_annotation_history_with_result(
+            document_id,
+            cx,
+            move |annotations, document_id| annotations.insert_annotations(document_id, pasted),
+        );
+        let inserted = match inserted {
+            Ok(inserted) => inserted,
+            Err(error) => {
+                self.annotation_paste_sequence = previous_paste_sequence;
+                self.next_annotation_sequence = previous_annotation_sequence;
+                return Err(error);
+            }
         };
-        if session.read(cx).save_status == NativeDocumentSaveStatus::Saving {
-            return Err("document save is in progress".into());
-        }
-        let inserted = session.update(cx, |session, cx| {
-            let inserted = session
-                .annotations
-                .insert_annotations(document_id.value(), pasted)
-                .map_err(|error| error.to_string())?;
-            let removed = session.sync_image_assets()?;
-            defer_drop_images(removed, cx);
-            cx.notify();
-            Ok::<Vec<MarkupId>, String>(inserted)
-        })?;
         self.annotation_statuses.insert(
             document_id,
             if inserted.len() == 1 {
@@ -10093,44 +13473,25 @@ impl DocumentWorkspace {
             return Err("document save is in progress".into());
         }
         let generation = self.next_generation();
+        let recovery_store = self.document_recovery_store.clone();
         session.update(cx, |session, cx| {
-            let before = session
-                .annotations
-                .snapshot(document_id.value())
-                .map(|snapshot| snapshot.page_rotations)
-                .unwrap_or_default();
-            if undo {
-                session.annotations.undo(document_id.value())
-            } else {
-                session.annotations.redo(document_id.value())
-            }
-            .map_err(|error| error.to_string())?;
-            let after = session
-                .annotations
-                .snapshot(document_id.value())
-                .map(|snapshot| snapshot.page_rotations)
-                .unwrap_or_default();
+            commit_recovery_guarded_annotation_change(
+                session,
+                recovery_store.as_ref(),
+                document_id,
+                true,
+                cx,
+                |session| {
+                    if undo {
+                        session.annotations.undo(document_id.value())
+                    } else {
+                        session.annotations.redo(document_id.value())
+                    }
+                    .map_err(|error| error.to_string())
+                },
+            )?;
             session.generation = generation;
             session.pending_rotation_generation = None;
-            if before != after {
-                session.sync_rotation_geometry();
-                if let Err(error) = session.refresh_rotation_presentations() {
-                    let rollback = if undo {
-                        session.annotations.redo(document_id.value())
-                    } else {
-                        session.annotations.undo(document_id.value())
-                    };
-                    rollback.map_err(|rollback| {
-                        format!("{error}; history rollback also failed: {rollback}")
-                    })?;
-                    session.sync_rotation_geometry();
-                    return Err(error);
-                }
-            } else {
-                let removed = session.sync_image_assets()?;
-                defer_drop_images(removed, cx);
-                session.rebuild_stable_highlight_presentations()?;
-            }
             cx.notify();
             Ok::<(), String>(())
         })?;
@@ -10147,26 +13508,54 @@ impl DocumentWorkspace {
             u64,
         ) -> Result<(), crate::annotation_model::AnnotationError>,
     ) -> Result<(), String> {
+        self.update_annotation_history_with_result(document_id, cx, command)
+    }
+
+    fn update_annotation_history_with_result<T>(
+        &mut self,
+        document_id: DocumentId,
+        cx: &mut Context<Self>,
+        command: impl FnOnce(
+            &mut AnnotationAdapter,
+            u64,
+        ) -> Result<T, crate::annotation_model::AnnotationError>,
+    ) -> Result<T, String> {
+        self.update_native_session_history_with_result(document_id, cx, move |session| {
+            command(&mut session.annotations, document_id.value())
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn update_native_session_history_with_result<T>(
+        &mut self,
+        document_id: DocumentId,
+        cx: &mut Context<Self>,
+        command: impl FnOnce(&mut NativeDocumentSession) -> Result<T, String>,
+    ) -> Result<T, String> {
         let Some(session) = self.session(document_id, cx).cloned() else {
             return Err("document session is closed".into());
         };
-        session.update(cx, |session, cx| {
+        let recovery_store = self.document_recovery_store.clone();
+        let result = session.update(cx, |session, cx| {
             if session.save_status == NativeDocumentSaveStatus::Saving {
                 return Err("document save is in progress".into());
             }
             if session.pending_rotation_generation.is_some() {
                 return Err("page rotation pixels are still pending".into());
             }
-            command(&mut session.annotations, document_id.value())
-                .map_err(|error| error.to_string())?;
-            let removed = session.sync_image_assets()?;
-            defer_drop_images(removed, cx);
-            session.rebuild_stable_highlight_presentations()?;
+            let result = commit_recovery_guarded_annotation_change(
+                session,
+                recovery_store.as_ref(),
+                document_id,
+                true,
+                cx,
+                command,
+            )?;
             cx.notify();
-            Ok::<(), String>(())
+            Ok::<T, String>(result)
         })?;
         cx.notify();
-        Ok(())
+        Ok(result)
     }
 
     pub fn annotation_snapshot(
@@ -10230,8 +13619,25 @@ impl DocumentWorkspace {
         point: PdfPoint,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        let page_index = self
+            .session(document_id, cx)
+            .and_then(|session| {
+                session
+                    .read(cx)
+                    .annotations
+                    .exact_selected_cloud_plus(document_id.value())
+                    .map(|annotation| annotation.page_index)
+            })
+            .ok_or_else(|| "no Cloud+ is selected".to_owned())?;
+        let caption_supplement =
+            self.annotation_caption_selection_paths(document_id, page_index, cx);
         self.update_annotation_history(document_id, cx, move |annotations, document_id| {
-            annotations.set_selected_cloud_plus_cloud_point(document_id, vertex_index, point)
+            annotations.set_selected_cloud_plus_cloud_point_with_routing_supplement(
+                document_id,
+                vertex_index,
+                point,
+                &caption_supplement,
+            )
         })
     }
 
@@ -10242,8 +13648,25 @@ impl DocumentWorkspace {
         delta_y: f64,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        let page_index = self
+            .session(document_id, cx)
+            .and_then(|session| {
+                session
+                    .read(cx)
+                    .annotations
+                    .exact_selected_cloud_plus(document_id.value())
+                    .map(|annotation| annotation.page_index)
+            })
+            .ok_or_else(|| "no Cloud+ is selected".to_owned())?;
+        let caption_supplement =
+            self.annotation_caption_selection_paths(document_id, page_index, cx);
         self.update_annotation_history(document_id, cx, move |annotations, document_id| {
-            annotations.translate_selected_cloud_plus_text_box(document_id, delta_x, delta_y)
+            annotations.translate_selected_cloud_plus_text_box_with_routing_supplement(
+                document_id,
+                delta_x,
+                delta_y,
+                &caption_supplement,
+            )
         })
     }
 
@@ -10278,7 +13701,11 @@ impl DocumentWorkspace {
         if let Some(inspector) = &self.dimension_property_inspector {
             return inspector.clone();
         }
-        let inspector = cx.new(|cx| { let mut inspector = DimensionPropertyInspector::new(window, cx); inspector.set_embedded(); inspector });
+        let inspector = cx.new(|cx| {
+            let mut inspector = DimensionPropertyInspector::new(window, cx);
+            inspector.set_embedded();
+            inspector
+        });
         let subscription = cx.subscribe(
             &inspector,
             |workspace, _, event: &DimensionPropertyEvent, cx| {
@@ -10377,9 +13804,7 @@ impl DocumentWorkspace {
                 {
                     return Ok(false);
                 }
-                if annotation.locked
-                    && !matches!(event.patch, DimensionPropertyPatch::Locked(_))
-                {
+                if annotation.locked && !matches!(event.patch, DimensionPropertyPatch::Locked(_)) {
                     return Ok(false);
                 }
                 return self.apply_measurement_path_visual_patch(event, annotation.clone(), cx);
@@ -10405,13 +13830,9 @@ impl DocumentWorkspace {
         match &event.patch {
             DimensionPropertyPatch::Locked(value) => {
                 let annotation_id = event.annotation_id.clone();
-                self.update_annotation_history(
-                    event.document_id,
-                    cx,
-                    move |annotations, id| {
-                        annotations.set_primary_selected_locked(id, &annotation_id, *value)
-                    },
-                )?;
+                self.update_annotation_history(event.document_id, cx, move |annotations, id| {
+                    annotations.set_primary_selected_locked(id, &annotation_id, *value)
+                })?;
             }
             DimensionPropertyPatch::OffsetPt(value) if is_dimension && value.is_finite() => {
                 let annotation_id = event.annotation_id.clone();
@@ -10578,6 +13999,35 @@ impl DocumentWorkspace {
             .unwrap_or_default()
     }
 
+    pub fn pending_image_preview(
+        &self,
+        document_id: DocumentId,
+        cx: &App,
+    ) -> Option<PendingImagePreview> {
+        let (hover_document, page_index, point) = self.pending_image_hover.as_ref()?;
+        if *hover_document != document_id {
+            return None;
+        }
+        self.session(document_id, cx).and_then(|session| {
+            session
+                .read(cx)
+                .annotations
+                .pending_image_preview_at(document_id.value(), *page_index, *point)
+                .ok()
+                .flatten()
+        })
+    }
+
+    pub fn page_interaction_bounds(
+        &self,
+        document_id: DocumentId,
+        page_index: u32,
+    ) -> Option<Bounds<Pixels>> {
+        self.page_interactions
+            .get(&(document_id, page_index))
+            .map(|interaction| interaction.bounds)
+    }
+
     pub fn image_render_asset_weak(
         &self,
         document_id: DocumentId,
@@ -10623,7 +14073,18 @@ impl DocumentWorkspace {
             || AnnotationAdapter::default().document_scene(document_id.value(), page_index),
             |session| {
                 let session = session.read(cx);
-                self.annotation_scene_for_session(document_id, page_index, &session)
+                let caption_supplement = self.annotation_caption_selection_paths_for_session(
+                    document_id,
+                    page_index,
+                    &session,
+                    cx,
+                );
+                self.annotation_scene_for_session(
+                    document_id,
+                    page_index,
+                    &session,
+                    &caption_supplement,
+                )
             },
         )
     }
@@ -10633,6 +14094,7 @@ impl DocumentWorkspace {
         document_id: DocumentId,
         page_index: u32,
         session: &NativeDocumentSession,
+        caption_supplement: &crate::annotation_model::AnnotationSelectionSupplement,
     ) -> AnnotationScene {
         let preview_blocked = self.active_document_id != Some(document_id)
             || self.pending_text_box_editor.is_some()
@@ -10650,9 +14112,11 @@ impl DocumentWorkspace {
                 .annotations
                 .canonical_document_scene(document_id.value(), page_index)
         } else {
-            session
-                .annotations
-                .document_scene(document_id.value(), page_index)
+            session.annotations.document_scene_with_routing_supplement(
+                document_id.value(),
+                page_index,
+                caption_supplement,
+            )
         }
     }
 
@@ -10686,6 +14150,70 @@ impl DocumentWorkspace {
         })
     }
 
+    pub fn annotation_caption_selection_paths(
+        &self,
+        document_id: DocumentId,
+        page_index: u32,
+        cx: &App,
+    ) -> crate::annotation_model::AnnotationSelectionSupplement {
+        let Some(session) = self.session(document_id, cx) else {
+            return Default::default();
+        };
+        self.annotation_caption_selection_paths_for_session(
+            document_id,
+            page_index,
+            &session.read(cx),
+            cx,
+        )
+    }
+
+    fn annotation_caption_selection_paths_for_session(
+        &self,
+        document_id: DocumentId,
+        page_index: u32,
+        session: &NativeDocumentSession,
+        cx: &App,
+    ) -> crate::annotation_model::AnnotationSelectionSupplement {
+        let Some(interaction) = self.page_interactions.get(&(document_id, page_index)) else {
+            return Default::default();
+        };
+        let text_system = gpui::WindowTextSystem::new(cx.text_system().clone());
+        crate::annotation_caption::selection_supplement(
+            &session
+                .annotations
+                .canonical_document_scene(document_id.value(), page_index),
+            interaction.transform,
+            &text_system,
+        )
+    }
+
+    pub fn selection_marquee_candidates(
+        &self,
+        document_id: DocumentId,
+        page_index: u32,
+        cx: &App,
+    ) -> Vec<MarkupId> {
+        if !self
+            .active_selection_marquee(document_id, cx)
+            .is_some_and(|(page, marquee)| page == page_index && marquee.active)
+        {
+            return Vec::new();
+        }
+        let supplement = self.annotation_caption_selection_paths(document_id, page_index, cx);
+        self.session(document_id, cx)
+            .map(|session| {
+                session
+                    .read(cx)
+                    .annotations
+                    .selection_marquee_candidates_with_supplement(
+                        document_id.value(),
+                        page_index,
+                        &supplement,
+                    )
+            })
+            .unwrap_or_default()
+    }
+
     pub fn set_annotation_tool(
         &mut self,
         document_id: DocumentId,
@@ -10694,6 +14222,7 @@ impl DocumentWorkspace {
     ) -> Result<(), String> {
         self.pan_tool_active = false;
         self.pan_drag = None;
+        self.clear_hover_candidate(cx);
         // Every explicit tool change clears a hold-Space stash, mirroring
         // `handleToolChange`. Hold/restore flows call this funnel first and
         // record their own stash afterwards.
@@ -10714,6 +14243,8 @@ impl DocumentWorkspace {
                 .annotations
                 .set_tool(tool)
                 .map_err(|error| error.to_string())?;
+            let removed = session.sync_image_assets()?;
+            defer_drop_images(removed, cx);
             cx.notify();
             Ok::<(), String>(())
         })?;
@@ -10756,9 +14287,7 @@ impl DocumentWorkspace {
     /// `begin_annotation_pointer`), mirroring DOM mousedown moving focus to
     /// the body, so the guard stays usable after canvas interaction.
     fn space_pan_available(&self, window: &mut Window, cx: &App) -> bool {
-        if self.pending_text_box_editor.is_some()
-            || self.pending_close_document_id.is_some()
-        {
+        if self.pending_text_box_editor.is_some() || self.pending_close_document_id.is_some() {
             return false;
         }
         match window.focused(cx) {
@@ -10806,11 +14335,10 @@ impl DocumentWorkspace {
         if !self.space_pan_session_ready(document_id, cx) {
             return;
         }
-        match self.space_pan_hold.key_down(
-            Instant::now(),
-            self.pan_tool_active,
-            event.is_held,
-        ) {
+        match self
+            .space_pan_hold
+            .key_down(Instant::now(), self.pan_tool_active, event.is_held)
+        {
             space_pan::SpacePanDown::Ignored => {}
             space_pan::SpacePanDown::BeginHold => {
                 let _ = self.set_annotation_tool(document_id, AnnotationTool::Select, cx);
@@ -10865,7 +14393,9 @@ impl DocumentWorkspace {
         cx: &mut Context<Self>,
     ) -> Result<String, String> {
         let decoded = decode_image_path(path).map_err(|error| error.to_string())?;
-        self.apply_decoded_image(document_id, decoded, cx)
+        let asset_id = self.apply_decoded_image(document_id, decoded, cx)?;
+        self.set_annotation_tool(document_id, AnnotationTool::Image, cx)?;
+        Ok(asset_id)
     }
 
     fn apply_decoded_image(
@@ -10889,10 +14419,8 @@ impl DocumentWorkspace {
                 .annotations
                 .set_image_placement_page(f64::from(page_size.0), f64::from(page_size.1), 0.45)
                 .map_err(|error| error.to_string())?;
-            session
-                .annotations
-                .set_tool(AnnotationTool::Image)
-                .map_err(|error| error.to_string())?;
+            let removed = session.sync_image_assets()?;
+            defer_drop_images(removed, cx);
             cx.notify();
             Ok::<(), String>(())
         })?;
@@ -10913,6 +14441,7 @@ impl DocumentWorkspace {
             {
                 return None;
             }
+            session.annotations.clear_pending_image_asset();
             session.image_prepare_generation = session.image_prepare_generation.saturating_add(1);
             Some(ImagePrepareAuthority {
                 document_id,
@@ -10923,6 +14452,11 @@ impl DocumentWorkspace {
         let Some(authority) = authority else {
             return;
         };
+        if let Err(error) = self.set_annotation_tool(document_id, AnnotationTool::Image, cx) {
+            self.annotation_statuses.insert(document_id, error);
+            cx.notify();
+            return;
+        }
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -11152,14 +14686,13 @@ impl DocumentWorkspace {
                 .footer(
                     DialogFooter::new()
                         .child(
-                            DialogClose::new().child(
-                                Button::new(DOCUMENT_SIGNATURE_RECENT_REMOVE_CANCEL_ID)
-                                    .debug_selector(|| {
-                                        DOCUMENT_SIGNATURE_RECENT_REMOVE_CANCEL_ID.into()
-                                    })
-                                    .outline()
-                                    .label("Cancel"),
-                            ),
+                            Button::new(DOCUMENT_SIGNATURE_RECENT_REMOVE_CANCEL_ID)
+                                .debug_selector(|| {
+                                    DOCUMENT_SIGNATURE_RECENT_REMOVE_CANCEL_ID.into()
+                                })
+                                .outline()
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
                             DialogAction::new().child(
@@ -11185,55 +14718,100 @@ impl DocumentWorkspace {
     fn cancel_signature_operation(&mut self, cx: &mut Context<Self>) {
         self.signature_operation.take();
         if let Some(id) = self.active_document_id
-            && let Some(session) = self.session(id, cx).cloned() {
+            && let Some(session) = self.session(id, cx).cloned()
+        {
             session.update(cx, |session, _| {
-                session.image_prepare_generation = session.image_prepare_generation.saturating_add(1);
+                session.image_prepare_generation =
+                    session.image_prepare_generation.saturating_add(1);
             });
         }
     }
 
-    fn begin_platform_signature(&mut self, document_id: DocumentId, phone: Option<crate::phone_signature::PhoneMode>, cx: &mut Context<Self>) {
+    fn begin_platform_signature(
+        &mut self,
+        document_id: DocumentId,
+        phone: Option<crate::phone_signature::PhoneMode>,
+        cx: &mut Context<Self>,
+    ) {
         self.cancel_signature_operation(cx);
-        let Some(session) = self.session(document_id, cx).cloned() else { return; };
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
         let authority = session.read(cx);
-        if !matches!(authority.status, NativeDocumentStatus::Ready) || authority.save_status == NativeDocumentSaveStatus::Saving { return; }
-        let authority = ImagePrepareAuthority { document_id, document_generation: authority.generation, prepare_generation: authority.image_prepare_generation };
+        if !matches!(authority.status, NativeDocumentStatus::Ready)
+            || authority.save_status == NativeDocumentSaveStatus::Saving
+        {
+            return;
+        }
+        let authority = ImagePrepareAuthority {
+            document_id,
+            document_generation: authority.generation,
+            prepare_generation: authority.image_prepare_generation,
+        };
         let operation = crate::phone_signature::SignatureOperation::default();
         let cancel = operation.0.clone();
         self.signature_operation = Some(operation);
         self.drawn_signature.clear();
         self.signature_prepare_state = SignaturePrepareState::Loading;
         cx.notify();
-        enum Event { Qr(crate::annotation_model::DecodedRgbaAsset), Done(Result<Option<SanitizedSignatureFile>, String>) }
+        enum Event {
+            Qr(crate::annotation_model::DecodedRgbaAsset),
+            Done(Result<Option<SanitizedSignatureFile>, String>),
+        }
         let (tx, rx) = async_channel::bounded(2);
         let background = cx.background_executor().spawn(async move {
             let result = if let Some(mode) = phone {
-                crate::local_phone_signature::receive(mode, cancel, |asset| tx.try_send(Event::Qr(asset)).is_ok())
-            } else { crate::camera_signature::capture(cancel) };
+                crate::local_phone_signature::receive(mode, cancel, |asset| {
+                    tx.try_send(Event::Qr(asset)).is_ok()
+                })
+            } else {
+                crate::camera_signature::capture(cancel)
+            };
             let _ = tx.send(Event::Done(result)).await;
         });
         cx.spawn(async move |entity, cx| {
             while let Ok(event) = rx.recv().await {
                 let done = matches!(event, Event::Done(_));
-                if entity.update(cx, |workspace, cx| {
-                    if !workspace.signature_authority_is_current(authority, cx) { return; }
-                    match event {
-                        Event::Qr(asset) => {
-                            if let Some(pixels) = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(asset.width_px(), asset.height_px(), asset.rgba().to_vec()) {
-                                workspace.signature_prepare_state = SignaturePrepareState::PhoneQr(Arc::new(RenderImage::new(smallvec::smallvec![Frame::new(pixels)])));
-                                cx.notify();
+                if entity
+                    .update(cx, |workspace, cx| {
+                        if !workspace.signature_authority_is_current(authority, cx) {
+                            return;
+                        }
+                        match event {
+                            Event::Qr(asset) => {
+                                if let Some(image) =
+                                    crate::document_session::decoded_asset_render_image(&asset, 1.)
+                                {
+                                    workspace.signature_prepare_state =
+                                        SignaturePrepareState::PhoneQr(image);
+                                    cx.notify();
+                                }
+                            }
+                            Event::Done(result) => {
+                                workspace.signature_operation.take();
+                                workspace.apply_signature_prepare_result(
+                                    authority,
+                                    match result {
+                                        Ok(Some(image)) => Some(Ok(image)),
+                                        Ok(None) => None,
+                                        Err(error) => Some(Err(error)),
+                                    },
+                                    cx,
+                                );
                             }
                         }
-                        Event::Done(result) => {
-                            workspace.signature_operation.take();
-                            workspace.apply_signature_prepare_result(authority, match result { Ok(Some(image)) => Some(Ok(image)), Ok(None) => None, Err(error) => Some(Err(error)) }, cx);
-                        }
-                    }
-                }).is_err() { break; }
-                if done { break; }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+                if done {
+                    break;
+                }
             }
             background.await;
-        }).detach();
+        })
+        .detach();
     }
 
     fn begin_signature_selection(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
@@ -11348,16 +14926,10 @@ impl DocumentWorkspace {
             Some(Err(error)) => SignaturePrepareState::Error(error),
             Some(Ok(sanitized)) => {
                 let asset = sanitized.into_asset();
-                let pixels = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(
-                    asset.width_px(),
-                    asset.height_px(),
-                    asset.rgba().to_vec(),
-                );
-                match pixels {
-                    Some(pixels) => SignaturePrepareState::Preview(SignaturePreview {
-                        asset,
-                        image: Arc::new(RenderImage::new(smallvec::smallvec![Frame::new(pixels)])),
-                    }),
+                match crate::document_session::decoded_asset_render_image(&asset, 1.) {
+                    Some(image) => {
+                        SignaturePrepareState::Preview(SignaturePreview { asset, image })
+                    }
                     None => SignaturePrepareState::Error("Unable to process this image.".into()),
                 }
             }
@@ -11373,8 +14945,7 @@ impl DocumentWorkspace {
         if let Some(input) = &self.signature_name_input {
             return input.clone();
         }
-        let input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Type your name"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Type your name"));
         self.signature_name_input = Some(input.clone());
         input
     }
@@ -11392,14 +14963,22 @@ impl DocumentWorkspace {
         }
         let spacing = cx.new(|cx| {
             InputState::new(window, cx)
-                .default_value(self.semantic_snap_settings.construction_grid_spacing_mm().to_string())
+                .default_value(
+                    self.semantic_snap_settings
+                        .construction_grid_spacing_mm()
+                        .to_string(),
+                )
                 .step(1.)
                 .min(1.)
                 .max(500.)
         });
         let increment = cx.new(|cx| {
             InputState::new(window, cx)
-                .default_value(self.semantic_snap_settings.dimension_increment_mm().to_string())
+                .default_value(
+                    self.semantic_snap_settings
+                        .dimension_increment_mm()
+                        .to_string(),
+                )
                 .step(0.1)
                 .min(0.1)
                 .max(500.)
@@ -11449,16 +15028,10 @@ impl DocumentWorkspace {
         let asset = TypedSignature::new(input.read(cx).value().as_ref())
             .and_then(|signature| signature.rasterize())
             .map_err(|error| error.to_string())?;
-        let pixels = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(
-            asset.width_px(),
-            asset.height_px(),
-            asset.rgba().to_vec(),
-        )
-        .ok_or_else(|| "Unable to process the typed signature.".to_owned())?;
-        self.signature_prepare_state = SignaturePrepareState::Preview(SignaturePreview {
-            asset,
-            image: Arc::new(RenderImage::new(smallvec::smallvec![Frame::new(pixels)])),
-        });
+        let image = crate::document_session::decoded_asset_render_image(&asset, 1.)
+            .ok_or_else(|| "Unable to process the typed signature.".to_owned())?;
+        self.signature_prepare_state =
+            SignaturePrepareState::Preview(SignaturePreview { asset, image });
         Ok(())
     }
 
@@ -11562,6 +15135,8 @@ impl DocumentWorkspace {
                 .annotations
                 .set_image_placement_page(f64::from(page_size.0), f64::from(page_size.1), 0.45)
                 .map_err(|error| error.to_string())?;
+            let removed = session.sync_image_assets()?;
+            defer_drop_images(removed, cx);
             cx.notify();
             Ok::<(), String>(())
         })?;
@@ -11641,10 +15216,10 @@ impl DocumentWorkspace {
         cx: &mut Context<Self>,
     ) -> Result<String, String> {
         let asset_id = self.prepare_image_from_path(document_id, path, cx)?;
-        let Some(session) = self.session(document_id, cx).cloned() else {
+        let Some(_session) = self.session(document_id, cx).cloned() else {
             return Err("document session is closed".into());
         };
-        session.update(cx, |session, cx| {
+        self.update_native_session_history_with_result(document_id, cx, move |session| {
             session.annotations.queue_next_annotation_id(id.clone());
             let outcome = session
                 .annotations
@@ -11655,16 +15230,21 @@ impl DocumentWorkspace {
                     "image placement did not create its stable annotation: {outcome:?}"
                 ));
             }
-            let removed = session.sync_image_assets()?;
-            defer_drop_images(removed, cx);
-            cx.notify();
             Ok::<(), String>(())
         })?;
         cx.notify();
         Ok(asset_id)
     }
 
-    fn select_available_annotation_tool(&mut self, tool: AnnotationTool, cx: &mut Context<Self>) {
+    fn select_available_annotation_tool(
+        &mut self,
+        tool: AnnotationTool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if window.has_focused_input(cx) {
+            return;
+        }
         if self.pending_text_box_editor.is_some() || self.pending_close_document_id.is_some() {
             cx.propagate();
             return;
@@ -11687,82 +15267,136 @@ impl DocumentWorkspace {
     fn select_line_tool_from_action(
         &mut self,
         _: &SelectLineTool,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::Line, cx);
+        self.select_available_annotation_tool(AnnotationTool::Line, window, cx);
+    }
+
+    fn select_text_box_tool_from_action(
+        &mut self,
+        _: &SelectTextBoxTool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_available_annotation_tool(AnnotationTool::TextBox, window, cx);
+    }
+
+    fn select_rectangle_tool_from_action(
+        &mut self,
+        _: &SelectRectangleTool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_available_annotation_tool(AnnotationTool::Rectangle, window, cx);
+    }
+
+    fn select_ellipse_tool_from_action(
+        &mut self,
+        _: &SelectEllipseTool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_available_annotation_tool(AnnotationTool::Ellipse, window, cx);
+    }
+
+    fn select_pen_tool_from_action(
+        &mut self,
+        _: &SelectPenTool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_available_annotation_tool(AnnotationTool::Pen, window, cx);
+    }
+
+    fn select_cloud_tool_from_action(
+        &mut self,
+        _: &SelectCloudTool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_available_annotation_tool(AnnotationTool::Cloud, window, cx);
+    }
+
+    fn select_callout_tool_from_action(
+        &mut self,
+        _: &SelectCalloutTool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_available_annotation_tool(AnnotationTool::Callout, window, cx);
     }
 
     fn select_arc_tool_from_action(
         &mut self,
         _: &SelectArcTool,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::Arc, cx);
+        self.select_available_annotation_tool(AnnotationTool::Arc, window, cx);
     }
 
     fn select_arrow_tool_from_action(
         &mut self,
         _: &SelectArrowTool,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::Arrow, cx);
+        self.select_available_annotation_tool(AnnotationTool::Arrow, window, cx);
     }
 
     fn select_polyline_tool_from_action(
         &mut self,
         _: &SelectPolylineTool,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::Polyline, cx);
+        self.select_available_annotation_tool(AnnotationTool::Polyline, window, cx);
     }
 
     fn select_polygon_tool_from_action(
         &mut self,
         _: &SelectPolygonTool,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::Polygon, cx);
+        self.select_available_annotation_tool(AnnotationTool::Polygon, window, cx);
     }
 
     fn select_polylength_tool_from_action(
         &mut self,
         _: &SelectPolylengthTool,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::Polylength, cx);
+        self.select_available_annotation_tool(AnnotationTool::Polylength, window, cx);
     }
 
     fn select_area_tool_from_action(
         &mut self,
         _: &SelectAreaTool,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::Area, cx);
+        self.select_available_annotation_tool(AnnotationTool::Area, window, cx);
     }
 
     fn select_cloud_plus_tool_from_action(
         &mut self,
         _: &SelectCloudPlusTool,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::CloudPlus, cx);
+        self.select_available_annotation_tool(AnnotationTool::CloudPlus, window, cx);
     }
 
     fn select_dimension_tool_from_action(
         &mut self,
         _: &SelectDimensionTool,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::Dimension, cx);
+        self.select_available_annotation_tool(AnnotationTool::Dimension, window, cx);
     }
 
     fn finish_vertex_path_from_action(
@@ -11796,24 +15430,29 @@ impl DocumentWorkspace {
             cx.propagate();
             return;
         }
-        let outcome = session.update(cx, |session, cx| {
-            let outcome = if measurement_path_pending {
-                session
-                    .annotations
-                    .finish_measurement_path(document_id.value())
-            } else if cloud_pending {
-                session.annotations.finish_cloud(document_id.value())
-            } else if cloud_plus_pending {
-                session.annotations.finish_cloud_plus(document_id.value())
-            } else {
-                session.annotations.finish_vertex_path(document_id.value())
-            };
-            if matches!(outcome, Ok(PointerPhaseOutcome::AnnotationCreated(_))) {
-                session.annotations.set_tool(AnnotationTool::Select)?;
-            }
-            cx.notify();
-            outcome
-        });
+        let page_index = session.read(cx).current_page;
+        let caption_supplement =
+            self.annotation_caption_selection_paths(document_id, page_index, cx);
+        let outcome = self.update_annotation_history_with_result(
+            document_id,
+            cx,
+            |annotations, document_id| {
+                let outcome = if measurement_path_pending {
+                    annotations.finish_measurement_path(document_id)
+                } else if cloud_pending {
+                    annotations.finish_cloud(document_id)
+                } else if cloud_plus_pending {
+                    annotations
+                        .finish_cloud_plus_with_routing_supplement(document_id, &caption_supplement)
+                } else {
+                    annotations.finish_vertex_path(document_id)
+                };
+                if matches!(outcome, Ok(PointerPhaseOutcome::AnnotationCreated(_))) {
+                    annotations.set_tool(AnnotationTool::Select)?;
+                }
+                outcome
+            },
+        );
         let created_cloud_plus_id = if cloud_plus_pending {
             match &outcome {
                 Ok(PointerPhaseOutcome::AnnotationCreated(id)) => Some(id.clone()),
@@ -11845,7 +15484,7 @@ impl DocumentWorkspace {
             let _ = self.begin_pending_composite_text_editor(
                 document_id,
                 page_index,
-                PendingTextEditorTarget::CloudPlus { id },
+                PendingTextEditorTarget::NewCloudPlus { id },
                 window,
                 cx,
             );
@@ -11856,18 +15495,21 @@ impl DocumentWorkspace {
     fn select_length_tool_from_action(
         &mut self,
         _: &SelectLengthTool,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::Length, cx);
+        self.select_available_annotation_tool(AnnotationTool::Length, window, cx);
     }
 
     fn select_highlight_tool_from_action(
         &mut self,
         _: &SelectHighlightTool,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if window.has_focused_input(cx) {
+            return;
+        }
         if self.pending_text_box_editor.is_some() || self.pending_close_document_id.is_some() {
             cx.propagate();
             return;
@@ -11890,9 +15532,12 @@ impl DocumentWorkspace {
     fn select_image_tool_from_action(
         &mut self,
         _: &SelectImageTool,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if window.has_focused_input(cx) {
+            return;
+        }
         if self.pending_text_box_editor.is_some() || self.pending_close_document_id.is_some() {
             cx.propagate();
             return;
@@ -11906,10 +15551,10 @@ impl DocumentWorkspace {
     fn select_snapshot_tool_from_action(
         &mut self,
         _: &SelectSnapshotTool,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::Snapshot, cx);
+        self.select_available_annotation_tool(AnnotationTool::Snapshot, window, cx);
     }
 
     fn select_all_annotations_from_action(
@@ -12034,11 +15679,12 @@ impl DocumentWorkspace {
         &mut self,
         document_id: DocumentId,
         page_index: u32,
+        container_bounds: Bounds<Pixels>,
         bounds: Bounds<Pixels>,
         transform: PageTransform,
         source_pdf_page_size_points: (f32, f32),
         painted_viewer: Option<PaintedViewerAuthority>,
-    ) {
+    ) -> bool {
         let painted_evidence = painted_viewer
             .filter(|authority| authority.rendered_dpr.is_finite() && authority.rendered_dpr > 0.)
             .map(|authority| {
@@ -12081,16 +15727,35 @@ impl DocumentWorkspace {
                     .insert((document_id, page_index), evidence);
                 evidence
             });
-        self.page_interactions.insert(
-            (document_id, page_index),
-            PageInteraction {
-                document_id,
-                page_index,
-                bounds,
-                transform,
-                painted_evidence,
-            },
-        );
+        let interaction = PageInteraction {
+            document_id,
+            page_index,
+            container_bounds,
+            bounds,
+            transform,
+            painted_evidence,
+        };
+        let geometry_changed = self
+            .pending_text_box_editor
+            .as_mut()
+            .filter(|editor| editor.document_id == document_id && editor.page_index == page_index)
+            .and_then(|editor| {
+                let PendingTextEditorTarget::NewTextBox {
+                    interaction: previous,
+                    ..
+                } = &mut editor.target
+                else {
+                    return None;
+                };
+                let changed =
+                    previous.container_bounds != container_bounds || previous.bounds != bounds;
+                *previous = interaction;
+                Some(changed)
+            })
+            .unwrap_or(false);
+        self.page_interactions
+            .insert((document_id, page_index), interaction);
+        geometry_changed
     }
 
     fn interaction_point(
@@ -12128,8 +15793,11 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        let pressed_hot_annotation_handle = self.hot_annotation_handle.clone();
         self.clear_hover_candidate(cx);
-        if self.pending_text_box_editor.is_some()
+        // This global capture listener runs before the popover's occluding surface.
+        // Let the open signature surface own its press, including outside dismissal.
+        if self.signature_popover_open
             || self.pending_close_document_id.is_some()
             || self
                 .active_document_id
@@ -12138,12 +15806,43 @@ impl DocumentWorkspace {
         {
             return false;
         }
-        if self.pan_tool_active {
-            let Some(document_id) = self.active_document_id else { return false; };
-            if !self.viewport_bounds.get(&document_id).is_some_and(|bounds| bounds.contains(&position)) {
+        if self.pending_text_box_editor.is_some() {
+            if self
+                .pending_new_text_box_editor_bounds()
+                .is_some_and(|bounds| bounds.contains(&position))
+            {
                 return false;
             }
-            let Some(session) = self.session(document_id, cx) else { return false; };
+            if matches!(
+                self.pending_text_box_editor
+                    .as_ref()
+                    .map(|editor| &editor.target),
+                Some(PendingTextEditorTarget::NewTextBox { .. })
+            ) {
+                if let Err(error) = self.commit_pending_text_box(cx) {
+                    self.text_box_commit_error = Some(error);
+                } else {
+                    self.workspace_focus.focus(window, cx);
+                }
+                cx.notify();
+                return true;
+            }
+            return false;
+        }
+        if self.pan_tool_active {
+            let Some(document_id) = self.active_document_id else {
+                return false;
+            };
+            if !self
+                .viewport_bounds
+                .get(&document_id)
+                .is_some_and(|bounds| bounds.contains(&position))
+            {
+                return false;
+            }
+            let Some(session) = self.session(document_id, cx) else {
+                return false;
+            };
             // DOM parity: a canvas press moves focus to the workspace body so
             // hold-Space later sees a non-interactive target. This runs in the
             // capture phase, so focusable chrome (buttons, tabs, inputs)
@@ -12154,7 +15853,11 @@ impl DocumentWorkspace {
             if self.canvas_focus_claim_allowed(window, cx) {
                 self.workspace_focus.focus(window, cx);
             }
-            self.pan_drag = Some((document_id, position, session.read(cx).viewer.scroll_handle().offset()));
+            self.pan_drag = Some((
+                document_id,
+                position,
+                session.read(cx).viewer.scroll_handle().offset(),
+            ));
             return true;
         }
         let Some(interaction) = self
@@ -12211,6 +15914,7 @@ impl DocumentWorkspace {
         };
         if !matches!(session.read(cx).status, NativeDocumentStatus::Ready)
             || session.read(cx).save_status == NativeDocumentSaveStatus::Saving
+            || session.read(cx).recovery_preparation.edit_guard().is_err()
             || self.pending_save_prompt.is_some_and(|pending| {
                 pending.document_id == interaction.document_id
                     && pending.document_generation == session.read(cx).generation
@@ -12235,19 +15939,22 @@ impl DocumentWorkspace {
                     return true;
                 }
             };
-            let outcome = session.update(cx, |session, cx| {
-                let outcome = session.annotations.pointer_double_click(
-                    interaction.document_id.value(),
-                    interaction.page_index,
-                    point,
-                    tolerance,
-                )?;
-                if matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_)) {
-                    session.annotations.set_tool(AnnotationTool::Select)?;
-                }
-                cx.notify();
-                Ok::<PointerPhaseOutcome, AnnotationError>(outcome)
-            });
+            let outcome = self.update_annotation_history_with_result(
+                interaction.document_id,
+                cx,
+                |annotations, document_id| {
+                    let outcome = annotations.pointer_double_click(
+                        document_id,
+                        interaction.page_index,
+                        point,
+                        tolerance,
+                    )?;
+                    if matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_)) {
+                        annotations.set_tool(AnnotationTool::Select)?;
+                    }
+                    Ok::<PointerPhaseOutcome, AnnotationError>(outcome)
+                },
+            );
             match outcome {
                 Ok(PointerPhaseOutcome::AnnotationCreated(_)) => {
                     self.annotation_statuses.remove(&interaction.document_id);
@@ -12269,23 +15976,25 @@ impl DocumentWorkspace {
                 .annotations
                 .cloud_pending(interaction.document_id.value())
         {
-            let outcome = session.update(cx, |session, cx| {
-                session.annotations.pointer_down(
-                    interaction.document_id.value(),
-                    interaction.page_index,
-                    self.next_pointer_id,
-                    point,
-                    interaction.transform.tolerance_points(4.)?,
-                )?;
-                let outcome = session
-                    .annotations
-                    .finish_cloud(interaction.document_id.value())?;
-                if matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_)) {
-                    session.annotations.set_tool(AnnotationTool::Select)?;
-                }
-                cx.notify();
-                Ok::<PointerPhaseOutcome, AnnotationError>(outcome)
-            });
+            let pointer_id = self.next_pointer_id;
+            let outcome = self.update_annotation_history_with_result(
+                interaction.document_id,
+                cx,
+                |annotations, document_id| {
+                    annotations.pointer_down(
+                        document_id,
+                        interaction.page_index,
+                        pointer_id,
+                        point,
+                        interaction.transform.tolerance_points(4.)?,
+                    )?;
+                    let outcome = annotations.finish_cloud(document_id)?;
+                    if matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_)) {
+                        annotations.set_tool(AnnotationTool::Select)?;
+                    }
+                    Ok::<PointerPhaseOutcome, AnnotationError>(outcome)
+                },
+            );
             match outcome {
                 Ok(PointerPhaseOutcome::AnnotationCreated(_)) => {
                     self.annotation_statuses.remove(&interaction.document_id);
@@ -12315,19 +16024,22 @@ impl DocumentWorkspace {
                     return true;
                 }
             };
-            let outcome = session.update(cx, |session, cx| {
-                let outcome = session.annotations.pointer_double_click(
-                    interaction.document_id.value(),
-                    interaction.page_index,
-                    point,
-                    tolerance,
-                )?;
-                if matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_)) {
-                    session.annotations.set_tool(AnnotationTool::Select)?;
-                }
-                cx.notify();
-                Ok::<PointerPhaseOutcome, AnnotationError>(outcome)
-            });
+            let outcome = self.update_annotation_history_with_result(
+                interaction.document_id,
+                cx,
+                |annotations, document_id| {
+                    let outcome = annotations.pointer_double_click(
+                        document_id,
+                        interaction.page_index,
+                        point,
+                        tolerance,
+                    )?;
+                    if matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_)) {
+                        annotations.set_tool(AnnotationTool::Select)?;
+                    }
+                    Ok::<PointerPhaseOutcome, AnnotationError>(outcome)
+                },
+            );
             match outcome {
                 Ok(PointerPhaseOutcome::AnnotationCreated(id)) => {
                     self.active_annotation_pointer = None;
@@ -12335,7 +16047,7 @@ impl DocumentWorkspace {
                     let _ = self.begin_pending_composite_text_editor(
                         interaction.document_id,
                         interaction.page_index,
-                        PendingTextEditorTarget::CloudPlus { id },
+                        PendingTextEditorTarget::NewCloudPlus { id },
                         window,
                         cx,
                     );
@@ -12362,10 +16074,10 @@ impl DocumentWorkspace {
                     return true;
                 }
             };
-            let rectangle_hit = session
+            let markup_hit = session
                 .read(cx)
                 .annotations
-                .hit_rectangle_id(
+                .hover_markup_id(
                     interaction.document_id.value(),
                     interaction.page_index,
                     point,
@@ -12373,50 +16085,47 @@ impl DocumentWorkspace {
                 )
                 .ok()
                 .flatten();
-            if let Some(id) = rectangle_hit {
-                let already_selected = session
-                    .read(cx)
-                    .annotations
-                    .selected_rectangle(interaction.document_id.value())
-                    .is_some_and(|rectangle| rectangle.id == id);
-                let selected = session.update(cx, |session, cx| {
-                    let selected = session
+            let click_candidate = self.properties_click_candidate.take();
+            let already_selected = markup_hit.as_ref().is_some_and(|id| {
+                click_candidate
+                    .as_ref()
+                    .filter(|candidate| {
+                        candidate.document_id == interaction.document_id
+                            && candidate.page_index == interaction.page_index
+                            && candidate.markup_id == *id
+                    })
+                    .map(|candidate| candidate.was_selected)
+                    .unwrap_or_else(|| {
+                        session
+                            .read(cx)
+                            .annotations
+                            .selected_ids(interaction.document_id.value())
+                            == std::slice::from_ref(id)
+                    })
+            });
+            if let Some(id) = markup_hit.as_ref() {
+                session.update(cx, |session, cx| {
+                    session
                         .annotations
-                        .select_id(interaction.document_id.value(), &id);
+                        .select_id(interaction.document_id.value(), id);
                     cx.notify();
-                    selected
                 });
-                if selected {
-                    let inspector = self.ensure_rectangle_property_inspector(window, cx);
-                    inspector.update(cx, |inspector, cx| {
-                        if already_selected && inspector.is_open() {
-                            inspector.close(cx);
-                        } else {
-                            inspector.open(cx);
-                        }
-                    });
-                    self.annotation_statuses.remove(&interaction.document_id);
-                    cx.notify();
-                    return true;
-                }
             }
-            let outcome = session.update(cx, |session, cx| {
-                session
-                    .annotations
-                    .set_observed_pixels_per_point(interaction.transform.pixels_per_point())
-                    .map_err(|error| error.to_string())?;
-                let outcome = session
-                    .annotations
-                    .pointer_double_click(
-                        interaction.document_id.value(),
+            let outcome = self.update_annotation_history_with_result(
+                interaction.document_id,
+                cx,
+                |annotations, document_id| {
+                    annotations
+                        .set_observed_pixels_per_point(interaction.transform.pixels_per_point())?;
+                    let outcome = annotations.pointer_double_click(
+                        document_id,
                         interaction.page_index,
                         point,
                         tolerance,
-                    )
-                    .map_err(|error| error.to_string())?;
-                cx.notify();
-                Ok::<PointerPhaseOutcome, String>(outcome)
-            });
+                    )?;
+                    Ok::<PointerPhaseOutcome, AnnotationError>(outcome)
+                },
+            );
             match outcome {
                 Ok(PointerPhaseOutcome::AnnotationEdited(_)) => {
                     self.annotation_statuses.remove(&interaction.document_id);
@@ -12426,6 +16135,10 @@ impl DocumentWorkspace {
                 Ok(PointerPhaseOutcome::SelectionChanged(Some(id))) => {
                     self.active_annotation_pointer = None;
                     self.annotation_statuses.remove(&interaction.document_id);
+                    self.right_rail_actions_open = properties_double_click_sidebar_open(
+                        already_selected,
+                        self.right_rail_actions_open,
+                    );
                     let target = if session
                         .read(cx)
                         .annotations
@@ -12433,6 +16146,13 @@ impl DocumentWorkspace {
                         .is_some()
                     {
                         PendingTextEditorTarget::ExistingDimension { id }
+                    } else if session
+                        .read(cx)
+                        .annotations
+                        .exact_selected_cloud_plus(interaction.document_id.value())
+                        .is_some()
+                    {
+                        PendingTextEditorTarget::ExistingCloudPlus { id }
                     } else {
                         PendingTextEditorTarget::ExistingTextBox { id }
                     };
@@ -12446,7 +16166,18 @@ impl DocumentWorkspace {
                     cx.notify();
                     return true;
                 }
-                Ok(PointerPhaseOutcome::Ignored) => {}
+                Ok(PointerPhaseOutcome::Ignored) => {
+                    if markup_hit.is_some() {
+                        self.active_annotation_pointer = None;
+                        self.annotation_statuses.remove(&interaction.document_id);
+                        self.right_rail_actions_open = properties_double_click_sidebar_open(
+                            already_selected,
+                            self.right_rail_actions_open,
+                        );
+                        cx.notify();
+                        return true;
+                    }
+                }
                 Ok(_) => {
                     return true;
                 }
@@ -12459,13 +16190,7 @@ impl DocumentWorkspace {
             }
         }
         if tool == AnnotationTool::TextBox {
-            return self.begin_pending_text_box(
-                interaction.document_id,
-                interaction.page_index,
-                point,
-                window,
-                cx,
-            );
+            return self.begin_pending_text_box(interaction, point, window, cx);
         }
         if tool == AnnotationTool::Length {
             if session
@@ -12473,17 +16198,23 @@ impl DocumentWorkspace {
                 .annotations
                 .length_placement_pending(interaction.document_id.value())
             {
-                let result = session.update(cx, |session, cx| {
-                    let outcome = session.annotations.commit_length_placement(
-                        interaction.document_id.value(),
-                        interaction.page_index,
-                        point,
-                        modifiers.shift,
-                    )?;
-                    session.annotations.clear_semantic_snap_decision();
-                    cx.notify();
-                    Ok::<PointerPhaseOutcome, AnnotationError>(outcome)
-                });
+                let result = self.update_annotation_history_with_result(
+                    interaction.document_id,
+                    cx,
+                    |annotations, document_id| {
+                        let outcome = annotations.commit_length_placement(
+                            document_id,
+                            interaction.page_index,
+                            point,
+                            modifiers.shift,
+                        )?;
+                        if matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_)) {
+                            annotations.set_tool(AnnotationTool::Select)?;
+                        }
+                        annotations.clear_semantic_snap_decision();
+                        Ok::<PointerPhaseOutcome, AnnotationError>(outcome)
+                    },
+                );
                 match result {
                     Ok(_) => {
                         self.annotation_statuses.remove(&interaction.document_id);
@@ -12537,17 +16268,23 @@ impl DocumentWorkspace {
                 .annotations
                 .dimension_placement_pending(interaction.document_id.value())
             {
-                let result = session.update(cx, |session, cx| {
-                    let outcome = session.annotations.commit_dimension_placement(
-                        interaction.document_id.value(),
-                        interaction.page_index,
-                        point,
-                        modifiers.shift,
-                    )?;
-                    session.annotations.clear_semantic_snap_decision();
-                    cx.notify();
-                    Ok::<PointerPhaseOutcome, AnnotationError>(outcome)
-                });
+                let result = self.update_annotation_history_with_result(
+                    interaction.document_id,
+                    cx,
+                    |annotations, document_id| {
+                        let outcome = annotations.commit_dimension_placement(
+                            document_id,
+                            interaction.page_index,
+                            point,
+                            modifiers.shift,
+                        )?;
+                        if matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_)) {
+                            annotations.set_tool(AnnotationTool::Select)?;
+                        }
+                        annotations.clear_semantic_snap_decision();
+                        Ok::<PointerPhaseOutcome, AnnotationError>(outcome)
+                    },
+                );
                 match result {
                     Ok(PointerPhaseOutcome::AnnotationCreated(id)) => {
                         self.annotation_statuses.remove(&interaction.document_id);
@@ -12623,6 +16360,39 @@ impl DocumentWorkspace {
         ) {
             return false;
         }
+        if tool == AnnotationTool::Select && click_count == 1 {
+            let selection_supplement = self.annotation_caption_selection_paths(
+                interaction.document_id,
+                interaction.page_index,
+                cx,
+            );
+            self.properties_click_candidate = interaction
+                .transform
+                .tolerance_points(4.)
+                .ok()
+                .and_then(|tolerance| {
+                    let session = session.read(cx);
+                    let annotations = &session.annotations;
+                    let markup_id = annotations
+                        .hover_markup_id_with_selection_paths(
+                            interaction.document_id.value(),
+                            interaction.page_index,
+                            point,
+                            tolerance,
+                            &selection_supplement,
+                        )
+                        .ok()
+                        .flatten()?;
+                    let was_selected = annotations.selected_ids(interaction.document_id.value())
+                        == std::slice::from_ref(&markup_id);
+                    Some(PropertiesClickCandidate {
+                        document_id: interaction.document_id,
+                        page_index: interaction.page_index,
+                        markup_id,
+                        was_selected,
+                    })
+                });
+        }
         let retained_pointer = self.active_annotation_pointer.filter(|active| {
             active.placement_pending
                 && active.document_id == interaction.document_id
@@ -12662,6 +16432,8 @@ impl DocumentWorkspace {
         };
         let next_annotation_id = if retained_pointer.is_none()
             && !path_draft_pending
+            && (tool != AnnotationTool::Image
+                || session.read(cx).annotations.image_asset().is_some())
             && matches!(
                 tool,
                 AnnotationTool::Rectangle
@@ -12745,39 +16517,101 @@ impl DocumentWorkspace {
                 return true;
             }
         };
-        let accepted = session
-            .update(cx, |session, cx| {
-                session
-                    .annotations
-                    .set_observed_pixels_per_point(interaction.transform.pixels_per_point())
-                    .map_err(|error| error.to_string())?;
-                if let Some(id) = next_annotation_id {
-                    session.annotations.queue_next_annotation_id(id);
-                }
-                if let Some(asset) = snapshot_capture {
-                    session.annotations.set_snapshot_capture_asset(asset);
-                }
-                let outcome = session
-                    .annotations
-                    .pointer_down_with_viewport_input(
+        let image_select_after_placement = tool == AnnotationTool::Image
+            && session.read(cx).annotations.image_select_after_placement();
+        let selection_supplement = self.annotation_caption_selection_paths(
+            interaction.document_id,
+            interaction.page_index,
+            cx,
+        );
+        let hover_handle_select = (tool == AnnotationTool::Select)
+            .then(|| {
+                let (_, _, hot_id, hot_index) =
+                    pressed_hot_annotation_handle
+                        .as_ref()
+                        .filter(|(document, page, _, _)| {
+                            *document == interaction.document_id && *page == interaction.page_index
+                        })?;
+                let session = session.read(cx);
+                let annotations = &session.annotations;
+                let tolerance = interaction.transform.tolerance_points(4.).ok()?;
+                let current = annotations
+                    .hover_transform_handle(
                         interaction.document_id.value(),
                         interaction.page_index,
-                        pointer_id,
-                        0,
                         point,
-                        viewport_point,
-                        interaction
-                            .transform
-                            .tolerance_points(4.)
-                            .map_err(|error| error.to_string())?,
-                        PointerInputModifiers {
-                            shift: modifiers.shift,
-                            alt: modifiers.alt,
-                        },
+                        tolerance,
                     )
-                    .map_err(|error| error.to_string())?;
-                cx.notify();
-                Ok::<PointerPhaseOutcome, String>(outcome)
+                    .ok()
+                    .flatten()?;
+                (&current.0 == hot_id && current.1 == *hot_index).then(|| current.0)
+            })
+            .flatten();
+        let recovery_store = self.document_recovery_store.clone();
+        let accepted = session
+            .update(cx, |session, cx| {
+                commit_recovery_guarded_annotation_change(
+                    session,
+                    recovery_store.as_ref(),
+                    interaction.document_id,
+                    true,
+                    cx,
+                    |session| {
+                        if tool == AnnotationTool::Image
+                            && session.annotations.image_asset().is_some()
+                        {
+                            let (page_size, _) = session
+                                .annotation_page_geometry(interaction.page_index)
+                                .ok_or_else(|| {
+                                    "image placement page geometry is unavailable".to_owned()
+                                })?;
+                            session
+                                .annotations
+                                .set_image_placement_page(
+                                    f64::from(page_size.0),
+                                    f64::from(page_size.1),
+                                    NATURAL_IMAGE_MAX_PAGE_FRACTION,
+                                )
+                                .map_err(|error| error.to_string())?;
+                        }
+                        session
+                            .annotations
+                            .set_observed_pixels_per_point(interaction.transform.pixels_per_point())
+                            .map_err(|error| error.to_string())?;
+                        if let Some(id) = hover_handle_select.as_ref() {
+                            session
+                                .annotations
+                                .select_id(interaction.document_id.value(), id);
+                        }
+                        if let Some(id) = next_annotation_id {
+                            session.annotations.queue_next_annotation_id(id);
+                        }
+                        if let Some(asset) = snapshot_capture {
+                            session.annotations.set_snapshot_capture_asset(asset);
+                        }
+                        let outcome = session
+                            .annotations
+                            .pointer_down_with_viewport_input_and_selection_paths(
+                                interaction.document_id.value(),
+                                interaction.page_index,
+                                pointer_id,
+                                0,
+                                point,
+                                viewport_point,
+                                interaction
+                                    .transform
+                                    .tolerance_points(4.)
+                                    .map_err(|error| error.to_string())?,
+                                PointerInputModifiers {
+                                    shift: modifiers.shift,
+                                    alt: modifiers.alt,
+                                },
+                                &selection_supplement,
+                            )
+                            .map_err(|error| error.to_string())?;
+                        Ok::<PointerPhaseOutcome, String>(outcome)
+                    },
+                )
             })
             .ok();
         if matches!(
@@ -12807,13 +16641,14 @@ impl DocumentWorkspace {
                 session.annotations.clear_semantic_snap_decision();
                 if matches!(
                     tool,
-                    AnnotationTool::Polyline
+                    AnnotationTool::Rectangle
+                        | AnnotationTool::Polyline
                         | AnnotationTool::Polygon
                         | AnnotationTool::Polylength
                         | AnnotationTool::Area
                         | AnnotationTool::CloudPlus
-                        | AnnotationTool::Image
-                ) {
+                ) || image_select_after_placement
+                {
                     session
                         .annotations
                         .set_tool(AnnotationTool::Select)
@@ -12829,7 +16664,7 @@ impl DocumentWorkspace {
                     AnnotationTool::Callout => PendingTextEditorTarget::Callout {
                         id: created_id.clone(),
                     },
-                    AnnotationTool::CloudPlus => PendingTextEditorTarget::CloudPlus {
+                    AnnotationTool::CloudPlus => PendingTextEditorTarget::NewCloudPlus {
                         id: created_id.clone(),
                     },
                     _ => unreachable!("only composite text tools open the retained editor"),
@@ -12873,13 +16708,20 @@ impl DocumentWorkspace {
                     && interaction.bounds.contains(&position)
             })
         else {
-            return false;
+            return self.clear_hover_candidate(cx);
         };
+        if self
+            .page_scale_control
+            .as_ref()
+            .is_some_and(|control| control.read(cx).is_picking())
+        {
+            return self.clear_hover_candidate(cx);
+        }
         let Some(point) = Self::interaction_point(interaction, position, true) else {
-            return false;
+            return self.clear_hover_candidate(cx);
         };
         let Some(session) = self.session(interaction.document_id, cx).cloned() else {
-            return false;
+            return self.clear_hover_candidate(cx);
         };
         let length_pending = session
             .read(cx)
@@ -12917,6 +16759,47 @@ impl DocumentWorkspace {
             && !cloud_plus_pending
             && !arc_pending
         {
+            let tool = session.read(cx).annotations.tool();
+            if tool == AnnotationTool::Image && session.read(cx).annotations.image_asset().is_some()
+            {
+                let placement_updated = session
+                    .update(cx, |session, _| {
+                        let (page_size, _) = session
+                            .annotation_page_geometry(interaction.page_index)
+                            .ok_or_else(|| {
+                                "image placement page geometry is unavailable".to_owned()
+                            })?;
+                        session
+                            .annotations
+                            .set_image_placement_page(
+                                f64::from(page_size.0),
+                                f64::from(page_size.1),
+                                NATURAL_IMAGE_MAX_PAGE_FRACTION,
+                            )
+                            .map_err(|error| error.to_string())
+                    })
+                    .is_ok();
+                if !placement_updated {
+                    return self.clear_hover_candidate(cx);
+                }
+                let next = Some((interaction.document_id, interaction.page_index, point));
+                if self.pending_image_hover != next
+                    || self.hovered_annotation.is_some()
+                    || self.hot_annotation_handle.is_some()
+                    || self.select_hover_hit.is_some()
+                {
+                    self.pending_image_hover = next;
+                    self.hovered_annotation = None;
+                    self.hot_annotation_handle = None;
+                    self.select_hover_hit = None;
+                    cx.notify();
+                    return true;
+                }
+                return false;
+            }
+            if tool != AnnotationTool::Select {
+                return self.clear_hover_candidate(cx);
+            }
             return self.update_hover_candidate(&session, &interaction, point, cx);
         }
         let updated = session
@@ -13013,10 +16896,10 @@ impl DocumentWorkspace {
             Ok(tolerance) => tolerance,
             Err(_) => return self.clear_hover_candidate(cx),
         };
-        let candidate = session
+        let select_hit = session
             .read(cx)
             .annotations
-            .hover_markup_id(
+            .select_hover_hit(
                 document_id.value(),
                 interaction.page_index,
                 point,
@@ -13024,9 +16907,63 @@ impl DocumentWorkspace {
             )
             .ok()
             .flatten()
+            .map(|hit| (document_id, interaction.page_index, hit));
+        let selected_rectangle_hot_handle =
+            select_hit.as_ref().and_then(|(document, page, hit)| {
+                let (id, index) = match hit {
+                    HitTarget::ResizeHandle { id, handle } => (
+                        id.clone(),
+                        RectangleResizeHandle::ALL
+                            .iter()
+                            .position(|candidate| candidate == handle)?,
+                    ),
+                    HitTarget::RotationHandle(id) => (id.clone(), RectangleResizeHandle::ALL.len()),
+                    HitTarget::Body(_) | HitTarget::LineEndpoint { .. } => return None,
+                };
+                Some((*document, *page, id, index))
+            });
+        let transform_hot_handle = session
+            .read(cx)
+            .annotations
+            .hover_transform_handle(
+                document_id.value(),
+                interaction.page_index,
+                point,
+                tolerance,
+            )
+            .ok()
+            .flatten()
+            .map(|(id, index)| (document_id, interaction.page_index, id, index));
+        let hot_handle = selected_rectangle_hot_handle.or(transform_hot_handle);
+        let selection_supplement =
+            self.annotation_caption_selection_paths(document_id, interaction.page_index, cx);
+        let candidate = session
+            .read(cx)
+            .annotations
+            .hover_markup_id_with_selection_paths(
+                document_id.value(),
+                interaction.page_index,
+                point,
+                tolerance,
+                &selection_supplement,
+            )
+            .ok()
+            .flatten()
             .map(|id| (document_id, interaction.page_index, id));
-        if self.hovered_annotation != candidate {
+        let candidate = candidate.or_else(|| {
+            hot_handle
+                .as_ref()
+                .map(|(document, page, id, _)| (*document, *page, id.clone()))
+        });
+        if self.hovered_annotation != candidate
+            || self.hot_annotation_handle != hot_handle
+            || self.select_hover_hit != select_hit
+            || self.pending_image_hover.is_some()
+        {
             self.hovered_annotation = candidate;
+            self.hot_annotation_handle = hot_handle;
+            self.select_hover_hit = select_hit;
+            self.pending_image_hover = None;
             cx.notify();
             true
         } else {
@@ -13035,7 +16972,15 @@ impl DocumentWorkspace {
     }
 
     fn clear_hover_candidate(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.hovered_annotation.take().is_some() {
+        let hovered = self.hovered_annotation.take();
+        let hot_handle = self.hot_annotation_handle.take();
+        let select_hit = self.select_hover_hit.take();
+        let image_hover = self.pending_image_hover.take();
+        if hovered.is_some()
+            || hot_handle.is_some()
+            || select_hit.is_some()
+            || image_hover.is_some()
+        {
             cx.notify();
             true
         } else {
@@ -13056,7 +17001,12 @@ impl DocumentWorkspace {
             }
             if self.session(document_id, cx).is_some() {
                 let next = offset + position - origin;
-                self.set_viewport_scroll(document_id, (-f32::from(next.x)).max(0.), (-f32::from(next.y)).max(0.), cx);
+                self.set_viewport_scroll(
+                    document_id,
+                    (-f32::from(next.x)).max(0.),
+                    (-f32::from(next.y)).max(0.),
+                    cx,
+                );
                 return true;
             }
             self.pan_drag = None;
@@ -13151,43 +17101,53 @@ impl DocumentWorkspace {
             return false;
         }
         let tool = session.read(cx).annotations.tool();
+        let selection_supplement =
+            self.annotation_caption_selection_paths(active.document_id, active.page_index, cx);
+        let recovery_store = self.document_recovery_store.clone();
         let outcome = session
             .update(cx, |session, cx| {
-                let outcome = session
-                    .annotations
-                    .pointer_up_with_viewport_input(
-                        active.pointer_id,
-                        point,
-                        viewport_point,
-                        PointerInputModifiers {
-                            shift: modifiers.shift,
-                            alt: modifiers.alt,
-                        },
-                    )
-                    .map_err(|error| error.to_string())?;
-                if outcome != PointerPhaseOutcome::PlacementPending {
-                    session.annotations.clear_semantic_snap_decision();
-                }
+                let outcome = commit_recovery_guarded_annotation_change(
+                    session,
+                    recovery_store.as_ref(),
+                    active.document_id,
+                    true,
+                    cx,
+                    |session| {
+                        let outcome = session
+                            .annotations
+                            .pointer_up_with_viewport_input_and_selection_paths(
+                                active.pointer_id,
+                                point,
+                                viewport_point,
+                                PointerInputModifiers {
+                                    shift: modifiers.shift,
+                                    alt: modifiers.alt,
+                                },
+                                &selection_supplement,
+                            )
+                            .map_err(|error| error.to_string())?;
+                        if outcome != PointerPhaseOutcome::PlacementPending {
+                            session.annotations.clear_semantic_snap_decision();
+                        }
+                        let created_ink =
+                            matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_))
+                                && matches!(tool, AnnotationTool::Pen | AnnotationTool::Highlight);
+                        let created_cloud_plus =
+                            matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_))
+                                && session.annotations.tool() == AnnotationTool::CloudPlus;
+                        let created_rectangle =
+                            matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_))
+                                && tool == AnnotationTool::Rectangle;
+                        if created_ink || created_cloud_plus || created_rectangle {
+                            session
+                                .annotations
+                                .set_tool(AnnotationTool::Select)
+                                .map_err(|error| error.to_string())?;
+                        }
+                        Ok::<PointerPhaseOutcome, String>(outcome)
+                    },
+                )?;
                 cx.notify();
-                let created_highlight =
-                    matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_))
-                        && session.annotations.tool() == AnnotationTool::Highlight;
-                let created_cloud_plus =
-                    matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_))
-                        && session.annotations.tool() == AnnotationTool::CloudPlus;
-                if created_highlight || created_cloud_plus {
-                    session
-                        .annotations
-                        .set_tool(AnnotationTool::Select)
-                        .map_err(|error| error.to_string())?;
-                }
-                if matches!(
-                    outcome,
-                    PointerPhaseOutcome::AnnotationCreated(_)
-                        | PointerPhaseOutcome::AnnotationEdited(_)
-                ) {
-                    session.rebuild_stable_highlight_presentations()?;
-                }
                 Ok::<PointerPhaseOutcome, String>(outcome)
             })
             .ok();
@@ -13197,7 +17157,7 @@ impl DocumentWorkspace {
             let _ = self.begin_pending_composite_text_editor(
                 active.document_id,
                 active.page_index,
-                PendingTextEditorTarget::CloudPlus { id: id.clone() },
+                PendingTextEditorTarget::NewCloudPlus { id: id.clone() },
                 window,
                 cx,
             );
@@ -13273,19 +17233,37 @@ impl DocumentWorkspace {
             return false;
         }
         if self.active_document_id != Some(document_id) {
+            let previous_document_id = self.active_document_id;
             if self.signature_popover_open
-                && let Some(previous) = self.active_document_id
+                && let Some(previous) = previous_document_id
             {
                 self.dismiss_signature_popover(previous, None, cx);
             }
             if let (Some(previous), Some(control)) =
-                (self.active_document_id, self.page_scale_control.clone())
+                (previous_document_id, self.page_scale_control.clone())
             {
                 control.update(cx, |control, cx| {
                     control.cancel_for_document(previous, cx);
                 });
             }
             self.cancel_annotation_pointer(cx);
+            if let Some(previous) = previous_document_id
+                && let Some(session) = self.session(previous, cx).cloned()
+            {
+                session.update(cx, |session, cx| {
+                    session.annotations.clear_pending_image_asset();
+                    cx.notify();
+                });
+            }
+            if let Some(session) = self.session(document_id, cx).cloned() {
+                session.update(cx, |session, cx| {
+                    session.annotations.clear_pending_image_asset();
+                    if session.annotations.tool() == AnnotationTool::Image {
+                        let _ = session.annotations.set_tool(AnnotationTool::Select);
+                    }
+                    cx.notify();
+                });
+            }
             self.active_document_id = Some(document_id);
             self.session_tab_reveal = Some(document_id);
             cx.notify();
@@ -13312,11 +17290,23 @@ impl DocumentWorkspace {
         let Some(session) = self.session(document_id, cx) else {
             return CloseRequestDisposition::NotFound;
         };
+        if let Some(warning_generation) =
+            session.read(cx).publication_durability_warning_generation()
+        {
+            if self.pending_close_document_id.is_some() {
+                return CloseRequestDisposition::ConfirmationRequired;
+            }
+            self.pending_close_document_id = Some(document_id);
+            self.pending_publication_warning_generation = Some(warning_generation);
+            cx.notify();
+            return CloseRequestDisposition::ConfirmationRequired;
+        }
         if session.read(cx).is_dirty() {
             if self.pending_close_document_id.is_some() {
                 return CloseRequestDisposition::ConfirmationRequired;
             }
             self.pending_close_document_id = Some(document_id);
+            self.pending_publication_warning_generation = None;
             cx.notify();
             CloseRequestDisposition::ConfirmationRequired
         } else {
@@ -13346,9 +17336,77 @@ impl DocumentWorkspace {
         if self.pending_close_document_id.take().is_none() {
             return DirtyCloseResolution::NoPendingDocument;
         }
+        self.pending_publication_warning_generation = None;
         self.close_after_save_document_id = None;
         cx.notify();
         DirtyCloseResolution::Cancelled
+    }
+
+    pub fn resolve_publication_warning_close(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> CloseRequestDisposition {
+        let Some(document_id) = self.pending_close_document_id.take() else {
+            return CloseRequestDisposition::NotFound;
+        };
+        let Some(warning_generation) = self.pending_publication_warning_generation.take() else {
+            return self.request_close_document(document_id, cx);
+        };
+        if self.session(document_id, cx).is_none() {
+            return CloseRequestDisposition::NotFound;
+        }
+        self.acknowledge_publication_durability_warning(document_id, warning_generation, cx);
+        self.request_close_document(document_id, cx)
+    }
+
+    pub fn first_publication_durability_warning(
+        &self,
+        cx: &App,
+    ) -> Option<(DocumentId, u64, String)> {
+        self.sessions.iter().find_map(|session| {
+            let session = session.read(cx);
+            Some((
+                session.id,
+                session.publication_durability_warning_generation()?,
+                session.publication_durability_warning()?.to_owned(),
+            ))
+        })
+    }
+
+    pub fn publication_durability_warning_generation(
+        &self,
+        document_id: DocumentId,
+        cx: &App,
+    ) -> Option<u64> {
+        self.session(document_id, cx)?
+            .read(cx)
+            .publication_durability_warning_generation()
+    }
+
+    pub fn acknowledge_publication_durability_warning(
+        &mut self,
+        document_id: DocumentId,
+        warning_generation: u64,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return false;
+        };
+        let cleared = session.update(cx, |session, cx| {
+            let cleared = session
+                .publication_durability_warning
+                .as_ref()
+                .is_some_and(|warning| warning.save_generation == warning_generation);
+            if cleared {
+                session.publication_durability_warning = None;
+                cx.notify();
+            }
+            cleared
+        });
+        if cleared {
+            cx.notify();
+        }
+        cleared
     }
 
     pub fn resolve_dirty_close_discard(&mut self, cx: &mut Context<Self>) -> DirtyCloseResolution {
@@ -13415,7 +17473,27 @@ impl DocumentWorkspace {
         if self.signature_popover_open && self.active_document_id == Some(document_id) {
             self.dismiss_signature_popover(document_id, None, cx);
         }
+        let recovery_authority = match &self.sessions[index].read(cx).recovery_preparation {
+            DocumentRecoveryPreparation::Ready { authority, .. }
+            | DocumentRecoveryPreparation::Ambiguous { authority, .. }
+            | DocumentRecoveryPreparation::RebaseFailed { authority, .. } => Some(*authority),
+            _ => None,
+        };
+        let recovery_store = recovery_authority
+            .map(|_| {
+                self.document_recovery_store
+                    .clone()
+                    .ok_or_else(|| "the document recovery store is unavailable".to_owned())
+            })
+            .transpose()?;
         let images = self.sessions[index].update(cx, |session, _| session.release())?;
+        if let (Some(recovery_authority), Some(store)) = (recovery_authority, recovery_store) {
+            if let Err(error) = store.clear_authority(&recovery_authority) {
+                self.last_file_error = Some(format!(
+                    "Closed document but retained its recovery checkpoint because it could not be retired safely: {error}"
+                ));
+            }
+        }
         if self
             .active_annotation_pointer
             .is_some_and(|active| active.document_id == document_id)
@@ -13429,10 +17507,12 @@ impl DocumentWorkspace {
         }
         if self.pending_close_document_id == Some(document_id) {
             self.pending_close_document_id = None;
+            self.pending_publication_warning_generation = None;
         }
         if self.close_after_save_document_id == Some(document_id) {
             self.close_after_save_document_id = None;
         }
+        self.recovery_confirmation_pending.remove(&document_id);
         self.viewer_session_subscriptions.remove(&document_id);
         self.viewer_quality_tasks.remove(&document_id);
         self.session_tab_focus_handles.remove(&document_id);
@@ -13507,17 +17587,191 @@ pub fn straight_line_arrowhead_points(
     crate::annotation_model::straight_line_arrowhead_points(start, end, stroke_width_pt)
 }
 
+struct ShapeFeedbackGeometry {
+    bounds: [Point<Pixels>; 4],
+    handles: [Point<Pixels>; 8],
+    rotation_center: Point<Pixels>,
+    connector_start: Point<Pixels>,
+    connector_end: Point<Pixels>,
+}
+
+fn annotation_paint_transform(
+    bounds: Bounds<Pixels>,
+    rotation_degrees: f64,
+    scale_factor: f32,
+) -> TransformationMatrix {
+    if rotation_degrees.rem_euclid(360.).abs() <= f64::EPSILON {
+        return TransformationMatrix::unit();
+    }
+    let centre = point(
+        bounds.origin.x + bounds.size.width / 2.,
+        bounds.origin.y + bounds.size.height / 2.,
+    );
+    TransformationMatrix::unit()
+        .translate(centre.scale(scale_factor))
+        .rotate(radians(rotation_degrees.to_radians() as f32))
+        .translate(centre.scale(-scale_factor))
+}
+
+fn shape_feedback_geometry(
+    rect: PdfRect,
+    rotation: f64,
+    ellipse: bool,
+    transform: &PageTransform,
+    origin: Point<Pixels>,
+    rotation_radius: f32,
+) -> ShapeFeedbackGeometry {
+    let local = transform.rect_to_local_pixels(rect);
+    let left = origin.x + px(local.x as f32);
+    let top = origin.y + px(local.y as f32);
+    let right = left + px(local.width as f32);
+    let bottom = top + px(local.height as f32);
+    let center = point((left + right) / 2., (top + bottom) / 2.);
+    let rotate = |sample| interaction_chrome::rotate_feedback_point(sample, center, rotation);
+    let project = |sample| {
+        let point = transform.point_to_local_pixels(sample);
+        gpui::point(origin.x + px(point.x as f32), origin.y + px(point.y as f32))
+    };
+    let bounds = [
+        point(left, top),
+        point(right, top),
+        point(right, bottom),
+        point(left, bottom),
+    ]
+    .map(rotate);
+    let handles = RectangleResizeHandle::ALL.map(|handle| {
+        let pdf = if ellipse {
+            ellipse_resize_handle_point_for_rect(rect, 0., handle)
+        } else {
+            handle.point(rect)
+        };
+        rotate(project(pdf))
+    });
+    let raw_rotation = project(PdfPoint {
+        x: rect.x + rect.width / 2.,
+        y: rect.y + rect.height + 12.,
+    });
+    let outside = |value: Pixels, start: Pixels, end: Pixels| {
+        if value < start {
+            start - px(12.)
+        } else if value > end {
+            end + px(12.)
+        } else {
+            value
+        }
+    };
+    let rotation_center = point(
+        outside(raw_rotation.x, left, right),
+        outside(raw_rotation.y, top, bottom),
+    );
+    let above = rotation_center.y < top;
+    let connector_start = point(
+        rotation_center.x.max(left).min(right),
+        if above { top } else { bottom },
+    );
+    let connector_end = point(
+        rotation_center.x,
+        rotation_center.y
+            + px(if above {
+                rotation_radius
+            } else {
+                -rotation_radius
+            }),
+    );
+    ShapeFeedbackGeometry {
+        bounds,
+        handles,
+        rotation_center: rotate(rotation_center),
+        connector_start: rotate(connector_start),
+        connector_end: rotate(connector_end),
+    }
+}
+
+fn paint_shape_feedback(
+    annotation: &SceneRectangle,
+    ellipse: bool,
+    allow_rotation: bool,
+    transform: &PageTransform,
+    origin: Point<Pixels>,
+    hovered_id: Option<&MarkupId>,
+    focused_id: Option<&MarkupId>,
+    candidate: bool,
+    hot_handle: Option<&(MarkupId, usize)>,
+    window: &mut Window,
+) {
+    if !annotation.feedback.chrome_visible() {
+        return;
+    }
+    let hover_controls_visible = hovered_id == Some(&annotation.id)
+        || hot_handle.is_some_and(|(id, _)| id == &annotation.id);
+    let Some(state) = interaction_chrome::feedback_state(
+        annotation.selected,
+        focused_id == Some(&annotation.id),
+        hover_controls_visible,
+        false,
+        candidate,
+    ) else {
+        return;
+    };
+    let geometry = shape_feedback_geometry(
+        annotation.rect,
+        annotation.rotation_degrees,
+        ellipse,
+        transform,
+        origin,
+        interaction_chrome::rotation_feedback_radius(state, false),
+    );
+    interaction_chrome::paint_feedback_path(&geometry.bounds, true, state, window);
+    if (annotation.selected || hover_controls_visible) && !candidate && !annotation.locked {
+        // Stems precede resize handles: sideways-page projection can cross a corner.
+        if annotation.selected
+            && allow_rotation
+            && annotation
+                .feedback
+                .handle_visible(RectangleResizeHandle::ALL.len())
+        {
+            let hot = hot_handle.is_some_and(|(id, index)| {
+                id == &annotation.id && *index == RectangleResizeHandle::ALL.len()
+            });
+            interaction_chrome::paint_rotation_feedback(
+                geometry.connector_start,
+                geometry.connector_end,
+                geometry.rotation_center,
+                state,
+                hot,
+                window,
+            );
+        }
+        for (index, center) in geometry.handles.into_iter().enumerate() {
+            if annotation.feedback.handle_visible(index) {
+                let hot = hot_handle
+                    .is_some_and(|(id, hot_index)| id == &annotation.id && *hot_index == index);
+                interaction_chrome::paint_rotated_feedback_handle(
+                    center,
+                    annotation.rotation_degrees,
+                    state,
+                    hot,
+                    window,
+                );
+            }
+        }
+    }
+}
+
 fn paint_ellipse_annotations(
-    annotations: Vec<SceneRectangle>,
+    annotations: impl IntoIterator<Item = SceneRectangle>,
     page_bounds: Bounds<Pixels>,
     page_size: (f32, f32),
     transform: &PageTransform,
     selection_color: gpui::Hsla,
     hovered_id: Option<&MarkupId>,
     focused_id: Option<&MarkupId>,
+    marquee_candidate_ids: &HashSet<MarkupId>,
+    hot_handle: Option<&(MarkupId, usize)>,
     window: &mut Window,
 ) {
     for annotation in annotations {
+        let annotation_candidate = marquee_candidate_ids.contains(&annotation.id);
         let project = |sample: PdfPoint| {
             let local = transform.point_to_local_pixels(sample);
             point(
@@ -13567,64 +17821,18 @@ fn paint_ellipse_annotations(
                     .opacity(annotation.appearance.opacity() as f32),
             );
         }
-        let annotation_focused = focused_id == Some(&annotation.id);
-        let annotation_hovered = hovered_id == Some(&annotation.id);
-        if let Some(chrome_outline) = interaction_chrome::outline_for(
-            annotation.selected,
-            annotation_focused,
-            annotation_hovered,
-            annotation.preview,
-            annotation.locked,
-        ) {
-            let mut builder = PathBuilder::stroke(px(2.));
-            builder.move_to(project(start));
-            for (control_a, control_b, to) in segments {
-                builder.cubic_bezier_to(project(to), project(control_a), project(control_b));
-            }
-            builder.close();
-            if let Ok(path) = builder.build() {
-                window.paint_path(path, chrome_outline);
-            }
-            if (annotation.selected || annotation_focused) && !annotation.preview {
-                for center in RectangleResizeHandle::ALL
-                    .map(|handle| {
-                        ellipse_resize_handle_point_for_rect(
-                            annotation.rect,
-                            annotation.rotation_degrees,
-                            handle,
-                        )
-                    })
-                    .map(project)
-                {
-                    interaction_chrome::paint_handle(Bounds::new(
-                            point(center.x - px(4.), center.y - px(4.)),
-                            size(px(8.), px(8.)),
-                        ), annotation.locked, window);
-                }
-                if let Ok(rotation_handle) = ellipse_rotation_handle_point_for_rect(
-                    annotation.rect,
-                    annotation.rotation_degrees,
-                    transform.pixels_per_point(),
-                ) {
-                    let north = ellipse_resize_handle_point_for_rect(
-                        annotation.rect,
-                        annotation.rotation_degrees,
-                        RectangleResizeHandle::North,
-                    );
-                    let mut connector = PathBuilder::stroke(px(2.));
-                    connector.move_to(project(north));
-                    connector.line_to(project(rotation_handle));
-                    if let Ok(path) = connector.build() {
-                        window.paint_path(path, chrome_outline);
-                    }
-                    let center = project(rotation_handle);
-                    interaction_chrome::paint_handle(Bounds::new(
-                            point(center.x - px(4.), center.y - px(4.)),
-                            size(px(8.), px(8.)),
-                        ), annotation.locked, window);
-                }
-            }
-        }
+        paint_shape_feedback(
+            &annotation,
+            true,
+            true,
+            transform,
+            page_bounds.origin,
+            hovered_id,
+            focused_id,
+            annotation_candidate,
+            hot_handle,
+            window,
+        );
     }
 }
 
@@ -13636,9 +17844,12 @@ fn paint_cloud_plus_annotation(
     selection_color: gpui::Hsla,
     hovered_id: Option<&MarkupId>,
     focused_id: Option<&MarkupId>,
+    marquee_candidate_ids: &HashSet<MarkupId>,
+    hot_handle: Option<&(MarkupId, usize)>,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let annotation_candidate = marquee_candidate_ids.contains(&annotation.id);
     if annotation.scallop_path.len() < 2 {
         return;
     }
@@ -13759,30 +17970,81 @@ fn paint_cloud_plus_annotation(
             }
         },
     );
-    let annotation_focused = focused_id == Some(&annotation.id);
-    let annotation_hovered = hovered_id == Some(&annotation.id);
-    if let Some(chrome_outline) = interaction_chrome::outline_for(
-        annotation.selected,
-        annotation_focused,
-        annotation_hovered,
-        annotation.draft,
-        annotation.locked,
-    ) {
-        window.paint_quad(
-            outline(text_box_bounds, chrome_outline, BorderStyle::Solid)
-                .border_widths(px(if annotation.locked { 1. } else { 2. })),
+    if annotation.feedback.chrome_visible()
+        && let Some(state) = interaction_chrome::feedback_state(
+            annotation.selected,
+            focused_id == Some(&annotation.id),
+            hovered_id == Some(&annotation.id),
+            false,
+            annotation_candidate,
+        )
+    {
+        let projected_cloud = annotation
+            .cloud_points
+            .iter()
+            .copied()
+            .map(project)
+            .collect::<Vec<_>>();
+        let mut bounds_points = projected_cloud.clone();
+        bounds_points.extend(projected_leader.iter().copied());
+        bounds_points.extend([
+            text_box_bounds.origin,
+            point(text_box_bounds.right(), text_box_bounds.bottom()),
+        ]);
+        let min_x = bounds_points.iter().map(|point| point.x).min().unwrap();
+        let min_y = bounds_points.iter().map(|point| point.y).min().unwrap();
+        let max_x = bounds_points.iter().map(|point| point.x).max().unwrap();
+        let max_y = bounds_points.iter().map(|point| point.y).max().unwrap();
+        interaction_chrome::paint_feedback_path(
+            &[
+                point(min_x, min_y),
+                point(max_x, min_y),
+                point(max_x, max_y),
+                point(min_x, max_y),
+            ],
+            true,
+            state,
+            window,
         );
-        if (annotation.selected || annotation_focused) && !annotation.draft {
-            for center in annotation
-                .cloud_points
-                .into_iter()
-                .map(project)
-                .chain(projected_leader)
-            {
-                interaction_chrome::paint_handle(Bounds::new(
-                        point(center.x - px(4.), center.y - px(4.)),
-                        size(px(8.), px(8.)),
-                    ), annotation.locked, window);
+        interaction_chrome::paint_feedback_path(&projected_cloud, true, state, window);
+        interaction_chrome::paint_feedback_path(&projected_leader, false, state, window);
+        if (annotation.selected || hovered_id == Some(&annotation.id))
+            && !annotation_candidate
+            && !annotation.locked
+        {
+            let cloud_count = projected_cloud.len();
+            let resize_end = cloud_count + RectangleResizeHandle::ALL.len();
+            for (index, center) in projected_cloud.into_iter().enumerate() {
+                if annotation.feedback.handle_visible(index) {
+                    interaction_chrome::paint_feedback_handle(
+                        center,
+                        state,
+                        hot_handle.is_some_and(|(id, hot)| id == &annotation.id && *hot == index),
+                        window,
+                    );
+                }
+            }
+            for (resize_index, handle) in RectangleResizeHandle::ALL.into_iter().enumerate() {
+                let index = cloud_count + resize_index;
+                if annotation.feedback.handle_visible(index) {
+                    interaction_chrome::paint_feedback_handle(
+                        project(handle.point(annotation.text_box)),
+                        state,
+                        hot_handle.is_some_and(|(id, hot)| id == &annotation.id && *hot == index),
+                        window,
+                    );
+                }
+            }
+            for (leader_index, center) in projected_leader.into_iter().enumerate() {
+                let index = resize_end + leader_index;
+                if annotation.feedback.handle_visible(index) {
+                    interaction_chrome::paint_feedback_handle(
+                        center,
+                        state,
+                        hot_handle.is_some_and(|(id, hot)| id == &annotation.id && *hot == index),
+                        window,
+                    );
+                }
             }
         }
     }
@@ -13794,11 +18056,14 @@ fn paint_dimension_annotation(
     page_bounds: Bounds<Pixels>,
     page_size: (f32, f32),
     selection_color: gpui::Hsla,
-    _hovered_id: Option<&MarkupId>,
-    _focused_id: Option<&MarkupId>,
+    hovered_id: Option<&MarkupId>,
+    focused_id: Option<&MarkupId>,
+    marquee_candidate_ids: &HashSet<MarkupId>,
+    hot_handle: Option<&(MarkupId, usize)>,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let annotation_candidate = marquee_candidate_ids.contains(&annotation.id);
     let delta_x = annotation.end.x - annotation.start.x;
     let delta_y = annotation.end.y - annotation.start.y;
     let length = delta_x.hypot(delta_y);
@@ -13862,10 +18127,10 @@ fn paint_dimension_annotation(
         }
     }
 
-    let text_style = annotation.appearance.text();
-    let caption_width_pt =
-        (annotation.content.chars().count() as f64 * text_style.font_size_pt() * 0.6 + 8.).max(16.);
-    let half_gap = (caption_width_pt * 0.5 + 4.).min(length * 0.45);
+    let caption_layout =
+        crate::annotation_caption::dimension_caption(&annotation, *transform, window.text_system());
+    let caption_width_pt = caption_layout.as_ref().map_or(0., |layout| layout.width_pt);
+    let half_gap = (caption_width_pt * 0.5 + 4.).min((length * 0.5 - 1.).max(0.));
     let unit_x = delta_x / length;
     let unit_y = delta_y / length;
     for (from, to) in [
@@ -13908,62 +18173,96 @@ fn paint_dimension_annotation(
         }
     }
 
-    let caption: SharedString = annotation.content.into();
-    let text_color = try_parse_color(text_style.color())
-        .unwrap_or(selection_color)
-        .opacity(text_style.opacity() as f32);
-    let run = TextRun {
-        len: caption.len(),
-        font: font(text_style.font_family().to_owned()),
-        color: text_color,
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    let font_size = px(text_style.font_size_pt() as f32 * scale);
-    let line_height = px(text_style.font_size_pt() as f32 * (13. / 12.) * scale);
-    let shaped = window
-        .text_system()
-        .shape_line(caption, font_size, &[run], None);
-    let center = project(caption_center);
-    let _ = shaped.paint(
-        point(
-            center.x - px(caption_width_pt as f32 * scale * 0.5),
-            center.y - line_height / 2.,
-        ),
-        line_height,
-        TextAlign::Center,
-        Some(px(caption_width_pt as f32 * scale)),
-        window,
-        cx,
-    );
+    if let Some(layout) = &caption_layout {
+        layout.paint(page_bounds.origin, window, cx);
+    }
 
-    if annotation.selected && !annotation.draft {
+    if annotation.feedback.chrome_visible()
+        && let Some(state) = interaction_chrome::feedback_state(
+            annotation.selected,
+            focused_id == Some(&annotation.id),
+            hovered_id == Some(&annotation.id),
+            false,
+            annotation_candidate,
+        )
+    {
+        let mut samples = vec![
+            project(annotation.start),
+            project(annotation.end),
+            project(extension_start_outer),
+            project(extension_end_outer),
+        ];
+        if let Some(layout) = &caption_layout {
+            let bounds = Bounds::new(
+                page_bounds.origin + layout.bounds.origin,
+                layout.bounds.size,
+            );
+            samples.extend([bounds.origin, point(bounds.right(), bounds.bottom())]);
+        }
+        let min_x = samples.iter().map(|p| p.x).min().unwrap();
+        let min_y = samples.iter().map(|p| p.y).min().unwrap();
+        let max_x = samples.iter().map(|p| p.x).max().unwrap();
+        let max_y = samples.iter().map(|p| p.y).max().unwrap();
+        interaction_chrome::paint_feedback_path(
+            &[
+                point(min_x, min_y),
+                point(max_x, min_y),
+                point(max_x, max_y),
+                point(min_x, max_y),
+            ],
+            true,
+            state,
+            window,
+        );
+    }
 
-        for center in [
+    if !annotation_candidate
+        && !annotation.locked
+        && (annotation.selected || hovered_id == Some(&annotation.id))
+    {
+        for (index, center) in [
             project(annotation.start),
             project(annotation.end),
             project(caption_center),
-        ] {
-            interaction_chrome::paint_handle(Bounds::new(
-                    point(center.x - px(4.), center.y - px(4.)),
-                    size(px(8.), px(8.)),
-                ), annotation.locked, window);
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if annotation.feedback.handle_visible(index) {
+                let state = interaction_chrome::feedback_state(
+                    annotation.selected,
+                    focused_id == Some(&annotation.id),
+                    hovered_id == Some(&annotation.id),
+                    false,
+                    annotation_candidate,
+                )
+                .expect("a selected or hovered Dimension has feedback state");
+                interaction_chrome::paint_feedback_handle(
+                    center,
+                    state,
+                    hot_handle.is_some_and(|(id, hot)| id == &annotation.id && *hot == index),
+                    window,
+                );
+            }
         }
     }
 }
 
 fn paint_arc_annotations(
-    annotations: Vec<SceneArc>,
+    annotations: impl IntoIterator<Item = SceneArc>,
     page_bounds: Bounds<Pixels>,
     page_size: (f32, f32),
     transform: &PageTransform,
     selection_color: gpui::Hsla,
     hovered_id: Option<&MarkupId>,
     focused_id: Option<&MarkupId>,
+    marquee_candidate_ids: &HashSet<MarkupId>,
+    hot_handle: Option<&(MarkupId, usize)>,
     window: &mut Window,
 ) {
     for annotation in annotations {
+        let annotation_candidate = marquee_candidate_ids.contains(&annotation.id);
+        let transform_hovered = hot_handle.is_some_and(|(id, _)| id == &annotation.id);
         let project = |sample: PdfPoint| {
             let local = transform.point_to_local_pixels(sample);
             point(
@@ -13994,34 +18293,38 @@ fn paint_arc_annotations(
                     .opacity(annotation.appearance.opacity() as f32),
             );
         }
-        let annotation_focused = focused_id == Some(&annotation.id);
-        let annotation_hovered = hovered_id == Some(&annotation.id);
-        if let Some(chrome_outline) = interaction_chrome::outline_for(
-            annotation.selected,
-            annotation_focused,
-            annotation_hovered,
-            annotation.draft,
-            annotation.locked,
-        ) {
-            let mut selection = PathBuilder::stroke(px(2.));
-            selection.move_to(project(first));
-            for sample in annotation.sampled_path.iter().skip(1) {
-                selection.line_to(project(*sample));
+        if !annotation.draft
+            && let Some(state) = interaction_chrome::feedback_state(
+                annotation.selected,
+                focused_id == Some(&annotation.id),
+                hovered_id == Some(&annotation.id) || transform_hovered,
+                false,
+                annotation_candidate,
+            )
+        {
+            if let Some(bounds) =
+                path_feedback_bounds(&annotation.sampled_path, 0., transform, page_bounds.origin)
+            {
+                interaction_chrome::paint_feedback_path(&bounds, true, state, window);
             }
-            if let Ok(path) = selection.build() {
-                window.paint_path(path, chrome_outline);
-            }
-
-            if (annotation.selected || annotation_focused) && !annotation.draft {
-                for center in [
+            if (annotation.selected || transform_hovered)
+                && !annotation_candidate
+                && !annotation.locked
+            {
+                for (index, center) in [
                     project(annotation.start),
                     project(annotation.mid),
                     project(annotation.end),
-                ] {
-                    interaction_chrome::paint_handle(Bounds::new(
-                            point(center.x - px(4.), center.y - px(4.)),
-                            size(px(8.), px(8.)),
-                        ), annotation.locked, window);
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    interaction_chrome::paint_feedback_handle(
+                        center,
+                        state,
+                        hot_handle.is_some_and(|(id, hot)| id == &annotation.id && *hot == index),
+                        window,
+                    );
                 }
             }
         }
@@ -14063,16 +18366,19 @@ fn redact_resize_point(rect: PdfRect, handle: RectangleResizeHandle) -> PdfPoint
 }
 
 fn paint_redact_annotations(
-    annotations: Vec<SceneRedact>,
+    annotations: impl IntoIterator<Item = SceneRedact>,
     page_bounds: Bounds<Pixels>,
     page_size: (f32, f32),
     transform: &PageTransform,
     selection_color: gpui::Hsla,
     hovered_id: Option<&MarkupId>,
     focused_id: Option<&MarkupId>,
+    marquee_candidate_ids: &HashSet<MarkupId>,
+    hot_handle: Option<&(MarkupId, usize)>,
     window: &mut Window,
 ) {
     for annotation in annotations {
+        let annotation_candidate = marquee_candidate_ids.contains(&annotation.id);
         let local = transform.rect_to_local_pixels(annotation.rect);
         let annotation_bounds = Bounds::new(
             point(
@@ -14100,35 +18406,27 @@ fn paint_redact_annotations(
             outline(annotation_bounds, stroke_color, BorderStyle::Solid)
                 .border_widths(stroke_width),
         );
-        let annotation_focused = focused_id == Some(&annotation.id);
-        let annotation_hovered = hovered_id == Some(&annotation.id);
-        let Some(chrome_outline) = interaction_chrome::outline_for(
-            annotation.selected,
-            annotation_focused,
-            annotation_hovered,
-            annotation.draft,
-            annotation.locked,
-        ) else {
-            continue;
-        };
-        window.paint_quad(
-            outline(annotation_bounds, chrome_outline, BorderStyle::Solid).border_widths(px(2.)),
+        paint_shape_feedback(
+            &SceneRectangle {
+                id: annotation.id,
+                rect: annotation.rect,
+                rotation_degrees: 0.,
+                appearance: annotation.appearance,
+                selected: annotation.selected,
+                locked: annotation.locked,
+                preview: annotation.draft,
+                feedback: annotation.feedback,
+            },
+            false,
+            false,
+            transform,
+            page_bounds.origin,
+            hovered_id,
+            focused_id,
+            annotation_candidate,
+            hot_handle,
+            window,
         );
-
-        if (annotation.selected || annotation_focused) && !annotation.draft {
-            for handle in RectangleResizeHandle::ALL {
-                let local =
-                    transform.point_to_local_pixels(redact_resize_point(annotation.rect, handle));
-                let center = point(
-                    page_bounds.origin.x + px(local.x as f32),
-                    page_bounds.origin.y + px(local.y as f32),
-                );
-                interaction_chrome::paint_handle(Bounds::new(
-                        point(center.x - px(4.), center.y - px(4.)),
-                        size(px(8.), px(8.)),
-                    ), annotation.locked, window);
-            }
-        }
     }
 }
 
@@ -14384,6 +18682,14 @@ fn selected_engineering_debug_markers(
         }
     }
     if let Some(annotation) = scene.callouts.iter().find(|annotation| annotation.selected) {
+        markers.extend(RectangleResizeHandle::ALL.into_iter().map(|handle| {
+            pointer_debug_marker(
+                callout_resize_handle_id(handle),
+                handle.point(annotation.text_box),
+                transform,
+                page_size,
+            )
+        }));
         markers.extend(
             annotation
                 .leader_points
@@ -14496,9 +18802,19 @@ fn paint_semantic_snap_indicator(
         page_bounds.origin.x + px(local.x as f32),
         page_bounds.origin.y + px(local.y as f32),
     );
-    let color = gpui::rgb(0x22c55e);
+    let color = gpui::rgb(0x16a34a);
     let half = px(5.);
     match decision.role {
+        SemanticSnapRole::GridPoint => {
+            let mut builder = PathBuilder::stroke(px(2.));
+            builder.move_to(point(center.x - half, center.y));
+            builder.line_to(point(center.x + half, center.y));
+            builder.move_to(point(center.x, center.y - half));
+            builder.line_to(point(center.x, center.y + half));
+            if let Ok(path) = builder.build() {
+                window.paint_path(path, color);
+            }
+        }
         SemanticSnapRole::Endpoint => {
             window.paint_quad(
                 outline(
@@ -14556,6 +18872,363 @@ fn paint_semantic_snap_indicator(
     }
 }
 
+fn paint_object_snap_tracking_guides(
+    tracking: &ObjectSnapTrackingResult,
+    page_bounds: Bounds<Pixels>,
+    transform: &PageTransform,
+    window: &mut Window,
+) {
+    let to_window = |pdf: PdfPoint| {
+        let local = transform.point_to_local_pixels(pdf);
+        point(
+            page_bounds.origin.x + px(local.x as f32),
+            page_bounds.origin.y + px(local.y as f32),
+        )
+    };
+    let resolved = to_window(tracking.point);
+    let color = gpui::rgb(0x16a34a);
+    for guide in &tracking.guides {
+        let origin = to_window(guide.origin);
+        let end = match guide.axis {
+            OrthogonalAxis::Horizontal => point(resolved.x, origin.y),
+            OrthogonalAxis::Vertical => point(origin.x, resolved.y),
+        };
+        let mut path = PathBuilder::stroke(px(1.25));
+        path.move_to(origin);
+        path.line_to(end);
+        let tick = px(5.);
+        path.move_to(point(origin.x - tick, origin.y));
+        path.line_to(point(origin.x + tick, origin.y));
+        path.move_to(point(origin.x, origin.y - tick));
+        path.line_to(point(origin.x, origin.y + tick));
+        if let Ok(path) = path.build() {
+            window.paint_path(path, color);
+        }
+    }
+    let half = px(5.);
+    let mut marker = PathBuilder::stroke(px(2.));
+    marker.move_to(point(resolved.x - half, resolved.y - half));
+    marker.line_to(point(resolved.x + half, resolved.y + half));
+    marker.move_to(point(resolved.x + half, resolved.y - half));
+    marker.line_to(point(resolved.x - half, resolved.y + half));
+    if let Ok(marker) = marker.build() {
+        window.paint_path(marker, color);
+    }
+}
+
+fn paint_relationship_measurement(
+    start: PdfPoint,
+    end: PdfPoint,
+    axis: OrthogonalAxis,
+    offset_px: f32,
+    page_bounds: Bounds<Pixels>,
+    transform: &PageTransform,
+    window: &mut Window,
+) {
+    let project = |pdf: PdfPoint| {
+        let local = transform.point_to_local_pixels(pdf);
+        point(
+            page_bounds.origin.x + px(local.x as f32),
+            page_bounds.origin.y + px(local.y as f32),
+        )
+    };
+    let mut start = project(start);
+    let mut end = project(end);
+    match axis {
+        OrthogonalAxis::Horizontal => {
+            start.y += px(offset_px);
+            end.y += px(offset_px);
+        }
+        OrthogonalAxis::Vertical => {
+            start.x += px(offset_px);
+            end.x += px(offset_px);
+        }
+    }
+    let color = gpui::rgb(0x16a34a);
+    let tick = px(4.);
+    let mut path = PathBuilder::stroke(px(1.25));
+    path.move_to(start);
+    path.line_to(end);
+    match axis {
+        OrthogonalAxis::Horizontal => {
+            for point in [start, end] {
+                path.move_to(gpui::point(point.x, point.y - tick));
+                path.line_to(gpui::point(point.x, point.y + tick));
+            }
+        }
+        OrthogonalAxis::Vertical => {
+            for point in [start, end] {
+                path.move_to(gpui::point(point.x - tick, point.y));
+                path.line_to(gpui::point(point.x + tick, point.y));
+            }
+        }
+    }
+    if let Ok(path) = path.build() {
+        window.paint_path(path, color);
+    }
+    let middle = point((start.x + end.x) / 2., (start.y + end.y) / 2.);
+    for (width, color) in [(px(4.25), gpui::rgb(0xffffff)), (px(1.25), color)] {
+        let mut equals = PathBuilder::stroke(width);
+        match axis {
+            OrthogonalAxis::Horizontal => {
+                equals.move_to(point(middle.x - px(3.), middle.y - px(2.)));
+                equals.line_to(point(middle.x + px(3.), middle.y - px(2.)));
+                equals.move_to(point(middle.x - px(3.), middle.y + px(2.)));
+                equals.line_to(point(middle.x + px(3.), middle.y + px(2.)));
+            }
+            OrthogonalAxis::Vertical => {
+                equals.move_to(point(middle.x - px(2.), middle.y - px(3.)));
+                equals.line_to(point(middle.x - px(2.), middle.y + px(3.)));
+                equals.move_to(point(middle.x + px(2.), middle.y - px(3.)));
+                equals.line_to(point(middle.x + px(2.), middle.y + px(3.)));
+            }
+        }
+        if let Ok(equals) = equals.build() {
+            window.paint_path(equals, color);
+        }
+    }
+}
+
+fn paint_relationship_snap_guides(
+    guides: &[RelationshipSnapGuide],
+    page_bounds: Bounds<Pixels>,
+    transform: &PageTransform,
+    window: &mut Window,
+) {
+    for guide in guides {
+        match guide {
+            RelationshipSnapGuide::EqualSize {
+                axis,
+                moving,
+                reference,
+            } => {
+                let (moving_start, moving_end, reference_start, reference_end) = match axis {
+                    OrthogonalAxis::Horizontal => (
+                        PdfPoint {
+                            x: moving.x,
+                            y: moving.y,
+                        },
+                        PdfPoint {
+                            x: moving.x + moving.width,
+                            y: moving.y,
+                        },
+                        PdfPoint {
+                            x: reference.rect.x,
+                            y: reference.rect.y,
+                        },
+                        PdfPoint {
+                            x: reference.rect.x + reference.rect.width,
+                            y: reference.rect.y,
+                        },
+                    ),
+                    OrthogonalAxis::Vertical => (
+                        PdfPoint {
+                            x: moving.x + moving.width,
+                            y: moving.y,
+                        },
+                        PdfPoint {
+                            x: moving.x + moving.width,
+                            y: moving.y + moving.height,
+                        },
+                        PdfPoint {
+                            x: reference.rect.x + reference.rect.width,
+                            y: reference.rect.y,
+                        },
+                        PdfPoint {
+                            x: reference.rect.x + reference.rect.width,
+                            y: reference.rect.y + reference.rect.height,
+                        },
+                    ),
+                };
+                paint_relationship_measurement(
+                    moving_start,
+                    moving_end,
+                    *axis,
+                    8.,
+                    page_bounds,
+                    transform,
+                    window,
+                );
+                paint_relationship_measurement(
+                    reference_start,
+                    reference_end,
+                    *axis,
+                    8.,
+                    page_bounds,
+                    transform,
+                    window,
+                );
+            }
+            RelationshipSnapGuide::EqualSpacing {
+                axis,
+                placement,
+                before,
+                moving,
+                after,
+            } => {
+                let cross = match axis {
+                    OrthogonalAxis::Horizontal => moving.y + moving.height * 0.5,
+                    OrthogonalAxis::Vertical => moving.x + moving.width * 0.5,
+                };
+                let (first_start, first_end, second_start, second_end) = match axis {
+                    OrthogonalAxis::Horizontal => {
+                        let first = match placement {
+                            EqualSpacingPlacement::Before => (
+                                PdfPoint {
+                                    x: moving.x + moving.width,
+                                    y: cross,
+                                },
+                                PdfPoint {
+                                    x: before.rect.x,
+                                    y: cross,
+                                },
+                            ),
+                            EqualSpacingPlacement::Between => (
+                                PdfPoint {
+                                    x: before.rect.x + before.rect.width,
+                                    y: cross,
+                                },
+                                PdfPoint {
+                                    x: moving.x,
+                                    y: cross,
+                                },
+                            ),
+                            EqualSpacingPlacement::After => (
+                                PdfPoint {
+                                    x: before.rect.x + before.rect.width,
+                                    y: cross,
+                                },
+                                PdfPoint {
+                                    x: after.rect.x,
+                                    y: cross,
+                                },
+                            ),
+                        };
+                        let second = match placement {
+                            EqualSpacingPlacement::Before => (
+                                PdfPoint {
+                                    x: before.rect.x + before.rect.width,
+                                    y: cross,
+                                },
+                                PdfPoint {
+                                    x: after.rect.x,
+                                    y: cross,
+                                },
+                            ),
+                            EqualSpacingPlacement::Between => (
+                                PdfPoint {
+                                    x: moving.x + moving.width,
+                                    y: cross,
+                                },
+                                PdfPoint {
+                                    x: after.rect.x,
+                                    y: cross,
+                                },
+                            ),
+                            EqualSpacingPlacement::After => (
+                                PdfPoint {
+                                    x: after.rect.x + after.rect.width,
+                                    y: cross,
+                                },
+                                PdfPoint {
+                                    x: moving.x,
+                                    y: cross,
+                                },
+                            ),
+                        };
+                        (first.0, first.1, second.0, second.1)
+                    }
+                    OrthogonalAxis::Vertical => {
+                        let first = match placement {
+                            EqualSpacingPlacement::Before => (
+                                PdfPoint {
+                                    x: cross,
+                                    y: moving.y + moving.height,
+                                },
+                                PdfPoint {
+                                    x: cross,
+                                    y: before.rect.y,
+                                },
+                            ),
+                            EqualSpacingPlacement::Between => (
+                                PdfPoint {
+                                    x: cross,
+                                    y: before.rect.y + before.rect.height,
+                                },
+                                PdfPoint {
+                                    x: cross,
+                                    y: moving.y,
+                                },
+                            ),
+                            EqualSpacingPlacement::After => (
+                                PdfPoint {
+                                    x: cross,
+                                    y: before.rect.y + before.rect.height,
+                                },
+                                PdfPoint {
+                                    x: cross,
+                                    y: after.rect.y,
+                                },
+                            ),
+                        };
+                        let second = match placement {
+                            EqualSpacingPlacement::Before => (
+                                PdfPoint {
+                                    x: cross,
+                                    y: before.rect.y + before.rect.height,
+                                },
+                                PdfPoint {
+                                    x: cross,
+                                    y: after.rect.y,
+                                },
+                            ),
+                            EqualSpacingPlacement::Between => (
+                                PdfPoint {
+                                    x: cross,
+                                    y: moving.y + moving.height,
+                                },
+                                PdfPoint {
+                                    x: cross,
+                                    y: after.rect.y,
+                                },
+                            ),
+                            EqualSpacingPlacement::After => (
+                                PdfPoint {
+                                    x: cross,
+                                    y: after.rect.y + after.rect.height,
+                                },
+                                PdfPoint {
+                                    x: cross,
+                                    y: moving.y,
+                                },
+                            ),
+                        };
+                        (first.0, first.1, second.0, second.1)
+                    }
+                };
+                paint_relationship_measurement(
+                    first_start,
+                    first_end,
+                    *axis,
+                    0.,
+                    page_bounds,
+                    transform,
+                    window,
+                );
+                paint_relationship_measurement(
+                    second_start,
+                    second_end,
+                    *axis,
+                    0.,
+                    page_bounds,
+                    transform,
+                    window,
+                );
+            }
+        }
+    }
+}
+
 fn paint_construction_grid(
     spacing_mm: f64,
     pdf_page_size: (f32, f32),
@@ -14599,6 +19272,157 @@ fn paint_construction_grid(
     }
 }
 
+/// SVG rectangle feedback starts at screen top-left, irrespective of PDF/page rotation.
+/// Raw vertex descriptors permit zero extents (which SVG does not paint); measured
+/// descriptors apply their one-point minimum in PDF space before projection.
+fn path_feedback_bounds(
+    points: &[PdfPoint],
+    minimum_extent: f64,
+    transform: &PageTransform,
+    page_origin: Point<Pixels>,
+) -> Option<[Point<Pixels>; 4]> {
+    let first = points.first()?;
+    let (mut left, mut bottom, mut right, mut top) = (first.x, first.y, first.x, first.y);
+    for sample in &points[1..] {
+        left = left.min(sample.x);
+        bottom = bottom.min(sample.y);
+        right = right.max(sample.x);
+        top = top.max(sample.y);
+    }
+    let width = (right - left).max(minimum_extent);
+    let height = (top - bottom).max(minimum_extent);
+    if width <= 0. || height <= 0. {
+        return None;
+    }
+    let local = transform.rect_to_local_pixels(PdfRect {
+        x: left,
+        y: bottom,
+        width,
+        height,
+    });
+    let left = page_origin.x + px(local.x as f32);
+    let top = page_origin.y + px(local.y as f32);
+    let right = left + px(local.width as f32);
+    let bottom = top + px(local.height as f32);
+    Some([
+        point(left, top),
+        point(right, top),
+        point(right, bottom),
+        point(left, bottom),
+    ])
+}
+
+/// Electron's ink descriptor encloses every retained path and expands the PDF
+/// bounds by half the stroke width, with a one-point minimum padding.
+fn ink_feedback_bounds(
+    paths: &[Vec<PdfPoint>],
+    stroke_width_pt: f64,
+    transform: &PageTransform,
+    page_origin: Point<Pixels>,
+) -> Option<[Point<Pixels>; 4]> {
+    let first = paths.iter().flatten().next()?;
+    let (mut left, mut bottom, mut right, mut top) = (first.x, first.y, first.x, first.y);
+    for sample in paths.iter().flatten().skip(1) {
+        left = left.min(sample.x);
+        bottom = bottom.min(sample.y);
+        right = right.max(sample.x);
+        top = top.max(sample.y);
+    }
+    let padding = (stroke_width_pt * 0.5).max(1.);
+    let local = transform.rect_to_local_pixels(PdfRect {
+        x: left - padding,
+        y: bottom - padding,
+        width: right - left + padding * 2.,
+        height: top - bottom + padding * 2.,
+    });
+    let left = page_origin.x + px(local.x as f32);
+    let top = page_origin.y + px(local.y as f32);
+    let right = left + px(local.width as f32);
+    let bottom = top + px(local.height as f32);
+    Some([
+        point(left, top),
+        point(right, top),
+        point(right, bottom),
+        point(left, bottom),
+    ])
+}
+
+/// Each retained ink path is its own compositing primitive, matching SVG.
+fn build_ink_scene_path(
+    points: &[PdfPoint],
+    smooth_curves: bool,
+    width: gpui::Pixels,
+    highlight: bool,
+    project: impl Fn(PdfPoint) -> gpui::Point<gpui::Pixels>,
+) -> Option<gpui::Path<gpui::Pixels>> {
+    let segments = build_ink_paint_path(points, smooth_curves);
+    if segments.is_empty() {
+        return None;
+    }
+    let mut builder = PathBuilder::stroke(width);
+    #[cfg(target_os = "macos")]
+    if highlight {
+        builder = builder.with_style(gpui::PathStyle::Stroke(
+            gpui::StrokeOptions::default()
+                .with_line_width(f32::from(width))
+                .with_line_cap(gpui::LineCap::Round)
+                .with_line_join(gpui::LineJoin::Round),
+        ));
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = highlight;
+    for segment in segments {
+        match segment {
+            InkPaintPathSegment::MoveTo(to) => builder.move_to(project(to)),
+            InkPaintPathSegment::LineTo(to) => builder.line_to(project(to)),
+            InkPaintPathSegment::CubicTo {
+                control_a,
+                control_b,
+                to,
+            } => builder.cubic_bezier_to(project(to), project(control_a), project(control_b)),
+        }
+    }
+    let path = builder.build().ok()?;
+    #[cfg(target_os = "macos")]
+    let path = if highlight {
+        path.with_multiply_over_opaque()
+    } else {
+        path
+    };
+    Some(path)
+}
+
+#[cfg(target_os = "macos")]
+fn highlight_page_content_mask(
+    highlight: bool,
+    page_bounds: Bounds<Pixels>,
+) -> Option<ContentMask<Pixels>> {
+    highlight.then_some(ContentMask {
+        bounds: page_bounds,
+    })
+}
+
+fn paint_ink_scene_path(
+    path: gpui::Path<Pixels>,
+    color: gpui::Hsla,
+    highlight: bool,
+    page_bounds: Bounds<Pixels>,
+    window: &mut Window,
+) {
+    #[cfg(target_os = "macos")]
+    {
+        window.with_content_mask(
+            highlight_page_content_mask(highlight, page_bounds),
+            |window| window.paint_path(path, color),
+        );
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (highlight, page_bounds);
+        window.paint_path(path, color);
+    }
+}
+
 fn annotation_layer(
     document_id: DocumentId,
     page_index: u32,
@@ -14607,14 +19431,19 @@ fn annotation_layer(
     rotation: PageRotation,
     coordinate_space: PageCoordinateSpace,
     scene: AnnotationScene,
+    pending_image_preview: Option<PendingImagePreview>,
+    pending_text_box: Option<PendingTextBoxPresentation>,
     highlights_precomposed: bool,
     image_assets: Arc<HashMap<String, Arc<RenderImage>>>,
     selection_color: gpui::Hsla,
     hovered_id: Option<MarkupId>,
+    hot_handle: Option<(MarkupId, usize)>,
     focused_id: Option<MarkupId>,
     construction_grid_color: gpui::Hsla,
     construction_grid_spacing_mm: Option<f64>,
     semantic_snap_decision: Option<SemanticSnapDecision>,
+    object_snap_tracking_result: Option<ObjectSnapTrackingResult>,
+    relationship_snap_guides: Vec<RelationshipSnapGuide>,
     selection_marquee: Option<SelectionMarquee>,
     interaction_control: Option<WeakEntity<DocumentWorkspace>>,
     painted_viewer: Option<PaintedViewerAuthority>,
@@ -14663,7 +19492,33 @@ fn annotation_layer(
         })
         .flatten();
     let painted_semantic_snap_decision = semantic_snap_decision.clone();
+    let painted_object_snap_tracking_result = object_snap_tracking_result.clone();
+    let painted_relationship_snap_guides = relationship_snap_guides.clone();
     let painted_construction_grid_spacing_mm = construction_grid_spacing_mm;
+    let pending_text_box = pending_text_box
+        .filter(|pending| pending.document_id == document_id && pending.page_index == page_index);
+    let painted_pending_text_box = pending_text_box.clone();
+    let pending_text_box_overlay = pending_text_box.and_then(|pending| {
+        let layer_bounds = Bounds::new(
+            point(px(0.), px(0.)),
+            size(px(page_size.0), px(page_size.1)),
+        );
+        let (page_bounds, transform) =
+            contained_page_bounds_for_space(layer_bounds, page_size, coordinate_space)?;
+        let local = transform.rect_to_local_pixels(pending.rect);
+        let bounds = Bounds::new(
+            point(
+                page_bounds.origin.x + px(local.x as f32),
+                page_bounds.origin.y + px(local.y as f32),
+            ),
+            size(px(local.width as f32), px(local.height as f32)),
+        );
+        Some((
+            pending.clone(),
+            pending.editor_bounds.unwrap_or(bounds),
+            pending.display_scale,
+        ))
+    });
     gpui::div()
         .id(stable_id)
         .debug_selector(move || selector.clone().into())
@@ -14672,23 +19527,43 @@ fn annotation_layer(
         .child(
             canvas(
                 move |bounds, _, cx| {
+                    let mut marquee_candidate_ids = HashSet::new();
                     if let Some(control) = interaction_control
                         && let Some((page_bounds, transform)) =
                             contained_page_bounds_for_space(bounds, page_size, coordinate_space)
                     {
-                        let _ = control.update(cx, |workspace, _| {
-                            workspace.record_page_interaction(
+                        let _ = control.update(cx, |workspace, cx| {
+                            let geometry_changed = workspace.record_page_interaction(
                                 document_id,
                                 page_index,
+                                bounds,
                                 page_bounds,
                                 transform,
                                 pdf_page_size,
                                 painted_viewer,
                             );
+                            if geometry_changed
+                                && workspace.pending_text_box_editor.as_ref().is_some_and(
+                                    |editor| {
+                                        editor.document_id == document_id
+                                            && editor.page_index == page_index
+                                            && matches!(
+                                                &editor.target,
+                                                PendingTextEditorTarget::NewTextBox { .. }
+                                            )
+                                    },
+                                )
+                            {
+                                cx.notify();
+                            }
+                            // Use this frame's page transform, not the preceding paint's
+                            // transform when zoom/rotation and a marquee coexist.
+                            marquee_candidate_ids = workspace.selection_marquee_candidates(document_id, page_index, cx).into_iter().collect();
                         });
                     }
+                    marquee_candidate_ids
                 },
-                move |bounds, _, window, cx| {
+                move |bounds, marquee_candidate_ids, window, cx| {
                     let hovered_id = hovered_id.as_ref();
                     let focused_id = focused_id.as_ref();
                     let Some((page_bounds, transform)) =
@@ -14706,53 +19581,189 @@ fn annotation_layer(
                             window,
                         );
                     }
-                    paint_redact_annotations(
-                        scene.redacts,
-                        page_bounds,
-                        page_size,
-                        &transform,
-                        selection_color,
-                        hovered_id,
-                        focused_id,
-                        window,
-                    );
-                    for annotation in scene.rectangles {
-                        if annotation.rotation_degrees != 0. {
-                            let points = rectangle_world_corners(
-                                annotation.rect,
-                                annotation.rotation_degrees,
-                            )
-                            .map(|sample| {
-                                let local = transform.point_to_local_pixels(sample);
-                                point(
-                                    page_bounds.origin.x + px(local.x as f32),
-                                    page_bounds.origin.y + px(local.y as f32),
+                    // Each body and its own interaction chrome keep document order.
+                    for annotation in scene.into_ordered_annotations() {
+                        match annotation {
+                        crate::annotation_model::SceneAnnotation::Redact(annotation) => paint_redact_annotations(
+                            [annotation],
+                            page_bounds,
+                            page_size,
+                            &transform,
+                            selection_color,
+                            hovered_id,
+                            focused_id,
+                            &marquee_candidate_ids,
+                            hot_handle.as_ref(),
+                            window,
+                        ),
+                        crate::annotation_model::SceneAnnotation::Rectangle(annotation) => {
+                            let annotation_candidate = marquee_candidate_ids.contains(&annotation.id);
+                            if annotation.rotation_degrees != 0. {
+                                let points = rectangle_world_corners(
+                                    annotation.rect,
+                                    annotation.rotation_degrees,
                                 )
-                            });
-                            if let Some(fill_color) = annotation.appearance.fill_color()
-                                && let Ok(color) = try_parse_color(fill_color)
-                            {
-                                let mut builder = PathBuilder::fill();
+                                .map(|sample| {
+                                    let local = transform.point_to_local_pixels(sample);
+                                    point(
+                                        page_bounds.origin.x + px(local.x as f32),
+                                        page_bounds.origin.y + px(local.y as f32),
+                                    )
+                                });
+                                if let Some(fill_color) = annotation.appearance.fill_color()
+                                    && let Ok(color) = try_parse_color(fill_color)
+                                {
+                                    let mut builder = PathBuilder::fill();
+                                    builder.move_to(points[0]);
+                                    for point in points.iter().skip(1) {
+                                        builder.line_to(*point);
+                                    }
+                                    builder.close();
+                                    if let Ok(path) = builder.build() {
+                                        window.paint_path(
+                                            path,
+                                            color.opacity(
+                                                (annotation.appearance.opacity()
+                                                    * annotation.appearance.fill_opacity())
+                                                    as f32,
+                                            ),
+                                        );
+                                    }
+                                }
+                                let stroke_width = px((annotation.appearance.stroke_width_pt() as f32
+                                    * f32::from(page_bounds.size.width)
+                                    / page_size.0)
+                                    .max(1.));
+                                let mut builder = PathBuilder::stroke(stroke_width);
+                                builder = match annotation.appearance.stroke_style() {
+                                    StrokeStyle::Solid => builder,
+                                    StrokeStyle::Dashed => {
+                                        builder.dash_array(&[stroke_width * 4., stroke_width * 2.])
+                                    }
+                                    StrokeStyle::Dotted => {
+                                        builder.dash_array(&[stroke_width, stroke_width * 2.])
+                                    }
+                                };
                                 builder.move_to(points[0]);
                                 for point in points.iter().skip(1) {
                                     builder.line_to(*point);
                                 }
                                 builder.close();
                                 if let Ok(path) = builder.build() {
-                                    window.paint_path(
-                                        path,
-                                        color.opacity(
-                                            (annotation.appearance.opacity()
-                                                * annotation.appearance.fill_opacity())
-                                                as f32,
-                                        ),
-                                    );
+                                    let color = try_parse_color(annotation.appearance.stroke_color())
+                                        .unwrap_or(selection_color)
+                                        .opacity(annotation.appearance.opacity() as f32);
+                                    window.paint_path(path, color);
                                 }
+                                paint_shape_feedback(&annotation, false, true, &transform, page_bounds.origin,
+                                    hovered_id, focused_id, annotation_candidate, hot_handle.as_ref(), window);
+                                continue;
                             }
+                            let local = transform.rect_to_local_pixels(annotation.rect);
+                            let annotation_bounds = Bounds::new(
+                                point(
+                                    page_bounds.origin.x + px(local.x as f32),
+                                    page_bounds.origin.y + px(local.y as f32),
+                                ),
+                                size(px(local.width as f32), px(local.height as f32)),
+                            );
+                            if let Some(fill_color) = annotation.appearance.fill_color()
+                                && let Ok(color) = try_parse_color(fill_color)
+                            {
+                                window.paint_quad(fill(
+                                    annotation_bounds,
+                                    color.opacity(
+                                        (annotation.appearance.opacity()
+                                            * annotation.appearance.fill_opacity())
+                                            as f32,
+                                    ),
+                                ));
+                            }
+                            let stroke_color = try_parse_color(annotation.appearance.stroke_color())
+                                .unwrap_or(selection_color)
+                                .opacity(annotation.appearance.opacity() as f32);
                             let stroke_width = px((annotation.appearance.stroke_width_pt() as f32
                                 * f32::from(page_bounds.size.width)
                                 / page_size.0)
                                 .max(1.));
+                            match annotation.appearance.stroke_style() {
+                                StrokeStyle::Solid | StrokeStyle::Dashed => {
+                                    window.paint_quad(
+                                        outline(
+                                            annotation_bounds,
+                                            stroke_color,
+                                            if annotation.appearance.stroke_style()
+                                                == StrokeStyle::Solid
+                                            {
+                                                BorderStyle::Solid
+                                            } else {
+                                                BorderStyle::Dashed
+                                            },
+                                        )
+                                        .border_widths(stroke_width),
+                                    );
+                                }
+                                StrokeStyle::Dotted => {
+                                    let left = annotation_bounds.origin.x;
+                                    let top = annotation_bounds.origin.y;
+                                    let right = left + annotation_bounds.size.width;
+                                    let bottom = top + annotation_bounds.size.height;
+                                    let mut builder = PathBuilder::stroke(stroke_width)
+                                        .dash_array(&[stroke_width, stroke_width * 2.]);
+                                    builder.move_to(point(left, top));
+                                    builder.line_to(point(right, top));
+                                    builder.line_to(point(right, bottom));
+                                    builder.line_to(point(left, bottom));
+                                    builder.close();
+                                    if let Ok(path) = builder.build() {
+                                        window.paint_path(path, stroke_color);
+                                    }
+                                }
+                            }
+                            paint_shape_feedback(&annotation, false, true, &transform, page_bounds.origin,
+                                hovered_id, focused_id, annotation_candidate, hot_handle.as_ref(), window);
+                        }
+                        crate::annotation_model::SceneAnnotation::Ellipse(annotation) => paint_ellipse_annotations(
+                            [annotation],
+                            page_bounds,
+                            page_size,
+                            &transform,
+                            selection_color,
+                            hovered_id,
+                            focused_id,
+                            &marquee_candidate_ids,
+                            hot_handle.as_ref(),
+                            window,
+                        ),
+                        crate::annotation_model::SceneAnnotation::Arc(annotation) => paint_arc_annotations(
+                            [annotation],
+                            page_bounds,
+                            page_size,
+                            &transform,
+                            selection_color,
+                            hovered_id,
+                            focused_id,
+                            &marquee_candidate_ids,
+                            hot_handle.as_ref(),
+                            window,
+                        ),
+                        crate::annotation_model::SceneAnnotation::StraightLine(annotation) => {
+                            let annotation_candidate = marquee_candidate_ids.contains(&annotation.id);
+                            let project = |sample: PdfPoint| {
+                                let local = transform.point_to_local_pixels(sample);
+                                point(
+                                    page_bounds.origin.x + px(local.x as f32),
+                                    page_bounds.origin.y + px(local.y as f32),
+                                )
+                            };
+                            let start = project(annotation.start);
+                            let end = project(annotation.end);
+                            let scale = f32::from(page_bounds.size.width) / page_size.0;
+                            let stroke_width =
+                                px((annotation.appearance.stroke_width_pt() as f32 * scale).max(1.));
+                            let color = try_parse_color(annotation.appearance.stroke_color())
+                                .unwrap_or(selection_color)
+                                .opacity(annotation.appearance.opacity() as f32);
                             let mut builder = PathBuilder::stroke(stroke_width);
                             builder = match annotation.appearance.stroke_style() {
                                 StrokeStyle::Solid => builder,
@@ -14763,762 +19774,683 @@ fn annotation_layer(
                                     builder.dash_array(&[stroke_width, stroke_width * 2.])
                                 }
                             };
-                            builder.move_to(points[0]);
-                            for point in points.iter().skip(1) {
-                                builder.line_to(*point);
-                            }
-                            builder.close();
+                            builder.move_to(start);
+                            builder.line_to(end);
                             if let Ok(path) = builder.build() {
-                                let color = try_parse_color(annotation.appearance.stroke_color())
-                                    .unwrap_or(selection_color)
-                                    .opacity(annotation.appearance.opacity() as f32);
                                 window.paint_path(path, color);
                             }
-                            let annotation_focused = focused_id == Some(&annotation.id);
-                            let annotation_hovered = hovered_id == Some(&annotation.id);
-                            if let Some(chrome_outline) = interaction_chrome::outline_for(
-                                annotation.selected,
-                                annotation_focused,
-                                annotation_hovered,
-                                annotation.preview,
-                                annotation.locked,
-                            ) {
-                                let mut builder = PathBuilder::stroke(px(2.));
-                                builder.move_to(points[0]);
-                                for point in points.iter().skip(1) {
-                                    builder.line_to(*point);
+                            if annotation.kind == LineKind::Arrow
+                                && let Some(points) = straight_line_arrowhead_points(
+                                    annotation.start,
+                                    annotation.end,
+                                    annotation.appearance.stroke_width_pt(),
+                                )
+                            {
+                                let points = points.map(project);
+                                let mut fill_builder = PathBuilder::fill();
+                                fill_builder.move_to(points[0]);
+                                fill_builder.line_to(points[1]);
+                                fill_builder.line_to(points[2]);
+                                fill_builder.close();
+                                if let Ok(path) = fill_builder.build() {
+                                    window.paint_path(path, color);
                                 }
-                                builder.close();
-                                if let Ok(path) = builder.build() {
-                                    window.paint_path(path, chrome_outline);
+                                let mut outline_builder = PathBuilder::stroke(stroke_width);
+                                outline_builder.move_to(points[0]);
+                                outline_builder.line_to(points[1]);
+                                outline_builder.line_to(points[2]);
+                                outline_builder.close();
+                                if let Ok(path) = outline_builder.build() {
+                                    window.paint_path(path, color);
                                 }
-                                if (annotation.selected || annotation_focused) && !annotation.preview
+                            }
+                            let transform_hovered = hot_handle
+                                .as_ref()
+                                .is_some_and(|(id, _)| id == &annotation.id);
+                            if (annotation.feedback.chrome_visible() || transform_hovered)
+                                && let Some(state) = interaction_chrome::feedback_state(
+                                    annotation.selected,
+                                    focused_id == Some(&annotation.id),
+                                    hovered_id == Some(&annotation.id) || transform_hovered,
+                                    false,
+                                    annotation_candidate,
+                                )
+                            {
+                                interaction_chrome::paint_line_feedback(start, end, state, window);
+                                if (annotation.selected || transform_hovered)
+                                    && !annotation_candidate
+                                    && !annotation.locked
                                 {
-                                    for center in points {
-                                        interaction_chrome::paint_handle(Bounds::new(
-                                                point(center.x - px(4.), center.y - px(4.)),
-                                                size(px(8.), px(8.)),
-                                            ), annotation.locked, window);
+                                    for (index, center) in [start, end].into_iter().enumerate() {
+                                        if !annotation.selected
+                                            || annotation.feedback.handle_visible(index)
+                                        {
+                                            interaction_chrome::paint_feedback_handle(
+                                                center,
+                                                state,
+                                                hot_handle.as_ref().is_some_and(
+                                                    |(id, hot_index)| {
+                                                        id == &annotation.id && *hot_index == index
+                                                    },
+                                                ),
+                                                window,
+                                            );
+                                        }
                                     }
                                 }
                             }
-                            continue;
                         }
-                        let local = transform.rect_to_local_pixels(annotation.rect);
-                        let annotation_bounds = Bounds::new(
-                            point(
-                                page_bounds.origin.x + px(local.x as f32),
-                                page_bounds.origin.y + px(local.y as f32),
-                            ),
-                            size(px(local.width as f32), px(local.height as f32)),
-                        );
-                        if let Some(fill_color) = annotation.appearance.fill_color()
-                            && let Ok(color) = try_parse_color(fill_color)
-                        {
-                            window.paint_quad(fill(
-                                annotation_bounds,
-                                color.opacity(
-                                    (annotation.appearance.opacity()
-                                        * annotation.appearance.fill_opacity())
-                                        as f32,
-                                ),
-                            ));
-                        }
-                        let stroke_color = try_parse_color(annotation.appearance.stroke_color())
-                            .unwrap_or(selection_color)
-                            .opacity(annotation.appearance.opacity() as f32);
-                        let stroke_width = px((annotation.appearance.stroke_width_pt() as f32
-                            * f32::from(page_bounds.size.width)
-                            / page_size.0)
-                            .max(1.));
-                        match annotation.appearance.stroke_style() {
-                            StrokeStyle::Solid | StrokeStyle::Dashed => {
-                                window.paint_quad(
-                                    outline(
-                                        annotation_bounds,
-                                        stroke_color,
-                                        if annotation.appearance.stroke_style()
-                                            == StrokeStyle::Solid
-                                        {
-                                            BorderStyle::Solid
-                                        } else {
-                                            BorderStyle::Dashed
-                                        },
-                                    )
-                                    .border_widths(stroke_width),
-                                );
+                        crate::annotation_model::SceneAnnotation::VertexPath(annotation) => {
+                            let annotation_candidate = marquee_candidate_ids.contains(&annotation.id);
+                            let transform_hovered = hot_handle
+                                .as_ref()
+                                .is_some_and(|(id, _)| id == &annotation.id);
+                            if annotation.points.len() < 2 {
+                                continue;
                             }
-                            StrokeStyle::Dotted => {
-                                let left = annotation_bounds.origin.x;
-                                let top = annotation_bounds.origin.y;
-                                let right = left + annotation_bounds.size.width;
-                                let bottom = top + annotation_bounds.size.height;
-                                let mut builder = PathBuilder::stroke(stroke_width)
-                                    .dash_array(&[stroke_width, stroke_width * 2.]);
-                                builder.move_to(point(left, top));
-                                builder.line_to(point(right, top));
-                                builder.line_to(point(right, bottom));
-                                builder.line_to(point(left, bottom));
-                                builder.close();
-                                if let Ok(path) = builder.build() {
-                                    window.paint_path(path, stroke_color);
-                                }
-                            }
-                        }
-                        let annotation_focused = focused_id == Some(&annotation.id);
-                        let annotation_hovered = hovered_id == Some(&annotation.id);
-                        if let Some(chrome_outline) = interaction_chrome::outline_for(
-                            annotation.selected,
-                            annotation_focused,
-                            annotation_hovered,
-                            annotation.preview,
-                            annotation.locked,
-                        ) {
-                            window.paint_quad(
-                                outline(annotation_bounds, chrome_outline, BorderStyle::Solid)
-                                    .border_widths(px(2.)),
-                            );
-                            let left = annotation_bounds.origin.x;
-                            let top = annotation_bounds.origin.y;
-                            let right = left + annotation_bounds.size.width;
-                            let bottom = top + annotation_bounds.size.height;
-                            let center_x = left + annotation_bounds.size.width / 2.;
-                            let center_y = top + annotation_bounds.size.height / 2.;
-                            let handle_size = px(8.);
-                            let handle_half = handle_size / 2.;
-                            if (annotation.selected || annotation_focused) && !annotation.preview {
-                                for center in [
-                                    point(left, top),
-                                    point(center_x, top),
-                                    point(right, top),
-                                    point(right, center_y),
-                                    point(right, bottom),
-                                    point(center_x, bottom),
-                                    point(left, bottom),
-                                    point(left, center_y),
-                                ] {
-                                    interaction_chrome::paint_handle(Bounds::new(
-                                            point(center.x - handle_half, center.y - handle_half),
-                                            size(handle_size, handle_size),
-                                        ), annotation.locked, window);
-                                }
-                                let rotation_center = point(center_x, top - px(12.));
-                                window.paint_quad(fill(
-                                    Bounds::new(
-                                        point(center_x - px(1.), rotation_center.y),
-                                        size(px(2.), px(12.)),
-                                    ),
-                                    chrome_outline,
-                                ));
-                                interaction_chrome::paint_handle(Bounds::new(
-                                        point(
-                                            rotation_center.x - handle_half,
-                                            rotation_center.y - handle_half,
-                                        ),
-                                        size(handle_size, handle_size),
-                                    ), annotation.locked, window);
-                            }
-                        }
-                    }
-                    paint_ellipse_annotations(
-                        scene.ellipses,
-                        page_bounds,
-                        page_size,
-                        &transform,
-                        selection_color,
-                        hovered_id,
-                        focused_id,
-                        window,
-                    );
-                    paint_arc_annotations(
-                        scene.arcs,
-                        page_bounds,
-                        page_size,
-                        &transform,
-                        selection_color,
-                        hovered_id,
-                        focused_id,
-                        window,
-                    );
-                    for annotation in scene.straight_lines {
-                        let project = |sample: PdfPoint| {
-                            let local = transform.point_to_local_pixels(sample);
-                            point(
-                                page_bounds.origin.x + px(local.x as f32),
-                                page_bounds.origin.y + px(local.y as f32),
-                            )
-                        };
-                        let start = project(annotation.start);
-                        let end = project(annotation.end);
-                        let scale = f32::from(page_bounds.size.width) / page_size.0;
-                        let stroke_width =
-                            px((annotation.appearance.stroke_width_pt() as f32 * scale).max(1.));
-                        let color = try_parse_color(annotation.appearance.stroke_color())
-                            .unwrap_or(selection_color)
-                            .opacity(annotation.appearance.opacity() as f32);
-                        let mut builder = PathBuilder::stroke(stroke_width);
-                        builder = match annotation.appearance.stroke_style() {
-                            StrokeStyle::Solid => builder,
-                            StrokeStyle::Dashed => {
-                                builder.dash_array(&[stroke_width * 4., stroke_width * 2.])
-                            }
-                            StrokeStyle::Dotted => {
-                                builder.dash_array(&[stroke_width, stroke_width * 2.])
-                            }
-                        };
-                        builder.move_to(start);
-                        builder.line_to(end);
-                        if let Ok(path) = builder.build() {
-                            window.paint_path(path, color);
-                        }
-                        if annotation.kind == LineKind::Arrow
-                            && let Some(points) = straight_line_arrowhead_points(
-                                annotation.start,
-                                annotation.end,
-                                annotation.appearance.stroke_width_pt(),
-                            )
-                        {
-                            let points = points.map(project);
-                            let mut fill_builder = PathBuilder::fill();
-                            fill_builder.move_to(points[0]);
-                            fill_builder.line_to(points[1]);
-                            fill_builder.line_to(points[2]);
-                            fill_builder.close();
-                            if let Ok(path) = fill_builder.build() {
-                                window.paint_path(path, color);
-                            }
-                            let mut outline_builder = PathBuilder::stroke(stroke_width);
-                            outline_builder.move_to(points[0]);
-                            outline_builder.line_to(points[1]);
-                            outline_builder.line_to(points[2]);
-                            outline_builder.close();
-                            if let Ok(path) = outline_builder.build() {
-                                window.paint_path(path, color);
-                            }
-                        }
-                        if annotation.selected && !annotation.draft {
-
-                            for center in [start, end] {
-                                interaction_chrome::paint_handle(Bounds::new(
-                                        point(center.x - px(4.), center.y - px(4.)),
-                                        size(px(8.), px(8.)),
-                                    ), annotation.locked, window);
-                            }
-                        }
-                    }
-                    for annotation in scene.vertex_paths {
-                        if annotation.points.len() < 2 {
-                            continue;
-                        }
-                        let project = |sample: PdfPoint| {
-                            let local = transform.point_to_local_pixels(sample);
-                            point(
-                                page_bounds.origin.x + px(local.x as f32),
-                                page_bounds.origin.y + px(local.y as f32),
-                            )
-                        };
-                        let projected = annotation
-                            .points
-                            .iter()
-                            .copied()
-                            .map(project)
-                            .collect::<Vec<_>>();
-                        let scale = f32::from(page_bounds.size.width) / page_size.0;
-                        let stroke_width =
-                            px((annotation.appearance.stroke_width_pt() as f32 * scale).max(1.));
-                        let stroke_color = try_parse_color(annotation.appearance.stroke_color())
-                            .unwrap_or(selection_color)
-                            .opacity(annotation.appearance.opacity() as f32);
-                        let closes = annotation.kind
-                            == crate::annotation_model::VertexPathKind::Polygon
-                            && !annotation.draft;
-                        if closes && let Some(fill_color) = annotation.appearance.fill_color() {
-                            let mut fill_builder = PathBuilder::fill();
-                            fill_builder.move_to(projected[0]);
-                            for sample in projected.iter().copied().skip(1) {
-                                fill_builder.line_to(sample);
-                            }
-                            fill_builder.close();
-                            if let Ok(path) = fill_builder.build() {
-                                let color = try_parse_color(fill_color)
-                                    .unwrap_or(selection_color)
-                                    .opacity(
-                                        (annotation.appearance.opacity()
-                                            * annotation.appearance.fill_opacity())
-                                            as f32,
-                                    );
-                                window.paint_path(path, color);
-                            }
-                        }
-                        let mut stroke_builder = PathBuilder::stroke(stroke_width);
-                        stroke_builder = match annotation.appearance.stroke_style() {
-                            StrokeStyle::Solid => stroke_builder,
-                            StrokeStyle::Dashed => {
-                                stroke_builder.dash_array(&[stroke_width * 4., stroke_width * 2.])
-                            }
-                            StrokeStyle::Dotted => {
-                                stroke_builder.dash_array(&[stroke_width, stroke_width * 2.])
-                            }
-                        };
-                        stroke_builder.move_to(projected[0]);
-                        for sample in projected.iter().copied().skip(1) {
-                            stroke_builder.line_to(sample);
-                        }
-                        if closes {
-                            stroke_builder.close();
-                        }
-                        if let Ok(path) = stroke_builder.build() {
-                            window.paint_path(path, stroke_color);
-                        }
-                        if annotation.selected && !annotation.draft {
-
-                            for center in projected {
-                                interaction_chrome::paint_handle(Bounds::new(
-                                        point(center.x - px(4.), center.y - px(4.)),
-                                        size(px(8.), px(8.)),
-                                    ), annotation.locked, window);
-                            }
-                        }
-                    }
-                    for annotation in scene.clouds {
-                        if annotation.scallop_path.len() < 2 {
-                            continue;
-                        }
-                        let project = |sample: PdfPoint| {
-                            let local = transform.point_to_local_pixels(sample);
-                            point(
-                                page_bounds.origin.x + px(local.x as f32),
-                                page_bounds.origin.y + px(local.y as f32),
-                            )
-                        };
-                        let scale = f32::from(page_bounds.size.width) / page_size.0;
-                        let stroke_width =
-                            px((annotation.appearance.stroke_width_pt() as f32 * scale).max(1.));
-                        let stroke_color = try_parse_color(annotation.appearance.stroke_color())
-                            .unwrap_or(selection_color)
-                            .opacity(annotation.appearance.opacity() as f32);
-                        let mut builder = PathBuilder::stroke(stroke_width);
-                        let first = project(annotation.scallop_path[0]);
-                        builder.move_to(first);
-                        for sample in annotation.scallop_path.iter().copied().skip(1) {
-                            builder.line_to(project(sample));
-                        }
-                        if !annotation.draft {
-                            builder.close();
-                        }
-                        if let Ok(path) = builder.build() {
-                            window.paint_path(path, stroke_color);
-                        }
-                        if annotation.selected && !annotation.draft {
-
-                            for center in annotation.points.into_iter().map(project) {
-                                interaction_chrome::paint_handle(Bounds::new(
-                                        point(center.x - px(4.), center.y - px(4.)),
-                                        size(px(8.), px(8.)),
-                                    ), annotation.locked, window);
-                            }
-                        }
-                    }
-                    for annotation in scene.cloud_pluses {
-                        paint_cloud_plus_annotation(
-                            annotation,
-                            &transform,
-                            page_bounds,
-                            page_size,
-                            selection_color,
-                            hovered_id,
-                            focused_id,
-                            window,
-                            cx,
-                        );
-                    }
-                    for annotation in scene.callouts {
-                        if annotation.leader_points.len() < 2 {
-                            continue;
-                        }
-                        let project = |sample: PdfPoint| {
-                            let local = transform.point_to_local_pixels(sample);
-                            point(
-                                page_bounds.origin.x + px(local.x as f32),
-                                page_bounds.origin.y + px(local.y as f32),
-                            )
-                        };
-                        let scale = f32::from(page_bounds.size.width) / page_size.0;
-                        let line = annotation.appearance.line();
-                        let stroke_width = px((line.stroke_width_pt() as f32 * scale).max(1.));
-                        let stroke_color = try_parse_color(line.stroke_color())
-                            .unwrap_or(selection_color)
-                            .opacity(line.opacity() as f32);
-                        let projected_leader = annotation
-                            .leader_points
-                            .iter()
-                            .copied()
-                            .map(project)
-                            .collect::<Vec<_>>();
-                        let mut leader = PathBuilder::stroke(stroke_width);
-                        leader = match line.stroke_style() {
-                            StrokeStyle::Solid => leader,
-                            StrokeStyle::Dashed => {
-                                leader.dash_array(&[stroke_width * 4., stroke_width * 2.])
-                            }
-                            StrokeStyle::Dotted => {
-                                leader.dash_array(&[stroke_width, stroke_width * 2.])
-                            }
-                        };
-                        leader.move_to(projected_leader[0]);
-                        for sample in projected_leader.iter().copied().skip(1) {
-                            leader.line_to(sample);
-                        }
-                        if let Ok(path) = leader.build() {
-                            window.paint_path(path, stroke_color);
-                        }
-                        if let Some(arrow) = straight_line_arrowhead_points(
-                            annotation.leader_points[1],
-                            annotation.leader_points[0],
-                            line.stroke_width_pt(),
-                        ) {
-                            let arrow = arrow.map(project);
-                            let mut open_arrow = PathBuilder::stroke(stroke_width);
-                            open_arrow.move_to(arrow[1]);
-                            open_arrow.line_to(arrow[0]);
-                            open_arrow.line_to(arrow[2]);
-                            if let Ok(path) = open_arrow.build() {
-                                window.paint_path(path, stroke_color);
-                            }
-                        }
-
-                        let local = transform.rect_to_local_pixels(annotation.text_box);
-                        let text_box_bounds = Bounds::new(
-                            point(
-                                page_bounds.origin.x + px(local.x as f32),
-                                page_bounds.origin.y + px(local.y as f32),
-                            ),
-                            size(px(local.width as f32), px(local.height as f32)),
-                        );
-                        let text_style = annotation.appearance.text();
-                        let font_size = px(text_style.font_size_pt() as f32 * scale);
-                        let line_height = px(text_style.font_size_pt() as f32 * 1.15 * scale);
-                        let inset = px(3. * scale);
-                        let line_count = annotation.content.split('\n').count().max(1) as f32;
-                        let text_height = line_height * line_count;
-                        let content_bounds = Bounds::new(
-                            point(
-                                text_box_bounds.origin.x + inset,
-                                text_box_bounds.origin.y
-                                    + ((text_box_bounds.size.height - text_height) / 2.).max(inset),
-                            ),
-                            size(
-                                (text_box_bounds.size.width - inset * 2.).max(px(0.)),
-                                text_height,
-                            ),
-                        );
-                        let text_color = try_parse_color(text_style.color())
-                            .unwrap_or(selection_color)
-                            .opacity(text_style.opacity() as f32);
-                        let align = match text_style.alignment() {
-                            TextAlignment::Left => TextAlign::Left,
-                            TextAlignment::Center => TextAlign::Center,
-                            TextAlignment::Right => TextAlign::Right,
-                        };
-                        window.with_content_mask(
-                            Some(ContentMask {
-                                bounds: text_box_bounds,
-                            }),
-                            |window| {
-                                for (line_index, line) in annotation.content.split('\n').enumerate()
-                                {
-                                    let text: SharedString = line.to_owned().into();
-                                    let run = TextRun {
-                                        len: text.len(),
-                                        font: font(text_style.font_family().to_owned()),
-                                        color: text_color,
-                                        background_color: None,
-                                        underline: None,
-                                        strikethrough: None,
-                                    };
-                                    let shaped = window.text_system().shape_line(
-                                        text,
-                                        font_size,
-                                        &[run],
-                                        None,
-                                    );
-                                    let _ = shaped.paint(
-                                        point(
-                                            content_bounds.origin.x,
-                                            content_bounds.origin.y
-                                                + line_height * line_index as f32,
-                                        ),
-                                        line_height,
-                                        align,
-                                        Some(content_bounds.size.width),
-                                        window,
-                                        cx,
-                                    );
-                                }
-                            },
-                        );
-                        let annotation_focused = focused_id == Some(&annotation.id);
-                        let annotation_hovered = hovered_id == Some(&annotation.id);
-                        if let Some(chrome_outline) = interaction_chrome::outline_for(
-                            annotation.selected,
-                            annotation_focused,
-                            annotation_hovered,
-                            annotation.draft,
-                            annotation.locked,
-                        ) {
-                            window.paint_quad(
-                                outline(text_box_bounds, chrome_outline, BorderStyle::Solid)
-                                    .border_widths(px(if annotation.locked { 1. } else { 2. })),
-                            );
-                            if (annotation.selected || annotation_focused) && !annotation.draft {
-                                for center in projected_leader {
-                                    interaction_chrome::paint_handle(Bounds::new(
-                                            point(center.x - px(4.), center.y - px(4.)),
-                                            size(px(8.), px(8.)),
-                                        ), annotation.locked, window);
-                                }
-                            }
-                        }
-                    }
-                    for annotation in scene.measurement_paths {
-                        if annotation.points.len() < 2 {
-                            continue;
-                        }
-                        let project = |sample: PdfPoint| {
-                            let local = transform.point_to_local_pixels(sample);
-                            point(
-                                page_bounds.origin.x + px(local.x as f32),
-                                page_bounds.origin.y + px(local.y as f32),
-                            )
-                        };
-                        let projected = annotation
-                            .points
-                            .iter()
-                            .copied()
-                            .map(project)
-                            .collect::<Vec<_>>();
-                        let scale = f32::from(page_bounds.size.width) / page_size.0;
-                        let stroke_width =
-                            px((annotation.appearance.stroke_width_pt() as f32 * scale).max(1.));
-                        let stroke_color = try_parse_color(annotation.appearance.stroke_color())
-                            .unwrap_or(selection_color)
-                            .opacity(annotation.appearance.opacity() as f32);
-                        let closes =
-                            annotation.kind == MeasurementPathKind::Area && !annotation.draft;
-                        if closes && let Some(fill_color) = annotation.appearance.fill_color() {
-                            let mut fill_builder = PathBuilder::fill();
-                            fill_builder.move_to(projected[0]);
-                            for sample in projected.iter().copied().skip(1) {
-                                fill_builder.line_to(sample);
-                            }
-                            fill_builder.close();
-                            if let Ok(path) = fill_builder.build() {
-                                let color = try_parse_color(fill_color)
-                                    .unwrap_or(selection_color)
-                                    .opacity(
-                                        (annotation.appearance.opacity()
-                                            * annotation.appearance.fill_opacity())
-                                            as f32,
-                                    );
-                                window.paint_path(path, color);
-                            }
-                        }
-                        let mut stroke_builder = PathBuilder::stroke(stroke_width);
-                        stroke_builder = match annotation.appearance.stroke_style() {
-                            StrokeStyle::Solid => stroke_builder,
-                            StrokeStyle::Dashed => {
-                                stroke_builder.dash_array(&[stroke_width * 4., stroke_width * 2.])
-                            }
-                            StrokeStyle::Dotted => {
-                                stroke_builder.dash_array(&[stroke_width, stroke_width * 2.])
-                            }
-                        };
-                        stroke_builder.move_to(projected[0]);
-                        for sample in projected.iter().copied().skip(1) {
-                            stroke_builder.line_to(sample);
-                        }
-                        if closes {
-                            stroke_builder.close();
-                        }
-                        if let Ok(path) = stroke_builder.build() {
-                            window.paint_path(path, stroke_color);
-                        }
-                        if annotation.show_caption && !annotation.caption.is_empty() {
-                            let center = projected
+                            let project = |sample: PdfPoint| {
+                                let local = transform.point_to_local_pixels(sample);
+                                point(
+                                    page_bounds.origin.x + px(local.x as f32),
+                                    page_bounds.origin.y + px(local.y as f32),
+                                )
+                            };
+                            let projected = annotation
+                                .points
                                 .iter()
                                 .copied()
-                                .fold(point(px(0.), px(0.)), |sum, sample| {
-                                    point(sum.x + sample.x, sum.y + sample.y)
-                                });
-                            let count = projected.len() as f32;
-                            let caption: SharedString = annotation.caption.into();
-                            let text_style = &annotation.text_style;
-                            let text_color = try_parse_color(text_style.color())
+                                .map(project)
+                                .collect::<Vec<_>>();
+                            let scale = f32::from(page_bounds.size.width) / page_size.0;
+                            let stroke_width =
+                                px((annotation.appearance.stroke_width_pt() as f32 * scale).max(1.));
+                            let stroke_color = try_parse_color(annotation.appearance.stroke_color())
                                 .unwrap_or(selection_color)
-                                .opacity(text_style.opacity() as f32);
-                            let run = TextRun {
-                                len: caption.len(),
-                                font: font(text_style.font_family()),
-                                color: text_color,
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
+                                .opacity(annotation.appearance.opacity() as f32);
+                            let closes = annotation.kind
+                                == crate::annotation_model::VertexPathKind::Polygon
+                                && !annotation.draft;
+                            if closes && let Some(fill_color) = annotation.appearance.fill_color() {
+                                let mut fill_builder = PathBuilder::fill();
+                                fill_builder.move_to(projected[0]);
+                                for sample in projected.iter().copied().skip(1) {
+                                    fill_builder.line_to(sample);
+                                }
+                                fill_builder.close();
+                                if let Ok(path) = fill_builder.build() {
+                                    let color = try_parse_color(fill_color)
+                                        .unwrap_or(selection_color)
+                                        .opacity(
+                                            (annotation.appearance.opacity()
+                                                * annotation.appearance.fill_opacity())
+                                                as f32,
+                                        );
+                                    window.paint_path(path, color);
+                                }
+                            }
+                            let mut stroke_builder = PathBuilder::stroke(stroke_width);
+                            stroke_builder = match annotation.appearance.stroke_style() {
+                                StrokeStyle::Solid => stroke_builder,
+                                StrokeStyle::Dashed => {
+                                    stroke_builder.dash_array(&[stroke_width * 4., stroke_width * 2.])
+                                }
+                                StrokeStyle::Dotted => {
+                                    stroke_builder.dash_array(&[stroke_width, stroke_width * 2.])
+                                }
                             };
-                            let shaped = window.text_system().shape_line(
-                                caption,
-                                px(text_style.font_size_pt() as f32 * scale),
-                                &[run],
-                                None,
-                            );
-                            let _ = shaped.paint(
+                            stroke_builder.move_to(projected[0]);
+                            for sample in projected.iter().copied().skip(1) {
+                                stroke_builder.line_to(sample);
+                            }
+                            if closes {
+                                stroke_builder.close();
+                            }
+                            if let Ok(path) = stroke_builder.build() {
+                                window.paint_path(path, stroke_color);
+                            }
+                            if !annotation.draft && let Some(state) = interaction_chrome::feedback_state(
+                                annotation.selected,
+                                focused_id == Some(&annotation.id),
+                                hovered_id == Some(&annotation.id) || transform_hovered,
+                                false,
+                                annotation_candidate,
+                            ) {
+                                if !closes && projected.len() == 2 {
+                                    interaction_chrome::paint_line_feedback(projected[0], projected[1], state, window);
+                                } else if let Some(bounds) = path_feedback_bounds(
+                                    &annotation.points, 0., &transform, page_bounds.origin,
+                                ) {
+                                    interaction_chrome::paint_feedback_path(&bounds, true, state, window);
+                                }
+                                if (annotation.selected || transform_hovered)
+                                    && !annotation_candidate
+                                    && !annotation.locked
+                                {
+                                    for (index, center) in projected.iter().copied().enumerate() {
+                                        interaction_chrome::paint_feedback_handle(
+                                            center,
+                                            state,
+                                            hot_handle.as_ref().is_some_and(
+                                                |(id, hot_index)| {
+                                                    id == &annotation.id
+                                                        && *hot_index == index
+                                                },
+                                            ),
+                                            window,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        crate::annotation_model::SceneAnnotation::Cloud(annotation) => {
+                            let annotation_candidate = marquee_candidate_ids.contains(&annotation.id);
+                            let hover_controls_visible = hovered_id == Some(&annotation.id)
+                                || hot_handle
+                                    .as_ref()
+                                    .is_some_and(|(id, _)| id == &annotation.id);
+                            if annotation.scallop_path.len() < 2 {
+                                continue;
+                            }
+                            let project = |sample: PdfPoint| {
+                                let local = transform.point_to_local_pixels(sample);
                                 point(
-                                    center.x / count,
-                                    center.y / count
-                                        - px(text_style.font_size_pt() as f32 * 1.15 * scale),
-                                ),
-                                px(text_style.font_size_pt() as f32 * 1.15 * scale),
-                                TextAlign::Center,
-                                None,
+                                    page_bounds.origin.x + px(local.x as f32),
+                                    page_bounds.origin.y + px(local.y as f32),
+                                )
+                            };
+                            let scale = f32::from(page_bounds.size.width) / page_size.0;
+                            let stroke_width =
+                                px((annotation.appearance.stroke_width_pt() as f32 * scale).max(1.));
+                            let stroke_color = try_parse_color(annotation.appearance.stroke_color())
+                                .unwrap_or(selection_color)
+                                .opacity(annotation.appearance.opacity() as f32);
+                            let mut builder = PathBuilder::stroke(stroke_width);
+                            let first = project(annotation.scallop_path[0]);
+                            builder.move_to(first);
+                            for sample in annotation.scallop_path.iter().copied().skip(1) {
+                                builder.line_to(project(sample));
+                            }
+                            if !annotation.draft {
+                                builder.close();
+                            }
+                            if let Ok(path) = builder.build() {
+                                window.paint_path(path, stroke_color);
+                            }
+                            if (annotation.feedback.chrome_visible() || hover_controls_visible)
+                                && let Some(state) = interaction_chrome::feedback_state(
+                                    annotation.selected,
+                                    focused_id == Some(&annotation.id),
+                                    hover_controls_visible,
+                                    false,
+                                    annotation_candidate,
+                                )
+                            {
+                                if let Some(bounds) = path_feedback_bounds(
+                                    &annotation.points,
+                                    0.,
+                                    &transform,
+                                    page_bounds.origin,
+                                ) {
+                                    interaction_chrome::paint_feedback_path(
+                                        &bounds,
+                                        true,
+                                        state,
+                                        window,
+                                    );
+                                }
+                                if (annotation.selected || hover_controls_visible)
+                                    && !annotation_candidate
+                                    && !annotation.locked
+                                {
+                                    for (index, center) in
+                                        annotation.points.into_iter().map(project).enumerate()
+                                    {
+                                        if hover_controls_visible
+                                            || annotation.feedback.handle_visible(index)
+                                        {
+                                            interaction_chrome::paint_feedback_handle(
+                                                center,
+                                                state,
+                                                hot_handle.as_ref().is_some_and(
+                                                    |(id, hot_index)| {
+                                                        id == &annotation.id
+                                                            && *hot_index == index
+                                                    },
+                                                ),
+                                                window,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        crate::annotation_model::SceneAnnotation::CloudPlus(annotation) => {
+                            paint_cloud_plus_annotation(
+                                annotation,
+                                &transform,
+                                page_bounds,
+                                page_size,
+                                selection_color,
+                                hovered_id,
+                                focused_id,
+                                &marquee_candidate_ids,
+                                hot_handle.as_ref(),
                                 window,
                                 cx,
                             );
                         }
-                        if annotation.selected && !annotation.draft {
-
-                            for center in projected.iter().copied() {
-                                interaction_chrome::paint_handle(Bounds::new(
-                                        point(center.x - px(4.), center.y - px(4.)),
-                                        size(px(8.), px(8.)),
-                                    ), annotation.locked, window);
-                            }
-                        }
-                    }
-                    for annotation in scene.pens {
-                        let project = |sample: PdfPoint| {
-                            let local = transform.point_to_local_pixels(sample);
-                            point(
-                                page_bounds.origin.x + px(local.x as f32),
-                                page_bounds.origin.y + px(local.y as f32),
-                            )
-                        };
-                        let scale = f32::from(page_bounds.size.width) / page_size.0;
-                        let paint_body = annotation.tool
-                            != crate::annotation_model::InkTool::Highlight
-                            || annotation.draft
-                            || !highlights_precomposed;
-                        for points in &annotation.paths {
-                            if !paint_body {
+                        crate::annotation_model::SceneAnnotation::Callout(annotation) => {
+                            let annotation_candidate = marquee_candidate_ids.contains(&annotation.id);
+                            let hover_controls_visible = hovered_id == Some(&annotation.id)
+                                || hot_handle
+                                    .as_ref()
+                                    .is_some_and(|(id, _)| id == &annotation.id);
+                            if annotation.leader_points.len() < 2 {
                                 continue;
                             }
-                            let paint_path = build_ink_paint_path(points, annotation.smooth_curves);
-                            if paint_path.is_empty() {
-                                continue;
-                            }
-                            let mut builder =
-                                PathBuilder::stroke(px((annotation.appearance.width_pt() as f32
-                                    * scale)
-                                    .max(1.)));
-                            for segment in paint_path {
-                                match segment {
-                                    InkPaintPathSegment::MoveTo(to) => builder.move_to(project(to)),
-                                    InkPaintPathSegment::LineTo(to) => builder.line_to(project(to)),
-                                    InkPaintPathSegment::CubicTo {
-                                        control_a,
-                                        control_b,
-                                        to,
-                                    } => builder.cubic_bezier_to(
-                                        project(to),
-                                        project(control_a),
-                                        project(control_b),
-                                    ),
-                                }
-                            }
-                            if let Ok(path) = builder.build() {
-                                let color = try_parse_color(annotation.appearance.color())
-                                    .unwrap_or(selection_color)
-                                    .opacity(annotation.appearance.opacity() as f32);
-                                window.paint_path(path, color);
-                            }
-                        }
-                        let annotation_focused = focused_id == Some(&annotation.id);
-                        let annotation_hovered = hovered_id == Some(&annotation.id);
-                        if let Some(chrome_outline) = interaction_chrome::outline_for(
-                            annotation.selected,
-                            annotation_focused,
-                            annotation_hovered,
-                            annotation.draft,
-                            annotation.locked,
-                        ) {
-                            let projected = annotation
-                                .paths
+                            let project = |sample: PdfPoint| {
+                                let local = transform.point_to_local_pixels(sample);
+                                point(
+                                    page_bounds.origin.x + px(local.x as f32),
+                                    page_bounds.origin.y + px(local.y as f32),
+                                )
+                            };
+                            let scale = f32::from(page_bounds.size.width) / page_size.0;
+                            let line = annotation.appearance.line();
+                            let stroke_width = px((line.stroke_width_pt() as f32 * scale).max(1.));
+                            let stroke_color = try_parse_color(line.stroke_color())
+                                .unwrap_or(selection_color)
+                                .opacity(line.opacity() as f32);
+                            let projected_leader = annotation
+                                .leader_points
                                 .iter()
-                                .flatten()
                                 .copied()
                                 .map(project)
                                 .collect::<Vec<_>>();
-                            if let Some(first) = projected.first().copied() {
-                                let (mut left, mut top, mut right, mut bottom) =
-                                    (first.x, first.y, first.x, first.y);
-                                for sample in projected.iter().skip(1) {
-                                    left = left.min(sample.x);
-                                    top = top.min(sample.y);
-                                    right = right.max(sample.x);
-                                    bottom = bottom.max(sample.y);
+                            let mut leader = PathBuilder::stroke(stroke_width);
+                            leader = match line.stroke_style() {
+                                StrokeStyle::Solid => leader,
+                                StrokeStyle::Dashed => {
+                                    leader.dash_array(&[stroke_width * 4., stroke_width * 2.])
                                 }
-                                let padding = px(4.);
-                                window.paint_quad(
-                                    outline(
-                                        Bounds::new(
-                                            point(left - padding, top - padding),
-                                            size(
-                                                right - left + padding * 2.,
-                                                bottom - top + padding * 2.,
+                                StrokeStyle::Dotted => {
+                                    leader.dash_array(&[stroke_width, stroke_width * 2.])
+                                }
+                            };
+                            leader.move_to(projected_leader[0]);
+                            for sample in projected_leader.iter().copied().skip(1) {
+                                leader.line_to(sample);
+                            }
+                            if let Ok(path) = leader.build() {
+                                window.paint_path(path, stroke_color);
+                            }
+                            if let Some(arrow) = straight_line_arrowhead_points(
+                                annotation.leader_points[1],
+                                annotation.leader_points[0],
+                                line.stroke_width_pt(),
+                            ) {
+                                let arrow = arrow.map(project);
+                                let mut open_arrow = PathBuilder::stroke(stroke_width);
+                                open_arrow.move_to(arrow[1]);
+                                open_arrow.line_to(arrow[0]);
+                                open_arrow.line_to(arrow[2]);
+                                if let Ok(path) = open_arrow.build() {
+                                    window.paint_path(path, stroke_color);
+                                }
+                            }
+
+                            let local = transform.rect_to_local_pixels(annotation.text_box);
+                            let text_box_bounds = Bounds::new(
+                                point(
+                                    page_bounds.origin.x + px(local.x as f32),
+                                    page_bounds.origin.y + px(local.y as f32),
+                                ),
+                                size(px(local.width as f32), px(local.height as f32)),
+                            );
+                            let text_style = annotation.appearance.text();
+                            let font_size = px(text_style.font_size_pt() as f32 * scale);
+                            let line_height = px(text_style.font_size_pt() as f32 * 1.15 * scale);
+                            let inset = px(3. * scale);
+                            let line_count = annotation.content.split('\n').count().max(1) as f32;
+                            let text_height = line_height * line_count;
+                            let content_bounds = Bounds::new(
+                                point(
+                                    text_box_bounds.origin.x + inset,
+                                    text_box_bounds.origin.y
+                                        + ((text_box_bounds.size.height - text_height) / 2.).max(inset),
+                                ),
+                                size(
+                                    (text_box_bounds.size.width - inset * 2.).max(px(0.)),
+                                    text_height,
+                                ),
+                            );
+                            let text_color = try_parse_color(text_style.color())
+                                .unwrap_or(selection_color)
+                                .opacity(text_style.opacity() as f32);
+                            let align = match text_style.alignment() {
+                                TextAlignment::Left => TextAlign::Left,
+                                TextAlignment::Center => TextAlign::Center,
+                                TextAlignment::Right => TextAlign::Right,
+                            };
+                            window.with_content_mask(
+                                Some(ContentMask {
+                                    bounds: text_box_bounds,
+                                }),
+                                |window| {
+                                    for (line_index, line) in annotation.content.split('\n').enumerate()
+                                    {
+                                        let text: SharedString = line.to_owned().into();
+                                        let run = TextRun {
+                                            len: text.len(),
+                                            font: font(text_style.font_family().to_owned()),
+                                            color: text_color,
+                                            background_color: None,
+                                            underline: None,
+                                            strikethrough: None,
+                                        };
+                                        let shaped = window.text_system().shape_line(
+                                            text,
+                                            font_size,
+                                            &[run],
+                                            None,
+                                        );
+                                        let _ = shaped.paint(
+                                            point(
+                                                content_bounds.origin.x,
+                                                content_bounds.origin.y
+                                                    + line_height * line_index as f32,
                                             ),
-                                        ),
-                                        chrome_outline,
-                                        BorderStyle::Solid,
-                                    )
-                                    .border_widths(px(1.)),
+                                            line_height,
+                                            align,
+                                            Some(content_bounds.size.width),
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                },
+                            );
+                            if annotation.feedback.chrome_visible()
+                                && let Some(state) = interaction_chrome::feedback_state(
+                                    annotation.selected,
+                                    focused_id == Some(&annotation.id),
+                                    hover_controls_visible,
+                                    false,
+                                    annotation_candidate,
+                                )
+                            {
+                                let mut bounds_points = projected_leader.clone();
+                                bounds_points.extend([
+                                    text_box_bounds.origin,
+                                    point(text_box_bounds.right(), text_box_bounds.bottom()),
+                                ]);
+                                let min_x = bounds_points.iter().map(|point| point.x).min().unwrap();
+                                let min_y = bounds_points.iter().map(|point| point.y).min().unwrap();
+                                let max_x = bounds_points.iter().map(|point| point.x).max().unwrap();
+                                let max_y = bounds_points.iter().map(|point| point.y).max().unwrap();
+                                interaction_chrome::paint_feedback_path(
+                                    &[
+                                        point(min_x, min_y),
+                                        point(max_x, min_y),
+                                        point(max_x, max_y),
+                                        point(min_x, max_y),
+                                    ],
+                                    true,
+                                    state,
+                                    window,
+                                );
+                                interaction_chrome::paint_feedback_path(
+                                    &projected_leader,
+                                    false,
+                                    state,
+                                    window,
+                                );
+                                if (annotation.selected || hover_controls_visible)
+                                    && !annotation_candidate
+                                    && !annotation.locked
+                                {
+                                    for (index, handle) in
+                                        RectangleResizeHandle::ALL.into_iter().enumerate()
+                                    {
+                                        if annotation.feedback.handle_visible(index) {
+                                            interaction_chrome::paint_feedback_handle(
+                                                project(handle.point(annotation.text_box)),
+                                                state,
+                                                hot_handle.as_ref().is_some_and(
+                                                    |(id, hot_index)| {
+                                                        id == &annotation.id && *hot_index == index
+                                                    },
+                                                ),
+                                                window,
+                                            );
+                                        }
+                                    }
+                                    for (index, center) in projected_leader.into_iter().enumerate() {
+                                        if annotation.feedback.handle_visible(
+                                            RectangleResizeHandle::ALL.len() + index,
+                                        ) {
+                                            interaction_chrome::paint_feedback_handle(
+                                                center,
+                                                state,
+                                                hot_handle.as_ref().is_some_and(
+                                                    |(id, hot_index)| {
+                                                        id == &annotation.id
+                                                            && *hot_index
+                                                                == RectangleResizeHandle::ALL.len()
+                                                                    + index
+                                                    },
+                                                ),
+                                                window,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        crate::annotation_model::SceneAnnotation::MeasurementPath(annotation) => {
+                            let annotation_candidate = marquee_candidate_ids.contains(&annotation.id);
+                            if annotation.points.len() < 2 {
+                                continue;
+                            }
+                            let project = |sample: PdfPoint| {
+                                let local = transform.point_to_local_pixels(sample);
+                                point(
+                                    page_bounds.origin.x + px(local.x as f32),
+                                    page_bounds.origin.y + px(local.y as f32),
+                                )
+                            };
+                            let projected = annotation
+                                .points
+                                .iter()
+                                .copied()
+                                .map(project)
+                                .collect::<Vec<_>>();
+                            let scale = f32::from(page_bounds.size.width) / page_size.0;
+                            let stroke_width =
+                                px((annotation.appearance.stroke_width_pt() as f32 * scale).max(1.));
+                            let stroke_color = try_parse_color(annotation.appearance.stroke_color())
+                                .unwrap_or(selection_color)
+                                .opacity(annotation.appearance.opacity() as f32);
+                            let closes =
+                                annotation.kind == MeasurementPathKind::Area && !annotation.draft;
+                            if closes && let Some(fill_color) = annotation.appearance.fill_color() {
+                                let mut fill_builder = PathBuilder::fill();
+                                fill_builder.move_to(projected[0]);
+                                for sample in projected.iter().copied().skip(1) {
+                                    fill_builder.line_to(sample);
+                                }
+                                fill_builder.close();
+                                if let Ok(path) = fill_builder.build() {
+                                    let color = try_parse_color(fill_color)
+                                        .unwrap_or(selection_color)
+                                        .opacity(
+                                            (annotation.appearance.opacity()
+                                                * annotation.appearance.fill_opacity())
+                                                as f32,
+                                        );
+                                    window.paint_path(path, color);
+                                }
+                            }
+                            let mut stroke_builder = PathBuilder::stroke(stroke_width);
+                            stroke_builder = match annotation.appearance.stroke_style() {
+                                StrokeStyle::Solid => stroke_builder,
+                                StrokeStyle::Dashed => {
+                                    stroke_builder.dash_array(&[stroke_width * 4., stroke_width * 2.])
+                                }
+                                StrokeStyle::Dotted => {
+                                    stroke_builder.dash_array(&[stroke_width, stroke_width * 2.])
+                                }
+                            };
+                            stroke_builder.move_to(projected[0]);
+                            for sample in projected.iter().copied().skip(1) {
+                                stroke_builder.line_to(sample);
+                            }
+                            if closes {
+                                stroke_builder.close();
+                            }
+                            if let Ok(path) = stroke_builder.build() {
+                                window.paint_path(path, stroke_color);
+                            }
+                            if let Some(layout) = crate::annotation_caption::measurement_caption(&annotation, transform, window.text_system()) {
+                                layout.paint(page_bounds.origin, window, cx);
+                            }
+                            let transform_hovered = hot_handle
+                                .as_ref()
+                                .is_some_and(|(id, _)| id == &annotation.id);
+                            if !annotation.draft && let Some(state) = interaction_chrome::feedback_state(
+                                annotation.selected,
+                                focused_id == Some(&annotation.id),
+                                hovered_id == Some(&annotation.id) || transform_hovered,
+                                false,
+                                annotation_candidate,
+                            ) {
+                                if !closes && projected.len() == 2 {
+                                    interaction_chrome::paint_line_feedback(projected[0], projected[1], state, window);
+                                } else if let Some(bounds) = path_feedback_bounds(
+                                    &annotation.points, 1., &transform, page_bounds.origin,
+                                ) {
+                                    interaction_chrome::paint_feedback_path(&bounds, true, state, window);
+                                }
+                                if (annotation.selected || transform_hovered)
+                                    && !annotation_candidate
+                                    && !annotation.locked
+                                {
+                                    for (index, center) in projected.iter().copied().enumerate() {
+                                        interaction_chrome::paint_feedback_handle(
+                                            center,
+                                            state,
+                                            hot_handle.as_ref().is_some_and(
+                                                |(id, hot_index)| {
+                                                    id == &annotation.id && *hot_index == index
+                                                },
+                                            ),
+                                            window,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        crate::annotation_model::SceneAnnotation::Pen(annotation) => {
+                            let annotation_candidate = marquee_candidate_ids.contains(&annotation.id);
+                            let project = |sample: PdfPoint| {
+                                let local = transform.point_to_local_pixels(sample);
+                                point(
+                                    page_bounds.origin.x + px(local.x as f32),
+                                    page_bounds.origin.y + px(local.y as f32),
+                                )
+                            };
+                            let scale = f32::from(page_bounds.size.width) / page_size.0;
+                            let paint_body = cfg!(target_os = "macos") || annotation.tool
+                                != crate::annotation_model::InkTool::Highlight
+                                || annotation.draft
+                                || !highlights_precomposed;
+                            for points in &annotation.paths {
+                                if !paint_body {
+                                    continue;
+                                }
+                                let highlight = annotation.tool == crate::annotation_model::InkTool::Highlight;
+                                let minimum_width = if cfg!(target_os = "macos") && highlight { 0.05 } else { 1. };
+                                let width = px((annotation.appearance.width_pt() as f32 * scale).max(minimum_width));
+                                if let Some(path) = build_ink_scene_path(
+                                    points, annotation.smooth_curves, width, highlight, project,
+                                ) {
+                                    let color = try_parse_color(annotation.appearance.color())
+                                        .unwrap_or(selection_color)
+                                        .opacity(annotation.appearance.opacity() as f32);
+                                    paint_ink_scene_path(
+                                        path,
+                                        color,
+                                        highlight,
+                                        page_bounds,
+                                        window,
+                                    );
+                                }
+                            }
+                            if annotation.feedback.chrome_visible()
+                                && let Some(state) = interaction_chrome::feedback_state(
+                                    annotation.selected,
+                                    focused_id == Some(&annotation.id),
+                                    hovered_id == Some(&annotation.id),
+                                    false,
+                                    annotation_candidate,
+                                )
+                                && let Some(bounds) = ink_feedback_bounds(
+                                    &annotation.paths,
+                                    annotation.appearance.width_pt(),
+                                    &transform,
+                                    page_bounds.origin,
+                                )
+                            {
+                                interaction_chrome::paint_feedback_path(
+                                    &bounds, true, state, window,
                                 );
                             }
                         }
-                    }
-                    for annotation in scene.text_boxes {
-                        let local = transform.rect_to_local_pixels(annotation.layout_rect);
-                        let annotation_bounds = Bounds::new(
-                            point(
-                                page_bounds.origin.x + px(local.x as f32),
-                                page_bounds.origin.y + px(local.y as f32),
-                            ),
-                            size(px(local.width as f32), px(local.height as f32)),
-                        );
-                        let scale = f32::from(page_bounds.size.width) / page_size.0;
-                        let font_size = px(annotation.style.font_size_pt() as f32 * scale);
-                        let line_height = px(annotation.style.font_size_pt() as f32 * 1.15 * scale);
-                        let inset = px(5. * scale);
-                        let color = try_parse_color(annotation.style.color())
-                            .unwrap_or(selection_color)
-                            .opacity(annotation.style.opacity() as f32);
-                        let align = match annotation.style.alignment() {
-                            TextAlignment::Left => TextAlign::Left,
-                            TextAlignment::Center => TextAlign::Center,
-                            TextAlignment::Right => TextAlign::Right,
-                        };
-                        let content_bounds = Bounds::new(
-                            point(
-                                annotation_bounds.origin.x + inset,
-                                annotation_bounds.origin.y + inset,
-                            ),
-                            size(
-                                (annotation_bounds.size.width - inset * 2.).max(px(0.)),
-                                (annotation_bounds.size.height - inset * 2.).max(px(0.)),
-                            ),
-                        );
-                        window.with_content_mask(
-                            Some(ContentMask {
-                                bounds: annotation_bounds,
-                            }),
-                            |window| {
+                        crate::annotation_model::SceneAnnotation::TextBox(annotation) => {
+                            let annotation_candidate = marquee_candidate_ids.contains(&annotation.id);
+                            let hover_controls_visible = hovered_id == Some(&annotation.id)
+                                || hot_handle
+                                    .as_ref()
+                                    .is_some_and(|(id, _)| id == &annotation.id);
+                            let local = transform.rect_to_local_pixels(annotation.layout_rect);
+                            let annotation_bounds = Bounds::new(
+                                point(
+                                    page_bounds.origin.x + px(local.x as f32),
+                                    page_bounds.origin.y + px(local.y as f32),
+                                ),
+                                size(px(local.width as f32), px(local.height as f32)),
+                            );
+                            let scale = f32::from(page_bounds.size.width) / page_size.0;
+                            let font_size = px(annotation.style.font_size_pt() as f32 * scale);
+                            let line_height = px(annotation.style.font_size_pt() as f32 * 1.15 * scale);
+                            let inset = px(5. * scale);
+                            let base_text_color = try_parse_color(annotation.style.color())
+                                .unwrap_or(selection_color);
+                            let color =
+                                base_text_color.opacity(annotation.style.opacity() as f32);
+                            let align = match annotation.style.alignment() {
+                                TextAlignment::Left => TextAlign::Left,
+                                TextAlignment::Center => TextAlign::Center,
+                                TextAlignment::Right => TextAlign::Right,
+                            };
+                            let content_bounds = Bounds::new(
+                                point(
+                                    annotation_bounds.origin.x + inset,
+                                    annotation_bounds.origin.y + inset,
+                                ),
+                                size(
+                                    (annotation_bounds.size.width - inset * 2.).max(px(0.)),
+                                    (annotation_bounds.size.height - inset * 2.).max(px(0.)),
+                                ),
+                            );
+                            let paint_transform = annotation_paint_transform(
+                                annotation_bounds,
+                                annotation.rotation_degrees,
+                                window.scale_factor(),
+                            );
+                            // Explicit text lines may overflow the retained layout rectangle, as
+                            // in the Electron canvas. The viewer owns clipping; the rectangle
+                            // remains the alignment/editing geometry and saved PDF annotation box.
+                            if annotation.rich_text_runs.is_empty() {
                                 for (line_index, line) in annotation.content.split('\n').enumerate()
                                 {
                                     let text: SharedString = line.to_owned().into();
@@ -15536,7 +20468,7 @@ fn annotation_layer(
                                         &[run],
                                         None,
                                     );
-                                    let _ = shaped.paint(
+                                    let _ = shaped.paint_transformed(
                                         point(
                                             content_bounds.origin.x,
                                             content_bounds.origin.y
@@ -15545,134 +20477,428 @@ fn annotation_layer(
                                         line_height,
                                         align,
                                         Some(content_bounds.size.width),
+                                        paint_transform,
                                         window,
                                         cx,
                                     );
                                 }
-                            },
-                        );
-                        let annotation_focused = focused_id == Some(&annotation.id);
-                        let annotation_hovered = hovered_id == Some(&annotation.id);
-                        if let Some(chrome_outline) = interaction_chrome::outline_for(
-                            annotation.selected,
-                            annotation_focused,
-                            annotation_hovered,
-                            false,
-                            annotation.locked,
-                        ) {
-                            window.paint_quad(
-                                outline(annotation_bounds, chrome_outline, BorderStyle::Solid)
-                                    .border_widths(px(if annotation.locked { 1. } else { 2. })),
-                            );
-                            let left = annotation_bounds.origin.x;
-                            let top = annotation_bounds.origin.y;
-                            let right = left + annotation_bounds.size.width;
-                            let bottom = top + annotation_bounds.size.height;
-                            let center_x = left + annotation_bounds.size.width / 2.;
-                            let center_y = top + annotation_bounds.size.height / 2.;
-                            if annotation.selected || annotation_focused {
-                                for center in [
-                                    point(left, top),
-                                    point(center_x, top),
-                                    point(right, top),
-                                    point(right, center_y),
-                                    point(right, bottom),
-                                    point(center_x, bottom),
-                                    point(left, bottom),
-                                    point(left, center_y),
-                                ] {
-                                    interaction_chrome::paint_handle(Bounds::new(
-                                            point(center.x - px(4.), center.y - px(4.)),
-                                            size(px(8.), px(8.)),
-                                        ), annotation.locked, window);
+                            } else {
+                                let rich_lines = shape_text_box_rich_lines(
+                                    &annotation.rich_text_runs,
+                                    &annotation.style,
+                                    scale,
+                                    base_text_color,
+                                    window.text_system(),
+                                );
+                                let mut line_y = content_bounds.origin.y;
+                                for line in rich_lines {
+                                    let mut fragment_x = text_box_rich_line_x(
+                                        content_bounds,
+                                        line.width,
+                                        annotation.style.alignment(),
+                                    );
+                                    for fragment in line.fragments {
+                                        let fragment_height =
+                                            fragment.line.ascent + fragment.line.descent;
+                                        let _ = fragment.line.paint_transformed(
+                                            point(
+                                                fragment_x,
+                                                line_y + line.baseline - fragment.line.ascent,
+                                            ),
+                                            fragment_height,
+                                            TextAlign::Left,
+                                            None,
+                                            paint_transform,
+                                            window,
+                                            cx,
+                                        );
+                                        fragment_x += fragment.line.width();
+                                    }
+                                    line_y += line.height;
+                                }
+                            }
+                            if annotation.feedback.chrome_visible()
+                                && let Some(state) = interaction_chrome::feedback_state(
+                                    annotation.selected,
+                                    focused_id == Some(&annotation.id),
+                                    hover_controls_visible,
+                                    false,
+                                    annotation_candidate,
+                                )
+                            {
+                                let geometry = shape_feedback_geometry(
+                                    annotation.layout_rect,
+                                    annotation.rotation_degrees,
+                                    false,
+                                    &transform,
+                                    page_bounds.origin,
+                                    interaction_chrome::rotation_feedback_radius(state, false),
+                                );
+                                interaction_chrome::paint_feedback_path(
+                                    &geometry.bounds, true, state, window,
+                                );
+                                if (annotation.selected || hover_controls_visible)
+                                    && !annotation_candidate
+                                    && !annotation.locked
+                                {
+                                    let rotation_index = RectangleResizeHandle::ALL.len();
+                                    if annotation.selected
+                                        && annotation.feedback.handle_visible(rotation_index)
+                                    {
+                                        interaction_chrome::paint_rotation_feedback(
+                                            geometry.connector_start,
+                                            geometry.connector_end,
+                                            geometry.rotation_center,
+                                            state,
+                                            hot_handle.as_ref().is_some_and(|(id, hot_index)| {
+                                                id == &annotation.id && *hot_index == rotation_index
+                                            }),
+                                            window,
+                                        );
+                                    }
+                                    for (index, center) in geometry.handles.into_iter().enumerate() {
+                                        if annotation.feedback.handle_visible(index) {
+                                            interaction_chrome::paint_rotated_feedback_handle(
+                                                center,
+                                                annotation.rotation_degrees,
+                                                state,
+                                                hot_handle.as_ref().is_some_and(
+                                                    |(id, hot_index)| {
+                                                        id == &annotation.id
+                                                            && *hot_index == index
+                                                    },
+                                                ),
+                                                window,
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }
+                        crate::annotation_model::SceneAnnotation::Dimension(annotation) => {
+                            paint_dimension_annotation(
+                                annotation,
+                                &transform,
+                                page_bounds,
+                                page_size,
+                                selection_color,
+                                hovered_id,
+                                focused_id,
+                                &marquee_candidate_ids,
+                                hot_handle.as_ref(),
+                                window,
+                                cx,
+                            );
+                        }
+                        crate::annotation_model::SceneAnnotation::Length(annotation) => {
+                            let annotation_candidate = marquee_candidate_ids.contains(&annotation.id);
+                            let project = |sample: PdfPoint| {
+                                let local = transform.point_to_local_pixels(sample);
+                                point(
+                                    page_bounds.origin.x + px(local.x as f32),
+                                    page_bounds.origin.y + px(local.y as f32),
+                                )
+                            };
+                            let start = project(annotation.start);
+                            let end = project(annotation.end);
+                            let scale = f32::from(page_bounds.size.width) / page_size.0;
+                            let line = annotation.appearance.line();
+                            let color = try_parse_color(line.stroke_color())
+                                .unwrap_or(selection_color)
+                                .opacity(line.opacity() as f32);
+                            let mut builder = PathBuilder::stroke(px(
+                                (line.stroke_width_pt() as f32 * scale).max(1.),
+                            ));
+                            builder.move_to(start);
+                            builder.line_to(end);
+                            if let Ok(path) = builder.build() {
+                                window.paint_path(path, color);
+                            }
+                            if let Some(layout) = crate::annotation_caption::length_caption(&annotation, transform, window.text_system()) {
+                                layout.paint(page_bounds.origin, window, cx);
+                            }
+                            let transform_hovered = hot_handle
+                                .as_ref()
+                                .is_some_and(|(id, _)| id == &annotation.id);
+                            if (annotation.feedback.chrome_visible() || transform_hovered)
+                                && let Some(state) = interaction_chrome::feedback_state(
+                                    annotation.selected,
+                                    focused_id == Some(&annotation.id),
+                                    hovered_id == Some(&annotation.id) || transform_hovered,
+                                    false,
+                                    annotation_candidate,
+                                )
+                            {
+                                interaction_chrome::paint_line_feedback(start, end, state, window);
+                                if (annotation.selected || transform_hovered)
+                                    && !annotation_candidate
+                                    && !annotation.locked
+                                {
+                                    for (index, center) in [start, end].into_iter().enumerate() {
+                                        if !annotation.selected
+                                            || annotation.feedback.handle_visible(index)
+                                        {
+                                            interaction_chrome::paint_feedback_handle(
+                                                center,
+                                                state,
+                                                hot_handle.as_ref().is_some_and(
+                                                    |(id, hot_index)| {
+                                                        id == &annotation.id && *hot_index == index
+                                                    },
+                                                ),
+                                                window,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        crate::annotation_model::SceneAnnotation::Snapshot(annotation) => {
+                            let annotation_candidate = marquee_candidate_ids.contains(&annotation.id);
+                            let hover_controls_visible = hovered_id == Some(&annotation.id)
+                                || hot_handle
+                                    .as_ref()
+                                    .is_some_and(|(id, _)| id == &annotation.id);
+                            let local = transform.rect_to_local_pixels(annotation.rect);
+                            let image_bounds = Bounds::new(
+                                point(
+                                    page_bounds.origin.x + px(local.x as f32),
+                                    page_bounds.origin.y + px(local.y as f32),
+                                ),
+                                size(px(local.width as f32), px(local.height as f32)),
+                            );
+                            if let Some(image) = image_assets.get(&annotation_image_cache_key(
+                                annotation.asset_id.as_str(),
+                                annotation.opacity,
+                            )) {
+                                let paint_transform = annotation_paint_transform(
+                                    image_bounds,
+                                    annotation.rotation_degrees,
+                                    window.scale_factor(),
+                                );
+                                let _ = window.paint_image_transformed(
+                                    image_bounds,
+                                    image_bounds,
+                                    Default::default(),
+                                    image.clone(),
+                                    0,
+                                    false,
+                                    paint_transform,
+                                );
+                            }
+                            if annotation.feedback.chrome_visible()
+                                && let Some(state) = interaction_chrome::feedback_state(
+                                    annotation.selected,
+                                    focused_id == Some(&annotation.id),
+                                    hover_controls_visible,
+                                    false,
+                                    annotation_candidate,
+                                )
+                            {
+                                let geometry = shape_feedback_geometry(
+                                    annotation.rect,
+                                    annotation.rotation_degrees,
+                                    false,
+                                    &transform,
+                                    page_bounds.origin,
+                                    interaction_chrome::rotation_feedback_radius(state, false),
+                                );
+                                interaction_chrome::paint_feedback_path(
+                                    &geometry.bounds, true, state, window,
+                                );
+                                if (annotation.selected || hover_controls_visible)
+                                    && !annotation_candidate
+                                    && !annotation.locked
+                                {
+                                    let rotation_index = RectangleResizeHandle::ALL.len();
+                                    if annotation.selected
+                                        && annotation.feedback.handle_visible(rotation_index)
+                                    {
+                                        interaction_chrome::paint_rotation_feedback(
+                                            geometry.connector_start,
+                                            geometry.connector_end,
+                                            geometry.rotation_center,
+                                            state,
+                                            hot_handle.as_ref().is_some_and(
+                                                |(id, hot_index)| {
+                                                    id == &annotation.id
+                                                        && *hot_index == rotation_index
+                                                },
+                                            ),
+                                            window,
+                                        );
+                                    }
+                                    for (index, center) in
+                                        geometry.handles.into_iter().enumerate()
+                                    {
+                                        if annotation.feedback.handle_visible(index) {
+                                            interaction_chrome::paint_rotated_feedback_handle(
+                                                center,
+                                                annotation.rotation_degrees,
+                                                state,
+                                                hot_handle.as_ref().is_some_and(
+                                                    |(id, hot_index)| {
+                                                        id == &annotation.id
+                                                            && *hot_index == index
+                                                    },
+                                                ),
+                                                window,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        crate::annotation_model::SceneAnnotation::Image(annotation) => {
+                            let annotation_candidate = marquee_candidate_ids.contains(&annotation.id);
+                            let hover_controls_visible = hovered_id == Some(&annotation.id)
+                                || hot_handle
+                                    .as_ref()
+                                    .is_some_and(|(id, _)| id == &annotation.id);
+                            let local = transform.rect_to_local_pixels(annotation.rect);
+                            let image_bounds = Bounds::new(
+                                point(
+                                    page_bounds.origin.x + px(local.x as f32),
+                                    page_bounds.origin.y + px(local.y as f32),
+                                ),
+                                size(px(local.width as f32), px(local.height as f32)),
+                            );
+                            if let Some(image) = image_assets.get(&annotation_image_cache_key(
+                                annotation.asset_id.as_str(),
+                                annotation.opacity,
+                            )) {
+                                let paint_transform = annotation_paint_transform(
+                                    image_bounds,
+                                    annotation.rotation_degrees,
+                                    window.scale_factor(),
+                                );
+                                let _ = window.paint_image_transformed(
+                                    image_bounds,
+                                    image_bounds,
+                                    Default::default(),
+                                    image.clone(),
+                                    0,
+                                    false,
+                                    paint_transform,
+                                );
+                            }
+                            if annotation.feedback.chrome_visible()
+                                && let Some(state) = interaction_chrome::feedback_state(
+                                    annotation.selected,
+                                    focused_id == Some(&annotation.id),
+                                    hover_controls_visible,
+                                    false,
+                                    annotation_candidate,
+                                )
+                            {
+                                let geometry = shape_feedback_geometry(
+                                    annotation.rect,
+                                    annotation.rotation_degrees,
+                                    false,
+                                    &transform,
+                                    page_bounds.origin,
+                                    interaction_chrome::rotation_feedback_radius(state, false),
+                                );
+                                interaction_chrome::paint_feedback_path(
+                                    &geometry.bounds, true, state, window,
+                                );
+                                if (annotation.selected || hover_controls_visible)
+                                    && !annotation_candidate
+                                    && !annotation.locked
+                                {
+                                    let rotation_index = RectangleResizeHandle::ALL.len();
+                                    if annotation.selected
+                                        && annotation.feedback.handle_visible(rotation_index)
+                                    {
+                                        interaction_chrome::paint_rotation_feedback(
+                                            geometry.connector_start,
+                                            geometry.connector_end,
+                                            geometry.rotation_center,
+                                            state,
+                                            hot_handle.as_ref().is_some_and(|(id, hot_index)| {
+                                                id == &annotation.id && *hot_index == rotation_index
+                                            }),
+                                            window,
+                                        );
+                                    }
+                                    for (index, center) in geometry.handles.into_iter().enumerate() {
+                                        if annotation.aspect_locked && index % 2 == 1 {
+                                            continue;
+                                        }
+                                        if annotation.feedback.handle_visible(index) {
+                                            interaction_chrome::paint_rotated_feedback_handle(
+                                                center,
+                                                annotation.rotation_degrees,
+                                                state,
+                                                hot_handle.as_ref().is_some_and(|(id, hot_index)| {
+                                                    const IMAGE_TO_RECTANGLE_INDEX: [usize; 8] =
+                                                        [6, 5, 4, 3, 2, 1, 0, 7];
+                                                    id == &annotation.id
+                                                        && IMAGE_TO_RECTANGLE_INDEX
+                                                            .get(*hot_index)
+                                                            .is_some_and(|mapped| *mapped == index)
+                                                }),
+                                                window,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        }
                     }
-                    for annotation in scene.dimensions {
-                        paint_dimension_annotation(
-                            annotation,
-                            &transform,
-                            page_bounds,
-                            page_size,
-                            selection_color,
-                            hovered_id,
-                            focused_id,
-                            window,
-                            cx,
-                        );
-                    }
-                    for annotation in scene.lengths {
-                        let project = |sample: PdfPoint| {
+                    if let Some(pending) = painted_pending_text_box.as_ref() {
+                        let rect = pending.rect;
+                        let corners = [
+                            PdfPoint { x: rect.x, y: rect.y + rect.height },
+                            PdfPoint { x: rect.x + rect.width, y: rect.y + rect.height },
+                            PdfPoint { x: rect.x + rect.width, y: rect.y },
+                            PdfPoint { x: rect.x, y: rect.y },
+                        ]
+                        .map(|sample| {
                             let local = transform.point_to_local_pixels(sample);
                             point(
                                 page_bounds.origin.x + px(local.x as f32),
                                 page_bounds.origin.y + px(local.y as f32),
                             )
-                        };
-                        let start = project(annotation.start);
-                        let end = project(annotation.end);
-                        let scale = f32::from(page_bounds.size.width) / page_size.0;
-                        let line = annotation.appearance.line();
-                        let color = try_parse_color(line.stroke_color())
-                            .unwrap_or(selection_color)
-                            .opacity(line.opacity() as f32);
-                        let mut builder = PathBuilder::stroke(px(
-                            (line.stroke_width_pt() as f32 * scale).max(1.),
-                        ));
-                        builder.move_to(start);
-                        builder.line_to(end);
-                        if let Ok(path) = builder.build() {
-                            window.paint_path(path, color);
-                        }
-                        if annotation.show_caption {
-                            let caption: SharedString = annotation.caption.into();
-                            let text = annotation.appearance.text();
-                            let text_color = try_parse_color(text.color())
-                                .unwrap_or(selection_color)
-                                .opacity(text.opacity() as f32);
-                            let run = TextRun {
-                                len: caption.len(),
-                                font: font(text.font_family()),
-                                color: text_color,
-                                background_color: None,
-                                underline: None,
-                                strikethrough: None,
-                            };
-                            let shaped = window.text_system().shape_line(
-                                caption,
-                                px(text.font_size_pt() as f32 * scale),
-                                &[run],
-                                None,
-                            );
-                            let _ = shaped.paint(
+                        });
+                        interaction_chrome::paint_feedback_path(
+                            &corners,
+                            true,
+                            interaction_chrome::ChromeState::Focused,
+                            window,
+                        );
+                        let left = rect.x;
+                        let centre_x = rect.x + rect.width / 2.;
+                        let right = rect.x + rect.width;
+                        let bottom = rect.y;
+                        let centre_y = rect.y + rect.height / 2.;
+                        let top = rect.y + rect.height;
+                        for sample in [
+                            PdfPoint { x: left, y: bottom },
+                            PdfPoint { x: centre_x, y: bottom },
+                            PdfPoint { x: right, y: bottom },
+                            PdfPoint { x: right, y: centre_y },
+                            PdfPoint { x: right, y: top },
+                            PdfPoint { x: centre_x, y: top },
+                            PdfPoint { x: left, y: top },
+                            PdfPoint { x: left, y: centre_y },
+                        ] {
+                            let local = transform.point_to_local_pixels(sample);
+                            interaction_chrome::paint_feedback_handle(
                                 point(
-                                    start.x + (end.x - start.x) / 2.,
-                                    start.y + (end.y - start.y) / 2.
-                                        - px(text.font_size_pt() as f32 * 1.15 * scale),
+                                    page_bounds.origin.x + px(local.x as f32),
+                                    page_bounds.origin.y + px(local.y as f32),
                                 ),
-                                px(text.font_size_pt() as f32 * 1.15 * scale),
-                                TextAlign::Center,
-                                None,
+                                interaction_chrome::ChromeState::Focused,
+                                false,
                                 window,
-                                cx,
                             );
                         }
-                        if annotation.selected {
-                            let handle_size = px(8.);
-                            let handle_half = handle_size / 2.;
-
-                            for center in [start, end] {
-                                interaction_chrome::paint_handle(Bounds::new(
-                                        point(center.x - handle_half, center.y - handle_half),
-                                        size(handle_size, handle_size),
-                                    ), annotation.locked, window);
-                            }
-                        }
                     }
-                    for annotation in scene.snapshots {
-                        let local = transform.rect_to_local_pixels(annotation.rect);
-                        let image_bounds = Bounds::new(
+                    if let Some(preview) = pending_image_preview.as_ref() {
+                        let local = transform.rect_to_local_pixels(preview.rect);
+                        let preview_bounds = Bounds::new(
                             point(
                                 page_bounds.origin.x + px(local.x as f32),
                                 page_bounds.origin.y + px(local.y as f32),
@@ -15680,91 +20906,17 @@ fn annotation_layer(
                             size(px(local.width as f32), px(local.height as f32)),
                         );
                         if let Some(image) = image_assets.get(&annotation_image_cache_key(
-                            annotation.asset_id.as_str(),
-                            annotation.opacity,
+                            preview.asset_id.as_str(),
+                            preview.opacity,
                         )) {
                             let _ = window.paint_image(
-                                image_bounds,
-                                image_bounds,
+                                preview_bounds,
+                                preview_bounds,
                                 Default::default(),
                                 image.clone(),
                                 0,
                                 false,
                             );
-                        }
-                        let annotation_focused = focused_id == Some(&annotation.id);
-                        let annotation_hovered = hovered_id == Some(&annotation.id);
-                        if let Some(chrome_outline) = interaction_chrome::outline_for(
-                            annotation.selected,
-                            annotation_focused,
-                            annotation_hovered,
-                            annotation.draft,
-                            annotation.locked,
-                        ) {
-                            window.paint_quad(
-                                outline(image_bounds, chrome_outline, BorderStyle::Solid)
-                                    .border_widths(px(if annotation.locked { 1. } else { 2. })),
-                            );
-                        }
-                    }
-                    for annotation in scene.images {
-                        let local = transform.rect_to_local_pixels(annotation.rect);
-                        let image_bounds = Bounds::new(
-                            point(
-                                page_bounds.origin.x + px(local.x as f32),
-                                page_bounds.origin.y + px(local.y as f32),
-                            ),
-                            size(px(local.width as f32), px(local.height as f32)),
-                        );
-                        if let Some(image) = image_assets.get(&annotation_image_cache_key(
-                            annotation.asset_id.as_str(),
-                            annotation.opacity,
-                        )) {
-                            let _ = window.paint_image(
-                                image_bounds,
-                                image_bounds,
-                                Default::default(),
-                                image.clone(),
-                                0,
-                                false,
-                            );
-                        }
-                        let annotation_focused = focused_id == Some(&annotation.id);
-                        let annotation_hovered = hovered_id == Some(&annotation.id);
-                        if let Some(chrome_outline) = interaction_chrome::outline_for(
-                            annotation.selected,
-                            annotation_focused,
-                            annotation_hovered,
-                            false,
-                            annotation.locked,
-                        ) {
-                            window.paint_quad(
-                                outline(image_bounds, chrome_outline, BorderStyle::Solid)
-                                    .border_widths(px(if annotation.locked { 1. } else { 2. })),
-                            );
-                            let left = image_bounds.origin.x;
-                            let top = image_bounds.origin.y;
-                            let right = left + image_bounds.size.width;
-                            let bottom = top + image_bounds.size.height;
-                            let center_x = left + image_bounds.size.width / 2.;
-                            let center_y = top + image_bounds.size.height / 2.;
-                            if annotation.selected || annotation_focused {
-                                for center in [
-                                    point(left, top),
-                                    point(center_x, top),
-                                    point(right, top),
-                                    point(right, center_y),
-                                    point(right, bottom),
-                                    point(center_x, bottom),
-                                    point(left, bottom),
-                                    point(left, center_y),
-                                ] {
-                                    interaction_chrome::paint_handle(Bounds::new(
-                                            point(center.x - px(4.), center.y - px(4.)),
-                                            size(px(8.), px(8.)),
-                                        ), annotation.locked, window);
-                                }
-                            }
                         }
                     }
                     if let Some(marquee) = selection_marquee
@@ -15781,6 +20933,17 @@ fn annotation_layer(
                     if let Some(decision) = painted_semantic_snap_decision.as_ref() {
                         paint_semantic_snap_indicator(decision, page_bounds, &transform, window);
                     }
+                    if let Some(tracking) = painted_object_snap_tracking_result.as_ref() {
+                        paint_object_snap_tracking_guides(tracking, page_bounds, &transform, window);
+                    }
+                    if !painted_relationship_snap_guides.is_empty() {
+                        paint_relationship_snap_guides(
+                            &painted_relationship_snap_guides,
+                            page_bounds,
+                            &transform,
+                            window,
+                        );
+                    }
                 },
             )
             .size_full(),
@@ -15794,6 +20957,60 @@ fn annotation_layer(
         .when_some(semantic_snap_debug_marker, |layer, marker| {
             layer.child(marker)
         })
+        .when_some(
+            pending_text_box_overlay,
+            |layer, (pending, bounds, scale)| {
+                let font_size = px(pending.style.font_size_pt() as f32 * scale);
+                let line_height = px(pending.style.line_height_pt() as f32 * scale);
+                let vertical_inset = px(
+                    ((pending.style.font_size_pt() * 1.5
+                        - pending.style.line_height_pt())
+                        / 2.)
+                        .max(0.) as f32
+                        * scale,
+                );
+                let text_colour = try_parse_color(pending.style.color())
+                    .unwrap_or(gpui::black())
+                    .opacity(pending.style.opacity() as f32);
+                layer.child(
+                    gpui::div()
+                        .id(DOCUMENT_TEXT_BOX_EDITOR_ID)
+                        .debug_selector(|| DOCUMENT_TEXT_BOX_EDITOR_ID.into())
+                        .absolute()
+                        .left(bounds.origin.x)
+                        .top(bounds.origin.y)
+                        .w(bounds.size.width)
+                        .h(bounds.size.height)
+                        .min_w(px(24.))
+                        .min_h(px(18.))
+                        .overflow_hidden()
+                        .occlude()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            Textarea::new(&pending.input)
+                                .aria_label("Text box content")
+                                .appearance(false)
+                                .bordered(false)
+                                .size_full()
+                                .font_family(
+                                    display_annotation_font_family(
+                                        pending.style.font_family(),
+                                    )
+                                    .to_owned(),
+                                )
+                                .text_size(font_size)
+                                .line_height(line_height)
+                                .text_color(text_colour)
+                                .editor_paddings(Edges {
+                                    top: vertical_inset,
+                                    right: px(5. * scale),
+                                    bottom: vertical_inset,
+                                    left: px(5. * scale),
+                                }),
+                        ),
+                )
+            },
+        )
         .context_menu(move |menu, _, _| {
             menu.menu("Select tool", Box::new(SelectTool))
                 .menu("Hand tool", Box::new(PanTool))
@@ -15937,13 +21154,24 @@ fn drawn_signature_canvas(
 }
 
 fn rail_tool_button(id: &'static str, label: &'static str, icon: &'static str) -> Button {
-    accessible_icon_button(Button::new(id)
-        .debug_selector(move || id.into())
-        .icon(gpui_component::Icon::default().path(format!("icons/rail/{icon}.svg")))
-        // Large keeps the stock 32px button but uses a 24px icon. The 36-unit
-        // overscan canvas therefore preserves the original 16px cloud geometry.
-        .when(icon == "cloud-plus", |button| button.large())
-        .ghost().tooltip(label), label)
+    accessible_icon_button(
+        Button::new(id)
+            .debug_selector(move || id.into())
+            .icon(gpui_component::Icon::default().path(format!("icons/rail/{icon}.svg")))
+            // Large keeps the stock 32px button but uses a 24px icon. The 36-unit
+            // overscan canvas therefore preserves the original 16px cloud geometry.
+            .when(icon == "cloud-plus", |button| button.large())
+            .ghost()
+            .tooltip(label),
+        label,
+    )
+}
+
+const fn properties_double_click_sidebar_open(
+    was_selected_before_double_click: bool,
+    sidebar_open: bool,
+) -> bool {
+    !(was_selected_before_double_click && sidebar_open)
 }
 
 // A second click toggles the existing properties surface, without re-arming
@@ -15969,15 +21197,41 @@ fn right_rail_columns(width: Pixels, rem: Pixels) -> usize {
     (((width / rem - 0.25) / 2.5).round() as usize).clamp(1, 8)
 }
 
-fn rail_tool_section(label: &'static str, buttons: Vec<gpui::AnyElement>, columns: usize, cx: &App) -> gpui::AnyElement {
+fn rail_tool_section(
+    label: &'static str,
+    buttons: Vec<gpui::AnyElement>,
+    columns: usize,
+    cx: &App,
+) -> gpui::AnyElement {
     let group_columns = columns.min(buttons.len()).max(1);
-    v_flex().w_full().flex_none().gap_2()
-        .when(label != "General", |section| section.border_t_1().border_color(cx.theme().border).pt_2())
-        .when(columns > 1, |section| section.child(gpui::div().w_full().text_center().text_xs().font_semibold().child(label)))
-        .child(h_flex().w_full().justify_center().child(gpui::div().grid()
-            .w(gpui::rems(2.5 * group_columns as f32 - 0.5))
-            // Explicit columns avoid fractional-pixel flex wrapping at UI zoom.
-            .grid_cols(group_columns as u16).gap_2().children(buttons)))
+    v_flex()
+        .w_full()
+        .flex_none()
+        .gap_2()
+        .when(label != "General", |section| {
+            section.border_t_1().border_color(cx.theme().border).pt_2()
+        })
+        .when(columns > 1, |section| {
+            section.child(
+                gpui::div()
+                    .w_full()
+                    .text_center()
+                    .text_xs()
+                    .font_semibold()
+                    .child(label),
+            )
+        })
+        .child(
+            h_flex().w_full().justify_center().child(
+                gpui::div()
+                    .grid()
+                    .w(gpui::rems(2.5 * group_columns as f32 - 0.5))
+                    // Explicit columns avoid fractional-pixel flex wrapping at UI zoom.
+                    .grid_cols(group_columns as u16)
+                    .gap_2()
+                    .children(buttons),
+            ),
+        )
         .into_any_element()
 }
 
@@ -15991,13 +21245,9 @@ fn signature_input_surface(
     muted_foreground: gpui::Hsla,
 ) -> gpui::AnyElement {
     match mode {
-        SignatureInputMode::Draw => drawn_signature_canvas(
-            drawn_signature,
-            control,
-            border,
-            background,
-        )
-        .into_any_element(),
+        SignatureInputMode::Draw => {
+            drawn_signature_canvas(drawn_signature, control, border, background).into_any_element()
+        }
         SignatureInputMode::Type => v_flex()
             .gap_2()
             .child(gpui::div().text_sm().child("Type your signature"))
@@ -16022,15 +21272,8 @@ fn signature_input_surface(
 
 fn recent_signature_preview(signature: RecentSignature) -> Option<RecentSignaturePreview> {
     let asset = signature.asset();
-    let pixels = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(
-        asset.width_px(),
-        asset.height_px(),
-        asset.rgba().to_vec(),
-    )?;
-    Some(RecentSignaturePreview {
-        signature,
-        image: Arc::new(RenderImage::new(smallvec::smallvec![Frame::new(pixels)])),
-    })
+    let image = crate::document_session::decoded_asset_render_image(asset, 1.)?;
+    Some(RecentSignaturePreview { signature, image })
 }
 
 fn recent_signature_section(
@@ -16058,86 +21301,115 @@ fn recent_signature_section(
         );
     } else if !recent_signatures.is_empty() {
         section = section
-            .child(gpui::div().text_sm().font_semibold().child("Recent signatures"))
-            .children(recent_signatures.into_iter().enumerate().map(|(index, recent)| {
-                let id = recent.signature.id().to_owned();
-                let use_id = format!("document-workspace-signature-recent-use-{id}");
-                let remove_id = format!("document-workspace-signature-recent-remove-{id}");
-                let group_id = format!("document-workspace-signature-recent-row-{id}");
-                let use_control = control.clone();
-                let remove_control = control.clone();
-                h_flex()
-                    .group(group_id.clone())
-                    .gap_1()
-                    .child(accessible_icon_button(
-                        Button::new(use_id.clone())
-                            .debug_selector(move || use_id.clone().into())
-                            .outline()
-                            .flex_1()
-                            .min_w_0()
-                            .h_16()
-                            .tooltip(format!("Use recent signature {}", index + 1))
-                            .child(
-                                gpui::div()
-                                    .size_full()
-                                    .rounded_sm()
-                                    // Signature ink is raster content; preview it on paper
-                                    // in both themes, independently of the UI surface.
-                                    .bg(gpui::rgb(0xffffff))
-                                    .p_1()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .overflow_hidden()
+            .child(
+                gpui::div()
+                    .text_sm()
+                    .font_semibold()
+                    .child("Recent signatures"),
+            )
+            .children(
+                recent_signatures
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, recent)| {
+                        let id = recent.signature.id().to_owned();
+                        let use_id = format!("document-workspace-signature-recent-use-{id}");
+                        let remove_id = format!("document-workspace-signature-recent-remove-{id}");
+                        let group_id = format!("document-workspace-signature-recent-row-{id}");
+                        let use_control = control.clone();
+                        let remove_control = control.clone();
+                        h_flex()
+                            .group(group_id.clone())
+                            .gap_1()
+                            .child(accessible_icon_button(
+                                Button::new(use_id.clone())
+                                    .debug_selector(move || use_id.clone().into())
+                                    .outline()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .h_16()
+                                    .tooltip(format!("Use recent signature {}", index + 1))
                                     .child(
-                                        img(recent.image.clone())
-                                            .flex_none()
-                                            .w(gpui::rems((2.5 * recent.signature.asset().width_px() as f32 / recent.signature.asset().height_px() as f32).min(14.0)))
-                                            .h(gpui::rems((14.0 * recent.signature.asset().height_px() as f32 / recent.signature.asset().width_px() as f32).min(2.5)))
-                                            .object_fit(ObjectFit::Contain),
-                                    ),
-                            )
-                            .on_click(move |_, window, cx| {
-                                let _ = use_control.update(cx, |workspace, cx| {
-                                    if let Err(error) = workspace.arm_recent_signature_placement(
-                                        document_id,
-                                        &id,
-                                        window,
-                                        cx,
-                                    ) {
-                                        workspace.signature_prepare_state =
-                                            SignaturePrepareState::Error(error);
-                                        cx.notify();
-                                    }
-                                });
-                            }),
-                        format!("Use recent signature {}", index + 1),
-                    ))
-                    .child(accessible_icon_button(
-                        Button::new(remove_id.clone())
-                            .debug_selector(move || remove_id.clone().into())
-                            .icon(IconName::Delete)
-                            .ghost()
-                            .danger()
-                            .tooltip(format!("Remove recent signature {}", index + 1))
-                            .opacity(0.)
-                            .group_hover(group_id, |style| style.opacity(1.))
-                            .focus(|style| style.opacity(1.))
-                            .on_click(move |_, window, cx| {
-                                cx.stop_propagation();
-                                DocumentWorkspace::confirm_remove_recent_signature(
-                                    remove_control.clone(),
-                                    recent.signature.id().to_owned(),
-                                    window,
-                                    cx,
-                                );
-                            }),
-                        format!("Remove recent signature {}", index + 1),
-                    ))
-            }));
+                                        gpui::div()
+                                            .size_full()
+                                            .rounded_sm()
+                                            // Signature ink is raster content; preview it on paper
+                                            // in both themes, independently of the UI surface.
+                                            .bg(gpui::rgb(0xffffff))
+                                            .p_1()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .overflow_hidden()
+                                            .child(
+                                                img(recent.image.clone())
+                                                    .flex_none()
+                                                    .w(gpui::rems(
+                                                        (2.5 * recent.signature.asset().width_px()
+                                                            as f32
+                                                            / recent.signature.asset().height_px()
+                                                                as f32)
+                                                            .min(14.0),
+                                                    ))
+                                                    .h(gpui::rems(
+                                                        (14.0
+                                                            * recent.signature.asset().height_px()
+                                                                as f32
+                                                            / recent.signature.asset().width_px()
+                                                                as f32)
+                                                            .min(2.5),
+                                                    ))
+                                                    .object_fit(ObjectFit::Contain),
+                                            ),
+                                    )
+                                    .on_click(move |_, window, cx| {
+                                        let _ = use_control.update(cx, |workspace, cx| {
+                                            if let Err(error) = workspace
+                                                .arm_recent_signature_placement(
+                                                    document_id,
+                                                    &id,
+                                                    window,
+                                                    cx,
+                                                )
+                                            {
+                                                workspace.signature_prepare_state =
+                                                    SignaturePrepareState::Error(error);
+                                                cx.notify();
+                                            }
+                                        });
+                                    }),
+                                format!("Use recent signature {}", index + 1),
+                            ))
+                            .child(accessible_icon_button(
+                                Button::new(remove_id.clone())
+                                    .debug_selector(move || remove_id.clone().into())
+                                    .icon(IconName::Delete)
+                                    .ghost()
+                                    .danger()
+                                    .tooltip(format!("Remove recent signature {}", index + 1))
+                                    .opacity(0.)
+                                    .group_hover(group_id, |style| style.opacity(1.))
+                                    .focus(|style| style.opacity(1.))
+                                    .on_click(move |_, window, cx| {
+                                        cx.stop_propagation();
+                                        DocumentWorkspace::confirm_remove_recent_signature(
+                                            remove_control.clone(),
+                                            recent.signature.id().to_owned(),
+                                            window,
+                                            cx,
+                                        );
+                                    }),
+                                format!("Remove recent signature {}", index + 1),
+                            ))
+                    }),
+            );
     } else if storage_issue.is_none() {
-        section = section.child(gpui::div().text_sm().text_color(muted_foreground)
-            .child("No recent signatures yet."));
+        section = section.child(
+            gpui::div()
+                .text_sm()
+                .text_color(muted_foreground)
+                .child("No recent signatures yet."),
+        );
     }
     section
         .when_some(storage_issue, |section, issue| {
@@ -16212,7 +21484,10 @@ fn annotation_tool_group(
             let draw_mode_control = signature_content_control.clone();
             let type_mode_control = signature_content_control.clone();
             let image_mode_control = signature_content_control.clone();
-            let loading = matches!(signature_prepare_state, SignaturePrepareState::Loading | SignaturePrepareState::PhoneQr(_));
+            let loading = matches!(
+                signature_prepare_state,
+                SignaturePrepareState::Loading | SignaturePrepareState::PhoneQr(_)
+            );
             let has_signature =
                 matches!(signature_prepare_state, SignaturePrepareState::Preview(_))
                     || (signature_input_mode == SignatureInputMode::Draw
@@ -16223,16 +21498,27 @@ fn annotation_tool_group(
                 .id("document-workspace-signature-scroll-content")
                 .w_full()
                 .gap_2()
-                .child(h_flex().justify_between()
-                    .child(gpui::div().text_sm().font_semibold().child("Signature"))
-                    .child(accessible_icon_button(
-                        Button::new("document-workspace-signature-close")
-                            .icon(IconName::Close).ghost().tooltip("Close signature")
-                            .on_click(move |_, window, cx| {
-                                let _ = close_control.update(cx, |workspace, cx| {
-                                    workspace.dismiss_signature_popover(document_id, Some(window), cx);
-                                });
-                            }), "Close signature")))
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .child(gpui::div().text_sm().font_semibold().child("Signature"))
+                        .child(accessible_icon_button(
+                            Button::new("document-workspace-signature-close")
+                                .icon(IconName::Close)
+                                .ghost()
+                                .tooltip("Close signature")
+                                .on_click(move |_, window, cx| {
+                                    let _ = close_control.update(cx, |workspace, cx| {
+                                        workspace.dismiss_signature_popover(
+                                            document_id,
+                                            Some(window),
+                                            cx,
+                                        );
+                                    });
+                                }),
+                            "Close signature",
+                        )),
+                )
                 .child(recent_signature_section(
                     document_id,
                     recent_signatures.clone(),
@@ -16242,54 +21528,64 @@ fn annotation_tool_group(
                     signature_muted_foreground,
                 ))
                 .child(
-                ButtonGroup::new("document-workspace-signature-mode")
-                    .child(
-                        Button::new(DOCUMENT_SIGNATURE_MODE_DRAW_ID)
-                            .debug_selector(|| DOCUMENT_SIGNATURE_MODE_DRAW_ID.into())
-                            .label("Draw")
-                            .selected(signature_input_mode == SignatureInputMode::Draw)
-                            .on_click(move |_, _, cx| {
-                                let _ = draw_mode_control.update(cx, |workspace, cx| {
-                                    workspace.cancel_signature_operation(cx);
-                                    workspace.signature_input_mode = SignatureInputMode::Draw;
-                                    workspace.signature_prepare_state = SignaturePrepareState::Idle;
-                                    cx.notify();
-                                });
-                            }),
-                    )
-                    .child(
-                        Button::new(DOCUMENT_SIGNATURE_MODE_TYPE_ID)
-                            .debug_selector(|| DOCUMENT_SIGNATURE_MODE_TYPE_ID.into())
-                            .label("Type")
-                            .selected(signature_input_mode == SignatureInputMode::Type)
-                            .on_click(move |_, _, cx| {
-                                let _ = type_mode_control.update(cx, |workspace, cx| {
-                                    workspace.cancel_signature_operation(cx);
-                                    workspace.signature_input_mode = SignatureInputMode::Type;
-                                    workspace.signature_prepare_state = SignaturePrepareState::Idle;
-                                    workspace.drawn_signature.clear();
-                                    cx.notify();
-                                });
-                            }),
-                    )
-                    .child(
-                        Button::new(DOCUMENT_SIGNATURE_MODE_IMAGE_ID)
-                            .debug_selector(|| DOCUMENT_SIGNATURE_MODE_IMAGE_ID.into())
-                            .label("Image")
-                            .selected(signature_input_mode == SignatureInputMode::Image)
-                            .on_click(move |_, _, cx| {
-                                let _ = image_mode_control.update(cx, |workspace, cx| {
-                                    workspace.cancel_signature_operation(cx);
-                                    workspace.signature_input_mode = SignatureInputMode::Image;
-                                    workspace.signature_prepare_state = SignaturePrepareState::Idle;
-                                    workspace.drawn_signature.clear();
-                                    cx.notify();
-                                });
-                            }),
-                    ),
+                    ButtonGroup::new("document-workspace-signature-mode")
+                        .child(
+                            Button::new(DOCUMENT_SIGNATURE_MODE_DRAW_ID)
+                                .debug_selector(|| DOCUMENT_SIGNATURE_MODE_DRAW_ID.into())
+                                .label("Draw")
+                                .selected(signature_input_mode == SignatureInputMode::Draw)
+                                .on_click(move |_, _, cx| {
+                                    let _ = draw_mode_control.update(cx, |workspace, cx| {
+                                        workspace.cancel_signature_operation(cx);
+                                        workspace.signature_input_mode = SignatureInputMode::Draw;
+                                        workspace.signature_prepare_state =
+                                            SignaturePrepareState::Idle;
+                                        cx.notify();
+                                    });
+                                }),
+                        )
+                        .child(
+                            Button::new(DOCUMENT_SIGNATURE_MODE_TYPE_ID)
+                                .debug_selector(|| DOCUMENT_SIGNATURE_MODE_TYPE_ID.into())
+                                .label("Type")
+                                .selected(signature_input_mode == SignatureInputMode::Type)
+                                .on_click(move |_, _, cx| {
+                                    let _ = type_mode_control.update(cx, |workspace, cx| {
+                                        workspace.cancel_signature_operation(cx);
+                                        workspace.signature_input_mode = SignatureInputMode::Type;
+                                        workspace.signature_prepare_state =
+                                            SignaturePrepareState::Idle;
+                                        workspace.drawn_signature.clear();
+                                        cx.notify();
+                                    });
+                                }),
+                        )
+                        .child(
+                            Button::new(DOCUMENT_SIGNATURE_MODE_IMAGE_ID)
+                                .debug_selector(|| DOCUMENT_SIGNATURE_MODE_IMAGE_ID.into())
+                                .label("Image")
+                                .selected(signature_input_mode == SignatureInputMode::Image)
+                                .on_click(move |_, _, cx| {
+                                    let _ = image_mode_control.update(cx, |workspace, cx| {
+                                        workspace.cancel_signature_operation(cx);
+                                        workspace.signature_input_mode = SignatureInputMode::Image;
+                                        workspace.signature_prepare_state =
+                                            SignaturePrepareState::Idle;
+                                        workspace.drawn_signature.clear();
+                                        cx.notify();
+                                    });
+                                }),
+                        ),
                 );
             content = match &signature_prepare_state {
-                SignaturePrepareState::PhoneQr(image) => content.child(v_flex().gap_2().child("Scan with your phone").child(gpui::img(image.clone()).w_full().h_48().object_fit(gpui::ObjectFit::Contain))),
+                SignaturePrepareState::PhoneQr(image) => content.child(
+                    v_flex().gap_2().child("Scan with your phone").child(
+                        gpui::img(image.clone())
+                            .w_full()
+                            .h_48()
+                            .object_fit(gpui::ObjectFit::Contain),
+                    ),
+                ),
                 SignaturePrepareState::Idle => content.child(signature_input_surface(
                     signature_input_mode,
                     drawn_signature.clone(),
@@ -16343,82 +21639,131 @@ fn annotation_tool_group(
                         .child(
                             img(preview.image.clone())
                                 .flex_none()
-                                .w(gpui::rems((6.0 * preview.asset.width_px() as f32 / preview.asset.height_px() as f32).min(16.0)))
-                                .h(gpui::rems((16.0 * preview.asset.height_px() as f32 / preview.asset.width_px() as f32).min(6.0)))
+                                .w(gpui::rems(
+                                    (6.0 * preview.asset.width_px() as f32
+                                        / preview.asset.height_px() as f32)
+                                        .min(16.0),
+                                ))
+                                .h(gpui::rems(
+                                    (16.0 * preview.asset.height_px() as f32
+                                        / preview.asset.width_px() as f32)
+                                        .min(6.0),
+                                ))
                                 .object_fit(ObjectFit::Contain),
                         ),
                 ),
             };
-            let phone_pairing = matches!(signature_prepare_state, SignaturePrepareState::PhoneQr(_));
+            let phone_pairing =
+                matches!(signature_prepare_state, SignaturePrepareState::PhoneQr(_));
             let content = content
-                .when(!phone_pairing && signature_input_mode == SignatureInputMode::Image && camera_available, |content| content.child(
-                    Button::new("signature-camera").label("Use camera").disabled(loading).on_click(move |_, _, cx| {
-                        let _ = camera_control.update(cx, |workspace, cx| workspace.begin_platform_signature(document_id, None, cx));
-                    })
-                ))
-                .when(!phone_pairing && signature_input_mode != SignatureInputMode::Type && crate::local_phone_signature::helper_path().is_some(), |content| content.child(
-                    Button::new("signature-phone").label("Use phone").disabled(loading).on_click(move |_, _, cx| {
-                        let mode = if signature_input_mode == SignatureInputMode::Draw { crate::phone_signature::PhoneMode::Draw } else { crate::phone_signature::PhoneMode::Image };
-                        let _ = phone_control.update(cx, |workspace, cx| workspace.begin_platform_signature(document_id, Some(mode), cx));
-                    })
-                ))
-                .when(!phone_pairing && signature_input_mode == SignatureInputMode::Image, |content| content.child(
-                    Button::new(DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID)
-                        .debug_selector(|| DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID.into())
-                        .label("Choose file")
-                        .disabled(loading)
-                        .on_click(move |_, _, cx| {
-                            let _ = choose_control.update(cx, |workspace, cx| {
-                                workspace.begin_signature_selection(document_id, cx);
-                            });
-                        }),
-                ))
-                .when(!phone_pairing, |content| content.child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            Button::new(DOCUMENT_SIGNATURE_CLEAR_ID)
-                                .debug_selector(|| DOCUMENT_SIGNATURE_CLEAR_ID.into())
-                                .label("Clear")
-                                .disabled(loading || !has_signature)
-                                .on_click(move |_, window, cx| {
-                                    clear_name_input.update(cx, |input, cx| {
-                                        input.set_value("", window, cx);
-                                    });
-                                    let _ = clear_control.update(cx, |workspace, cx| {
-                                        workspace.clear_signature_input(cx);
+                .when(
+                    !phone_pairing
+                        && signature_input_mode == SignatureInputMode::Image
+                        && camera_available,
+                    |content| {
+                        content.child(
+                            Button::new("signature-camera")
+                                .label("Use camera")
+                                .disabled(loading)
+                                .on_click(move |_, _, cx| {
+                                    let _ = camera_control.update(cx, |workspace, cx| {
+                                        workspace.begin_platform_signature(document_id, None, cx)
                                     });
                                 }),
                         )
-                        .child(
-                            Button::new(DOCUMENT_SIGNATURE_ADD_ID)
-                                .debug_selector(|| DOCUMENT_SIGNATURE_ADD_ID.into())
-                                .label("Add signature")
-                                .primary()
-                                .disabled(loading || !has_signature)
-                                .on_click(move |_, window, cx| {
-                                    let _ = add_control.update(cx, |workspace, cx| {
-                                        if signature_input_mode == SignatureInputMode::Type
-                                            && let Err(error) = workspace.prepare_typed_signature(cx)
-                                        {
-                                            workspace.signature_prepare_state =
-                                                SignaturePrepareState::Error(error);
-                                            cx.notify();
-                                            return;
-                                        }
-                                        if let Err(error) = workspace.arm_signature_placement(
+                    },
+                )
+                .when(
+                    !phone_pairing
+                        && signature_input_mode != SignatureInputMode::Type
+                        && crate::local_phone_signature::helper_path().is_some(),
+                    |content| {
+                        content.child(
+                            Button::new("signature-phone")
+                                .label("Use phone")
+                                .disabled(loading)
+                                .on_click(move |_, _, cx| {
+                                    let mode = if signature_input_mode == SignatureInputMode::Draw {
+                                        crate::phone_signature::PhoneMode::Draw
+                                    } else {
+                                        crate::phone_signature::PhoneMode::Image
+                                    };
+                                    let _ = phone_control.update(cx, |workspace, cx| {
+                                        workspace.begin_platform_signature(
                                             document_id,
-                                            window,
+                                            Some(mode),
                                             cx,
-                                        ) {
-                                            workspace.signature_prepare_state =
-                                                SignaturePrepareState::Error(error);
-                                            cx.notify();
-                                        }
+                                        )
                                     });
                                 }),
-                        ),
-                ));
+                        )
+                    },
+                )
+                .when(
+                    !phone_pairing && signature_input_mode == SignatureInputMode::Image,
+                    |content| {
+                        content.child(
+                            Button::new(DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID)
+                                .debug_selector(|| DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID.into())
+                                .label("Choose file")
+                                .disabled(loading)
+                                .on_click(move |_, _, cx| {
+                                    let _ = choose_control.update(cx, |workspace, cx| {
+                                        workspace.begin_signature_selection(document_id, cx);
+                                    });
+                                }),
+                        )
+                    },
+                )
+                .when(!phone_pairing, |content| {
+                    content.child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new(DOCUMENT_SIGNATURE_CLEAR_ID)
+                                    .debug_selector(|| DOCUMENT_SIGNATURE_CLEAR_ID.into())
+                                    .label("Clear")
+                                    .disabled(loading || !has_signature)
+                                    .on_click(move |_, window, cx| {
+                                        clear_name_input.update(cx, |input, cx| {
+                                            input.set_value("", window, cx);
+                                        });
+                                        let _ = clear_control.update(cx, |workspace, cx| {
+                                            workspace.clear_signature_input(cx);
+                                        });
+                                    }),
+                            )
+                            .child(
+                                Button::new(DOCUMENT_SIGNATURE_ADD_ID)
+                                    .debug_selector(|| DOCUMENT_SIGNATURE_ADD_ID.into())
+                                    .label("Add signature")
+                                    .primary()
+                                    .disabled(loading || !has_signature)
+                                    .on_click(move |_, window, cx| {
+                                        let _ = add_control.update(cx, |workspace, cx| {
+                                            if signature_input_mode == SignatureInputMode::Type
+                                                && let Err(error) =
+                                                    workspace.prepare_typed_signature(cx)
+                                            {
+                                                workspace.signature_prepare_state =
+                                                    SignaturePrepareState::Error(error);
+                                                cx.notify();
+                                                return;
+                                            }
+                                            if let Err(error) = workspace.arm_signature_placement(
+                                                document_id,
+                                                window,
+                                                cx,
+                                            ) {
+                                                workspace.signature_prepare_state =
+                                                    SignaturePrepareState::Error(error);
+                                                cx.notify();
+                                            }
+                                        });
+                                    }),
+                            ),
+                    )
+                });
             // Keep the viewport limit outside Scrollable: a max-height on its
             // content would hide overflow from the stock scroll handle.
             v_flex()
@@ -16426,281 +21771,397 @@ fn annotation_tool_group(
                 .debug_selector(|| "document-workspace-signature-content".into())
                 .w_72()
                 .max_h(window.viewport_size().height - window.rem_size() * 4.)
-                .child(v_flex().flex_1().overflow_hidden().child(
-                    content.size_full().overflow_y_scrollbar(),
-                ))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .overflow_hidden()
+                        .child(content.size_full().overflow_y_scrollbar()),
+                )
                 .focus_trap("signature-input-focus", &signature_focus)
         });
-    v_flex().w_full().flex_none().gap_2()
- .child(rail_tool_section("General", vec![rail_tool_button(DOCUMENT_SELECT_TOOL_ID, "Select", "mouse-pointer-2").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_SELECT_TOOL_ID.into())
-                        .selected(annotation_tool == AnnotationTool::Select && !pan_active).toggled(annotation_tool == AnnotationTool::Select && !pan_active)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(
-                                document_id,
-                                AnnotationTool::Select,
-                                cx,
-                            );
-                        })).into_any_element(),
-rail_tool_button("document-workspace-pan-tool", "Hand", "hand")
- .selected(pan_active).toggled(pan_active).disabled(save_busy)
- .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-   if workspace.set_annotation_tool(document_id, AnnotationTool::Select, cx).is_ok() {
-       workspace.pan_tool_active = true;
-       cx.notify();
-   }
- })).into_any_element()], columns, cx))
- .child(rail_tool_section("Review", vec![rail_tool_button(DOCUMENT_TEXT_BOX_TOOL_ID, "Text Box", "type").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_TEXT_BOX_TOOL_ID.into())
-                        .selected(annotation_tool == AnnotationTool::TextBox && !pan_active).toggled(annotation_tool == AnnotationTool::TextBox && !pan_active)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(
-                                document_id,
-                                AnnotationTool::TextBox,
-                                cx,
-                            );
-                        })).into_any_element(),
-rail_tool_button(DOCUMENT_ARROW_TOOL_ID, "Arrow", "arrow-right").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_ARROW_TOOL_ID.into())
-                        .tooltip(AnnotationTool::Arrow.tooltip_label())
-                        .selected(annotation_tool == AnnotationTool::Arrow && !pan_active).toggled(annotation_tool == AnnotationTool::Arrow && !pan_active)
-                        .disabled(save_busy)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(
-                                document_id,
-                                AnnotationTool::Arrow,
-                                cx,
-                            );
-                        })).into_any_element(),
-rail_tool_button(DOCUMENT_HIGHLIGHT_TOOL_ID, "Highlight", "highlighter")
-                        .tooltip("Highlight (H)")
-                        .selected(annotation_tool == AnnotationTool::Highlight && !pan_active)
-                        .toggled(annotation_tool == AnnotationTool::Highlight && !pan_active)
-                        .disabled(save_busy)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(document_id, AnnotationTool::Highlight, cx);
-                        })).into_any_element(),
-rail_tool_button(DOCUMENT_CLOUD_TOOL_ID, "Cloud", "cloud").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_CLOUD_TOOL_ID.into())
-                        .tooltip(AnnotationTool::Cloud.tooltip_label())
-                        .selected(annotation_tool == AnnotationTool::Cloud && !pan_active).toggled(annotation_tool == AnnotationTool::Cloud && !pan_active)
-                        .disabled(save_busy)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(
-                                document_id,
-                                AnnotationTool::Cloud,
-                                cx,
-                            );
-                        })).into_any_element(),
-rail_tool_button(DOCUMENT_CLOUD_PLUS_TOOL_ID, "Cloud+", "cloud-plus").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_CLOUD_PLUS_TOOL_ID.into())
-                        .tooltip(AnnotationTool::CloudPlus.tooltip_label())
-                        .selected(annotation_tool == AnnotationTool::CloudPlus && !pan_active).toggled(annotation_tool == AnnotationTool::CloudPlus && !pan_active)
-                        .disabled(save_busy)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(
-                                document_id,
-                                AnnotationTool::CloudPlus,
-                                cx,
-                            );
-                        })).into_any_element(),
-rail_tool_button(DOCUMENT_CALLOUT_TOOL_ID, "Callout", "callout").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_CALLOUT_TOOL_ID.into())
-                        .tooltip(AnnotationTool::Callout.tooltip_label())
-                        .selected(annotation_tool == AnnotationTool::Callout && !pan_active).toggled(annotation_tool == AnnotationTool::Callout && !pan_active)
-                        .disabled(save_busy)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(
-                                document_id,
-                                AnnotationTool::Callout,
-                                cx,
-                            );
-                        })).into_any_element(),
-rail_tool_button(DOCUMENT_REDACT_TOOL_ID, "Redact", "shield-x").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_REDACT_TOOL_ID.into())
-                        .tooltip(AnnotationTool::Redact.tooltip_label())
-                        .selected(annotation_tool == AnnotationTool::Redact && !pan_active).toggled(annotation_tool == AnnotationTool::Redact && !pan_active)
-                        .disabled(save_busy)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(
-                                document_id,
-                                AnnotationTool::Redact,
-                                cx,
-                            );
-                        })).into_any_element(),
-signature_control.into_any_element(),
-rail_tool_button(DOCUMENT_IMAGE_TOOL_ID, "Insert Image", "image").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_IMAGE_TOOL_ID.into())
-                        .tooltip("Insert Image (I)")
-                        .selected(annotation_tool == AnnotationTool::Image && !pan_active).toggled(annotation_tool == AnnotationTool::Image && !pan_active)
-                        .disabled(save_busy)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            workspace.begin_image_selection(document_id, cx);
-                        })).into_any_element(),
-rail_tool_button(DOCUMENT_SNAPSHOT_TOOL_ID, "Snapshot", "scan-search").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_SNAPSHOT_TOOL_ID.into())
-                        .tooltip("Snapshot (G)")
-                        .selected(annotation_tool == AnnotationTool::Snapshot && !pan_active).toggled(annotation_tool == AnnotationTool::Snapshot && !pan_active)
-                        .disabled(save_busy)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(
-                                document_id,
-                                AnnotationTool::Snapshot,
-                                cx,
-                            );
-                        })).into_any_element()], columns, cx))
- .child(rail_tool_section("Draw", vec![rail_tool_button(DOCUMENT_RECTANGLE_TOOL_ID, "Rectangle", "square").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_RECTANGLE_TOOL_ID.into())
-                        .selected(annotation_tool == AnnotationTool::Rectangle && !pan_active).toggled(annotation_tool == AnnotationTool::Rectangle && !pan_active)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(
-                                document_id,
-                                AnnotationTool::Rectangle,
-                                cx,
-                            );
-                        })).into_any_element(),
-rail_tool_button(DOCUMENT_ELLIPSE_TOOL_ID, "Ellipse", "circle").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_ELLIPSE_TOOL_ID.into())
-                        .tooltip(AnnotationTool::Ellipse.tooltip_label())
-                        .selected(annotation_tool == AnnotationTool::Ellipse && !pan_active).toggled(annotation_tool == AnnotationTool::Ellipse && !pan_active)
-                        .disabled(save_busy)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(
-                                document_id,
-                                AnnotationTool::Ellipse,
-                                cx,
-                            );
-                        })).into_any_element(),
-rail_tool_button(DOCUMENT_LINE_TOOL_ID, "Line", "minus").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_LINE_TOOL_ID.into())
-                        .tooltip(AnnotationTool::Line.tooltip_label())
-                        .selected(annotation_tool == AnnotationTool::Line && !pan_active).toggled(annotation_tool == AnnotationTool::Line && !pan_active)
-                        .disabled(save_busy)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(
-                                document_id,
-                                AnnotationTool::Line,
-                                cx,
-                            );
-                        })).into_any_element(),
-rail_tool_button(DOCUMENT_POLYLINE_TOOL_ID, "Polyline", "waypoints").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_POLYLINE_TOOL_ID.into())
-                        .tooltip(AnnotationTool::Polyline.tooltip_label())
-                        .selected(annotation_tool == AnnotationTool::Polyline && !pan_active).toggled(annotation_tool == AnnotationTool::Polyline && !pan_active)
-                        .disabled(save_busy)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(
-                                document_id,
-                                AnnotationTool::Polyline,
-                                cx,
-                            );
-                        })).into_any_element(),
-rail_tool_button(DOCUMENT_PEN_TOOL_ID, "Pen", "pen-line").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_PEN_TOOL_ID.into())
-                        .selected(annotation_tool == AnnotationTool::Pen && !pan_active).toggled(annotation_tool == AnnotationTool::Pen && !pan_active)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ =
-                                workspace.set_annotation_tool(document_id, AnnotationTool::Pen, cx);
-                        })).into_any_element(),
-rail_tool_button(DOCUMENT_ARC_TOOL_ID, "Arc", "spline").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_ARC_TOOL_ID.into())
-                        .tooltip(AnnotationTool::Arc.tooltip_label())
-                        .selected(annotation_tool == AnnotationTool::Arc && !pan_active).toggled(annotation_tool == AnnotationTool::Arc && !pan_active)
-                        .disabled(save_busy)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ =
-                                workspace.set_annotation_tool(document_id, AnnotationTool::Arc, cx);
-                        })).into_any_element(),
-rail_tool_button(DOCUMENT_POLYGON_TOOL_ID, "Polygon", "pentagon").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_POLYGON_TOOL_ID.into())
-                        .tooltip(AnnotationTool::Polygon.tooltip_label())
-                        .selected(annotation_tool == AnnotationTool::Polygon && !pan_active).toggled(annotation_tool == AnnotationTool::Polygon && !pan_active)
-                        .disabled(save_busy)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(
-                                document_id,
-                                AnnotationTool::Polygon,
-                                cx,
-                            );
-                        })).into_any_element(),
-rail_tool_button(DOCUMENT_DIMENSION_TOOL_ID, "Dimension", "ruler").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_DIMENSION_TOOL_ID.into())
-                        .tooltip(AnnotationTool::Dimension.tooltip_label())
-                        .selected(annotation_tool == AnnotationTool::Dimension && !pan_active).toggled(annotation_tool == AnnotationTool::Dimension && !pan_active)
-                        .disabled(save_busy)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(
-                                document_id,
-                                AnnotationTool::Dimension,
-                                cx,
-                            );
-                        })).into_any_element()], columns, cx))
- .child(rail_tool_section("Measure", vec![rail_tool_button(PAGE_SCALE_TRIGGER_ID, "Set Page Scale", "scan-line").disabled(save_busy)
-                .debug_selector(|| PAGE_SCALE_TRIGGER_ID.into())
-                .disabled(save_busy)
-                .on_click(move |_, window, cx| {
-                    let _ = page_scale_control.update(cx, |control, cx| {
-                        control.open_for(document_id, current_page, window, cx);
-                    });
-                }).into_any_element(),
-rail_tool_button(DOCUMENT_LENGTH_TOOL_ID, "Length", "ruler-dimension-line").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_LENGTH_TOOL_ID.into())
-                        .selected(annotation_tool == AnnotationTool::Length && !pan_active).toggled(annotation_tool == AnnotationTool::Length && !pan_active)
-                        .disabled(save_busy)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(
-                                document_id,
-                                AnnotationTool::Length,
-                                cx,
-                            );
-                        })).into_any_element(),
-rail_tool_button(DOCUMENT_POLYLENGTH_TOOL_ID, "Polylength", "route").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_POLYLENGTH_TOOL_ID.into())
-                        .tooltip(AnnotationTool::Polylength.tooltip_label())
-                        .selected(annotation_tool == AnnotationTool::Polylength && !pan_active).toggled(annotation_tool == AnnotationTool::Polylength && !pan_active)
-                        .disabled(save_busy)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(
-                                document_id,
-                                AnnotationTool::Polylength,
-                                cx,
-                            );
-                        })).into_any_element(),
-rail_tool_button(DOCUMENT_AREA_TOOL_ID, "Area", "chart-area").disabled(save_busy)
-                        .debug_selector(|| DOCUMENT_AREA_TOOL_ID.into())
-                        .tooltip(AnnotationTool::Area.tooltip_label())
-                        .selected(annotation_tool == AnnotationTool::Area && !pan_active).toggled(annotation_tool == AnnotationTool::Area && !pan_active)
-                        .disabled(save_busy)
-                        .on_click(cx.listener(move |workspace, event, _, cx| {
-                            if rail_tool_secondary_click(workspace, event, cx) { return; }
-                            let _ = workspace.set_annotation_tool(
-                                document_id,
-                                AnnotationTool::Area,
-                                cx,
-                            );
-                        })).into_any_element()], columns, cx))
- .into_any_element()
+    v_flex()
+        .w_full()
+        .flex_none()
+        .gap_2()
+        .child(rail_tool_section(
+            "General",
+            vec![
+                rail_tool_button(DOCUMENT_SELECT_TOOL_ID, "Select", "mouse-pointer-2")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_SELECT_TOOL_ID.into())
+                    .selected(annotation_tool == AnnotationTool::Select && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Select && !pan_active)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ =
+                            workspace.set_annotation_tool(document_id, AnnotationTool::Select, cx);
+                    }))
+                    .into_any_element(),
+                rail_tool_button("document-workspace-pan-tool", "Hand", "hand")
+                    .selected(pan_active)
+                    .toggled(pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        if workspace
+                            .set_annotation_tool(document_id, AnnotationTool::Select, cx)
+                            .is_ok()
+                        {
+                            workspace.pan_tool_active = true;
+                            cx.notify();
+                        }
+                    }))
+                    .into_any_element(),
+            ],
+            columns,
+            cx,
+        ))
+        .child(rail_tool_section(
+            "Review",
+            vec![
+                rail_tool_button(DOCUMENT_TEXT_BOX_TOOL_ID, "Text Box", "type")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_TEXT_BOX_TOOL_ID.into())
+                    .selected(annotation_tool == AnnotationTool::TextBox && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::TextBox && !pan_active)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ =
+                            workspace.set_annotation_tool(document_id, AnnotationTool::TextBox, cx);
+                    }))
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_ARROW_TOOL_ID, "Arrow", "arrow-right")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_ARROW_TOOL_ID.into())
+                    .tooltip(AnnotationTool::Arrow.tooltip_label())
+                    .selected(annotation_tool == AnnotationTool::Arrow && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Arrow && !pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ =
+                            workspace.set_annotation_tool(document_id, AnnotationTool::Arrow, cx);
+                    }))
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_HIGHLIGHT_TOOL_ID, "Highlight", "highlighter")
+                    .tooltip("Highlight (H)")
+                    .selected(annotation_tool == AnnotationTool::Highlight && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Highlight && !pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ = workspace.set_annotation_tool(
+                            document_id,
+                            AnnotationTool::Highlight,
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_CLOUD_TOOL_ID, "Cloud", "cloud")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_CLOUD_TOOL_ID.into())
+                    .tooltip(AnnotationTool::Cloud.tooltip_label())
+                    .selected(annotation_tool == AnnotationTool::Cloud && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Cloud && !pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ =
+                            workspace.set_annotation_tool(document_id, AnnotationTool::Cloud, cx);
+                    }))
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_CLOUD_PLUS_TOOL_ID, "Cloud+", "cloud-plus")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_CLOUD_PLUS_TOOL_ID.into())
+                    .tooltip(AnnotationTool::CloudPlus.tooltip_label())
+                    .selected(annotation_tool == AnnotationTool::CloudPlus && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::CloudPlus && !pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ = workspace.set_annotation_tool(
+                            document_id,
+                            AnnotationTool::CloudPlus,
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_CALLOUT_TOOL_ID, "Callout", "callout")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_CALLOUT_TOOL_ID.into())
+                    .tooltip(AnnotationTool::Callout.tooltip_label())
+                    .selected(annotation_tool == AnnotationTool::Callout && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Callout && !pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ =
+                            workspace.set_annotation_tool(document_id, AnnotationTool::Callout, cx);
+                    }))
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_REDACT_TOOL_ID, "Redact", "shield-x")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_REDACT_TOOL_ID.into())
+                    .tooltip(AnnotationTool::Redact.tooltip_label())
+                    .selected(annotation_tool == AnnotationTool::Redact && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Redact && !pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ =
+                            workspace.set_annotation_tool(document_id, AnnotationTool::Redact, cx);
+                    }))
+                    .into_any_element(),
+                signature_control.into_any_element(),
+                rail_tool_button(DOCUMENT_IMAGE_TOOL_ID, "Insert Image", "image")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_IMAGE_TOOL_ID.into())
+                    .tooltip("Insert Image (I)")
+                    .selected(annotation_tool == AnnotationTool::Image && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Image && !pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        workspace.begin_image_selection(document_id, cx);
+                    }))
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_SNAPSHOT_TOOL_ID, "Snapshot", "scan-search")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_SNAPSHOT_TOOL_ID.into())
+                    .tooltip("Snapshot (G)")
+                    .selected(annotation_tool == AnnotationTool::Snapshot && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Snapshot && !pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ = workspace.set_annotation_tool(
+                            document_id,
+                            AnnotationTool::Snapshot,
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+            ],
+            columns,
+            cx,
+        ))
+        .child(rail_tool_section(
+            "Draw",
+            vec![
+                rail_tool_button(DOCUMENT_RECTANGLE_TOOL_ID, "Rectangle", "square")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_RECTANGLE_TOOL_ID.into())
+                    .selected(annotation_tool == AnnotationTool::Rectangle && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Rectangle && !pan_active)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ = workspace.set_annotation_tool(
+                            document_id,
+                            AnnotationTool::Rectangle,
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_ELLIPSE_TOOL_ID, "Ellipse", "circle")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_ELLIPSE_TOOL_ID.into())
+                    .tooltip(AnnotationTool::Ellipse.tooltip_label())
+                    .selected(annotation_tool == AnnotationTool::Ellipse && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Ellipse && !pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ =
+                            workspace.set_annotation_tool(document_id, AnnotationTool::Ellipse, cx);
+                    }))
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_LINE_TOOL_ID, "Line", "minus")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_LINE_TOOL_ID.into())
+                    .tooltip(AnnotationTool::Line.tooltip_label())
+                    .selected(annotation_tool == AnnotationTool::Line && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Line && !pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ =
+                            workspace.set_annotation_tool(document_id, AnnotationTool::Line, cx);
+                    }))
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_POLYLINE_TOOL_ID, "Polyline", "waypoints")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_POLYLINE_TOOL_ID.into())
+                    .tooltip(AnnotationTool::Polyline.tooltip_label())
+                    .selected(annotation_tool == AnnotationTool::Polyline && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Polyline && !pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ = workspace.set_annotation_tool(
+                            document_id,
+                            AnnotationTool::Polyline,
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_PEN_TOOL_ID, "Pen", "pen-line")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_PEN_TOOL_ID.into())
+                    .selected(annotation_tool == AnnotationTool::Pen && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Pen && !pan_active)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ = workspace.set_annotation_tool(document_id, AnnotationTool::Pen, cx);
+                    }))
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_ARC_TOOL_ID, "Arc", "spline")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_ARC_TOOL_ID.into())
+                    .tooltip(AnnotationTool::Arc.tooltip_label())
+                    .selected(annotation_tool == AnnotationTool::Arc && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Arc && !pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ = workspace.set_annotation_tool(document_id, AnnotationTool::Arc, cx);
+                    }))
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_POLYGON_TOOL_ID, "Polygon", "pentagon")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_POLYGON_TOOL_ID.into())
+                    .tooltip(AnnotationTool::Polygon.tooltip_label())
+                    .selected(annotation_tool == AnnotationTool::Polygon && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Polygon && !pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ =
+                            workspace.set_annotation_tool(document_id, AnnotationTool::Polygon, cx);
+                    }))
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_DIMENSION_TOOL_ID, "Dimension", "ruler")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_DIMENSION_TOOL_ID.into())
+                    .tooltip(AnnotationTool::Dimension.tooltip_label())
+                    .selected(annotation_tool == AnnotationTool::Dimension && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Dimension && !pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ = workspace.set_annotation_tool(
+                            document_id,
+                            AnnotationTool::Dimension,
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+            ],
+            columns,
+            cx,
+        ))
+        .child(rail_tool_section(
+            "Measure",
+            vec![
+                rail_tool_button(PAGE_SCALE_TRIGGER_ID, "Set Page Scale", "scan-line")
+                    .disabled(save_busy)
+                    .debug_selector(|| PAGE_SCALE_TRIGGER_ID.into())
+                    .disabled(save_busy)
+                    .on_click(move |_, window, cx| {
+                        let _ = page_scale_control.update(cx, |control, cx| {
+                            control.open_for(document_id, current_page, window, cx);
+                        });
+                    })
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_LENGTH_TOOL_ID, "Length", "ruler-dimension-line")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_LENGTH_TOOL_ID.into())
+                    .selected(annotation_tool == AnnotationTool::Length && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Length && !pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ =
+                            workspace.set_annotation_tool(document_id, AnnotationTool::Length, cx);
+                    }))
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_POLYLENGTH_TOOL_ID, "Polylength", "route")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_POLYLENGTH_TOOL_ID.into())
+                    .tooltip(AnnotationTool::Polylength.tooltip_label())
+                    .selected(annotation_tool == AnnotationTool::Polylength && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Polylength && !pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ = workspace.set_annotation_tool(
+                            document_id,
+                            AnnotationTool::Polylength,
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_AREA_TOOL_ID, "Area", "chart-area")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_AREA_TOOL_ID.into())
+                    .tooltip(AnnotationTool::Area.tooltip_label())
+                    .selected(annotation_tool == AnnotationTool::Area && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Area && !pan_active)
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ =
+                            workspace.set_annotation_tool(document_id, AnnotationTool::Area, cx);
+                    }))
+                    .into_any_element(),
+            ],
+            columns,
+            cx,
+        ))
+        .into_any_element()
 }
 
 // Measure the natural label once in layout; reveal-time truncation must not
@@ -16709,20 +22170,41 @@ fn session_tab_overlay_label(label: String, group: String, revealed: bool) -> im
     gpui::div()
         .relative()
         .min_w_0()
-        .child(gpui::div().whitespace_nowrap().text_ellipsis().opacity(0.).child(label.clone()))
-        .child(gpui::div()
-            .absolute().inset_0()
-            .when(revealed, |this| this.pr_6())
-            .child(gpui::div().w_full().min_w_0().whitespace_nowrap().text_ellipsis()
-                .debug_selector(move || format!("{group}-visible-label").into())
-                .child(label)))
+        .child(
+            gpui::div()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .opacity(0.)
+                .child(label.clone()),
+        )
+        .child(
+            gpui::div()
+                .absolute()
+                .inset_0()
+                .when(revealed, |this| this.pr_6())
+                .child(
+                    gpui::div()
+                        .w_full()
+                        .min_w_0()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .debug_selector(move || format!("{group}-visible-label").into())
+                        .child(label),
+                ),
+        )
 }
 
 fn session_tab_close_lane() -> gpui::Div {
     // The pinned medium Outline tab is 32 physical px high with 1px borders.
     // The stock small close button is 24px: this lane gives equal 4px outer
     // clearance at the top, bottom and trailing edge, independent of text height.
-    h_flex().absolute().right_0().top_0().h_full().w(px(32. - 2.)).justify_center()
+    h_flex()
+        .absolute()
+        .right_0()
+        .top_0()
+        .h_full()
+        .w(px(32. - 2.))
+        .justify_center()
 }
 
 impl Render for DocumentWorkspace {
@@ -16730,6 +22212,10 @@ impl Render for DocumentWorkspace {
         if self.session_tab_last_active != self.active_document_id {
             self.pan_tool_active = false;
             self.pan_drag = None;
+            self.hovered_annotation = None;
+            self.hot_annotation_handle = None;
+            self.select_hover_hit = None;
+            self.pending_image_hover = None;
             self.session_tab_last_active = self.active_document_id;
             self.session_tab_reveal = self.active_document_id;
         }
@@ -16752,6 +22238,7 @@ impl Render for DocumentWorkspace {
         let measurement_property_inspector = self.ensure_measurement_property_inspector(window, cx);
         let dimension_property_inspector = self.ensure_dimension_property_inspector(window, cx);
         let page_scale_pick_instruction = page_scale_control.read(cx).pick_instruction();
+        let calibration_pick_active = page_scale_pick_instruction.is_some();
         let session_tabs = self
             .sessions
             .iter()
@@ -16765,6 +22252,7 @@ impl Render for DocumentWorkspace {
                 )
             })
             .collect::<Vec<_>>();
+        let document_opening_batch_count = self.active_document_open_batches;
         let active = self
             .active_document_id
             .and_then(|id| self.session(id, cx))
@@ -16776,16 +22264,12 @@ impl Render for DocumentWorkspace {
             .min_h_0()
             .track_focus(&self.workspace_focus)
             .key_context(DOCUMENT_WORKSPACE_CONTEXT)
-            .on_key_down(cx.listener(
-                |workspace, event: &KeyDownEvent, window, cx| {
-                    workspace.handle_space_pan_down(event, window, cx);
-                },
-            ))
-            .on_key_up(cx.listener(
-                |workspace, event: &KeyUpEvent, window, cx| {
-                    workspace.handle_space_pan_up(event, window, cx);
-                },
-            ))
+            .on_key_down(cx.listener(|workspace, event: &KeyDownEvent, window, cx| {
+                workspace.handle_space_pan_down(event, window, cx);
+            }))
+            .on_key_up(cx.listener(|workspace, event: &KeyUpEvent, window, cx| {
+                workspace.handle_space_pan_up(event, window, cx);
+            }))
             .on_action(cx.listener(Self::open_pdf_from_action))
             .on_action(cx.listener(|workspace, _: &NewFromTemplate, _, cx| {
                 workspace.template_manage_requests =
@@ -16877,11 +22361,14 @@ impl Render for DocumentWorkspace {
             .on_action(cx.listener(|workspace, _: &SinglePageView, _, cx| {
                 workspace.set_active_page_view_mode(PageViewMode::SinglePage, cx);
             }))
-            .on_action(cx.listener(|workspace, _: &SelectTool, _, cx| {
-                workspace.select_available_annotation_tool(AnnotationTool::Select, cx);
+            .on_action(cx.listener(|workspace, _: &SelectTool, window, cx| {
+                workspace.select_available_annotation_tool(AnnotationTool::Select, window, cx);
             }))
-            .on_action(cx.listener(|workspace, _: &PanTool, _, cx| {
-                workspace.select_available_annotation_tool(AnnotationTool::Select, cx);
+            .on_action(cx.listener(|workspace, _: &PanTool, window, cx| {
+                if window.has_focused_input(cx) {
+                    return;
+                }
+                workspace.select_available_annotation_tool(AnnotationTool::Select, window, cx);
                 if workspace.active_document_id.is_some() {
                     workspace.pan_tool_active = true;
                     cx.notify();
@@ -16900,6 +22387,12 @@ impl Render for DocumentWorkspace {
                     control.open_for(document_id, current_page, window, cx);
                 });
             }))
+            .on_action(cx.listener(Self::select_text_box_tool_from_action))
+            .on_action(cx.listener(Self::select_rectangle_tool_from_action))
+            .on_action(cx.listener(Self::select_ellipse_tool_from_action))
+            .on_action(cx.listener(Self::select_pen_tool_from_action))
+            .on_action(cx.listener(Self::select_cloud_tool_from_action))
+            .on_action(cx.listener(Self::select_callout_tool_from_action))
             .on_action(cx.listener(Self::select_line_tool_from_action))
             .on_action(cx.listener(Self::select_arc_tool_from_action))
             .on_action(cx.listener(Self::select_arrow_tool_from_action))
@@ -16922,14 +22415,45 @@ impl Render for DocumentWorkspace {
             .on_action(cx.listener(Self::undo_annotations_from_action))
             .on_action(cx.listener(Self::redo_annotations_from_action))
             .on_action(cx.listener(|workspace, _: &Escape, window, cx| {
-                if workspace.pan_tool_active {
-                    workspace.pan_tool_active = false;
-                    workspace.pan_drag = None;
-                    // Escape also drops a hold-Space stash, mirroring the
-                    // reference global-Escape reset to Select.
-                    workspace.space_pan_hold.clear_stash();
-                    cx.notify();
-                } else if workspace
+                let pending_editor_focused = workspace
+                    .pending_text_box_focus(cx)
+                    .is_some_and(|focus| focus.is_focused(window));
+                if workspace.signature_popover_open
+                    || window.has_active_dialog(cx)
+                    || window.has_active_sheet(cx)
+                    || (window.has_focused_input(cx) && !pending_editor_focused)
+                {
+                    cx.propagate();
+                    return;
+                }
+                if workspace.pending_text_box_editor.is_some() {
+                    if !workspace.cancel_pending_composite_text_editor(window, cx) {
+                        let existing_text_box = workspace
+                            .pending_text_box_editor
+                            .as_ref()
+                            .is_some_and(|editor| {
+                                matches!(
+                                    editor.target,
+                                    PendingTextEditorTarget::ExistingTextBox { .. }
+                                )
+                            });
+                        match workspace.commit_pending_text_box(cx) {
+                            Ok(_) => {
+                                if existing_text_box {
+                                    workspace.workspace_focus.focus(window, cx);
+                                } else {
+                                    workspace.text_box_return_focus.focus(window, cx);
+                                }
+                            }
+                            Err(error) => {
+                                workspace.text_box_commit_error = Some(error);
+                                cx.notify();
+                            }
+                        }
+                    }
+                    return;
+                }
+                if workspace
                     .page_scale_control
                     .as_ref()
                     .is_some_and(|control| {
@@ -16940,52 +22464,35 @@ impl Render for DocumentWorkspace {
                         workspace.annotation_statuses.remove(&document_id);
                     }
                     cx.notify();
-                } else if workspace.pending_text_box_editor.is_some() {
-                    if !workspace.cancel_pending_composite_text_editor(window, cx) {
-                        match workspace.commit_pending_text_box(cx) {
-                            Ok(_) => workspace.text_box_return_focus.focus(window, cx),
-                            Err(error) => {
-                                workspace.text_box_commit_error = Some(error);
-                                cx.notify();
-                            }
-                        }
-                    }
-                } else if let Some(document_id) = workspace.active_document_id
-                    && workspace.session(document_id, cx).is_some_and(|session| {
-                        session
-                            .read(cx)
-                            .annotations
-                            .vertex_path_pending(document_id.value())
-                            || session
-                                .read(cx)
-                                .annotations
-                                .cloud_pending(document_id.value())
-                            || session
-                                .read(cx)
-                                .annotations
-                                .cloud_plus_pending(document_id.value())
-                    })
-                {
-                    workspace.finish_vertex_path_from_action(&FinishVertexPath, window, cx);
-                } else if let Some(document_id) = workspace.active_document_id
-                    && workspace.session(document_id, cx).is_some_and(|session| {
-                        session.read(cx).annotations.tool() != AnnotationTool::Select
-                            || workspace.active_annotation_pointer.is_some()
-                    })
-                {
-                    workspace.active_annotation_pointer = None;
-                    if let Some(session) = workspace.session(document_id, cx).cloned() {
-                        session.update(cx, |session, cx| {
-                            let _ = session.annotations.cancel(PointerCancelReason::ToolChanged);
-                            let _ = session.annotations.set_tool(AnnotationTool::Select);
-                            cx.notify();
-                        });
-                    }
-                    workspace.annotation_statuses.remove(&document_id);
-                    cx.notify();
-                } else {
-                    cx.propagate();
+                    return;
                 }
+                let Some(document_id) = workspace.active_document_id else {
+                    cx.propagate();
+                    return;
+                };
+                // Electron's capture-phase Escape finishes only cloud polygons,
+                // then resets the canvas tool and selection. Other drafts cancel.
+                if workspace.session(document_id, cx).is_some_and(|session| {
+                    let session = session.read(cx);
+                    session.annotations.cloud_pending(document_id.value())
+                        || session.annotations.cloud_plus_pending(document_id.value())
+                }) {
+                    workspace.finish_vertex_path_from_action(&FinishVertexPath, window, cx);
+                }
+                workspace.pan_tool_active = false;
+                workspace.pan_drag = None;
+                workspace.space_pan_hold.clear_stash();
+                workspace.active_annotation_pointer = None;
+                if let Some(session) = workspace.session(document_id, cx).cloned() {
+                    session.update(cx, |session, cx| {
+                        let _ = session.annotations.cancel(PointerCancelReason::ToolChanged);
+                        let _ = session.annotations.set_tool(AnnotationTool::Select);
+                        session.annotations.clear_selection(document_id.value());
+                        cx.notify();
+                    });
+                }
+                workspace.annotation_statuses.remove(&document_id);
+                cx.notify();
             }))
             .size_full()
             .min_h(px(360.))
@@ -17055,9 +22562,13 @@ impl Render for DocumentWorkspace {
                             .focus(|style| style.opacity(1.))
                             .debug_selector(move || close_selector.clone().into())
                             .accessibility_id(close_accessibility_id)
-                            .custom(gpui_component::button::ButtonCustomVariant::new(cx)
-                                .color(cx.theme().transparent).hover(cx.theme().background)
-                                .active(cx.theme().input).foreground(cx.theme().foreground))
+                            .custom(
+                                gpui_component::button::ButtonCustomVariant::new(cx)
+                                    .color(cx.theme().transparent)
+                                    .hover(cx.theme().background)
+                                    .active(cx.theme().input)
+                                    .foreground(cx.theme().foreground),
+                            )
                             .bg(cx.theme().transparent)
                             .border_color(cx.theme().transparent)
                             .small()
@@ -17076,8 +22587,12 @@ impl Render for DocumentWorkspace {
                     Tab::new()
                         .button_states(true)
                         .on_hover(cx.listener(move |workspace, hovered, _, cx| {
-                            let next = if *hovered { Some(document_id) } else {
-                                workspace.session_tab_hovered.filter(|id| *id != document_id)
+                            let next = if *hovered {
+                                Some(document_id)
+                            } else {
+                                workspace
+                                    .session_tab_hovered
+                                    .filter(|id| *id != document_id)
                             };
                             if workspace.session_tab_hovered != next {
                                 workspace.session_tab_hovered = next;
@@ -17086,11 +22601,15 @@ impl Render for DocumentWorkspace {
                         }))
                         .group(tab_selector.clone())
                         .debug_selector(move || debug_selector.clone().into())
-                        .child(session_tab_overlay_label(if *dirty {
-                            format!("* {visual_title}")
-                        } else {
-                            visual_title
-                        }, tab_selector, reveal_close))
+                        .child(session_tab_overlay_label(
+                            if *dirty {
+                                format!("* {visual_title}")
+                            } else {
+                                visual_title
+                            },
+                            tab_selector,
+                            reveal_close,
+                        ))
                         .aria_label(accessibility_label)
                         .aria_description(DOCUMENT_TAB_REORDER_DESCRIPTION)
                         .aria_keyshortcuts(DOCUMENT_TAB_REORDER_KEYSHORTCUTS)
@@ -17153,63 +22672,123 @@ impl Render for DocumentWorkspace {
                         ),
                 )
                 .child(document_actions);
-            return root
-                .child(session_tab_strip)
-                .child(h_flex().flex_1().min_h_0().w_full().items_stretch()
-                .child(self.render_left_rail(false, true, cx))
-                .child(v_flex().flex_1().min_w_0().h_full()
-                .child(self.viewer_toolbar.clone())
-                .child(
-                    v_flex()
-                        .id(DOCUMENT_EMPTY_ID)
-                        .debug_selector(|| DOCUMENT_EMPTY_ID.into())
-                        .flex_1()
-                        .items_center()
-                        .justify_center()
-                        .gap_2()
-                        .when_some(opening_title, |view, title| {
-                            let status = format!("Opening {title}");
-                            view.child(
+            return root.child(session_tab_strip).child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .items_stretch()
+                    .child(self.render_left_rail(false, true, cx))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(self.viewer_toolbar.clone())
+                            .child(
                                 v_flex()
-                                    .id(DOCUMENT_OPEN_STATUS_ID)
-                                    .debug_selector(|| DOCUMENT_OPEN_STATUS_ID.into())
-                                    .role(Role::Status)
-                                    .aria_label(status.clone())
-                                    .a11y_synthetic_children(|builder| {
-                                        builder.parent_node().set_live(Live::Polite)
-                                    })
-                                    .w(px(240.))
+                                    .id(DOCUMENT_EMPTY_ID)
+                                    .debug_selector(|| DOCUMENT_EMPTY_ID.into())
+                                    .flex_1()
                                     .items_center()
+                                    .justify_center()
                                     .gap_2()
-                                    .child(status)
+                                    .when_some(self.startup_recovery_message(), |view, message| {
+                                        view.child(
+                                            gpui::div().w(px(480.)).max_w_full().child(
+                                                self.render_startup_recovery_inbox(message, cx),
+                                            ),
+                                        )
+                                    })
+                                    .when_some(
+                                        self.session_recovery_warning.clone(),
+                                        |view, warning| {
+                                            view.child(
+                                v_flex()
+                                    .w(px(480.))
+                                    .max_w_full()
+                                    .gap_2()
                                     .child(
                                         gpui::div()
-                                            .id(DOCUMENT_OPEN_PROGRESS_ID)
-                                            .debug_selector(|| DOCUMENT_OPEN_PROGRESS_ID.into())
-                                            .w_full()
+                                            .id(DOCUMENT_RECOVERY_WARNING_ALERT_ID)
+                                            .debug_selector(|| {
+                                                DOCUMENT_RECOVERY_WARNING_ALERT_ID.into()
+                                            })
                                             .child(
-                                                Progress::new("document-open-progress-component")
-                                                    .loading(true),
+                                                Alert::warning(
+                                                    "document-workspace-recovery-warning-message",
+                                                    warning,
+                                                )
+                                                .title("Previous unsaved changes"),
                                             ),
+                                    )
+                                    .child(
+                                        Button::new(DOCUMENT_RECOVERY_WARNING_DISMISS_ID)
+                                            .debug_selector(|| {
+                                                DOCUMENT_RECOVERY_WARNING_DISMISS_ID.into()
+                                            })
+                                            .accessibility_id(
+                                                DOCUMENT_RECOVERY_WARNING_DISMISS_ID,
+                                            )
+                                            .outline()
+                                            .label("Dismiss")
+                                            .on_click(cx.listener(|workspace, _, _, cx| {
+                                                workspace.dismiss_session_recovery_warning(cx);
+                                            })),
                                     ),
                             )
-                        })
-                        .when(
-                            !self.sessions.iter().any(|session| {
-                                matches!(session.read(cx).status, NativeDocumentStatus::Opening)
-                            }),
-                            |view| view.child("Open a PDF to start"),
-                        )
-                        .child(
-                            Button::new(VIEWPORT_OPEN_DOCUMENT_ID)
-                                .debug_selector(|| VIEWPORT_OPEN_DOCUMENT_ID.into())
-                                .label("Open")
-                                .on_click(cx.listener(|workspace, _, _, cx| {
-                                    workspace.prompt_to_open_documents(cx);
-                                })),
-                        )
-                        .when_some(open_failure, |view, failure| {
-                            view.child(
+                                        },
+                                    )
+                                    .when_some(opening_title, |view, title| {
+                                        let status = format!("Opening {title}");
+                                        view.child(
+                                            v_flex()
+                                                .id(DOCUMENT_OPEN_STATUS_ID)
+                                                .debug_selector(|| DOCUMENT_OPEN_STATUS_ID.into())
+                                                .role(Role::Status)
+                                                .aria_label(status.clone())
+                                                .a11y_synthetic_children(|builder| {
+                                                    builder.parent_node().set_live(Live::Polite)
+                                                })
+                                                .w(px(240.))
+                                                .items_center()
+                                                .gap_2()
+                                                .child(status)
+                                                .child(
+                                                    gpui::div()
+                                                        .id(DOCUMENT_OPEN_PROGRESS_ID)
+                                                        .debug_selector(|| {
+                                                            DOCUMENT_OPEN_PROGRESS_ID.into()
+                                                        })
+                                                        .w_full()
+                                                        .child(
+                                                            Progress::new(
+                                                                "document-open-progress-component",
+                                                            )
+                                                            .loading(true),
+                                                        ),
+                                                ),
+                                        )
+                                    })
+                                    .when(
+                                        !self.sessions.iter().any(|session| {
+                                            matches!(
+                                                session.read(cx).status,
+                                                NativeDocumentStatus::Opening
+                                            )
+                                        }),
+                                        |view| view.child("Open a PDF to start"),
+                                    )
+                                    .child(
+                                        Button::new(VIEWPORT_OPEN_DOCUMENT_ID)
+                                            .debug_selector(|| VIEWPORT_OPEN_DOCUMENT_ID.into())
+                                            .label("Open")
+                                            .on_click(cx.listener(|workspace, _, _, cx| {
+                                                workspace.prompt_to_open_documents(cx);
+                                            })),
+                                    )
+                                    .when_some(open_failure, |view, failure| {
+                                        view.child(
                                 v_flex()
                                     .w(px(520.))
                                     .gap_2()
@@ -17238,18 +22817,20 @@ impl Render for DocumentWorkspace {
                                             })),
                                     ),
                             )
-                        })
-                        .when_some(error, |view, error| {
-                            view.child(
-                                gpui::div()
-                                    .id(DOCUMENT_ERROR_ID)
-                                    .debug_selector(|| DOCUMENT_ERROR_ID.into())
-                                    .text_sm()
-                                    .text_color(cx.theme().danger)
-                                    .child(error),
-                            )
-                        }),
-                )));
+                                    })
+                                    .when_some(error, |view, error| {
+                                        view.child(
+                                            gpui::div()
+                                                .id(DOCUMENT_ERROR_ID)
+                                                .debug_selector(|| DOCUMENT_ERROR_ID.into())
+                                                .text_sm()
+                                                .text_color(cx.theme().danger)
+                                                .child(error),
+                                        )
+                                    }),
+                            ),
+                    ),
+            );
         };
 
         let (
@@ -17283,10 +22864,14 @@ impl Render for DocumentWorkspace {
             save_busy,
             ink_mutation_disabled,
             save_failure,
+            recovery_preparation_issue,
             presentation_error,
             recovery_pending,
             annotation_scene,
+            pending_image_preview,
             semantic_snap_decision,
+            object_snap_tracking_result,
+            relationship_snap_guides,
             construction_grid_spacing_mm,
             active_selection_marquee,
             current_highlights_precomposed,
@@ -17326,7 +22911,9 @@ impl Render for DocumentWorkspace {
                 .selected_has_unlocked(document_id.value());
             let selected_annotations = session
                 .annotations
-                .primary_selected_annotation(document_id.value()).into_iter().collect::<Vec<_>>();
+                .primary_selected_annotation(document_id.value())
+                .into_iter()
+                .collect::<Vec<_>>();
             let selected_rectangle = match selected_annotations.as_slice() {
                 [Annotation::Rectangle(annotation)] => Some(annotation.clone()),
                 _ => None,
@@ -17427,7 +23014,8 @@ impl Render for DocumentWorkspace {
                             annotation.appearance.stroke_width_pt(),
                             annotation.appearance.opacity(),
                             annotation.appearance.stroke_style(),
-                        ).expect("stored measurement appearance is valid"),
+                        )
+                        .expect("stored measurement appearance is valid"),
                         TextBoxStyle::new(
                             annotation.text_style().font_family(),
                             annotation.text_style().font_size_pt(),
@@ -17440,8 +23028,15 @@ impl Render for DocumentWorkspace {
                                 annotation.text_style().alignment(),
                             )
                         })
+                        .and_then(|style| {
+                            style.with_layout_metrics(
+                                annotation.text_style().line_height_pt(),
+                                annotation.text_style().inset_pt(),
+                            )
+                        })
                         .expect("stored measurement text style is valid"),
-                    ).expect("measurement path line and text share opacity"),
+                    )
+                    .expect("measurement path line and text share opacity"),
                     annotation.locked,
                 )),
                 _ => None,
@@ -17489,19 +23084,75 @@ impl Render for DocumentWorkspace {
                 NativeDocumentSaveStatus::Failed(failure) => Some(failure.clone()),
                 NativeDocumentSaveStatus::Idle | NativeDocumentSaveStatus::Saving => None,
             };
+            let recovery_preparation_issue = match &session.recovery_preparation {
+                DocumentRecoveryPreparation::Failed { message, .. } => {
+                    Some((message.clone(), false, false))
+                }
+                DocumentRecoveryPreparation::Ambiguous { message, .. } => {
+                    Some((message.clone(), true, false))
+                }
+                DocumentRecoveryPreparation::RebaseFailed { message, .. } => {
+                    Some((message.clone(), false, true))
+                }
+                DocumentRecoveryPreparation::Unbound
+                | DocumentRecoveryPreparation::Pending { .. }
+                | DocumentRecoveryPreparation::Ready { .. } => None,
+            };
             let presentation_error = session.presentation_error.clone();
             let recovery_pending = session.recovery_generation.is_some();
-            let annotation_scene =
-                self.annotation_scene_for_session(document_id, current_page, &session);
+            let caption_supplement = self.annotation_caption_selection_paths_for_session(
+                document_id,
+                current_page,
+                &session,
+                cx,
+            );
+            let annotation_scene = self.annotation_scene_for_session(
+                document_id,
+                current_page,
+                &session,
+                &caption_supplement,
+            );
+            let pending_image_preview = self.pending_image_hover.as_ref().and_then(
+                |(hover_document, hover_page, point)| {
+                    (*hover_document == document_id).then(|| {
+                        session
+                            .annotations
+                            .pending_image_preview_at(document_id.value(), *hover_page, *point)
+                            .ok()
+                            .flatten()
+                    })?
+                },
+            );
             let semantic_snap_decision = session.annotations.semantic_snap_decision().cloned();
+            let object_snap_tracking_result = (self.semantic_snap_settings.guides_enabled()
+                && self
+                    .semantic_snap_settings
+                    .is_guide_enabled(SemanticSnapGuideType::Alignment))
+            .then(|| session.annotations.object_snap_tracking_result().cloned())
+            .flatten();
+            let relationship_snap_guides = if self.semantic_snap_settings.guides_enabled() {
+                session
+                    .annotations
+                    .relationship_snap_guides()
+                    .iter()
+                    .filter(|guide| match guide {
+                        RelationshipSnapGuide::EqualSize { .. } => self
+                            .semantic_snap_settings
+                            .is_guide_enabled(SemanticSnapGuideType::EqualSize),
+                        RelationshipSnapGuide::EqualSpacing { .. } => self
+                            .semantic_snap_settings
+                            .is_guide_enabled(SemanticSnapGuideType::EqualSpacing),
+                    })
+                    .cloned()
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let construction_grid_spacing_mm = (self
                 .semantic_snap_settings
                 .is_source_enabled(SemanticSnapSource::ConstructionGrid)
                 && self.semantic_snap_settings.construction_grid_visible())
-            .then_some(
-                self.semantic_snap_settings
-                    .construction_grid_spacing_mm(),
-            );
+            .then_some(self.semantic_snap_settings.construction_grid_spacing_mm());
             let active_selection_marquee = session
                 .annotations
                 .active_selection_marquee(document_id.value());
@@ -17534,8 +23185,13 @@ impl Render for DocumentWorkspace {
                             .map(|thumbnail| thumbnail.image.clone()),
                         session.highlight_composite.annotation_revision == scene.revision,
                         scene,
-                        session.annotations.document_page_scale(document_id.value(), page_index).map(PageScale::ratio_label),
-                        session.thumbnail_requests.get(&page_index)
+                        session
+                            .annotations
+                            .document_page_scale(document_id.value(), page_index)
+                            .map(PageScale::ratio_label),
+                        session
+                            .thumbnail_requests
+                            .get(&page_index)
                             .filter(|request| request.epoch == session.resource_epoch)
                             .and_then(|request| request.error.clone()),
                     )
@@ -17551,10 +23207,18 @@ impl Render for DocumentWorkspace {
                         .iter()
                         .filter(|layout| plan.visible_pages.contains(&layout.page))
                         .map(|layout| {
+                            let caption_supplement = self
+                                .annotation_caption_selection_paths_for_session(
+                                    document_id,
+                                    layout.page as u32,
+                                    &session,
+                                    cx,
+                                );
                             let scene = self.annotation_scene_for_session(
                                 document_id,
                                 layout.page as u32,
                                 &session,
+                                &caption_supplement,
                             );
                             let tiles = session.viewer.visible_tiles(layout.page);
                             let quality = session.viewer.page_quality(layout.page);
@@ -17635,10 +23299,14 @@ impl Render for DocumentWorkspace {
                 save_busy,
                 ink_mutation_disabled,
                 save_failure,
+                recovery_preparation_issue,
                 presentation_error,
                 recovery_pending,
                 annotation_scene,
+                pending_image_preview,
                 semantic_snap_decision,
+                object_snap_tracking_result,
+                relationship_snap_guides,
                 construction_grid_spacing_mm,
                 active_selection_marquee,
                 current_highlights_precomposed,
@@ -17650,6 +23318,40 @@ impl Render for DocumentWorkspace {
                 viewer_snapshot,
             )
         };
+        let select_hover_cursor = self
+            .select_hover_hit
+            .as_ref()
+            .and_then(|(hover_document, hover_page, hit)| {
+                if *hover_document != document_id || *hover_page != current_page {
+                    return None;
+                }
+                let HitTarget::ResizeHandle { id, handle } = hit else {
+                    return None;
+                };
+                let rectangle = selected_rectangle
+                    .as_ref()
+                    .filter(|rectangle| &rectangle.id == id)?;
+                Some(rectangle_resize_cursor_style(
+                    *handle,
+                    rectangle.rotation_degrees,
+                ))
+            })
+            .or_else(|| {
+                let (hover_document, hover_page, id, index) =
+                    self.hot_annotation_handle.as_ref()?;
+                if *hover_document != document_id || *hover_page != current_page {
+                    return None;
+                }
+                annotation_resize_cursor_style(&annotation_scene, id, *index)
+            });
+        let viewport_cursor_style = document_viewport_cursor_style(
+            annotation_tool,
+            self.pan_tool_active,
+            self.pan_drag.is_some(),
+            calibration_pick_active,
+            active_selection_marquee.is_some(),
+            select_hover_cursor,
+        );
         if let Some((id, offset, show_offset, appearance, locked)) = selected_dimension.as_ref() {
             let snapshot = DimensionPropertySnapshot {
                 document_id,
@@ -17680,14 +23382,30 @@ impl Render for DocumentWorkspace {
                 || panel.is_disabled() != ink_mutation_disabled
         };
         if let Some(session) = self.session(document_id, cx) {
-            let properties = session.read(cx).annotations.tool_properties(annotation_tool);
+            let properties = session
+                .read(cx)
+                .annotations
+                .tool_properties(annotation_tool);
             tool_defaults_panel.update(cx, |panel, cx| {
-                panel.sync(document_id, annotation_tool, properties, ink_mutation_disabled, window, cx);
+                panel.sync(
+                    document_id,
+                    annotation_tool,
+                    properties,
+                    ink_mutation_disabled,
+                    window,
+                    cx,
+                );
             });
         }
         if defaults_need_sync {
             highlight_defaults_panel.update(cx, |panel, cx| {
-                panel.sync(document_id, highlight_defaults.clone(), ink_mutation_disabled, window, cx);
+                panel.sync(
+                    document_id,
+                    highlight_defaults.clone(),
+                    ink_mutation_disabled,
+                    window,
+                    cx,
+                );
             });
         }
         let thumbnail_scroll = self.thumbnail_scroll.clone();
@@ -17962,10 +23680,52 @@ impl Render for DocumentWorkspace {
             .session(document_id, cx)
             .and_then(|session| session.read(cx).annotations.focused_id(document_id.value()));
         let hovered_annotation = self.hovered_annotation.clone();
-        let pending_text_box_input = self
+        let hot_annotation_handle = self.hot_annotation_handle.clone();
+        let pending_text_box_presentation = self
             .pending_text_box_editor
             .as_ref()
             .filter(|editor| editor.document_id == document_id)
+            .and_then(|editor| {
+                let PendingTextEditorTarget::NewTextBox {
+                    rect,
+                    style,
+                    interaction,
+                    ..
+                } = &editor.target
+                else {
+                    return None;
+                };
+                let local = interaction.transform.rect_to_local_pixels(*rect);
+                let editor_bounds = Some(Bounds::new(
+                    point(
+                        interaction.bounds.origin.x - interaction.container_bounds.origin.x
+                            + px(local.x as f32),
+                        interaction.bounds.origin.y - interaction.container_bounds.origin.y
+                            + px(local.y as f32),
+                    ),
+                    size(px(local.width as f32), px(local.height as f32)),
+                ));
+                Some(PendingTextBoxPresentation {
+                    document_id: editor.document_id,
+                    page_index: editor.page_index,
+                    rect: *rect,
+                    style: style.clone(),
+                    input: editor.input.clone(),
+                    editor_bounds,
+                    display_scale: interaction.transform.pixels_per_point() as f32,
+                })
+            });
+        let pending_non_creation_editor =
+            self.pending_text_box_editor.as_ref().is_some_and(|editor| {
+                !matches!(&editor.target, PendingTextEditorTarget::NewTextBox { .. })
+            });
+        let pending_text_box_input = self
+            .pending_text_box_editor
+            .as_ref()
+            .filter(|editor| {
+                editor.document_id == document_id
+                    && !matches!(&editor.target, PendingTextEditorTarget::NewTextBox { .. })
+            })
             .map(|editor| editor.input.clone());
         let highlight_open_control = cx.entity().downgrade();
         let highlight_color_control = cx.entity().downgrade();
@@ -18190,14 +23950,20 @@ impl Render for DocumentWorkspace {
                                 });
                             }),
                     )
-                    .child(gpui::div().text_sm().font_semibold().child("Construction grid"))
+                    .child(
+                        gpui::div()
+                            .text_sm()
+                            .font_semibold()
+                            .child("Construction grid"),
+                    )
                     .child(
                         Checkbox::new(DOCUMENT_SNAP_CONSTRUCTION_GRID_ID)
                             .debug_selector(|| DOCUMENT_SNAP_CONSTRUCTION_GRID_ID.into())
                             .label("Snap to grid")
-                            .checked(semantic_settings.is_source_enabled(
-                                SemanticSnapSource::ConstructionGrid,
-                            ))
+                            .checked(
+                                semantic_settings
+                                    .is_source_enabled(SemanticSnapSource::ConstructionGrid),
+                            )
                             .on_click(move |checked, _, cx| {
                                 let _ = snap_grid_control.update(cx, |workspace, cx| {
                                     workspace.set_semantic_snap_source(
@@ -18210,14 +23976,13 @@ impl Render for DocumentWorkspace {
                     )
                     .child(
                         Checkbox::new(DOCUMENT_SNAP_CONSTRUCTION_GRID_VISIBLE_ID)
-                            .debug_selector(|| {
-                                DOCUMENT_SNAP_CONSTRUCTION_GRID_VISIBLE_ID.into()
-                            })
+                            .debug_selector(|| DOCUMENT_SNAP_CONSTRUCTION_GRID_VISIBLE_ID.into())
                             .label("Show grid")
                             .checked(semantic_settings.construction_grid_visible())
-                            .disabled(!semantic_settings.is_source_enabled(
-                                SemanticSnapSource::ConstructionGrid,
-                            ))
+                            .disabled(
+                                !semantic_settings
+                                    .is_source_enabled(SemanticSnapSource::ConstructionGrid),
+                            )
                             .on_click(move |checked, _, cx| {
                                 let _ = snap_grid_visible_control.update(cx, |workspace, cx| {
                                     workspace.set_semantic_snap_grid_visible(*checked, cx);
@@ -18245,7 +24010,12 @@ impl Render for DocumentWorkspace {
                                     ),
                             ),
                     )
-                    .child(gpui::div().text_sm().font_semibold().child("Dimension increments"))
+                    .child(
+                        gpui::div()
+                            .text_sm()
+                            .font_semibold()
+                            .child("Dimension increments"),
+                    )
                     .child(
                         Checkbox::new(DOCUMENT_SNAP_DIMENSION_INCREMENT_ID)
                             .debug_selector(|| DOCUMENT_SNAP_DIMENSION_INCREMENT_ID.into())
@@ -18388,63 +24158,59 @@ impl Render for DocumentWorkspace {
                         Checkbox::new(DOCUMENT_SNAP_GUIDE_ALIGNMENT_ID)
                             .debug_selector(|| DOCUMENT_SNAP_GUIDE_ALIGNMENT_ID.into())
                             .label("Alignment")
-                            .checked(semantic_settings.is_guide_enabled(
-                                SemanticSnapGuideType::Alignment,
-                            ))
+                            .checked(
+                                semantic_settings
+                                    .is_guide_enabled(SemanticSnapGuideType::Alignment),
+                            )
                             .disabled(!semantic_settings.guides_enabled())
                             .on_click(move |checked, _, cx| {
-                                let _ = snap_alignment_guide_control.update(
-                                    cx,
-                                    |workspace, cx| {
-                                        workspace.set_semantic_snap_guide(
-                                            SemanticSnapGuideType::Alignment,
-                                            *checked,
-                                            cx,
-                                        );
-                                    },
-                                );
+                                let _ = snap_alignment_guide_control.update(cx, |workspace, cx| {
+                                    workspace.set_semantic_snap_guide(
+                                        SemanticSnapGuideType::Alignment,
+                                        *checked,
+                                        cx,
+                                    );
+                                });
                             }),
                     )
                     .child(
                         Checkbox::new(DOCUMENT_SNAP_GUIDE_EQUAL_SIZE_ID)
                             .debug_selector(|| DOCUMENT_SNAP_GUIDE_EQUAL_SIZE_ID.into())
                             .label("Equal size")
-                            .checked(semantic_settings.is_guide_enabled(
-                                SemanticSnapGuideType::EqualSize,
-                            ))
+                            .checked(
+                                semantic_settings
+                                    .is_guide_enabled(SemanticSnapGuideType::EqualSize),
+                            )
                             .disabled(!semantic_settings.guides_enabled())
                             .on_click(move |checked, _, cx| {
-                                let _ = snap_equal_size_guide_control.update(
-                                    cx,
-                                    |workspace, cx| {
+                                let _ =
+                                    snap_equal_size_guide_control.update(cx, |workspace, cx| {
                                         workspace.set_semantic_snap_guide(
                                             SemanticSnapGuideType::EqualSize,
                                             *checked,
                                             cx,
                                         );
-                                    },
-                                );
+                                    });
                             }),
                     )
                     .child(
                         Checkbox::new(DOCUMENT_SNAP_GUIDE_EQUAL_SPACING_ID)
                             .debug_selector(|| DOCUMENT_SNAP_GUIDE_EQUAL_SPACING_ID.into())
                             .label("Equal spacing")
-                            .checked(semantic_settings.is_guide_enabled(
-                                SemanticSnapGuideType::EqualSpacing,
-                            ))
+                            .checked(
+                                semantic_settings
+                                    .is_guide_enabled(SemanticSnapGuideType::EqualSpacing),
+                            )
                             .disabled(!semantic_settings.guides_enabled())
                             .on_click(move |checked, _, cx| {
-                                let _ = snap_equal_spacing_guide_control.update(
-                                    cx,
-                                    |workspace, cx| {
+                                let _ =
+                                    snap_equal_spacing_guide_control.update(cx, |workspace, cx| {
                                         workspace.set_semantic_snap_guide(
                                             SemanticSnapGuideType::EqualSpacing,
                                             *checked,
                                             cx,
                                         );
-                                    },
-                                );
+                                    });
                             }),
                     )
             });
@@ -18719,8 +24485,10 @@ impl Render for DocumentWorkspace {
         });
         let inspector_width = window.rem_size() * 18.75;
         let inspector_range = window.rem_size() * 13.75..window.rem_size() * 26.25;
-        let inline_selection = self.right_rail_actions_open && annotation_tool == AnnotationTool::Select;
-        let active_inspector = if (inline_selection || self.rectangular_shape_property_inspector_open)
+        let inline_selection =
+            self.right_rail_actions_open && annotation_tool == AnnotationTool::Select;
+        let active_inspector = if (inline_selection
+            || self.rectangular_shape_property_inspector_open)
             && (selected_rectangle.is_some() || selected_ellipse.is_some())
         {
             Some(ActiveInspector {
@@ -18732,13 +24500,17 @@ impl Render for DocumentWorkspace {
                 initial_width: inspector_width,
                 width_range: inspector_range.clone(),
             })
-        } else if (inline_selection || self.straight_line_property_inspector_open) && selected_straight_line.is_some() {
+        } else if (inline_selection || self.straight_line_property_inspector_open)
+            && selected_straight_line.is_some()
+        {
             Some(ActiveInspector {
                 kind: ActiveInspectorKind::StraightLine,
                 initial_width: inspector_width,
                 width_range: inspector_range.clone(),
             })
-        } else if (inline_selection || self.vertex_path_property_inspector_open) && selected_vertex_path.is_some() {
+        } else if (inline_selection || self.vertex_path_property_inspector_open)
+            && selected_vertex_path.is_some()
+        {
             Some(ActiveInspector {
                 kind: ActiveInspectorKind::VertexPath,
                 initial_width: inspector_width,
@@ -18758,19 +24530,25 @@ impl Render for DocumentWorkspace {
                 initial_width: inspector_width,
                 width_range: inspector_range.clone(),
             })
-        } else if (inline_selection || self.text_box_property_inspector_open) && selected_text_box.is_some() {
+        } else if (inline_selection || self.text_box_property_inspector_open)
+            && selected_text_box.is_some()
+        {
             Some(ActiveInspector {
                 kind: ActiveInspectorKind::TextBox,
                 initial_width: inspector_width,
                 width_range: inspector_range.clone(),
             })
-        } else if (inline_selection || self.measurement_property_inspector_open) && selected_measurement.is_some() {
+        } else if (inline_selection || self.measurement_property_inspector_open)
+            && selected_measurement.is_some()
+        {
             Some(ActiveInspector {
                 kind: ActiveInspectorKind::Measurement,
                 initial_width: inspector_width,
                 width_range: inspector_range.clone(),
             })
-        } else if (inline_selection || self.dimension_property_inspector_open) && selected_dimension.is_some() {
+        } else if (inline_selection || self.dimension_property_inspector_open)
+            && selected_dimension.is_some()
+        {
             Some(ActiveInspector {
                 kind: ActiveInspectorKind::Dimension,
                 initial_width: inspector_width,
@@ -18793,7 +24571,10 @@ impl Render for DocumentWorkspace {
             .session_tab_pointer_drag
             .as_ref()
             .is_some_and(|drag| drag.activated);
-        let overflow_items = session_tabs.iter().map(|(id, title, _, _)| (*id, title.clone())).collect::<Vec<_>>();
+        let overflow_items = session_tabs
+            .iter()
+            .map(|(id, title, _, _)| (*id, title.clone()))
+            .collect::<Vec<_>>();
         let rendered_session_tabs = session_tabs.into_iter().enumerate().map(
                 |(tab_ix, (tab_document_id, tab_title, dirty, saving))| {
                     let tab_id = document_session_tab_id(tab_document_id);
@@ -18809,6 +24590,14 @@ impl Render for DocumentWorkspace {
                         .expect("every retained session tab must own a bounds cell")
                         .clone();
                     let is_active = self.active_document_id == Some(tab_document_id);
+                    let publication_warning = self
+                        .session(tab_document_id, cx)
+                        .and_then(|session| {
+                            session
+                                .read(cx)
+                                .publication_durability_warning()
+                                .map(str::to_owned)
+                        });
                     let is_dragged = self.session_tab_pointer_drag.as_ref().is_some_and(|drag| {
                         drag.activated && drag.document_id == tab_document_id
                     });
@@ -18821,7 +24610,9 @@ impl Render for DocumentWorkspace {
                         session_tab_ids.iter().position(|id| *id == drag.document_id)
                             .is_some_and(|source_ix| source_ix < tab_ix)
                     });
-                    let accessibility_label = if dirty {
+                    let accessibility_label = if publication_warning.is_some() {
+                        format!("{tab_title}, Saved with warning")
+                    } else if dirty {
                         format!("{tab_title}, Unsaved changes")
                     } else {
                         tab_title.clone()
@@ -18991,7 +24782,119 @@ impl Render for DocumentWorkspace {
                             }),
                         close_label,
                     );
-                    let close = if dirty {
+                    let close = if let Some(publication_warning) = publication_warning {
+                        let confirmation_open =
+                            self.pending_close_document_id == Some(tab_document_id);
+                        let open_control = cx.entity().downgrade();
+                        let content_control = cx.entity().downgrade();
+                        let warning_title = tab_title.clone();
+                        Popover::new(format!(
+                            "{tab_document_id}-publication-warning-close-popover"
+                        ))
+                        .anchor(Anchor::TopRight)
+                        .open(confirmation_open)
+                        .overlay_closable(true)
+                        .on_open_change(move |open, _, cx| {
+                            let _ = open_control.update(cx, |workspace, cx| {
+                                if *open {
+                                    workspace.request_close_document(tab_document_id, cx);
+                                } else {
+                                    workspace.resolve_dirty_close_cancel(cx);
+                                }
+                            });
+                        })
+                        .w_80()
+                        .trigger(close)
+                        .content(move |_, _window, cx| {
+                            let popover = cx.entity();
+                            let cancel_popover = popover.clone();
+                            let cancel_control = content_control.clone();
+                            let continue_control = content_control.clone();
+                            v_flex()
+                                .id(DOCUMENT_PUBLICATION_WARNING_CLOSE_ID)
+                                .debug_selector(|| DOCUMENT_PUBLICATION_WARNING_CLOSE_ID.into())
+                                .w_full()
+                                .gap_3()
+                                .child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(gpui::div().font_semibold().child(format!(
+                                            "“{warning_title}” was saved with a warning"
+                                        )))
+                                        .child(
+                                            gpui::div()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(format!(
+                                                    "The file will not be written again. Closing would remove its crash-recovery fallback even though directory durability was not confirmed. {publication_warning}"
+                                                )),
+                                        ),
+                                )
+                                .child(
+                                    h_flex()
+                                        .justify_end()
+                                        .gap_2()
+                                        .child(
+                                            Button::new(
+                                                DOCUMENT_PUBLICATION_WARNING_CLOSE_CANCEL_ID,
+                                            )
+                                            .debug_selector(|| {
+                                                DOCUMENT_PUBLICATION_WARNING_CLOSE_CANCEL_ID.into()
+                                            })
+                                            .outline()
+                                            .label("Keep open")
+                                            .on_click(move |_: &ClickEvent, window, cx| {
+                                                let _ = cancel_control.update(
+                                                    cx,
+                                                    |workspace, cx| {
+                                                        workspace.resolve_dirty_close_cancel(cx);
+                                                    },
+                                                );
+                                                cancel_popover.update(cx, |popover, cx| {
+                                                    popover.dismiss(window, cx)
+                                                });
+                                            }),
+                                        )
+                                        .child(
+                                            Button::new(
+                                                DOCUMENT_PUBLICATION_WARNING_CLOSE_CONTINUE_ID,
+                                            )
+                                            .debug_selector(|| {
+                                                DOCUMENT_PUBLICATION_WARNING_CLOSE_CONTINUE_ID
+                                                    .into()
+                                            })
+                                            .primary()
+                                            .label("Continue closing")
+                                            .on_click(move |_: &ClickEvent, window, cx| {
+                                                let successor_focus = continue_control
+                                                    .update(cx, |workspace, cx| {
+                                                        let disposition = workspace
+                                                            .resolve_publication_warning_close(cx);
+                                                        (disposition
+                                                            == CloseRequestDisposition::Closed)
+                                                            .then(|| {
+                                                                workspace.active_document_id
+                                                                    .and_then(|document_id| {
+                                                                        workspace
+                                                                            .session_tab_focus_handles
+                                                                            .get(&document_id)
+                                                                            .cloned()
+                                                                    })
+                                                            })
+                                                            .flatten()
+                                                    })
+                                                    .ok()
+                                                    .flatten();
+                                                if let Some(successor_focus) = successor_focus {
+                                                    successor_focus.focus(window, cx);
+                                                } else {
+                                                    window.refresh();
+                                                }
+                                            }),
+                                        ),
+                                )
+                        })
+                        .into_any_element()
+                    } else if dirty {
                         let confirmation_open =
                             self.pending_close_document_id == Some(tab_document_id);
                         let open_control = cx.entity().downgrade();
@@ -19167,39 +25070,47 @@ impl Render for DocumentWorkspace {
             "Open PDF",
         );
         let overflow_lane = self.session_tabs_overflow.then(|| {
-                let control = cx.entity().downgrade();
-                h_flex()
-                    .id("document-tabs-overflow-lane")
-                    .debug_selector(|| "document-tabs-overflow-lane".into())
-                    .flex_shrink_0()
-                    .pr_3()
-                    .border_r_1()
-                    .border_color(cx.theme().border)
-                    .child(accessible_icon_button(
-                    Button::new("document-tabs-overflow")
-                        .debug_selector(|| "document-tabs-overflow".into())
-                        .icon(IconName::ChevronDown)
-                        .tooltip("Open documents"), "Open documents")
-                        .dropdown_menu(move |mut menu, _, _| {
-                            menu = menu.scrollable(true);
-                            for (ix, (id, title)) in overflow_items.iter().enumerate() {
-                                let id = *id;
-                                let control = control.clone();
-                                menu = menu.item(PopupMenuItem::new(title.clone())
+            let control = cx.entity().downgrade();
+            h_flex()
+                .id("document-tabs-overflow-lane")
+                .debug_selector(|| "document-tabs-overflow-lane".into())
+                .flex_shrink_0()
+                .pr_3()
+                .border_r_1()
+                .border_color(cx.theme().border)
+                .child(
+                    accessible_icon_button(
+                        Button::new("document-tabs-overflow")
+                            .debug_selector(|| "document-tabs-overflow".into())
+                            .icon(IconName::ChevronDown)
+                            .tooltip("Open documents"),
+                        "Open documents",
+                    )
+                    .dropdown_menu(move |mut menu, _, _| {
+                        menu = menu.scrollable(true);
+                        for (ix, (id, title)) in overflow_items.iter().enumerate() {
+                            let id = *id;
+                            let control = control.clone();
+                            menu = menu.item(
+                                PopupMenuItem::new(title.clone())
                                     .checked(selected_session_ix == Some(ix))
                                     .on_click(move |_, window, cx| {
                                         let _ = control.update(cx, |workspace, cx| {
                                             let _ = workspace.activate_document(id, cx);
-                                            if let Some(focus) = workspace.session_tab_focus_handles.get(&id) {
+                                            if let Some(focus) =
+                                                workspace.session_tab_focus_handles.get(&id)
+                                            {
                                                 focus.focus(window, cx);
                                             }
                                             cx.notify();
                                         });
-                                    }));
-                            }
-                            menu
-                        }))
-            });
+                                    }),
+                            );
+                        }
+                        menu
+                    }),
+                )
+        });
         let document_actions = h_flex()
             .flex_shrink_0()
             .gap_2()
@@ -19265,13 +25176,18 @@ impl Render for DocumentWorkspace {
             |_, _, _| {},
             move |_, _, window, _| {
                 window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Capture || !wheel_scroll.bounds().contains(&event.position) {
+                    if phase != DispatchPhase::Capture
+                        || !wheel_scroll.bounds().contains(&event.position)
+                    {
                         return;
                     }
                     let delta = event.delta.pixel_delta(px(16.));
                     let max = wheel_scroll.max_offset().x;
                     if max > px(0.) {
-                        wheel_scroll.set_offset(point(session_tab_wheel_offset(wheel_scroll.offset().x, max, delta), px(0.)));
+                        wheel_scroll.set_offset(point(
+                            session_tab_wheel_offset(wheel_scroll.offset().x, max, delta),
+                            px(0.),
+                        ));
                         let _ = wheel_control.update(cx, |_, cx| cx.notify());
                         window.prevent_default();
                         cx.stop_propagation();
@@ -19343,8 +25259,12 @@ impl Render for DocumentWorkspace {
         let cancel_drag_control = cx.entity().downgrade();
         let overflow_control = cx.entity().downgrade();
         let overflow_scroll = self.session_tab_scroll.clone();
-        let overflow_bounds = self.session_tab_bounds.values()
-            .chain(self.session_tab_close_bounds.values()).cloned().collect::<Vec<_>>();
+        let overflow_bounds = self
+            .session_tab_bounds
+            .values()
+            .chain(self.session_tab_close_bounds.values())
+            .cloned()
+            .collect::<Vec<_>>();
         let session_tab_strip = h_flex()
             .id(DOCUMENT_SESSION_TABS_ID)
             .debug_selector(|| DOCUMENT_SESSION_TABS_ID.into())
@@ -19383,35 +25303,48 @@ impl Render for DocumentWorkspace {
                         // Read after child prepaint has refreshed the tab bounds.
                         let overflow_scroll = overflow_scroll.clone();
                         cx.defer(move |cx| {
-                            let measured = overflow_bounds.iter().map(|bounds| bounds.get())
+                            let measured = overflow_bounds
+                                .iter()
+                                .map(|bounds| bounds.get())
                                 .filter(|bounds| bounds.size.width > px(0.))
                                 .collect::<Vec<_>>();
-                            let overflow = session_tab_strip_overflows(&measured, overflow_scroll.bounds().size.width);
+                            let overflow = session_tab_strip_overflows(
+                                &measured,
+                                overflow_scroll.bounds().size.width,
+                            );
                             let _ = overflow_control.update(cx, |workspace, cx| {
-                                    if let Some(id) = workspace.session_tab_reveal.take() {
-                                        if let Some(tab) = workspace.session_tab_bounds.get(&id) {
-                                            let tab = tab.get();
-                                            let right = workspace.session_tab_close_bounds.get(&id)
-                                                .map(|bounds| bounds.get().right()).unwrap_or(tab.right())
-                                                .max(tab.right());
-                                            let viewport = workspace.session_tab_scroll.bounds();
-                                            let correction = if tab.left() < viewport.left() {
-                                                viewport.left() - tab.left()
-                                            } else if right > viewport.right() {
-                                                viewport.right() - right
-                                            } else { px(0.) };
-                                            if correction != px(0.) {
-                                                let offset = workspace.session_tab_scroll.offset();
-                                                let max = workspace.session_tab_scroll.max_offset().x;
-                                                workspace.session_tab_scroll.set_offset(point((offset.x + correction).clamp(-max, px(0.)), px(0.)));
-                                                cx.notify();
-                                            }
+                                if let Some(id) = workspace.session_tab_reveal.take() {
+                                    if let Some(tab) = workspace.session_tab_bounds.get(&id) {
+                                        let tab = tab.get();
+                                        let right = workspace
+                                            .session_tab_close_bounds
+                                            .get(&id)
+                                            .map(|bounds| bounds.get().right())
+                                            .unwrap_or(tab.right())
+                                            .max(tab.right());
+                                        let viewport = workspace.session_tab_scroll.bounds();
+                                        let correction = if tab.left() < viewport.left() {
+                                            viewport.left() - tab.left()
+                                        } else if right > viewport.right() {
+                                            viewport.right() - right
+                                        } else {
+                                            px(0.)
+                                        };
+                                        if correction != px(0.) {
+                                            let offset = workspace.session_tab_scroll.offset();
+                                            let max = workspace.session_tab_scroll.max_offset().x;
+                                            workspace.session_tab_scroll.set_offset(point(
+                                                (offset.x + correction).clamp(-max, px(0.)),
+                                                px(0.),
+                                            ));
+                                            cx.notify();
                                         }
                                     }
-                                    if workspace.session_tabs_overflow != overflow {
-                                        workspace.session_tabs_overflow = overflow;
-                                        cx.notify();
-                                    }
+                                }
+                                if workspace.session_tabs_overflow != overflow {
+                                    workspace.session_tabs_overflow = overflow;
+                                    cx.notify();
+                                }
                             });
                         });
                     })
@@ -19548,9 +25481,8 @@ impl Render for DocumentWorkspace {
                 ),
             };
         let inspector_visible = inspector_kind.is_some();
-        let combined_measurement_properties = inspector_visible
-            && selected_measurement.is_some()
-            && selected_dimension.is_some();
+        let combined_measurement_properties =
+            inspector_visible && selected_measurement.is_some() && selected_dimension.is_some();
         let inspector_shell = match inspector_kind {
             Some(ActiveInspectorKind::Rectangle) => active_inspector_shell().child(
                 self.rectangle_property_inspector
@@ -19623,46 +25555,58 @@ impl Render for DocumentWorkspace {
                     .on_click(cx.listener(move |workspace, _, window, cx| {
                         workspace.right_rail_actions_open = false;
                         match kind {
-                        ActiveInspectorKind::Rectangle | ActiveInspectorKind::Ellipse => {
-                            workspace
-                                .set_rectangular_shape_property_inspector_open(false, window, cx);
+                            ActiveInspectorKind::Rectangle | ActiveInspectorKind::Ellipse => {
+                                workspace.set_rectangular_shape_property_inspector_open(
+                                    false, window, cx,
+                                );
+                            }
+                            ActiveInspectorKind::StraightLine => {
+                                workspace
+                                    .set_straight_line_property_inspector_open(false, window, cx);
+                            }
+                            ActiveInspectorKind::VertexPath => {
+                                workspace
+                                    .set_vertex_path_property_inspector_open(false, window, cx);
+                            }
+                            ActiveInspectorKind::Ink => {
+                                workspace.set_ink_property_inspector_open(false, window, cx);
+                            }
+                            ActiveInspectorKind::EngineeringVisual => {
+                                workspace.set_engineering_visual_property_inspector_open(
+                                    false, window, cx,
+                                );
+                            }
+                            ActiveInspectorKind::TextBox => {
+                                workspace.set_text_box_property_inspector_open(false, window, cx);
+                            }
+                            ActiveInspectorKind::Measurement => {
+                                workspace
+                                    .set_measurement_property_inspector_open(false, window, cx);
+                            }
+                            ActiveInspectorKind::Dimension => {
+                                workspace.set_dimension_property_inspector_open(false, window, cx);
+                            }
                         }
-                        ActiveInspectorKind::StraightLine => {
-                            workspace.set_straight_line_property_inspector_open(false, window, cx);
-                        }
-                        ActiveInspectorKind::VertexPath => {
-                            workspace.set_vertex_path_property_inspector_open(false, window, cx);
-                        }
-                        ActiveInspectorKind::Ink => {
-                            workspace.set_ink_property_inspector_open(false, window, cx);
-                        }
-                        ActiveInspectorKind::EngineeringVisual => {
-                            workspace
-                                .set_engineering_visual_property_inspector_open(false, window, cx);
-                        }
-                        ActiveInspectorKind::TextBox => {
-                            workspace.set_text_box_property_inspector_open(false, window, cx);
-                        }
-                        ActiveInspectorKind::Measurement => {
-                            workspace.set_measurement_property_inspector_open(false, window, cx);
-                        }
-                        ActiveInspectorKind::Dimension => {
-                            workspace.set_dimension_property_inspector_open(false, window, cx);
-                        }
-                    }})),
+                    })),
                 "Close properties",
             ))
         });
         let page_scale_cancel_control = page_scale_control.downgrade();
         let save_failure_title = format!("Couldn’t save “{title}”");
         let text_box_commit_error = self.text_box_commit_error.clone();
-        let properties_visible = self.right_rail_actions_open || inspector_visible || self.pending_text_box_editor.is_some();
+        let properties_visible =
+            self.right_rail_actions_open || inspector_visible || pending_non_creation_editor;
         // Preserve the user's open/width preferences while temporarily yielding
         // thumbnail space to properties and the stock minimum canvas width.
         let rem = window.rem_size();
-        let required_width = rem * 3. + right_rail_width(self.right_rail_columns, rem)
+        let required_width = rem * 3.
+            + right_rail_width(self.right_rail_columns, rem)
             + self.left_sidebar_sizing.preferred_width(rem)
-            + if properties_visible { self.right_sidebar_sizing.preferred_width(rem) } else { px(0.) }
+            + if properties_visible {
+                self.right_sidebar_sizing.preferred_width(rem)
+            } else {
+                px(0.)
+            }
             + px(100.); // Pinned ResizablePanel's default minimum; not re-exported by the facade.
         let thumbnails_fit = window.viewport_size().width >= required_width;
         let thumbnails_visible = self.pages_panel_open && thumbnails_fit;
@@ -19852,16 +25796,21 @@ impl Render for DocumentWorkspace {
                                                                             rotation,
                                                                             coordinate_space,
                                                                             scene,
+                                                                            None,
+                                                                            None,
                                                                             highlights_precomposed,
                                                                             thumbnail_images.clone(),
                                                                             selection_color,
                                                                             thumbnail_hovered.clone().filter(|(doc, page, _)| {
                                                                                 *doc == document_id && *page == page_index
                                                                             }).map(|(_, _, id)| id),
+                                                                            None,
                                                                             thumbnail_focused.clone(),
                                                                             cx.theme().border,
                                                                             None,
                                                                             None,
+                                                                            None,
+                                                                            Vec::new(),
                                                                             None,
                                                                             None,
                                                                             None,
@@ -19907,291 +25856,365 @@ impl Render for DocumentWorkspace {
                                 )
                         });
         let supporting_actions = v_flex()
-                .w_full().h_full().flex_none()
-                .min_w_0()
-                .gap_2()
-                .px_3()
-                .py_2()
-                .border_l_1()
-                .border_color(cx.theme().border)
-                .child(h_flex().w_full().h_8().flex_none().gap_2()
-                    .child(gpui::div().flex_1().min_w_0().text_ellipsis().font_semibold().child(title))
-                    .child(accessible_icon_button(Button::new("document-workspace-rail-actions-close")
-                        .debug_selector(|| "document-workspace-rail-actions-close".into())
-                        .icon(IconName::Close).ghost().tooltip("Close document actions")
-                        .on_click(cx.listener(|workspace, _, _, cx| {
-                            if workspace.pending_text_box_editor.is_some()
-                                && let Err(error) = workspace.commit_pending_text_box(cx) {
+            .w_full()
+            .h_full()
+            .flex_none()
+            .min_w_0()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .border_l_1()
+            .border_color(cx.theme().border)
+            .child(
+                h_flex()
+                    .w_full()
+                    .h_8()
+                    .flex_none()
+                    .gap_2()
+                    .child(
+                        gpui::div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_ellipsis()
+                            .font_semibold()
+                            .child(title),
+                    )
+                    .child(accessible_icon_button(
+                        Button::new("document-workspace-rail-actions-close")
+                            .debug_selector(|| "document-workspace-rail-actions-close".into())
+                            .icon(IconName::Close)
+                            .ghost()
+                            .tooltip("Close document actions")
+                            .on_click(cx.listener(|workspace, _, _, cx| {
+                                if workspace.pending_text_box_editor.is_some()
+                                    && let Err(error) = workspace.commit_pending_text_box(cx)
+                                {
                                     workspace.text_box_commit_error = Some(error);
                                     cx.notify();
                                     return;
                                 }
-                            workspace.right_rail_actions_open = false;
-                            cx.notify();
-                        })), "Close document actions")))
-                .child(highlight_settings_control)
-                .child(
-                    gpui::div()
-                        .ml_auto()
-                        .flex_shrink_0()
-                        .text_sm()
-                        .child(format!("Page {}", current_page + 1)),
-                )
-                .child(
-                    v_flex()
-                        .id(DOCUMENT_TOOLBAR_SCROLL_ID)
-                        .debug_selector(|| DOCUMENT_TOOLBAR_SCROLL_ID.into())
-                        .w_full()
-                        .flex_1()
-                        .min_h_0()
-                        .min_w_0()
-                        .overflow_y_scroll()
-                        .track_scroll(&self.toolbar_scroll)
-                        .child(
-                            v_flex()
-                                .id(DOCUMENT_TOOLBAR_CONTENT_ID)
-                                .debug_selector(|| DOCUMENT_TOOLBAR_CONTENT_ID.into())
-                                .w_full()
-                                .flex_shrink_0()
-                                .gap_2()
-                                .child(v_flex().flex_shrink_0().child(history_group))
-                                .child(
-                                    v_flex()
-                                        .flex_shrink_0()
-                                        .child(rectangle_properties_button),
-                                )
-                                .child(
-                                    v_flex()
-                                        .flex_shrink_0()
-                                        .child(ellipse_properties_button),
-                                )
-                                .child(v_flex().flex_shrink_0().child(stroke_control))
-                                .when_some(straight_line_properties, |toolbar, button| {
-                                    toolbar.child(v_flex().flex_shrink_0().child(button))
-                                })
-                                .when_some(vertex_path_properties, |toolbar, button| {
-                                    toolbar.child(v_flex().flex_shrink_0().child(button))
-                                })
-                                .when_some(ink_properties_button, |toolbar, button| {
-                                    toolbar.child(v_flex().flex_shrink_0().child(button))
-                                })
-                                .when_some(
-                                    engineering_visual_properties_button,
-                                    |toolbar, button| {
-                                        toolbar.child(v_flex().flex_shrink_0().child(button))
-                                    },
-                                )
-                                .when_some(text_box_properties_button, |toolbar, button| {
-                                    toolbar.child(v_flex().flex_shrink_0().child(button))
-                                })
-                                .when_some(measurement_properties_button, |toolbar, button| {
-                                    toolbar.child(v_flex().flex_shrink_0().child(button))
-                                })
-                                .when_some(dimension_properties, |toolbar, properties| {
-                                    toolbar.child(v_flex().flex_shrink_0().child(properties))
-                                })
-                                .when_some(
-                                    self.annotation_statuses.get(&document_id).cloned(),
-                                    |toolbar, status| {
-                                        toolbar.child(
-                                            gpui::div()
-                                                .id(DOCUMENT_ANNOTATION_STATUS_ID)
-                                                .debug_selector(|| {
-                                                    DOCUMENT_ANNOTATION_STATUS_ID.into()
-                                                })
-                                                .text_sm()
-                                                .text_color(cx.theme().danger)
-                                                .child(status),
-                                        )
-                                    },
-                                )
-                                .when_some(pending_text_box_input, |toolbar, input| {
+                                workspace.right_rail_actions_open = false;
+                                cx.notify();
+                            })),
+                        "Close document actions",
+                    )),
+            )
+            .child(highlight_settings_control)
+            .child(
+                gpui::div()
+                    .ml_auto()
+                    .flex_shrink_0()
+                    .text_sm()
+                    .child(format!("Page {}", current_page + 1)),
+            )
+            .child(
+                v_flex()
+                    .id(DOCUMENT_TOOLBAR_SCROLL_ID)
+                    .debug_selector(|| DOCUMENT_TOOLBAR_SCROLL_ID.into())
+                    .w_full()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.toolbar_scroll)
+                    .child(
+                        v_flex()
+                            .id(DOCUMENT_TOOLBAR_CONTENT_ID)
+                            .debug_selector(|| DOCUMENT_TOOLBAR_CONTENT_ID.into())
+                            .w_full()
+                            .flex_shrink_0()
+                            .gap_2()
+                            .child(v_flex().flex_shrink_0().child(history_group))
+                            .child(v_flex().flex_shrink_0().child(rectangle_properties_button))
+                            .child(v_flex().flex_shrink_0().child(ellipse_properties_button))
+                            .child(v_flex().flex_shrink_0().child(stroke_control))
+                            .when_some(straight_line_properties, |toolbar, button| {
+                                toolbar.child(v_flex().flex_shrink_0().child(button))
+                            })
+                            .when_some(vertex_path_properties, |toolbar, button| {
+                                toolbar.child(v_flex().flex_shrink_0().child(button))
+                            })
+                            .when_some(ink_properties_button, |toolbar, button| {
+                                toolbar.child(v_flex().flex_shrink_0().child(button))
+                            })
+                            .when_some(engineering_visual_properties_button, |toolbar, button| {
+                                toolbar.child(v_flex().flex_shrink_0().child(button))
+                            })
+                            .when_some(text_box_properties_button, |toolbar, button| {
+                                toolbar.child(v_flex().flex_shrink_0().child(button))
+                            })
+                            .when_some(measurement_properties_button, |toolbar, button| {
+                                toolbar.child(v_flex().flex_shrink_0().child(button))
+                            })
+                            .when_some(dimension_properties, |toolbar, properties| {
+                                toolbar.child(v_flex().flex_shrink_0().child(properties))
+                            })
+                            .when_some(
+                                self.annotation_statuses.get(&document_id).cloned(),
+                                |toolbar, status| {
                                     toolbar.child(
                                         gpui::div()
-                                            .id(DOCUMENT_TEXT_BOX_EDITOR_ID)
-                                            .debug_selector(|| DOCUMENT_TEXT_BOX_EDITOR_ID.into())
-                                            .w(px(220.))
-                                            .h(px(72.))
-                                            .child(
-                                                Textarea::new(&input)
-                                                    .aria_label("Text box content")
-                                                    .h_full(),
-                                            ),
+                                            .id(DOCUMENT_ANNOTATION_STATUS_ID)
+                                            .debug_selector(|| DOCUMENT_ANNOTATION_STATUS_ID.into())
+                                            .text_sm()
+                                            .text_color(cx.theme().danger)
+                                            .child(status),
                                     )
-                                })
-                                .child(
+                                },
+                            )
+                            .when_some(pending_text_box_input, |toolbar, input| {
+                                toolbar.child(
                                     gpui::div()
-                                        .id(DOCUMENT_TEXT_BOX_RETURN_FOCUS_ID)
-                                        .track_focus(&self.text_box_return_focus)
-                                        .w(px(1.))
-                                        .h(px(1.)),
+                                        .id(DOCUMENT_TEXT_BOX_EDITOR_ID)
+                                        .debug_selector(|| DOCUMENT_TEXT_BOX_EDITOR_ID.into())
+                                        .w(px(220.))
+                                        .h(px(72.))
+                                        .child(
+                                            Textarea::new(&input)
+                                                .aria_label("Text box content")
+                                                .h_full(),
+                                        ),
                                 )
-                                .child(
-                                    Button::new(DOCUMENT_ANNOTATION_LOCK_ID)
-                                        .debug_selector(|| DOCUMENT_ANNOTATION_LOCK_ID.into())
-                                        .small()
-                                        .label(if selected_annotation_locked {
-                                            "Unlock"
-                                        } else {
-                                            "Lock"
-                                        })
-                                        .disabled(selected_annotation_id.is_none() || save_busy)
-                                        .on_click(cx.listener(move |workspace, _, _, cx| {
-                                            let _ = workspace.set_selected_annotation_locked(
-                                                document_id,
-                                                !selected_annotation_locked,
-                                                cx,
-                                            );
-                                        })),
-                                )
-                                .child(
-                                    Button::new(DOCUMENT_ANNOTATION_DELETE_ID)
-                                        .debug_selector(|| DOCUMENT_ANNOTATION_DELETE_ID.into())
-                                        .small()
-                                        .danger()
-                                        .label("Delete")
-                                        .disabled(
-                                            selected_annotation_id.is_none()
-                                                || !selected_has_unlocked_annotation
-                                                || save_busy,
-                                        )
-                                        .on_click(cx.listener(move |workspace, _, _, cx| {
-                                            let _ = workspace
-                                                .delete_selected_annotation(document_id, cx);
-                                        })),
-                                ),
-                        ),
+                            })
+                            .child(
+                                Button::new(DOCUMENT_ANNOTATION_LOCK_ID)
+                                    .debug_selector(|| DOCUMENT_ANNOTATION_LOCK_ID.into())
+                                    .small()
+                                    .label(if selected_annotation_locked {
+                                        "Unlock"
+                                    } else {
+                                        "Lock"
+                                    })
+                                    .disabled(selected_annotation_id.is_none() || save_busy)
+                                    .on_click(cx.listener(move |workspace, _, _, cx| {
+                                        let _ = workspace.set_selected_annotation_locked(
+                                            document_id,
+                                            !selected_annotation_locked,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                            .child(
+                                Button::new(DOCUMENT_ANNOTATION_DELETE_ID)
+                                    .debug_selector(|| DOCUMENT_ANNOTATION_DELETE_ID.into())
+                                    .small()
+                                    .danger()
+                                    .label("Delete")
+                                    .disabled(
+                                        selected_annotation_id.is_none()
+                                            || !selected_has_unlocked_annotation
+                                            || save_busy,
+                                    )
+                                    .on_click(cx.listener(move |workspace, _, _, cx| {
+                                        let _ =
+                                            workspace.delete_selected_annotation(document_id, cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .flex_shrink_0()
+                    .gap_1()
+                    .child(
+                        Button::new(DOCUMENT_ROTATE_LEFT_ID)
+                            .debug_selector(|| DOCUMENT_ROTATE_LEFT_ID.into())
+                            .small()
+                            .label("Rotate Left")
+                            .disabled(save_busy)
+                            .on_click(cx.listener(move |workspace, _, _, cx| {
+                                workspace.rotate_page_async(
+                                    document_id,
+                                    PageRotationDirection::Left,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        Button::new(DOCUMENT_ROTATE_RIGHT_ID)
+                            .debug_selector(|| DOCUMENT_ROTATE_RIGHT_ID.into())
+                            .small()
+                            .label("Rotate Right")
+                            .disabled(save_busy)
+                            .on_click(cx.listener(move |workspace, _, _, cx| {
+                                workspace.rotate_page_async(
+                                    document_id,
+                                    PageRotationDirection::Right,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        Button::new(DOCUMENT_SAVE_ID)
+                            .debug_selector(|| DOCUMENT_SAVE_ID.into())
+                            .small()
+                            .label(if save_in_progress {
+                                "Saving…"
+                            } else {
+                                "Save"
+                            })
+                            .disabled(save_busy)
+                            .on_click(cx.listener(move |workspace, _, _, cx| {
+                                workspace.save_active_document(cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(DOCUMENT_SAVE_AS_ID)
+                            .debug_selector(|| DOCUMENT_SAVE_AS_ID.into())
+                            .small()
+                            .label(save_as_command_label(save_in_progress))
+                            .disabled(save_busy)
+                            .on_click(cx.listener(move |workspace, _, _, cx| {
+                                workspace.prompt_to_save_as(document_id, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(DOCUMENT_CLOSE_ID)
+                            .debug_selector(|| DOCUMENT_CLOSE_ID.into())
+                            .small()
+                            .ghost()
+                            .label("Close")
+                            .on_click(cx.listener(move |workspace, _, _, cx| {
+                                workspace.request_close_document(document_id, cx);
+                            })),
+                    ),
+            );
+        let supporting_actions =
+            if combined_measurement_properties && self.pending_text_box_editor.is_none() {
+                let title = match selected_measurement.as_ref().map(|selected| selected.1) {
+                    Some(AnnotationKind::Area) => "Area",
+                    Some(AnnotationKind::Length) => "Length",
+                    _ => "Polylength",
+                };
+                let close = accessible_icon_button(
+                    Button::new(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID)
+                        .debug_selector(|| DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID.into())
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .tooltip("Close properties")
+                        .on_click(cx.listener(|workspace, _, _, cx| {
+                            workspace.right_rail_actions_open = false;
+                            workspace.dimension_property_inspector_open = false;
+                            workspace.measurement_property_inspector_open = false;
+                            cx.notify();
+                        })),
+                    "Close properties",
+                );
+                crate::property_controls::PropertyInspectorPanel::new(
+                    "measurement-combined-properties",
+                    "measurement-combined-properties-header",
+                    "measurement-combined-properties-scroll",
+                    title,
                 )
+                .header_trailing(close)
                 .child(
                     v_flex()
-                        .flex_shrink_0()
-                        .gap_1()
+                        .w_full()
+                        .child(vertex_path_property_inspector.clone())
+                        .child(dimension_property_inspector.clone())
                         .child(
-                            Button::new(DOCUMENT_ROTATE_LEFT_ID)
-                                .debug_selector(|| DOCUMENT_ROTATE_LEFT_ID.into())
-                                .small()
-                                .label("Rotate Left")
-                                .disabled(save_busy)
-                                .on_click(cx.listener(move |workspace, _, _, cx| {
-                                    workspace.rotate_page_async(
-                                        document_id,
-                                        PageRotationDirection::Left,
-                                        cx,
-                                    );
-                                })),
-                        )
-                        .child(
-                            Button::new(DOCUMENT_ROTATE_RIGHT_ID)
-                                .debug_selector(|| DOCUMENT_ROTATE_RIGHT_ID.into())
-                                .small()
-                                .label("Rotate Right")
-                                .disabled(save_busy)
-                                .on_click(cx.listener(move |workspace, _, _, cx| {
-                                    workspace.rotate_page_async(
-                                        document_id,
-                                        PageRotationDirection::Right,
-                                        cx,
-                                    );
-                                })),
-                        )
-                        .child(
-                            Button::new(DOCUMENT_SAVE_ID)
-                                .debug_selector(|| DOCUMENT_SAVE_ID.into())
-                                .small()
-                                .label(if save_in_progress { "Saving…" } else { "Save" })
-                                .disabled(save_busy)
-                                .on_click(cx.listener(move |workspace, _, _, cx| {
-                                    workspace.save_active_document(cx);
-                                })),
-                        )
-                        .child(
-                            Button::new(DOCUMENT_SAVE_AS_ID)
-                                .debug_selector(|| DOCUMENT_SAVE_AS_ID.into())
-                                .small()
-                                .label(save_as_command_label(save_in_progress))
-                                .disabled(save_busy)
-                                .on_click(cx.listener(move |workspace, _, _, cx| {
-                                    workspace.prompt_to_save_as(document_id, cx);
-                                })),
-                        )
-                        .child(
-                            Button::new(DOCUMENT_CLOSE_ID)
-                                .debug_selector(|| DOCUMENT_CLOSE_ID.into())
-                                .small()
-                                .ghost()
-                                .label("Close")
-                                .on_click(cx.listener(move |workspace, _, _, cx| {
-                                    workspace.request_close_document(document_id, cx);
-                                })),
+                            gpui::div()
+                                .w_full()
+                                .border_t_1()
+                                .border_color(cx.theme().border)
+                                .child(measurement_property_inspector.clone()),
                         ),
-                );
-        let supporting_actions = if combined_measurement_properties && self.pending_text_box_editor.is_none() {
-            let title = match selected_measurement.as_ref().map(|selected| selected.1) {
-                Some(AnnotationKind::Area) => "Area",
-                Some(AnnotationKind::Length) => "Length",
-                _ => "Polylength",
-            };
-            let close = accessible_icon_button(Button::new(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID)
-                .debug_selector(|| DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID.into())
-                .ghost().xsmall().icon(IconName::Close).tooltip("Close properties")
-                .on_click(cx.listener(|workspace, _, _, cx| {
-                    workspace.right_rail_actions_open = false;
-                    workspace.dimension_property_inspector_open = false;
-                    workspace.measurement_property_inspector_open = false;
-                    cx.notify();
-                })), "Close properties");
-            crate::property_controls::PropertyInspectorPanel::new(
-                "measurement-combined-properties", "measurement-combined-properties-header",
-                "measurement-combined-properties-scroll", title)
-                .header_trailing(close)
-                .child(v_flex().w_full()
-                    .child(vertex_path_property_inspector.clone())
-                    .child(dimension_property_inspector.clone())
-                    .child(gpui::div().w_full().border_t_1().border_color(cx.theme().border)
-                        .child(measurement_property_inspector.clone())))
+                )
                 .into_any_element()
-        } else if inspector_visible && self.pending_text_box_editor.is_none() {
-            gpui::div().w_full().h_full().min_h_0()
-                .child(inspector_shell).into_any_element()
-        } else if annotation_tool == AnnotationTool::Highlight
-            && self.pending_text_box_editor.is_none() {
-            gpui::div().w_full().h_full().min_h_0()
-                .border_l_1().border_color(cx.theme().border)
-                .child(highlight_defaults_panel).into_any_element()
-        } else if self.pending_text_box_editor.is_none() {
-            gpui::div().w_full().h_full().min_h_0()
-                .child(tool_defaults_panel).into_any_element()
-        } else { supporting_actions.into_any_element() };
+            } else if inspector_visible && self.pending_text_box_editor.is_none() {
+                gpui::div()
+                    .w_full()
+                    .h_full()
+                    .min_h_0()
+                    .child(inspector_shell)
+                    .into_any_element()
+            } else if annotation_tool == AnnotationTool::Highlight
+                && self.pending_text_box_editor.is_none()
+            {
+                gpui::div()
+                    .w_full()
+                    .h_full()
+                    .min_h_0()
+                    .border_l_1()
+                    .border_color(cx.theme().border)
+                    .child(highlight_defaults_panel)
+                    .into_any_element()
+            } else if self.pending_text_box_editor.is_none() {
+                gpui::div()
+                    .w_full()
+                    .h_full()
+                    .min_h_0()
+                    .child(tool_defaults_panel)
+                    .into_any_element()
+            } else {
+                supporting_actions.into_any_element()
+            };
         let supporting_actions = gpui::div()
             .on_prepaint(self.right_sidebar_sizing.measure())
             .id("document-workspace-properties-sidebar")
             .debug_selector(|| "document-workspace-properties-sidebar".into())
-            .w_full().h_full().min_h_0().child(supporting_actions);
+            .w_full()
+            .h_full()
+            .min_h_0()
+            .child(supporting_actions);
         let right_rail = v_flex()
             .id("document-workspace-right-rail")
             .debug_selector(|| "document-workspace-right-rail".into())
-            .w_full().h_full().flex_none().min_h_0()
-            .border_l_1().border_color(cx.theme().border)
-            .child(h_flex().h_12().when(self.right_rail_columns == 1, |header| header.h(gpui::rems(5.5)).flex_col())
-                .flex_none().w_full().justify_center().gap_2()
-                .border_b_1().border_color(cx.theme().border)
-                .child(rail_tool_button("document-workspace-rail-actions", "Document actions and properties", "sliders-horizontal")
-                    .disabled(save_busy)
-                    .selected(self.right_rail_actions_open).toggled(self.right_rail_actions_open)
-                    .on_click(cx.listener(|workspace, _, _, cx| {
-                        workspace.right_rail_actions_open = !workspace.right_rail_actions_open;
-                        cx.notify();
-                    })))
-                .child(semantic_snap_control))
-            .child(v_flex().id("document-workspace-right-rail-scroll")
-                .debug_selector(|| "document-workspace-right-rail-scroll".into())
-                .flex_1().min_h_0().w_full().overflow_y_scroll().py_2()
-                .track_scroll(&self.right_rail_scroll)
-                .child(tool_group)
-                .vertical_scrollbar(&self.right_rail_scroll));
+            .w_full()
+            .h_full()
+            .flex_none()
+            .min_h_0()
+            .border_l_1()
+            .border_color(cx.theme().border)
+            .child(
+                h_flex()
+                    .h_12()
+                    .when(self.right_rail_columns == 1, |header| {
+                        header.h(gpui::rems(5.5)).flex_col()
+                    })
+                    .flex_none()
+                    .w_full()
+                    .justify_center()
+                    .gap_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        rail_tool_button(
+                            "document-workspace-rail-actions",
+                            "Document actions and properties",
+                            "sliders-horizontal",
+                        )
+                        .disabled(save_busy)
+                        .selected(self.right_rail_actions_open)
+                        .toggled(self.right_rail_actions_open)
+                        .on_click(cx.listener(|workspace, _, _, cx| {
+                            workspace.right_rail_actions_open = !workspace.right_rail_actions_open;
+                            cx.notify();
+                        })),
+                    )
+                    .child(semantic_snap_control),
+            )
+            .child(
+                v_flex()
+                    .id("document-workspace-right-rail-scroll")
+                    .debug_selector(|| "document-workspace-right-rail-scroll".into())
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .overflow_y_scroll()
+                    .py_2()
+                    .track_scroll(&self.right_rail_scroll)
+                    .child(tool_group)
+                    .vertical_scrollbar(&self.right_rail_scroll),
+            );
         let properties_resizable = window.use_keyed_state(
-            ("document-workspace-properties-size-state", usize::from(properties_visible)),
-            cx, |_, _| ResizableState::default(),
+            (
+                "document-workspace-properties-size-state",
+                usize::from(properties_visible),
+            ),
+            cx,
+            |_, _| ResizableState::default(),
         );
         let rail_layout = self.right_rail_layout.clone();
         let rail_state = self.right_rail_resizable.clone();
@@ -20273,6 +26296,45 @@ impl Render for DocumentWorkspace {
                     ),
             )
         })
+        .when_some(self.startup_recovery_message(), |root, message| {
+            root.child(
+                gpui::div()
+                    .w_full()
+                    .p_2()
+                    .child(self.render_startup_recovery_inbox(message, cx)),
+            )
+        })
+        .when_some(self.session_recovery_warning.clone(), |root, warning| {
+            root.child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .p_2()
+                    .child(
+                        gpui::div()
+                            .id(DOCUMENT_RECOVERY_WARNING_ALERT_ID)
+                            .debug_selector(|| DOCUMENT_RECOVERY_WARNING_ALERT_ID.into())
+                            .flex_1()
+                            .child(
+                                Alert::warning(
+                                    "document-workspace-recovery-warning-message",
+                                    warning,
+                                )
+                                .title("Previous unsaved changes"),
+                            ),
+                    )
+                    .child(
+                        Button::new(DOCUMENT_RECOVERY_WARNING_DISMISS_ID)
+                            .debug_selector(|| DOCUMENT_RECOVERY_WARNING_DISMISS_ID.into())
+                            .accessibility_id(DOCUMENT_RECOVERY_WARNING_DISMISS_ID)
+                            .outline()
+                            .label("Dismiss")
+                            .on_click(cx.listener(|workspace, _, _, cx| {
+                                workspace.dismiss_session_recovery_warning(cx);
+                            })),
+                    ),
+            )
+        })
         .when_some(self.last_document_open_failure().cloned(), |root, failure| {
             root.child(
                 h_flex()
@@ -20312,12 +26374,16 @@ impl Render for DocumentWorkspace {
                     .gap_2()
                     .p_2()
                     .child(
-                        Alert::error(DOCUMENT_SAVE_ERROR_ALERT_ID, failure.message)
+                        Alert::error(
+                            DOCUMENT_SAVE_ERROR_ALERT_ID,
+                            failure.presentation_message().to_owned(),
+                        )
                             .title(save_failure_title)
                             .flex_1(),
                     )
                     .when(
-                        failure.operation == DocumentSaveFailureOperation::InPlace,
+                        failure.operation == DocumentSaveFailureOperation::InPlace
+                            && failure.can_retry(),
                         |actions| {
                             actions.child(
                                 Button::new(DOCUMENT_SAVE_ERROR_RETRY_ID)
@@ -20352,6 +26418,71 @@ impl Render for DocumentWorkspace {
                     ),
             )
         })
+        .when_some(
+            recovery_preparation_issue,
+            |root, (error, ambiguous, rebase_failed)| {
+                let confirmation_pending = (ambiguous || rebase_failed)
+                    && self.recovery_confirmation_pending.contains(&document_id);
+                let action_id = if ambiguous {
+                    DOCUMENT_RECOVERY_PREPARATION_CONFIRM_ID
+                } else if rebase_failed {
+                    DOCUMENT_RECOVERY_REBASE_RETRY_ID
+                } else {
+                    DOCUMENT_RECOVERY_PREPARATION_RETRY_ID
+                };
+                root.child(
+                    h_flex()
+                        .id(DOCUMENT_RECOVERY_PREPARATION_ALERT_ID)
+                        .debug_selector(|| DOCUMENT_RECOVERY_PREPARATION_ALERT_ID.into())
+                        .w_full()
+                        .gap_2()
+                        .p_2()
+                        .child(
+                            Alert::error(
+                                "document-recovery-preparation-message",
+                                format!(
+                                    "Butter Paper cannot safely accept edits until crash recovery is available: {error}"
+                                ),
+                            )
+                            .title(if ambiguous {
+                                "Crash recovery needs confirmation"
+                            } else if rebase_failed {
+                                "Crash recovery needs repair"
+                            } else {
+                                "Crash recovery unavailable"
+                            })
+                            .flex_1(),
+                        )
+                        .child(
+                            Button::new(action_id)
+                                .debug_selector(move || action_id.into())
+                                .accessibility_id(action_id)
+                                .label(if confirmation_pending {
+                                    if rebase_failed {
+                                        "Retrying…"
+                                    } else {
+                                        "Checking…"
+                                    }
+                                } else if ambiguous {
+                                    "Check again"
+                                } else if rebase_failed {
+                                    "Retry recovery"
+                                } else {
+                                    "Retry"
+                                })
+                                .disabled(confirmation_pending)
+                                .on_click(cx.listener(move |workspace, _, _, cx| {
+                                    if let Err(error) = workspace
+                                        .retry_document_recovery_preparation(document_id, cx)
+                                    {
+                                        workspace.last_file_error = Some(error);
+                                        cx.notify();
+                                    }
+                                })),
+                        ),
+                )
+            },
+        )
         .when_some(self.last_file_error.clone(), |root, error| {
             root.child(
                 gpui::div()
@@ -20436,6 +26567,7 @@ impl Render for DocumentWorkspace {
                                 .debug_selector(|| DOCUMENT_VIEWPORT_ID.into())
                                 .relative()
                                 .size_full()
+                                .cursor(viewport_cursor_style)
                                 .overflow_scroll()
                                 .track_scroll(&viewer_scroll)
                                 .on_scroll_wheel(cx.listener(
@@ -20635,18 +26767,31 @@ impl Render for DocumentWorkspace {
                                                             rotation,
                                                             coordinate_space,
                                                             scene,
+                                                            pending_image_preview.clone().filter(|preview| preview.page_index == page_index),
+                                                            pending_text_box_presentation.clone().filter(|preview| preview.page_index == page_index),
                                                             highlights_precomposed,
                                                             image_assets.clone(),
                                                             selection_color,
                                                             hovered_annotation.clone().filter(|(doc, page, _)| {
                                                                 *doc == document_id && *page == page_index
                                                             }).map(|(_, _, id)| id),
+                                                            hot_annotation_handle.clone().filter(|(doc, page, _, _)| {
+                                                                *doc == document_id && *page == page_index
+                                                            }).map(|(_, _, id, index)| (id, index)),
                                                             focused_annotation_id.clone(),
                                                             cx.theme().border,
                                                             construction_grid_spacing_mm,
                                                             (page_index == current_page)
                                                                 .then(|| semantic_snap_decision.clone())
                                                                 .flatten(),
+                                                            (page_index == current_page)
+                                                                .then(|| object_snap_tracking_result.clone())
+                                                                .flatten(),
+                                                            if page_index == current_page {
+                                                                relationship_snap_guides.clone()
+                                                            } else {
+                                                                Vec::new()
+                                                            },
                                                             active_selection_marquee
                                                                 .as_ref()
                                                                 .filter(|(active_page, _)| {
@@ -20680,16 +26825,23 @@ impl Render for DocumentWorkspace {
                                                     current_page_rotation,
                                                     current_coordinate_space,
                                                     annotation_scene,
+                                                    pending_image_preview.clone().filter(|preview| preview.page_index == current_page),
+                                                    pending_text_box_presentation.clone().filter(|preview| preview.page_index == current_page),
                                                     current_highlights_precomposed,
                                                     image_assets,
                                                     selection_color,
                                                     hovered_annotation.clone().filter(|(doc, page, _)| {
                                                         *doc == document_id && *page == current_page
                                                     }).map(|(_, _, id)| id),
+                                                    hot_annotation_handle.clone().filter(|(doc, page, _, _)| {
+                                                        *doc == document_id && *page == current_page
+                                                    }).map(|(_, _, id, index)| (id, index)),
                                                     focused_annotation_id.clone(),
                                                     cx.theme().border,
                                                     construction_grid_spacing_mm,
                                                     semantic_snap_decision.clone(),
+                                                    object_snap_tracking_result.clone(),
+                                                    relationship_snap_guides.clone(),
                                                     active_selection_marquee
                                                         .as_ref()
                                                         .filter(|(active_page, _)| {
@@ -20703,6 +26855,47 @@ impl Render for DocumentWorkspace {
                                     })
                                 })
                                 .child(viewer_status_surface)
+                                .when(document_opening_batch_count > 0, |viewport| {
+                                    let status = if document_opening_batch_count == 1 {
+                                        "Opening PDF".to_owned()
+                                    } else {
+                                        format!(
+                                            "Opening PDFs from {document_opening_batch_count} requests"
+                                        )
+                                    };
+                                    viewport.child(
+                                        v_flex()
+                                            .id(DOCUMENT_OPEN_STATUS_ID)
+                                            .debug_selector(|| DOCUMENT_OPEN_STATUS_ID.into())
+                                            .absolute()
+                                            .inset_0()
+                                            .occlude()
+                                            .items_center()
+                                            .justify_center()
+                                            .gap_3()
+                                            .bg(cx.theme().background)
+                                            .role(Role::Status)
+                                            .aria_label(status.clone())
+                                            .a11y_synthetic_children(|builder| {
+                                                builder.parent_node().set_live(Live::Polite)
+                                            })
+                                            .child(status)
+                                            .child(
+                                                gpui::div()
+                                                    .id(DOCUMENT_OPEN_PROGRESS_ID)
+                                                    .debug_selector(|| {
+                                                        DOCUMENT_OPEN_PROGRESS_ID.into()
+                                                    })
+                                                    .w(px(240.))
+                                                    .child(
+                                                        Progress::new(
+                                                            "document-active-open-progress-component",
+                                                        )
+                                                        .loading(true),
+                                                    ),
+                                            ),
+                                    )
+                                })
                                 .vertical_scrollbar(&viewer_scroll)
                                 .horizontal_scrollbar(&viewer_scroll),
                         ),
@@ -20710,9 +26903,19 @@ impl Render for DocumentWorkspace {
                 ,
         )
         .child(pointer_event_bridge)
+        .child(
+            gpui::div()
+                .id(DOCUMENT_TEXT_BOX_RETURN_FOCUS_ID)
+                .track_focus(&self.text_box_return_focus)
+                .absolute()
+                .left_0()
+                .top_0()
+                .w(px(1.))
+                .h(px(1.)),
+        )
         )), &self.viewer_resizable, thumbnails_visible))))
         .child(resizable_panel()
-            .visible(self.right_rail_actions_open || inspector_visible || self.pending_text_box_editor.is_some())
+            .visible(self.right_rail_actions_open || inspector_visible || pending_non_creation_editor)
             .size(window.rem_size() * 18.75)
             .size_range(window.rem_size() * 15.0..window.rem_size() * 26.25)
             .flex_none().child(supporting_actions))
@@ -20816,8 +27019,7 @@ fn path_property_patch_matches(
             appearance.stroke_color() == color && appearance.opacity() == *opacity
         }
         VertexPathPropertyPatch::FillColorAndOpacity { color, opacity } => {
-            appearance.fill_color() == Some(color.as_str())
-                && appearance.fill_opacity() == *opacity
+            appearance.fill_color() == Some(color.as_str()) && appearance.fill_opacity() == *opacity
         }
         VertexPathPropertyPatch::StrokeColor(value) => appearance.stroke_color() == value,
         VertexPathPropertyPatch::StrokeWidthPt(value) => appearance.stroke_width_pt() == *value,
@@ -20886,24 +27088,382 @@ fn set_rectangular_shape_rotation(
 }
 
 fn next_workspace_annotation_sequence(annotations: &[Annotation]) -> u64 {
-    annotations
-        .iter()
-        .filter_map(|annotation| {
-            let value = annotation.id().as_str();
-            value
-                .strip_prefix("workspace:")?
-                .rsplit_once(':')?
-                .1
-                .parse::<u64>()
-                .ok()
-        })
-        .max()
-        .map_or(1, |sequence| sequence.saturating_add(1))
+    next_workspace_markup_sequence(annotations.iter().map(Annotation::id))
+}
+
+fn next_workspace_markup_sequence<'a>(ids: impl Iterator<Item = &'a MarkupId>) -> u64 {
+    ids.filter_map(|id| {
+        let value = id.as_str();
+        value
+            .strip_prefix("workspace:")?
+            .rsplit_once(':')?
+            .1
+            .parse::<u64>()
+            .ok()
+    })
+    .max()
+    .map_or(1, |sequence| sequence.saturating_add(1))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PendingTextEditorAuthority, validate_existing_text_editor_authority};
+    use super::{
+        Bounds, PendingTextEditorAuthority, ReconciledRecoveryAuthority, TextAlignment,
+        TextBoxRichTextRun, apply_recovery_confirmation_result, apply_recovery_preparation_result,
+        block_recovery_after_authority_conflict, document_viewport_cursor_style, point,
+        properties_double_click_sidebar_open, px, rectangle_resize_cursor_style,
+        replace_recovery_timeline_reconciled, size, split_text_box_rich_lines,
+        text_box_rich_line_x, validate_existing_text_editor_authority,
+    };
+
+    #[test]
+    fn rich_text_lines_preserve_run_styles_across_newlines_and_boundaries() {
+        let runs = vec![
+            TextBoxRichTextRun::new("Alpha\n")
+                .unwrap()
+                .with_emphasis(true, false),
+            TextBoxRichTextRun::new("Beta\nGamma")
+                .unwrap()
+                .with_emphasis(false, true),
+        ];
+
+        let lines = split_text_box_rich_lines(&runs);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0][0].text, "Alpha");
+        assert!(lines[0][0].run.bold());
+        assert_eq!(lines[1][0].text, "Beta");
+        assert!(lines[1][0].run.italic());
+        assert_eq!(lines[2][0].text, "Gamma");
+        assert!(lines[2][0].run.italic());
+    }
+
+    #[test]
+    fn rich_text_alignment_uses_the_width_of_the_whole_line() {
+        let bounds = Bounds::new(point(px(10.), px(20.)), size(px(100.), px(40.)));
+        assert_eq!(
+            text_box_rich_line_x(bounds, px(20.), TextAlignment::Left),
+            px(10.)
+        );
+        assert_eq!(
+            text_box_rich_line_x(bounds, px(20.), TextAlignment::Center),
+            px(50.)
+        );
+        assert_eq!(
+            text_box_rich_line_x(bounds, px(20.), TextAlignment::Right),
+            px(90.)
+        );
+    }
+
+    #[test]
+    fn properties_double_click_collapses_only_the_same_selected_markup() {
+        assert!(!properties_double_click_sidebar_open(true, true));
+        assert!(properties_double_click_sidebar_open(true, false));
+        assert!(properties_double_click_sidebar_open(false, true));
+        assert!(properties_double_click_sidebar_open(false, false));
+    }
+
+    #[test]
+    fn viewport_cursor_policy_matches_select_tool_pan_and_gesture_precedence() {
+        use super::{AnnotationTool, CursorStyle};
+
+        assert_eq!(
+            document_viewport_cursor_style(
+                AnnotationTool::Select,
+                false,
+                false,
+                false,
+                false,
+                None
+            ),
+            CursorStyle::Arrow,
+        );
+        assert_eq!(
+            document_viewport_cursor_style(
+                AnnotationTool::Rectangle,
+                false,
+                false,
+                false,
+                false,
+                None
+            ),
+            CursorStyle::Crosshair,
+        );
+        assert_eq!(
+            document_viewport_cursor_style(AnnotationTool::Select, true, false, false, false, None),
+            CursorStyle::OpenHand,
+        );
+        assert_eq!(
+            document_viewport_cursor_style(AnnotationTool::Select, true, true, false, false, None),
+            CursorStyle::ClosedHand,
+        );
+        assert_eq!(
+            document_viewport_cursor_style(AnnotationTool::Select, true, true, true, false, None),
+            CursorStyle::Crosshair,
+            "calibration picking owns the pointer before Pan",
+        );
+        assert_eq!(
+            document_viewport_cursor_style(AnnotationTool::Select, true, true, false, true, None),
+            CursorStyle::Crosshair,
+            "a live selection marquee owns the pointer before Pan",
+        );
+        assert_eq!(
+            document_viewport_cursor_style(
+                AnnotationTool::Select,
+                false,
+                false,
+                false,
+                false,
+                Some(CursorStyle::ResizeLeftRight),
+            ),
+            CursorStyle::ResizeLeftRight,
+        );
+        assert_eq!(
+            document_viewport_cursor_style(
+                AnnotationTool::Select,
+                true,
+                true,
+                false,
+                false,
+                Some(CursorStyle::ResizeLeftRight),
+            ),
+            CursorStyle::ClosedHand,
+            "an active Pan gesture owns the cursor before Select hover",
+        );
+    }
+
+    #[test]
+    fn rectangle_resize_cursor_quantises_handle_and_annotation_rotation_to_native_axes() {
+        use super::{CursorStyle, RectangleResizeHandle};
+
+        assert_eq!(
+            rectangle_resize_cursor_style(RectangleResizeHandle::East, 0.),
+            CursorStyle::ResizeLeftRight,
+        );
+        assert_eq!(
+            rectangle_resize_cursor_style(RectangleResizeHandle::North, 0.),
+            CursorStyle::ResizeUpDown,
+        );
+        assert_eq!(
+            rectangle_resize_cursor_style(RectangleResizeHandle::NorthWest, 0.),
+            CursorStyle::ResizeUpLeftDownRight,
+        );
+        assert_eq!(
+            rectangle_resize_cursor_style(RectangleResizeHandle::NorthEast, 0.),
+            CursorStyle::ResizeUpRightDownLeft,
+        );
+        assert_eq!(
+            rectangle_resize_cursor_style(RectangleResizeHandle::East, 90.),
+            CursorStyle::ResizeUpDown,
+        );
+        assert_eq!(
+            rectangle_resize_cursor_style(RectangleResizeHandle::NorthEast, 90.),
+            CursorStyle::ResizeUpLeftDownRight,
+        );
+        assert_eq!(
+            rectangle_resize_cursor_style(RectangleResizeHandle::East, 360.),
+            CursorStyle::ResizeLeftRight,
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ordered_highlight_scene_path_marks_multiply_and_tessellates_round_caps() {
+        use super::*;
+        let points = [
+            PdfPoint::new(2., 10.).unwrap(),
+            PdfPoint::new(18., 10.).unwrap(),
+        ];
+        let project = |p: PdfPoint| point(px(p.x as f32), px(p.y as f32));
+        let highlight = build_ink_scene_path(&points, false, px(8.), true, project).unwrap();
+        let pen = build_ink_scene_path(&points, false, px(8.), false, project).unwrap();
+        assert!(highlight.multiplies_over_opaque());
+        assert!(!pen.multiplies_over_opaque());
+        assert!(!highlight.vertices.is_empty());
+        assert!((f32::from(highlight.bounds.origin.x) + 2.).abs() < 0.2);
+        assert!((f32::from(highlight.bounds.right()) - 22.).abs() < 0.2);
+        assert_eq!(pen.bounds.origin.x, px(2.));
+        assert_eq!(pen.bounds.right(), px(18.));
+        assert!(build_ink_scene_path(&[], false, px(8.), true, project).is_none());
+
+        let page_bounds = Bounds::new(point(px(3.), px(5.)), size(px(20.), px(30.)));
+        assert_eq!(
+            highlight_page_content_mask(true, page_bounds),
+            Some(ContentMask {
+                bounds: page_bounds
+            }),
+            "Mac Highlight bodies must be clipped to the page before Metal compositing",
+        );
+        assert_eq!(
+            highlight_page_content_mask(false, page_bounds),
+            None,
+            "ordinary Pen bodies retain the canvas viewport mask",
+        );
+    }
+
+    #[test]
+    fn shape_feedback_geometry_projects_then_rotates_bounds_handles_and_stem() {
+        use super::*;
+        let rect = PdfRect::new(10., 20., 40., 20.).unwrap();
+        let origin = point(px(5.), px(7.));
+        let transform = PageTransform::new_rotated(100., 200., 2., PageRotation::Degrees0).unwrap();
+        let geometry = shape_feedback_geometry(rect, 0., false, &transform, origin, 4.);
+        assert_eq!(
+            geometry.bounds,
+            [
+                point(px(25.), px(327.)),
+                point(px(105.), px(327.)),
+                point(px(105.), px(367.)),
+                point(px(25.), px(367.))
+            ]
+        );
+        assert_eq!(geometry.rotation_center, point(px(65.), px(315.)));
+        assert_eq!(geometry.connector_start, point(px(65.), px(327.)));
+        assert_eq!(geometry.connector_end, point(px(65.), px(319.)));
+        let rotated = shape_feedback_geometry(rect, 90., false, &transform, origin, 4.);
+        assert_eq!(
+            rotated.bounds,
+            [
+                point(px(85.), px(307.)),
+                point(px(85.), px(387.)),
+                point(px(45.), px(387.)),
+                point(px(45.), px(307.))
+            ]
+        );
+        assert_eq!(rotated.rotation_center, point(px(97.), px(347.)));
+        let ellipse = shape_feedback_geometry(rect, 0., true, &transform, origin, 4.);
+        assert_eq!(
+            ellipse.bounds, geometry.bounds,
+            "ellipse chrome is the rectangle, not its curved perimeter"
+        );
+        let northwest = ellipse.handles[0];
+        assert!(
+            (f32::from(northwest.x) - (65. - 40. * std::f32::consts::FRAC_1_SQRT_2)).abs() < 0.001
+        );
+        assert!(
+            (f32::from(northwest.y) - (347. - 20. * std::f32::consts::FRAC_1_SQRT_2)).abs() < 0.001
+        );
+        let transform =
+            PageTransform::new_rotated(100., 200., 2., PageRotation::Degrees90).unwrap();
+        let sideways = shape_feedback_geometry(rect, 0., false, &transform, origin, 4.);
+        assert_eq!(sideways.rotation_center, point(px(97.), px(67.)));
+        assert_eq!(sideways.connector_start, point(px(85.), px(107.)));
+        assert_eq!(
+            sideways.connector_end,
+            point(px(97.), px(63.)),
+            "retain the routed reference diagonal-stem projection"
+        );
+    }
+
+    #[test]
+    fn annotation_paint_transform_rotates_device_pixels_about_projected_centre() {
+        use super::*;
+
+        let bounds = Bounds::new(point(px(10.), px(20.)), size(px(40.), px(20.)));
+        assert_eq!(
+            annotation_paint_transform(bounds, 0., 2.),
+            TransformationMatrix::unit(),
+            "zero-degree annotations retain the exact existing paint path",
+        );
+
+        let quarter_turn = annotation_paint_transform(bounds, 90., 2.);
+        let transformed = quarter_turn.apply(point(px(80.), px(60.)));
+        assert!((f32::from(transformed.x) - 60.).abs() < 0.001);
+        assert!((f32::from(transformed.y) - 80.).abs() < 0.001);
+
+        let arbitrary = annotation_paint_transform(bounds, 330., 2.);
+        let transformed = arbitrary.apply(point(px(80.), px(60.)));
+        assert!((f32::from(transformed.x) - 77.320_51).abs() < 0.001);
+        assert!((f32::from(transformed.y) - 50.).abs() < 0.001);
+    }
+
+    #[test]
+    fn path_feedback_bounds_use_svg_screen_order_and_pdf_minimum_before_rotation() {
+        use super::*;
+        let points = [
+            PdfPoint { x: 10., y: 20. },
+            PdfPoint { x: 50., y: 20. },
+            PdfPoint { x: 30., y: 20. },
+        ];
+        let origin = point(px(7.), px(11.));
+        for (rotation, expected) in [
+            (
+                PageRotation::Degrees0,
+                [(27., 153.), (107., 153.), (107., 155.), (27., 155.)],
+            ),
+            (
+                PageRotation::Degrees90,
+                [(47., 31.), (49., 31.), (49., 111.), (47., 111.)],
+            ),
+            (
+                PageRotation::Degrees180,
+                [(107., 51.), (187., 51.), (187., 53.), (107., 53.)],
+            ),
+            (
+                PageRotation::Degrees270,
+                [(149., 111.), (151., 111.), (151., 191.), (149., 191.)],
+            ),
+        ] {
+            let transform = PageTransform::new_rotated(100., 92., 2., rotation).unwrap();
+            assert!(
+                path_feedback_bounds(&points, 0., &transform, origin).is_none(),
+                "SVG raw zero-height rectangle must not paint"
+            );
+            assert_eq!(
+                path_feedback_bounds(&points, 1., &transform, origin).unwrap(),
+                expected.map(|(x, y)| point(px(x), px(y))),
+                "{rotation:?}"
+            );
+        }
+        let transform = PageTransform::new_rotated(100., 92., 1., PageRotation::Degrees0).unwrap();
+        let triangle = [
+            PdfPoint { x: 10., y: 20. },
+            PdfPoint { x: 50., y: 30. },
+            PdfPoint { x: 20., y: 60. },
+        ];
+        assert_eq!(
+            path_feedback_bounds(&triangle, 0., &transform, point(px(0.), px(0.))).unwrap(),
+            [
+                point(px(10.), px(32.)),
+                point(px(50.), px(32.)),
+                point(px(50.), px(72.)),
+                point(px(10.), px(72.))
+            ]
+        );
+    }
+
+    #[test]
+    fn ink_feedback_bounds_match_reference_stroke_padding_across_paths_and_rotation() {
+        use super::*;
+        let paths = vec![
+            vec![PdfPoint { x: 10., y: 20. }, PdfPoint { x: 50., y: 30. }],
+            vec![PdfPoint { x: 20., y: 60. }, PdfPoint { x: 35., y: 40. }],
+        ];
+        let origin = point(px(7.), px(11.));
+        let transform = PageTransform::new_rotated(100., 92., 2., PageRotation::Degrees0).unwrap();
+        assert_eq!(
+            ink_feedback_bounds(&paths, 8., &transform, origin).unwrap(),
+            [
+                point(px(19.), px(67.)),
+                point(px(115.), px(67.)),
+                point(px(115.), px(163.)),
+                point(px(19.), px(163.)),
+            ],
+            "four-point padding must be applied in PDF space before projection",
+        );
+
+        let transform = PageTransform::new_rotated(100., 92., 2., PageRotation::Degrees90).unwrap();
+        assert_eq!(
+            ink_feedback_bounds(&paths, 1., &transform, origin).unwrap(),
+            [
+                point(px(45.), px(29.)),
+                point(px(129.), px(29.)),
+                point(px(129.), px(113.)),
+                point(px(45.), px(113.)),
+            ],
+            "the reference one-point minimum padding must survive page rotation",
+        );
+        assert!(ink_feedback_bounds(&[], 8., &transform, origin).is_none());
+    }
 
     #[test]
     fn existing_text_editor_authority_rejects_stale_resource_without_mutation() {
@@ -20922,6 +27482,253 @@ mod tests {
         assert_eq!(authority.resource_generation, before.resource_generation);
         assert_eq!(authority.baseline_revision, before.baseline_revision);
         assert_eq!(authority.baseline_text, before.baseline_text);
+    }
+
+    #[test]
+    fn recovery_preparation_completion_cleans_closed_and_stale_publications() {
+        use crate::document_recovery_store::{
+            DocumentRecoveryStore, RecoverySourceKind, StagedRecoveryPublication,
+        };
+        use crate::document_session::DocumentRecoveryPreparation;
+        use sha2::{Digest as _, Sha256};
+
+        let root = std::env::temp_dir().join(format!(
+            "butter-paper-workspace-recovery-authority-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.pdf");
+        let base = b"%PDF-1.7\nworkspace recovery authority\n%%EOF\n";
+        std::fs::write(&source, base).unwrap();
+        let store = DocumentRecoveryStore::open(&root).unwrap();
+        let source_sha256: [u8; 32] = Sha256::digest(base).into();
+        let publication = StagedRecoveryPublication {
+            source_path: &source,
+            source_kind: RecoverySourceKind::Opened,
+            timeline: b"timeline",
+            current_revision: 0,
+            saved_revision: 0,
+            requires_save_as: false,
+        };
+        let published = store
+            .stage_and_publish_new(source_sha256, &publication)
+            .unwrap();
+
+        assert_eq!(
+            apply_recovery_preparation_result(
+                None,
+                3,
+                Ok(ReconciledRecoveryAuthority::Durable(published)),
+            ),
+            Some(published),
+            "a publication completed after close must be removed",
+        );
+
+        let mut pending = DocumentRecoveryPreparation::Pending {
+            generation: 4,
+            source_kind: RecoverySourceKind::Opened,
+        };
+        assert_eq!(
+            apply_recovery_preparation_result(
+                Some(&mut pending),
+                3,
+                Ok(ReconciledRecoveryAuthority::Durable(published)),
+            ),
+            Some(published),
+            "a stale completion must not become the current authority",
+        );
+        assert!(matches!(
+            pending,
+            DocumentRecoveryPreparation::Pending { generation: 4, .. }
+        ));
+
+        assert_eq!(
+            apply_recovery_preparation_result(
+                Some(&mut pending),
+                4,
+                Ok(ReconciledRecoveryAuthority::Durable(published)),
+            ),
+            None,
+        );
+        assert!(matches!(
+            pending,
+            DocumentRecoveryPreparation::Ready {
+                generation: 4,
+                authority,
+                ..
+            } if authority == published
+        ));
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ambiguous_recovery_confirmation_preserves_exact_authority_until_confirmed() {
+        use crate::document_recovery_store::{
+            DocumentRecoveryStore, RecoverySourceKind, StagedRecoveryPublication,
+        };
+        use crate::document_session::DocumentRecoveryPreparation;
+        use sha2::{Digest as _, Sha256};
+
+        let root = std::env::temp_dir().join(format!(
+            "butter-paper-workspace-recovery-confirmation-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.pdf");
+        let base = b"%PDF-1.7\nworkspace recovery confirmation\n%%EOF\n";
+        std::fs::write(&source, base).unwrap();
+        let store = DocumentRecoveryStore::open(&root).unwrap();
+        let authority = store
+            .stage_and_publish_new(
+                Sha256::digest(base).into(),
+                &StagedRecoveryPublication {
+                    source_path: &source,
+                    source_kind: RecoverySourceKind::Opened,
+                    timeline: b"timeline",
+                    current_revision: 0,
+                    saved_revision: 0,
+                    requires_save_as: false,
+                },
+            )
+            .unwrap();
+        let mut preparation = DocumentRecoveryPreparation::Ambiguous {
+            generation: 9,
+            authority,
+            source_kind: RecoverySourceKind::Opened,
+            message: "initial confirmation failed".into(),
+        };
+
+        assert!(apply_recovery_confirmation_result(
+            &mut preparation,
+            9,
+            authority,
+            Err("disk still unavailable".into()),
+        ));
+        assert!(matches!(
+            &preparation,
+            DocumentRecoveryPreparation::Ambiguous {
+                generation: 9,
+                authority: retained,
+                message,
+                ..
+            } if *retained == authority && message.contains("disk still unavailable")
+        ));
+        assert!(preparation.edit_guard().is_err());
+        assert!(!apply_recovery_confirmation_result(
+            &mut preparation,
+            8,
+            authority,
+            Ok(authority),
+        ));
+        assert!(matches!(
+            preparation,
+            DocumentRecoveryPreparation::Ambiguous { generation: 9, .. }
+        ));
+
+        let confirmed = store.confirm_authority_durable(&authority).unwrap();
+        assert!(apply_recovery_confirmation_result(
+            &mut preparation,
+            9,
+            authority,
+            Ok(confirmed),
+        ));
+        assert!(matches!(
+            preparation,
+            DocumentRecoveryPreparation::Ready {
+                generation: 9,
+                authority: ready,
+                ..
+            } if ready == authority
+        ));
+        assert_eq!(
+            store
+                .load(authority.document_id())
+                .unwrap()
+                .unwrap()
+                .authority,
+            authority
+        );
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_recovery_authority_blocks_further_edits_without_reusing_or_clearing_old_token() {
+        use crate::document_recovery_store::{
+            DocumentRecoveryStore, RecoverySourceKind, StagedRecoveryPublication,
+        };
+        use crate::document_session::DocumentRecoveryPreparation;
+        use sha2::{Digest as _, Sha256};
+
+        let root = std::env::temp_dir().join(format!(
+            "butter-paper-workspace-stale-recovery-authority-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.pdf");
+        let base = b"%PDF-1.7\nstale workspace recovery authority\n%%EOF\n";
+        std::fs::write(&source, base).unwrap();
+        let store = DocumentRecoveryStore::open(&root).unwrap();
+        let source_sha256: [u8; 32] = Sha256::digest(base).into();
+        let initial = StagedRecoveryPublication {
+            source_path: &source,
+            source_kind: RecoverySourceKind::Opened,
+            timeline: b"timeline-1",
+            current_revision: 1,
+            saved_revision: 0,
+            requires_save_as: false,
+        };
+        let old = store
+            .stage_and_publish_new(source_sha256, &initial)
+            .unwrap();
+        let external = StagedRecoveryPublication {
+            timeline: b"timeline-2",
+            current_revision: 2,
+            ..initial
+        };
+        let newer = store.replace_timeline(&old, &external).unwrap();
+        let local_attempt = StagedRecoveryPublication {
+            timeline: b"timeline-local",
+            current_revision: 2,
+            ..initial
+        };
+
+        let ReconciledRecoveryAuthority::Conflict { message } =
+            replace_recovery_timeline_reconciled(&store, &old, &local_attempt).unwrap()
+        else {
+            panic!("a stale CAS token must be reported as a conflict");
+        };
+        let mut preparation = DocumentRecoveryPreparation::Ready {
+            generation: 7,
+            authority: old,
+            source_kind: RecoverySourceKind::Opened,
+        };
+        block_recovery_after_authority_conflict(&mut preparation, message);
+        assert!(preparation.edit_guard().is_err());
+        assert!(matches!(
+            preparation,
+            DocumentRecoveryPreparation::Failed { generation: 7, .. }
+        ));
+        assert_eq!(
+            store.load(newer.document_id()).unwrap().unwrap().authority,
+            newer,
+            "the newer store authority must remain intact and the stale token must not be reused",
+        );
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 

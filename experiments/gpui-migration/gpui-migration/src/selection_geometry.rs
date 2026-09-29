@@ -103,8 +103,10 @@ impl SelectionMarquee {
     }
 
     pub fn resolved_kind(&self) -> SelectionKind {
-        self.kind
-            .unwrap_or_else(|| selection_kind(self.start, self.current))
+        self.kind.unwrap_or_else(|| match self.shape {
+            SelectionShape::Lasso => SelectionKind::Window,
+            SelectionShape::Box => selection_kind(self.start, self.current),
+        })
     }
 }
 
@@ -292,6 +294,27 @@ fn point_in_polygon(point: SelectionPoint, polygon: &[SelectionPoint]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unlatch_lasso_defaults_to_window_until_horizontal_threshold_is_crossed() {
+        for horizontal in [-6., -0.5, 0., 0.5, 6.] {
+            let mut marquee = SelectionMarquee::lasso(
+                1,
+                SelectionPoint::new(10., 10.),
+                SelectionOperation::Replace,
+            );
+            marquee.update(SelectionPoint::new(10. + horizontal, 40.));
+            assert!(marquee.active, "vertical movement activates the lasso");
+            assert_eq!(marquee.kind, None);
+            assert_eq!(marquee.resolved_kind(), SelectionKind::Window);
+
+            marquee.update(SelectionPoint::new(3., 50.));
+            assert_eq!(marquee.kind, Some(SelectionKind::Crossing));
+            assert_eq!(marquee.resolved_kind(), SelectionKind::Crossing);
+            marquee.update(SelectionPoint::new(30., 60.));
+            assert_eq!(marquee.resolved_kind(), SelectionKind::Crossing);
+        }
+    }
 
     #[test]
     fn marquee_strict_threshold_and_latched_direction_match_the_electron_contract() {

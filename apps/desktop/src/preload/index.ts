@@ -6,6 +6,7 @@ import type {
   ButterPaperBridge,
   ApplicationMenuCommand,
   ApplicationMenuState,
+  ElectronMigrationExportRequest,
   PageGeometryRequest,
   PdfOpenProgress,
   PdfDocumentAccessRequest,
@@ -225,8 +226,8 @@ const bridge: ButterPaperBridge = {
     getStatus: async () => ipcRenderer.invoke(ipcChannels.updatesGetStatus),
     setFrequency: async (frequency: UpdateFrequency) => ipcRenderer.invoke(ipcChannels.updatesSetFrequency, frequency),
     checkNow: async () => ipcRenderer.invoke(ipcChannels.updatesCheckNow),
-    installDownloaded: async () => {
-      await ipcRenderer.invoke(ipcChannels.updatesInstallDownloaded);
+    installDownloaded: async (request: ElectronMigrationExportRequest) => {
+      await ipcRenderer.invoke(ipcChannels.updatesInstallDownloaded, request);
     },
     setRestartBlocked: async (blocked: boolean) => {
       await ipcRenderer.invoke(ipcChannels.updatesSetRestartBlocked, blocked);
@@ -255,6 +256,11 @@ const bridge: ButterPaperBridge = {
     importDocument: async (request) => ipcRenderer.invoke(ipcChannels.templateImportDocument, request),
     remove: async (templateId: string) => ipcRenderer.invoke(ipcChannels.templateRemove, templateId),
     createDocument: async (templateId: string) => ipcRenderer.invoke(ipcChannels.templateCreateDocument, templateId),
+  },
+  migration: {
+    exportElectronData: async (request: ElectronMigrationExportRequest) => (
+      ipcRenderer.invoke(ipcChannels.migrationExportElectronData, request)
+    ),
   },
   signaturePhone: {
     start: async (mode: PhoneSignatureMode) => ipcRenderer.invoke(ipcChannels.signaturePhoneStart, mode),

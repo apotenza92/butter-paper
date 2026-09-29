@@ -1,7 +1,7 @@
 use gpui::{
     App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, InteractiveElement as _,
     IntoElement, ParentElement as _, Render, ScrollHandle, StatefulInteractiveElement as _,
-    Styled as _, Window, prelude::FluentBuilder as _,
+    Styled as _, Window, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Selectable as _,
@@ -21,6 +21,7 @@ use crate::zoom_control::ZoomControl;
 pub const VIEWER_TOOLBAR_ID: &str = "viewer-toolbar";
 pub const VIEWER_TOOLBAR_SCROLL_ID: &str = "viewer-toolbar-scroll";
 pub const VIEWER_TOOLBAR_CONTENT_ID: &str = "viewer-toolbar-content";
+pub const VIEWER_TOOLBAR_FROZEN_CONTENT_WIDTH: f32 = 667.;
 pub const FIT_BUTTON_GROUP_ID: &str = "viewer-fit-controls";
 pub const FIT_WIDTH_ID: &str = "viewer-fit-width";
 pub const FIT_PAGE_ID: &str = "viewer-fit-page";
@@ -457,26 +458,39 @@ impl Render for ViewerToolbarStrip {
                             .flex_shrink_0()
                             .justify_center()
                             .items_center()
-                            .gap_2()
-                            // Match the shell's standard edge inset; keep intrinsic
-                            // control sizes intact at the 480px centre-column contract.
-                            .px_1()
-                            .py_1()
-                            .when_some(self.zoom_control.clone(), |toolbar, control| {
-                                toolbar.child(h_flex().flex_shrink_0().child(control))
-                            })
-                            .child(h_flex().flex_shrink_0().child(fit_controls))
                             .child(
                                 h_flex()
+                                    .w(px(VIEWER_TOOLBAR_FROZEN_CONTENT_WIDTH))
                                     .flex_shrink_0()
-                                    .child(self.continuous_control.clone()),
-                            )
-                            .when_some(self.single_page_control.clone(), |toolbar, control| {
-                                toolbar.child(h_flex().flex_shrink_0().child(control))
-                            })
-                            .when_some(self.cad_view_control.clone(), |toolbar, control| {
-                                toolbar.child(h_flex().flex_shrink_0().child(control))
-                            }),
+                                    .justify_center()
+                                    .items_center()
+                                    .gap_2()
+                                    // Match the shell's standard edge inset; keep intrinsic
+                                    // control sizes intact at the 480px centre-column contract.
+                                    .px_1()
+                                    .py_1()
+                                    .when_some(self.zoom_control.clone(), |toolbar, control| {
+                                        toolbar.child(h_flex().flex_shrink_0().child(control))
+                                    })
+                                    .child(h_flex().flex_shrink_0().child(fit_controls))
+                                    .child(
+                                        h_flex()
+                                            .flex_shrink_0()
+                                            .child(self.continuous_control.clone()),
+                                    )
+                                    .when_some(
+                                        self.single_page_control.clone(),
+                                        |toolbar, control| {
+                                            toolbar.child(h_flex().flex_shrink_0().child(control))
+                                        },
+                                    )
+                                    .when_some(
+                                        self.cad_view_control.clone(),
+                                        |toolbar, control| {
+                                            toolbar.child(h_flex().flex_shrink_0().child(control))
+                                        },
+                                    ),
+                            ),
                     ),
             )
     }

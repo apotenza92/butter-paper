@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { prepareZed, verifyZed } from "./prepare-zed.mjs";
 import { access, mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -13,9 +14,20 @@ import {
 } from "./source-preparation.mjs";
 
 function run(command, args, options = {}) {
+  const env = command === "git"
+    ? {
+        ...process.env,
+        GIT_CONFIG_COUNT: "2",
+        GIT_CONFIG_KEY_0: "core.autocrlf",
+        GIT_CONFIG_VALUE_0: "false",
+        GIT_CONFIG_KEY_1: "core.eol",
+        GIT_CONFIG_VALUE_1: "lf",
+      }
+    : process.env;
   const result = spawnSync(command, args, {
     cwd: options.cwd,
     encoding: "utf8",
+    env,
     stdio: options.capture ? ["ignore", "pipe", "pipe"] : "inherit",
   });
   if (result.status !== 0) {
@@ -47,7 +59,17 @@ async function verifyCheckout(root, policy) {
   const changed = run("git", ["status", "--short"], { cwd: root, capture: true });
   const expectedChanges = [
     "M  Cargo.toml",
+    "M  crates/base/src/input/base/element.rs",
+    "M  crates/base/src/input/base/layout.rs",
+    "A  crates/base/src/input/base/rotation.rs",
+    "M  crates/base/src/input/base/state.rs",
+    "M  crates/base/src/input/editor/display_map/text_wrapper.rs",
+    "M  crates/base/src/input/mod.rs",
     "M  crates/ui/src/button/button.rs",
+    "M  crates/ui/src/input/input.rs",
+    "M  crates/ui/src/input/mod.rs",
+    "M  crates/ui/src/input/state.rs",
+    "M  crates/ui/src/input/textarea.rs",
     "M  crates/ui/src/menu/menu_item.rs",
     "M  crates/ui/src/menu/popup_menu.rs",
     "M  crates/ui/src/tab/tab.rs",
@@ -65,6 +87,12 @@ async function verifyCheckout(root, policy) {
   }
   if (await fileSha256(join(probeDirectory, policy.menuAccessibilityPatch.path)) !== policy.menuAccessibilityPatch.sha256) {
     throw new Error("menu accessibility patch checksum drifted");
+  }
+  if (await fileSha256(join(probeDirectory, policy.textareaPaddingPatch.path)) !== policy.textareaPaddingPatch.sha256) {
+    throw new Error("textarea padding patch checksum drifted");
+  }
+  if (await fileSha256(join(probeDirectory, policy.textareaRotationPatch.path)) !== policy.textareaRotationPatch.sha256) {
+    throw new Error("textarea rotation patch checksum drifted");
   }
   return validatePreparedTree(root, policy);
 }
@@ -88,6 +116,8 @@ async function prepare(source) {
     run("git", ["apply", "--index", join(probeDirectory, policy.patch.path)], { cwd: temporary });
     run("git", ["apply", "--index", join(probeDirectory, policy.tabStatePatch.path)], { cwd: temporary });
     run("git", ["apply", "--index", join(probeDirectory, policy.menuAccessibilityPatch.path)], { cwd: temporary });
+    run("git", ["apply", "--index", join(probeDirectory, policy.textareaPaddingPatch.path)], { cwd: temporary });
+    run("git", ["apply", "--index", join(probeDirectory, policy.textareaRotationPatch.path)], { cwd: temporary });
 
     const digest = await verifyCheckout(temporary, policy);
     await rename(temporary, output);
@@ -105,13 +135,14 @@ const policy = await loadPolicy();
 const output = join(probeDirectory, policy.prepared.directory);
 
 if (command === "prepare") {
-  process.stdout.write(`${JSON.stringify(await prepare(source), null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ component: await prepare(source), zed: await prepareZed(policy, process.argv.includes("--zed-source") ? process.argv[process.argv.indexOf("--zed-source") + 1] : undefined) }, null, 2)}\n`);
 } else if (command === "verify") {
   process.stdout.write(`${JSON.stringify({
     status: "verified",
     output,
     digest: await verifyCheckout(output, policy),
     sharedSources: await verifySharedSourceInputs(policy),
+    zed: await verifyZed(join(probeDirectory, policy.zedPrepared.directory), policy),
   }, null, 2)}\n`);
 } else {
   throw new Error(`unknown command ${command}; use prepare or verify`);

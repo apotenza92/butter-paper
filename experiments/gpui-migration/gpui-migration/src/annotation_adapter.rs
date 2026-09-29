@@ -5,7 +5,7 @@
 //! binary; command ordering, typed tools, gesture lifetime, frozen defaults,
 //! history, and selection live here.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 #[path = "tool_properties.rs"]
 pub mod tool_properties;
@@ -16,37 +16,48 @@ pub use tool_properties::{
 
 use crate::annotation_model::{
     Annotation, AnnotationCommand, AnnotationDocument, AnnotationEdit, AnnotationError,
-    AnnotationKind, AnnotationScene, AnnotationSnapshot, ArcAnnotation, ArcControlPoint,
-    CalloutAnnotation, CalloutAppearance, CloudAnnotation, CloudPlusAnnotation,
-    CloudPlusAppearance, CommandOutcome, DecodedRgbaAsset, DimensionAnnotation,
-    DimensionAppearance, EllipseAnnotation, GestureKind, ImageAnnotation, InkTool,
-    LengthAnnotation, LengthCalibration, LengthEndpoint, LineEndpoint, LineKind, MarkupId,
-    MeasurementPathAnnotation, MeasurementPathKind, PageRotation, PageRotationDirection, PageScale,
-    PdfPoint, PdfRect, PenAnnotation, PenAppearance, PointerCancelReason, PointerTool,
-    RectangleAnnotation, RectangleAppearance, RectangleResizeHandle, RedactAnnotation, ScalePreset,
-    SceneArc, SceneCallout, SceneCloud, SceneCloudPlus, SceneDimension, SceneLength,
-    SceneMeasurementPath, SceneRedact, SceneSnapshot, SceneStraightLine, SceneVertexPath,
-    SnapshotAnnotation, SpatialQueryWork, StraightLineAnnotation, StraightLineAppearance,
-    StrokeStyle, TextBoxAnnotation, TextBoxStyle, VertexPathAnnotation, VertexPathKind,
+    AnnotationKind, AnnotationScene, AnnotationSelectionSupplement, AnnotationSnapshot,
+    ArcAnnotation, ArcControlPoint, CalloutAnnotation, CalloutAppearance, CloudAnnotation,
+    CloudPlusAnnotation, CloudPlusAppearance, CommandOutcome, DecodedRgbaAsset,
+    DimensionAnnotation, DimensionAppearance, EllipseAnnotation, GestureKind, HitTarget,
+    ImageAnnotation, InkTool, LengthAnnotation, LengthCalibration, LengthEndpoint, LineEndpoint,
+    LineKind, MarkupId, MeasurementPathAnnotation, MeasurementPathKind, PageRotation,
+    PageRotationDirection, PageScale, PdfPoint, PdfRect, PenAnnotation, PenAppearance,
+    PointerCancelReason, PointerTool, RectangleAnnotation, RectangleAppearance,
+    RectangleResizeHandle, RedactAnnotation, RetainedAnnotationObstacle, ScalePreset,
+    SceneAnnotation, SceneArc, SceneCallout, SceneCloud, SceneCloudPlus, SceneDimension,
+    SceneInteractionFeedback, SceneLength, SceneMeasurementPath, SceneRectangle, SceneRedact,
+    SceneSnapshot, SceneStraightLine, SceneVertexPath, SnapshotAnnotation, SpatialQueryWork,
+    StraightLineAnnotation, StraightLineAppearance, StrokeStyle, TextBoxAnnotation, TextBoxStyle,
+    VertexPathAnnotation, VertexPathKind,
 };
 use crate::cloud_plus_routing::{
-    CloudPlusRoutingContext, place_initial_cloud_plus_text_box, route_cloud_plus_leader,
+    CloudPlusObstacle, CloudPlusRoutingContext, place_initial_cloud_plus_text_box,
+    route_cloud_plus_leader, snap_cloud_plus_leader_tip,
 };
 use crate::density_fixture::{DensityFixtureImportOutcome, materialize_density_fixture};
 use crate::native_editing_v5::{
     InclusiveLInfGridSnap, NativeEditingV5Error, PropertyEditCommit, PropertyEditPlan,
     SnapGestureCommit, SnapResolution, SnapTransformPlan, StrokeWidthEditTransaction, Translation,
 };
+use crate::pdf_content_geometry::PageSnapGeometry;
 use crate::selection_geometry::{
     SelectionMarquee, SelectionOperation, SelectionPoint, SelectionShape,
 };
 use crate::semantic_snapping::{
-    SemanticSnapDecision, SemanticSnapIndex, SemanticSnapSettings,
+    AcquiredTrackingPoint, ObjectSnapTrackingResult, OrthogonalAxis, PageGridDefinition,
+    RelationshipSnapGuide, SemanticSnapDecision, SemanticSnapError, SemanticSnapIndex,
+    SemanticSnapSettings, SemanticSnapSource, annotation_guide_rects, combined_guide_bounds,
+    find_equal_size_snap, find_equal_spacing_snap, find_object_snap_tracking_point,
+    moving_annotation_snap_anchor_points,
+    moving_annotation_snap_anchor_points_with_selection_supplement,
     quantize_pdf_distance_to_mm_increment, resolve_construction_grid_point,
+    toggle_acquired_tracking_point,
 };
 
 pub const FROZEN_TEXT_CREATE: &str = "Beam B-12 / revision 3";
 pub const NATURAL_IMAGE_MAX_PAGE_FRACTION: f64 = 0.45;
+pub const IMAGE_PLACEMENT_PREVIEW_OPACITY: f64 = 0.45;
 const TEXT_WIDTH_PT: f64 = 240.0;
 const TEXT_HEIGHT_PT: f64 = 72.0;
 const HIGHLIGHT_MIN_DISTANCE_PT: f64 = 0.5;
@@ -88,6 +99,19 @@ pub const fn redact_resize_handle_id(handle: RectangleResizeHandle) -> &'static 
     }
 }
 
+pub const fn callout_resize_handle_id(handle: RectangleResizeHandle) -> &'static str {
+    match handle {
+        RectangleResizeHandle::NorthWest => "callout.textBox.resize.nw",
+        RectangleResizeHandle::North => "callout.textBox.resize.n",
+        RectangleResizeHandle::NorthEast => "callout.textBox.resize.ne",
+        RectangleResizeHandle::East => "callout.textBox.resize.e",
+        RectangleResizeHandle::SouthEast => "callout.textBox.resize.se",
+        RectangleResizeHandle::South => "callout.textBox.resize.s",
+        RectangleResizeHandle::SouthWest => "callout.textBox.resize.sw",
+        RectangleResizeHandle::West => "callout.textBox.resize.w",
+    }
+}
+
 pub const fn snapshot_resize_handle_id(handle: RectangleResizeHandle) -> &'static str {
     match handle {
         RectangleResizeHandle::NorthWest => "snapshot.resize.nw",
@@ -110,6 +134,43 @@ pub fn snapshot_resize_handle_point(
 
 pub fn snapshot_rotation_handle_point(
     annotation: &SnapshotAnnotation,
+    observed_pixels_per_point: f64,
+) -> Result<PdfPoint, AnnotationError> {
+    ellipse_rotation_handle_point_for_rect(
+        annotation.rect,
+        annotation.rotation_degrees(),
+        observed_pixels_per_point,
+    )
+}
+
+pub fn text_box_resize_handle_point(
+    annotation: &TextBoxAnnotation,
+    handle: RectangleResizeHandle,
+) -> PdfPoint {
+    handle.world_point(annotation.layout_rect, annotation.rotation_degrees())
+}
+
+pub fn text_box_rotation_handle_point(
+    annotation: &TextBoxAnnotation,
+    observed_pixels_per_point: f64,
+) -> Result<PdfPoint, AnnotationError> {
+    ellipse_rotation_handle_point_for_rect(
+        annotation.layout_rect,
+        annotation.rotation_degrees(),
+        observed_pixels_per_point,
+    )
+}
+
+fn image_resize_handle_point(annotation: &ImageAnnotation, handle: ImageResizeHandle) -> PdfPoint {
+    rotate_point_around_rect_center(
+        image_resize_handle_local_point(annotation.rect, handle),
+        annotation.rect,
+        -annotation.rotation_degrees(),
+    )
+}
+
+pub fn image_rotation_handle_point(
+    annotation: &ImageAnnotation,
     observed_pixels_per_point: f64,
 ) -> Result<PdfPoint, AnnotationError> {
     ellipse_rotation_handle_point_for_rect(
@@ -318,6 +379,16 @@ struct ImagePlacementPage {
 struct PendingImageAsset {
     asset: DecodedRgbaAsset,
     aspect_locked: bool,
+    select_after_placement: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingImagePreview {
+    pub document_id: u64,
+    pub page_index: u32,
+    pub rect: PdfRect,
+    pub asset_id: String,
+    pub opacity: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -543,6 +614,9 @@ enum ActivePointer {
         pointer_id: u64,
         start: PdfPoint,
         current: PdfPoint,
+        snap_anchor_points: Vec<PdfPoint>,
+        excluded_ids: Vec<MarkupId>,
+        snap_caption_supplement: AnnotationSelectionSupplement,
     },
     Domain {
         document_id: u64,
@@ -551,6 +625,7 @@ enum ActivePointer {
         ink: bool,
         ink_start: Option<PdfPoint>,
         rectangle_translation_start: Option<PdfPoint>,
+        rectangle_resize_handle: Option<RectangleResizeHandle>,
         rectangle_create_start: Option<PdfPoint>,
         click_placement_pending: bool,
     },
@@ -682,6 +757,7 @@ enum ActivePointer {
         current: PdfPoint,
         original_start: PdfPoint,
         original_end: PdfPoint,
+        snap_anchor_points: Vec<PdfPoint>,
     },
     StraightLineEndpoint {
         document_id: u64,
@@ -737,6 +813,17 @@ enum ActivePointer {
         start: PdfPoint,
         current: PdfPoint,
         original_rect: PdfRect,
+        original_rotation_degrees: f64,
+    },
+    TextBoxRotate {
+        document_id: u64,
+        page_index: u32,
+        pointer_id: u64,
+        id: MarkupId,
+        start: PdfPoint,
+        current: PdfPoint,
+        original_rect: PdfRect,
+        original_rotation_degrees: f64,
     },
     ImageMove {
         document_id: u64,
@@ -756,6 +843,18 @@ enum ActivePointer {
         start: PdfPoint,
         current: PdfPoint,
         original_rect: PdfRect,
+        original_rotation_degrees: f64,
+        aspect_locked: bool,
+    },
+    ImageRotate {
+        document_id: u64,
+        page_index: u32,
+        pointer_id: u64,
+        id: MarkupId,
+        start: PdfPoint,
+        current: PdfPoint,
+        original_rect: PdfRect,
+        original_rotation_degrees: f64,
     },
     SnapshotMove {
         document_id: u64,
@@ -795,6 +894,18 @@ enum ActivePointer {
         start: PdfPoint,
         current: PdfPoint,
     },
+    LengthMove {
+        document_id: u64,
+        page_index: u32,
+        pointer_id: u64,
+        id: MarkupId,
+        start: PdfPoint,
+        current: PdfPoint,
+        original_start: PdfPoint,
+        original_end: PdfPoint,
+        snap_anchor_points: Vec<PdfPoint>,
+        snap_caption_supplement: AnnotationSelectionSupplement,
+    },
     DimensionCreate {
         document_id: u64,
         page_index: u32,
@@ -813,6 +924,8 @@ enum ActivePointer {
         start: PdfPoint,
         current: PdfPoint,
         original: DimensionAnnotation,
+        snap_anchor_points: Vec<PdfPoint>,
+        snap_caption_supplement: AnnotationSelectionSupplement,
     },
     CalloutEdit {
         document_id: u64,
@@ -824,6 +937,19 @@ enum ActivePointer {
         start: PdfPoint,
         current: PdfPoint,
         original: CalloutAnnotation,
+        snap_anchor_points: Vec<PdfPoint>,
+    },
+    CloudPlusEdit {
+        document_id: u64,
+        page_index: u32,
+        pointer_id: u64,
+        id: MarkupId,
+        expected_revision: u64,
+        kind: CloudPlusPointerEditKind,
+        start: PdfPoint,
+        current: PdfPoint,
+        original: CloudPlusAnnotation,
+        snap_anchor_points: Vec<PdfPoint>,
     },
     CloudEdit {
         document_id: u64,
@@ -835,9 +961,11 @@ enum ActivePointer {
         start: PdfPoint,
         current: PdfPoint,
         original: CloudAnnotation,
+        snap_anchor_points: Vec<PdfPoint>,
     },
     LengthEndpoint {
         document_id: u64,
+        page_index: u32,
         pointer_id: u64,
         id: MarkupId,
         endpoint: LengthEndpoint,
@@ -855,6 +983,16 @@ enum DimensionPointerEditKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CalloutPointerEditKind {
+    TextBoxResize(RectangleResizeHandle),
+    LeaderPoint(usize),
+    TextBox,
+    Body,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CloudPlusPointerEditKind {
+    CloudVertex(usize),
+    TextBoxResize(RectangleResizeHandle),
     LeaderPoint(usize),
     TextBox,
     Body,
@@ -920,10 +1058,72 @@ enum ImageResizeHandle {
     West,
 }
 
+impl ImageResizeHandle {
+    const ALL: [Self; 8] = [
+        Self::SouthWest,
+        Self::South,
+        Self::SouthEast,
+        Self::East,
+        Self::NorthEast,
+        Self::North,
+        Self::NorthWest,
+        Self::West,
+    ];
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EllipseHandleKind {
     Resize(RectangleResizeHandle),
     Rotate,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum EqualSizeResizeGeometry {
+    Ellipse,
+    Redact,
+    Rectangle,
+    Image {
+        handle: ImageResizeHandle,
+        start: PdfPoint,
+        aspect_locked: bool,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct EqualSizeResizeTarget {
+    document_id: u64,
+    page_index: u32,
+    id: MarkupId,
+    handle: RectangleResizeHandle,
+    original_rect: PdfRect,
+    geometry: EqualSizeResizeGeometry,
+}
+
+impl EqualSizeResizeTarget {
+    fn rect_at(&self, point: PdfPoint) -> Option<PdfRect> {
+        match self.geometry {
+            EqualSizeResizeGeometry::Ellipse => Some(ellipse_resized_rect(
+                self.original_rect,
+                0.,
+                self.handle,
+                point,
+            )),
+            EqualSizeResizeGeometry::Redact => {
+                redact_resized_rect(self.original_rect, self.handle, point).ok()
+            }
+            EqualSizeResizeGeometry::Rectangle => Some(
+                self.original_rect
+                    .rotated_resize_from_handle(0., self.handle, point),
+            ),
+            EqualSizeResizeGeometry::Image {
+                handle,
+                start,
+                aspect_locked,
+            } => {
+                resized_image_rect(self.original_rect, handle, start, point, 0., aspect_locked).ok()
+            }
+        }
+    }
 }
 
 /// Evidence bookkeeping for the frozen benchmark replay.
@@ -968,11 +1168,165 @@ pub struct AnnotationAdapter {
     rectangle_snap_settings: RectangleSnapSettings,
     semantic_snap_settings: SemanticSnapSettings,
     semantic_snap_decision: Option<SemanticSnapDecision>,
+    acquired_tracking_points: Vec<AcquiredTrackingPoint>,
+    tracking_hover_key: Option<(i64, i64)>,
+    object_snap_tracking_result: Option<ObjectSnapTrackingResult>,
+    relationship_snap_guides: Vec<RelationshipSnapGuide>,
     semantic_snap_page_sizes: HashMap<(u64, u32), (f64, f64)>,
+    semantic_snap_page_grids: HashMap<(u64, u32), PageGridDefinition>,
+    semantic_snap_page_content: HashMap<(u64, u32), Arc<SemanticSnapIndex>>,
+    retained_annotation_obstacles: HashMap<u64, Vec<RetainedAnnotationObstacle>>,
     observed_pixels_per_point: ObservedPixelsPerPoint,
 }
 
 impl AnnotationAdapter {
+    /// Encodes one document's committed annotation model and exact undo/redo
+    /// timeline. Adapter-owned pointer and placement state is intentionally
+    /// excluded from the recovery payload.
+    pub fn encode_document_recovery_timeline(
+        &self,
+        document_id: u64,
+    ) -> Result<Vec<u8>, AnnotationError> {
+        self.documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .encode_recovery_timeline()
+    }
+
+    /// Atomically replaces one document from a validated recovery timeline.
+    ///
+    /// Decoding and adapter-specific identity validation complete before the
+    /// existing document or any interaction state is changed. On success,
+    /// stale pointer/draft/placement state for the restored document is
+    /// discarded and generated comparison IDs advance beyond identities that
+    /// survive only in undo or redo history.
+    pub fn restore_document_recovery_timeline(
+        &mut self,
+        document_id: u64,
+        bytes: &[u8],
+    ) -> Result<(), AnnotationError> {
+        let document = AnnotationDocument::hydrate_recovery_timeline(bytes)?;
+        let recovered_sequence = self.replacement_sequence_floor(document_id, &document)?;
+
+        self.clear_document_recovery_transients(document_id);
+        self.next_sequence = self.next_sequence.max(recovered_sequence);
+        self.documents.insert(document_id, document);
+        Ok(())
+    }
+
+    fn replacement_sequence_floor(
+        &self,
+        document_id: u64,
+        replacement: &AnnotationDocument,
+    ) -> Result<u64, AnnotationError> {
+        let max_sequence = self
+            .documents
+            .iter()
+            .filter(|(existing_document_id, _)| **existing_document_id != document_id)
+            .map(|(_, document)| document)
+            .chain(std::iter::once(replacement))
+            .flat_map(AnnotationDocument::recovery_markup_ids)
+            .filter_map(|id| comparison_sequence(&id))
+            .chain(self.queued_id.as_ref().and_then(comparison_sequence))
+            .chain(std::iter::once(self.next_sequence))
+            .max()
+            .unwrap_or_default();
+        if max_sequence == u64::MAX {
+            return Err(AnnotationError::InvalidRecoveryTimeline(
+                "comparison markup sequence is exhausted".into(),
+            ));
+        }
+        Ok(max_sequence)
+    }
+
+    fn clear_document_recovery_transients(&mut self, document_id: u64) {
+        if self
+            .vertex_path_draft
+            .as_ref()
+            .is_some_and(|draft| draft.document_id == document_id)
+        {
+            self.vertex_path_draft = None;
+        }
+        if self
+            .cloud_draft
+            .as_ref()
+            .is_some_and(|draft| draft.document_id == document_id)
+        {
+            self.cloud_draft = None;
+        }
+        if self
+            .cloud_plus_draft
+            .as_ref()
+            .is_some_and(|draft| draft.document_id == document_id)
+        {
+            self.cloud_plus_draft = None;
+        }
+        if self
+            .measurement_path_draft
+            .as_ref()
+            .is_some_and(|draft| draft.document_id == document_id)
+        {
+            self.measurement_path_draft = None;
+        }
+        if self
+            .arc_draft
+            .as_ref()
+            .is_some_and(|draft| draft.document_id == document_id)
+        {
+            self.arc_draft = None;
+        }
+        if self
+            .snapshot_draft
+            .as_ref()
+            .is_some_and(|draft| draft.document_id == document_id)
+        {
+            self.snapshot_draft = None;
+            self.snapshot_capture_asset = None;
+        } else if self.snapshot_draft.is_none() {
+            self.snapshot_capture_asset = None;
+        }
+
+        // Pending Image placement has no document owner before its click is
+        // handled. It cannot safely survive a model replacement because the
+        // next click could apply pre-recovery state to the recovered document.
+        self.image_asset = None;
+        self.image_placement_page = None;
+        self.queued_id = None;
+        self.queued_rectangle_appearance = None;
+        self.queued_text_content = None;
+        self.semantic_snap_decision = None;
+
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active_pointer_document_id(active) == document_id)
+        {
+            self.active = None;
+        }
+        if self
+            .native_v5_snap_observation
+            .as_ref()
+            .is_some_and(|observation| observation.document_id == document_id)
+        {
+            self.native_v5_snap_observation = None;
+        }
+        if self
+            .native_v5_property_receipt
+            .as_ref()
+            .is_some_and(|(receipt_document_id, _)| *receipt_document_id == document_id)
+        {
+            self.native_v5_property_receipt = None;
+        }
+        if self
+            .native_v5_snap_receipt
+            .as_ref()
+            .is_some_and(|(receipt_document_id, _)| *receipt_document_id == document_id)
+        {
+            self.native_v5_snap_receipt = None;
+        }
+        self.retained_annotation_obstacles.remove(&document_id);
+    }
+
     pub fn load_imported_annotations(
         &mut self,
         document_id: u64,
@@ -994,12 +1348,14 @@ impl AnnotationAdapter {
             .collect::<Vec<_>>();
         let mut document = AnnotationDocument::default();
         document.load_imported_annotations(annotations, imported_length_calibrations)?;
+        let sequence_floor = self.replacement_sequence_floor(document_id, &document)?;
         if self
             .active_surface()
             .is_some_and(|(active_document_id, _)| active_document_id == document_id)
         {
             self.cancel(PointerCancelReason::PageChanged)?;
         }
+        self.next_sequence = self.next_sequence.max(sequence_floor);
         self.documents.insert(document_id, document);
         Ok(())
     }
@@ -1053,12 +1409,14 @@ impl AnnotationAdapter {
             imported_length_calibrations.into_iter().collect(),
             page_rotations,
         )?;
+        let sequence_floor = self.replacement_sequence_floor(document_id, &document)?;
         if self
             .active_surface()
             .is_some_and(|(active_document_id, _)| active_document_id == document_id)
         {
             self.cancel(PointerCancelReason::PageChanged)?;
         }
+        self.next_sequence = self.next_sequence.max(sequence_floor);
         self.documents.insert(document_id, document);
         Ok(())
     }
@@ -1078,12 +1436,14 @@ impl AnnotationAdapter {
             scale_presets,
             page_rotations,
         )?;
+        let sequence_floor = self.replacement_sequence_floor(document_id, &document)?;
         if self
             .active_surface()
             .is_some_and(|(active_document_id, _)| active_document_id == document_id)
         {
             self.cancel(PointerCancelReason::PageChanged)?;
         }
+        self.next_sequence = self.next_sequence.max(sequence_floor);
         self.documents.insert(document_id, document);
         Ok(())
     }
@@ -1523,6 +1883,10 @@ impl AnnotationAdapter {
     ) -> Result<(), AnnotationError> {
         self.semantic_snap_settings = settings;
         self.semantic_snap_decision = None;
+        self.acquired_tracking_points.clear();
+        self.tracking_hover_key = None;
+        self.object_snap_tracking_result = None;
+        self.relationship_snap_guides.clear();
         Ok(())
     }
 
@@ -1534,8 +1898,71 @@ impl AnnotationAdapter {
         self.semantic_snap_decision.as_ref()
     }
 
+    pub fn object_snap_tracking_result(&self) -> Option<&ObjectSnapTrackingResult> {
+        self.object_snap_tracking_result.as_ref()
+    }
+
+    pub fn relationship_snap_guides(&self) -> &[RelationshipSnapGuide] {
+        &self.relationship_snap_guides
+    }
+
     pub fn clear_semantic_snap_decision(&mut self) {
         self.semantic_snap_decision = None;
+        self.object_snap_tracking_result = None;
+        self.relationship_snap_guides.clear();
+    }
+
+    fn update_tracking_acquisition(&mut self, decision: Option<&SemanticSnapDecision>) {
+        let Some(decision) = decision.filter(|decision| decision.point_candidate) else {
+            self.tracking_hover_key = None;
+            return;
+        };
+        let key = (
+            (decision.point.x * 1_000.).round() as i64,
+            (decision.point.y * 1_000.).round() as i64,
+        );
+        if self.tracking_hover_key == Some(key) {
+            return;
+        }
+        self.tracking_hover_key = Some(key);
+        self.acquired_tracking_points = toggle_acquired_tracking_point(
+            &self.acquired_tracking_points,
+            AcquiredTrackingPoint {
+                point: decision.point,
+                source: decision.source,
+                role: decision.role,
+                owner_id: decision.owner_id.clone(),
+            },
+        );
+    }
+
+    fn acquired_tracking_for_enabled_sources(&self) -> Vec<AcquiredTrackingPoint> {
+        self.acquired_tracking_points
+            .iter()
+            .filter(|point| self.semantic_snap_settings.is_source_enabled(point.source))
+            .cloned()
+            .collect()
+    }
+
+    fn manipulation_chrome_visible(&self, document_id: u64, page_index: u32) -> bool {
+        !self
+            .semantic_snap_settings
+            .is_source_enabled(SemanticSnapSource::Annotation)
+            && !(self
+                .semantic_snap_settings
+                .is_source_enabled(SemanticSnapSource::Content)
+                && self
+                    .semantic_snap_page_content
+                    .contains_key(&(document_id, page_index)))
+            && !(self
+                .semantic_snap_settings
+                .is_source_enabled(SemanticSnapSource::PageGrid)
+                && self
+                    .semantic_snap_page_grids
+                    .contains_key(&(document_id, page_index)))
+            && !self
+                .semantic_snap_settings
+                .is_source_enabled(SemanticSnapSource::ConstructionGrid)
     }
 
     pub fn set_semantic_snap_page_size(
@@ -1551,6 +1978,267 @@ impl AnnotationAdapter {
         );
     }
 
+    pub fn set_semantic_snap_page_grid(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        grid: Option<PageGridDefinition>,
+    ) {
+        let key = (document_id, page_index);
+        if let Some(grid) = grid {
+            self.semantic_snap_page_grids.insert(key, grid);
+        } else {
+            self.semantic_snap_page_grids.remove(&key);
+        }
+        self.semantic_snap_decision = None;
+    }
+
+    pub fn set_semantic_snap_page_content(
+        &mut self,
+        document_id: u64,
+        geometry: PageSnapGeometry,
+    ) -> Result<(), SemanticSnapError> {
+        let key = (document_id, geometry.page_index);
+        // Validate candidate expansion before replacing a previously usable
+        // page cache. This also keeps malformed/oversized worker results from
+        // affecting annotation interaction.
+        let index = SemanticSnapIndex::default().with_page_content(&geometry)?;
+        self.semantic_snap_page_content.insert(key, Arc::new(index));
+        self.semantic_snap_decision = None;
+        Ok(())
+    }
+
+    pub fn clear_semantic_snap_page_content(&mut self, document_id: u64) {
+        self.semantic_snap_page_content
+            .retain(|(owner, _), _| *owner != document_id);
+        self.semantic_snap_decision = None;
+    }
+
+    pub fn clear_semantic_snap_page_content_page(&mut self, document_id: u64, page_index: u32) {
+        self.semantic_snap_page_content
+            .remove(&(document_id, page_index));
+        self.semantic_snap_decision = None;
+    }
+
+    fn semantic_snap_index(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        scene: &AnnotationScene,
+        excluded_owner_ids: &[MarkupId],
+        supplement: &AnnotationSelectionSupplement,
+    ) -> SemanticSnapIndex {
+        let index = SemanticSnapIndex::from_annotation_scene_with_selection_supplement(
+            scene,
+            excluded_owner_ids,
+            supplement,
+        );
+        let index = if let Some(content) = self
+            .semantic_snap_page_content
+            .get(&(document_id, page_index))
+        {
+            index.with_shared_index(content.clone())
+        } else {
+            index
+        };
+        if let Some(grid) = self
+            .semantic_snap_page_grids
+            .get(&(document_id, page_index))
+        {
+            index
+                .with_page_grid(grid)
+                .expect("stored page-grid geometry was validated before installation")
+        } else {
+            index
+        }
+    }
+
+    pub fn set_retained_annotation_obstacles(
+        &mut self,
+        document_id: u64,
+        mut obstacles: Vec<RetainedAnnotationObstacle>,
+    ) {
+        obstacles.sort_by(|left, right| {
+            (left.page_index, left.id.as_str()).cmp(&(right.page_index, right.id.as_str()))
+        });
+        self.retained_annotation_obstacles
+            .insert(document_id, obstacles);
+    }
+
+    fn cloud_plus_routing_context(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        exclude_id: Option<&MarkupId>,
+        caption_supplement: &AnnotationSelectionSupplement,
+    ) -> CloudPlusRoutingContext {
+        let page_bounds = self
+            .semantic_snap_page_sizes
+            .get(&(document_id, page_index))
+            .and_then(|(width, height)| PdfRect::new(0., 0., *width, *height).ok());
+        let mut obstacles = self
+            .retained_annotation_obstacles
+            .get(&document_id)
+            .into_iter()
+            .flatten()
+            .filter(|obstacle| obstacle.page_index == page_index)
+            .map(|obstacle| CloudPlusObstacle::Rect {
+                id: Some(obstacle.id.clone()),
+                rect: obstacle.rect,
+            })
+            .collect::<Vec<_>>();
+        let Some(document) = self.documents.get(&document_id) else {
+            return CloudPlusRoutingContext {
+                page_bounds,
+                obstacles,
+            };
+        };
+
+        let mut annotations = document
+            .document_scene(page_index)
+            .into_ordered_annotations()
+            .filter(|annotation| exclude_id.is_none_or(|id| annotation.id() != id))
+            .collect::<Vec<_>>();
+        annotations.sort_by(|left, right| left.id().as_str().cmp(right.id().as_str()));
+
+        for annotation in annotations {
+            let owner = annotation.id().as_str().to_owned();
+            match annotation {
+                SceneAnnotation::Rectangle(annotation) | SceneAnnotation::Ellipse(annotation) => {
+                    obstacles.push(CloudPlusObstacle::Rect {
+                        id: Some(owner),
+                        rect: annotation.rect,
+                    });
+                }
+                SceneAnnotation::Redact(annotation) => {
+                    obstacles.push(CloudPlusObstacle::Rect {
+                        id: Some(owner),
+                        rect: annotation.rect,
+                    });
+                }
+                SceneAnnotation::Arc(annotation) => {
+                    obstacles.push(CloudPlusObstacle::Rect {
+                        id: Some(owner),
+                        rect: annotation.rect,
+                    });
+                }
+                SceneAnnotation::StraightLine(annotation) => {
+                    obstacles.push(CloudPlusObstacle::Polyline {
+                        id: Some(owner),
+                        points: vec![annotation.start, annotation.end],
+                    });
+                }
+                SceneAnnotation::VertexPath(annotation) => match annotation.kind {
+                    VertexPathKind::Polyline => obstacles.push(CloudPlusObstacle::Polyline {
+                        id: Some(owner),
+                        points: annotation.points,
+                    }),
+                    VertexPathKind::Polygon => obstacles.push(CloudPlusObstacle::Polygon {
+                        id: Some(owner),
+                        points: annotation.points,
+                    }),
+                },
+                SceneAnnotation::Cloud(annotation) => {
+                    obstacles.push(CloudPlusObstacle::Polygon {
+                        id: Some(owner),
+                        points: annotation.points,
+                    });
+                }
+                SceneAnnotation::CloudPlus(annotation) => {
+                    obstacles.extend([
+                        CloudPlusObstacle::Rect {
+                            id: Some(format!("{owner}:text")),
+                            rect: annotation.text_box,
+                        },
+                        CloudPlusObstacle::Polyline {
+                            id: Some(format!("{owner}:leader")),
+                            points: annotation.leader_points,
+                        },
+                        CloudPlusObstacle::Polygon {
+                            id: Some(format!("{owner}:cloud")),
+                            points: annotation.scallop_path,
+                        },
+                    ]);
+                }
+                SceneAnnotation::Callout(annotation) => {
+                    obstacles.extend([
+                        CloudPlusObstacle::Rect {
+                            id: Some(format!("{owner}:text")),
+                            rect: annotation.text_box,
+                        },
+                        CloudPlusObstacle::Polyline {
+                            id: Some(format!("{owner}:leader")),
+                            points: annotation.leader_points,
+                        },
+                    ]);
+                }
+                SceneAnnotation::MeasurementPath(annotation) => match annotation.kind {
+                    MeasurementPathKind::Polylength => {
+                        obstacles.push(CloudPlusObstacle::Polyline {
+                            id: Some(owner),
+                            points: annotation.points,
+                        });
+                    }
+                    MeasurementPathKind::Area => obstacles.push(CloudPlusObstacle::Polygon {
+                        id: Some(owner),
+                        points: annotation.points,
+                    }),
+                },
+                SceneAnnotation::Pen(annotation) => {
+                    obstacles.extend(annotation.paths.into_iter().enumerate().map(
+                        |(index, points)| CloudPlusObstacle::Polyline {
+                            id: Some(format!("{owner}:path:{index}")),
+                            points,
+                        },
+                    ));
+                }
+                SceneAnnotation::TextBox(annotation) => {
+                    obstacles.push(CloudPlusObstacle::Rect {
+                        id: Some(owner),
+                        rect: annotation.layout_rect,
+                    });
+                }
+                SceneAnnotation::Dimension(annotation) => {
+                    if let Some(rect) = caption_supplement
+                        .get(&annotation.id)
+                        .and_then(|corners| routing_points_bounds(corners))
+                    {
+                        obstacles.push(CloudPlusObstacle::Rect {
+                            id: Some(format!("{owner}:caption")),
+                            rect,
+                        });
+                    }
+                    obstacles.push(CloudPlusObstacle::Polyline {
+                        id: Some(format!("{owner}:line")),
+                        points: vec![annotation.start, annotation.end],
+                    });
+                }
+                SceneAnnotation::Length(annotation) => {
+                    obstacles.push(CloudPlusObstacle::Polyline {
+                        id: Some(owner),
+                        points: vec![annotation.start, annotation.end],
+                    });
+                }
+                SceneAnnotation::Image(annotation) => {
+                    obstacles.push(CloudPlusObstacle::Rect {
+                        id: Some(owner),
+                        rect: annotation.rect,
+                    });
+                }
+                SceneAnnotation::Snapshot(annotation) => {
+                    obstacles.push(CloudPlusObstacle::Rect {
+                        id: Some(owner),
+                        rect: annotation.rect,
+                    });
+                }
+            }
+        }
+        CloudPlusRoutingContext {
+            page_bounds,
+            obstacles,
+        }
+    }
+
     fn resolve_semantic_creation_point(
         &mut self,
         document_id: u64,
@@ -1558,14 +2246,583 @@ impl AnnotationAdapter {
         point: PdfPoint,
         constrain_orthogonal: bool,
     ) -> PdfPoint {
+        self.relationship_snap_guides.clear();
+        let moving = match self.active.as_ref() {
+            Some(ActivePointer::Domain {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                rectangle_translation_start: Some(start),
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => self
+                .documents
+                .get(active_document_id)
+                .and_then(|document| document.selected_id().cloned().map(|id| (document, id)))
+                .map(|(document, id)| {
+                    // The domain Rectangle gesture installs a scene preview at
+                    // pointer-down; freeze anchors from committed geometry.
+                    let scene = document.thumbnail_scene(page_index);
+                    let anchors = moving_annotation_snap_anchor_points_with_selection_supplement(
+                        &scene,
+                        std::slice::from_ref(&id),
+                        128,
+                        &AnnotationSelectionSupplement::new(),
+                    );
+                    (
+                        *start,
+                        anchors,
+                        vec![id],
+                        AnnotationSelectionSupplement::new(),
+                    )
+                }),
+            Some(ActivePointer::EllipseMove {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                start,
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => {
+                self.documents.get(active_document_id).map(|document| {
+                    let scene = document.thumbnail_scene(page_index);
+                    (
+                        *start,
+                        moving_annotation_snap_anchor_points_with_selection_supplement(
+                            &scene,
+                            std::slice::from_ref(id),
+                            128,
+                            &AnnotationSelectionSupplement::new(),
+                        ),
+                        vec![id.clone()],
+                        AnnotationSelectionSupplement::new(),
+                    )
+                })
+            }
+            Some(ActivePointer::InkMove {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                start,
+                original_paths,
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => Some((
+                *start,
+                original_paths.iter().flatten().copied().take(128).collect(),
+                vec![id.clone()],
+                AnnotationSelectionSupplement::new(),
+            )),
+            Some(ActivePointer::RedactMove {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                start,
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => {
+                self.documents.get(active_document_id).map(|document| {
+                    let scene = document.thumbnail_scene(page_index);
+                    (
+                        *start,
+                        moving_annotation_snap_anchor_points_with_selection_supplement(
+                            &scene,
+                            std::slice::from_ref(id),
+                            128,
+                            &AnnotationSelectionSupplement::new(),
+                        ),
+                        vec![id.clone()],
+                        AnnotationSelectionSupplement::new(),
+                    )
+                })
+            }
+            Some(ActivePointer::StraightLineMove {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                start,
+                snap_anchor_points,
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => Some((
+                *start,
+                snap_anchor_points.clone(),
+                vec![id.clone()],
+                AnnotationSelectionSupplement::new(),
+            )),
+            Some(ActivePointer::LengthMove {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                start,
+                snap_anchor_points,
+                snap_caption_supplement,
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => Some((
+                *start,
+                snap_anchor_points.clone(),
+                vec![id.clone()],
+                snap_caption_supplement.clone(),
+            )),
+            Some(ActivePointer::DimensionEdit {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                kind: DimensionPointerEditKind::Body,
+                start,
+                snap_anchor_points,
+                snap_caption_supplement,
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => Some((
+                *start,
+                snap_anchor_points.clone(),
+                vec![id.clone()],
+                snap_caption_supplement.clone(),
+            )),
+            Some(ActivePointer::TextBoxMove {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                start,
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => {
+                self.documents.get(active_document_id).map(|document| {
+                    let scene = document.thumbnail_scene(page_index);
+                    (
+                        *start,
+                        moving_annotation_snap_anchor_points(&scene, std::slice::from_ref(id), 128),
+                        vec![id.clone()],
+                        AnnotationSelectionSupplement::new(),
+                    )
+                })
+            }
+            Some(ActivePointer::ImageMove {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                start,
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => {
+                self.documents.get(active_document_id).map(|document| {
+                    let scene = document.thumbnail_scene(page_index);
+                    (
+                        *start,
+                        moving_annotation_snap_anchor_points(&scene, std::slice::from_ref(id), 128),
+                        vec![id.clone()],
+                        AnnotationSelectionSupplement::new(),
+                    )
+                })
+            }
+            Some(ActivePointer::SnapshotMove {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                start,
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => {
+                self.documents.get(active_document_id).map(|document| {
+                    let scene = document.thumbnail_scene(page_index);
+                    (
+                        *start,
+                        moving_annotation_snap_anchor_points(&scene, std::slice::from_ref(id), 128),
+                        vec![id.clone()],
+                        AnnotationSelectionSupplement::new(),
+                    )
+                })
+            }
+            Some(ActivePointer::ArcMove {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                start,
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => {
+                self.documents.get(active_document_id).map(|document| {
+                    let scene = document.thumbnail_scene(page_index);
+                    (
+                        *start,
+                        moving_annotation_snap_anchor_points(&scene, std::slice::from_ref(id), 128),
+                        vec![id.clone()],
+                        AnnotationSelectionSupplement::new(),
+                    )
+                })
+            }
+            Some(ActivePointer::GroupMove {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                start,
+                snap_anchor_points,
+                excluded_ids,
+                snap_caption_supplement,
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => Some((
+                *start,
+                snap_anchor_points.clone(),
+                excluded_ids.clone(),
+                snap_caption_supplement.clone(),
+            )),
+            Some(ActivePointer::CloudEdit {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                kind: CloudPointerEditKind::Body,
+                start,
+                snap_anchor_points,
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => Some((
+                *start,
+                snap_anchor_points.clone(),
+                vec![id.clone()],
+                AnnotationSelectionSupplement::new(),
+            )),
+            Some(ActivePointer::CalloutEdit {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                kind: CalloutPointerEditKind::TextBox | CalloutPointerEditKind::Body,
+                start,
+                snap_anchor_points,
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => Some((
+                *start,
+                snap_anchor_points.clone(),
+                vec![id.clone()],
+                AnnotationSelectionSupplement::new(),
+            )),
+            Some(ActivePointer::CloudPlusEdit {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                kind: CloudPlusPointerEditKind::TextBox | CloudPlusPointerEditKind::Body,
+                start,
+                snap_anchor_points,
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => Some((
+                *start,
+                snap_anchor_points.clone(),
+                vec![id.clone()],
+                AnnotationSelectionSupplement::new(),
+            )),
+            _ => None,
+        };
+        if let Some((start, anchors, excluded_ids, caption_supplement)) = moving {
+            let scene = self.document_scene(document_id, page_index);
+            let index = self.semantic_snap_index(
+                document_id,
+                page_index,
+                &scene,
+                &excluded_ids,
+                &caption_supplement,
+            );
+            let delta_x = point.x - start.x;
+            let delta_y = point.y - start.y;
+            let page_size = self
+                .semantic_snap_page_sizes
+                .get(&(document_id, page_index))
+                .copied();
+            let mut best: Option<(SemanticSnapDecision, PdfPoint)> = None;
+            for anchor in &anchors {
+                let prospective = PdfPoint {
+                    x: anchor.x + delta_x,
+                    y: anchor.y + delta_y,
+                };
+                let annotation = index.resolve_point(
+                    prospective,
+                    &self.semantic_snap_settings,
+                    self.observed_pixels_per_point.0,
+                );
+                let grid = page_size.and_then(|(width, height)| {
+                    resolve_construction_grid_point(
+                        prospective,
+                        width,
+                        height,
+                        &self.semantic_snap_settings,
+                        self.observed_pixels_per_point.0,
+                    )
+                });
+                let decision = match (annotation, grid) {
+                    (Some(annotation), Some(grid)) => Some(
+                        if annotation.distance_window_px <= grid.distance_window_px {
+                            annotation
+                        } else {
+                            grid
+                        },
+                    ),
+                    (annotation @ Some(_), None) => annotation,
+                    (None, grid) => grid,
+                };
+                if let Some(decision) = decision
+                    && best.as_ref().is_none_or(|(current, _)| {
+                        decision.distance_window_px < current.distance_window_px
+                    })
+                {
+                    best = Some((decision, prospective));
+                }
+            }
+            let mut resolved = point;
+            if let Some((decision, prospective)) = best {
+                resolved = PdfPoint {
+                    x: point.x + decision.point.x - prospective.x,
+                    y: point.y + decision.point.y - prospective.y,
+                };
+                self.update_tracking_acquisition(Some(&decision));
+                self.object_snap_tracking_result = None;
+                self.semantic_snap_decision = Some(decision);
+            } else {
+                self.update_tracking_acquisition(None);
+                self.semantic_snap_decision = None;
+                let acquired = self.acquired_tracking_for_enabled_sources();
+                let mut best_tracking: Option<(ObjectSnapTrackingResult, PdfPoint)> = None;
+                for anchor in &anchors {
+                    let prospective = PdfPoint {
+                        x: anchor.x + delta_x,
+                        y: anchor.y + delta_y,
+                    };
+                    if let Some(result) = find_object_snap_tracking_point(
+                        prospective,
+                        &acquired,
+                        self.observed_pixels_per_point.0,
+                        self.semantic_snap_settings.sensitivity_window_px(),
+                        &[OrthogonalAxis::Horizontal, OrthogonalAxis::Vertical],
+                    ) && best_tracking.as_ref().is_none_or(|(current, _)| {
+                        result.distance_window_px < current.distance_window_px
+                    }) {
+                        best_tracking = Some((result, prospective));
+                    }
+                }
+                if let Some((result, prospective)) = best_tracking {
+                    resolved = PdfPoint {
+                        x: point.x + result.point.x - prospective.x,
+                        y: point.y + result.point.y - prospective.y,
+                    };
+                    self.object_snap_tracking_result = Some(result);
+                } else {
+                    self.object_snap_tracking_result = None;
+                }
+            }
+
+            let initial_bounds = self
+                .documents
+                .get(&document_id)
+                .and_then(|document| {
+                    let committed_scene = document.thumbnail_scene(page_index);
+                    let points = annotation_guide_rects(&committed_scene, &[], &caption_supplement)
+                        .into_iter()
+                        .filter(|guide| excluded_ids.contains(&guide.owner_id))
+                        .flat_map(|guide| {
+                            let rect = guide.rect;
+                            [
+                                PdfPoint {
+                                    x: rect.x,
+                                    y: rect.y,
+                                },
+                                PdfPoint {
+                                    x: rect.x + rect.width,
+                                    y: rect.y + rect.height,
+                                },
+                            ]
+                        })
+                        .collect::<Vec<_>>();
+                    combined_guide_bounds(&points)
+                })
+                .or_else(|| combined_guide_bounds(&anchors));
+            if let Some(initial_bounds) = initial_bounds {
+                let mut moving_bounds = PdfRect {
+                    x: initial_bounds.x + resolved.x - start.x,
+                    y: initial_bounds.y + resolved.y - start.y,
+                    ..initial_bounds
+                };
+                let references = annotation_guide_rects(&scene, &excluded_ids, &caption_supplement);
+                if let Some(spacing) = find_equal_spacing_snap(
+                    moving_bounds,
+                    &references,
+                    self.observed_pixels_per_point.0,
+                    self.semantic_snap_settings.sensitivity_window_px(),
+                ) {
+                    resolved.x += spacing.adjustment.x;
+                    resolved.y += spacing.adjustment.y;
+                    moving_bounds.x += spacing.adjustment.x;
+                    moving_bounds.y += spacing.adjustment.y;
+                    self.relationship_snap_guides.extend(spacing.guides);
+                    self.semantic_snap_decision = None;
+                    self.object_snap_tracking_result = None;
+                }
+                if let Some(size) = find_equal_size_snap(
+                    moving_bounds,
+                    &references,
+                    self.observed_pixels_per_point.0,
+                    0.5,
+                ) {
+                    self.relationship_snap_guides.extend(size.guides);
+                }
+            }
+            return resolved;
+        }
+        let manipulated_id = match self.active.as_ref() {
+            Some(ActivePointer::Domain {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                rectangle_resize_handle: Some(_),
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => self
+                .documents
+                .get(active_document_id)
+                .and_then(|document| document.selected_id().cloned()),
+            Some(ActivePointer::StraightLineEndpoint {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                ..
+            })
+            | Some(ActivePointer::LengthEndpoint {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                ..
+            })
+            | Some(ActivePointer::VertexPathPoint {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                ..
+            })
+            | Some(ActivePointer::MeasurementPathPoint {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                ..
+            })
+            | Some(ActivePointer::ArcControlPoint {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => {
+                Some(id.clone())
+            }
+            Some(ActivePointer::EllipseResize {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                ..
+            })
+            | Some(ActivePointer::RedactResize {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                ..
+            })
+            | Some(ActivePointer::TextBoxResize {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                ..
+            })
+            | Some(ActivePointer::ImageResize {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                ..
+            })
+            | Some(ActivePointer::SnapshotResize {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => {
+                Some(id.clone())
+            }
+            Some(ActivePointer::CalloutEdit {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                kind:
+                    CalloutPointerEditKind::TextBoxResize(_) | CalloutPointerEditKind::LeaderPoint(_),
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => {
+                Some(id.clone())
+            }
+            Some(ActivePointer::CloudPlusEdit {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                kind:
+                    CloudPlusPointerEditKind::CloudVertex(_)
+                    | CloudPlusPointerEditKind::TextBoxResize(_)
+                    | CloudPlusPointerEditKind::LeaderPoint(_),
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => {
+                Some(id.clone())
+            }
+            _ => None,
+        };
+        if let Some(manipulated_id) = manipulated_id {
+            let scene = self.document_scene(document_id, page_index);
+            let annotation_decision = self
+                .semantic_snap_index(
+                    document_id,
+                    page_index,
+                    &scene,
+                    std::slice::from_ref(&manipulated_id),
+                    &AnnotationSelectionSupplement::new(),
+                )
+                .resolve_point(
+                    point,
+                    &self.semantic_snap_settings,
+                    self.observed_pixels_per_point.0,
+                );
+            let construction_grid_decision = self
+                .semantic_snap_page_sizes
+                .get(&(document_id, page_index))
+                .and_then(|(width, height)| {
+                    resolve_construction_grid_point(
+                        point,
+                        *width,
+                        *height,
+                        &self.semantic_snap_settings,
+                        self.observed_pixels_per_point.0,
+                    )
+                });
+            let decision = match (annotation_decision, construction_grid_decision) {
+                (Some(annotation), Some(grid)) => Some(
+                    if annotation.distance_window_px <= grid.distance_window_px {
+                        annotation
+                    } else {
+                        grid
+                    },
+                ),
+                (annotation @ Some(_), None) => annotation,
+                (None, grid) => grid,
+            };
+            if let Some(decision) = decision {
+                let resolved = decision.point;
+                self.update_tracking_acquisition(Some(&decision));
+                self.object_snap_tracking_result = None;
+                self.semantic_snap_decision = Some(decision);
+                return resolved;
+            }
+            self.update_tracking_acquisition(None);
+            self.semantic_snap_decision = None;
+            let tracking = find_object_snap_tracking_point(
+                point,
+                &self.acquired_tracking_for_enabled_sources(),
+                self.observed_pixels_per_point.0,
+                self.semantic_snap_settings.sensitivity_window_px(),
+                &[OrthogonalAxis::Horizontal, OrthogonalAxis::Vertical],
+            );
+            let resolved = tracking.as_ref().map_or(point, |tracking| tracking.point);
+            self.object_snap_tracking_result = tracking;
+            return resolved;
+        }
         if !matches!(
             self.tool,
             AnnotationTool::Line
                 | AnnotationTool::Arrow
                 | AnnotationTool::Length
                 | AnnotationTool::Dimension
+                | AnnotationTool::Image
+                | AnnotationTool::Polyline
+                | AnnotationTool::Polygon
+                | AnnotationTool::Polylength
+                | AnnotationTool::Area
+                | AnnotationTool::Arc
         ) {
             self.semantic_snap_decision = None;
+            self.object_snap_tracking_result = None;
             return point;
         }
         let (excluded_ids, creation_anchor) = match self.active.as_ref() {
@@ -1592,10 +2849,55 @@ impl AnnotationAdapter {
             }) if (*active_document_id, *active_page_index) == (document_id, page_index) => {
                 (vec![id.clone()], Some(*start))
             }
-            _ => (Vec::new(), None),
+            _ => self
+                .vertex_path_draft
+                .as_ref()
+                .filter(|draft| (draft.document_id, draft.page_index) == (document_id, page_index))
+                .and_then(|draft| {
+                    draft
+                        .points
+                        .last()
+                        .copied()
+                        .map(|anchor| (vec![draft.id.clone()], Some(anchor)))
+                })
+                .or_else(|| {
+                    self.measurement_path_draft
+                        .as_ref()
+                        .filter(|draft| {
+                            (draft.document_id, draft.page_index) == (document_id, page_index)
+                        })
+                        .and_then(|draft| {
+                            draft
+                                .points
+                                .last()
+                                .copied()
+                                .map(|anchor| (vec![draft.id.clone()], Some(anchor)))
+                        })
+                })
+                .or_else(|| {
+                    self.arc_draft
+                        .as_ref()
+                        .filter(|draft| {
+                            (draft.document_id, draft.page_index) == (document_id, page_index)
+                        })
+                        .map(|draft| {
+                            (
+                                vec![draft.id.clone()],
+                                draft.end.is_none().then_some(draft.start),
+                            )
+                        })
+                })
+                .unwrap_or((Vec::new(), None)),
         };
         let scene = self.document_scene(document_id, page_index);
-        let annotation_decision = SemanticSnapIndex::from_annotation_scene(&scene, &excluded_ids)
+        let annotation_decision = self
+            .semantic_snap_index(
+                document_id,
+                page_index,
+                &scene,
+                &excluded_ids,
+                &AnnotationSelectionSupplement::new(),
+            )
             .resolve_point_with_orthogonal_anchor(
                 point,
                 &self.semantic_snap_settings,
@@ -1625,9 +2927,37 @@ impl AnnotationAdapter {
             (annotation @ Some(_), None) => annotation,
             (None, grid) => grid,
         };
-        let mut resolved = decision.as_ref().map_or(point, |decision| decision.point);
-        if decision.is_none()
-            && self.tool == AnnotationTool::Dimension
+        if let Some(decision) = decision {
+            let resolved = decision.point;
+            self.update_tracking_acquisition(Some(&decision));
+            self.object_snap_tracking_result = None;
+            self.semantic_snap_decision = Some(decision);
+            return resolved;
+        }
+        self.update_tracking_acquisition(None);
+        self.semantic_snap_decision = None;
+        let constrained = if constrain_orthogonal {
+            creation_anchor.map_or(point, |anchor| {
+                let dx = point.x - anchor.x;
+                let dy = point.y - anchor.y;
+                if dx.abs() >= dy.abs() {
+                    PdfPoint {
+                        x: point.x,
+                        y: anchor.y,
+                    }
+                } else {
+                    PdfPoint {
+                        x: anchor.x,
+                        y: point.y,
+                    }
+                }
+            })
+        } else {
+            point
+        };
+        let mut resolved = constrained;
+        let mut increment_applied = false;
+        if self.tool == AnnotationTool::Dimension
             && self.semantic_snap_settings.dimension_increment_enabled()
             && let Some(anchor) = creation_anchor
         {
@@ -1645,9 +2975,386 @@ impl AnnotationAdapter {
                     x: anchor.x + delta_x * scale,
                     y: anchor.y + delta_y * scale,
                 };
+                increment_applied = true;
             }
         }
-        self.semantic_snap_decision = decision;
+        if !increment_applied {
+            let allowed_axes = if constrain_orthogonal {
+                creation_anchor.map_or_else(
+                    || vec![OrthogonalAxis::Horizontal, OrthogonalAxis::Vertical],
+                    |anchor| {
+                        if (point.x - anchor.x).abs() >= (point.y - anchor.y).abs() {
+                            vec![OrthogonalAxis::Vertical]
+                        } else {
+                            vec![OrthogonalAxis::Horizontal]
+                        }
+                    },
+                )
+            } else {
+                vec![OrthogonalAxis::Horizontal, OrthogonalAxis::Vertical]
+            };
+            let tracking = find_object_snap_tracking_point(
+                constrained,
+                &self.acquired_tracking_for_enabled_sources(),
+                self.observed_pixels_per_point.0,
+                self.semantic_snap_settings.sensitivity_window_px(),
+                &allowed_axes,
+            );
+            resolved = tracking
+                .as_ref()
+                .map_or(resolved, |tracking| tracking.point);
+            self.object_snap_tracking_result = tracking;
+        } else {
+            self.object_snap_tracking_result = None;
+        }
+        resolved
+    }
+
+    fn resolve_equal_size_resize_point(&mut self, point: PdfPoint) -> PdfPoint {
+        let target = match self.active.as_ref() {
+            Some(ActivePointer::Domain {
+                document_id,
+                page_index,
+                rectangle_resize_handle: Some(handle),
+                ..
+            }) => self.documents.get(document_id).and_then(|document| {
+                let id = document.selected_id()?.clone();
+                let annotation = document
+                    .rectangles()
+                    .iter()
+                    .find(|annotation| annotation.id == id)?;
+                (annotation.rotation_degrees.rem_euclid(360.).abs() <= f64::EPSILON).then(|| {
+                    EqualSizeResizeTarget {
+                        document_id: *document_id,
+                        page_index: *page_index,
+                        id,
+                        handle: *handle,
+                        original_rect: annotation.rect,
+                        geometry: EqualSizeResizeGeometry::Rectangle,
+                    }
+                })
+            }),
+            Some(ActivePointer::EllipseResize {
+                document_id,
+                page_index,
+                id,
+                handle,
+                original_rect,
+                original_rotation_degrees,
+                ..
+            }) if original_rotation_degrees.rem_euclid(360.).abs() <= f64::EPSILON => {
+                Some(EqualSizeResizeTarget {
+                    document_id: *document_id,
+                    page_index: *page_index,
+                    id: id.clone(),
+                    handle: *handle,
+                    original_rect: *original_rect,
+                    geometry: EqualSizeResizeGeometry::Ellipse,
+                })
+            }
+            Some(ActivePointer::RedactResize {
+                document_id,
+                page_index,
+                id,
+                handle,
+                original_rect,
+                ..
+            }) => Some(EqualSizeResizeTarget {
+                document_id: *document_id,
+                page_index: *page_index,
+                id: id.clone(),
+                handle: *handle,
+                original_rect: *original_rect,
+                geometry: EqualSizeResizeGeometry::Redact,
+            }),
+            Some(ActivePointer::ImageResize {
+                document_id,
+                page_index,
+                id,
+                handle,
+                start,
+                original_rect,
+                original_rotation_degrees,
+                aspect_locked,
+                ..
+            }) if original_rotation_degrees.rem_euclid(360.).abs() <= f64::EPSILON => {
+                let rectangle_handle = match handle {
+                    ImageResizeHandle::SouthWest => RectangleResizeHandle::SouthWest,
+                    ImageResizeHandle::South => RectangleResizeHandle::South,
+                    ImageResizeHandle::SouthEast => RectangleResizeHandle::SouthEast,
+                    ImageResizeHandle::East => RectangleResizeHandle::East,
+                    ImageResizeHandle::NorthEast => RectangleResizeHandle::NorthEast,
+                    ImageResizeHandle::North => RectangleResizeHandle::North,
+                    ImageResizeHandle::NorthWest => RectangleResizeHandle::NorthWest,
+                    ImageResizeHandle::West => RectangleResizeHandle::West,
+                };
+                Some(EqualSizeResizeTarget {
+                    document_id: *document_id,
+                    page_index: *page_index,
+                    id: id.clone(),
+                    handle: rectangle_handle,
+                    original_rect: *original_rect,
+                    geometry: EqualSizeResizeGeometry::Image {
+                        handle: *handle,
+                        start: *start,
+                        aspect_locked: *aspect_locked,
+                    },
+                })
+            }
+            Some(ActivePointer::TextBoxResize {
+                document_id,
+                page_index,
+                id,
+                handle,
+                original_rect,
+                original_rotation_degrees,
+                ..
+            })
+            | Some(ActivePointer::SnapshotResize {
+                document_id,
+                page_index,
+                id,
+                handle,
+                original_rect,
+                original_rotation_degrees,
+                ..
+            }) if original_rotation_degrees.rem_euclid(360.).abs() <= f64::EPSILON => {
+                Some(EqualSizeResizeTarget {
+                    document_id: *document_id,
+                    page_index: *page_index,
+                    id: id.clone(),
+                    handle: *handle,
+                    original_rect: *original_rect,
+                    geometry: EqualSizeResizeGeometry::Rectangle,
+                })
+            }
+            Some(ActivePointer::CalloutEdit {
+                document_id,
+                page_index,
+                id,
+                kind: CalloutPointerEditKind::TextBoxResize(handle),
+                original,
+                ..
+            }) => Some(EqualSizeResizeTarget {
+                document_id: *document_id,
+                page_index: *page_index,
+                id: id.clone(),
+                handle: *handle,
+                original_rect: original.text_box,
+                geometry: EqualSizeResizeGeometry::Rectangle,
+            }),
+            Some(ActivePointer::CloudPlusEdit {
+                document_id,
+                page_index,
+                id,
+                kind: CloudPlusPointerEditKind::TextBoxResize(handle),
+                original,
+                ..
+            }) => Some(EqualSizeResizeTarget {
+                document_id: *document_id,
+                page_index: *page_index,
+                id: id.clone(),
+                handle: *handle,
+                original_rect: original.text_box,
+                geometry: EqualSizeResizeGeometry::Rectangle,
+            }),
+            _ => None,
+        };
+        let Some(target) = target else {
+            return point;
+        };
+        let Some(moving_bounds) = target.rect_at(point) else {
+            return point;
+        };
+        let references = self
+            .documents
+            .get(&target.document_id)
+            .map(|document| {
+                annotation_guide_rects(
+                    &document.thumbnail_scene(target.page_index),
+                    std::slice::from_ref(&target.id),
+                    &AnnotationSelectionSupplement::new(),
+                )
+            })
+            .unwrap_or_default();
+        let Some(size) = find_equal_size_snap(
+            moving_bounds,
+            &references,
+            self.observed_pixels_per_point.0,
+            self.semantic_snap_settings.sensitivity_window_px(),
+        ) else {
+            return point;
+        };
+        let west = matches!(
+            target.handle,
+            RectangleResizeHandle::NorthWest
+                | RectangleResizeHandle::West
+                | RectangleResizeHandle::SouthWest
+        );
+        let east = matches!(
+            target.handle,
+            RectangleResizeHandle::NorthEast
+                | RectangleResizeHandle::East
+                | RectangleResizeHandle::SouthEast
+        );
+        let north = matches!(
+            target.handle,
+            RectangleResizeHandle::NorthWest
+                | RectangleResizeHandle::North
+                | RectangleResizeHandle::NorthEast
+        );
+        let south = matches!(
+            target.handle,
+            RectangleResizeHandle::SouthWest
+                | RectangleResizeHandle::South
+                | RectangleResizeHandle::SouthEast
+        );
+        let width = (west || east).then_some(size.width).flatten();
+        let height = (north || south).then_some(size.height).flatten();
+        if width.is_none() && height.is_none() {
+            return point;
+        }
+        let resolved = PdfPoint {
+            x: point.x
+                + width.map_or(0., |width| {
+                    (width - moving_bounds.width) * if west { -1. } else { 1. }
+                }),
+            y: point.y
+                + height.map_or(0., |height| {
+                    (height - moving_bounds.height) * if south { -1. } else { 1. }
+                }),
+        };
+        let Some(resolved_bounds) = target.rect_at(resolved) else {
+            return point;
+        };
+        self.relationship_snap_guides = size
+            .guides
+            .into_iter()
+            .filter_map(|guide| match guide {
+                RelationshipSnapGuide::EqualSize {
+                    axis, reference, ..
+                } if (axis == OrthogonalAxis::Horizontal && width.is_some())
+                    || (axis == OrthogonalAxis::Vertical && height.is_some()) =>
+                {
+                    Some(RelationshipSnapGuide::EqualSize {
+                        axis,
+                        moving: resolved_bounds,
+                        reference,
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        self.semantic_snap_decision = None;
+        self.object_snap_tracking_result = None;
+        resolved
+    }
+
+    fn resolve_equal_size_placement_point(
+        &mut self,
+        point: PdfPoint,
+        constrain_orthogonal: bool,
+    ) -> PdfPoint {
+        let placement = match self.active.as_ref() {
+            Some(ActivePointer::Domain {
+                document_id,
+                page_index,
+                rectangle_create_start: Some(start),
+                ink: false,
+                ..
+            }) => Some((*document_id, *page_index, *start, false)),
+            Some(ActivePointer::EllipseCreate {
+                document_id,
+                page_index,
+                start,
+                ..
+            }) => Some((*document_id, *page_index, *start, true)),
+            Some(ActivePointer::RedactCreate {
+                document_id,
+                page_index,
+                start,
+                ..
+            }) => Some((*document_id, *page_index, *start, false)),
+            _ => self
+                .snapshot_draft
+                .as_ref()
+                .map(|draft| (draft.document_id, draft.page_index, draft.start, false)),
+        };
+        let Some((document_id, page_index, start, is_ellipse)) = placement else {
+            return point;
+        };
+        let candidate = if is_ellipse && constrain_orthogonal {
+            EllipseAnnotation::constrained_end(start, point)
+        } else {
+            point
+        };
+        let moving_bounds = PdfRect::from_corners(start, candidate);
+        let references = self
+            .documents
+            .get(&document_id)
+            .map(|document| {
+                annotation_guide_rects(
+                    &document.thumbnail_scene(page_index),
+                    &[],
+                    &AnnotationSelectionSupplement::new(),
+                )
+            })
+            .unwrap_or_default();
+        let Some(size) = find_equal_size_snap(
+            moving_bounds,
+            &references,
+            self.observed_pixels_per_point.0,
+            self.semantic_snap_settings.sensitivity_window_px(),
+        ) else {
+            return point;
+        };
+        let (mut width, mut height) = (size.width, size.height);
+        if is_ellipse && constrain_orthogonal && (width.is_some() || height.is_some()) {
+            let diameter = match (width, height) {
+                (Some(width), Some(height)) => {
+                    if (width - moving_bounds.width).abs() <= (height - moving_bounds.height).abs()
+                    {
+                        width
+                    } else {
+                        height
+                    }
+                }
+                (Some(width), None) => width,
+                (None, Some(height)) => height,
+                (None, None) => unreachable!(),
+            };
+            width = Some(diameter);
+            height = Some(diameter);
+        }
+        let resolved = PdfPoint {
+            x: width.map_or(candidate.x, |width| {
+                start.x + width * if candidate.x < start.x { -1. } else { 1. }
+            }),
+            y: height.map_or(candidate.y, |height| {
+                start.y + height * if candidate.y < start.y { -1. } else { 1. }
+            }),
+        };
+        let resolved_bounds = PdfRect::from_corners(start, resolved);
+        self.relationship_snap_guides = size
+            .guides
+            .into_iter()
+            .filter_map(|guide| match guide {
+                RelationshipSnapGuide::EqualSize {
+                    axis, reference, ..
+                } if (axis == OrthogonalAxis::Horizontal && width.is_some())
+                    || (axis == OrthogonalAxis::Vertical && height.is_some()) =>
+                {
+                    Some(RelationshipSnapGuide::EqualSize {
+                        axis,
+                        moving: resolved_bounds,
+                        reference,
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        self.semantic_snap_decision = None;
+        self.object_snap_tracking_result = None;
         resolved
     }
 
@@ -1680,10 +3387,16 @@ impl AnnotationAdapter {
         Ok(())
     }
 
+    pub fn clear_pending_image_asset(&mut self) {
+        self.image_asset = None;
+        self.image_placement_page = None;
+    }
+
     pub fn set_image_asset(&mut self, asset: DecodedRgbaAsset) {
         self.image_asset = Some(PendingImageAsset {
             asset,
             aspect_locked: false,
+            select_after_placement: false,
         });
     }
 
@@ -1691,6 +3404,7 @@ impl AnnotationAdapter {
         self.image_asset = Some(PendingImageAsset {
             asset,
             aspect_locked: true,
+            select_after_placement: true,
         });
     }
 
@@ -1776,6 +3490,40 @@ impl AnnotationAdapter {
 
     pub fn image_asset(&self) -> Option<&DecodedRgbaAsset> {
         self.image_asset.as_ref().map(|pending| &pending.asset)
+    }
+
+    /// Read-only page-local Image ghost matching the geometry a click at the
+    /// same point will commit. Pointer ownership remains in the workspace so
+    /// leaving the page can remove the transient preview without discarding
+    /// the prepared asset.
+    pub fn pending_image_preview_at(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+    ) -> Result<Option<PendingImagePreview>, AnnotationError> {
+        if self.tool != AnnotationTool::Image {
+            return Ok(None);
+        }
+        let Some(pending) = self.image_asset.as_ref() else {
+            return Ok(None);
+        };
+        let Some(placement_page) = self.image_placement_page else {
+            return Ok(None);
+        };
+        Ok(Some(PendingImagePreview {
+            document_id,
+            page_index,
+            rect: image_placement_rect(pending, placement_page, point)?,
+            asset_id: pending.asset.id().as_str().to_owned(),
+            opacity: IMAGE_PLACEMENT_PREVIEW_OPACITY,
+        }))
+    }
+
+    pub(crate) fn image_select_after_placement(&self) -> bool {
+        self.image_asset
+            .as_ref()
+            .is_some_and(|pending| pending.select_after_placement)
     }
 
     pub fn set_length_calibration(
@@ -2139,6 +3887,17 @@ impl AnnotationAdapter {
         &mut self,
         document_id: u64,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
+        self.finish_cloud_plus_with_routing_supplement(
+            document_id,
+            &AnnotationSelectionSupplement::new(),
+        )
+    }
+
+    pub fn finish_cloud_plus_with_routing_supplement(
+        &mut self,
+        document_id: u64,
+        caption_supplement: &AnnotationSelectionSupplement,
+    ) -> Result<PointerPhaseOutcome, AnnotationError> {
         let draft = self
             .cloud_plus_draft
             .take()
@@ -2150,7 +3909,13 @@ impl AnnotationAdapter {
         if draft.points.len() < 3 {
             return Ok(PointerPhaseOutcome::Ignored);
         }
-        self.commit_cloud_plus(document_id, draft.page_index, draft.id, draft.points)
+        self.commit_cloud_plus(
+            document_id,
+            draft.page_index,
+            draft.id,
+            draft.points,
+            caption_supplement,
+        )
     }
 
     pub fn update_cloud_plus_hover(
@@ -2176,6 +3941,44 @@ impl AnnotationAdapter {
         vertex_index: usize,
         point: PdfPoint,
     ) -> Result<(), AnnotationError> {
+        self.set_selected_cloud_plus_cloud_point_with_routing_supplement(
+            document_id,
+            vertex_index,
+            point,
+            &AnnotationSelectionSupplement::new(),
+        )
+    }
+
+    pub fn set_selected_cloud_plus_cloud_point_with_routing_supplement(
+        &mut self,
+        document_id: u64,
+        vertex_index: usize,
+        point: PdfPoint,
+        caption_supplement: &AnnotationSelectionSupplement,
+    ) -> Result<(), AnnotationError> {
+        let selected_id = self
+            .documents
+            .get(&document_id)
+            .and_then(AnnotationDocument::selected_id)
+            .cloned()
+            .ok_or(AnnotationError::NoSelection)?;
+        let page_index = self
+            .documents
+            .get(&document_id)
+            .and_then(|document| {
+                document
+                    .cloud_pluses()
+                    .iter()
+                    .find(|annotation| annotation.id == selected_id)
+                    .map(|annotation| annotation.page_index)
+            })
+            .ok_or(AnnotationError::NoSelection)?;
+        let routing_context = self.cloud_plus_routing_context(
+            document_id,
+            page_index,
+            Some(&selected_id),
+            caption_supplement,
+        );
         let document = self
             .documents
             .get_mut(&document_id)
@@ -2203,7 +4006,7 @@ impl AnnotationAdapter {
             &visible_path,
             annotation.text_box,
             annotation.leader_points(),
-            &CloudPlusRoutingContext::default(),
+            &routing_context,
         )?;
         document.apply_command(AnnotationCommand::EditAnnotation {
             id,
@@ -2222,6 +4025,44 @@ impl AnnotationAdapter {
         delta_x: f64,
         delta_y: f64,
     ) -> Result<(), AnnotationError> {
+        self.translate_selected_cloud_plus_text_box_with_routing_supplement(
+            document_id,
+            delta_x,
+            delta_y,
+            &AnnotationSelectionSupplement::new(),
+        )
+    }
+
+    pub fn translate_selected_cloud_plus_text_box_with_routing_supplement(
+        &mut self,
+        document_id: u64,
+        delta_x: f64,
+        delta_y: f64,
+        caption_supplement: &AnnotationSelectionSupplement,
+    ) -> Result<(), AnnotationError> {
+        let selected_id = self
+            .documents
+            .get(&document_id)
+            .and_then(AnnotationDocument::selected_id)
+            .cloned()
+            .ok_or(AnnotationError::NoSelection)?;
+        let page_index = self
+            .documents
+            .get(&document_id)
+            .and_then(|document| {
+                document
+                    .cloud_pluses()
+                    .iter()
+                    .find(|annotation| annotation.id == selected_id)
+                    .map(|annotation| annotation.page_index)
+            })
+            .ok_or(AnnotationError::NoSelection)?;
+        let routing_context = self.cloud_plus_routing_context(
+            document_id,
+            page_index,
+            Some(&selected_id),
+            caption_supplement,
+        );
         let document = self
             .documents
             .get_mut(&document_id)
@@ -2247,7 +4088,7 @@ impl AnnotationAdapter {
             &annotation.scallop_path(),
             text_box,
             annotation.leader_points(),
-            &CloudPlusRoutingContext::default(),
+            &routing_context,
         )?;
         document.apply_command(AnnotationCommand::EditAnnotation {
             id,
@@ -2361,7 +4202,16 @@ impl AnnotationAdapter {
             self.measurement_path_draft = Some(draft);
             return Err(AnnotationError::NoActiveGesture);
         }
-        if draft.points.len() < draft.kind.minimum_points() {
+        // Commit exactly the path displayed by the hover preview, including
+        // its final point when it is at least half a PDF point from the last click.
+        let mut points = draft.points.clone();
+        let last = *points
+            .last()
+            .expect("a measurement draft retains its first point");
+        if (draft.hover.x - last.x).hypot(draft.hover.y - last.y) >= 0.5 {
+            points.push(draft.hover);
+        }
+        if points.len() < draft.kind.minimum_points() {
             self.measurement_path_draft = Some(draft);
             return Ok(PointerPhaseOutcome::Ignored);
         }
@@ -2378,7 +4228,7 @@ impl AnnotationAdapter {
                 Annotation::MeasurementPath(MeasurementPathAnnotation::new_with_text_style(
                     draft.id,
                     draft.page_index,
-                    draft.points,
+                    points,
                     draft.kind,
                     draft.calibration,
                     rectangle_tool_appearance(&properties, false)?,
@@ -2958,6 +4808,11 @@ impl AnnotationAdapter {
                 page_index,
                 ..
             }
+            | ActivePointer::LengthMove {
+                document_id,
+                page_index,
+                ..
+            }
             | ActivePointer::DimensionCreate {
                 document_id,
                 page_index,
@@ -2969,6 +4824,11 @@ impl AnnotationAdapter {
                 ..
             }
             | ActivePointer::CalloutEdit {
+                document_id,
+                page_index,
+                ..
+            }
+            | ActivePointer::CloudPlusEdit {
                 document_id,
                 page_index,
                 ..
@@ -2993,12 +4853,22 @@ impl AnnotationAdapter {
                 page_index,
                 ..
             }
+            | ActivePointer::TextBoxRotate {
+                document_id,
+                page_index,
+                ..
+            }
             | ActivePointer::ImageMove {
                 document_id,
                 page_index,
                 ..
             }
             | ActivePointer::ImageResize {
+                document_id,
+                page_index,
+                ..
+            }
+            | ActivePointer::ImageRotate {
                 document_id,
                 page_index,
                 ..
@@ -3039,6 +4909,46 @@ impl AnnotationAdapter {
             } if *active_document_id == document_id => Some((*page_index, marquee.clone())),
             _ => None,
         }
+    }
+
+    pub fn selection_marquee_candidates(&self, document_id: u64, page_index: u32) -> Vec<MarkupId> {
+        self.selection_marquee_candidates_with_supplement(
+            document_id,
+            page_index,
+            &AnnotationSelectionSupplement::new(),
+        )
+    }
+
+    pub fn selection_marquee_candidates_with_supplement(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        supplement: &AnnotationSelectionSupplement,
+    ) -> Vec<MarkupId> {
+        let Some(ActivePointer::Marquee {
+            document_id: active_document,
+            page_index: active_page,
+            marquee,
+            pdf_points,
+            ..
+        }) = self.active.as_ref()
+        else {
+            return Vec::new();
+        };
+        if (*active_document, *active_page) != (document_id, page_index) || !marquee.active {
+            return Vec::new();
+        }
+        self.documents
+            .get(&document_id)
+            .map(|document| {
+                document.marquee_candidates_with_supplement(
+                    page_index,
+                    &marquee_in_pdf(marquee, pdf_points),
+                    selection_point_from_pdf,
+                    supplement,
+                )
+            })
+            .unwrap_or_default()
     }
 
     pub fn is_click_placement_pending(&self) -> bool {
@@ -3230,15 +5140,970 @@ impl AnnotationAdapter {
         point: PdfPoint,
         tolerance_pt: f64,
     ) -> Result<Option<MarkupId>, AnnotationError> {
+        self.hover_markup_id_with_selection_paths(
+            document_id,
+            page_index,
+            point,
+            tolerance_pt,
+            &AnnotationSelectionSupplement::new(),
+        )
+    }
+
+    pub fn hover_markup_id_with_selection_paths(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+        supplement: &AnnotationSelectionSupplement,
+    ) -> Result<Option<MarkupId>, AnnotationError> {
         let document = self
             .documents
             .get(&document_id)
             .ok_or(AnnotationError::NoSelection)?;
-        let direct_hit = document.hit_test(page_index, point, tolerance_pt)?;
-        Ok(direct_hit
-            .as_ref()
-            .map(|hit| hit.markup_id().clone())
-            .or_else(|| hit_non_rectangle(document, page_index, point, tolerance_pt)))
+        let selected_control = document
+            .hit_test(page_index, point, tolerance_pt)?
+            .filter(|hit| !matches!(hit, HitTarget::Body(_)))
+            .map(|hit| hit.markup_id().clone());
+        Ok(selected_control.or_else(|| {
+            hit_annotation_body_in_document_order(
+                document,
+                page_index,
+                point,
+                tolerance_pt,
+                supplement,
+            )
+        }))
+    }
+
+    /// Read-only Select hover hit for the primary selected Rectangle. The
+    /// result preserves body, resize-handle, and rotation-handle semantics so
+    /// the presentation layer can choose feedback without repeating hit
+    /// testing. Locked rectangles remain body-hoverable, but their inert
+    /// controls do not advertise resize or rotation.
+    pub fn select_hover_hit(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<HitTarget>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let Some(hit) = document.hit_test(page_index, point, tolerance_pt)? else {
+            return Ok(None);
+        };
+        let Some(selected_id) = document.selected_id() else {
+            return Ok(None);
+        };
+        let Some(selected) = document
+            .rectangles()
+            .iter()
+            .find(|annotation| &annotation.id == selected_id)
+        else {
+            return Ok(None);
+        };
+        if hit.markup_id() != selected_id {
+            return Ok(None);
+        }
+        if selected.locked
+            && matches!(
+                hit,
+                HitTarget::ResizeHandle { .. } | HitTarget::RotationHandle(_)
+            )
+        {
+            return Ok(None);
+        }
+        Ok(Some(hit))
+    }
+
+    /// Rectangle resize handle under the pointer in stable clockwise order.
+    /// The selected unlocked Rectangle wins before the topmost unlocked
+    /// hovered Rectangle. Rotation remains selected-only, matching Electron.
+    pub fn hover_rectangle_handle(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let handle_tolerance =
+            tolerance_pt.max(9. / self.observed_pixels_per_point.0.max(f64::EPSILON));
+        let to_hit = |annotation: &RectangleAnnotation| {
+            RectangleResizeHandle::ALL
+                .into_iter()
+                .enumerate()
+                .rev()
+                .find(|(_, handle)| {
+                    distance(
+                        handle.world_point(annotation.rect, annotation.rotation_degrees),
+                        point,
+                    ) <= handle_tolerance
+                })
+                .map(|(index, _)| (annotation.id.clone(), index))
+        };
+        let selected = document.selected_id();
+        let hit = selected
+            .and_then(|selected| {
+                document.rectangles().iter().find(|annotation| {
+                    annotation.page_index == page_index
+                        && &annotation.id == selected
+                        && !annotation.locked
+                })
+            })
+            .and_then(to_hit)
+            .or_else(|| {
+                document
+                    .rectangles()
+                    .iter()
+                    .rev()
+                    .filter(|annotation| {
+                        annotation.page_index == page_index
+                            && !annotation.locked
+                            && selected != Some(&annotation.id)
+                    })
+                    .find_map(to_hit)
+            });
+        Ok(hit)
+    }
+
+    /// Redact resize handle under the pointer in stable clockwise order. The
+    /// selected unlocked Redact wins before the topmost unlocked hovered one.
+    pub fn hover_redact_handle(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let handle_tolerance =
+            tolerance_pt.max(9. / self.observed_pixels_per_point.0.max(f64::EPSILON));
+        let to_hit = |annotation: &RedactAnnotation| {
+            RectangleResizeHandle::ALL
+                .into_iter()
+                .enumerate()
+                .rev()
+                .find(|(_, handle)| {
+                    distance(redact_resize_handle_point(annotation, *handle), point)
+                        <= handle_tolerance
+                })
+                .map(|(index, _)| (annotation.id.clone(), index))
+        };
+        let selected = document.selected_id();
+        let hit = selected
+            .and_then(|selected| {
+                document.redacts().iter().find(|annotation| {
+                    annotation.page_index == page_index
+                        && &annotation.id == selected
+                        && !annotation.locked
+                })
+            })
+            .and_then(to_hit)
+            .or_else(|| {
+                document
+                    .redacts()
+                    .iter()
+                    .rev()
+                    .filter(|annotation| {
+                        annotation.page_index == page_index
+                            && !annotation.locked
+                            && selected != Some(&annotation.id)
+                    })
+                    .find_map(to_hit)
+            });
+        Ok(hit)
+    }
+
+    /// Ellipse resize handle under the pointer in stable clockwise order. The
+    /// selected unlocked Ellipse wins before the topmost unlocked hovered one;
+    /// rotation remains selected-only.
+    pub fn hover_ellipse_handle(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let handle_tolerance =
+            tolerance_pt.max(9. / self.observed_pixels_per_point.0.max(f64::EPSILON));
+        let to_hit = |annotation: &EllipseAnnotation| {
+            RectangleResizeHandle::ALL
+                .into_iter()
+                .enumerate()
+                .rev()
+                .find(|(_, handle)| {
+                    distance(ellipse_resize_handle_point(annotation, *handle), point)
+                        <= handle_tolerance
+                })
+                .map(|(index, _)| (annotation.id.clone(), index))
+        };
+        let selected = document.selected_id();
+        let hit = selected
+            .and_then(|selected| {
+                document.ellipses().iter().find(|annotation| {
+                    annotation.page_index == page_index
+                        && &annotation.id == selected
+                        && !annotation.locked
+                })
+            })
+            .and_then(to_hit)
+            .or_else(|| {
+                document
+                    .ellipses()
+                    .iter()
+                    .rev()
+                    .filter(|annotation| {
+                        annotation.page_index == page_index
+                            && !annotation.locked
+                            && selected != Some(&annotation.id)
+                    })
+                    .find_map(to_hit)
+            });
+        Ok(hit)
+    }
+
+    /// Line/Arrow endpoint under the pointer in stable start/end feedback
+    /// order. The selected unlocked line wins before the topmost unlocked
+    /// hovered line.
+    pub fn hover_straight_line_handle(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let handle_tolerance =
+            tolerance_pt.max(9. / self.observed_pixels_per_point.0.max(f64::EPSILON));
+        let to_hit = |annotation: &StraightLineAnnotation| {
+            [annotation.start, annotation.end]
+                .into_iter()
+                .enumerate()
+                .rev()
+                .find(|(_, handle)| distance(*handle, point) <= handle_tolerance)
+                .map(|(index, _)| (annotation.id.clone(), index))
+        };
+        let selected = document.selected_id();
+        let hit = selected
+            .and_then(|selected| {
+                document.straight_lines().iter().find(|annotation| {
+                    annotation.page_index == page_index
+                        && &annotation.id == selected
+                        && !annotation.locked
+                })
+            })
+            .and_then(to_hit)
+            .or_else(|| {
+                document
+                    .straight_lines()
+                    .iter()
+                    .rev()
+                    .filter(|annotation| {
+                        annotation.page_index == page_index
+                            && !annotation.locked
+                            && selected != Some(&annotation.id)
+                    })
+                    .find_map(to_hit)
+            });
+        Ok(hit)
+    }
+
+    /// Length endpoint under the pointer in stable start/end feedback order.
+    /// The selected unlocked Length wins before the topmost unlocked hovered
+    /// Length.
+    pub fn hover_length_handle(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let handle_tolerance =
+            tolerance_pt.max(9. / self.observed_pixels_per_point.0.max(f64::EPSILON));
+        let to_hit = |annotation: &LengthAnnotation| {
+            [annotation.start, annotation.end]
+                .into_iter()
+                .enumerate()
+                .rev()
+                .find(|(_, handle)| distance(*handle, point) <= handle_tolerance)
+                .map(|(index, _)| (annotation.id.clone(), index))
+        };
+        let selected = document.selected_id();
+        let hit = selected
+            .and_then(|selected| {
+                document.lengths().iter().find(|annotation| {
+                    annotation.page_index == page_index
+                        && &annotation.id == selected
+                        && !annotation.locked
+                })
+            })
+            .and_then(to_hit)
+            .or_else(|| {
+                document
+                    .lengths()
+                    .iter()
+                    .rev()
+                    .filter(|annotation| {
+                        annotation.page_index == page_index
+                            && !annotation.locked
+                            && selected != Some(&annotation.id)
+                    })
+                    .find_map(to_hit)
+            });
+        Ok(hit)
+    }
+
+    /// Callout handle under the pointer, using selected-first then topmost
+    /// unselected overlap priority. The returned index is the stable feedback
+    /// order: eight text-box handles followed by leader points.
+    pub fn hover_callout_handle(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let selected = document.selected_id();
+        let selected_callout = selected.and_then(|selected| {
+            document.callouts().iter().find(|annotation| {
+                annotation.page_index == page_index
+                    && &annotation.id == selected
+                    && !annotation.locked
+            })
+        });
+        let hit = selected_callout
+            .and_then(|annotation| {
+                hit_callout_handle(
+                    annotation,
+                    point,
+                    tolerance_pt,
+                    self.observed_pixels_per_point.0,
+                )
+                .map(|index| (annotation.id.clone(), index))
+            })
+            .or_else(|| {
+                document
+                    .callouts()
+                    .iter()
+                    .rev()
+                    .filter(|annotation| {
+                        annotation.page_index == page_index
+                            && !annotation.locked
+                            && selected != Some(&annotation.id)
+                    })
+                    .find_map(|annotation| {
+                        hit_callout_handle(
+                            annotation,
+                            point,
+                            tolerance_pt,
+                            self.observed_pixels_per_point.0,
+                        )
+                        .map(|index| (annotation.id.clone(), index))
+                    })
+            });
+        Ok(hit)
+    }
+
+    /// Text Box handle under the pointer in stable rectangle feedback order,
+    /// with rotation at index 8. The selected unlocked Text Box wins before
+    /// the topmost unlocked hovered Text Box so the first press on a visible
+    /// hover control can begin the transform.
+    pub fn hover_text_box_handle(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let to_hit = |annotation: &TextBoxAnnotation, allow_rotation: bool| {
+            let handle_tolerance =
+                tolerance_pt.max(9. / self.observed_pixels_per_point.0.max(f64::EPSILON));
+            if allow_rotation
+                && text_box_rotation_handle_point(annotation, self.observed_pixels_per_point.0)
+                    .is_ok_and(|handle| distance(handle, point) <= handle_tolerance)
+            {
+                return Some((annotation.id.clone(), 8));
+            }
+            hit_text_box_resize_handle(
+                annotation,
+                point,
+                tolerance_pt,
+                self.observed_pixels_per_point.0,
+            )
+            .map(|handle| {
+                let index = RectangleResizeHandle::ALL
+                    .iter()
+                    .position(|candidate| candidate == &handle)
+                    .expect("Text Box handle belongs to the stable feedback order");
+                (annotation.id.clone(), index)
+            })
+        };
+        let selected = document.selected_id();
+        let hit = selected
+            .and_then(|selected| {
+                document.text_boxes().iter().find(|annotation| {
+                    annotation.page_index == page_index
+                        && &annotation.id == selected
+                        && !annotation.locked
+                })
+            })
+            .and_then(|annotation| to_hit(annotation, true))
+            .or_else(|| {
+                document
+                    .text_boxes()
+                    .iter()
+                    .rev()
+                    .filter(|annotation| {
+                        annotation.page_index == page_index
+                            && !annotation.locked
+                            && selected != Some(&annotation.id)
+                    })
+                    .find_map(|annotation| to_hit(annotation, false))
+            });
+        Ok(hit)
+    }
+
+    /// Image handle under the pointer in stable clockwise feedback order,
+    /// with rotation at index 8. The selected unlocked Image wins before the
+    /// topmost unlocked hovered Image. Aspect-locked images advertise only
+    /// working resize corners plus rotation.
+    pub fn hover_image_handle(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let to_hit = |annotation: &ImageAnnotation, allow_rotation: bool| {
+            let handle_tolerance =
+                tolerance_pt.max(9. / self.observed_pixels_per_point.0.max(f64::EPSILON));
+            if allow_rotation
+                && image_rotation_handle_point(annotation, self.observed_pixels_per_point.0)
+                    .is_ok_and(|handle| distance(handle, point) <= handle_tolerance)
+            {
+                return Some((annotation.id.clone(), 8));
+            }
+            hit_image_resize_handle(annotation, point, tolerance_pt).map(|handle| {
+                let index = ImageResizeHandle::ALL
+                    .iter()
+                    .position(|candidate| candidate == &handle)
+                    .expect("Image handle belongs to the stable feedback order");
+                (annotation.id.clone(), index)
+            })
+        };
+        let selected = document.selected_id();
+        let hit = selected
+            .and_then(|selected| {
+                document.images().iter().find(|annotation| {
+                    annotation.page_index == page_index
+                        && &annotation.id == selected
+                        && !annotation.locked
+                })
+            })
+            .and_then(|annotation| to_hit(annotation, true))
+            .or_else(|| {
+                document
+                    .images()
+                    .iter()
+                    .rev()
+                    .filter(|annotation| {
+                        annotation.page_index == page_index
+                            && !annotation.locked
+                            && selected != Some(&annotation.id)
+                    })
+                    .find_map(|annotation| to_hit(annotation, false))
+            });
+        Ok(hit)
+    }
+
+    /// Dimension handle under the pointer in stable feedback order: start,
+    /// end, then offset/caption. The selected unlocked Dimension wins before
+    /// the topmost unlocked hovered Dimension so Electron's first press on a
+    /// visible hover handle can begin the transform without a selection-only
+    /// precursor click.
+    pub fn hover_dimension_handle(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let selected = document.selected_id();
+        let hit = selected
+            .and_then(|selected| {
+                document.dimensions().iter().find(|annotation| {
+                    annotation.page_index == page_index
+                        && &annotation.id == selected
+                        && !annotation.locked
+                })
+            })
+            .and_then(|annotation| {
+                hit_dimension_handle(
+                    annotation,
+                    point,
+                    tolerance_pt,
+                    self.observed_pixels_per_point.0,
+                )
+                .map(|index| (annotation.id.clone(), index))
+            })
+            .or_else(|| {
+                document
+                    .dimensions()
+                    .iter()
+                    .rev()
+                    .filter(|annotation| {
+                        annotation.page_index == page_index
+                            && !annotation.locked
+                            && selected != Some(&annotation.id)
+                    })
+                    .find_map(|annotation| {
+                        hit_dimension_handle(
+                            annotation,
+                            point,
+                            tolerance_pt,
+                            self.observed_pixels_per_point.0,
+                        )
+                        .map(|index| (annotation.id.clone(), index))
+                    })
+            });
+        Ok(hit)
+    }
+
+    /// Arc control under the pointer in stable start/mid/end feedback order.
+    /// The selected unlocked Arc wins before the topmost unlocked hovered Arc.
+    pub fn hover_arc_handle(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let to_hit = |annotation: &ArcAnnotation| {
+            hit_arc_handle_index(
+                annotation,
+                point,
+                tolerance_pt,
+                self.observed_pixels_per_point.0,
+            )
+            .map(|index| (annotation.id.clone(), index))
+        };
+        let selected = document.selected_id();
+        let hit = selected
+            .and_then(|selected| {
+                document.arcs().iter().find(|annotation| {
+                    annotation.page_index == page_index
+                        && &annotation.id == selected
+                        && !annotation.locked
+                })
+            })
+            .and_then(to_hit)
+            .or_else(|| {
+                document
+                    .arcs()
+                    .iter()
+                    .rev()
+                    .filter(|annotation| {
+                        annotation.page_index == page_index
+                            && !annotation.locked
+                            && selected != Some(&annotation.id)
+                    })
+                    .find_map(to_hit)
+            });
+        Ok(hit)
+    }
+
+    /// Polyline/Polygon vertex under the pointer in stable path order. The
+    /// selected unlocked path wins before the topmost unlocked hovered path.
+    pub fn hover_vertex_path_handle(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let to_hit = |annotation: &VertexPathAnnotation| {
+            hit_vertex_path_handle_index(
+                annotation,
+                point,
+                tolerance_pt,
+                self.observed_pixels_per_point.0,
+            )
+            .map(|index| (annotation.id.clone(), index))
+        };
+        let selected = document.selected_id();
+        let hit = selected
+            .and_then(|selected| {
+                document.vertex_paths().iter().find(|annotation| {
+                    annotation.page_index == page_index
+                        && &annotation.id == selected
+                        && !annotation.locked
+                })
+            })
+            .and_then(to_hit)
+            .or_else(|| {
+                document
+                    .vertex_paths()
+                    .iter()
+                    .rev()
+                    .filter(|annotation| {
+                        annotation.page_index == page_index
+                            && !annotation.locked
+                            && selected != Some(&annotation.id)
+                    })
+                    .find_map(to_hit)
+            });
+        Ok(hit)
+    }
+
+    /// Polylength/Area vertex under the pointer in stable path order. The
+    /// selected unlocked measurement wins before the topmost unlocked hovered
+    /// measurement.
+    pub fn hover_measurement_path_handle(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let to_hit = |annotation: &MeasurementPathAnnotation| {
+            hit_measurement_path_handle_index(
+                annotation,
+                point,
+                tolerance_pt,
+                self.observed_pixels_per_point.0,
+            )
+            .map(|index| (annotation.id.clone(), index))
+        };
+        let selected = document.selected_id();
+        let hit = selected
+            .and_then(|selected| {
+                document.measurement_paths().iter().find(|annotation| {
+                    annotation.page_index == page_index
+                        && &annotation.id == selected
+                        && !annotation.locked
+                })
+            })
+            .and_then(to_hit)
+            .or_else(|| {
+                document
+                    .measurement_paths()
+                    .iter()
+                    .rev()
+                    .filter(|annotation| {
+                        annotation.page_index == page_index
+                            && !annotation.locked
+                            && selected != Some(&annotation.id)
+                    })
+                    .find_map(to_hit)
+            });
+        Ok(hit)
+    }
+
+    /// Snapshot resize control under the pointer in rectangle feedback order.
+    /// The selected unlocked Snapshot may also expose rotation at index eight;
+    /// hovered-unselected Snapshots expose only their eight resize controls.
+    pub fn hover_snapshot_handle(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let selected = document.selected_id();
+        let hit = selected
+            .and_then(|selected| {
+                document.snapshots().iter().find(|annotation| {
+                    annotation.page_index == page_index
+                        && &annotation.id == selected
+                        && !annotation.locked
+                })
+            })
+            .and_then(|annotation| {
+                hit_snapshot_handle_index(
+                    annotation,
+                    point,
+                    tolerance_pt,
+                    self.observed_pixels_per_point.0,
+                    true,
+                )
+                .map(|index| (annotation.id.clone(), index))
+            })
+            .or_else(|| {
+                document
+                    .snapshots()
+                    .iter()
+                    .rev()
+                    .filter(|annotation| {
+                        annotation.page_index == page_index
+                            && !annotation.locked
+                            && selected != Some(&annotation.id)
+                    })
+                    .find_map(|annotation| {
+                        hit_snapshot_handle_index(
+                            annotation,
+                            point,
+                            tolerance_pt,
+                            self.observed_pixels_per_point.0,
+                            false,
+                        )
+                        .map(|index| (annotation.id.clone(), index))
+                    })
+            });
+        Ok(hit)
+    }
+
+    /// Cloud+ handle under the pointer in stable feedback order: cloud
+    /// vertices, eight text-box resize handles, then leader points. Selected
+    /// geometry wins before topmost hovered-unselected geometry.
+    pub fn hover_cloud_plus_handle(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let selected = document.selected_id();
+        let selected_cloud_plus = selected.and_then(|selected| {
+            document.cloud_pluses().iter().find(|annotation| {
+                annotation.page_index == page_index
+                    && &annotation.id == selected
+                    && !annotation.locked
+            })
+        });
+        let hit = selected_cloud_plus
+            .and_then(|annotation| {
+                hit_cloud_plus_handle(
+                    annotation,
+                    point,
+                    tolerance_pt,
+                    self.observed_pixels_per_point.0,
+                )
+                .map(|index| (annotation.id.clone(), index))
+            })
+            .or_else(|| {
+                document
+                    .cloud_pluses()
+                    .iter()
+                    .rev()
+                    .filter(|annotation| {
+                        annotation.page_index == page_index
+                            && !annotation.locked
+                            && selected != Some(&annotation.id)
+                    })
+                    .find_map(|annotation| {
+                        hit_cloud_plus_handle(
+                            annotation,
+                            point,
+                            tolerance_pt,
+                            self.observed_pixels_per_point.0,
+                        )
+                        .map(|index| (annotation.id.clone(), index))
+                    })
+            });
+        Ok(hit)
+    }
+
+    /// Cloud vertex under the pointer in stable control-path order. The
+    /// selected unlocked Cloud wins before the topmost unlocked hovered Cloud
+    /// so the first press on visible hover chrome begins the vertex transform.
+    pub fn hover_cloud_handle(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let handle_tolerance =
+            tolerance_pt.max(9. / self.observed_pixels_per_point.0.max(f64::EPSILON));
+        let to_hit = |annotation: &CloudAnnotation| {
+            annotation
+                .points()
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, vertex)| distance(**vertex, point) <= handle_tolerance)
+                .map(|(index, _)| (annotation.id.clone(), index))
+        };
+        let selected = document.selected_id();
+        let hit = selected
+            .and_then(|selected| {
+                document.clouds().iter().find(|annotation| {
+                    annotation.page_index == page_index
+                        && &annotation.id == selected
+                        && !annotation.locked
+                })
+            })
+            .and_then(to_hit)
+            .or_else(|| {
+                document
+                    .clouds()
+                    .iter()
+                    .rev()
+                    .filter(|annotation| {
+                        annotation.page_index == page_index
+                            && !annotation.locked
+                            && selected != Some(&annotation.id)
+                    })
+                    .find_map(to_hit)
+            });
+        Ok(hit)
+    }
+
+    /// Resolves transform controls across families with the reference's global
+    /// priority: the selected annotation first, otherwise the topmost hovered
+    /// annotation in document order. Family-local indices remain unchanged.
+    pub fn hover_transform_handle(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let candidates = [
+            self.hover_rectangle_handle(document_id, page_index, point, tolerance_pt)?,
+            self.hover_redact_handle(document_id, page_index, point, tolerance_pt)?,
+            self.hover_ellipse_handle(document_id, page_index, point, tolerance_pt)?,
+            self.hover_straight_line_handle(document_id, page_index, point, tolerance_pt)?,
+            self.hover_length_handle(document_id, page_index, point, tolerance_pt)?,
+            self.hover_text_box_handle(document_id, page_index, point, tolerance_pt)?,
+            self.hover_image_handle(document_id, page_index, point, tolerance_pt)?,
+            self.hover_dimension_handle(document_id, page_index, point, tolerance_pt)?,
+            self.hover_arc_handle(document_id, page_index, point, tolerance_pt)?,
+            self.hover_vertex_path_handle(document_id, page_index, point, tolerance_pt)?,
+            self.hover_measurement_path_handle(document_id, page_index, point, tolerance_pt)?,
+            self.hover_snapshot_handle(document_id, page_index, point, tolerance_pt)?,
+            self.hover_callout_handle(document_id, page_index, point, tolerance_pt)?,
+            self.hover_cloud_plus_handle(document_id, page_index, point, tolerance_pt)?,
+            self.hover_cloud_handle(document_id, page_index, point, tolerance_pt)?,
+        ];
+        if let Some(selected) = document.selected_id()
+            && let Some(candidate) = candidates.iter().flatten().find(|(id, _)| id == selected)
+        {
+            return Ok(Some(candidate.clone()));
+        }
+        Ok(document.annotation_order().iter().rev().find_map(|id| {
+            candidates
+                .iter()
+                .flatten()
+                .find(|(candidate, _)| candidate == id)
+                .cloned()
+        }))
     }
 
     pub fn selected_ellipse_appearance(&self, document_id: u64) -> Option<&RectangleAppearance> {
@@ -3284,6 +6149,19 @@ impl AnnotationAdapter {
             .text_boxes()
             .iter()
             .find(|text_box| text_box.id == selected.id)
+    }
+
+    /// Returns a Cloud+ only when the current selection contains exactly one.
+    pub fn exact_selected_cloud_plus(&self, document_id: u64) -> Option<&CloudPlusAnnotation> {
+        let document = self.documents.get(&document_id)?;
+        let selected = document.selected_annotations_in_document_order();
+        let [Annotation::CloudPlus(selected)] = selected.as_slice() else {
+            return None;
+        };
+        document
+            .cloud_pluses()
+            .iter()
+            .find(|cloud_plus| cloud_plus.id == selected.id)
     }
 
     /// Returns a Dimension only when the current selection contains exactly one.
@@ -3475,6 +6353,31 @@ impl AnnotationAdapter {
         tolerance_pt: f64,
         modifiers: PointerInputModifiers,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
+        self.pointer_down_with_viewport_input_and_selection_paths(
+            document_id,
+            page_index,
+            pointer_id,
+            button,
+            point,
+            viewport_point,
+            tolerance_pt,
+            modifiers,
+            &AnnotationSelectionSupplement::new(),
+        )
+    }
+
+    pub fn pointer_down_with_viewport_input_and_selection_paths(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        pointer_id: u64,
+        button: u8,
+        point: PdfPoint,
+        viewport_point: SelectionPoint,
+        tolerance_pt: f64,
+        modifiers: PointerInputModifiers,
+        supplement: &AnnotationSelectionSupplement,
+    ) -> Result<PointerPhaseOutcome, AnnotationError> {
         let constrain_orthogonal = modifiers.shift;
         if button != 0 {
             return Ok(PointerPhaseOutcome::Ignored);
@@ -3562,22 +6465,17 @@ impl AnnotationAdapter {
             }
             marquee.update(viewport_point);
             pdf_points.push(point);
-            let mut pdf_marquee = marquee;
-            pdf_marquee.start = pdf_points
-                .first()
-                .copied()
-                .map(selection_point_from_pdf)
-                .unwrap_or_else(|| selection_point_from_pdf(point));
-            pdf_marquee.current = selection_point_from_pdf(point);
-            pdf_marquee.points = pdf_points
-                .into_iter()
-                .map(selection_point_from_pdf)
-                .collect();
+            let pdf_marquee = marquee_in_pdf(&marquee, &pdf_points);
             let document = self
                 .documents
                 .get_mut(&document_id)
                 .ok_or(AnnotationError::NoActiveGesture)?;
-            document.apply_marquee_selection(page_index, &pdf_marquee, selection_point_from_pdf);
+            document.apply_marquee_selection_with_supplement(
+                page_index,
+                &pdf_marquee,
+                selection_point_from_pdf,
+                supplement,
+            );
             return Ok(PointerPhaseOutcome::SelectionChanged(
                 document.selected_id().cloned(),
             ));
@@ -3875,6 +6773,15 @@ impl AnnotationAdapter {
             return Ok(PointerPhaseOutcome::PlacementPending);
         }
         self.cancel(PointerCancelReason::AdapterError)?;
+        // Ordinary Image remains active after its one-shot asset is consumed.
+        // A following press clears placement selection without editing or duplicating it.
+        if self.tool == AnnotationTool::Image && self.image_asset.is_none() {
+            self.documents
+                .entry(document_id)
+                .or_default()
+                .clear_selection();
+            return Ok(PointerPhaseOutcome::SelectionChanged(None));
+        }
         let tool = self.tool;
         let id = if tool == AnnotationTool::Select {
             None
@@ -3890,11 +6797,19 @@ impl AnnotationAdapter {
         let document = self.documents.entry(document_id).or_default();
         match tool {
             AnnotationTool::Select => {
-                let direct_hit = document.hit_test(page_index, point, tolerance_pt)?;
-                let selectable_hit_id = direct_hit
-                    .as_ref()
+                let selectable_hit_id = document
+                    .hit_test(page_index, point, tolerance_pt)?
+                    .filter(|hit| !matches!(hit, HitTarget::Body(_)))
                     .map(|hit| hit.markup_id().clone())
-                    .or_else(|| hit_non_rectangle(document, page_index, point, tolerance_pt));
+                    .or_else(|| {
+                        hit_annotation_body_in_document_order(
+                            document,
+                            page_index,
+                            point,
+                            tolerance_pt,
+                            supplement,
+                        )
+                    });
                 if let Some((id, control)) = hit_selected_arc_control_point(
                     document,
                     page_index,
@@ -3915,7 +6830,7 @@ impl AnnotationAdapter {
                         document_id,
                         page_index,
                         pointer_id,
-                        id,
+                        id: id.clone(),
                         expected_revision: document.snapshot().revision,
                         control,
                         start: point,
@@ -3953,7 +6868,7 @@ impl AnnotationAdapter {
                             document_id,
                             page_index,
                             pointer_id,
-                            id,
+                            id: id.clone(),
                             handle,
                             start: point,
                             current: point,
@@ -3994,7 +6909,7 @@ impl AnnotationAdapter {
                         document_id,
                         page_index,
                         pointer_id,
-                        id,
+                        id: id.clone(),
                         handle,
                         start: point,
                         current: point,
@@ -4006,12 +6921,17 @@ impl AnnotationAdapter {
                     && document.selected_ids().len() > 1
                     && document.selected_ids().contains(&id)
                 {
+                    let (snap_anchor_points, excluded_ids) =
+                        moving_snap_context(document, page_index, supplement);
                     self.active = Some(ActivePointer::GroupMove {
                         document_id,
                         page_index,
                         pointer_id,
                         start: point,
                         current: point,
+                        snap_anchor_points,
+                        excluded_ids,
+                        snap_caption_supplement: supplement.clone(),
                     });
                     return Ok(PointerPhaseOutcome::GestureStarted);
                 }
@@ -4033,6 +6953,14 @@ impl AnnotationAdapter {
                     if original.locked {
                         return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
                     }
+                    let scene = document.thumbnail_scene(page_index);
+                    let snap_anchor_points =
+                        moving_annotation_snap_anchor_points_with_selection_supplement(
+                            &scene,
+                            std::slice::from_ref(&id),
+                            128,
+                            supplement,
+                        );
                     self.active = Some(ActivePointer::DimensionEdit {
                         document_id,
                         page_index,
@@ -4043,6 +6971,8 @@ impl AnnotationAdapter {
                         start: point,
                         current: point,
                         original,
+                        snap_anchor_points,
+                        snap_caption_supplement: supplement.clone(),
                     });
                     return Ok(PointerPhaseOutcome::GestureStarted);
                 }
@@ -4068,12 +6998,61 @@ impl AnnotationAdapter {
                         document_id,
                         page_index,
                         pointer_id,
+                        id: id.clone(),
+                        expected_revision,
+                        kind,
+                        start: point,
+                        current: point,
+                        original,
+                        snap_anchor_points: moving_annotation_snap_anchor_points(
+                            &document.document_scene(page_index),
+                            std::slice::from_ref(&id),
+                            128,
+                        ),
+                    });
+                    return Ok(PointerPhaseOutcome::GestureStarted);
+                }
+                if let Some((id, kind)) = hit_selected_cloud_plus_control(
+                    document,
+                    page_index,
+                    point,
+                    tolerance_pt,
+                    self.observed_pixels_per_point.0,
+                ) {
+                    document.select(&id);
+                    let expected_revision = document.snapshot().revision;
+                    let original = document
+                        .cloud_pluses()
+                        .iter()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a Cloud+ control hit must retain its annotation")
+                        .clone();
+                    if original.locked {
+                        return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                    }
+                    let snap_anchor_points = if matches!(
+                        kind,
+                        CloudPlusPointerEditKind::TextBox | CloudPlusPointerEditKind::Body
+                    ) {
+                        moving_annotation_snap_anchor_points(
+                            &document.document_scene(page_index),
+                            std::slice::from_ref(&id),
+                            128,
+                        )
+                    } else {
+                        Vec::new()
+                    };
+                    self.active = Some(ActivePointer::CloudPlusEdit {
+                        document_id,
+                        page_index,
+                        pointer_id,
                         id,
                         expected_revision,
                         kind,
                         start: point,
                         current: point,
                         original,
+                        snap_anchor_points,
                     });
                     return Ok(PointerPhaseOutcome::GestureStarted);
                 }
@@ -4095,6 +7074,10 @@ impl AnnotationAdapter {
                     if original.locked {
                         return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
                     }
+                    let snap_anchor_points = match kind {
+                        CloudPointerEditKind::Body => original.points().to_vec(),
+                        CloudPointerEditKind::Vertex(_) => Vec::new(),
+                    };
                     self.active = Some(ActivePointer::CloudEdit {
                         document_id,
                         page_index,
@@ -4105,12 +7088,17 @@ impl AnnotationAdapter {
                         start: point,
                         current: point,
                         original,
+                        snap_anchor_points,
                     });
                     return Ok(PointerPhaseOutcome::GestureStarted);
                 }
-                if let Some((id, endpoint)) =
-                    hit_straight_line_endpoint(document, page_index, point, tolerance_pt)
-                {
+                if let Some((id, endpoint)) = hit_straight_line_endpoint(
+                    document,
+                    page_index,
+                    point,
+                    tolerance_pt,
+                    self.observed_pixels_per_point.0,
+                ) {
                     document.select(&id);
                     let annotation = document
                         .straight_lines()
@@ -4131,9 +7119,13 @@ impl AnnotationAdapter {
                     });
                     return Ok(PointerPhaseOutcome::GestureStarted);
                 }
-                if let Some((id, vertex_index)) =
-                    hit_selected_vertex_path_point(document, page_index, point, tolerance_pt)
-                {
+                if let Some((id, vertex_index)) = hit_selected_vertex_path_point(
+                    document,
+                    page_index,
+                    point,
+                    tolerance_pt,
+                    self.observed_pixels_per_point.0,
+                ) {
                     document.select(&id);
                     let annotation = document
                         .vertex_paths()
@@ -4154,9 +7146,13 @@ impl AnnotationAdapter {
                     });
                     return Ok(PointerPhaseOutcome::GestureStarted);
                 }
-                if let Some((id, vertex_index)) =
-                    hit_selected_measurement_path_point(document, page_index, point, tolerance_pt)
-                {
+                if let Some((id, vertex_index)) = hit_selected_measurement_path_point(
+                    document,
+                    page_index,
+                    point,
+                    tolerance_pt,
+                    self.observed_pixels_per_point.0,
+                ) {
                     document.select(&id);
                     let annotation = document
                         .measurement_paths()
@@ -4177,16 +7173,54 @@ impl AnnotationAdapter {
                     });
                     return Ok(PointerPhaseOutcome::GestureStarted);
                 }
-                if let Some((id, endpoint)) =
-                    hit_length_endpoint(document, page_index, point, tolerance_pt)
-                {
+                if let Some((id, endpoint)) = hit_length_endpoint(
+                    document,
+                    page_index,
+                    point,
+                    tolerance_pt,
+                    self.observed_pixels_per_point.0,
+                ) {
                     document.select(&id);
+                    let annotation = document
+                        .lengths()
+                        .iter()
+                        .find(|annotation| annotation.id == id)
+                        .expect("an endpoint hit must retain its Length");
+                    if annotation.locked {
+                        return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                    }
                     self.active = Some(ActivePointer::LengthEndpoint {
                         document_id,
+                        page_index,
                         pointer_id,
                         id: id.clone(),
                         endpoint,
                         current: point,
+                    });
+                    return Ok(PointerPhaseOutcome::GestureStarted);
+                }
+                if let Some(id) = hit_selected_text_box_rotation_handle(
+                    document,
+                    page_index,
+                    point,
+                    tolerance_pt,
+                    self.observed_pixels_per_point.0,
+                ) {
+                    document.select(&id);
+                    let annotation = document
+                        .text_boxes()
+                        .iter()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a rotation-handle hit must retain its Text Box");
+                    self.active = Some(ActivePointer::TextBoxRotate {
+                        document_id,
+                        page_index,
+                        pointer_id,
+                        id,
+                        start: point,
+                        current: point,
+                        original_rect: annotation.layout_rect,
+                        original_rotation_degrees: annotation.rotation_degrees(),
                     });
                     return Ok(PointerPhaseOutcome::GestureStarted);
                 }
@@ -4215,19 +7249,49 @@ impl AnnotationAdapter {
                         start: point,
                         current: point,
                         original_rect: annotation.layout_rect,
+                        original_rotation_degrees: annotation.rotation_degrees(),
                     });
                     return Ok(PointerPhaseOutcome::GestureStarted);
                 }
-                if let Some((id, handle)) =
-                    hit_selected_image_resize_handle(document, page_index, point, tolerance_pt)
-                {
+                if let Some(id) = hit_selected_image_rotation_handle(
+                    document,
+                    page_index,
+                    point,
+                    tolerance_pt,
+                    self.observed_pixels_per_point.0,
+                ) {
+                    document.select(&id);
+                    let annotation = document
+                        .images()
+                        .iter()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a rotation-handle hit must retain its Image");
+                    self.active = Some(ActivePointer::ImageRotate {
+                        document_id,
+                        page_index,
+                        pointer_id,
+                        id,
+                        start: point,
+                        current: point,
+                        original_rect: annotation.rect,
+                        original_rotation_degrees: annotation.rotation_degrees(),
+                    });
+                    return Ok(PointerPhaseOutcome::GestureStarted);
+                }
+                if let Some((id, handle)) = hit_selected_image_resize_handle(
+                    document,
+                    page_index,
+                    point,
+                    tolerance_pt,
+                    self.observed_pixels_per_point.0,
+                ) {
                     document.select(&id);
                     let annotation = document
                         .images()
                         .iter()
                         .find(|annotation| annotation.id == id)
                         .expect("a resize-handle hit must retain its image");
-                    if annotation.locked || annotation.aspect_locked {
+                    if annotation.locked {
                         return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
                     }
                     self.active = Some(ActivePointer::ImageResize {
@@ -4239,6 +7303,8 @@ impl AnnotationAdapter {
                         start: point,
                         current: point,
                         original_rect: annotation.rect,
+                        original_rotation_degrees: annotation.rotation_degrees(),
+                        aspect_locked: annotation.aspect_locked,
                     });
                     return Ok(PointerPhaseOutcome::GestureStarted);
                 }
@@ -4299,30 +7365,84 @@ impl AnnotationAdapter {
                     });
                     return Ok(PointerPhaseOutcome::GestureStarted);
                 }
-                if let Some(id) = hit_straight_line(document, page_index, point, tolerance_pt) {
+                if let Some(id) = hit_annotation_body_in_document_order(
+                    document,
+                    page_index,
+                    point,
+                    tolerance_pt,
+                    supplement,
+                ) {
+                    if let Some(annotation) = document
+                        .rectangles()
+                        .iter()
+                        .find(|annotation| annotation.id == id)
+                        .cloned()
+                    {
+                        if annotation.locked {
+                            document.select(&id);
+                            return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                        }
+                        let outcome = document.apply_command(AnnotationCommand::PointerDown {
+                            pointer_id,
+                            page_index,
+                            point,
+                            tolerance_pt,
+                            tool: PointerTool::Select {
+                                rotation_handle_offset_pt: ROTATION_HANDLE_OFFSET_CSS_PX
+                                    / self.observed_pixels_per_point.0,
+                            },
+                        })?;
+                        if let CommandOutcome::GestureStarted { kind, .. } = outcome {
+                            self.active = Some(ActivePointer::Domain {
+                                document_id,
+                                page_index,
+                                pointer_id,
+                                ink: false,
+                                ink_start: None,
+                                rectangle_translation_start: matches!(kind, GestureKind::Move)
+                                    .then_some(point),
+                                rectangle_resize_handle: match kind {
+                                    GestureKind::Resize(handle) => Some(handle),
+                                    _ => None,
+                                },
+                                rectangle_create_start: None,
+                                click_placement_pending: false,
+                            });
+                            return Ok(PointerPhaseOutcome::GestureStarted);
+                        }
+                        return Ok(PointerPhaseOutcome::SelectionChanged(
+                            document.selected_id().cloned(),
+                        ));
+                    }
                     document.select(&id);
-                    let annotation = document
+                    if let Some(annotation) = document
                         .straight_lines()
                         .iter()
                         .find(|annotation| annotation.id == id)
-                        .expect("a segment hit must retain its straight line");
-                    if annotation.locked {
-                        return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                    {
+                        if annotation.locked {
+                            return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                        }
+                        self.active = Some(ActivePointer::StraightLineMove {
+                            document_id,
+                            page_index,
+                            pointer_id,
+                            id,
+                            start: point,
+                            current: point,
+                            original_start: annotation.start,
+                            original_end: annotation.end,
+                            snap_anchor_points: vec![
+                                annotation.start,
+                                PdfPoint {
+                                    x: (annotation.start.x + annotation.end.x) * 0.5,
+                                    y: (annotation.start.y + annotation.end.y) * 0.5,
+                                },
+                                annotation.end,
+                            ],
+                        });
+                        return Ok(PointerPhaseOutcome::GestureStarted);
                     }
-                    self.active = Some(ActivePointer::StraightLineMove {
-                        document_id,
-                        page_index,
-                        pointer_id,
-                        id,
-                        start: point,
-                        current: point,
-                        original_start: annotation.start,
-                        original_end: annotation.end,
-                    });
-                    return Ok(PointerPhaseOutcome::GestureStarted);
-                }
-                if let Some(id) = hit_non_rectangle(document, page_index, point, tolerance_pt) {
-                    document.select(&id);
                     if let Some(annotation) = document
                         .redacts()
                         .iter()
@@ -4335,7 +7455,7 @@ impl AnnotationAdapter {
                             document_id,
                             page_index,
                             pointer_id,
-                            id,
+                            id: id.clone(),
                             start: point,
                             current: point,
                             original_rect: annotation.rect,
@@ -4419,12 +7539,17 @@ impl AnnotationAdapter {
                         .find(|annotation| annotation.id == id && !annotation.locked)
                         .is_some()
                     {
+                        let (snap_anchor_points, excluded_ids) =
+                            moving_snap_context(document, page_index, supplement);
                         self.active = Some(ActivePointer::GroupMove {
                             document_id,
                             page_index,
                             pointer_id,
                             start: point,
                             current: point,
+                            snap_anchor_points,
+                            excluded_ids,
+                            snap_caption_supplement: supplement.clone(),
                         });
                         return Ok(PointerPhaseOutcome::GestureStarted);
                     }
@@ -4433,12 +7558,48 @@ impl AnnotationAdapter {
                         .iter()
                         .any(|annotation| annotation.id == id && !annotation.locked)
                     {
+                        let (snap_anchor_points, excluded_ids) =
+                            moving_snap_context(document, page_index, supplement);
                         self.active = Some(ActivePointer::GroupMove {
                             document_id,
                             page_index,
                             pointer_id,
                             start: point,
                             current: point,
+                            snap_anchor_points,
+                            excluded_ids,
+                            snap_caption_supplement: supplement.clone(),
+                        });
+                        return Ok(PointerPhaseOutcome::GestureStarted);
+                    }
+                    if let Some(annotation) = document
+                        .lengths()
+                        .iter()
+                        .find(|annotation| annotation.id == id)
+                        .cloned()
+                    {
+                        if annotation.locked {
+                            return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                        }
+                        let scene = document.document_scene(page_index);
+                        let snap_anchor_points =
+                            moving_annotation_snap_anchor_points_with_selection_supplement(
+                                &scene,
+                                std::slice::from_ref(&id),
+                                128,
+                                supplement,
+                            );
+                        self.active = Some(ActivePointer::LengthMove {
+                            document_id,
+                            page_index,
+                            pointer_id,
+                            id,
+                            start: point,
+                            current: point,
+                            original_start: annotation.start,
+                            original_end: annotation.end,
+                            snap_anchor_points,
+                            snap_caption_supplement: supplement.clone(),
                         });
                         return Ok(PointerPhaseOutcome::GestureStarted);
                     }
@@ -4486,6 +7647,14 @@ impl AnnotationAdapter {
                         if annotation.locked {
                             return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
                         }
+                        let scene = document.thumbnail_scene(page_index);
+                        let snap_anchor_points =
+                            moving_annotation_snap_anchor_points_with_selection_supplement(
+                                &scene,
+                                std::slice::from_ref(&id),
+                                128,
+                                supplement,
+                            );
                         self.active = Some(ActivePointer::DimensionEdit {
                             document_id,
                             page_index,
@@ -4496,6 +7665,8 @@ impl AnnotationAdapter {
                             start: point,
                             current: point,
                             original: annotation,
+                            snap_anchor_points,
+                            snap_caption_supplement: supplement.clone(),
                         });
                         return Ok(PointerPhaseOutcome::GestureStarted);
                     }
@@ -4517,12 +7688,52 @@ impl AnnotationAdapter {
                             document_id,
                             page_index,
                             pointer_id,
+                            id: id.clone(),
+                            expected_revision: document.snapshot().revision,
+                            kind,
+                            start: point,
+                            current: point,
+                            original: annotation,
+                            snap_anchor_points: moving_annotation_snap_anchor_points(
+                                &document.document_scene(page_index),
+                                std::slice::from_ref(&id),
+                                128,
+                            ),
+                        });
+                        return Ok(PointerPhaseOutcome::GestureStarted);
+                    }
+                    if let Some(annotation) = document
+                        .cloud_pluses()
+                        .iter()
+                        .find(|annotation| annotation.id == id)
+                        .cloned()
+                    {
+                        if annotation.locked {
+                            return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                        }
+                        let kind = if rect_contains(annotation.text_box, point, tolerance_pt) {
+                            CloudPlusPointerEditKind::TextBox
+                        } else if cloud_plus_cloud_hit(&annotation, point, tolerance_pt) {
+                            CloudPlusPointerEditKind::Body
+                        } else {
+                            return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                        };
+                        let snap_anchor_points = moving_annotation_snap_anchor_points(
+                            &document.document_scene(page_index),
+                            std::slice::from_ref(&id),
+                            128,
+                        );
+                        self.active = Some(ActivePointer::CloudPlusEdit {
+                            document_id,
+                            page_index,
+                            pointer_id,
                             id,
                             expected_revision: document.snapshot().revision,
                             kind,
                             start: point,
                             current: point,
                             original: annotation,
+                            snap_anchor_points,
                         });
                         return Ok(PointerPhaseOutcome::GestureStarted);
                     }
@@ -4544,6 +7755,7 @@ impl AnnotationAdapter {
                             kind: CloudPointerEditKind::Body,
                             start: point,
                             current: point,
+                            snap_anchor_points: annotation.points().to_vec(),
                             original: annotation,
                         });
                         return Ok(PointerPhaseOutcome::GestureStarted);
@@ -4584,6 +7796,13 @@ impl AnnotationAdapter {
                         }
                     )
                     .then_some(point);
+                    let rectangle_resize_handle = match outcome {
+                        CommandOutcome::GestureStarted {
+                            kind: GestureKind::Resize(handle),
+                            ..
+                        } => Some(handle),
+                        _ => None,
+                    };
                     self.active = Some(ActivePointer::Domain {
                         document_id,
                         page_index,
@@ -4591,6 +7810,7 @@ impl AnnotationAdapter {
                         ink: false,
                         ink_start: None,
                         rectangle_translation_start,
+                        rectangle_resize_handle,
                         rectangle_create_start: None,
                         click_placement_pending: false,
                     });
@@ -4635,6 +7855,7 @@ impl AnnotationAdapter {
                     ink: false,
                     ink_start: None,
                     rectangle_translation_start: None,
+                    rectangle_resize_handle: None,
                     rectangle_create_start: Some(point),
                     click_placement_pending: false,
                 });
@@ -4742,6 +7963,7 @@ impl AnnotationAdapter {
                     ink: true,
                     ink_start: Some(point),
                     rectangle_translation_start: None,
+                    rectangle_resize_handle: None,
                     rectangle_create_start: None,
                     click_placement_pending: false,
                 });
@@ -4765,6 +7987,7 @@ impl AnnotationAdapter {
                     ink: true,
                     ink_start: Some(point),
                     rectangle_translation_start: None,
+                    rectangle_resize_handle: None,
                     rectangle_create_start: None,
                     click_placement_pending: false,
                 });
@@ -4804,37 +8027,15 @@ impl AnnotationAdapter {
                         "image tool requires a decoded bounded PNG or JPEG asset".into(),
                     )
                 })?;
-                if pending.aspect_locked {
-                    self.image_asset = None;
-                }
                 let placement_page = self.image_placement_page.ok_or_else(|| {
                     AnnotationError::InvalidGeometry(
                         "image tool requires the current page dimensions".into(),
                     )
                 })?;
-                let source_width = f64::from(pending.asset.width_px());
-                let source_height = f64::from(pending.asset.height_px());
-                let aspect_ratio = (source_width / source_height).max(0.01);
-                let natural_width = source_width.max(24.0);
-                let natural_height = natural_width / aspect_ratio;
-                let scale = 1.0_f64
-                    .min(placement_page.width_pt * placement_page.max_fraction / natural_width)
-                    .min(placement_page.height_pt * placement_page.max_fraction / natural_height);
-                let (width, height) = if pending.aspect_locked {
-                    (natural_width * scale, natural_height * scale)
-                } else {
-                    let width = (natural_width * scale).max(24.0);
-                    let height = (width / aspect_ratio).max(24.0);
-                    (width, height)
-                };
-                let x =
-                    (point.x - width / 2.0).clamp(0.0, (placement_page.width_pt - width).max(0.0));
-                let y = (point.y - height / 2.0)
-                    .clamp(0.0, (placement_page.height_pt - height).max(0.0));
                 let annotation = ImageAnnotation::new_with_opacity(
                     id.clone(),
                     page_index,
-                    PdfRect::new(x, y, width, height)?,
+                    image_placement_rect(&pending, placement_page, point)?,
                     pending.asset,
                     pending.aspect_locked,
                     tool_properties.opacity,
@@ -4842,6 +8043,8 @@ impl AnnotationAdapter {
                 document.apply_command(AnnotationCommand::CreateAnnotation(Annotation::Image(
                     annotation,
                 )))?;
+                self.image_asset = None;
+                self.image_placement_page = None;
                 Ok(PointerPhaseOutcome::AnnotationCreated(id))
             }
             AnnotationTool::Snapshot => {
@@ -4894,6 +8097,50 @@ impl AnnotationAdapter {
             .documents
             .get_mut(&document_id)
             .ok_or(AnnotationError::NoSelection)?;
+        if let Some(id) = hit_selected_text_box_rotation_handle(
+            document,
+            page_index,
+            point,
+            tolerance_pt,
+            self.observed_pixels_per_point.0,
+        ) {
+            let rotation = document
+                .text_boxes()
+                .iter()
+                .find(|annotation| annotation.id == id)
+                .expect("a Text Box rotation-handle hit must retain its annotation")
+                .rotation_degrees();
+            if rotation == 0. {
+                return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+            }
+            document.apply_command(AnnotationCommand::EditAnnotation {
+                id: id.clone(),
+                edit: AnnotationEdit::SetTextBoxRotation(0.),
+            })?;
+            return Ok(PointerPhaseOutcome::AnnotationEdited(id));
+        }
+        if let Some(id) = hit_selected_image_rotation_handle(
+            document,
+            page_index,
+            point,
+            tolerance_pt,
+            self.observed_pixels_per_point.0,
+        ) {
+            let rotation = document
+                .images()
+                .iter()
+                .find(|annotation| annotation.id == id)
+                .expect("an Image rotation-handle hit must retain its annotation")
+                .rotation_degrees();
+            if rotation == 0. {
+                return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+            }
+            document.apply_command(AnnotationCommand::EditAnnotation {
+                id: id.clone(),
+                edit: AnnotationEdit::SetImageRotation(0.),
+            })?;
+            return Ok(PointerPhaseOutcome::AnnotationEdited(id));
+        }
         if let Some(selected) = document.selected_id().cloned()
             && document.text_boxes().iter().any(|annotation| {
                 annotation.id == selected
@@ -4905,6 +8152,16 @@ impl AnnotationAdapter {
                     && point.y >= annotation.layout_rect.y - tolerance_pt
                     && point.y
                         <= annotation.layout_rect.y + annotation.layout_rect.height + tolerance_pt
+            })
+        {
+            return Ok(PointerPhaseOutcome::SelectionChanged(Some(selected)));
+        }
+        if let Some(selected) = document.selected_id().cloned()
+            && document.cloud_pluses().iter().any(|annotation| {
+                annotation.id == selected
+                    && annotation.page_index == page_index
+                    && !annotation.locked
+                    && cloud_plus_hit(annotation, point, tolerance_pt)
             })
         {
             return Ok(PointerPhaseOutcome::SelectionChanged(Some(selected)));
@@ -5006,6 +8263,7 @@ impl AnnotationAdapter {
         modifiers: PointerInputModifiers,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
         let constrain_orthogonal = modifiers.shift;
+        let raw_point = point;
         let point = self
             .active_surface()
             .map_or(point, |(document_id, page_index)| {
@@ -5016,6 +8274,8 @@ impl AnnotationAdapter {
                     constrain_orthogonal,
                 )
             });
+        let point = self.resolve_equal_size_resize_point(point);
+        let point = self.resolve_equal_size_placement_point(point, constrain_orthogonal);
         if let Some(draft) = self.snapshot_draft.as_mut() {
             require_pointer(draft.pointer_id, pointer_id)?;
             draft.current = point;
@@ -5151,6 +8411,11 @@ impl AnnotationAdapter {
                 current,
                 ..
             }
+            | ActivePointer::LengthMove {
+                pointer_id: active_pointer,
+                current,
+                ..
+            }
             | ActivePointer::DimensionCreate {
                 pointer_id: active_pointer,
                 current,
@@ -5171,6 +8436,11 @@ impl AnnotationAdapter {
                 ..
             }
             | ActivePointer::CalloutEdit {
+                pointer_id: active_pointer,
+                current,
+                ..
+            }
+            | ActivePointer::CloudPlusEdit {
                 pointer_id: active_pointer,
                 current,
                 ..
@@ -5260,6 +8530,15 @@ impl AnnotationAdapter {
                 *current = point;
                 Ok(PointerPhaseOutcome::GestureStarted)
             }
+            ActivePointer::TextBoxRotate {
+                pointer_id: active_pointer,
+                current,
+                ..
+            } => {
+                require_pointer(*active_pointer, pointer_id)?;
+                *current = raw_point;
+                Ok(PointerPhaseOutcome::GestureStarted)
+            }
             ActivePointer::ImageMove {
                 pointer_id: active_pointer,
                 current,
@@ -5289,6 +8568,15 @@ impl AnnotationAdapter {
                 *current = point;
                 Ok(PointerPhaseOutcome::GestureStarted)
             }
+            ActivePointer::ImageRotate {
+                pointer_id: active_pointer,
+                current,
+                ..
+            } => {
+                require_pointer(*active_pointer, pointer_id)?;
+                *current = raw_point;
+                Ok(PointerPhaseOutcome::GestureStarted)
+            }
         }
     }
 
@@ -5297,7 +8585,12 @@ impl AnnotationAdapter {
         pointer_id: u64,
         point: PdfPoint,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
-        if let Some(draft) = self.snapshot_draft.as_mut() {
+        if self.snapshot_draft.is_some() {
+            let point = self.resolve_equal_size_placement_point(point, false);
+            let draft = self
+                .snapshot_draft
+                .as_mut()
+                .expect("the Snapshot draft was checked before relationship snapping");
             require_pointer(draft.pointer_id, pointer_id)?;
             draft.current = point;
             return Ok(PointerPhaseOutcome::PlacementPending);
@@ -5333,7 +8626,25 @@ impl AnnotationAdapter {
         viewport_point: SelectionPoint,
         modifiers: PointerInputModifiers,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
+        self.pointer_up_with_viewport_input_and_selection_paths(
+            pointer_id,
+            point,
+            viewport_point,
+            modifiers,
+            &AnnotationSelectionSupplement::new(),
+        )
+    }
+
+    pub fn pointer_up_with_viewport_input_and_selection_paths(
+        &mut self,
+        pointer_id: u64,
+        point: PdfPoint,
+        viewport_point: SelectionPoint,
+        modifiers: PointerInputModifiers,
+        supplement: &AnnotationSelectionSupplement,
+    ) -> Result<PointerPhaseOutcome, AnnotationError> {
         let constrain_orthogonal = modifiers.shift;
+        let raw_point = point;
         let point = self
             .active_surface()
             .map_or(point, |(document_id, page_index)| {
@@ -5344,13 +8655,15 @@ impl AnnotationAdapter {
                     constrain_orthogonal,
                 )
             });
+        let point = self.resolve_equal_size_resize_point(point);
+        let point = self.resolve_equal_size_placement_point(point, constrain_orthogonal);
         if let Some(draft) = self.snapshot_draft.as_mut() {
             require_pointer(draft.pointer_id, pointer_id)?;
             draft.current = point;
             return Ok(PointerPhaseOutcome::PlacementPending);
         }
         let active = self.active.take().ok_or(AnnotationError::NoActiveGesture)?;
-        match active {
+        let outcome = match active {
             ActivePointer::Marquee {
                 document_id,
                 page_index,
@@ -5371,25 +8684,16 @@ impl AnnotationAdapter {
                     });
                     return Ok(PointerPhaseOutcome::PlacementPending);
                 }
-                let mut pdf_marquee = marquee;
-                pdf_marquee.start = pdf_points
-                    .first()
-                    .copied()
-                    .map(selection_point_from_pdf)
-                    .unwrap_or_else(|| selection_point_from_pdf(point));
-                pdf_marquee.current = selection_point_from_pdf(point);
-                pdf_marquee.points = pdf_points
-                    .into_iter()
-                    .map(selection_point_from_pdf)
-                    .collect();
+                let pdf_marquee = marquee_in_pdf(&marquee, &pdf_points);
                 let document = self
                     .documents
                     .get_mut(&document_id)
                     .ok_or(AnnotationError::NoActiveGesture)?;
-                document.apply_marquee_selection(
+                document.apply_marquee_selection_with_supplement(
                     page_index,
                     &pdf_marquee,
                     selection_point_from_pdf,
+                    supplement,
                 );
                 Ok(PointerPhaseOutcome::SelectionChanged(
                     document.selected_id().cloned(),
@@ -5438,6 +8742,7 @@ impl AnnotationAdapter {
                 ink,
                 ink_start,
                 rectangle_translation_start,
+                rectangle_resize_handle,
                 rectangle_create_start,
                 click_placement_pending,
                 page_index,
@@ -5451,6 +8756,7 @@ impl AnnotationAdapter {
                         ink,
                         ink_start,
                         rectangle_translation_start,
+                        rectangle_resize_handle,
                         rectangle_create_start,
                         click_placement_pending,
                     });
@@ -5482,6 +8788,7 @@ impl AnnotationAdapter {
                         ink,
                         ink_start: None,
                         rectangle_translation_start,
+                        rectangle_resize_handle,
                         rectangle_create_start: Some(start),
                         click_placement_pending: true,
                     });
@@ -5938,6 +9245,7 @@ impl AnnotationAdapter {
                         PdfPoint::new(rect.x + rect.width, rect.y + rect.height)?,
                         PdfPoint::new(rect.x, rect.y + rect.height)?,
                     ],
+                    supplement,
                 )
             }
             ActivePointer::StraightLineMove {
@@ -6038,6 +9346,31 @@ impl AnnotationAdapter {
                         edit: AnnotationEdit::SetMeasurementPathPoint {
                             vertex_index,
                             point,
+                        },
+                    })?;
+                Ok(PointerPhaseOutcome::AnnotationEdited(id))
+            }
+            ActivePointer::LengthMove {
+                document_id,
+                pointer_id: active_pointer,
+                id,
+                start,
+                ..
+            } => {
+                require_pointer(active_pointer, pointer_id)?;
+                if point_distance_css_px(start, point, self.observed_pixels_per_point.0)
+                    < POINTER_DRAG_THRESHOLD_CSS_PX
+                {
+                    return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                }
+                self.documents
+                    .get_mut(&document_id)
+                    .ok_or(AnnotationError::NoActiveGesture)?
+                    .apply_command(AnnotationCommand::EditAnnotation {
+                        id: id.clone(),
+                        edit: AnnotationEdit::TranslateLength {
+                            delta_x: point.x - start.x,
+                            delta_y: point.y - start.y,
                         },
                     })?;
                 Ok(PointerPhaseOutcome::AnnotationEdited(id))
@@ -6167,6 +9500,12 @@ impl AnnotationAdapter {
                     &original,
                 )?;
                 let edit = match kind {
+                    CalloutPointerEditKind::TextBoxResize(handle) => {
+                        let text_box = original
+                            .text_box
+                            .rotated_resize_from_handle(0., handle, point);
+                        AnnotationEdit::SetCalloutTextBox(text_box)
+                    }
                     CalloutPointerEditKind::LeaderPoint(point_index) => {
                         AnnotationEdit::SetCalloutLeaderPoint { point_index, point }
                     }
@@ -6175,6 +9514,70 @@ impl AnnotationAdapter {
                         delta_y: point.y - start.y,
                     },
                     CalloutPointerEditKind::Body => AnnotationEdit::TranslateCalloutGroup {
+                        delta_x: point.x - start.x,
+                        delta_y: point.y - start.y,
+                    },
+                };
+                document.apply_command(AnnotationCommand::EditAnnotation {
+                    id: id.clone(),
+                    edit,
+                })?;
+                Ok(PointerPhaseOutcome::AnnotationEdited(id))
+            }
+            ActivePointer::CloudPlusEdit {
+                document_id,
+                page_index,
+                pointer_id: active_pointer,
+                id,
+                expected_revision,
+                kind,
+                start,
+                original,
+                ..
+            } => {
+                require_pointer(active_pointer, pointer_id)?;
+                if point_distance_css_px(start, point, self.observed_pixels_per_point.0)
+                    < POINTER_DRAG_THRESHOLD_CSS_PX
+                {
+                    return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                }
+                let routing_context =
+                    self.cloud_plus_routing_context(document_id, page_index, Some(&id), supplement);
+                let preview = resolve_cloud_plus_pointer_edit(
+                    &original,
+                    kind,
+                    start,
+                    point,
+                    &routing_context,
+                )?;
+                let document = self
+                    .documents
+                    .get_mut(&document_id)
+                    .ok_or(AnnotationError::NoActiveGesture)?;
+                validate_cloud_plus_pointer_target(
+                    document,
+                    page_index,
+                    &id,
+                    expected_revision,
+                    &original,
+                )?;
+                let edit = match kind {
+                    CloudPlusPointerEditKind::CloudVertex(vertex_index) => {
+                        AnnotationEdit::SetCloudPlusCloudPoint {
+                            vertex_index,
+                            point: preview.cloud_points()[vertex_index],
+                            leader_points: preview.leader_points().to_vec(),
+                        }
+                    }
+                    CloudPlusPointerEditKind::TextBoxResize(_)
+                    | CloudPlusPointerEditKind::TextBox => AnnotationEdit::SetCloudPlusTextBox {
+                        text_box: preview.text_box,
+                        leader_points: preview.leader_points().to_vec(),
+                    },
+                    CloudPlusPointerEditKind::LeaderPoint(_) => {
+                        AnnotationEdit::SetCloudPlusLeaderPoints(preview.leader_points().to_vec())
+                    }
+                    CloudPlusPointerEditKind::Body => AnnotationEdit::TranslateCloudPlusGroup {
                         delta_x: point.x - start.x,
                         delta_y: point.y - start.y,
                     },
@@ -6313,6 +9716,7 @@ impl AnnotationAdapter {
                 handle,
                 start,
                 original_rect,
+                original_rotation_degrees,
                 ..
             } => {
                 require_pointer(active_pointer, pointer_id)?;
@@ -6321,7 +9725,11 @@ impl AnnotationAdapter {
                 {
                     return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
                 }
-                let rect = original_rect.rotated_resize_from_handle(0., handle, point);
+                let rect = original_rect.rotated_resize_from_handle(
+                    original_rotation_degrees,
+                    handle,
+                    point,
+                );
                 self.documents
                     .get_mut(&document_id)
                     .ok_or(AnnotationError::NoActiveGesture)?
@@ -6330,6 +9738,42 @@ impl AnnotationAdapter {
                         edit: AnnotationEdit::SetTextBoxLayoutRect(rect),
                     })?;
                 Ok(PointerPhaseOutcome::AnnotationEdited(id))
+            }
+            ActivePointer::TextBoxRotate {
+                document_id,
+                pointer_id: active_pointer,
+                id,
+                start,
+                original_rect,
+                original_rotation_degrees,
+                ..
+            } => {
+                require_pointer(active_pointer, pointer_id)?;
+                if point_distance_css_px(start, raw_point, self.observed_pixels_per_point.0)
+                    < POINTER_DRAG_THRESHOLD_CSS_PX
+                {
+                    return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                }
+                let rotation = ellipse_rotation_from_drag(
+                    original_rect,
+                    original_rotation_degrees,
+                    start,
+                    raw_point,
+                );
+                let outcome = self
+                    .documents
+                    .get_mut(&document_id)
+                    .ok_or(AnnotationError::NoActiveGesture)?
+                    .apply_command(AnnotationCommand::EditAnnotation {
+                        id: id.clone(),
+                        edit: AnnotationEdit::SetTextBoxRotation(rotation),
+                    })?;
+                Ok(match outcome {
+                    CommandOutcome::AnnotationEdited { changed: true, .. } => {
+                        PointerPhaseOutcome::AnnotationEdited(id)
+                    }
+                    _ => PointerPhaseOutcome::SelectionChanged(Some(id)),
+                })
             }
             ActivePointer::ImageMove {
                 document_id,
@@ -6367,6 +9811,8 @@ impl AnnotationAdapter {
                 handle,
                 start,
                 original_rect,
+                original_rotation_degrees,
+                aspect_locked,
                 ..
             } => {
                 require_pointer(active_pointer, pointer_id)?;
@@ -6375,7 +9821,14 @@ impl AnnotationAdapter {
                 {
                     return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
                 }
-                let rect = resized_image_rect(original_rect, handle, start, point)?;
+                let rect = resized_image_rect(
+                    original_rect,
+                    handle,
+                    start,
+                    point,
+                    original_rotation_degrees,
+                    aspect_locked,
+                )?;
                 self.documents
                     .get_mut(&document_id)
                     .ok_or(AnnotationError::NoActiveGesture)?
@@ -6384,6 +9837,42 @@ impl AnnotationAdapter {
                         edit: AnnotationEdit::SetImageRect(rect),
                     })?;
                 Ok(PointerPhaseOutcome::AnnotationEdited(id))
+            }
+            ActivePointer::ImageRotate {
+                document_id,
+                pointer_id: active_pointer,
+                id,
+                start,
+                original_rect,
+                original_rotation_degrees,
+                ..
+            } => {
+                require_pointer(active_pointer, pointer_id)?;
+                if point_distance_css_px(start, raw_point, self.observed_pixels_per_point.0)
+                    < POINTER_DRAG_THRESHOLD_CSS_PX
+                {
+                    return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                }
+                let rotation = ellipse_rotation_from_drag(
+                    original_rect,
+                    original_rotation_degrees,
+                    start,
+                    raw_point,
+                );
+                let outcome = self
+                    .documents
+                    .get_mut(&document_id)
+                    .ok_or(AnnotationError::NoActiveGesture)?
+                    .apply_command(AnnotationCommand::EditAnnotation {
+                        id: id.clone(),
+                        edit: AnnotationEdit::SetImageRotation(rotation),
+                    })?;
+                Ok(match outcome {
+                    CommandOutcome::AnnotationEdited { changed: true, .. } => {
+                        PointerPhaseOutcome::AnnotationEdited(id)
+                    }
+                    _ => PointerPhaseOutcome::SelectionChanged(Some(id)),
+                })
             }
             ActivePointer::SnapshotMove {
                 document_id,
@@ -6473,12 +9962,21 @@ impl AnnotationAdapter {
                     })?;
                 Ok(PointerPhaseOutcome::AnnotationEdited(id))
             }
-        }
+        };
+        self.acquired_tracking_points.clear();
+        self.tracking_hover_key = None;
+        self.object_snap_tracking_result = None;
+        self.relationship_snap_guides.clear();
+        outcome
     }
 
     pub fn cancel(&mut self, reason: PointerCancelReason) -> Result<(), AnnotationError> {
         if reason != PointerCancelReason::AdapterError {
             self.semantic_snap_decision = None;
+            self.acquired_tracking_points.clear();
+            self.tracking_hover_key = None;
+            self.object_snap_tracking_result = None;
+            self.relationship_snap_guides.clear();
         }
         self.vertex_path_draft = None;
         self.cloud_draft = None;
@@ -6663,8 +10161,11 @@ impl AnnotationAdapter {
         page_index: u32,
         id: MarkupId,
         cloud_points: Vec<PdfPoint>,
+        caption_supplement: &AnnotationSelectionSupplement,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
         let properties = self.tool_properties(AnnotationTool::CloudPlus);
+        let routing_context =
+            self.cloud_plus_routing_context(document_id, page_index, None, caption_supplement);
         let visible_path = cloud_visible_path(&cloud_points, properties.cloud_intensity)?;
         let placement = place_initial_cloud_plus_text_box(
             &cloud_points,
@@ -6672,7 +10173,7 @@ impl AnnotationAdapter {
             CLOUD_PLUS_TEXT_WIDTH_PT,
             CLOUD_PLUS_TEXT_HEIGHT_PT,
             CLOUD_PLUS_TEXT_GAP_PT,
-            &CloudPlusRoutingContext::default(),
+            &routing_context,
         )?;
         let annotation = CloudPlusAnnotation::new(
             id.clone(),
@@ -6834,60 +10335,103 @@ impl AnnotationAdapter {
         id: &MarkupId,
         content: impl Into<String>,
     ) -> Result<(), AnnotationError> {
-        let document = self
+        self.replace_cloud_plus_text_in_create_transaction_with_routing_supplement(
+            document_id,
+            id,
+            content,
+            &AnnotationSelectionSupplement::new(),
+        )
+    }
+
+    pub fn replace_cloud_plus_text_in_create_transaction_with_routing_supplement(
+        &mut self,
+        document_id: u64,
+        id: &MarkupId,
+        content: impl Into<String>,
+        caption_supplement: &AnnotationSelectionSupplement,
+    ) -> Result<(), AnnotationError> {
+        let annotation = self
             .documents
-            .get_mut(&document_id)
-            .ok_or(AnnotationError::NoSelection)?;
-        let annotation = document
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
             .cloud_pluses()
             .iter()
             .find(|annotation| &annotation.id == id)
             .cloned()
             .ok_or(AnnotationError::NoSelection)?;
         let content = content.into();
-        let normalized_content = content.replace("\r\n", "\n").replace('\r', "\n");
-        let line_count = normalized_content.split('\n').count().max(1) as f64;
-        let line_height = annotation.appearance.text().font_size_pt() * 1.15;
-        let height = annotation
-            .text_box
-            .height
-            .max(line_count * line_height + 12.);
-        let connection = annotation.leader_points().last().copied();
-        let existing_center_y = annotation.text_box.y + annotation.text_box.height * 0.5;
-        let connects_to_vertical_side = connection.is_some_and(|connection| {
-            (connection.x - annotation.text_box.x)
-                .abs()
-                .min((connection.x - (annotation.text_box.x + annotation.text_box.width)).abs())
-                <= (connection.y - annotation.text_box.y).abs().min(
-                    (connection.y - (annotation.text_box.y + annotation.text_box.height)).abs(),
-                )
-        });
-        let center_y = if connects_to_vertical_side {
-            connection
-                .expect("a vertical-side connection was checked above")
-                .y
-        } else {
-            existing_center_y
-        };
-        let text_box = PdfRect::new(
-            annotation.text_box.x,
-            center_y - height * 0.5,
-            annotation.text_box.width,
-            height,
-        )?;
-        let leader = route_cloud_plus_leader(
-            annotation.cloud_points(),
-            &annotation.scallop_path(),
-            text_box,
-            annotation.leader_points(),
-            &CloudPlusRoutingContext::default(),
-        )?;
+        let routing_context = self.cloud_plus_routing_context(
+            document_id,
+            annotation.page_index,
+            Some(id),
+            caption_supplement,
+        );
+        let (text_box, leader_points) =
+            cloud_plus_text_layout(&annotation, &content, &routing_context)?;
+        let document = self
+            .documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
         document.replace_cloud_plus_content_and_layout_in_create_transaction(
             id,
             content,
             text_box,
-            leader.points,
+            leader_points,
         )?;
+        Ok(())
+    }
+
+    pub fn replace_cloud_plus_text(
+        &mut self,
+        document_id: u64,
+        id: &MarkupId,
+        content: impl Into<String>,
+    ) -> Result<(), AnnotationError> {
+        self.replace_cloud_plus_text_with_routing_supplement(
+            document_id,
+            id,
+            content,
+            &AnnotationSelectionSupplement::new(),
+        )
+    }
+
+    pub fn replace_cloud_plus_text_with_routing_supplement(
+        &mut self,
+        document_id: u64,
+        id: &MarkupId,
+        content: impl Into<String>,
+        caption_supplement: &AnnotationSelectionSupplement,
+    ) -> Result<(), AnnotationError> {
+        let annotation = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .cloud_pluses()
+            .iter()
+            .find(|annotation| &annotation.id == id)
+            .cloned()
+            .ok_or(AnnotationError::NoSelection)?;
+        let content = content.into();
+        let routing_context = self.cloud_plus_routing_context(
+            document_id,
+            annotation.page_index,
+            Some(id),
+            caption_supplement,
+        );
+        let (text_box, leader_points) =
+            cloud_plus_text_layout(&annotation, &content, &routing_context)?;
+        let document = self
+            .documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        document.apply_command(AnnotationCommand::EditAnnotation {
+            id: id.clone(),
+            edit: AnnotationEdit::SetCloudPlusContentAndLayout {
+                content,
+                text_box,
+                leader_points,
+            },
+        })?;
         Ok(())
     }
 
@@ -6913,10 +10457,7 @@ impl AnnotationAdapter {
     /// Focused annotation for keyboard-focus feedback. Tracks the most
     /// recently selected id; empty when nothing is selected.
     pub fn focused_id(&self, document_id: u64) -> Option<MarkupId> {
-        self.documents
-            .get(&document_id)?
-            .focused_id()
-            .cloned()
+        self.documents.get(&document_id)?.focused_id().cloned()
     }
 
     /// Returns the current primary annotation without requiring the rest of
@@ -7765,11 +11306,39 @@ impl AnnotationAdapter {
     }
 
     pub fn document_scene(&self, document_id: u64, page_index: u32) -> AnnotationScene {
+        self.document_scene_with_routing_supplement(
+            document_id,
+            page_index,
+            &AnnotationSelectionSupplement::new(),
+        )
+    }
+
+    pub fn document_scene_with_routing_supplement(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        caption_supplement: &AnnotationSelectionSupplement,
+    ) -> AnnotationScene {
         let mut scene = self
             .documents
             .get(&document_id)
             .map(|document| document.document_scene(page_index))
             .unwrap_or_else(|| empty_scene(page_index));
+        let chrome_visible = self.manipulation_chrome_visible(document_id, page_index);
+        for annotation in &mut scene.rectangles {
+            annotation.feedback = match annotation.feedback {
+                SceneInteractionFeedback::Move { .. } => {
+                    SceneInteractionFeedback::Move { chrome_visible }
+                }
+                SceneInteractionFeedback::Transform { active_handle, .. } => {
+                    SceneInteractionFeedback::Transform {
+                        chrome_visible,
+                        active_handle,
+                    }
+                }
+                feedback => feedback,
+            };
+        }
         if let Some(draft) = &self.arc_draft
             && (draft.document_id, draft.page_index) == (document_id, page_index)
             && let Some(end) = draft.end
@@ -7787,6 +11356,9 @@ impl AnnotationAdapter {
                 start: annotation.start,
                 end: annotation.end,
                 mid: annotation.mid,
+                rect: annotation.rect(),
+                angle1_degrees: annotation.angle1_degrees(),
+                angle2_degrees: annotation.angle2_degrees(),
                 sampled_path: annotation.sampled_path(64),
                 appearance: annotation.appearance,
                 selected: true,
@@ -7813,6 +11385,7 @@ impl AnnotationAdapter {
                 selected: true,
                 locked: false,
                 draft: true,
+                feedback: SceneInteractionFeedback::Creation,
             });
         }
         if let Some(ActivePointer::RedactCreate {
@@ -7836,6 +11409,36 @@ impl AnnotationAdapter {
                 locked: false,
                 draft: true,
                 body_id: REDACT_BODY_ID,
+                feedback: SceneInteractionFeedback::Creation,
+            });
+        }
+        if let Some(ActivePointer::EllipseCreate {
+            document_id: active_document_id,
+            page_index: active_page_index,
+            id,
+            appearance,
+            start,
+            current,
+            ..
+        }) = &self.active
+            && (*active_document_id, *active_page_index) == (document_id, page_index)
+            && start != current
+            && let Ok(annotation) = EllipseAnnotation::new(
+                id.clone(),
+                page_index,
+                PdfRect::from_corners(*start, *current),
+                appearance.clone(),
+            )
+        {
+            scene.ellipses.push(SceneRectangle {
+                id: annotation.id,
+                rect: annotation.rect,
+                rotation_degrees: annotation.rotation_degrees,
+                appearance: annotation.appearance,
+                selected: true,
+                locked: false,
+                preview: true,
+                feedback: SceneInteractionFeedback::Creation,
             });
         }
         if let Some(ActivePointer::GroupMove {
@@ -7862,6 +11465,7 @@ impl AnnotationAdapter {
                 )
                 .expect("validated pointer points produce a finite group Rectangle preview");
                 annotation.preview = true;
+                annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
             }
             for annotation in scene
                 .ellipses
@@ -7876,6 +11480,7 @@ impl AnnotationAdapter {
                 )
                 .expect("validated pointer points produce a finite group Ellipse preview");
                 annotation.preview = true;
+                annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
             }
             for annotation in scene
                 .redacts
@@ -7890,6 +11495,7 @@ impl AnnotationAdapter {
                 )
                 .expect("validated pointer points produce a finite group Redact preview");
                 annotation.draft = true;
+                annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
             }
             for annotation in scene
                 .arcs
@@ -7922,6 +11528,7 @@ impl AnnotationAdapter {
                     PdfPoint::new(annotation.end.x + delta_x, annotation.end.y + delta_y)
                         .expect("validated pointer points produce a finite group Line preview");
                 annotation.draft = true;
+                annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
             }
             for annotation in scene
                 .vertex_paths
@@ -7933,6 +11540,22 @@ impl AnnotationAdapter {
                         .expect("validated pointer points produce a finite vertex-path preview");
                 }
                 annotation.draft = true;
+            }
+            for annotation in scene
+                .clouds
+                .iter_mut()
+                .filter(|annotation| annotation.selected && !annotation.locked)
+            {
+                for point in &mut annotation.points {
+                    *point = PdfPoint::new(point.x + delta_x, point.y + delta_y)
+                        .expect("validated pointer points produce a finite Cloud preview");
+                }
+                for point in &mut annotation.scallop_path {
+                    *point = PdfPoint::new(point.x + delta_x, point.y + delta_y)
+                        .expect("validated pointer points produce a finite Cloud scallop preview");
+                }
+                annotation.draft = true;
+                annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
             }
             for annotation in scene
                 .measurement_paths
@@ -7963,6 +11586,7 @@ impl AnnotationAdapter {
                     }
                 }
                 annotation.draft = true;
+                annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
             }
             for annotation in scene
                 .text_boxes
@@ -7976,6 +11600,7 @@ impl AnnotationAdapter {
                     annotation.layout_rect.height,
                 )
                 .expect("validated pointer points produce a finite group Text preview");
+                annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
             }
             for annotation in scene
                 .lengths
@@ -7988,6 +11613,8 @@ impl AnnotationAdapter {
                 annotation.end =
                     PdfPoint::new(annotation.end.x + delta_x, annotation.end.y + delta_y)
                         .expect("validated pointer points produce a finite group Length preview");
+                annotation.draft = true;
+                annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
             }
             for annotation in scene
                 .images
@@ -8001,6 +11628,7 @@ impl AnnotationAdapter {
                     annotation.rect.height,
                 )
                 .expect("validated pointer points produce a finite group Image preview");
+                annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
             }
             for annotation in scene
                 .snapshots
@@ -8040,6 +11668,7 @@ impl AnnotationAdapter {
             )
             .expect("validated pointer points produce a finite Ellipse move preview");
             annotation.preview = true;
+            annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
         }
         if let Some(ActivePointer::RedactMove {
             document_id: active_document_id,
@@ -8064,6 +11693,7 @@ impl AnnotationAdapter {
             )
             .expect("validated pointer points produce a finite Redact move preview");
             annotation.draft = true;
+            annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
         }
         if let Some(ActivePointer::RedactResize {
             document_id: active_document_id,
@@ -8083,6 +11713,13 @@ impl AnnotationAdapter {
             if let Ok(rect) = redact_resized_rect(*original_rect, *handle, *current) {
                 annotation.rect = rect;
                 annotation.draft = true;
+                annotation.feedback = SceneInteractionFeedback::Transform {
+                    chrome_visible,
+                    active_handle: RectangleResizeHandle::ALL
+                        .iter()
+                        .position(|candidate| candidate == handle)
+                        .expect("a Redact resize uses a known handle"),
+                };
             }
         }
         if let Some(ActivePointer::EllipseResize {
@@ -8108,6 +11745,13 @@ impl AnnotationAdapter {
                 *current,
             );
             annotation.preview = true;
+            annotation.feedback = SceneInteractionFeedback::Transform {
+                chrome_visible,
+                active_handle: RectangleResizeHandle::ALL
+                    .iter()
+                    .position(|candidate| candidate == handle)
+                    .expect("an Ellipse resize uses a known handle"),
+            };
         }
         if let Some(ActivePointer::EllipseRotate {
             document_id: active_document_id,
@@ -8132,6 +11776,10 @@ impl AnnotationAdapter {
                 *current,
             );
             annotation.preview = true;
+            annotation.feedback = SceneInteractionFeedback::Transform {
+                chrome_visible,
+                active_handle: RectangleResizeHandle::ALL.len(),
+            };
         }
         if let Some(ActivePointer::ArcMove {
             document_id: active_document_id,
@@ -8155,23 +11803,16 @@ impl AnnotationAdapter {
         {
             let delta_x = current.x - start.x;
             let delta_y = current.y - start.y;
-            annotation.start =
-                PdfPoint::new(original.start.x + delta_x, original.start.y + delta_y)
-                    .expect("validated pointer points produce a finite Arc preview");
-            annotation.end = PdfPoint::new(original.end.x + delta_x, original.end.y + delta_y)
-                .expect("validated pointer points produce a finite Arc preview");
-            annotation.mid = PdfPoint::new(original.mid.x + delta_x, original.mid.y + delta_y)
-                .expect("validated pointer points produce a finite Arc preview");
-            annotation.sampled_path = ArcAnnotation::new(
-                annotation.id.clone(),
-                page_index,
-                annotation.start,
-                annotation.end,
-                annotation.mid,
-                annotation.appearance.clone(),
-            )
-            .expect("translated Arc preview geometry remains valid")
-            .sampled_path(64);
+            let preview = original
+                .translated(delta_x, delta_y)
+                .expect("translated Arc preview geometry remains valid");
+            annotation.start = preview.start;
+            annotation.end = preview.end;
+            annotation.mid = preview.mid;
+            annotation.rect = preview.rect();
+            annotation.angle1_degrees = preview.angle1_degrees();
+            annotation.angle2_degrees = preview.angle2_degrees();
+            annotation.sampled_path = preview.sampled_path(64);
             annotation.draft = true;
         }
         if let Some(ActivePointer::ArcControlPoint {
@@ -8203,23 +11844,13 @@ impl AnnotationAdapter {
                 *snap_quarter_turn,
             )
             .unwrap_or(*current);
-            let (start, end, mid) = match *control {
-                ArcControlPoint::Start => (resolved, original.end, original.mid),
-                ArcControlPoint::Mid => (original.start, original.end, resolved),
-                ArcControlPoint::End => (original.start, resolved, original.mid),
-            };
-            if let Ok(mut preview) = ArcAnnotation::new(
-                annotation.id.clone(),
-                page_index,
-                start,
-                end,
-                mid,
-                original.appearance.clone(),
-            ) {
-                preview.locked = original.locked;
+            if let Ok(preview) = original.with_control_point(*control, resolved) {
                 annotation.start = preview.start;
                 annotation.end = preview.end;
                 annotation.mid = preview.mid;
+                annotation.rect = preview.rect();
+                annotation.angle1_degrees = preview.angle1_degrees();
+                annotation.angle2_degrees = preview.angle2_degrees();
                 annotation.sampled_path = preview.sampled_path(64);
                 annotation.draft = true;
             }
@@ -8246,6 +11877,7 @@ impl AnnotationAdapter {
                 selected: true,
                 locked: false,
                 draft: true,
+                feedback: SceneInteractionFeedback::Creation,
             });
         }
         if let Some(ActivePointer::CalloutCreate {
@@ -8287,6 +11919,7 @@ impl AnnotationAdapter {
                 selected: true,
                 locked: false,
                 draft: true,
+                feedback: SceneInteractionFeedback::Creation,
             });
         }
         if let Some(ActivePointer::CloudPlusCreate {
@@ -8301,6 +11934,8 @@ impl AnnotationAdapter {
             && start != current
         {
             let properties = self.tool_properties(AnnotationTool::CloudPlus);
+            let routing_context =
+                self.cloud_plus_routing_context(document_id, page_index, None, caption_supplement);
             let rect = PdfRect::from_corners(*start, *current);
             let cloud_points = vec![
                 PdfPoint {
@@ -8327,7 +11962,7 @@ impl AnnotationAdapter {
                     CLOUD_PLUS_TEXT_WIDTH_PT,
                     CLOUD_PLUS_TEXT_HEIGHT_PT,
                     CLOUD_PLUS_TEXT_GAP_PT,
-                    &CloudPlusRoutingContext::default(),
+                    &routing_context,
                 )
                 && let Ok(appearance) = cloud_plus_tool_appearance(&properties)
             {
@@ -8343,6 +11978,7 @@ impl AnnotationAdapter {
                     selected: true,
                     locked: false,
                     draft: true,
+                    feedback: SceneInteractionFeedback::Creation,
                 });
             }
         }
@@ -8370,6 +12006,7 @@ impl AnnotationAdapter {
             annotation.end = PdfPoint::new(original_end.x + delta_x, original_end.y + delta_y)
                 .expect("validated pointer points produce a finite line preview");
             annotation.draft = true;
+            annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
         }
         if let Some(draft) = &self.vertex_path_draft
             && (draft.document_id, draft.page_index) == (document_id, page_index)
@@ -8443,12 +12080,15 @@ impl AnnotationAdapter {
                 selected: true,
                 locked: false,
                 draft: true,
+                feedback: SceneInteractionFeedback::Creation,
             });
         }
         if let Some(draft) = &self.cloud_plus_draft
             && (draft.document_id, draft.page_index) == (document_id, page_index)
         {
             let properties = self.tool_properties(AnnotationTool::CloudPlus);
+            let routing_context =
+                self.cloud_plus_routing_context(document_id, page_index, None, caption_supplement);
             let mut cloud_points = draft.points.clone();
             if point_distance_css_px(
                 *cloud_points
@@ -8469,7 +12109,7 @@ impl AnnotationAdapter {
                     CLOUD_PLUS_TEXT_WIDTH_PT,
                     CLOUD_PLUS_TEXT_HEIGHT_PT,
                     CLOUD_PLUS_TEXT_GAP_PT,
-                    &CloudPlusRoutingContext::default(),
+                    &routing_context,
                 )
                 && let Ok(appearance) = cloud_plus_tool_appearance(&properties)
             {
@@ -8485,6 +12125,7 @@ impl AnnotationAdapter {
                     selected: true,
                     locked: false,
                     draft: true,
+                    feedback: SceneInteractionFeedback::Creation,
                 });
             }
         }
@@ -8563,6 +12204,22 @@ impl AnnotationAdapter {
             && let Some(vertex) = annotation.points.get_mut(*vertex_index)
         {
             *vertex = *current;
+            if let Some(retained) = self.documents.get(&document_id).and_then(|document| {
+                document
+                    .measurement_paths()
+                    .iter()
+                    .find(|retained| retained.id == *id)
+            }) && let Ok(preview) = MeasurementPathAnnotation::new_with_text_style(
+                retained.id.clone(),
+                retained.page_index,
+                annotation.points.clone(),
+                retained.kind,
+                retained.calibration().clone(),
+                retained.appearance.clone(),
+                retained.text_style().clone(),
+            ) {
+                annotation.caption = preview.caption();
+            }
             annotation.draft = true;
         }
         if let Some(ActivePointer::StraightLineEndpoint {
@@ -8584,6 +12241,13 @@ impl AnnotationAdapter {
                 LineEndpoint::End => annotation.end = *current,
             }
             annotation.draft = true;
+            annotation.feedback = SceneInteractionFeedback::Transform {
+                chrome_visible,
+                active_handle: match endpoint {
+                    LineEndpoint::Start => 0,
+                    LineEndpoint::End => 1,
+                },
+            };
         }
         if let Some(ActivePointer::InkMove {
             document_id: active_document_id,
@@ -8611,6 +12275,7 @@ impl AnnotationAdapter {
                 })
                 .collect();
             annotation.points = annotation.paths.first().cloned().unwrap_or_default();
+            annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
         }
         if let Some(ActivePointer::TextBoxMove {
             document_id: active_document_id,
@@ -8634,6 +12299,7 @@ impl AnnotationAdapter {
                 original_rect.height,
             )
             .expect("validated pointer points produce a finite Text Box preview");
+            annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
         }
         if let Some(ActivePointer::TextBoxResize {
             document_id: active_document_id,
@@ -8642,6 +12308,7 @@ impl AnnotationAdapter {
             handle,
             current,
             original_rect,
+            original_rotation_degrees,
             ..
         }) = &self.active
             && (*active_document_id, *active_page_index) == (document_id, page_index)
@@ -8650,8 +12317,45 @@ impl AnnotationAdapter {
                 .iter_mut()
                 .find(|annotation| annotation.id == *id)
         {
-            annotation.layout_rect =
-                original_rect.rotated_resize_from_handle(0., *handle, *current);
+            annotation.layout_rect = original_rect.rotated_resize_from_handle(
+                *original_rotation_degrees,
+                *handle,
+                *current,
+            );
+            annotation.feedback = SceneInteractionFeedback::Transform {
+                chrome_visible,
+                active_handle: RectangleResizeHandle::ALL
+                    .iter()
+                    .position(|candidate| candidate == handle)
+                    .expect("a Text Box resize uses a known handle"),
+            };
+        }
+        if let Some(ActivePointer::TextBoxRotate {
+            document_id: active_document_id,
+            page_index: active_page_index,
+            id,
+            start,
+            current,
+            original_rect,
+            original_rotation_degrees,
+            ..
+        }) = &self.active
+            && (*active_document_id, *active_page_index) == (document_id, page_index)
+            && let Some(annotation) = scene
+                .text_boxes
+                .iter_mut()
+                .find(|annotation| annotation.id == *id)
+        {
+            annotation.rotation_degrees = ellipse_rotation_from_drag(
+                *original_rect,
+                *original_rotation_degrees,
+                *start,
+                *current,
+            );
+            annotation.feedback = SceneInteractionFeedback::Transform {
+                chrome_visible,
+                active_handle: 8,
+            };
         }
         if let Some(ActivePointer::ImageMove {
             document_id: active_document_id,
@@ -8670,6 +12374,7 @@ impl AnnotationAdapter {
         {
             annotation.rect.x = original_rect.x + current.x - start.x;
             annotation.rect.y = original_rect.y + current.y - start.y;
+            annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
         }
         if let Some(ActivePointer::ImageResize {
             document_id: active_document_id,
@@ -8679,6 +12384,8 @@ impl AnnotationAdapter {
             start,
             current,
             original_rect,
+            original_rotation_degrees,
+            aspect_locked,
             ..
         }) = &self.active
             && (*active_document_id, *active_page_index) == (document_id, page_index)
@@ -8686,9 +12393,50 @@ impl AnnotationAdapter {
                 .images
                 .iter_mut()
                 .find(|annotation| annotation.id == *id)
-            && let Ok(rect) = resized_image_rect(*original_rect, *handle, *start, *current)
+            && let Ok(rect) = resized_image_rect(
+                *original_rect,
+                *handle,
+                *start,
+                *current,
+                *original_rotation_degrees,
+                *aspect_locked,
+            )
         {
             annotation.rect = rect;
+            annotation.feedback = SceneInteractionFeedback::Transform {
+                chrome_visible,
+                active_handle: ImageResizeHandle::ALL
+                    .iter()
+                    .position(|candidate| candidate == handle)
+                    .expect("an Image resize uses a known handle"),
+            };
+        }
+        if let Some(ActivePointer::ImageRotate {
+            document_id: active_document_id,
+            page_index: active_page_index,
+            id,
+            start,
+            current,
+            original_rect,
+            original_rotation_degrees,
+            ..
+        }) = &self.active
+            && (*active_document_id, *active_page_index) == (document_id, page_index)
+            && let Some(annotation) = scene
+                .images
+                .iter_mut()
+                .find(|annotation| annotation.id == *id)
+        {
+            annotation.rotation_degrees = ellipse_rotation_from_drag(
+                *original_rect,
+                *original_rotation_degrees,
+                *start,
+                *current,
+            );
+            annotation.feedback = SceneInteractionFeedback::Transform {
+                chrome_visible,
+                active_handle: 8,
+            };
         }
         if let Some(ActivePointer::SnapshotMove {
             document_id: active_document_id,
@@ -8713,6 +12461,7 @@ impl AnnotationAdapter {
             )
             .expect("validated pointer points produce a finite Snapshot move preview");
             annotation.draft = true;
+            annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
         }
         if let Some(ActivePointer::SnapshotResize {
             document_id: active_document_id,
@@ -8736,6 +12485,13 @@ impl AnnotationAdapter {
                 *current,
             );
             annotation.draft = true;
+            annotation.feedback = SceneInteractionFeedback::Transform {
+                chrome_visible,
+                active_handle: RectangleResizeHandle::ALL
+                    .iter()
+                    .position(|candidate| candidate == handle)
+                    .expect("a Snapshot resize uses a known handle"),
+            };
         }
         if let Some(ActivePointer::SnapshotRotate {
             document_id: active_document_id,
@@ -8760,6 +12516,10 @@ impl AnnotationAdapter {
                 *current,
             );
             annotation.draft = true;
+            annotation.feedback = SceneInteractionFeedback::Transform {
+                chrome_visible,
+                active_handle: RectangleResizeHandle::ALL.len(),
+            };
         }
         if let Some(ActivePointer::DimensionEdit {
             document_id: active_document_id,
@@ -8814,6 +12574,23 @@ impl AnnotationAdapter {
                 annotation.end = preview_end;
                 annotation.dimension_line_offset = preview_offset;
                 annotation.draft = true;
+                annotation.feedback = match kind {
+                    DimensionPointerEditKind::Body => {
+                        SceneInteractionFeedback::Move { chrome_visible }
+                    }
+                    DimensionPointerEditKind::Start => SceneInteractionFeedback::Transform {
+                        chrome_visible,
+                        active_handle: 0,
+                    },
+                    DimensionPointerEditKind::End => SceneInteractionFeedback::Transform {
+                        chrome_visible,
+                        active_handle: 1,
+                    },
+                    DimensionPointerEditKind::Offset => SceneInteractionFeedback::Transform {
+                        chrome_visible,
+                        active_handle: 2,
+                    },
+                };
             }
         }
         if let Some(ActivePointer::CalloutEdit {
@@ -8837,6 +12614,14 @@ impl AnnotationAdapter {
             let mut leader_points = original.leader_points().to_vec();
             let mut text_box = original.text_box;
             match kind {
+                CalloutPointerEditKind::TextBoxResize(handle) => {
+                    text_box = original
+                        .text_box
+                        .rotated_resize_from_handle(0., *handle, *current);
+                    if let Ok(resized) = original.resized_text_box(text_box) {
+                        leader_points = resized.leader_points().to_vec();
+                    }
+                }
                 CalloutPointerEditKind::LeaderPoint(index) => {
                     if let Some(point) = leader_points.get_mut(*index) {
                         *point = *current;
@@ -8872,7 +12657,90 @@ impl AnnotationAdapter {
                 annotation.leader_points = leader_points;
                 annotation.text_box = text_box;
                 annotation.draft = true;
+                annotation.feedback = match kind {
+                    CalloutPointerEditKind::TextBoxResize(handle) => {
+                        SceneInteractionFeedback::Transform {
+                            chrome_visible,
+                            active_handle: RectangleResizeHandle::ALL
+                                .iter()
+                                .position(|candidate| candidate == handle)
+                                .expect("a Callout resize handle must use the shared handle order"),
+                        }
+                    }
+                    CalloutPointerEditKind::LeaderPoint(index) => {
+                        SceneInteractionFeedback::Transform {
+                            chrome_visible,
+                            active_handle: RectangleResizeHandle::ALL.len() + *index,
+                        }
+                    }
+                    CalloutPointerEditKind::TextBox | CalloutPointerEditKind::Body => {
+                        SceneInteractionFeedback::Move { chrome_visible }
+                    }
+                };
             }
+        }
+        if let Some(ActivePointer::CloudPlusEdit {
+            document_id: active_document_id,
+            page_index: active_page_index,
+            id,
+            kind,
+            start,
+            current,
+            original,
+            ..
+        }) = &self.active
+            && (*active_document_id, *active_page_index) == (document_id, page_index)
+            && let Some(annotation) = scene
+                .cloud_pluses
+                .iter_mut()
+                .find(|annotation| annotation.id == *id)
+            && let Ok(preview) = resolve_cloud_plus_pointer_edit(
+                original,
+                *kind,
+                *start,
+                *current,
+                &self.cloud_plus_routing_context(
+                    document_id,
+                    page_index,
+                    Some(id),
+                    caption_supplement,
+                ),
+            )
+        {
+            annotation.cloud_points = preview.cloud_points().to_vec();
+            annotation.scallop_path = preview.scallop_path();
+            annotation.leader_points = preview.leader_points().to_vec();
+            annotation.text_box = preview.text_box;
+            annotation.draft = true;
+            annotation.feedback = match kind {
+                CloudPlusPointerEditKind::CloudVertex(index) => {
+                    SceneInteractionFeedback::Transform {
+                        chrome_visible,
+                        active_handle: *index,
+                    }
+                }
+                CloudPlusPointerEditKind::TextBoxResize(handle) => {
+                    SceneInteractionFeedback::Transform {
+                        chrome_visible,
+                        active_handle: original.cloud_points().len()
+                            + RectangleResizeHandle::ALL
+                                .iter()
+                                .position(|candidate| candidate == handle)
+                                .expect("a Cloud+ resize handle must use the shared order"),
+                    }
+                }
+                CloudPlusPointerEditKind::LeaderPoint(index) => {
+                    SceneInteractionFeedback::Transform {
+                        chrome_visible,
+                        active_handle: original.cloud_points().len()
+                            + RectangleResizeHandle::ALL.len()
+                            + *index,
+                    }
+                }
+                CloudPlusPointerEditKind::TextBox | CloudPlusPointerEditKind::Body => {
+                    SceneInteractionFeedback::Move { chrome_visible }
+                }
+            };
         }
         if let Some(ActivePointer::CloudEdit {
             document_id: active_document_id,
@@ -8916,6 +12784,13 @@ impl AnnotationAdapter {
                 annotation.points = preview.points().to_vec();
                 annotation.scallop_path = preview.scallop_path();
                 annotation.draft = true;
+                annotation.feedback = match kind {
+                    CloudPointerEditKind::Vertex(index) => SceneInteractionFeedback::Transform {
+                        chrome_visible,
+                        active_handle: *index,
+                    },
+                    CloudPointerEditKind::Body => SceneInteractionFeedback::Move { chrome_visible },
+                };
             }
         }
         if let Some(ActivePointer::DimensionCreate {
@@ -8950,6 +12825,7 @@ impl AnnotationAdapter {
                     selected: true,
                     locked: false,
                     draft: true,
+                    feedback: SceneInteractionFeedback::Creation,
                 });
             }
         }
@@ -8987,6 +12863,8 @@ impl AnnotationAdapter {
                 appearance: annotation.appearance,
                 selected: true,
                 locked: false,
+                draft: true,
+                feedback: SceneInteractionFeedback::Creation,
             });
         }
         if let Some(ActivePointer::LengthEndpoint {
@@ -9024,7 +12902,41 @@ impl AnnotationAdapter {
                 annotation.end = preview.end;
                 annotation.caption = preview.caption();
                 annotation.show_caption = preview.calibration().show_caption();
+                annotation.draft = true;
+                annotation.feedback = SceneInteractionFeedback::Transform {
+                    chrome_visible,
+                    active_handle: match endpoint {
+                        LengthEndpoint::Start => 0,
+                        LengthEndpoint::End => 1,
+                    },
+                };
             }
+        }
+        if let Some(ActivePointer::LengthMove {
+            document_id: active_document_id,
+            page_index: active_page_index,
+            id,
+            start,
+            current,
+            original_start,
+            original_end,
+            ..
+        }) = &self.active
+            && (*active_document_id, *active_page_index) == (document_id, page_index)
+            && let Some(annotation) = scene
+                .lengths
+                .iter_mut()
+                .find(|annotation| annotation.id == *id)
+        {
+            let delta_x = current.x - start.x;
+            let delta_y = current.y - start.y;
+            annotation.start =
+                PdfPoint::new(original_start.x + delta_x, original_start.y + delta_y)
+                    .expect("validated pointer points produce a finite Length preview");
+            annotation.end = PdfPoint::new(original_end.x + delta_x, original_end.y + delta_y)
+                .expect("validated pointer points produce a finite Length preview");
+            annotation.draft = true;
+            annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
         }
         scene
     }
@@ -9101,9 +13013,16 @@ impl AnnotationAdapter {
 
     fn next_id(&mut self, tool: AnnotationTool) -> Result<MarkupId, AnnotationError> {
         if let Some(id) = self.queued_id.take() {
+            if let Some(sequence) = comparison_sequence(&id) {
+                self.next_sequence = self.next_sequence.max(sequence);
+            }
             return Ok(id);
         }
-        self.next_sequence = self.next_sequence.saturating_add(1);
+        self.next_sequence = self.next_sequence.checked_add(1).ok_or_else(|| {
+            AnnotationError::InvalidRecoveryTimeline(
+                "comparison markup sequence is exhausted".into(),
+            )
+        })?;
         let family = match tool {
             AnnotationTool::Select => "selection",
             AnnotationTool::Rectangle => "rectangle",
@@ -9131,6 +13050,81 @@ impl AnnotationAdapter {
     }
 }
 
+fn active_pointer_document_id(active: &ActivePointer) -> u64 {
+    match active {
+        ActivePointer::Marquee { document_id, .. }
+        | ActivePointer::GroupMove { document_id, .. }
+        | ActivePointer::Domain { document_id, .. }
+        | ActivePointer::EllipseCreate { document_id, .. }
+        | ActivePointer::EllipseMove { document_id, .. }
+        | ActivePointer::EllipseResize { document_id, .. }
+        | ActivePointer::EllipseRotate { document_id, .. }
+        | ActivePointer::RedactCreate { document_id, .. }
+        | ActivePointer::RedactMove { document_id, .. }
+        | ActivePointer::RedactResize { document_id, .. }
+        | ActivePointer::ArcMove { document_id, .. }
+        | ActivePointer::ArcControlPoint { document_id, .. }
+        | ActivePointer::StraightLineCreate { document_id, .. }
+        | ActivePointer::CalloutCreate { document_id, .. }
+        | ActivePointer::CloudPlusCreate { document_id, .. }
+        | ActivePointer::StraightLineMove { document_id, .. }
+        | ActivePointer::StraightLineEndpoint { document_id, .. }
+        | ActivePointer::VertexPathPoint { document_id, .. }
+        | ActivePointer::MeasurementPathPoint { document_id, .. }
+        | ActivePointer::InkMove { document_id, .. }
+        | ActivePointer::TextBoxMove { document_id, .. }
+        | ActivePointer::TextBoxResize { document_id, .. }
+        | ActivePointer::TextBoxRotate { document_id, .. }
+        | ActivePointer::ImageMove { document_id, .. }
+        | ActivePointer::ImageResize { document_id, .. }
+        | ActivePointer::ImageRotate { document_id, .. }
+        | ActivePointer::SnapshotMove { document_id, .. }
+        | ActivePointer::SnapshotResize { document_id, .. }
+        | ActivePointer::SnapshotRotate { document_id, .. }
+        | ActivePointer::LengthCreate { document_id, .. }
+        | ActivePointer::LengthMove { document_id, .. }
+        | ActivePointer::DimensionCreate { document_id, .. }
+        | ActivePointer::DimensionEdit { document_id, .. }
+        | ActivePointer::CalloutEdit { document_id, .. }
+        | ActivePointer::CloudPlusEdit { document_id, .. }
+        | ActivePointer::CloudEdit { document_id, .. }
+        | ActivePointer::LengthEndpoint { document_id, .. } => *document_id,
+    }
+}
+
+fn comparison_sequence(id: &MarkupId) -> Option<u64> {
+    let remainder = id.as_str().strip_prefix("comparison:")?;
+    let (family, sequence) = remainder.rsplit_once(':')?;
+    (!family.is_empty())
+        .then(|| sequence.parse::<u64>().ok())
+        .flatten()
+}
+
+fn image_placement_rect(
+    pending: &PendingImageAsset,
+    placement_page: ImagePlacementPage,
+    point: PdfPoint,
+) -> Result<PdfRect, AnnotationError> {
+    let source_width = f64::from(pending.asset.width_px());
+    let source_height = f64::from(pending.asset.height_px());
+    let aspect_ratio = (source_width / source_height).max(0.01);
+    let natural_width = source_width.max(24.0);
+    let natural_height = natural_width / aspect_ratio;
+    let scale = 1.0_f64
+        .min(placement_page.width_pt * placement_page.max_fraction / natural_width)
+        .min(placement_page.height_pt * placement_page.max_fraction / natural_height);
+    let (width, height) = if pending.aspect_locked {
+        (natural_width * scale, natural_height * scale)
+    } else {
+        let width = (natural_width * scale).max(24.0);
+        let height = (width / aspect_ratio).max(24.0);
+        (width, height)
+    };
+    let x = (point.x - width / 2.0).clamp(0.0, (placement_page.width_pt - width).max(0.0));
+    let y = (point.y - height / 2.0).clamp(0.0, (placement_page.height_pt - height).max(0.0));
+    PdfRect::new(x, y, width, height)
+}
+
 fn require_pointer(active: u64, received: u64) -> Result<(), AnnotationError> {
     if active == received {
         Ok(())
@@ -9140,6 +13134,120 @@ fn require_pointer(active: u64, received: u64) -> Result<(), AnnotationError> {
             received,
         })
     }
+}
+
+fn moving_snap_context(
+    document: &AnnotationDocument,
+    page_index: u32,
+    supplement: &AnnotationSelectionSupplement,
+) -> (Vec<PdfPoint>, Vec<MarkupId>) {
+    let scene = document.document_scene(page_index);
+    let mut excluded_ids = Vec::new();
+    excluded_ids.extend(
+        scene
+            .straight_lines
+            .iter()
+            .filter(|annotation| annotation.selected && !annotation.locked)
+            .map(|annotation| annotation.id.clone()),
+    );
+    excluded_ids.extend(
+        scene
+            .rectangles
+            .iter()
+            .filter(|annotation| annotation.selected && !annotation.locked)
+            .map(|annotation| annotation.id.clone()),
+    );
+    excluded_ids.extend(
+        scene
+            .ellipses
+            .iter()
+            .filter(|annotation| annotation.selected && !annotation.locked)
+            .map(|annotation| annotation.id.clone()),
+    );
+    excluded_ids.extend(
+        scene
+            .redacts
+            .iter()
+            .filter(|annotation| annotation.selected && !annotation.locked)
+            .map(|annotation| annotation.id.clone()),
+    );
+    excluded_ids.extend(
+        scene
+            .arcs
+            .iter()
+            .filter(|annotation| annotation.selected && !annotation.locked && !annotation.draft)
+            .map(|annotation| annotation.id.clone()),
+    );
+    excluded_ids.extend(
+        scene
+            .vertex_paths
+            .iter()
+            .filter(|annotation| annotation.selected && !annotation.locked && !annotation.draft)
+            .map(|annotation| annotation.id.clone()),
+    );
+    excluded_ids.extend(
+        scene
+            .measurement_paths
+            .iter()
+            .filter(|annotation| annotation.selected && !annotation.locked && !annotation.draft)
+            .map(|annotation| annotation.id.clone()),
+    );
+    excluded_ids.extend(
+        scene
+            .dimensions
+            .iter()
+            .filter(|annotation| annotation.selected && !annotation.locked)
+            .map(|annotation| annotation.id.clone()),
+    );
+    excluded_ids.extend(
+        scene
+            .lengths
+            .iter()
+            .filter(|annotation| annotation.selected && !annotation.locked)
+            .map(|annotation| annotation.id.clone()),
+    );
+    excluded_ids.extend(
+        scene
+            .clouds
+            .iter()
+            .filter(|annotation| annotation.selected && !annotation.locked)
+            .map(|annotation| annotation.id.clone()),
+    );
+    excluded_ids.extend(
+        scene
+            .callouts
+            .iter()
+            .filter(|annotation| annotation.selected && !annotation.locked)
+            .map(|annotation| annotation.id.clone()),
+    );
+    excluded_ids.extend(
+        scene
+            .text_boxes
+            .iter()
+            .filter(|annotation| annotation.selected && !annotation.locked)
+            .map(|annotation| annotation.id.clone()),
+    );
+    excluded_ids.extend(
+        scene
+            .images
+            .iter()
+            .filter(|annotation| annotation.selected && !annotation.locked)
+            .map(|annotation| annotation.id.clone()),
+    );
+    excluded_ids.extend(
+        scene
+            .snapshots
+            .iter()
+            .filter(|annotation| annotation.selected && !annotation.locked && !annotation.draft)
+            .map(|annotation| annotation.id.clone()),
+    );
+    let anchors = moving_annotation_snap_anchor_points_with_selection_supplement(
+        &scene,
+        &excluded_ids,
+        128,
+        supplement,
+    );
+    (anchors, excluded_ids)
 }
 
 fn point_distance_css_px(start: PdfPoint, end: PdfPoint, observed_pixels_per_point: f64) -> f64 {
@@ -9268,15 +13376,17 @@ fn hit_straight_line_endpoint(
     page_index: u32,
     point: PdfPoint,
     tolerance: f64,
+    observed_pixels_per_point: f64,
 ) -> Option<(MarkupId, LineEndpoint)> {
     let selected = document.selected_id()?;
     let annotation = document
         .straight_lines()
         .iter()
         .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
-    if distance(annotation.end, point) <= tolerance {
+    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
+    if distance(annotation.end, point) <= handle_tolerance {
         Some((annotation.id.clone(), LineEndpoint::End))
-    } else if distance(annotation.start, point) <= tolerance {
+    } else if distance(annotation.start, point) <= handle_tolerance {
         Some((annotation.id.clone(), LineEndpoint::Start))
     } else {
         None
@@ -9288,19 +13398,31 @@ fn hit_selected_vertex_path_point(
     page_index: u32,
     point: PdfPoint,
     tolerance: f64,
+    observed_pixels_per_point: f64,
 ) -> Option<(MarkupId, usize)> {
     let selected = document.selected_id()?;
     let annotation = document
         .vertex_paths()
         .iter()
         .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
+    hit_vertex_path_handle_index(annotation, point, tolerance, observed_pixels_per_point)
+        .map(|index| (annotation.id.clone(), index))
+}
+
+fn hit_vertex_path_handle_index(
+    annotation: &VertexPathAnnotation,
+    point: PdfPoint,
+    tolerance: f64,
+    observed_pixels_per_point: f64,
+) -> Option<usize> {
+    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
     annotation
         .points()
         .iter()
         .enumerate()
         .rev()
-        .find(|(_, vertex)| distance(**vertex, point) <= tolerance)
-        .map(|(index, _)| (annotation.id.clone(), index))
+        .find(|(_, vertex)| distance(**vertex, point) <= handle_tolerance)
+        .map(|(index, _)| index)
 }
 
 fn hit_selected_measurement_path_point(
@@ -9308,37 +13430,31 @@ fn hit_selected_measurement_path_point(
     page_index: u32,
     point: PdfPoint,
     tolerance: f64,
+    observed_pixels_per_point: f64,
 ) -> Option<(MarkupId, usize)> {
     let selected = document.selected_id()?;
     let annotation = document
         .measurement_paths()
         .iter()
         .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
+    hit_measurement_path_handle_index(annotation, point, tolerance, observed_pixels_per_point)
+        .map(|index| (annotation.id.clone(), index))
+}
+
+fn hit_measurement_path_handle_index(
+    annotation: &MeasurementPathAnnotation,
+    point: PdfPoint,
+    tolerance: f64,
+    observed_pixels_per_point: f64,
+) -> Option<usize> {
+    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
     annotation
         .points()
         .iter()
         .enumerate()
         .rev()
-        .find(|(_, vertex)| distance(**vertex, point) <= tolerance)
-        .map(|(index, _)| (annotation.id.clone(), index))
-}
-
-fn hit_straight_line(
-    document: &AnnotationDocument,
-    page_index: u32,
-    point: PdfPoint,
-    tolerance: f64,
-) -> Option<MarkupId> {
-    document
-        .straight_lines()
-        .iter()
-        .rev()
-        .find(|annotation| {
-            annotation.page_index == page_index
-                && point_segment_distance(point, annotation.start, annotation.end)
-                    <= tolerance.max(annotation.appearance.stroke_width_pt() / 2.0)
-        })
-        .map(|annotation| annotation.id.clone())
+        .find(|(_, vertex)| distance(**vertex, point) <= handle_tolerance)
+        .map(|(index, _)| index)
 }
 
 fn hit_length_endpoint(
@@ -9346,15 +13462,17 @@ fn hit_length_endpoint(
     page_index: u32,
     point: PdfPoint,
     tolerance: f64,
+    observed_pixels_per_point: f64,
 ) -> Option<(MarkupId, LengthEndpoint)> {
     let selected = document.selected_id()?;
     let annotation = document
         .lengths()
         .iter()
         .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
-    if distance(annotation.end, point) <= tolerance {
+    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
+    if distance(annotation.end, point) <= handle_tolerance {
         Some((annotation.id.clone(), LengthEndpoint::End))
-    } else if distance(annotation.start, point) <= tolerance {
+    } else if distance(annotation.start, point) <= handle_tolerance {
         Some((annotation.id.clone(), LengthEndpoint::Start))
     } else {
         None
@@ -9366,65 +13484,92 @@ fn hit_selected_image_resize_handle(
     page_index: u32,
     point: PdfPoint,
     tolerance: f64,
+    observed_pixels_per_point: f64,
 ) -> Option<(MarkupId, ImageResizeHandle)> {
     let selected = document.selected_id()?;
     let annotation = document
         .images()
         .iter()
         .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
-    let rect = annotation.rect;
+    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
+    if image_rotation_handle_point(annotation, observed_pixels_per_point)
+        .is_ok_and(|handle| distance(handle, point) <= handle_tolerance)
+    {
+        return None;
+    }
+    hit_image_resize_handle(annotation, point, tolerance)
+        .map(|handle| (annotation.id.clone(), handle))
+}
+
+fn hit_selected_image_rotation_handle(
+    document: &AnnotationDocument,
+    page_index: u32,
+    point: PdfPoint,
+    tolerance: f64,
+    observed_pixels_per_point: f64,
+) -> Option<MarkupId> {
+    let selected = document.selected_id()?;
+    let annotation = document.images().iter().find(|annotation| {
+        annotation.page_index == page_index && &annotation.id == selected && !annotation.locked
+    })?;
+    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
+    image_rotation_handle_point(annotation, observed_pixels_per_point)
+        .is_ok_and(|handle| distance(handle, point) <= handle_tolerance)
+        .then(|| annotation.id.clone())
+}
+
+fn hit_image_resize_handle(
+    annotation: &ImageAnnotation,
+    point: PdfPoint,
+    tolerance: f64,
+) -> Option<ImageResizeHandle> {
+    ImageResizeHandle::ALL
+        .into_iter()
+        .filter(|handle| {
+            !annotation.aspect_locked
+                || matches!(
+                    handle,
+                    ImageResizeHandle::SouthWest
+                        | ImageResizeHandle::SouthEast
+                        | ImageResizeHandle::NorthEast
+                        | ImageResizeHandle::NorthWest
+                )
+        })
+        .find(|handle| distance(image_resize_handle_point(annotation, *handle), point) <= tolerance)
+}
+
+fn image_resize_handle_local_point(rect: PdfRect, handle: ImageResizeHandle) -> PdfPoint {
     let left = rect.x;
     let center_x = rect.x + rect.width / 2.0;
     let right = rect.x + rect.width;
     let bottom = rect.y;
     let center_y = rect.y + rect.height / 2.0;
     let top = rect.y + rect.height;
-    [
-        (
-            ImageResizeHandle::SouthWest,
-            PdfPoint { x: left, y: bottom },
-        ),
-        (
-            ImageResizeHandle::South,
-            PdfPoint {
-                x: center_x,
-                y: bottom,
-            },
-        ),
-        (
-            ImageResizeHandle::SouthEast,
-            PdfPoint {
-                x: right,
-                y: bottom,
-            },
-        ),
-        (
-            ImageResizeHandle::East,
-            PdfPoint {
-                x: right,
-                y: center_y,
-            },
-        ),
-        (ImageResizeHandle::NorthEast, PdfPoint { x: right, y: top }),
-        (
-            ImageResizeHandle::North,
-            PdfPoint {
-                x: center_x,
-                y: top,
-            },
-        ),
-        (ImageResizeHandle::NorthWest, PdfPoint { x: left, y: top }),
-        (
-            ImageResizeHandle::West,
-            PdfPoint {
-                x: left,
-                y: center_y,
-            },
-        ),
-    ]
-    .into_iter()
-    .find(|(_, center)| distance(*center, point) <= tolerance)
-    .map(|(handle, _)| (annotation.id.clone(), handle))
+    match handle {
+        ImageResizeHandle::SouthWest => PdfPoint { x: left, y: bottom },
+        ImageResizeHandle::South => PdfPoint {
+            x: center_x,
+            y: bottom,
+        },
+        ImageResizeHandle::SouthEast => PdfPoint {
+            x: right,
+            y: bottom,
+        },
+        ImageResizeHandle::East => PdfPoint {
+            x: right,
+            y: center_y,
+        },
+        ImageResizeHandle::NorthEast => PdfPoint { x: right, y: top },
+        ImageResizeHandle::North => PdfPoint {
+            x: center_x,
+            y: top,
+        },
+        ImageResizeHandle::NorthWest => PdfPoint { x: left, y: top },
+        ImageResizeHandle::West => PdfPoint {
+            x: left,
+            y: center_y,
+        },
+    }
 }
 
 fn hit_selected_snapshot_resize_handle(
@@ -9439,19 +13584,15 @@ fn hit_selected_snapshot_resize_handle(
         .snapshots()
         .iter()
         .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
-    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
-    if snapshot_rotation_handle_point(annotation, observed_pixels_per_point)
-        .is_ok_and(|handle| distance(handle, point) <= handle_tolerance)
-    {
-        return None;
-    }
-    RectangleResizeHandle::ALL
-        .into_iter()
-        .rev()
-        .find(|handle| {
-            distance(snapshot_resize_handle_point(annotation, *handle), point) <= handle_tolerance
-        })
-        .map(|handle| (annotation.id.clone(), handle))
+    hit_snapshot_handle_index(
+        annotation,
+        point,
+        tolerance,
+        observed_pixels_per_point,
+        false,
+    )
+    .and_then(|index| RectangleResizeHandle::ALL.get(index).copied())
+    .map(|handle| (annotation.id.clone(), handle))
 }
 
 fn hit_selected_snapshot_rotation_handle(
@@ -9466,10 +13607,38 @@ fn hit_selected_snapshot_rotation_handle(
         .snapshots()
         .iter()
         .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
+    (hit_snapshot_handle_index(
+        annotation,
+        point,
+        tolerance,
+        observed_pixels_per_point,
+        true,
+    ) == Some(RectangleResizeHandle::ALL.len()))
+    .then(|| annotation.id.clone())
+}
+
+fn hit_snapshot_handle_index(
+    annotation: &SnapshotAnnotation,
+    point: PdfPoint,
+    tolerance: f64,
+    observed_pixels_per_point: f64,
+    include_rotation: bool,
+) -> Option<usize> {
     let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
-    snapshot_rotation_handle_point(annotation, observed_pixels_per_point)
-        .is_ok_and(|handle| distance(handle, point) <= handle_tolerance)
-        .then(|| annotation.id.clone())
+    if include_rotation
+        && snapshot_rotation_handle_point(annotation, observed_pixels_per_point)
+            .is_ok_and(|handle| distance(handle, point) <= handle_tolerance)
+    {
+        return Some(RectangleResizeHandle::ALL.len());
+    }
+    RectangleResizeHandle::ALL
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, handle)| {
+            distance(snapshot_resize_handle_point(annotation, **handle), point) <= handle_tolerance
+        })
+        .map(|(index, _)| index)
 }
 
 fn resized_image_rect(
@@ -9477,8 +13646,111 @@ fn resized_image_rect(
     handle: ImageResizeHandle,
     start: PdfPoint,
     current: PdfPoint,
+    rotation_degrees: f64,
+    aspect_locked: bool,
 ) -> Result<PdfRect, AnnotationError> {
+    if rotation_degrees.rem_euclid(360.).abs() > f64::EPSILON {
+        let local_start = rotate_point_around_rect_center(start, original, rotation_degrees);
+        let local_current = rotate_point_around_rect_center(current, original, rotation_degrees);
+        let mut resized = resized_image_rect(
+            original,
+            handle,
+            local_start,
+            local_current,
+            0.,
+            aspect_locked,
+        )?;
+        let opposite = match handle {
+            ImageResizeHandle::SouthWest => ImageResizeHandle::NorthEast,
+            ImageResizeHandle::South => ImageResizeHandle::North,
+            ImageResizeHandle::SouthEast => ImageResizeHandle::NorthWest,
+            ImageResizeHandle::East => ImageResizeHandle::West,
+            ImageResizeHandle::NorthEast => ImageResizeHandle::SouthWest,
+            ImageResizeHandle::North => ImageResizeHandle::South,
+            ImageResizeHandle::NorthWest => ImageResizeHandle::SouthEast,
+            ImageResizeHandle::West => ImageResizeHandle::East,
+        };
+        let original_anchor = rotate_point_around_rect_center(
+            image_resize_handle_local_point(original, opposite),
+            original,
+            -rotation_degrees,
+        );
+        let resized_anchor = rotate_point_around_rect_center(
+            image_resize_handle_local_point(resized, opposite),
+            resized,
+            -rotation_degrees,
+        );
+        resized.x += original_anchor.x - resized_anchor.x;
+        resized.y += original_anchor.y - resized_anchor.y;
+        return Ok(resized);
+    }
     const MIN_IMAGE_SIZE_PT: f64 = 24.0;
+    if aspect_locked {
+        let aspect_ratio = original.width / original.height;
+        let right = original.x + original.width;
+        let top = original.y + original.height;
+        let anchor = match handle {
+            ImageResizeHandle::SouthWest => PdfPoint { x: right, y: top },
+            ImageResizeHandle::SouthEast => PdfPoint {
+                x: original.x,
+                y: top,
+            },
+            ImageResizeHandle::NorthEast => PdfPoint {
+                x: original.x,
+                y: original.y,
+            },
+            ImageResizeHandle::NorthWest => PdfPoint {
+                x: right,
+                y: original.y,
+            },
+            _ => {
+                return Err(AnnotationError::InvalidGeometry(
+                    "aspect-locked images resize only from corner handles".into(),
+                ));
+            }
+        };
+        let requested_width = if matches!(
+            handle,
+            ImageResizeHandle::SouthWest | ImageResizeHandle::NorthWest
+        ) {
+            anchor.x - current.x
+        } else {
+            current.x - anchor.x
+        };
+        let requested_height = if matches!(
+            handle,
+            ImageResizeHandle::SouthWest | ImageResizeHandle::SouthEast
+        ) {
+            anchor.y - current.y
+        } else {
+            current.y - anchor.y
+        };
+        let minimum_width = MIN_IMAGE_SIZE_PT.max(MIN_IMAGE_SIZE_PT * aspect_ratio);
+        let minimum_height = minimum_width / aspect_ratio;
+        let scale = (requested_width / original.width)
+            .max(requested_height / original.height)
+            .max(minimum_width / original.width)
+            .max(minimum_height / original.height);
+        let width = original.width * scale;
+        let height = original.height * scale;
+        let x = if matches!(
+            handle,
+            ImageResizeHandle::SouthWest | ImageResizeHandle::NorthWest
+        ) {
+            anchor.x - width
+        } else {
+            anchor.x
+        };
+        let y = if matches!(
+            handle,
+            ImageResizeHandle::SouthWest | ImageResizeHandle::SouthEast
+        ) {
+            anchor.y - height
+        } else {
+            anchor.y
+        };
+        return PdfRect::new(x, y, width, height);
+    }
     let delta_x = current.x - start.x;
     let delta_y = current.y - start.y;
     let left_moves = matches!(
@@ -9519,169 +13791,203 @@ fn resized_image_rect(
     PdfRect::new(x, y, width, height)
 }
 
-fn hit_non_rectangle(
+fn hit_annotation_body_in_document_order(
     document: &AnnotationDocument,
     page_index: u32,
     point: PdfPoint,
     tolerance: f64,
+    supplement: &AnnotationSelectionSupplement,
 ) -> Option<MarkupId> {
     document
-        .redacts()
+        .annotation_order()
         .iter()
         .rev()
-        .find(|annotation| {
-            annotation.page_index == page_index && point_in_rect(point, annotation.rect, tolerance)
+        .find(|id| {
+            annotation_body_contains(document, id, page_index, point, tolerance)
+                || annotation_caption_contains(document, id, page_index, point, supplement)
         })
-        .map(|annotation| annotation.id.clone())
-        .or_else(|| {
-            document
-                .arcs()
-                .iter()
-                .rev()
-                .find(|annotation| {
-                    annotation.page_index == page_index && arc_hit(annotation, point, tolerance)
+        .cloned()
+}
+
+fn annotation_caption_contains(
+    document: &AnnotationDocument,
+    id: &MarkupId,
+    page_index: u32,
+    point: PdfPoint,
+    supplement: &AnnotationSelectionSupplement,
+) -> bool {
+    let belongs_to_page = document
+        .lengths()
+        .iter()
+        .any(|annotation| &annotation.id == id && annotation.page_index == page_index)
+        || document
+            .measurement_paths()
+            .iter()
+            .any(|annotation| &annotation.id == id && annotation.page_index == page_index)
+        || document
+            .dimensions()
+            .iter()
+            .any(|annotation| &annotation.id == id && annotation.page_index == page_index);
+    belongs_to_page
+        && supplement
+            .get(id)
+            .is_some_and(|polygon| point_in_polygon(point, polygon))
+}
+
+fn annotation_body_contains(
+    document: &AnnotationDocument,
+    id: &MarkupId,
+    page_index: u32,
+    point: PdfPoint,
+    tolerance: f64,
+) -> bool {
+    if let Some(annotation) = document
+        .rectangles()
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        let local_point =
+            rotate_point_around_rect_center(point, annotation.rect, annotation.rotation_degrees);
+        return annotation.page_index == page_index
+            && rect_contains(annotation.rect, local_point, tolerance);
+    }
+    if let Some(annotation) = document
+        .straight_lines()
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        return annotation.page_index == page_index
+            && point_segment_distance(point, annotation.start, annotation.end)
+                <= tolerance.max(annotation.appearance.stroke_width_pt() / 2.);
+    }
+    if let Some(annotation) = document
+        .redacts()
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        return annotation.page_index == page_index
+            && point_in_rect(point, annotation.rect, tolerance);
+    }
+    if let Some(annotation) = document
+        .arcs()
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        return annotation.page_index == page_index && arc_hit(annotation, point, tolerance);
+    }
+    if let Some(annotation) = document
+        .ellipses()
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        return annotation.page_index == page_index && ellipse_hit(annotation, point, tolerance);
+    }
+    if let Some(annotation) = document
+        .vertex_paths()
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        return annotation.page_index == page_index
+            && vertex_path_hit(annotation, point, tolerance);
+    }
+    if let Some(annotation) = document
+        .measurement_paths()
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        return annotation.page_index == page_index
+            && measurement_path_hit(annotation, point, tolerance);
+    }
+    if let Some(annotation) = document
+        .clouds()
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        return annotation.page_index == page_index && cloud_hit(annotation, point, tolerance);
+    }
+    if let Some(annotation) = document
+        .cloud_pluses()
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        return annotation.page_index == page_index && cloud_plus_hit(annotation, point, tolerance);
+    }
+    if let Some(annotation) = document
+        .images()
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        let local_point =
+            rotate_point_around_rect_center(point, annotation.rect, annotation.rotation_degrees());
+        return annotation.page_index == page_index
+            && rect_contains(annotation.rect, local_point, tolerance);
+    }
+    if let Some(annotation) = document
+        .snapshots()
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        let local_point =
+            rotate_point_around_rect_center(point, annotation.rect, annotation.rotation_degrees());
+        return annotation.page_index == page_index
+            && rect_contains(annotation.rect, local_point, tolerance);
+    }
+    if let Some(annotation) = document
+        .text_boxes()
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        let local_point = rotate_point_around_rect_center(
+            point,
+            annotation.layout_rect,
+            annotation.rotation_degrees(),
+        );
+        return annotation.page_index == page_index
+            && rect_contains(annotation.layout_rect, local_point, tolerance);
+    }
+    if let Some(annotation) = document
+        .dimensions()
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        let (start, end) = annotation.dimension_line_points();
+        return annotation.page_index == page_index
+            && point_segment_distance(point, start, end)
+                <= tolerance.max(annotation.appearance.line().stroke_width_pt() / 2.);
+    }
+    if let Some(annotation) = document
+        .callouts()
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        return annotation.page_index == page_index
+            && (rect_contains(annotation.text_box, point, tolerance)
+                || annotation.leader_points().windows(2).any(|segment| {
+                    point_segment_distance(point, segment[0], segment[1]) <= tolerance
+                }));
+    }
+    if let Some(annotation) = document
+        .lengths()
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        return annotation.page_index == page_index
+            && point_segment_distance(point, annotation.start, annotation.end) <= tolerance;
+    }
+    if let Some(annotation) = document
+        .pens()
+        .iter()
+        .find(|annotation| &annotation.id == id)
+    {
+        return annotation.page_index == page_index
+            && annotation.paths().any(|path| {
+                path.windows(2).any(|segment| {
+                    point_segment_distance(point, segment[0], segment[1])
+                        <= tolerance.max(annotation.appearance.width_pt() / 2.)
                 })
-                .map(|annotation| annotation.id.clone())
-        })
-        .or_else(|| {
-            document
-                .ellipses()
-                .iter()
-                .rev()
-                .find(|annotation| {
-                    annotation.page_index == page_index && ellipse_hit(annotation, point, tolerance)
-                })
-                .map(|annotation| annotation.id.clone())
-        })
-        .or_else(|| {
-            document
-                .vertex_paths()
-                .iter()
-                .rev()
-                .find(|annotation| {
-                    annotation.page_index == page_index
-                        && vertex_path_hit(annotation, point, tolerance)
-                })
-                .map(|annotation| annotation.id.clone())
-        })
-        .or_else(|| {
-            document
-                .measurement_paths()
-                .iter()
-                .rev()
-                .find(|annotation| {
-                    annotation.page_index == page_index
-                        && measurement_path_hit(annotation, point, tolerance)
-                })
-                .map(|annotation| annotation.id.clone())
-        })
-        .or_else(|| {
-            document
-                .clouds()
-                .iter()
-                .rev()
-                .find(|annotation| {
-                    annotation.page_index == page_index && cloud_hit(annotation, point, tolerance)
-                })
-                .map(|annotation| annotation.id.clone())
-        })
-        .or_else(|| {
-            document
-                .images()
-                .iter()
-                .rev()
-                .find(|annotation| {
-                    annotation.page_index == page_index
-                        && rect_contains(annotation.rect, point, tolerance)
-                })
-                .map(|annotation| annotation.id.clone())
-        })
-        .or_else(|| {
-            document
-                .snapshots()
-                .iter()
-                .rev()
-                .find(|annotation| {
-                    if annotation.page_index != page_index {
-                        return false;
-                    }
-                    let local_point = rotate_point_around_rect_center(
-                        point,
-                        annotation.rect,
-                        annotation.rotation_degrees(),
-                    );
-                    rect_contains(annotation.rect, local_point, tolerance)
-                })
-                .map(|annotation| annotation.id.clone())
-        })
-        .or_else(|| {
-            document
-                .text_boxes()
-                .iter()
-                .rev()
-                .find(|annotation| {
-                    annotation.page_index == page_index
-                        && rect_contains(annotation.layout_rect, point, tolerance)
-                })
-                .map(|annotation| annotation.id.clone())
-        })
-        .or_else(|| {
-            document
-                .dimensions()
-                .iter()
-                .rev()
-                .find(|annotation| {
-                    if annotation.page_index != page_index {
-                        return false;
-                    }
-                    let (start, end) = annotation.dimension_line_points();
-                    point_segment_distance(point, start, end)
-                        <= tolerance.max(annotation.appearance.line().stroke_width_pt() / 2.)
-                })
-                .map(|annotation| annotation.id.clone())
-        })
-        .or_else(|| {
-            document
-                .callouts()
-                .iter()
-                .rev()
-                .find(|annotation| {
-                    annotation.page_index == page_index
-                        && (rect_contains(annotation.text_box, point, tolerance)
-                            || annotation.leader_points().windows(2).any(|segment| {
-                                point_segment_distance(point, segment[0], segment[1]) <= tolerance
-                            }))
-                })
-                .map(|annotation| annotation.id.clone())
-        })
-        .or_else(|| {
-            document
-                .lengths()
-                .iter()
-                .rev()
-                .find(|annotation| {
-                    annotation.page_index == page_index
-                        && point_segment_distance(point, annotation.start, annotation.end)
-                            <= tolerance
-                })
-                .map(|annotation| annotation.id.clone())
-        })
-        .or_else(|| {
-            document
-                .pens()
-                .iter()
-                .rev()
-                .find(|annotation| {
-                    annotation.page_index == page_index
-                        && annotation.paths().any(|path| {
-                            path.windows(2).any(|segment| {
-                                point_segment_distance(point, segment[0], segment[1])
-                                    <= tolerance.max(annotation.appearance.width_pt() / 2.0)
-                            })
-                        })
-                })
-                .map(|annotation| annotation.id.clone())
-        })
+            });
+    }
+    false
 }
 
 fn hit_selected_dimension_control(
@@ -9696,23 +14002,37 @@ fn hit_selected_dimension_control(
         .dimensions()
         .iter()
         .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
-    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
-    for (handle, handle_point) in [
-        (DimensionPointerEditKind::Start, annotation.start),
-        (DimensionPointerEditKind::End, annotation.end),
-        (
-            DimensionPointerEditKind::Offset,
-            annotation.caption_center(),
-        ),
-    ] {
-        if distance(handle_point, point) <= handle_tolerance {
-            return Some((annotation.id.clone(), handle));
-        }
+    if let Some(index) =
+        hit_dimension_handle(annotation, point, tolerance, observed_pixels_per_point)
+    {
+        let kind = match index {
+            0 => DimensionPointerEditKind::Start,
+            1 => DimensionPointerEditKind::End,
+            2 => DimensionPointerEditKind::Offset,
+            _ => unreachable!("Dimension handles have three stable indices"),
+        };
+        return Some((annotation.id.clone(), kind));
     }
     let (offset_start, offset_end) = annotation.dimension_line_points();
     (point_segment_distance(point, offset_start, offset_end) <= tolerance
         || point_segment_distance(point, annotation.start, annotation.end) <= tolerance)
         .then(|| (annotation.id.clone(), DimensionPointerEditKind::Body))
+}
+
+fn hit_dimension_handle(
+    annotation: &DimensionAnnotation,
+    point: PdfPoint,
+    tolerance: f64,
+    observed_pixels_per_point: f64,
+) -> Option<usize> {
+    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
+    [
+        annotation.start,
+        annotation.end,
+        annotation.caption_center(),
+    ]
+    .into_iter()
+    .position(|handle_point| distance(handle_point, point) <= handle_tolerance)
 }
 
 fn hit_selected_callout_control(
@@ -9727,17 +14047,14 @@ fn hit_selected_callout_control(
         .callouts()
         .iter()
         .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
-    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
-    if let Some((index, _)) = annotation
-        .leader_points()
-        .iter()
-        .enumerate()
-        .find(|(_, candidate)| distance(**candidate, point) <= handle_tolerance)
+    if let Some(index) = hit_callout_handle(annotation, point, tolerance, observed_pixels_per_point)
     {
-        return Some((
-            annotation.id.clone(),
-            CalloutPointerEditKind::LeaderPoint(index),
-        ));
+        let kind = if index < RectangleResizeHandle::ALL.len() {
+            CalloutPointerEditKind::TextBoxResize(RectangleResizeHandle::ALL[index])
+        } else {
+            CalloutPointerEditKind::LeaderPoint(index - RectangleResizeHandle::ALL.len())
+        };
+        return Some((annotation.id.clone(), kind));
     }
     if rect_contains(annotation.text_box, point, tolerance) {
         return Some((annotation.id.clone(), CalloutPointerEditKind::TextBox));
@@ -9747,6 +14064,106 @@ fn hit_selected_callout_control(
         .windows(2)
         .any(|segment| point_segment_distance(point, segment[0], segment[1]) <= tolerance)
         .then(|| (annotation.id.clone(), CalloutPointerEditKind::Body))
+}
+
+fn hit_selected_cloud_plus_control(
+    document: &AnnotationDocument,
+    page_index: u32,
+    point: PdfPoint,
+    tolerance: f64,
+    observed_pixels_per_point: f64,
+) -> Option<(MarkupId, CloudPlusPointerEditKind)> {
+    let selected = document.selected_id()?;
+    let annotation = document
+        .cloud_pluses()
+        .iter()
+        .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
+    if let Some(index) =
+        hit_cloud_plus_handle(annotation, point, tolerance, observed_pixels_per_point)
+    {
+        let cloud_count = annotation.cloud_points().len();
+        let resize_end = cloud_count + RectangleResizeHandle::ALL.len();
+        let kind = if index < cloud_count {
+            CloudPlusPointerEditKind::CloudVertex(index)
+        } else if index < resize_end {
+            CloudPlusPointerEditKind::TextBoxResize(RectangleResizeHandle::ALL[index - cloud_count])
+        } else {
+            CloudPlusPointerEditKind::LeaderPoint(index - resize_end)
+        };
+        return Some((annotation.id.clone(), kind));
+    }
+    if rect_contains(annotation.text_box, point, tolerance) {
+        return Some((annotation.id.clone(), CloudPlusPointerEditKind::TextBox));
+    }
+    cloud_plus_cloud_hit(annotation, point, tolerance)
+        .then(|| (annotation.id.clone(), CloudPlusPointerEditKind::Body))
+}
+
+fn hit_cloud_plus_handle(
+    annotation: &CloudPlusAnnotation,
+    point: PdfPoint,
+    tolerance: f64,
+    observed_pixels_per_point: f64,
+) -> Option<usize> {
+    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
+    let cloud_count = annotation.cloud_points().len();
+    let resize_end = cloud_count + RectangleResizeHandle::ALL.len();
+    if let Some((index, _)) = annotation
+        .leader_points()
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, candidate)| distance(**candidate, point) <= handle_tolerance)
+    {
+        return Some(resize_end + index);
+    }
+    if let Some(handle) = RectangleResizeHandle::ALL.into_iter().rev().find(|handle| {
+        distance(
+            axis_aligned_resize_handle_point(annotation.text_box, *handle),
+            point,
+        ) <= handle_tolerance
+    }) {
+        return RectangleResizeHandle::ALL
+            .iter()
+            .position(|candidate| *candidate == handle)
+            .map(|index| cloud_count + index);
+    }
+    annotation
+        .cloud_points()
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, candidate)| distance(**candidate, point) <= handle_tolerance)
+        .map(|(index, _)| index)
+}
+
+fn hit_callout_handle(
+    annotation: &CalloutAnnotation,
+    point: PdfPoint,
+    tolerance: f64,
+    observed_pixels_per_point: f64,
+) -> Option<usize> {
+    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
+    if let Some((index, _)) = annotation
+        .leader_points()
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, candidate)| distance(**candidate, point) <= handle_tolerance)
+    {
+        return Some(RectangleResizeHandle::ALL.len() + index);
+    }
+    if let Some(handle) = RectangleResizeHandle::ALL.into_iter().rev().find(|handle| {
+        distance(
+            axis_aligned_resize_handle_point(annotation.text_box, *handle),
+            point,
+        ) <= handle_tolerance
+    }) {
+        return RectangleResizeHandle::ALL
+            .iter()
+            .position(|candidate| *candidate == handle);
+    }
+    None
 }
 
 fn hit_selected_cloud_control(
@@ -9795,13 +14212,7 @@ fn resolve_arc_control_point(
     snap_quarter_turn: bool,
 ) -> Result<PdfPoint, AnnotationError> {
     if control == ArcControlPoint::Mid && snap_quarter_turn {
-        ArcAnnotation::constrained_midpoint(
-            original.start,
-            original.end,
-            point,
-            minimum_bulge_pt,
-            true,
-        )
+        original.constrained_midpoint_for_shape(point, minimum_bulge_pt, true)
     } else {
         Ok(point)
     }
@@ -9871,6 +14282,156 @@ fn validate_callout_pointer_target(
         return Err(AnnotationError::NoActiveGesture);
     }
     Ok(())
+}
+
+fn validate_cloud_plus_pointer_target(
+    document: &AnnotationDocument,
+    page_index: u32,
+    id: &MarkupId,
+    expected_revision: u64,
+    original: &CloudPlusAnnotation,
+) -> Result<(), AnnotationError> {
+    validate_pointer_identity(document, id, expected_revision)?;
+    let retained = document
+        .cloud_pluses()
+        .iter()
+        .find(|annotation| &annotation.id == id && annotation.page_index == page_index)
+        .ok_or(AnnotationError::NoSelection)?;
+    if retained.locked {
+        return Err(AnnotationError::LockedMarkup(id.clone()));
+    }
+    if !retained.same_persisted_state_as(original) {
+        return Err(AnnotationError::NoActiveGesture);
+    }
+    Ok(())
+}
+
+fn routing_points_bounds(points: &[PdfPoint]) -> Option<PdfRect> {
+    let first = *points.first()?;
+    let (min_x, min_y, max_x, max_y) = points.iter().skip(1).fold(
+        (first.x, first.y, first.x, first.y),
+        |(min_x, min_y, max_x, max_y), point| {
+            (
+                min_x.min(point.x),
+                min_y.min(point.y),
+                max_x.max(point.x),
+                max_y.max(point.y),
+            )
+        },
+    );
+    PdfRect::new(min_x, min_y, max_x - min_x, max_y - min_y).ok()
+}
+
+fn resolve_cloud_plus_pointer_edit(
+    original: &CloudPlusAnnotation,
+    kind: CloudPlusPointerEditKind,
+    start: PdfPoint,
+    current: PdfPoint,
+    routing_context: &CloudPlusRoutingContext,
+) -> Result<CloudPlusAnnotation, AnnotationError> {
+    let mut cloud_points = original.cloud_points().to_vec();
+    let mut text_box = original.text_box;
+    let mut leader_points = original.leader_points().to_vec();
+    match kind {
+        CloudPlusPointerEditKind::CloudVertex(index) => {
+            let point = cloud_points.get_mut(index).ok_or_else(|| {
+                AnnotationError::InvalidGeometry("Cloud+ point index is out of range".into())
+            })?;
+            *point = current;
+            let visible_path =
+                cloud_visible_path(&cloud_points, original.border_effect_intensity())?;
+            leader_points = route_cloud_plus_leader(
+                &cloud_points,
+                &visible_path,
+                text_box,
+                &leader_points,
+                routing_context,
+            )?
+            .points;
+        }
+        CloudPlusPointerEditKind::TextBoxResize(handle) => {
+            text_box = original
+                .text_box
+                .rotated_resize_from_handle(0., handle, current);
+            leader_points = route_cloud_plus_leader(
+                &cloud_points,
+                &original.scallop_path(),
+                text_box,
+                &leader_points,
+                routing_context,
+            )?
+            .points;
+        }
+        CloudPlusPointerEditKind::LeaderPoint(index) => {
+            if index >= leader_points.len() {
+                return Err(AnnotationError::InvalidGeometry(
+                    "Cloud+ leader point index is out of range".into(),
+                ));
+            }
+            if index == leader_points.len() - 1 {
+                leader_points[index] = current;
+                leader_points = route_cloud_plus_leader(
+                    &cloud_points,
+                    &original.scallop_path(),
+                    text_box,
+                    &leader_points,
+                    routing_context,
+                )?
+                .points;
+            } else if index == 0 {
+                leader_points[index] =
+                    snap_cloud_plus_leader_tip(&original.scallop_path(), current)?;
+            } else {
+                leader_points[index] = current;
+            }
+        }
+        CloudPlusPointerEditKind::TextBox => {
+            text_box.x += current.x - start.x;
+            text_box.y += current.y - start.y;
+            leader_points = route_cloud_plus_leader(
+                &cloud_points,
+                &original.scallop_path(),
+                text_box,
+                &leader_points,
+                routing_context,
+            )?
+            .points;
+        }
+        CloudPlusPointerEditKind::Body => {
+            let delta_x = current.x - start.x;
+            let delta_y = current.y - start.y;
+            for point in &mut cloud_points {
+                point.x += delta_x;
+                point.y += delta_y;
+            }
+            for point in &mut leader_points {
+                point.x += delta_x;
+                point.y += delta_y;
+            }
+            text_box.x += delta_x;
+            text_box.y += delta_y;
+        }
+    }
+    let cloud_appearance_path = match kind {
+        CloudPlusPointerEditKind::CloudVertex(_) => None,
+        CloudPlusPointerEditKind::Body => {
+            original.translated_cloud_appearance_path(current.x - start.x, current.y - start.y)?
+        }
+        _ => original.cloud_appearance_path().map(|path| path.to_vec()),
+    };
+    let mut resolved = CloudPlusAnnotation::new(
+        original.id.clone(),
+        original.page_index,
+        cloud_points,
+        original.border_effect_intensity(),
+        leader_points,
+        text_box,
+        original.content(),
+        original.appearance.clone(),
+    )?
+    .with_cloud_appearance_path(cloud_appearance_path)?;
+    resolved.locked = original.locked;
+    Ok(resolved)
 }
 
 fn validate_cloud_pointer_target(
@@ -10001,17 +14562,31 @@ fn hit_selected_arc_control_point(
         .arcs()
         .iter()
         .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
-    [
-        (ArcControlPoint::Start, annotation.start),
-        (ArcControlPoint::Mid, annotation.mid),
-        (ArcControlPoint::End, annotation.end),
-    ]
-    .into_iter()
-    .find(|(_, control_point)| {
-        distance(*control_point, point)
-            <= tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON))
+    hit_arc_handle_index(annotation, point, tolerance, observed_pixels_per_point).map(|index| {
+        (
+            annotation.id.clone(),
+            [
+                ArcControlPoint::Start,
+                ArcControlPoint::Mid,
+                ArcControlPoint::End,
+            ][index],
+        )
     })
-    .map(|(control, _)| (annotation.id.clone(), control))
+}
+
+fn hit_arc_handle_index(
+    annotation: &ArcAnnotation,
+    point: PdfPoint,
+    tolerance: f64,
+    observed_pixels_per_point: f64,
+) -> Option<usize> {
+    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
+    [annotation.start, annotation.mid, annotation.end]
+        .into_iter()
+        .enumerate()
+        .rev()
+        .find(|(_, control_point)| distance(*control_point, point) <= handle_tolerance)
+        .map(|(index, _)| index)
 }
 
 fn arc_hit(annotation: &ArcAnnotation, point: PdfPoint, tolerance: f64) -> bool {
@@ -10070,6 +14645,78 @@ fn cloud_hit(annotation: &CloudAnnotation, point: PdfPoint, tolerance: f64) -> b
     points
         .windows(2)
         .any(|segment| point_segment_distance(point, segment[0], segment[1]) <= edge_tolerance)
+}
+
+fn cloud_plus_cloud_hit(annotation: &CloudPlusAnnotation, point: PdfPoint, tolerance: f64) -> bool {
+    let edge_tolerance = tolerance.max(annotation.appearance.cloud().stroke_width_pt() / 2.0);
+    let control_path = annotation.cloud_points();
+    control_path
+        .windows(2)
+        .any(|segment| point_segment_distance(point, segment[0], segment[1]) <= edge_tolerance)
+        || control_path
+            .first()
+            .zip(control_path.last())
+            .is_some_and(|(first, last)| {
+                point_segment_distance(point, *last, *first) <= edge_tolerance
+            })
+        || annotation
+            .scallop_path()
+            .windows(2)
+            .any(|segment| point_segment_distance(point, segment[0], segment[1]) <= edge_tolerance)
+}
+
+fn cloud_plus_hit(annotation: &CloudPlusAnnotation, point: PdfPoint, tolerance: f64) -> bool {
+    rect_contains(annotation.text_box, point, 0.)
+        || annotation
+            .leader_points()
+            .windows(2)
+            .any(|segment| point_segment_distance(point, segment[0], segment[1]) <= tolerance)
+        || cloud_plus_cloud_hit(annotation, point, tolerance)
+}
+
+fn cloud_plus_text_layout(
+    annotation: &CloudPlusAnnotation,
+    content: &str,
+    routing_context: &CloudPlusRoutingContext,
+) -> Result<(PdfRect, Vec<PdfPoint>), AnnotationError> {
+    let normalized_content = content.replace("\r\n", "\n").replace('\r', "\n");
+    let line_count = normalized_content.split('\n').count().max(1) as f64;
+    let line_height = annotation.appearance.text().font_size_pt() * 1.15;
+    let height = annotation
+        .text_box
+        .height
+        .max(line_count * line_height + 12.);
+    let connection = annotation.leader_points().last().copied();
+    let existing_center_y = annotation.text_box.y + annotation.text_box.height * 0.5;
+    let connects_to_vertical_side = connection.is_some_and(|connection| {
+        (connection.x - annotation.text_box.x)
+            .abs()
+            .min((connection.x - (annotation.text_box.x + annotation.text_box.width)).abs())
+            <= (connection.y - annotation.text_box.y)
+                .abs()
+                .min((connection.y - (annotation.text_box.y + annotation.text_box.height)).abs())
+    });
+    let center_y = if connects_to_vertical_side {
+        connection
+            .expect("a vertical-side connection was checked above")
+            .y
+    } else {
+        existing_center_y
+    };
+    let text_box = PdfRect::new(
+        annotation.text_box.x,
+        center_y - height * 0.5,
+        annotation.text_box.width,
+        height,
+    )?;
+    let leader = route_cloud_plus_leader(
+        annotation.cloud_points(),
+        &annotation.scallop_path(),
+        text_box,
+        annotation.leader_points(),
+        routing_context,
+    )?;
+    Ok((text_box, leader.points))
 }
 
 fn point_in_polygon(point: PdfPoint, vertices: &[PdfPoint]) -> bool {
@@ -10131,16 +14778,42 @@ fn hit_selected_text_box_resize_handle(
         .iter()
         .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
     let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
-    RectangleResizeHandle::ALL
-        .into_iter()
-        .rev()
-        .find(|handle| {
-            distance(
-                axis_aligned_resize_handle_point(annotation.layout_rect, *handle),
-                point,
-            ) <= handle_tolerance
-        })
+    if text_box_rotation_handle_point(annotation, observed_pixels_per_point)
+        .is_ok_and(|handle| distance(handle, point) <= handle_tolerance)
+    {
+        return None;
+    }
+    hit_text_box_resize_handle(annotation, point, tolerance, observed_pixels_per_point)
         .map(|handle| (annotation.id.clone(), handle))
+}
+
+fn hit_selected_text_box_rotation_handle(
+    document: &AnnotationDocument,
+    page_index: u32,
+    point: PdfPoint,
+    tolerance: f64,
+    observed_pixels_per_point: f64,
+) -> Option<MarkupId> {
+    let selected = document.selected_id()?;
+    let annotation = document.text_boxes().iter().find(|annotation| {
+        annotation.page_index == page_index && &annotation.id == selected && !annotation.locked
+    })?;
+    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
+    text_box_rotation_handle_point(annotation, observed_pixels_per_point)
+        .is_ok_and(|handle| distance(handle, point) <= handle_tolerance)
+        .then(|| annotation.id.clone())
+}
+
+fn hit_text_box_resize_handle(
+    annotation: &TextBoxAnnotation,
+    point: PdfPoint,
+    tolerance: f64,
+    observed_pixels_per_point: f64,
+) -> Option<RectangleResizeHandle> {
+    let handle_tolerance = tolerance.max(9. / observed_pixels_per_point.max(f64::EPSILON));
+    RectangleResizeHandle::ALL.into_iter().rev().find(|handle| {
+        distance(text_box_resize_handle_point(annotation, *handle), point) <= handle_tolerance
+    })
 }
 
 fn ellipse_resize_point_from_handle(
@@ -10306,6 +14979,24 @@ fn distance(left: PdfPoint, right: PdfPoint) -> f64 {
     (left.x - right.x).hypot(left.y - right.y)
 }
 
+fn marquee_in_pdf(marquee: &SelectionMarquee, pdf_points: &[PdfPoint]) -> SelectionMarquee {
+    let mut projected = marquee.clone();
+    // Keep activation and latched direction from viewport coordinates; only the
+    // geometry is projected to PDF space for the shared hit query.
+    if let Some(first) = pdf_points.first().copied() {
+        projected.start = selection_point_from_pdf(first);
+    }
+    if let Some(last) = pdf_points.last().copied() {
+        projected.current = selection_point_from_pdf(last);
+    }
+    projected.points = pdf_points
+        .iter()
+        .copied()
+        .map(selection_point_from_pdf)
+        .collect();
+    projected
+}
+
 fn selection_point_from_pdf(point: PdfPoint) -> SelectionPoint {
     SelectionPoint::new(point.x, point.y)
 }
@@ -10359,6 +15050,7 @@ fn point_segment_distance(point: PdfPoint, start: PdfPoint, end: PdfPoint) -> f6
 
 fn empty_scene(page_index: u32) -> AnnotationScene {
     AnnotationScene {
+        annotation_order: Vec::new(),
         page_index,
         revision: 0,
         rectangles: Vec::new(),
@@ -10383,9 +15075,375 @@ fn empty_scene(page_index: u32) -> AnnotationScene {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::semantic_snapping::SemanticSnapRole;
 
     fn point(x: f64, y: f64) -> PdfPoint {
         PdfPoint::new(x, y).unwrap()
+    }
+
+    fn assert_snap_evidence_references(
+        adapter: &AnnotationAdapter,
+        owner_id: &MarkupId,
+        direct_role: SemanticSnapRole,
+    ) {
+        if let Some(decision) = adapter.semantic_snap_decision() {
+            assert_eq!(decision.owner_id.as_ref(), Some(owner_id));
+            assert_eq!(decision.role, direct_role);
+            return;
+        }
+        assert!(
+            adapter
+                .relationship_snap_guides()
+                .iter()
+                .any(|guide| match guide {
+                    RelationshipSnapGuide::EqualSize { reference, .. } => {
+                        &reference.owner_id == owner_id
+                    }
+                    RelationshipSnapGuide::EqualSpacing { before, after, .. } => {
+                        &before.owner_id == owner_id || &after.owner_id == owner_id
+                    }
+                })
+        );
+    }
+
+    #[test]
+    fn installed_pdf_content_hides_manipulation_chrome_only_while_source_is_enabled() {
+        let mut adapter = AnnotationAdapter::default();
+        let settings = SemanticSnapSettings::default()
+            .with_source(SemanticSnapSource::Annotation, false)
+            .with_source(SemanticSnapSource::PageGrid, false)
+            .with_source(SemanticSnapSource::ConstructionGrid, false);
+        adapter.set_semantic_snap_settings(settings).unwrap();
+        assert!(adapter.manipulation_chrome_visible(7, 0));
+        adapter
+            .set_semantic_snap_page_content(
+                7,
+                PageSnapGeometry {
+                    page_index: 0,
+                    primitives: vec![crate::pdf_content_geometry::PdfContentPrimitive::Line {
+                        start: crate::pdf_content_geometry::PdfPoint { x: 0., y: 0. },
+                        end: crate::pdf_content_geometry::PdfPoint { x: 10., y: 0. },
+                    }],
+                },
+            )
+            .unwrap();
+        assert!(!adapter.manipulation_chrome_visible(7, 0));
+        adapter
+            .set_semantic_snap_settings(settings.with_source(SemanticSnapSource::Content, false))
+            .unwrap();
+        assert!(adapter.manipulation_chrome_visible(7, 0));
+        adapter.set_semantic_snap_settings(settings).unwrap();
+        adapter.clear_semantic_snap_page_content_page(7, 0);
+        assert!(adapter.manipulation_chrome_visible(7, 0));
+    }
+
+    fn recovery_rectangle(id: &str, x: f64) -> Annotation {
+        Annotation::Rectangle(RectangleAnnotation {
+            id: MarkupId::new(id).unwrap(),
+            page_index: 0,
+            rect: PdfRect::new(x, 20., 40., 30.).unwrap(),
+            rotation_degrees: 0.,
+            appearance: RectangleAppearance::new("#ff0000", 1., Some("#ffffff"), 1.).unwrap(),
+            locked: false,
+        })
+    }
+
+    #[test]
+    fn recovery_bridge_preserves_dirty_history_and_other_documents() {
+        let mut adapter = AnnotationAdapter::default();
+        let document = adapter.documents.entry(7).or_default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(recovery_rectangle(
+                "recovery:first",
+                20.,
+            )))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::MarkSaved)
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(recovery_rectangle(
+                "recovery:second",
+                80.,
+            )))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(recovery_rectangle(
+                "recovery:future",
+                140.,
+            )))
+            .unwrap();
+        document.apply_command(AnnotationCommand::Undo).unwrap();
+        adapter
+            .documents
+            .entry(9)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(recovery_rectangle(
+                "other:survives",
+                220.,
+            )))
+            .unwrap();
+
+        let expected = adapter.snapshot(7).unwrap();
+        let other = adapter.snapshot(9).unwrap();
+        assert!(expected.dirty);
+        assert!(expected.undo_depth > 0);
+        assert_eq!(expected.redo_depth, 1);
+        let bytes = adapter.encode_document_recovery_timeline(7).unwrap();
+
+        adapter
+            .documents
+            .get_mut(&7)
+            .unwrap()
+            .apply_command(AnnotationCommand::CreateAnnotation(recovery_rectangle(
+                "recovery:discarded",
+                300.,
+            )))
+            .unwrap();
+        adapter
+            .restore_document_recovery_timeline(7, &bytes)
+            .unwrap();
+
+        assert_eq!(adapter.snapshot(7).unwrap(), expected);
+        assert_eq!(adapter.snapshot(9).unwrap(), other);
+        adapter.undo(7).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap().rectangles.len(), 1);
+        adapter.redo(7).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap(), expected);
+    }
+
+    #[test]
+    fn failed_recovery_decode_leaves_original_document_untouched() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(recovery_rectangle(
+                "recovery:original",
+                20.,
+            )))
+            .unwrap();
+        let before = adapter.snapshot(7).unwrap();
+
+        assert!(
+            adapter
+                .restore_document_recovery_timeline(7, br#"{"schema_version":999}"#)
+                .is_err()
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+    }
+
+    #[test]
+    fn successful_recovery_clears_target_transient_interaction_state() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(recovery_rectangle(
+                "recovery:stable",
+                20.,
+            )))
+            .unwrap();
+        let bytes = adapter.encode_document_recovery_timeline(7).unwrap();
+
+        adapter.set_tool(AnnotationTool::Rectangle).unwrap();
+        adapter.pointer_down(7, 0, 71, point(10., 10.), 4.).unwrap();
+        adapter.vertex_path_draft = Some(VertexPathDraft {
+            document_id: 7,
+            page_index: 0,
+            id: MarkupId::new("draft:vertex").unwrap(),
+            kind: VertexPathKind::Polyline,
+            points: vec![point(10., 10.)],
+            hover: point(20., 20.),
+        });
+        adapter.snapshot_draft = Some(SnapshotDraft {
+            document_id: 7,
+            page_index: 0,
+            pointer_id: 72,
+            id: MarkupId::new("draft:snapshot").unwrap(),
+            start: point(10., 10.),
+            current: point(30., 30.),
+        });
+        let asset = DecodedRgbaAsset::new(1, 1, vec![1, 2, 3, 255]).unwrap();
+        adapter.set_image_asset(asset.clone());
+        adapter.set_snapshot_capture_asset(asset);
+        adapter.set_image_placement_page(600., 800., 0.45).unwrap();
+        adapter.queue_next_annotation_id(MarkupId::new("comparison:rectangle:8").unwrap());
+        adapter.queue_next_rectangle_appearance(
+            RectangleAppearance::new("#000000", 2., Some("#ffffff"), 0.5).unwrap(),
+        );
+        adapter.queue_next_text_content("discard me");
+        adapter.semantic_snap_decision = Some(SemanticSnapDecision {
+            point: point(12., 14.),
+            owner_id: None,
+            role: crate::semantic_snapping::SemanticSnapRole::Endpoint,
+            source: SemanticSnapSource::Annotation,
+            point_candidate: true,
+            distance_window_px: 1.,
+        });
+
+        adapter
+            .restore_document_recovery_timeline(7, &bytes)
+            .unwrap();
+
+        assert!(adapter.active.is_none());
+        assert!(adapter.vertex_path_draft.is_none());
+        assert!(adapter.snapshot_draft.is_none());
+        assert!(adapter.snapshot_capture_asset.is_none());
+        assert_eq!(
+            adapter
+                .pending_image_preview_at(9, 0, point(40., 40.))
+                .unwrap(),
+            None
+        );
+        assert!(adapter.queued_id.is_none());
+        assert!(adapter.queued_rectangle_appearance.is_none());
+        assert!(adapter.queued_text_content.is_none());
+        assert!(adapter.semantic_snap_decision.is_none());
+        assert_eq!(adapter.snapshot(7).unwrap().rectangles.len(), 1);
+    }
+
+    #[test]
+    fn recovery_bridge_advances_generated_ids_past_history_only_ids() {
+        let mut source = AnnotationAdapter::default();
+        let document = source.documents.entry(7).or_default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(recovery_rectangle(
+                "comparison:rectangle:41",
+                20.,
+            )))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::DeleteSelected)
+            .unwrap();
+        assert!(source.snapshot(7).unwrap().rectangles.is_empty());
+        let bytes = source.encode_document_recovery_timeline(7).unwrap();
+
+        let mut restored = AnnotationAdapter::default();
+        restored
+            .documents
+            .entry(9)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(recovery_rectangle(
+                "comparison:rectangle:83",
+                220.,
+            )))
+            .unwrap();
+        restored.queue_next_annotation_id(MarkupId::new("comparison:text:97").unwrap());
+        restored
+            .restore_document_recovery_timeline(7, &bytes)
+            .unwrap();
+
+        assert_eq!(
+            restored
+                .next_id(AnnotationTool::Rectangle)
+                .unwrap()
+                .as_str(),
+            "comparison:rectangle:98"
+        );
+    }
+
+    #[test]
+    fn imported_comparison_ids_raise_the_adapter_sequence() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter
+            .load_imported_annotations(7, vec![recovery_rectangle("comparison:rectangle:120", 20.)])
+            .unwrap();
+
+        assert_eq!(
+            adapter.next_id(AnnotationTool::Rectangle).unwrap().as_str(),
+            "comparison:rectangle:121"
+        );
+    }
+
+    #[test]
+    fn generated_id_allocation_reports_sequence_exhaustion_without_collision() {
+        let mut adapter = AnnotationAdapter {
+            next_sequence: u64::MAX - 1,
+            ..AnnotationAdapter::default()
+        };
+
+        assert_eq!(
+            adapter.next_id(AnnotationTool::Rectangle).unwrap().as_str(),
+            format!("comparison:rectangle:{}", u64::MAX)
+        );
+        assert!(matches!(
+            adapter.next_id(AnnotationTool::Rectangle),
+            Err(AnnotationError::InvalidRecoveryTimeline(_))
+        ));
+    }
+
+    #[test]
+    fn recovery_rejects_an_exhausted_sequence_without_replacing_the_document() {
+        let mut source = AnnotationAdapter::default();
+        source
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(recovery_rectangle(
+                &format!("comparison:rectangle:{}", u64::MAX),
+                20.,
+            )))
+            .unwrap();
+        let bytes = source.encode_document_recovery_timeline(7).unwrap();
+
+        let mut target = AnnotationAdapter::default();
+        target
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(recovery_rectangle(
+                "target:original",
+                80.,
+            )))
+            .unwrap();
+        let before = target.snapshot(7).unwrap();
+
+        assert!(matches!(
+            target.restore_document_recovery_timeline(7, &bytes),
+            Err(AnnotationError::InvalidRecoveryTimeline(_))
+        ));
+        assert_eq!(target.snapshot(7).unwrap(), before);
+    }
+
+    #[test]
+    fn measurement_hover_completion_uses_pdf_point_threshold_without_duplicates() {
+        for tool in [AnnotationTool::Polylength, AnnotationTool::Area] {
+            for offset in [0.0, 0.499, 0.5] {
+                let mut adapter = AnnotationAdapter::default();
+                adapter
+                    .set_document_page_length_calibration(
+                        7,
+                        0,
+                        LengthCalibration::new(1.0, "mm", "Scale", true).unwrap(),
+                    )
+                    .unwrap();
+                adapter.set_tool(tool).unwrap();
+                let mut expected = vec![point(20., 20.), point(100., 20.)];
+                if tool == AnnotationTool::Area {
+                    expected.push(point(100., 80.));
+                }
+                for (index, vertex) in expected.iter().copied().enumerate() {
+                    adapter
+                        .pointer_down(7, 0, index as u64 + 1, vertex, 4.)
+                        .unwrap();
+                }
+                let last = *expected.last().unwrap();
+                let hover = point(last.x + offset, last.y);
+                adapter.update_measurement_path_hover(7, 0, hover).unwrap();
+                if offset >= 0.5 {
+                    expected.push(hover);
+                }
+                let undo_before = adapter.snapshot(7).unwrap().undo_depth;
+                adapter.finish_measurement_path(7).unwrap();
+                let snapshot = adapter.snapshot(7).unwrap();
+                assert_eq!(snapshot.measurement_paths[0].points(), expected.as_slice());
+                assert_eq!(snapshot.undo_depth, undo_before + 1);
+                assert!(!adapter.measurement_path_pending(7));
+            }
+        }
     }
 
     fn seed_dimension(adapter: &mut AnnotationAdapter) -> MarkupId {
@@ -10464,6 +15522,271 @@ mod tests {
         id
     }
 
+    fn seed_cloud_plus(adapter: &mut AnnotationAdapter) -> MarkupId {
+        let id = MarkupId::new("cloud-plus:pointer-edit").unwrap();
+        let annotation = CloudPlusAnnotation::new(
+            id.clone(),
+            0,
+            vec![
+                point(10., 10.),
+                point(50., 10.),
+                point(50., 50.),
+                point(10., 50.),
+            ],
+            2.,
+            vec![point(50., 30.), point(75., 30.), point(100., 30.)],
+            PdfRect::new(100., 20., 40., 20.).unwrap(),
+            "Cloud+",
+            default_cloud_plus_appearance().unwrap(),
+        )
+        .unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::CloudPlus(
+                annotation,
+            )))
+            .unwrap();
+        id
+    }
+
+    fn routing_obstacle_id(obstacle: &CloudPlusObstacle) -> Option<&str> {
+        match obstacle {
+            CloudPlusObstacle::Rect { id, .. }
+            | CloudPlusObstacle::Polyline { id, .. }
+            | CloudPlusObstacle::Polygon { id, .. } => id.as_deref(),
+        }
+    }
+
+    #[test]
+    fn cloud_plus_routing_context_is_page_local_deterministic_and_excludes_owner() {
+        let mut adapter = AnnotationAdapter::default();
+        let cloud_plus_id = seed_cloud_plus(&mut adapter);
+        let callout_id = seed_callout(&mut adapter);
+        let other_page_id = MarkupId::new("other-page").unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Rectangle(
+                RectangleAnnotation {
+                    id: other_page_id,
+                    page_index: 1,
+                    rect: PdfRect::new(20., 20., 40., 40.).unwrap(),
+                    rotation_degrees: 0.,
+                    appearance: RectangleAppearance::default(),
+                    locked: false,
+                },
+            )))
+            .unwrap();
+        adapter.set_semantic_snap_page_size(7, 0, 612., 792.);
+
+        let context = adapter.cloud_plus_routing_context(
+            7,
+            0,
+            Some(&cloud_plus_id),
+            &AnnotationSelectionSupplement::new(),
+        );
+        assert_eq!(
+            context.page_bounds,
+            Some(PdfRect::new(0., 0., 612., 792.).unwrap())
+        );
+        assert_eq!(
+            context
+                .obstacles
+                .iter()
+                .filter_map(routing_obstacle_id)
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+            vec![
+                format!("{}:text", callout_id.as_str()),
+                format!("{}:leader", callout_id.as_str()),
+            ]
+        );
+    }
+
+    #[test]
+    fn cloud_plus_routing_includes_only_same_page_retained_annotation_bounds() {
+        let mut adapter = AnnotationAdapter::default();
+        let page_zero = PdfRect::new(200., 20., 80., 60.).unwrap();
+        adapter.set_retained_annotation_obstacles(
+            7,
+            vec![
+                RetainedAnnotationObstacle {
+                    id: "opaque:1:0:other-page".into(),
+                    page_index: 1,
+                    rect: PdfRect::new(10., 10., 30., 30.).unwrap(),
+                },
+                RetainedAnnotationObstacle {
+                    id: "opaque:0:0:note".into(),
+                    page_index: 0,
+                    rect: page_zero,
+                },
+            ],
+        );
+
+        let context =
+            adapter.cloud_plus_routing_context(7, 0, None, &AnnotationSelectionSupplement::new());
+
+        assert_eq!(
+            context.obstacles,
+            vec![CloudPlusObstacle::Rect {
+                id: Some("opaque:0:0:note".into()),
+                rect: page_zero,
+            }]
+        );
+    }
+
+    #[test]
+    fn cloud_plus_routing_uses_the_electron_arc_rect_not_visible_sweep_bounds() {
+        let mut adapter = AnnotationAdapter::default();
+        let arc_id = MarkupId::new("arc:routing-obstacle").unwrap();
+        let arc = ArcAnnotation::new(
+            arc_id.clone(),
+            0,
+            point(100., 100.),
+            point(200., 100.),
+            point(150., 150.),
+            RectangleAppearance::default(),
+        )
+        .unwrap();
+        let expected_rect = arc.rect();
+        let visible_bounds = routing_points_bounds(&arc.sampled_path(64)).unwrap();
+        assert_ne!(visible_bounds, expected_rect);
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Arc(arc)))
+            .unwrap();
+
+        let context =
+            adapter.cloud_plus_routing_context(7, 0, None, &AnnotationSelectionSupplement::new());
+
+        assert_eq!(
+            context.obstacles,
+            vec![CloudPlusObstacle::Rect {
+                id: Some(arc_id.as_str().to_owned()),
+                rect: expected_rect,
+            }]
+        );
+    }
+
+    #[test]
+    fn cloud_plus_routing_uses_ui_measured_dimension_caption_and_reference_line() {
+        let mut adapter = AnnotationAdapter::default();
+        let dimension_id = seed_dimension(&mut adapter);
+        let caption = PdfRect::new(48., 57., 44., 14.).unwrap();
+        let supplement = HashMap::from([(
+            dimension_id.clone(),
+            vec![
+                point(caption.x, caption.y),
+                point(caption.x + caption.width, caption.y),
+                point(caption.x + caption.width, caption.y + caption.height),
+                point(caption.x, caption.y + caption.height),
+            ],
+        )]);
+
+        let context = adapter.cloud_plus_routing_context(7, 0, None, &supplement);
+
+        assert_eq!(
+            context.obstacles,
+            vec![
+                CloudPlusObstacle::Rect {
+                    id: Some(format!("{}:caption", dimension_id.as_str())),
+                    rect: caption,
+                },
+                CloudPlusObstacle::Polyline {
+                    id: Some(format!("{}:line", dimension_id.as_str())),
+                    points: vec![point(20., 40.), point(120., 40.)],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn cloud_plus_creation_preview_and_commit_share_page_and_obstacle_routing() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_semantic_snap_page_size(7, 0, 612., 792.);
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Rectangle(
+                RectangleAnnotation {
+                    id: MarkupId::new("right-side-obstacle").unwrap(),
+                    page_index: 0,
+                    rect: PdfRect::new(295., 0., 220., 180.).unwrap(),
+                    rotation_degrees: 0.,
+                    appearance: RectangleAppearance::default(),
+                    locked: false,
+                },
+            )))
+            .unwrap();
+        adapter.set_tool(AnnotationTool::CloudPlus).unwrap();
+        adapter.pointer_down(7, 0, 1, point(200., 10.), 4.).unwrap();
+        adapter.pointer_move(1, point(280., 60.)).unwrap();
+
+        let draft = adapter.document_scene(7, 0).cloud_pluses.remove(0);
+        assert!(draft.draft);
+        assert!(draft.text_box.x + draft.text_box.width <= 200.);
+        adapter.pointer_up(1, point(280., 60.)).unwrap();
+        let committed = adapter.document_scene(7, 0).cloud_pluses.remove(0);
+        assert!(!committed.draft);
+        assert_eq!(committed.text_box, draft.text_box);
+        assert_eq!(committed.leader_points, draft.leader_points);
+    }
+
+    #[test]
+    fn cloud_plus_creation_preview_and_commit_share_measured_caption_routing() {
+        let mut adapter = AnnotationAdapter::default();
+        let dimension_id = seed_dimension(&mut adapter);
+        let blocking_caption = PdfRect::new(295., 0., 220., 180.).unwrap();
+        let supplement = HashMap::from([(
+            dimension_id,
+            vec![
+                point(blocking_caption.x, blocking_caption.y),
+                point(
+                    blocking_caption.x + blocking_caption.width,
+                    blocking_caption.y,
+                ),
+                point(
+                    blocking_caption.x + blocking_caption.width,
+                    blocking_caption.y + blocking_caption.height,
+                ),
+                point(
+                    blocking_caption.x,
+                    blocking_caption.y + blocking_caption.height,
+                ),
+            ],
+        )]);
+        adapter.set_semantic_snap_page_size(7, 0, 612., 792.);
+        adapter.set_tool(AnnotationTool::CloudPlus).unwrap();
+        adapter.pointer_down(7, 0, 1, point(200., 10.), 4.).unwrap();
+        adapter.pointer_move(1, point(280., 60.)).unwrap();
+
+        let draft = adapter
+            .document_scene_with_routing_supplement(7, 0, &supplement)
+            .cloud_pluses
+            .remove(0);
+        assert!(draft.draft);
+        assert!(draft.text_box.x + draft.text_box.width <= 200.);
+        adapter
+            .pointer_up_with_viewport_input_and_selection_paths(
+                1,
+                point(280., 60.),
+                SelectionPoint::new(280., 60.),
+                PointerInputModifiers::default(),
+                &supplement,
+            )
+            .unwrap();
+        let committed = adapter.document_scene(7, 0).cloud_pluses.remove(0);
+        assert!(!committed.draft);
+        assert_eq!(committed.text_box, draft.text_box);
+        assert_eq!(committed.leader_points, draft.leader_points);
+    }
+
     #[test]
     fn ordinary_rectangle_property_command_commits_once_and_preserves_other_appearance() {
         let mut adapter = AnnotationAdapter::default();
@@ -10497,8 +15820,18 @@ mod tests {
     fn dimension_pointer_edits_preview_then_commit_once_and_reject_stale_or_invalid_release() {
         let mut adapter = AnnotationAdapter::default();
         let id = seed_dimension(&mut adapter);
+        let snapping_off = SemanticSnapSettings::default()
+            .with_source(SemanticSnapSource::Content, false)
+            .with_source(SemanticSnapSource::Annotation, false)
+            .with_source(SemanticSnapSource::PageGrid, false)
+            .with_source(SemanticSnapSource::ConstructionGrid, false);
+        adapter.set_semantic_snap_settings(snapping_off).unwrap();
         let before = adapter.snapshot(7).unwrap();
         let original = before.dimensions[0].clone();
+        assert_eq!(
+            adapter.document_scene(7, 0).dimensions[0].feedback,
+            SceneInteractionFeedback::Normal
+        );
 
         assert_eq!(
             adapter.pointer_down(7, 0, 1, original.start, 4.).unwrap(),
@@ -10508,11 +15841,32 @@ mod tests {
         let preview = adapter.document_scene(7, 0).dimensions.remove(0);
         assert_eq!(preview.start, point(30., 50.));
         assert!(preview.draft);
+        assert_eq!(
+            preview.feedback,
+            SceneInteractionFeedback::Transform {
+                chrome_visible: true,
+                active_handle: 0,
+            }
+        );
         assert_eq!(adapter.snapshot(7).unwrap(), before);
         adapter.cancel(PointerCancelReason::FocusLost).unwrap();
         assert_eq!(adapter.snapshot(7).unwrap(), before);
 
+        adapter
+            .set_semantic_snap_settings(
+                snapping_off.with_source(SemanticSnapSource::Annotation, true),
+            )
+            .unwrap();
         adapter.pointer_down(7, 0, 2, original.end, 4.).unwrap();
+        adapter.pointer_move(2, point(140., 50.)).unwrap();
+        assert_eq!(
+            adapter.document_scene(7, 0).dimensions[0].feedback,
+            SceneInteractionFeedback::Transform {
+                chrome_visible: false,
+                active_handle: 1,
+            }
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
         assert_eq!(
             adapter.pointer_up(2, point(140., 50.)).unwrap(),
             PointerPhaseOutcome::AnnotationEdited(id.clone())
@@ -10523,6 +15877,20 @@ mod tests {
         assert_eq!(committed.dimensions[0].content(), original.content());
         assert_eq!(committed.dimensions[0].appearance, original.appearance);
         adapter.undo(7).unwrap();
+        let restored = adapter.snapshot(7).unwrap();
+
+        adapter.set_semantic_snap_settings(snapping_off).unwrap();
+        adapter.pointer_down(7, 0, 5, point(70., 40.), 4.).unwrap();
+        adapter.pointer_move(5, point(80., 50.)).unwrap();
+        assert_eq!(
+            adapter.document_scene(7, 0).dimensions[0].feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: true,
+            }
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), restored);
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap(), restored);
 
         let offset_handle = original.caption_center();
         adapter.pointer_down(7, 0, 3, offset_handle, 4.).unwrap();
@@ -10545,6 +15913,77 @@ mod tests {
             adapter.snapshot(7).unwrap().revision,
             revision_before_invalid
         );
+
+        let mut creation = AnnotationAdapter::default();
+        creation
+            .begin_dimension_placement(
+                9,
+                0,
+                MarkupId::new("dimension:feedback-creation").unwrap(),
+                point(20., 20.),
+            )
+            .unwrap();
+        creation
+            .update_dimension_placement(point(120., 20.), false)
+            .unwrap();
+        let draft = creation.document_scene(9, 0).dimensions.remove(0);
+        assert!(draft.draft);
+        assert_eq!(draft.feedback, SceneInteractionFeedback::Creation);
+        assert!(!draft.feedback.chrome_visible());
+        assert_eq!(creation.history_depths(9), (0, 0));
+    }
+
+    #[test]
+    fn dimension_hover_handles_preserve_stable_order_without_mutation() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_dimension(&mut adapter);
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let original = adapter.snapshot(7).unwrap().dimensions[0].clone();
+        let before = adapter.snapshot(7).unwrap();
+        let history_before = adapter.history_depths(7);
+
+        for (point, index) in [
+            (original.start, 0),
+            (original.end, 1),
+            (original.caption_center(), 2),
+        ] {
+            assert_eq!(
+                adapter.hover_dimension_handle(7, 0, point, 1.).unwrap(),
+                Some((id.clone(), index)),
+            );
+        }
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+        assert_eq!(adapter.history_depths(7), history_before);
+
+        adapter.clear_selection(7);
+        assert_eq!(
+            adapter
+                .hover_dimension_handle(7, 0, original.caption_center(), 1.)
+                .unwrap(),
+            Some((id.clone(), 2)),
+            "an unlocked unselected Dimension exposes its visible hover controls",
+        );
+        assert_eq!(adapter.snapshot(7).unwrap().revision, before.revision);
+
+        adapter.select_id(7, &id);
+        adapter.set_selected_locked(7, true).unwrap();
+        adapter.clear_selection(7);
+        assert_eq!(
+            adapter
+                .hover_dimension_handle(7, 0, original.start, 1.)
+                .unwrap(),
+            None,
+            "locked Dimension controls remain inert",
+        );
+
+        adapter.set_tool(AnnotationTool::Rectangle).unwrap();
+        assert_eq!(
+            adapter
+                .hover_dimension_handle(7, 0, original.end, 1.)
+                .unwrap(),
+            None,
+            "Dimension hover controls belong only to Select",
+        );
     }
 
     #[test]
@@ -10553,14 +15992,23 @@ mod tests {
         let id = seed_callout(&mut adapter);
         let original = adapter.snapshot(7).unwrap().callouts[0].clone();
         let base_revision = adapter.snapshot(7).unwrap().revision;
+        assert_eq!(
+            adapter.document_scene(7, 0).callouts[0].feedback,
+            SceneInteractionFeedback::Normal
+        );
 
         adapter
             .pointer_down(7, 0, 1, original.leader_points()[1], 4.)
             .unwrap();
         adapter.pointer_move(1, point(64., 52.)).unwrap();
+        let leader_preview = adapter.document_scene(7, 0).callouts.remove(0);
+        assert_eq!(leader_preview.leader_points[1], point(64., 52.));
         assert_eq!(
-            adapter.document_scene(7, 0).callouts[0].leader_points[1],
-            point(64., 52.)
+            leader_preview.feedback,
+            SceneInteractionFeedback::Transform {
+                chrome_visible: false,
+                active_handle: 9,
+            }
         );
         assert_eq!(adapter.snapshot(7).unwrap().revision, base_revision);
         assert_eq!(
@@ -10576,6 +16024,15 @@ mod tests {
         );
         adapter.pointer_down(7, 0, 2, text_center, 4.).unwrap();
         adapter
+            .pointer_move(2, point(text_center.x + 10., text_center.y + 5.))
+            .unwrap();
+        assert_eq!(
+            adapter.document_scene(7, 0).callouts[0].feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: false,
+            }
+        );
+        adapter
             .pointer_up(2, point(text_center.x + 10., text_center.y + 5.))
             .unwrap();
         let text_moved = adapter.snapshot(7).unwrap().callouts[0].clone();
@@ -10586,6 +16043,13 @@ mod tests {
 
         let leader_body = point(40., 30.);
         adapter.pointer_down(7, 0, 3, leader_body, 4.).unwrap();
+        adapter.pointer_move(3, point(50., 40.)).unwrap();
+        assert_eq!(
+            adapter.document_scene(7, 0).callouts[0].feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: false,
+            }
+        );
         adapter.pointer_up(3, point(50., 40.)).unwrap();
         let group_moved = adapter.snapshot(7).unwrap().callouts[0].clone();
         assert_eq!(group_moved.leader_points()[0], point(30., 30.));
@@ -10607,11 +16071,286 @@ mod tests {
     }
 
     #[test]
+    fn callout_text_box_resize_previews_cancels_and_commits_once() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_callout(&mut adapter);
+        let before = adapter.snapshot(7).unwrap();
+        let original = before.callouts[0].clone();
+        let north_handle = RectangleResizeHandle::North.point(original.text_box);
+        let resized_north = point(north_handle.x, north_handle.y + 22.);
+
+        adapter.pointer_down(7, 0, 1, north_handle, 4.).unwrap();
+        adapter.pointer_move(1, resized_north).unwrap();
+        let resize_preview = adapter.document_scene(7, 0).callouts.remove(0);
+        assert_eq!(
+            resize_preview.text_box,
+            PdfRect::new(100., 20., 80., 62.).unwrap()
+        );
+        assert_eq!(
+            resize_preview.leader_points,
+            vec![point(20., 20.), point(60., 40.), point(100., 51.),]
+        );
+        assert_eq!(
+            resize_preview.feedback,
+            SceneInteractionFeedback::Transform {
+                chrome_visible: false,
+                active_handle: 1,
+            }
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+
+        adapter.pointer_down(7, 0, 2, north_handle, 4.).unwrap();
+        assert_eq!(
+            adapter.pointer_up(2, resized_north).unwrap(),
+            PointerPhaseOutcome::AnnotationEdited(id)
+        );
+        let resized = adapter.snapshot(7).unwrap();
+        assert_eq!(resized.revision, before.revision + 1);
+        assert_eq!(resized.undo_depth, before.undo_depth + 1);
+        assert_eq!(
+            resized.callouts[0].text_box,
+            PdfRect::new(100., 20., 80., 62.).unwrap()
+        );
+        assert_eq!(resized.callouts[0].leader_points()[2], point(100., 51.));
+        assert_eq!(resized.callouts[0].id, original.id);
+        assert_eq!(resized.callouts[0].content(), original.content());
+        assert_eq!(resized.callouts[0].appearance, original.appearance);
+    }
+
+    #[test]
+    fn callout_composite_routes_snap_to_external_geometry_without_preview_history() {
+        use crate::semantic_snapping::SemanticSnapRole;
+
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_callout(&mut adapter);
+        let target_id = MarkupId::new("callout:snap-target").unwrap();
+        adapter
+            .documents
+            .get_mut(&7)
+            .unwrap()
+            .apply_command(AnnotationCommand::CreateAnnotation(
+                Annotation::StraightLine(
+                    StraightLineAnnotation::new(
+                        target_id.clone(),
+                        0,
+                        point(210., 20.),
+                        point(250., 20.),
+                        LineKind::Line,
+                        StraightLineAppearance::default_for(LineKind::Line),
+                    )
+                    .unwrap(),
+                ),
+            ))
+            .unwrap();
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&id));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_source(SemanticSnapSource::Content, false)
+                    .with_source(SemanticSnapSource::PageGrid, false)
+                    .with_source(SemanticSnapSource::ConstructionGrid, false),
+            )
+            .unwrap();
+        let original = adapter.snapshot(7).unwrap().callouts[0].clone();
+        let history_before = adapter.history_depths(7);
+
+        adapter
+            .pointer_down(7, 0, 81, original.leader_points()[0], 4.)
+            .unwrap();
+        adapter.pointer_move(81, point(209., 21.)).unwrap();
+        let preview = adapter.document_scene(7, 0).callouts.remove(0);
+        assert_eq!(preview.leader_points[0], point(210., 20.));
+        assert_eq!(adapter.history_depths(7), history_before);
+        assert_snap_evidence_references(&adapter, &target_id, SemanticSnapRole::Endpoint);
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap().callouts[0], original);
+
+        let text_center = point(
+            original.text_box.x + original.text_box.width * 0.5,
+            original.text_box.y + original.text_box.height * 0.5,
+        );
+        adapter.pointer_down(7, 0, 82, text_center, 4.).unwrap();
+        adapter
+            .pointer_move(82, point(text_center.x + 29., text_center.y + 1.))
+            .unwrap();
+        let preview = adapter.document_scene(7, 0).callouts.remove(0);
+        assert_eq!(preview.text_box.x, original.text_box.x + 30.);
+        assert_eq!(preview.text_box.y, original.text_box.y);
+        assert_eq!(preview.leader_points[0], original.leader_points()[0]);
+        assert_eq!(preview.leader_points[1], original.leader_points()[1]);
+        assert_eq!(preview.leader_points[2], point(130., 40.));
+        assert_eq!(
+            preview.feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: false,
+            }
+        );
+        assert_eq!(adapter.history_depths(7), history_before);
+        assert_eq!(
+            adapter
+                .pointer_up(82, point(text_center.x + 29., text_center.y + 1.))
+                .unwrap(),
+            PointerPhaseOutcome::AnnotationEdited(id)
+        );
+        let committed = adapter.snapshot(7).unwrap();
+        assert_eq!(committed.callouts[0].text_box, preview.text_box);
+        assert_eq!(committed.callouts[0].leader_points(), preview.leader_points);
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
+    }
+
+    #[test]
+    fn callout_hover_handle_uses_feedback_order_and_leader_overlap_priority() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_callout(&mut adapter);
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter.clear_selection(7);
+        let before_hover = adapter.snapshot(7).unwrap();
+        assert_eq!(
+            adapter
+                .hover_callout_handle(7, 0, point(20., 20.), 4.)
+                .unwrap(),
+            Some((id.clone(), 8))
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before_hover);
+        assert_eq!(
+            adapter
+                .hover_callout_handle(7, 0, point(100., 40.), 4.)
+                .unwrap(),
+            Some((id.clone(), 10))
+        );
+        assert_eq!(
+            adapter
+                .hover_callout_handle(7, 0, point(140., 40.), 4.)
+                .unwrap()
+                .map(|(_, index)| index),
+            None
+        );
+        adapter.set_tool(AnnotationTool::Rectangle).unwrap();
+        assert_eq!(
+            adapter
+                .hover_callout_handle(7, 0, point(20., 20.), 4.)
+                .unwrap(),
+            None
+        );
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter
+            .documents
+            .get_mut(&7)
+            .unwrap()
+            .apply_command(AnnotationCommand::SetLocked { id, locked: true })
+            .unwrap();
+        assert_eq!(
+            adapter
+                .hover_callout_handle(7, 0, point(20., 20.), 4.)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn cloud_plus_composite_snaps_handles_and_text_move_without_self_targets_or_preview_history() {
+        use crate::semantic_snapping::{SemanticSnapRole, SemanticSnapSource};
+
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_cloud_plus(&mut adapter);
+        let target_id = MarkupId::new("cloud-plus:snap-target").unwrap();
+        adapter
+            .documents
+            .get_mut(&7)
+            .unwrap()
+            .apply_command(AnnotationCommand::CreateAnnotation(
+                Annotation::StraightLine(
+                    StraightLineAnnotation::new(
+                        target_id.clone(),
+                        0,
+                        point(200., 20.),
+                        point(240., 20.),
+                        LineKind::Line,
+                        StraightLineAppearance::default_for(LineKind::Line),
+                    )
+                    .unwrap(),
+                ),
+            ))
+            .unwrap();
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&id));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_source(SemanticSnapSource::Content, false)
+                    .with_source(SemanticSnapSource::PageGrid, false)
+                    .with_source(SemanticSnapSource::ConstructionGrid, false),
+            )
+            .unwrap();
+        let original = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        let history_before = adapter.history_depths(7);
+
+        let index = SemanticSnapIndex::from_annotation_scene(
+            &adapter.document_scene(7, 0),
+            std::slice::from_ref(&target_id),
+        );
+        let indexed_cloud_point = index
+            .resolve_point(
+                point(50.5, 10.5),
+                &adapter.semantic_snap_settings,
+                adapter.observed_pixels_per_point.0,
+            )
+            .expect("Cloud+ control geometry must be an annotation snap target");
+        assert_eq!(indexed_cloud_point.owner_id.as_ref(), Some(&id));
+        assert_eq!(indexed_cloud_point.point, point(50., 10.));
+
+        adapter
+            .pointer_down(7, 0, 90, original.cloud_points()[1], 4.)
+            .unwrap();
+        adapter.pointer_move(90, point(199., 21.)).unwrap();
+        let preview = adapter.document_scene(7, 0).cloud_pluses.remove(0);
+        assert_eq!(preview.cloud_points[1], point(200., 20.));
+        assert_eq!(adapter.history_depths(7), history_before);
+        assert_snap_evidence_references(&adapter, &target_id, SemanticSnapRole::Endpoint);
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+        assert!(adapter.snapshot(7).unwrap().cloud_pluses[0].same_persisted_state_as(&original));
+
+        let text_center = point(
+            original.text_box.x + original.text_box.width * 0.5,
+            original.text_box.y + original.text_box.height * 0.5,
+        );
+        adapter.pointer_down(7, 0, 91, text_center, 4.).unwrap();
+        adapter
+            .pointer_move(91, point(text_center.x + 149., text_center.y + 10.))
+            .unwrap();
+        let preview = adapter.document_scene(7, 0).cloud_pluses.remove(0);
+        assert_eq!(preview.cloud_points, original.cloud_points());
+        assert_eq!(preview.text_box, PdfRect::new(250., 30., 40., 20.).unwrap());
+        assert_eq!(adapter.history_depths(7), history_before);
+        assert_snap_evidence_references(&adapter, &target_id, SemanticSnapRole::Endpoint);
+        assert_eq!(
+            adapter
+                .pointer_up(91, point(text_center.x + 149., text_center.y + 10.))
+                .unwrap(),
+            PointerPhaseOutcome::AnnotationEdited(id)
+        );
+        let committed = adapter.snapshot(7).unwrap();
+        assert_eq!(committed.cloud_pluses[0].text_box, preview.text_box);
+        assert_eq!(
+            committed.cloud_pluses[0].leader_points(),
+            preview.leader_points
+        );
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
+    }
+
+    #[test]
     fn cloud_pointer_vertex_and_body_edits_preserve_scallop_authority_and_cancel_exactly() {
         let mut adapter = AnnotationAdapter::default();
         let id = seed_cloud(&mut adapter);
         let before = adapter.snapshot(7).unwrap();
         let original = before.clouds[0].clone();
+        assert_eq!(
+            adapter.document_scene(7, 0).clouds[0].feedback,
+            SceneInteractionFeedback::Normal
+        );
 
         adapter
             .pointer_down(7, 0, 1, original.points()[0], 4.)
@@ -10620,12 +16359,44 @@ mod tests {
         let preview = adapter.document_scene(7, 0).clouds.remove(0);
         assert_eq!(preview.points[0], point(25., 30.));
         assert_ne!(preview.scallop_path, original.scallop_path());
+        assert_eq!(
+            preview.feedback,
+            SceneInteractionFeedback::Transform {
+                chrome_visible: false,
+                active_handle: 0,
+            }
+        );
         assert_eq!(adapter.snapshot(7).unwrap(), before);
         adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
         assert_eq!(adapter.snapshot(7).unwrap(), before);
 
-        let body = original.scallop_path()[0];
+        let body = original
+            .scallop_path()
+            .iter()
+            .copied()
+            .max_by(|left, right| {
+                let clearance = |candidate: PdfPoint| {
+                    original
+                        .points()
+                        .iter()
+                        .map(|point| distance(*point, candidate))
+                        .fold(f64::INFINITY, f64::min)
+                };
+                clearance(*left).total_cmp(&clearance(*right))
+            })
+            .expect("a valid Cloud has a visible scallop body");
         adapter.pointer_down(7, 0, 2, body, 4.).unwrap();
+        adapter
+            .pointer_move(2, point(body.x + 10., body.y + 8.))
+            .unwrap();
+        let preview = adapter.document_scene(7, 0).clouds.remove(0);
+        assert_eq!(preview.points[0], point(30., 28.));
+        assert_eq!(
+            preview.feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: false,
+            }
+        );
         assert_eq!(
             adapter
                 .pointer_up(2, point(body.x + 10., body.y + 8.))
@@ -10640,6 +16411,85 @@ mod tests {
             original.border_effect_intensity()
         );
         assert_eq!(moved.clouds[0].appearance, original.appearance);
+    }
+
+    #[test]
+    fn cloud_body_move_snaps_control_path_anchors_and_excludes_its_own_geometry() {
+        let mut adapter = AnnotationAdapter::default();
+        let cloud_id = seed_cloud(&mut adapter);
+        let target_id = MarkupId::new("cloud:snap-target").unwrap();
+        let target = StraightLineAnnotation::new(
+            target_id.clone(),
+            0,
+            point(140., 20.),
+            point(180., 20.),
+            LineKind::Line,
+            StraightLineAppearance::default_for(LineKind::Line),
+        )
+        .unwrap();
+        let document = adapter.documents.get_mut(&7).unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(
+                Annotation::StraightLine(target),
+            ))
+            .unwrap();
+        assert!(document.select(&cloud_id));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_source(SemanticSnapSource::Content, false)
+                    .with_source(SemanticSnapSource::Annotation, true)
+                    .with_source(SemanticSnapSource::PageGrid, false)
+                    .with_source(SemanticSnapSource::ConstructionGrid, false),
+            )
+            .unwrap();
+
+        let cloud = adapter.snapshot(7).unwrap().clouds[0].clone();
+        let body = cloud
+            .scallop_path()
+            .iter()
+            .copied()
+            .max_by(|left, right| {
+                let clearance = |candidate: PdfPoint| {
+                    cloud
+                        .points()
+                        .iter()
+                        .map(|point| distance(*point, candidate))
+                        .fold(f64::INFINITY, f64::min)
+                };
+                clearance(*left).total_cmp(&clearance(*right))
+            })
+            .expect("a valid Cloud has a visible scallop body");
+        adapter.pointer_down(7, 0, 8, body, 4.).unwrap();
+        assert!(
+            matches!(
+                adapter.active.as_ref(),
+                Some(ActivePointer::CloudEdit {
+                    kind: CloudPointerEditKind::Body,
+                    ..
+                })
+            ),
+            "unexpected Cloud body pointer state: {:?}",
+            adapter.active
+        );
+        adapter
+            .pointer_move(8, point(body.x + 39.5, body.y))
+            .unwrap();
+        let preview = adapter.document_scene(7, 0).clouds.remove(0);
+        assert_snap_evidence_references(&adapter, &target_id, SemanticSnapRole::Endpoint);
+        assert_eq!(preview.points[1], point(140., 20.));
+        assert_eq!(
+            preview.feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: false,
+            }
+        );
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().clouds[0].points()[1],
+            point(100., 20.)
+        );
     }
 
     fn customised_tool_properties(tool: AnnotationTool) -> ToolProperties {
@@ -10759,6 +16609,776 @@ mod tests {
         assert_eq!(style.font_size_pt(), 18.0);
         assert_eq!(style.font_family(), "Arimo");
         assert_eq!(style.opacity(), 0.55);
+    }
+
+    #[test]
+    fn shape_feedback_distinguishes_creation_move_and_active_transform_without_history() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_tool(AnnotationTool::Ellipse).unwrap();
+        adapter.pointer_down(7, 0, 1, point(20., 20.), 4.).unwrap();
+        adapter.pointer_move(1, point(120., 80.)).unwrap();
+        let creation = adapter.document_scene(7, 0).ellipses.remove(0);
+        assert!(creation.preview);
+        assert_eq!(creation.feedback, SceneInteractionFeedback::Creation);
+        adapter.pointer_up(1, point(120., 80.)).unwrap();
+        let snapshot = adapter.snapshot(7).unwrap();
+        assert_eq!((snapshot.undo_depth, snapshot.redo_depth), (1, 0));
+
+        let snapping_off = SemanticSnapSettings::default()
+            .with_source(SemanticSnapSource::Content, false)
+            .with_source(SemanticSnapSource::Annotation, false)
+            .with_source(SemanticSnapSource::PageGrid, false)
+            .with_source(SemanticSnapSource::ConstructionGrid, false);
+        adapter.set_semantic_snap_settings(snapping_off).unwrap();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter.pointer_down(7, 0, 2, point(20., 40.), 4.).unwrap();
+        adapter.pointer_move(2, point(30., 50.)).unwrap();
+        let moving = adapter.document_scene(7, 0).ellipses.remove(0);
+        assert_eq!(
+            moving.feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: true,
+            }
+        );
+        let snapshot = adapter.snapshot(7).unwrap();
+        assert_eq!((snapshot.undo_depth, snapshot.redo_depth), (1, 0));
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+
+        let ellipse = adapter.snapshot(7).unwrap().ellipses[0].clone();
+        let east = ellipse_resize_handle_point(&ellipse, RectangleResizeHandle::East);
+        adapter.pointer_down(7, 0, 3, east, 4.).unwrap();
+        adapter
+            .pointer_move(3, point(east.x + 20., east.y))
+            .unwrap();
+        let resizing = adapter.document_scene(7, 0).ellipses.remove(0);
+        assert_eq!(
+            resizing.feedback,
+            SceneInteractionFeedback::Transform {
+                chrome_visible: true,
+                active_handle: 3,
+            }
+        );
+        let snapshot = adapter.snapshot(7).unwrap();
+        assert_eq!((snapshot.undo_depth, snapshot.redo_depth), (1, 0));
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+
+        let snapping = snapping_off.with_source(SemanticSnapSource::Annotation, true);
+        adapter.set_semantic_snap_settings(snapping).unwrap();
+        adapter.pointer_down(7, 0, 4, point(20., 40.), 4.).unwrap();
+        adapter.pointer_move(4, point(30., 50.)).unwrap();
+        assert_eq!(
+            adapter.document_scene(7, 0).ellipses[0].feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: false,
+            }
+        );
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+
+        let mut redact = AnnotationAdapter::default();
+        redact.set_tool(AnnotationTool::Redact).unwrap();
+        redact.pointer_down(9, 0, 10, point(30., 30.), 4.).unwrap();
+        redact.pointer_move(10, point(130., 90.)).unwrap();
+        assert_eq!(
+            redact.document_scene(9, 0).redacts[0].feedback,
+            SceneInteractionFeedback::Creation
+        );
+    }
+
+    #[test]
+    fn text_box_and_image_feedback_distinguish_move_transform_and_snap_visibility() {
+        let mut adapter = AnnotationAdapter::default();
+        let text_id = MarkupId::new("text-box:feedback").unwrap();
+        let image_id = MarkupId::new("image:feedback").unwrap();
+        let document = adapter.documents.entry(7).or_default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::TextBox(
+                TextBoxAnnotation::new(
+                    text_id.clone(),
+                    0,
+                    PdfRect::new(20., 20., 100., 50.).unwrap(),
+                    "Text",
+                    TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+                )
+                .unwrap(),
+            )))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Image(
+                ImageAnnotation::new(
+                    image_id.clone(),
+                    0,
+                    PdfRect::new(200., 20., 100., 50.).unwrap(),
+                    DecodedRgbaAsset::new(2, 1, vec![255; 8]).unwrap(),
+                    false,
+                )
+                .unwrap(),
+            )))
+            .unwrap();
+        let baseline = adapter.snapshot(7).unwrap();
+        assert_eq!((baseline.undo_depth, baseline.redo_depth), (2, 0));
+
+        let snapping_off = SemanticSnapSettings::default()
+            .with_source(SemanticSnapSource::Content, false)
+            .with_source(SemanticSnapSource::Annotation, false)
+            .with_source(SemanticSnapSource::PageGrid, false)
+            .with_source(SemanticSnapSource::ConstructionGrid, false);
+        adapter.set_semantic_snap_settings(snapping_off).unwrap();
+        adapter.documents.get_mut(&7).unwrap().select(&text_id);
+        adapter.pointer_down(7, 0, 1, point(70., 45.), 4.).unwrap();
+        adapter.pointer_move(1, point(80., 55.)).unwrap();
+        assert_eq!(
+            adapter.document_scene(7, 0).text_boxes[0].feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: true,
+            }
+        );
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+
+        adapter.pointer_down(7, 0, 2, point(120., 45.), 4.).unwrap();
+        adapter.pointer_move(2, point(140., 45.)).unwrap();
+        assert_eq!(
+            adapter.document_scene(7, 0).text_boxes[0].feedback,
+            SceneInteractionFeedback::Transform {
+                chrome_visible: true,
+                active_handle: 3,
+            }
+        );
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+
+        adapter.documents.get_mut(&7).unwrap().select(&image_id);
+        adapter.pointer_down(7, 0, 3, point(250., 45.), 4.).unwrap();
+        adapter.pointer_move(3, point(260., 55.)).unwrap();
+        assert_eq!(
+            adapter.document_scene(7, 0).images[0].feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: true,
+            }
+        );
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+
+        adapter.pointer_down(7, 0, 4, point(300., 45.), 4.).unwrap();
+        adapter.pointer_move(4, point(320., 45.)).unwrap();
+        assert_eq!(
+            adapter.document_scene(7, 0).images[0].feedback,
+            SceneInteractionFeedback::Transform {
+                chrome_visible: true,
+                active_handle: 3,
+            }
+        );
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap(), baseline);
+
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_source(SemanticSnapSource::Content, false)
+                    .with_source(SemanticSnapSource::Annotation, true)
+                    .with_source(SemanticSnapSource::PageGrid, false)
+                    .with_source(SemanticSnapSource::ConstructionGrid, false),
+            )
+            .unwrap();
+        adapter.pointer_down(7, 0, 5, point(300., 45.), 4.).unwrap();
+        adapter.pointer_move(5, point(320., 45.)).unwrap();
+        assert_eq!(
+            adapter.document_scene(7, 0).images[0].feedback,
+            SceneInteractionFeedback::Transform {
+                chrome_visible: false,
+                active_handle: 3,
+            }
+        );
+        adapter.pointer_up(5, point(320., 45.)).unwrap();
+        assert_eq!(adapter.history_depths(7), (3, 0));
+    }
+
+    #[test]
+    fn selected_text_box_and_image_hover_handles_preserve_stable_feedback_identity() {
+        let mut adapter = AnnotationAdapter::default();
+        let text_id = MarkupId::new("text-box:hover-handle").unwrap();
+        let lower_text_id = MarkupId::new("text-box:hover-handle-lower").unwrap();
+        let upper_text_id = MarkupId::new("text-box:hover-handle-upper").unwrap();
+        let image_id = MarkupId::new("image:hover-handle").unwrap();
+        let aspect_image_id = MarkupId::new("image:hover-handle-aspect").unwrap();
+        let document = adapter.documents.entry(7).or_default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::TextBox(
+                TextBoxAnnotation::new(
+                    text_id.clone(),
+                    0,
+                    PdfRect::new(20., 20., 100., 50.).unwrap(),
+                    "Text",
+                    TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+                )
+                .unwrap(),
+            )))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Image(
+                ImageAnnotation::new(
+                    aspect_image_id.clone(),
+                    0,
+                    PdfRect::new(350., 20., 100., 50.).unwrap(),
+                    DecodedRgbaAsset::new(2, 1, vec![255; 8]).unwrap(),
+                    true,
+                )
+                .unwrap(),
+            )))
+            .unwrap();
+        for id in [&lower_text_id, &upper_text_id] {
+            document
+                .apply_command(AnnotationCommand::CreateAnnotation(Annotation::TextBox(
+                    TextBoxAnnotation::new(
+                        id.clone(),
+                        0,
+                        PdfRect::new(500., 20., 100., 50.).unwrap(),
+                        "Overlap",
+                        TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+                    )
+                    .unwrap(),
+                )))
+                .unwrap();
+        }
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Image(
+                ImageAnnotation::new(
+                    image_id.clone(),
+                    0,
+                    PdfRect::new(200., 20., 100., 50.).unwrap(),
+                    DecodedRgbaAsset::new(2, 1, vec![255; 8]).unwrap(),
+                    false,
+                )
+                .unwrap(),
+            )))
+            .unwrap();
+
+        adapter.documents.get_mut(&7).unwrap().select(&text_id);
+        let before_text_hover = adapter.snapshot(7).unwrap();
+        assert_eq!(
+            adapter
+                .hover_text_box_handle(7, 0, point(120., 45.), 4.)
+                .unwrap(),
+            Some((text_id.clone(), 3))
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before_text_hover);
+
+        adapter.clear_selection(7);
+        let before_unselected_hover = adapter.snapshot(7).unwrap();
+        assert_eq!(
+            adapter
+                .hover_text_box_handle(7, 0, point(120., 45.), 4.)
+                .unwrap(),
+            Some((text_id.clone(), 3))
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before_unselected_hover);
+        let text_rotation = {
+            let text = adapter
+                .documents
+                .get(&7)
+                .unwrap()
+                .text_boxes()
+                .iter()
+                .find(|annotation| annotation.id == text_id)
+                .unwrap();
+            text_box_rotation_handle_point(text, adapter.observed_pixels_per_point.0).unwrap()
+        };
+        assert_eq!(
+            adapter
+                .hover_text_box_handle(7, 0, text_rotation, 4.)
+                .unwrap(),
+            None,
+            "Electron withholds Text Box rotation controls until selection"
+        );
+        assert_eq!(
+            adapter
+                .hover_text_box_handle(7, 0, point(600., 45.), 4.)
+                .unwrap(),
+            Some((upper_text_id.clone(), 3)),
+            "the topmost unselected Text Box must own an overlapping hover control"
+        );
+        adapter
+            .documents
+            .get_mut(&7)
+            .unwrap()
+            .select(&lower_text_id);
+        assert_eq!(
+            adapter
+                .hover_text_box_handle(7, 0, point(600., 45.), 4.)
+                .unwrap(),
+            Some((lower_text_id, 3)),
+            "the selected Text Box must win before an overlapping unselected control"
+        );
+
+        adapter.clear_selection(7);
+        let before_unselected_image_hover = adapter.snapshot(7).unwrap();
+        assert_eq!(
+            adapter
+                .hover_image_handle(7, 0, point(300., 45.), 4.)
+                .unwrap(),
+            Some((image_id.clone(), 3))
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before_unselected_image_hover);
+        let image_rotation = {
+            let image = adapter
+                .documents
+                .get(&7)
+                .unwrap()
+                .images()
+                .iter()
+                .find(|annotation| annotation.id == image_id)
+                .unwrap();
+            image_rotation_handle_point(image, adapter.observed_pixels_per_point.0).unwrap()
+        };
+        assert_eq!(
+            adapter
+                .hover_image_handle(7, 0, image_rotation, 4.)
+                .unwrap(),
+            None,
+            "Electron withholds Image rotation controls until selection"
+        );
+
+        adapter.documents.get_mut(&7).unwrap().select(&image_id);
+        let before_image_hover = adapter.snapshot(7).unwrap();
+        assert_eq!(
+            adapter
+                .hover_image_handle(7, 0, point(300., 45.), 4.)
+                .unwrap(),
+            Some((image_id.clone(), 3))
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before_image_hover);
+        assert_eq!(
+            adapter
+                .hover_image_handle(7, 0, image_rotation, 4.)
+                .unwrap(),
+            Some((image_id.clone(), 8))
+        );
+
+        adapter
+            .documents
+            .get_mut(&7)
+            .unwrap()
+            .select(&aspect_image_id);
+        assert_eq!(
+            adapter
+                .hover_image_handle(7, 0, point(450., 45.), 4.)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            adapter
+                .hover_image_handle(7, 0, point(450., 70.), 4.)
+                .unwrap(),
+            Some((aspect_image_id.clone(), 4))
+        );
+        adapter
+            .documents
+            .get_mut(&7)
+            .unwrap()
+            .apply_command(AnnotationCommand::SetLocked {
+                id: aspect_image_id,
+                locked: true,
+            })
+            .unwrap();
+        assert_eq!(
+            adapter
+                .hover_image_handle(7, 0, point(450., 70.), 4.)
+                .unwrap(),
+            None
+        );
+
+        adapter.documents.get_mut(&7).unwrap().select(&text_id);
+        adapter
+            .documents
+            .get_mut(&7)
+            .unwrap()
+            .apply_command(AnnotationCommand::SetLocked {
+                id: text_id.clone(),
+                locked: true,
+            })
+            .unwrap();
+        assert_eq!(
+            adapter
+                .hover_text_box_handle(7, 0, point(120., 45.), 4.)
+                .unwrap(),
+            None
+        );
+        adapter.set_tool(AnnotationTool::Rectangle).unwrap();
+        assert_eq!(
+            adapter
+                .hover_text_box_handle(7, 0, point(120., 45.), 4.)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn text_box_and_image_rotation_handles_use_raw_geometry_and_single_commit_history() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let text_id = MarkupId::new("text-box:rotate").unwrap();
+        let image_id = MarkupId::new("image:rotate").unwrap();
+        let overlapping_id = MarkupId::new("image:overlap").unwrap();
+        let text = TextBoxAnnotation::new(
+            text_id.clone(),
+            0,
+            PdfRect::new(20., 20., 100., 50.).unwrap(),
+            "Text",
+            TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+        )
+        .unwrap()
+        .with_rotation_degrees(30.)
+        .unwrap();
+        let image = ImageAnnotation::new(
+            image_id.clone(),
+            0,
+            PdfRect::new(200., 20., 100., 50.).unwrap(),
+            DecodedRgbaAsset::new(2, 1, vec![255; 8]).unwrap(),
+            true,
+        )
+        .unwrap()
+        .with_rotation_degrees(330.)
+        .unwrap();
+        let overlapping = ImageAnnotation::new(
+            overlapping_id,
+            0,
+            PdfRect::new(40., 70., 40., 30.).unwrap(),
+            DecodedRgbaAsset::new(1, 1, vec![255; 4]).unwrap(),
+            false,
+        )
+        .unwrap();
+        let document = adapter.documents.entry(7).or_default();
+        document
+            .load_imported_annotations(
+                vec![
+                    Annotation::TextBox(text),
+                    Annotation::Image(image),
+                    Annotation::Image(overlapping),
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+
+        adapter.documents.get_mut(&7).unwrap().select(&text_id);
+        let text = adapter.documents[&7]
+            .text_boxes()
+            .iter()
+            .find(|item| item.id == text_id)
+            .unwrap()
+            .clone();
+        let text_handle = text_box_rotation_handle_point(&text, 1.).unwrap();
+        assert_eq!(
+            adapter
+                .hover_text_box_handle(7, 0, text_handle, 1.)
+                .unwrap(),
+            Some((text_id.clone(), 8)),
+            "the selected rotation handle wins even when another body overlaps it",
+        );
+        let text_center = point(
+            text.layout_rect.x + text.layout_rect.width * 0.5,
+            text.layout_rect.y + text.layout_rect.height * 0.5,
+        );
+        let start_angle = (text_handle.y - text_center.y).atan2(text_handle.x - text_center.x);
+        let radius = distance(text_center, text_handle);
+        let target_angle = start_angle - 60_f64.to_radians();
+        let target = point(
+            text_center.x + radius * target_angle.cos(),
+            text_center.y + radius * target_angle.sin(),
+        );
+        assert_eq!(
+            adapter.pointer_down(7, 0, 10, text_handle, 1.).unwrap(),
+            PointerPhaseOutcome::GestureStarted,
+        );
+        adapter.pointer_move(10, target).unwrap();
+        assert_eq!(
+            adapter.document_scene(7, 0).text_boxes[0].rotation_degrees,
+            90.
+        );
+        let history_before = adapter.history_depths(7);
+        assert_eq!(
+            adapter.pointer_up(10, target).unwrap(),
+            PointerPhaseOutcome::AnnotationEdited(text_id.clone()),
+        );
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
+        assert_eq!(
+            adapter.snapshot(7).unwrap().text_boxes[0].rotation_degrees(),
+            90.
+        );
+        adapter.undo(7).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().text_boxes[0].rotation_degrees(),
+            30.
+        );
+        let reset_handle =
+            text_box_rotation_handle_point(&adapter.snapshot(7).unwrap().text_boxes[0], 1.)
+                .unwrap();
+        let history_before_reset = adapter.history_depths(7);
+        assert_eq!(
+            adapter
+                .pointer_double_click(7, 0, reset_handle, 1.)
+                .unwrap(),
+            PointerPhaseOutcome::AnnotationEdited(text_id.clone()),
+        );
+        assert_eq!(
+            adapter.snapshot(7).unwrap().text_boxes[0].rotation_degrees(),
+            0.
+        );
+        assert_eq!(adapter.history_depths(7), (history_before_reset.0 + 1, 0));
+        let zero_handle =
+            text_box_rotation_handle_point(&adapter.snapshot(7).unwrap().text_boxes[0], 1.)
+                .unwrap();
+        let history_before_no_op_reset = adapter.history_depths(7);
+        assert_eq!(
+            adapter.pointer_double_click(7, 0, zero_handle, 1.).unwrap(),
+            PointerPhaseOutcome::SelectionChanged(Some(text_id.clone())),
+        );
+        assert_eq!(adapter.history_depths(7), history_before_no_op_reset);
+
+        adapter.documents.get_mut(&7).unwrap().select(&image_id);
+        let image = adapter.documents[&7]
+            .images()
+            .iter()
+            .find(|item| item.id == image_id)
+            .unwrap();
+        let image_handle = image_rotation_handle_point(image, 1.).unwrap();
+        assert_eq!(
+            adapter.hover_image_handle(7, 0, image_handle, 1.).unwrap(),
+            Some((image_id.clone(), 8)),
+        );
+        let image_center = point(
+            image.rect.x + image.rect.width * 0.5,
+            image.rect.y + image.rect.height * 0.5,
+        );
+        let no_op_target = point(
+            image_handle.x + (image_handle.x - image_center.x) * 0.25,
+            image_handle.y + (image_handle.y - image_center.y) * 0.25,
+        );
+        let history_before = adapter.history_depths(7);
+        adapter.pointer_down(7, 0, 11, image_handle, 1.).unwrap();
+        adapter.pointer_move(11, no_op_target).unwrap();
+        assert_eq!(
+            adapter.pointer_up(11, no_op_target).unwrap(),
+            PointerPhaseOutcome::SelectionChanged(Some(image_id.clone())),
+        );
+        assert_eq!(adapter.history_depths(7), history_before);
+        assert_eq!(
+            adapter.snapshot(7).unwrap().images[0].rotation_degrees(),
+            330.
+        );
+
+        adapter
+            .set_primary_selected_locked(7, &image_id, true)
+            .unwrap();
+        assert_eq!(
+            adapter.hover_image_handle(7, 0, image_handle, 1.).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn aspect_locked_image_corner_resize_preserves_ratio_and_opposite_anchor() {
+        let original = PdfRect::new(20., 30., 100., 50.).unwrap();
+        let resized = resized_image_rect(
+            original,
+            ImageResizeHandle::NorthEast,
+            point(120., 80.),
+            point(160., 90.),
+            0.,
+            true,
+        )
+        .unwrap();
+        assert_eq!(resized, PdfRect::new(20., 30., 140., 70.).unwrap());
+        assert_eq!(
+            resized.width / resized.height,
+            original.width / original.height
+        );
+        assert!(
+            resized_image_rect(
+                original,
+                ImageResizeHandle::East,
+                point(120., 55.),
+                point(160., 55.),
+                0.,
+                true,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pending_image_preview_matches_committed_clamped_geometry_without_history() {
+        let mut adapter = AnnotationAdapter::default();
+        let snapping_off = SemanticSnapSettings::default()
+            .with_source(SemanticSnapSource::Content, false)
+            .with_source(SemanticSnapSource::Annotation, false)
+            .with_source(SemanticSnapSource::PageGrid, false)
+            .with_source(SemanticSnapSource::ConstructionGrid, false);
+        adapter.set_semantic_snap_settings(snapping_off).unwrap();
+        let asset = DecodedRgbaAsset::new(512, 384, vec![255; 512 * 384 * 4]).unwrap();
+        let asset_id = asset.id().as_str().to_owned();
+        adapter.set_tool(AnnotationTool::Image).unwrap();
+        adapter.set_image_asset(asset);
+        adapter
+            .set_image_placement_page(612., 792., NATURAL_IMAGE_MAX_PAGE_FRACTION)
+            .unwrap();
+
+        let history_before = adapter.history_depths(7);
+        let preview = adapter
+            .pending_image_preview_at(7, 0, point(306., 396.))
+            .unwrap()
+            .expect("prepared Image hover produces a preview");
+        assert_eq!(preview.document_id, 7);
+        assert_eq!(preview.page_index, 0);
+        assert_eq!(preview.asset_id, asset_id);
+        assert_eq!(preview.opacity, IMAGE_PLACEMENT_PREVIEW_OPACITY);
+        assert_eq!(adapter.history_depths(7), history_before);
+
+        adapter.queue_next_annotation_id(MarkupId::new("image:preview-commit").unwrap());
+        assert!(matches!(
+            adapter
+                .pointer_down(7, 0, 1, point(306., 396.), 4.)
+                .unwrap(),
+            PointerPhaseOutcome::AnnotationCreated(_)
+        ));
+        assert_eq!(adapter.snapshot(7).unwrap().images[0].rect, preview.rect);
+        assert!(
+            adapter
+                .pending_image_preview_at(7, 0, point(306., 396.))
+                .unwrap()
+                .is_none()
+        );
+
+        let mut edge = AnnotationAdapter::default();
+        edge.set_tool(AnnotationTool::Image).unwrap();
+        edge.set_image_asset(DecodedRgbaAsset::new(512, 384, vec![255; 512 * 384 * 4]).unwrap());
+        edge.set_image_placement_page(612., 792., 0.45).unwrap();
+        let edge_preview = edge
+            .pending_image_preview_at(7, 0, point(0., 0.))
+            .unwrap()
+            .unwrap();
+        assert_eq!(edge_preview.rect.x, 0.);
+        assert_eq!(edge_preview.rect.y, 0.);
+
+        let mut snapped = AnnotationAdapter::default();
+        snapped.set_semantic_snap_settings(snapping_off).unwrap();
+        snapped.set_tool(AnnotationTool::Rectangle).unwrap();
+        snapped
+            .pointer_down(7, 0, 1, point(200., 200.), 4.)
+            .unwrap();
+        snapped.pointer_move(1, point(300., 300.)).unwrap();
+        snapped.pointer_up(1, point(300., 300.)).unwrap();
+        snapped
+            .set_semantic_snap_settings(
+                snapping_off.with_source(SemanticSnapSource::Annotation, true),
+            )
+            .unwrap();
+        snapped.set_tool(AnnotationTool::Image).unwrap();
+        snapped.set_image_asset(DecodedRgbaAsset::new(512, 384, vec![255; 512 * 384 * 4]).unwrap());
+        snapped
+            .set_image_placement_page(612., 792., NATURAL_IMAGE_MAX_PAGE_FRACTION)
+            .unwrap();
+        let raw_point = point(202., 202.);
+        let raw_preview = snapped
+            .pending_image_preview_at(7, 0, raw_point)
+            .unwrap()
+            .expect("Image hover stays at the raw pointer before click-time snapping");
+        snapped.queue_next_annotation_id(MarkupId::new("image:snapped-commit").unwrap());
+        assert!(matches!(
+            snapped.pointer_down(7, 0, 2, raw_point, 4.).unwrap(),
+            PointerPhaseOutcome::AnnotationCreated(_)
+        ));
+        let snapped_rect = snapped.snapshot(7).unwrap().images[0].rect;
+        assert_ne!(snapped_rect, raw_preview.rect);
+        assert_eq!(
+            point(
+                snapped_rect.x + snapped_rect.width / 2.,
+                snapped_rect.y + snapped_rect.height / 2.,
+            ),
+            point(200., 200.)
+        );
+    }
+
+    #[test]
+    fn ink_feedback_distinguishes_creation_single_move_and_group_move_without_preview_history() {
+        let snapping_off = SemanticSnapSettings::default()
+            .with_source(SemanticSnapSource::Content, false)
+            .with_source(SemanticSnapSource::Annotation, false)
+            .with_source(SemanticSnapSource::PageGrid, false)
+            .with_source(SemanticSnapSource::ConstructionGrid, false);
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_semantic_snap_settings(snapping_off).unwrap();
+
+        adapter.set_tool(AnnotationTool::Pen).unwrap();
+        adapter.pointer_down(7, 0, 1, point(20., 20.), 4.).unwrap();
+        adapter.pointer_move(1, point(70., 50.)).unwrap();
+        adapter.pointer_move(1, point(120., 80.)).unwrap();
+        let creation = adapter.document_scene(7, 0).pens.remove(0);
+        assert!(creation.draft);
+        assert_eq!(creation.feedback, SceneInteractionFeedback::Creation);
+        assert!(!creation.feedback.chrome_visible());
+        assert_eq!(adapter.history_depths(7), (0, 0));
+        adapter.pointer_up(1, point(120., 80.)).unwrap();
+
+        let first = adapter.snapshot(7).unwrap().pens[0].clone();
+        let history_after_creation = adapter.history_depths(7);
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter.pointer_down(7, 0, 2, point(70., 50.), 5.).unwrap();
+        adapter.pointer_move(2, point(80., 60.)).unwrap();
+        let moving = adapter.document_scene(7, 0).pens.remove(0);
+        assert_eq!(
+            moving.feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: true,
+            }
+        );
+        assert_eq!(adapter.history_depths(7), history_after_creation);
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap().pens[0], first);
+        assert_eq!(adapter.history_depths(7), history_after_creation);
+
+        adapter
+            .set_semantic_snap_settings(
+                snapping_off.with_source(SemanticSnapSource::Annotation, true),
+            )
+            .unwrap();
+        adapter.pointer_down(7, 0, 3, point(70., 50.), 5.).unwrap();
+        adapter.pointer_move(3, point(80., 60.)).unwrap();
+        assert_eq!(
+            adapter.document_scene(7, 0).pens[0].feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: false,
+            }
+        );
+        assert_eq!(adapter.history_depths(7), history_after_creation);
+        adapter.pointer_up(3, point(80., 60.)).unwrap();
+        assert_eq!(adapter.history_depths(7), (history_after_creation.0 + 1, 0));
+
+        adapter.set_semantic_snap_settings(snapping_off).unwrap();
+        adapter.set_tool(AnnotationTool::Pen).unwrap();
+        adapter
+            .pointer_down(7, 0, 4, point(200., 200.), 4.)
+            .unwrap();
+        adapter.pointer_move(4, point(230., 220.)).unwrap();
+        adapter.pointer_move(4, point(260., 240.)).unwrap();
+        adapter.pointer_up(4, point(260., 240.)).unwrap();
+        let snapshot = adapter.snapshot(7).unwrap();
+        let first_id = snapshot.pens[0].id.clone();
+        let second_id = snapshot.pens[1].id.clone();
+        let document = adapter.documents.get_mut(&7).unwrap();
+        assert!(document.select(&first_id));
+        document.toggle_selection(&second_id);
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let history_before_group = adapter.history_depths(7);
+        adapter.pointer_down(7, 0, 5, point(80., 60.), 5.).unwrap();
+        adapter.pointer_move(5, point(90., 70.)).unwrap();
+        let group = adapter.document_scene(7, 0);
+        assert_eq!(group.pens.len(), 2);
+        assert!(group.pens.iter().all(|pen| {
+            pen.feedback
+                == SceneInteractionFeedback::Move {
+                    chrome_visible: true,
+                }
+        }));
+        assert_eq!(adapter.history_depths(7), history_before_group);
+        adapter.cancel(PointerCancelReason::ToolChanged).unwrap();
+        assert_eq!(adapter.history_depths(7), history_before_group);
     }
 
     #[test]
@@ -11309,6 +17929,1996 @@ mod tests {
     }
 
     #[test]
+    fn installed_page_grid_drives_current_page_creation_and_ignores_target_toggles() {
+        use crate::semantic_snapping::{
+            PageGridDefinition, PageGridKind, PageGridSource, SemanticSnapRole, SemanticSnapSource,
+            SemanticSnapTarget,
+        };
+
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_tool(AnnotationTool::Line).unwrap();
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_source(SemanticSnapSource::Annotation, false)
+                    .with_source(SemanticSnapSource::Content, false)
+                    .with_source(SemanticSnapSource::PageGrid, true)
+                    .with_source(SemanticSnapSource::ConstructionGrid, false)
+                    .with_target(SemanticSnapTarget::Intersection, false)
+                    .with_target(SemanticSnapTarget::Nearest, false),
+            )
+            .unwrap();
+        adapter.set_semantic_snap_page_grid(
+            7,
+            0,
+            Some(
+                PageGridDefinition::new(
+                    PageGridKind::Rectangular,
+                    point(0., 0.),
+                    10.,
+                    100.,
+                    100.,
+                    0.,
+                    PageGridSource::Generated,
+                )
+                .unwrap(),
+            ),
+        );
+
+        adapter.pointer_down(7, 0, 1, point(9.6, 10.3), 2.).unwrap();
+        adapter.pointer_move(1, point(20.3, 19.7)).unwrap();
+        let line = adapter.document_scene(7, 0).straight_lines.remove(0);
+        assert_eq!(line.start, point(10., 10.));
+        assert_eq!(line.end, point(20., 20.));
+        assert_eq!(
+            adapter
+                .semantic_snap_decision()
+                .map(|decision| decision.role),
+            Some(SemanticSnapRole::GridPoint)
+        );
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+
+        adapter.pointer_down(7, 1, 2, point(9.6, 10.3), 2.).unwrap();
+        adapter.pointer_move(2, point(20.3, 19.7)).unwrap();
+        let wrong_page = adapter.document_scene(7, 1).straight_lines.remove(0);
+        assert_eq!(wrong_page.start, point(9.6, 10.3));
+        assert_eq!(wrong_page.end, point(20.3, 19.7));
+        assert!(adapter.semantic_snap_decision().is_none());
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+
+        adapter
+            .set_semantic_snap_settings(
+                adapter
+                    .semantic_snap_settings()
+                    .with_source(SemanticSnapSource::PageGrid, false),
+            )
+            .unwrap();
+        adapter.pointer_down(7, 0, 3, point(9.6, 10.3), 2.).unwrap();
+        adapter.pointer_move(3, point(20.3, 19.7)).unwrap();
+        let disabled = adapter.document_scene(7, 0).straight_lines.remove(0);
+        assert_eq!(disabled.start, point(9.6, 10.3));
+        assert_eq!(disabled.end, point(20.3, 19.7));
+    }
+
+    #[test]
+    fn installed_pdf_content_drives_real_line_creation_and_respects_source_toggle() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_tool(AnnotationTool::Line).unwrap();
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_source(SemanticSnapSource::Annotation, false)
+                    .with_source(SemanticSnapSource::Content, true)
+                    .with_source(SemanticSnapSource::PageGrid, false)
+                    .with_source(SemanticSnapSource::ConstructionGrid, false),
+            )
+            .unwrap();
+        adapter
+            .set_semantic_snap_page_content(
+                7,
+                PageSnapGeometry {
+                    page_index: 0,
+                    primitives: vec![crate::pdf_content_geometry::PdfContentPrimitive::Line {
+                        start: crate::pdf_content_geometry::PdfPoint { x: 10., y: 10. },
+                        end: crate::pdf_content_geometry::PdfPoint { x: 30., y: 10. },
+                    }],
+                },
+            )
+            .unwrap();
+
+        adapter.pointer_down(7, 0, 1, point(9.7, 10.2), 2.).unwrap();
+        adapter.pointer_move(1, point(20.2, 10.1)).unwrap();
+        let snapped = adapter.document_scene(7, 0).straight_lines.remove(0);
+        assert_eq!(snapped.start, point(10., 10.));
+        assert_eq!(snapped.end, point(20., 10.));
+        assert_eq!(
+            adapter
+                .semantic_snap_decision()
+                .map(|decision| decision.role),
+            Some(crate::semantic_snapping::SemanticSnapRole::Midpoint)
+        );
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+
+        adapter
+            .set_semantic_snap_settings(
+                adapter
+                    .semantic_snap_settings()
+                    .with_source(SemanticSnapSource::Content, false),
+            )
+            .unwrap();
+        adapter.pointer_down(7, 0, 2, point(9.7, 10.2), 2.).unwrap();
+        adapter.pointer_move(2, point(20.2, 10.1)).unwrap();
+        let raw = adapter.document_scene(7, 0).straight_lines.remove(0);
+        assert_eq!(raw.start, point(9.7, 10.2));
+        assert_eq!(raw.end, point(20.2, 10.1));
+    }
+
+    #[test]
+    fn real_line_creation_acquires_revisits_and_uses_content_tracking_paths() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_tool(AnnotationTool::Line).unwrap();
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_source(SemanticSnapSource::Annotation, false)
+                    .with_source(SemanticSnapSource::Content, true)
+                    .with_source(SemanticSnapSource::PageGrid, false)
+                    .with_source(SemanticSnapSource::ConstructionGrid, false),
+            )
+            .unwrap();
+        adapter
+            .set_semantic_snap_page_content(
+                7,
+                PageSnapGeometry {
+                    page_index: 0,
+                    primitives: vec![crate::pdf_content_geometry::PdfContentPrimitive::Line {
+                        start: crate::pdf_content_geometry::PdfPoint { x: 10., y: 10. },
+                        end: crate::pdf_content_geometry::PdfPoint { x: 30., y: 10. },
+                    }],
+                },
+            )
+            .unwrap();
+
+        adapter.pointer_down(7, 0, 1, point(9.7, 10.2), 2.).unwrap();
+        adapter.pointer_move(1, point(80., 12.)).unwrap();
+        let tracked = adapter.document_scene(7, 0).straight_lines.remove(0);
+        assert_eq!(tracked.start, point(10., 10.));
+        assert_eq!(tracked.end, point(80., 10.));
+        let tracking = adapter.object_snap_tracking_result().unwrap();
+        assert_eq!(tracking.point, point(80., 10.));
+        assert_eq!(tracking.guides.len(), 1);
+        assert_eq!(tracking.guides[0].axis, OrthogonalAxis::Horizontal);
+        assert_eq!(tracking.guides[0].source, SemanticSnapSource::Content);
+
+        // Leaving and revisiting the acquired point removes it, matching the
+        // stable Electron temporary-tracking contract.
+        adapter.pointer_move(1, point(9.8, 10.1)).unwrap();
+        adapter.pointer_move(1, point(80., 12.)).unwrap();
+        let untracked = adapter.document_scene(7, 0).straight_lines.remove(0);
+        assert_eq!(untracked.end, point(80., 12.));
+        assert!(adapter.object_snap_tracking_result().is_none());
+    }
+
+    #[test]
+    fn real_rectangle_move_snaps_equal_spacing_without_source_or_guide_dependency() {
+        use crate::semantic_snapping::{
+            EqualSpacingPlacement, RelationshipSnapGuide, SemanticSnapGuideType,
+        };
+
+        let mut adapter = AnnotationAdapter::default();
+        let before_id = MarkupId::new("rectangle:spacing-before").unwrap();
+        let moving_id = MarkupId::new("rectangle:spacing-moving").unwrap();
+        let after_id = MarkupId::new("rectangle:spacing-after").unwrap();
+        let document = adapter.documents.entry(7).or_default();
+        for (id, x) in [
+            (before_id.clone(), 10.),
+            (moving_id.clone(), 40.),
+            (after_id.clone(), 100.),
+        ] {
+            document
+                .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Rectangle(
+                    RectangleAnnotation {
+                        id,
+                        page_index: 0,
+                        rect: PdfRect::new(x, 20., 20., 20.).unwrap(),
+                        rotation_degrees: 0.,
+                        appearance: RectangleAppearance::default(),
+                        locked: false,
+                    },
+                )))
+                .unwrap();
+        }
+        assert!(document.select(&moving_id));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_source(SemanticSnapSource::Annotation, false)
+                    .with_source(SemanticSnapSource::Content, false)
+                    .with_source(SemanticSnapSource::PageGrid, false)
+                    .with_source(SemanticSnapSource::ConstructionGrid, false)
+                    .with_guides_enabled(false)
+                    .with_guide(SemanticSnapGuideType::EqualSpacing, false),
+            )
+            .unwrap();
+
+        let history_before = adapter.history_depths(7);
+        adapter.pointer_down(7, 0, 8, point(50., 30.), 1.).unwrap();
+        adapter.pointer_move(8, point(66., 30.)).unwrap();
+        let preview = adapter.document_scene(7, 0);
+        assert_eq!(
+            preview
+                .rectangles
+                .iter()
+                .find(|rectangle| rectangle.id == moving_id)
+                .unwrap()
+                .rect,
+            PdfRect::new(55., 20., 20., 20.).unwrap()
+        );
+        assert_eq!(adapter.history_depths(7), history_before);
+        assert!(adapter.semantic_snap_decision().is_none());
+        assert!(adapter.object_snap_tracking_result().is_none());
+        assert!(
+            adapter
+                .relationship_snap_guides()
+                .iter()
+                .any(|guide| matches!(
+                    guide,
+                    RelationshipSnapGuide::EqualSpacing {
+                        placement: EqualSpacingPlacement::Between,
+                        before,
+                        after,
+                        ..
+                    } if before.owner_id == before_id && after.owner_id == after_id
+                ))
+        );
+
+        adapter.pointer_up(8, point(66., 30.)).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().rectangles[1].rect,
+            PdfRect::new(55., 20., 20., 20.).unwrap()
+        );
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
+        assert!(adapter.relationship_snap_guides().is_empty());
+        adapter.undo(7).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().rectangles[1].rect,
+            PdfRect::new(40., 20., 20., 20.).unwrap()
+        );
+    }
+
+    #[test]
+    fn ink_move_uses_exact_path_bounds_for_equal_spacing_and_undo() {
+        use crate::semantic_snapping::{EqualSpacingPlacement, RelationshipSnapGuide};
+
+        let mut adapter = AnnotationAdapter::default();
+        let before_id = MarkupId::new("ink-spacing:before").unwrap();
+        let ink_id = MarkupId::new("ink-spacing:moving").unwrap();
+        let after_id = MarkupId::new("ink-spacing:after").unwrap();
+        let document = adapter.documents.entry(7).or_default();
+        for (id, x) in [(before_id.clone(), 10.), (after_id.clone(), 100.)] {
+            document
+                .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Rectangle(
+                    RectangleAnnotation {
+                        id,
+                        page_index: 0,
+                        rect: PdfRect::new(x, 10., 20., 20.).unwrap(),
+                        rotation_degrees: 0.,
+                        appearance: RectangleAppearance::default(),
+                        locked: false,
+                    },
+                )))
+                .unwrap();
+        }
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Pen(
+                PenAnnotation::new(
+                    ink_id.clone(),
+                    0,
+                    vec![point(40., 20.), point(60., 20.)],
+                    PenAppearance::new("#ff0000", 2., 1.).unwrap(),
+                )
+                .unwrap(),
+            )))
+            .unwrap();
+        assert!(document.select(&ink_id));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_source(SemanticSnapSource::Annotation, false)
+                    .with_source(SemanticSnapSource::Content, false)
+                    .with_source(SemanticSnapSource::PageGrid, false)
+                    .with_source(SemanticSnapSource::ConstructionGrid, false),
+            )
+            .unwrap();
+
+        let before = adapter.snapshot(7).unwrap();
+        let history_before = adapter.history_depths(7);
+        adapter.pointer_down(7, 0, 3, point(50., 20.), 2.).unwrap();
+        adapter.pointer_move(3, point(66., 20.)).unwrap();
+        let preview = adapter.document_scene(7, 0).pens.pop().unwrap();
+        assert_eq!(preview.paths[0], vec![point(55., 20.), point(75., 20.)]);
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+        assert_eq!(adapter.history_depths(7), history_before);
+        assert!(
+            adapter
+                .relationship_snap_guides()
+                .iter()
+                .any(|guide| matches!(
+                    guide,
+                    RelationshipSnapGuide::EqualSpacing {
+                        placement: EqualSpacingPlacement::Between,
+                        before,
+                        after,
+                        ..
+                    } if before.owner_id == before_id && after.owner_id == after_id
+                ))
+        );
+
+        adapter.pointer_up(3, point(66., 20.)).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().pens[0].paths().next().unwrap(),
+            preview.paths[0]
+        );
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
+        adapter.undo(7).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap().pens, before.pens);
+    }
+
+    #[test]
+    fn rectangle_and_constrained_ellipse_placement_snap_equal_size_in_both_directions() {
+        use crate::semantic_snapping::{RelationshipSnapGuide, SemanticSnapGuideType};
+
+        let mut adapter = AnnotationAdapter::default();
+        let reference_id = MarkupId::new("placement-size:reference").unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Rectangle(
+                RectangleAnnotation {
+                    id: reference_id.clone(),
+                    page_index: 0,
+                    rect: PdfRect::new(10., 10., 20., 30.).unwrap(),
+                    rotation_degrees: 0.,
+                    appearance: RectangleAppearance::default(),
+                    locked: false,
+                },
+            )))
+            .unwrap();
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_source(SemanticSnapSource::Annotation, false)
+                    .with_source(SemanticSnapSource::Content, false)
+                    .with_source(SemanticSnapSource::PageGrid, false)
+                    .with_source(SemanticSnapSource::ConstructionGrid, false)
+                    .with_guides_enabled(false)
+                    .with_guide(SemanticSnapGuideType::EqualSize, false),
+            )
+            .unwrap();
+
+        adapter.set_tool(AnnotationTool::Rectangle).unwrap();
+        adapter.queue_next_annotation_id(MarkupId::new("placement-size:rectangle").unwrap());
+        let history_before = adapter.history_depths(7);
+        adapter
+            .pointer_down(7, 0, 1, point(100., 100.), 1.)
+            .unwrap();
+        adapter.pointer_move(1, point(119., 129.)).unwrap();
+        let rectangle_preview = adapter.document_scene(7, 0).rectangles.pop().unwrap();
+        assert_eq!(
+            rectangle_preview.rect,
+            PdfRect::new(100., 100., 20., 30.).unwrap()
+        );
+        assert_eq!(adapter.history_depths(7), history_before);
+        assert_eq!(adapter.relationship_snap_guides().len(), 2);
+        assert!(
+            adapter
+                .relationship_snap_guides()
+                .iter()
+                .all(|guide| matches!(
+                    guide,
+                    RelationshipSnapGuide::EqualSize { reference, .. }
+                        if reference.owner_id == reference_id
+                ))
+        );
+        adapter.pointer_up(1, point(119., 129.)).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().rectangles[1].rect,
+            rectangle_preview.rect
+        );
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
+
+        adapter.set_tool(AnnotationTool::Ellipse).unwrap();
+        adapter.queue_next_annotation_id(MarkupId::new("placement-size:ellipse").unwrap());
+        let history_before_ellipse = adapter.history_depths(7);
+        adapter
+            .pointer_down(7, 0, 2, point(200., 200.), 1.)
+            .unwrap();
+        adapter
+            .pointer_move_with_constraint(2, point(171., 169.), true)
+            .unwrap();
+        let ellipse_preview = adapter.document_scene(7, 0).ellipses.pop().unwrap();
+        assert_eq!(
+            ellipse_preview.rect,
+            PdfRect::new(170., 170., 30., 30.).unwrap()
+        );
+        assert_eq!(adapter.history_depths(7), history_before_ellipse);
+        assert_eq!(adapter.relationship_snap_guides().len(), 1);
+        adapter
+            .pointer_up_with_constraint(2, point(171., 169.), true)
+            .unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().ellipses[0].rect,
+            ellipse_preview.rect
+        );
+        assert_eq!(adapter.history_depths(7), (history_before_ellipse.0 + 1, 0));
+        adapter.undo(7).unwrap();
+        assert!(adapter.snapshot(7).unwrap().ellipses.is_empty());
+    }
+
+    #[test]
+    fn axis_aligned_ellipse_resize_snaps_only_the_active_handle_axes() {
+        use crate::semantic_snapping::{RelationshipSnapGuide, SemanticSnapGuideType};
+
+        let mut adapter = AnnotationAdapter::default();
+        let reference_id = MarkupId::new("resize-size:reference").unwrap();
+        let ellipse_id = MarkupId::new("resize-size:ellipse").unwrap();
+        let document = adapter.documents.entry(7).or_default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Rectangle(
+                RectangleAnnotation {
+                    id: reference_id.clone(),
+                    page_index: 0,
+                    rect: PdfRect::new(100., 100., 50., 70.).unwrap(),
+                    rotation_degrees: 0.,
+                    appearance: RectangleAppearance::default(),
+                    locked: false,
+                },
+            )))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Ellipse(
+                EllipseAnnotation::new(
+                    ellipse_id.clone(),
+                    0,
+                    PdfRect::new(40., 100., 40., 40.).unwrap(),
+                    RectangleAppearance::default(),
+                )
+                .unwrap(),
+            )))
+            .unwrap();
+        assert!(document.select(&ellipse_id));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_source(SemanticSnapSource::Annotation, false)
+                    .with_source(SemanticSnapSource::Content, false)
+                    .with_source(SemanticSnapSource::PageGrid, false)
+                    .with_source(SemanticSnapSource::ConstructionGrid, false)
+                    .with_guides_enabled(false)
+                    .with_guide(SemanticSnapGuideType::EqualSize, false),
+            )
+            .unwrap();
+
+        let history_before = adapter.history_depths(7);
+        adapter.pointer_down(7, 0, 1, point(80., 120.), 1.).unwrap();
+        adapter.pointer_move(1, point(89., 120.)).unwrap();
+        let preview = adapter.document_scene(7, 0).ellipses.pop().unwrap();
+        assert_eq!(preview.rect, PdfRect::new(40., 100., 50., 40.).unwrap());
+        assert_eq!(adapter.history_depths(7), history_before);
+        assert_eq!(adapter.relationship_snap_guides().len(), 1);
+        assert!(matches!(
+            &adapter.relationship_snap_guides()[0],
+            RelationshipSnapGuide::EqualSize {
+                axis: OrthogonalAxis::Horizontal,
+                moving,
+                reference,
+            } if *moving == preview.rect && reference.owner_id == reference_id
+        ));
+
+        adapter.pointer_up(1, point(89., 120.)).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap().ellipses[0].rect, preview.rect);
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
+        assert!(adapter.relationship_snap_guides().is_empty());
+        adapter.undo(7).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().ellipses[0].rect,
+            PdfRect::new(40., 100., 40., 40.).unwrap()
+        );
+
+        adapter
+            .documents
+            .get_mut(&7)
+            .unwrap()
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id: ellipse_id.clone(),
+                edit: AnnotationEdit::SetEllipseRotation(45.),
+            })
+            .unwrap();
+        let rotated = adapter.snapshot(7).unwrap().ellipses[0].clone();
+        let rotated_handle = ellipse_resize_handle_point(&rotated, RectangleResizeHandle::East);
+        adapter.pointer_down(7, 0, 2, rotated_handle, 1.).unwrap();
+        adapter
+            .pointer_move(2, point(rotated_handle.x + 9., rotated_handle.y))
+            .unwrap();
+        assert!(adapter.relationship_snap_guides().is_empty());
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+    }
+
+    #[test]
+    fn straight_line_endpoint_preview_separates_creation_chrome_and_real_snapping() {
+        use crate::semantic_snapping::SemanticSnapRole;
+
+        let mut adapter = AnnotationAdapter::default();
+        let primary_id = MarkupId::new("line:manipulation-primary").unwrap();
+        let target_id = MarkupId::new("line:manipulation-target").unwrap();
+        let primary = StraightLineAnnotation::new(
+            primary_id.clone(),
+            0,
+            PdfPoint::new(10., 10.).unwrap(),
+            PdfPoint::new(100., 10.).unwrap(),
+            LineKind::Line,
+            StraightLineAppearance::default_for(LineKind::Line),
+        )
+        .unwrap();
+        let target = StraightLineAnnotation::new(
+            target_id.clone(),
+            0,
+            PdfPoint::new(130., 30.).unwrap(),
+            PdfPoint::new(180., 30.).unwrap(),
+            LineKind::Line,
+            StraightLineAppearance::default_for(LineKind::Line),
+        )
+        .unwrap();
+        let document = adapter.documents.entry(7).or_default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(
+                Annotation::StraightLine(primary),
+            ))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(
+                Annotation::StraightLine(target),
+            ))
+            .unwrap();
+        assert!(document.select(&primary_id));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+
+        let snapping_off = SemanticSnapSettings::default()
+            .with_source(SemanticSnapSource::Content, false)
+            .with_source(SemanticSnapSource::Annotation, false)
+            .with_source(SemanticSnapSource::PageGrid, false)
+            .with_source(SemanticSnapSource::ConstructionGrid, false);
+        adapter.set_semantic_snap_settings(snapping_off).unwrap();
+        adapter
+            .pointer_down(7, 0, 41, PdfPoint::new(100., 10.).unwrap(), 4.)
+            .unwrap();
+        adapter
+            .pointer_move(41, PdfPoint::new(115., 20.).unwrap())
+            .unwrap();
+        let preview = adapter.document_scene(7, 0);
+        let primary = preview
+            .straight_lines
+            .iter()
+            .find(|line| line.id == primary_id)
+            .unwrap();
+        assert_eq!(
+            primary.feedback,
+            SceneInteractionFeedback::Transform {
+                chrome_visible: true,
+                active_handle: 1,
+            }
+        );
+        assert_eq!(primary.end, PdfPoint::new(115., 20.).unwrap());
+        assert!(adapter.semantic_snap_decision().is_none());
+        adapter.cancel(PointerCancelReason::ToolChanged).unwrap();
+        let stable = adapter.document_scene(7, 0);
+        let primary = stable
+            .straight_lines
+            .iter()
+            .find(|line| line.id == primary_id)
+            .unwrap();
+        assert_eq!(primary.feedback, SceneInteractionFeedback::Normal);
+        assert_eq!(primary.end, PdfPoint::new(100., 10.).unwrap());
+
+        adapter
+            .set_semantic_snap_settings(
+                snapping_off.with_source(SemanticSnapSource::Annotation, true),
+            )
+            .unwrap();
+        let history_before = adapter.history_depths(7);
+        adapter
+            .pointer_down(7, 0, 42, PdfPoint::new(100., 10.).unwrap(), 4.)
+            .unwrap();
+        adapter
+            .pointer_move(42, PdfPoint::new(129., 31.).unwrap())
+            .unwrap();
+        let snapped = adapter.document_scene(7, 0);
+        let primary = snapped
+            .straight_lines
+            .iter()
+            .find(|line| line.id == primary_id)
+            .unwrap();
+        assert_eq!(
+            primary.feedback,
+            SceneInteractionFeedback::Transform {
+                chrome_visible: false,
+                active_handle: 1,
+            }
+        );
+        assert_eq!(primary.end, PdfPoint::new(130., 30.).unwrap());
+        assert_snap_evidence_references(&adapter, &target_id, SemanticSnapRole::Endpoint);
+        assert_eq!(adapter.history_depths(7), history_before);
+        adapter
+            .pointer_up(42, PdfPoint::new(129., 31.).unwrap())
+            .unwrap();
+        let committed = adapter.snapshot(7).unwrap();
+        assert_eq!(
+            committed
+                .straight_lines
+                .iter()
+                .find(|line| line.id == primary_id)
+                .unwrap()
+                .end,
+            PdfPoint::new(130., 30.).unwrap()
+        );
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
+
+        let mut length_adapter = AnnotationAdapter::default();
+        let length_id = MarkupId::new("length:manipulation-primary").unwrap();
+        let length_target_id = MarkupId::new("length:manipulation-target").unwrap();
+        let length = LengthAnnotation::new(
+            length_id.clone(),
+            0,
+            PdfPoint::new(20., 60.).unwrap(),
+            PdfPoint::new(100., 60.).unwrap(),
+            LengthCalibration::from_scale(72., 1., "m", 2, false).unwrap(),
+        )
+        .unwrap();
+        let target = StraightLineAnnotation::new(
+            length_target_id.clone(),
+            0,
+            PdfPoint::new(140., 80.).unwrap(),
+            PdfPoint::new(180., 80.).unwrap(),
+            LineKind::Line,
+            StraightLineAppearance::default_for(LineKind::Line),
+        )
+        .unwrap();
+        let document = length_adapter.documents.entry(9).or_default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Length(
+                length,
+            )))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(
+                Annotation::StraightLine(target),
+            ))
+            .unwrap();
+        assert!(document.select(&length_id));
+        length_adapter.set_tool(AnnotationTool::Select).unwrap();
+        length_adapter
+            .set_semantic_snap_settings(
+                snapping_off.with_source(SemanticSnapSource::Annotation, true),
+            )
+            .unwrap();
+        length_adapter
+            .pointer_down(9, 0, 43, PdfPoint::new(100., 60.).unwrap(), 4.)
+            .unwrap();
+        length_adapter
+            .pointer_move(43, PdfPoint::new(139., 79.).unwrap())
+            .unwrap();
+        let scene = length_adapter.document_scene(9, 0);
+        let length = scene
+            .lengths
+            .iter()
+            .find(|item| item.id == length_id)
+            .unwrap();
+        assert_eq!(
+            length.feedback,
+            SceneInteractionFeedback::Transform {
+                chrome_visible: false,
+                active_handle: 1,
+            }
+        );
+        assert_eq!(length.end, PdfPoint::new(140., 80.).unwrap());
+        let decision = length_adapter.semantic_snap_decision().unwrap();
+        assert_eq!(decision.owner_id.as_ref(), Some(&length_target_id));
+        assert_eq!(decision.role, SemanticSnapRole::Endpoint);
+    }
+
+    #[test]
+    fn length_caption_anchor_snaps_body_move_without_self_target_or_preview_history() {
+        use crate::semantic_snapping::{SemanticSnapRole, SemanticSnapSource};
+
+        let mut adapter = AnnotationAdapter::default();
+        let length_id = MarkupId::new("length:caption-snap-primary").unwrap();
+        let target_id = MarkupId::new("length:caption-snap-target").unwrap();
+        let length = LengthAnnotation::new(
+            length_id.clone(),
+            0,
+            point(10., 50.),
+            point(100., 50.),
+            LengthCalibration::from_scale(72., 1., "m", 2, false).unwrap(),
+        )
+        .unwrap();
+        let target = StraightLineAnnotation::new(
+            target_id.clone(),
+            0,
+            point(250., 80.),
+            point(280., 80.),
+            LineKind::Line,
+            StraightLineAppearance::default_for(LineKind::Line),
+        )
+        .unwrap();
+        let document = adapter.documents.entry(7).or_default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Length(
+                length,
+            )))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(
+                Annotation::StraightLine(target),
+            ))
+            .unwrap();
+        assert!(document.select(&length_id));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_source(SemanticSnapSource::Content, false)
+                    .with_source(SemanticSnapSource::PageGrid, false)
+                    .with_source(SemanticSnapSource::ConstructionGrid, false),
+            )
+            .unwrap();
+        let supplement = [(
+            length_id.clone(),
+            vec![
+                point(200., 40.),
+                point(220., 40.),
+                point(220., 50.),
+                point(200., 50.),
+            ],
+        )]
+        .into_iter()
+        .collect::<AnnotationSelectionSupplement>();
+        let before = adapter.snapshot(7).unwrap();
+        let history_before = adapter.history_depths(7);
+        let caption_center = point(210., 45.);
+
+        assert_eq!(
+            adapter
+                .pointer_down_with_viewport_input_and_selection_paths(
+                    7,
+                    0,
+                    81,
+                    0,
+                    caption_center,
+                    SelectionPoint::new(caption_center.x, caption_center.y),
+                    1.,
+                    PointerInputModifiers::default(),
+                    &supplement,
+                )
+                .unwrap(),
+            PointerPhaseOutcome::GestureStarted
+        );
+        adapter.pointer_move(81, point(239., 74.)).unwrap();
+        let preview = adapter.document_scene(7, 0);
+        let preview_length = preview
+            .lengths
+            .iter()
+            .find(|annotation| annotation.id == length_id)
+            .unwrap();
+        assert_eq!(preview_length.start, point(40., 80.));
+        assert_eq!(preview_length.end, point(130., 80.));
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+        assert_eq!(adapter.history_depths(7), history_before);
+        assert_snap_evidence_references(&adapter, &target_id, SemanticSnapRole::Endpoint);
+
+        assert_eq!(
+            adapter.pointer_up(81, point(239., 74.)).unwrap(),
+            PointerPhaseOutcome::AnnotationEdited(length_id.clone())
+        );
+        let committed = adapter.snapshot(7).unwrap();
+        assert_eq!(committed.lengths[0].start, point(40., 80.));
+        assert_eq!(committed.lengths[0].end, point(130., 80.));
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
+        adapter.undo(7).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap().lengths, before.lengths);
+
+        let group_line_id = MarkupId::new("length:caption-snap-group-line").unwrap();
+        adapter
+            .documents
+            .get_mut(&7)
+            .unwrap()
+            .apply_command(AnnotationCommand::CreateAnnotation(
+                Annotation::StraightLine(
+                    StraightLineAnnotation::new(
+                        group_line_id.clone(),
+                        0,
+                        point(10., 10.),
+                        point(100., 10.),
+                        LineKind::Line,
+                        StraightLineAppearance::default_for(LineKind::Line),
+                    )
+                    .unwrap(),
+                ),
+            ))
+            .unwrap();
+        let document = adapter.documents.get_mut(&7).unwrap();
+        assert!(document.select(&group_line_id));
+        document.toggle_selection(&length_id);
+        let group_before = adapter.snapshot(7).unwrap();
+        let group_history_before = adapter.history_depths(7);
+        assert_eq!(
+            adapter
+                .pointer_down_with_viewport_input_and_selection_paths(
+                    7,
+                    0,
+                    82,
+                    0,
+                    point(50., 10.),
+                    SelectionPoint::new(50., 10.),
+                    1.,
+                    PointerInputModifiers::default(),
+                    &supplement,
+                )
+                .unwrap(),
+            PointerPhaseOutcome::GestureStarted
+        );
+        adapter.pointer_move(82, point(79., 39.)).unwrap();
+        let group_preview = adapter.document_scene(7, 0);
+        assert_eq!(
+            group_preview
+                .straight_lines
+                .iter()
+                .find(|annotation| annotation.id == group_line_id)
+                .unwrap()
+                .start,
+            point(40., 40.)
+        );
+        assert_eq!(
+            group_preview
+                .lengths
+                .iter()
+                .find(|annotation| annotation.id == length_id)
+                .unwrap()
+                .start,
+            point(40., 80.)
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), group_before);
+        assert_eq!(adapter.history_depths(7), group_history_before);
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap(), group_before);
+    }
+
+    #[test]
+    fn rectangular_shape_body_moves_snap_non_pointer_anchors_without_preview_history() {
+        use crate::semantic_snapping::{SemanticSnapRole, SemanticSnapSource};
+
+        fn snapping_settings() -> SemanticSnapSettings {
+            SemanticSnapSettings::default()
+                .with_source(SemanticSnapSource::Content, false)
+                .with_source(SemanticSnapSource::PageGrid, false)
+                .with_source(SemanticSnapSource::ConstructionGrid, false)
+        }
+
+        fn target(id: MarkupId, start: PdfPoint) -> Annotation {
+            Annotation::StraightLine(
+                StraightLineAnnotation::new(
+                    id,
+                    0,
+                    start,
+                    point(start.x + 30., start.y),
+                    LineKind::Line,
+                    StraightLineAppearance::default_for(LineKind::Line),
+                )
+                .unwrap(),
+            )
+        }
+
+        let rectangle_id = MarkupId::new("rectangle:body-snap").unwrap();
+        let rectangle_target_id = MarkupId::new("rectangle:body-snap-target").unwrap();
+        let rectangle = RectangleAnnotation {
+            id: rectangle_id.clone(),
+            page_index: 0,
+            rect: PdfRect::new(10., 10., 40., 40.).unwrap(),
+            rotation_degrees: 0.,
+            appearance: RectangleAppearance::default(),
+            locked: false,
+        };
+        let mut rectangle_adapter = AnnotationAdapter::default();
+        let document = rectangle_adapter.documents.entry(7).or_default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Rectangle(
+                rectangle,
+            )))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(target(
+                rectangle_target_id.clone(),
+                point(60., 60.),
+            )))
+            .unwrap();
+        assert!(document.select(&rectangle_id));
+        rectangle_adapter.set_tool(AnnotationTool::Select).unwrap();
+        rectangle_adapter
+            .set_semantic_snap_settings(snapping_settings())
+            .unwrap();
+        let rectangle_before = rectangle_adapter.snapshot(7).unwrap();
+        let rectangle_history = rectangle_adapter.history_depths(7);
+        rectangle_adapter
+            .pointer_down(7, 0, 91, point(30., 30.), 2.)
+            .unwrap();
+        rectangle_adapter.pointer_move(91, point(39., 39.)).unwrap();
+        assert_eq!(
+            rectangle_adapter.document_scene(7, 0).rectangles[0].rect,
+            PdfRect::new(20., 20., 40., 40.).unwrap()
+        );
+        assert_eq!(rectangle_adapter.snapshot(7).unwrap(), rectangle_before);
+        assert_eq!(rectangle_adapter.history_depths(7), rectangle_history);
+        assert_snap_evidence_references(
+            &rectangle_adapter,
+            &rectangle_target_id,
+            SemanticSnapRole::Endpoint,
+        );
+        rectangle_adapter
+            .cancel(PointerCancelReason::CaptureLost)
+            .unwrap();
+        assert_eq!(rectangle_adapter.snapshot(7).unwrap(), rectangle_before);
+        rectangle_adapter
+            .pointer_down(7, 0, 92, point(30., 30.), 2.)
+            .unwrap();
+        rectangle_adapter.pointer_move(92, point(39., 39.)).unwrap();
+        rectangle_adapter.pointer_up(92, point(39., 39.)).unwrap();
+        assert_eq!(
+            rectangle_adapter.history_depths(7),
+            (rectangle_history.0 + 1, 0)
+        );
+        rectangle_adapter.undo(7).unwrap();
+        assert_eq!(
+            rectangle_adapter.snapshot(7).unwrap().rectangles,
+            rectangle_before.rectangles
+        );
+
+        let ellipse_id = MarkupId::new("ellipse:body-snap").unwrap();
+        let ellipse_target_id = MarkupId::new("ellipse:body-snap-target").unwrap();
+        let ellipse = EllipseAnnotation::new(
+            ellipse_id.clone(),
+            0,
+            PdfRect::new(10., 10., 100., 60.).unwrap(),
+            RectangleAppearance::default(),
+        )
+        .unwrap();
+        let mut ellipse_adapter = AnnotationAdapter::default();
+        let document = ellipse_adapter.documents.entry(8).or_default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Ellipse(
+                ellipse,
+            )))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(target(
+                ellipse_target_id.clone(),
+                point(120., 80.),
+            )))
+            .unwrap();
+        assert!(document.select(&ellipse_id));
+        ellipse_adapter.set_tool(AnnotationTool::Select).unwrap();
+        ellipse_adapter
+            .set_semantic_snap_settings(snapping_settings())
+            .unwrap();
+        let ellipse_before = ellipse_adapter.snapshot(8).unwrap();
+        let ellipse_history = ellipse_adapter.history_depths(8);
+        ellipse_adapter
+            .pointer_down(8, 0, 93, point(10., 30.), 4.)
+            .unwrap();
+        ellipse_adapter.pointer_move(93, point(19., 39.)).unwrap();
+        assert_eq!(
+            ellipse_adapter.document_scene(8, 0).ellipses[0].rect,
+            PdfRect::new(20., 20., 100., 60.).unwrap()
+        );
+        assert_eq!(ellipse_adapter.snapshot(8).unwrap(), ellipse_before);
+        assert_eq!(ellipse_adapter.history_depths(8), ellipse_history);
+        assert_snap_evidence_references(
+            &ellipse_adapter,
+            &ellipse_target_id,
+            SemanticSnapRole::Endpoint,
+        );
+        ellipse_adapter.pointer_up(93, point(19., 39.)).unwrap();
+        assert_eq!(
+            ellipse_adapter.history_depths(8),
+            (ellipse_history.0 + 1, 0)
+        );
+        ellipse_adapter.undo(8).unwrap();
+        assert_eq!(
+            ellipse_adapter.snapshot(8).unwrap().ellipses,
+            ellipse_before.ellipses
+        );
+
+        let redact_id = MarkupId::new("redact:body-snap").unwrap();
+        let redact_target_id = MarkupId::new("redact:body-snap-target").unwrap();
+        let redact_appearance = RectangleAppearance::new("#ff0000", 1., Some("#000000"), 0.35)
+            .unwrap()
+            .with_fill_opacity(0.35)
+            .unwrap();
+        let redact = RedactAnnotation::new(
+            redact_id.clone(),
+            0,
+            PdfRect::new(10., 10., 40., 40.).unwrap(),
+            "#000000",
+            None::<String>,
+            redact_appearance,
+        )
+        .unwrap();
+        let mut redact_adapter = AnnotationAdapter::default();
+        let document = redact_adapter.documents.entry(9).or_default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Redact(
+                redact,
+            )))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(target(
+                redact_target_id.clone(),
+                point(60., 60.),
+            )))
+            .unwrap();
+        assert!(document.select(&redact_id));
+        redact_adapter.set_tool(AnnotationTool::Select).unwrap();
+        redact_adapter
+            .set_semantic_snap_settings(snapping_settings())
+            .unwrap();
+        let redact_before = redact_adapter.snapshot(9).unwrap();
+        let redact_history = redact_adapter.history_depths(9);
+        redact_adapter
+            .pointer_down(9, 0, 94, point(30., 30.), 2.)
+            .unwrap();
+        redact_adapter.pointer_move(94, point(39., 39.)).unwrap();
+        assert_eq!(
+            redact_adapter.document_scene(9, 0).redacts[0].rect,
+            PdfRect::new(20., 20., 40., 40.).unwrap()
+        );
+        assert_eq!(redact_adapter.snapshot(9).unwrap(), redact_before);
+        assert_eq!(redact_adapter.history_depths(9), redact_history);
+        assert_snap_evidence_references(
+            &redact_adapter,
+            &redact_target_id,
+            SemanticSnapRole::Endpoint,
+        );
+        redact_adapter.pointer_up(94, point(39., 39.)).unwrap();
+        assert_eq!(redact_adapter.history_depths(9), (redact_history.0 + 1, 0));
+        redact_adapter.undo(9).unwrap();
+        assert_eq!(
+            redact_adapter.snapshot(9).unwrap().redacts,
+            redact_before.redacts
+        );
+    }
+
+    #[test]
+    fn rotated_snapshot_body_and_resize_snap_without_preview_history() {
+        use crate::semantic_snapping::{SemanticSnapRole, SemanticSnapSource};
+
+        let snapshot_id = MarkupId::new("snapshot:rotated-body-snap").unwrap();
+        let target_id = MarkupId::new("snapshot:rotated-body-snap-target").unwrap();
+        let snapshot = SnapshotAnnotation::new(
+            snapshot_id.clone(),
+            0,
+            PdfRect::new(0., 0., 100., 50.).unwrap(),
+            DecodedRgbaAsset::new(2, 1, vec![255; 8]).unwrap(),
+            1.,
+        )
+        .unwrap()
+        .with_rotation_degrees(90.)
+        .unwrap();
+        let target = StraightLineAnnotation::new(
+            target_id.clone(),
+            0,
+            point(100., 100.),
+            point(130., 100.),
+            LineKind::Line,
+            StraightLineAppearance::default_for(LineKind::Line),
+        )
+        .unwrap();
+        let mut adapter = AnnotationAdapter::default();
+        let document = adapter.documents.entry(7).or_default();
+        document
+            .load_imported_annotations(
+                vec![
+                    Annotation::Snapshot(snapshot),
+                    Annotation::StraightLine(target),
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+        assert!(document.select(&snapshot_id));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_source(SemanticSnapSource::Content, false)
+                    .with_source(SemanticSnapSource::PageGrid, false)
+                    .with_source(SemanticSnapSource::ConstructionGrid, false),
+            )
+            .unwrap();
+
+        let before = adapter.snapshot(7).unwrap();
+        let history_before = adapter.history_depths(7);
+        assert_eq!(
+            adapter.pointer_down(7, 0, 95, point(50., 25.), 2.).unwrap(),
+            PointerPhaseOutcome::GestureStarted
+        );
+        adapter.pointer_move(95, point(75.4, 150.4)).unwrap();
+        assert_eq!(
+            adapter.document_scene(7, 0).snapshots[0].rect,
+            PdfRect::new(25., 125., 100., 50.).unwrap()
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+        assert_eq!(adapter.history_depths(7), history_before);
+        assert_snap_evidence_references(&adapter, &target_id, SemanticSnapRole::Endpoint);
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+
+        adapter.pointer_down(7, 0, 96, point(50., 25.), 2.).unwrap();
+        adapter.pointer_move(96, point(75.4, 150.4)).unwrap();
+        adapter.pointer_up(96, point(75.4, 150.4)).unwrap();
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
+        adapter.undo(7).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap().snapshots, before.snapshots);
+
+        let snapshot = adapter.snapshot(7).unwrap().snapshots[0].clone();
+        let resize = snapshot_resize_handle_point(&snapshot, RectangleResizeHandle::NorthWest);
+        let before_resize = adapter.snapshot(7).unwrap();
+        let history_before_resize = adapter.history_depths(7);
+        adapter.pointer_down(7, 0, 97, resize, 2.).unwrap();
+        adapter.pointer_move(97, point(100.4, 100.4)).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap(), before_resize);
+        assert_eq!(adapter.history_depths(7), history_before_resize);
+        let decision = adapter.semantic_snap_decision().unwrap();
+        assert_eq!(decision.point, point(100., 100.));
+        assert_eq!(decision.owner_id.as_ref(), Some(&target_id));
+        adapter.pointer_up(97, point(100.4, 100.4)).unwrap();
+        assert_eq!(adapter.history_depths(7), (history_before_resize.0 + 1, 0));
+        adapter.undo(7).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().snapshots,
+            before_resize.snapshots
+        );
+    }
+
+    #[test]
+    fn rectangular_shape_group_snap_context_includes_only_selected_unlocked_page_geometry() {
+        let rectangle_id = MarkupId::new("rectangle:group-snap").unwrap();
+        let ellipse_id = MarkupId::new("ellipse:group-snap").unwrap();
+        let redact_id = MarkupId::new("redact:group-snap").unwrap();
+        let locked_id = MarkupId::new("ellipse:group-snap-locked").unwrap();
+        let other_page_id = MarkupId::new("redact:group-snap-other-page").unwrap();
+        let redact_appearance = RectangleAppearance::new("#ff0000", 1., Some("#000000"), 0.35)
+            .unwrap()
+            .with_fill_opacity(0.35)
+            .unwrap();
+        let mut locked = EllipseAnnotation::new(
+            locked_id.clone(),
+            0,
+            PdfRect::new(100., 10., 20., 20.).unwrap(),
+            RectangleAppearance::default(),
+        )
+        .unwrap();
+        locked.locked = true;
+        let mut document = AnnotationDocument::default();
+        for annotation in [
+            Annotation::Rectangle(RectangleAnnotation {
+                id: rectangle_id.clone(),
+                page_index: 0,
+                rect: PdfRect::new(10., 10., 20., 20.).unwrap(),
+                rotation_degrees: 0.,
+                appearance: RectangleAppearance::default(),
+                locked: false,
+            }),
+            Annotation::Ellipse(
+                EllipseAnnotation::new(
+                    ellipse_id.clone(),
+                    0,
+                    PdfRect::new(40., 10., 20., 20.).unwrap(),
+                    RectangleAppearance::default(),
+                )
+                .unwrap(),
+            ),
+            Annotation::Redact(
+                RedactAnnotation::new(
+                    redact_id.clone(),
+                    0,
+                    PdfRect::new(70., 10., 20., 20.).unwrap(),
+                    "#000000",
+                    None::<String>,
+                    redact_appearance.clone(),
+                )
+                .unwrap(),
+            ),
+            Annotation::Ellipse(locked),
+            Annotation::Redact(
+                RedactAnnotation::new(
+                    other_page_id.clone(),
+                    1,
+                    PdfRect::new(130., 10., 20., 20.).unwrap(),
+                    "#000000",
+                    None::<String>,
+                    redact_appearance,
+                )
+                .unwrap(),
+            ),
+        ] {
+            document
+                .apply_command(AnnotationCommand::CreateAnnotation(annotation))
+                .unwrap();
+        }
+        assert!(document.select(&rectangle_id));
+        for id in [&ellipse_id, &redact_id, &locked_id, &other_page_id] {
+            document.toggle_selection(id);
+        }
+
+        let (anchors, excluded_ids) =
+            moving_snap_context(&document, 0, &AnnotationSelectionSupplement::new());
+        assert_eq!(excluded_ids, vec![rectangle_id, ellipse_id, redact_id]);
+        assert_eq!(anchors.len(), 27);
+        assert!(anchors.contains(&point(20., 20.)));
+        assert!(anchors.contains(&point(50., 20.)));
+        assert!(anchors.contains(&point(80., 20.)));
+        assert!(!anchors.contains(&point(110., 20.)));
+        assert!(!anchors.contains(&point(140., 20.)));
+        assert!(anchors.len() <= 128);
+    }
+
+    #[test]
+    fn rotated_composite_group_snap_context_excludes_only_moving_page_owners() {
+        let text_id = MarkupId::new("text-box:group-snap").unwrap();
+        let image_id = MarkupId::new("image:group-snap").unwrap();
+        let snapshot_id = MarkupId::new("snapshot:group-snap").unwrap();
+        let locked_id = MarkupId::new("image:group-snap-locked").unwrap();
+        let other_page_id = MarkupId::new("snapshot:group-snap-other-page").unwrap();
+        let asset = DecodedRgbaAsset::new(2, 1, vec![255; 8]).unwrap();
+        let text = TextBoxAnnotation::new(
+            text_id.clone(),
+            0,
+            PdfRect::new(10., 20., 20., 10.).unwrap(),
+            "Text",
+            TextBoxStyle::new("Helvetica", 12., "#000000", 1.).unwrap(),
+        )
+        .unwrap()
+        .with_rotation_degrees(90.)
+        .unwrap();
+        let image = ImageAnnotation::new(
+            image_id.clone(),
+            0,
+            PdfRect::new(50., 60., 20., 10.).unwrap(),
+            asset.clone(),
+            false,
+        )
+        .unwrap()
+        .with_rotation_degrees(90.)
+        .unwrap();
+        let mut locked = ImageAnnotation::new(
+            locked_id.clone(),
+            0,
+            PdfRect::new(130., 140., 20., 10.).unwrap(),
+            asset.clone(),
+            false,
+        )
+        .unwrap();
+        locked.locked = true;
+        let snapshot = SnapshotAnnotation::new(
+            snapshot_id.clone(),
+            0,
+            PdfRect::new(90., 100., 20., 10.).unwrap(),
+            asset.clone(),
+            1.,
+        )
+        .unwrap()
+        .with_rotation_degrees(90.)
+        .unwrap();
+        let other_page = SnapshotAnnotation::new(
+            other_page_id.clone(),
+            1,
+            PdfRect::new(170., 180., 20., 10.).unwrap(),
+            asset,
+            1.,
+        )
+        .unwrap();
+        let mut document = AnnotationDocument::default();
+        for annotation in [
+            Annotation::TextBox(text),
+            Annotation::Image(image),
+            Annotation::Snapshot(snapshot),
+            Annotation::Image(locked),
+            Annotation::Snapshot(other_page),
+        ] {
+            document
+                .apply_command(AnnotationCommand::CreateAnnotation(annotation))
+                .unwrap();
+        }
+        assert!(document.select(&text_id));
+        for id in [&image_id, &snapshot_id, &locked_id, &other_page_id] {
+            document.toggle_selection(id);
+        }
+
+        let (anchors, excluded_ids) =
+            moving_snap_context(&document, 0, &AnnotationSelectionSupplement::new());
+        assert_eq!(excluded_ids, vec![text_id, image_id, snapshot_id]);
+        assert_eq!(anchors.len(), 27);
+        assert!(anchors.contains(&point(15., 15.)));
+        assert!(anchors.contains(&point(55., 55.)));
+        assert!(anchors.contains(&point(95., 95.)));
+        assert!(!anchors.contains(&point(140., 145.)));
+        assert!(!anchors.contains(&point(180., 185.)));
+    }
+
+    #[test]
+    fn vertex_path_body_move_snaps_path_anchor_without_preview_history() {
+        use crate::semantic_snapping::{SemanticSnapRole, SemanticSnapSource};
+
+        let path_id = MarkupId::new("polyline:body-snap").unwrap();
+        let target_id = MarkupId::new("polyline:body-snap-target").unwrap();
+        let path = VertexPathAnnotation::new(
+            path_id.clone(),
+            0,
+            vec![point(10., 10.), point(30., 10.), point(30., 30.)],
+            VertexPathKind::Polyline,
+            RectangleAppearance::default(),
+        )
+        .unwrap();
+        let target = StraightLineAnnotation::new(
+            target_id.clone(),
+            0,
+            point(60., 60.),
+            point(90., 60.),
+            LineKind::Line,
+            StraightLineAppearance::default_for(LineKind::Line),
+        )
+        .unwrap();
+        let mut adapter = AnnotationAdapter::default();
+        let document = adapter.documents.entry(7).or_default();
+        document
+            .load_imported_annotations(
+                vec![
+                    Annotation::VertexPath(path),
+                    Annotation::StraightLine(target),
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+        assert!(document.select(&path_id));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_source(SemanticSnapSource::Content, false)
+                    .with_source(SemanticSnapSource::PageGrid, false)
+                    .with_source(SemanticSnapSource::ConstructionGrid, false),
+            )
+            .unwrap();
+
+        let before = adapter.snapshot(7).unwrap();
+        let history_before = adapter.history_depths(7);
+        assert_eq!(
+            adapter.pointer_down(7, 0, 98, point(20., 10.), 2.).unwrap(),
+            PointerPhaseOutcome::GestureStarted
+        );
+        adapter.pointer_move(98, point(49.4, 39.4)).unwrap();
+        let preview_points = adapter.document_scene(7, 0).vertex_paths[0].points.clone();
+        for (actual, expected) in
+            preview_points
+                .iter()
+                .zip([point(40., 40.), point(60., 40.), point(60., 60.)])
+        {
+            assert!((actual.x - expected.x).abs() < 0.000_001);
+            assert!((actual.y - expected.y).abs() < 0.000_001);
+        }
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+        assert_eq!(adapter.history_depths(7), history_before);
+        let decision = adapter.semantic_snap_decision().unwrap();
+        assert_eq!(decision.point, point(60., 60.));
+        assert_eq!(decision.owner_id.as_ref(), Some(&target_id));
+        assert_eq!(decision.role, SemanticSnapRole::Endpoint);
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+
+        adapter.pointer_down(7, 0, 99, point(20., 10.), 2.).unwrap();
+        adapter.pointer_move(99, point(49.4, 39.4)).unwrap();
+        adapter.pointer_up(99, point(49.4, 39.4)).unwrap();
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
+        adapter.undo(7).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().vertex_paths,
+            before.vertex_paths
+        );
+    }
+
+    #[test]
+    fn vertex_path_point_edit_excludes_its_owner_and_snaps_to_external_geometry() {
+        use crate::semantic_snapping::{SemanticSnapRole, SemanticSnapSource};
+
+        let path_id = MarkupId::new("polyline:point-snap").unwrap();
+        let target_id = MarkupId::new("line:point-snap-target").unwrap();
+        let path = VertexPathAnnotation::new(
+            path_id.clone(),
+            0,
+            vec![point(10., 10.), point(59., 60.), point(30., 30.)],
+            VertexPathKind::Polyline,
+            RectangleAppearance::default(),
+        )
+        .unwrap();
+        let target = StraightLineAnnotation::new(
+            target_id.clone(),
+            0,
+            point(60., 60.),
+            point(90., 80.),
+            LineKind::Line,
+            StraightLineAppearance::default_for(LineKind::Line),
+        )
+        .unwrap();
+        let mut adapter = AnnotationAdapter::default();
+        let document = adapter.documents.entry(7).or_default();
+        document
+            .load_imported_annotations(
+                vec![
+                    Annotation::VertexPath(path),
+                    Annotation::StraightLine(target),
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+        assert!(document.select(&path_id));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_source(SemanticSnapSource::Content, false)
+                    .with_source(SemanticSnapSource::PageGrid, false)
+                    .with_source(SemanticSnapSource::ConstructionGrid, false),
+            )
+            .unwrap();
+
+        let before = adapter.snapshot(7).unwrap();
+        let history_before = adapter.history_depths(7);
+        adapter
+            .pointer_down(7, 0, 101, point(10., 10.), 2.)
+            .unwrap();
+        adapter.pointer_move(101, point(59.4, 60.1)).unwrap();
+        assert_eq!(
+            adapter.document_scene(7, 0).vertex_paths[0].points[0],
+            point(60., 60.)
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+        assert_eq!(adapter.history_depths(7), history_before);
+        assert_snap_evidence_references(&adapter, &target_id, SemanticSnapRole::Endpoint);
+        adapter.pointer_up(101, point(59.4, 60.1)).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().vertex_paths[0].points()[0],
+            point(60., 60.)
+        );
+        adapter.undo(7).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().vertex_paths,
+            before.vertex_paths
+        );
+    }
+
+    #[test]
+    fn multi_click_path_creation_snaps_and_uses_last_vertex_for_shift_constraint() {
+        use crate::semantic_snapping::SemanticSnapSource;
+
+        fn target_line(id: MarkupId) -> Annotation {
+            Annotation::StraightLine(
+                StraightLineAnnotation::new(
+                    id,
+                    0,
+                    point(50., 10.),
+                    point(80., 30.),
+                    LineKind::Line,
+                    StraightLineAppearance::default_for(LineKind::Line),
+                )
+                .unwrap(),
+            )
+        }
+
+        let snapping = SemanticSnapSettings::default()
+            .with_source(SemanticSnapSource::Content, false)
+            .with_source(SemanticSnapSource::PageGrid, false)
+            .with_source(SemanticSnapSource::ConstructionGrid, false);
+        let mut vertex = AnnotationAdapter::default();
+        vertex
+            .documents
+            .entry(7)
+            .or_default()
+            .load_imported_annotations(
+                vec![target_line(
+                    MarkupId::new("line:vertex-create-target").unwrap(),
+                )],
+                Vec::new(),
+            )
+            .unwrap();
+        vertex.set_semantic_snap_settings(snapping.clone()).unwrap();
+        vertex.set_tool(AnnotationTool::Polyline).unwrap();
+        vertex.pointer_down(7, 0, 102, point(10., 10.), 2.).unwrap();
+        vertex
+            .pointer_down_with_viewport_input(
+                7,
+                0,
+                103,
+                0,
+                point(49.4, 20.),
+                SelectionPoint::new(49.4, 20.),
+                2.,
+                PointerInputModifiers {
+                    shift: true,
+                    alt: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            vertex.vertex_path_draft.as_ref().unwrap().points,
+            vec![point(10., 10.), point(50., 10.)]
+        );
+
+        let mut measurement = AnnotationAdapter::default();
+        measurement
+            .documents
+            .entry(8)
+            .or_default()
+            .load_imported_annotations(
+                vec![target_line(
+                    MarkupId::new("line:measurement-create-target").unwrap(),
+                )],
+                Vec::new(),
+            )
+            .unwrap();
+        measurement
+            .set_document_page_length_calibration(
+                8,
+                0,
+                LengthCalibration::new(1., "mm", "Scale", true).unwrap(),
+            )
+            .unwrap();
+        measurement.set_semantic_snap_settings(snapping).unwrap();
+        measurement.set_tool(AnnotationTool::Polylength).unwrap();
+        measurement
+            .pointer_down(8, 0, 104, point(10., 10.), 2.)
+            .unwrap();
+        measurement
+            .pointer_down_with_viewport_input(
+                8,
+                0,
+                105,
+                0,
+                point(49.4, 20.),
+                SelectionPoint::new(49.4, 20.),
+                2.,
+                PointerInputModifiers {
+                    shift: true,
+                    alt: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            measurement.measurement_path_draft.as_ref().unwrap().points,
+            vec![point(10., 10.), point(50., 10.)]
+        );
+    }
+
+    #[test]
+    fn arc_body_control_and_creation_use_sampled_semantic_geometry() {
+        use crate::semantic_snapping::SemanticSnapSource;
+
+        let arc_id = MarkupId::new("arc:semantic-routes").unwrap();
+        let arc = ArcAnnotation::new(
+            arc_id.clone(),
+            0,
+            point(10., 10.),
+            point(50., 10.),
+            point(30., 30.),
+            RectangleAppearance::default(),
+        )
+        .unwrap();
+        let body_pointer = arc.sampled_path(64)[16];
+        let body_target_id = MarkupId::new("line:arc-body-target").unwrap();
+        let control_target_id = MarkupId::new("line:arc-control-target").unwrap();
+        let mut adapter = AnnotationAdapter::default();
+        let document = adapter.documents.entry(7).or_default();
+        document
+            .load_imported_annotations(
+                vec![
+                    Annotation::Arc(arc.clone()),
+                    Annotation::StraightLine(
+                        StraightLineAnnotation::new(
+                            body_target_id.clone(),
+                            0,
+                            point(100., 100.),
+                            point(130., 100.),
+                            LineKind::Line,
+                            StraightLineAppearance::default_for(LineKind::Line),
+                        )
+                        .unwrap(),
+                    ),
+                    Annotation::StraightLine(
+                        StraightLineAnnotation::new(
+                            control_target_id.clone(),
+                            0,
+                            point(31., 30.),
+                            point(31., 60.),
+                            LineKind::Line,
+                            StraightLineAppearance::default_for(LineKind::Line),
+                        )
+                        .unwrap(),
+                    ),
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+        assert!(document.select(&arc_id));
+        let expected_revision = document.snapshot().revision;
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_source(SemanticSnapSource::Content, false)
+                    .with_source(SemanticSnapSource::PageGrid, false)
+                    .with_source(SemanticSnapSource::ConstructionGrid, false),
+            )
+            .unwrap();
+
+        adapter.active = Some(ActivePointer::ArcMove {
+            document_id: 7,
+            page_index: 0,
+            pointer_id: 106,
+            id: arc_id.clone(),
+            expected_revision,
+            start: body_pointer,
+            current: body_pointer,
+            original: arc.clone(),
+        });
+        adapter
+            .pointer_move(106, point(body_pointer.x + 89.4, body_pointer.y + 89.4))
+            .unwrap();
+        let moved_start = adapter.document_scene(7, 0).arcs[0].start;
+        assert!((moved_start.x - 100.).abs() < 1.);
+        assert!((moved_start.y - 100.).abs() < 1.);
+        assert_ne!(moved_start, point(99.4, 99.4));
+        assert_eq!(
+            adapter.semantic_snap_decision().unwrap().owner_id.as_ref(),
+            Some(&body_target_id)
+        );
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+
+        adapter.active = Some(ActivePointer::ArcControlPoint {
+            document_id: 7,
+            page_index: 0,
+            pointer_id: 107,
+            id: arc_id.clone(),
+            expected_revision,
+            control: ArcControlPoint::Start,
+            start: arc.start,
+            current: arc.start,
+            original: arc,
+            snap_quarter_turn: false,
+        });
+        adapter.pointer_move(107, point(30.4, 30.)).unwrap();
+        assert_eq!(adapter.document_scene(7, 0).arcs[0].start, point(31., 30.));
+        assert_eq!(
+            adapter.semantic_snap_decision().unwrap().owner_id.as_ref(),
+            Some(&control_target_id)
+        );
+        adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+
+        let mut creation = AnnotationAdapter::default();
+        creation
+            .documents
+            .entry(8)
+            .or_default()
+            .load_imported_annotations(
+                vec![Annotation::StraightLine(
+                    StraightLineAnnotation::new(
+                        MarkupId::new("line:arc-create-target").unwrap(),
+                        0,
+                        point(10., 10.),
+                        point(50., 10.),
+                        LineKind::Line,
+                        StraightLineAppearance::default_for(LineKind::Line),
+                    )
+                    .unwrap(),
+                )],
+                Vec::new(),
+            )
+            .unwrap();
+        creation
+            .set_semantic_snap_settings(adapter.semantic_snap_settings().clone())
+            .unwrap();
+        creation.set_tool(AnnotationTool::Arc).unwrap();
+        creation
+            .pointer_down(8, 0, 108, point(10.3, 10.3), 2.)
+            .unwrap();
+        creation
+            .pointer_down_with_viewport_input(
+                8,
+                0,
+                109,
+                0,
+                point(49.4, 20.),
+                SelectionPoint::new(49.4, 20.),
+                2.,
+                PointerInputModifiers {
+                    shift: true,
+                    alt: false,
+                },
+            )
+            .unwrap();
+        let draft = creation.arc_draft.as_ref().unwrap();
+        assert_eq!(draft.start, point(10., 10.));
+        assert_eq!(draft.end, Some(point(50., 10.)));
+    }
+
+    #[test]
+    fn linear_body_and_group_moves_snap_geometry_anchors_without_preview_history() {
+        use crate::semantic_snapping::SemanticSnapRole;
+
+        let snapping_off = SemanticSnapSettings::default()
+            .with_source(SemanticSnapSource::Content, false)
+            .with_source(SemanticSnapSource::Annotation, false)
+            .with_source(SemanticSnapSource::PageGrid, false)
+            .with_source(SemanticSnapSource::ConstructionGrid, false);
+        let mut adapter = AnnotationAdapter::default();
+        let line_id = MarkupId::new("line:move-primary").unwrap();
+        let length_id = MarkupId::new("length:move-primary").unwrap();
+        let target_id = MarkupId::new("line:move-target").unwrap();
+        let document = adapter.documents.entry(7).or_default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(
+                Annotation::StraightLine(
+                    StraightLineAnnotation::new(
+                        line_id.clone(),
+                        0,
+                        point(10., 10.),
+                        point(100., 10.),
+                        LineKind::Line,
+                        StraightLineAppearance::default_for(LineKind::Line),
+                    )
+                    .unwrap(),
+                ),
+            ))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Length(
+                LengthAnnotation::new(
+                    length_id.clone(),
+                    0,
+                    point(10., 50.),
+                    point(100., 50.),
+                    LengthCalibration::from_scale(72., 1., "m", 2, false).unwrap(),
+                )
+                .unwrap(),
+            )))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(
+                Annotation::StraightLine(
+                    StraightLineAnnotation::new(
+                        target_id.clone(),
+                        0,
+                        point(130., 30.),
+                        point(180., 30.),
+                        LineKind::Line,
+                        StraightLineAppearance::default_for(LineKind::Line),
+                    )
+                    .unwrap(),
+                ),
+            ))
+            .unwrap();
+        assert!(document.select(&line_id));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter.set_semantic_snap_settings(snapping_off).unwrap();
+
+        adapter.pointer_down(7, 0, 51, point(50., 10.), 3.).unwrap();
+        adapter.pointer_move(51, point(79., 29.)).unwrap();
+        let preview = adapter.document_scene(7, 0);
+        let line = preview
+            .straight_lines
+            .iter()
+            .find(|line| line.id == line_id)
+            .unwrap();
+        assert_eq!(line.start, point(39., 29.));
+        assert_eq!(
+            line.feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: true,
+            }
+        );
+        adapter.cancel(PointerCancelReason::ToolChanged).unwrap();
+        assert_eq!(
+            adapter
+                .snapshot(7)
+                .unwrap()
+                .straight_lines
+                .iter()
+                .find(|line| line.id == line_id)
+                .unwrap()
+                .start,
+            point(10., 10.)
+        );
+
+        adapter
+            .set_semantic_snap_settings(
+                snapping_off.with_source(SemanticSnapSource::Annotation, true),
+            )
+            .unwrap();
+        let history_before = adapter.history_depths(7);
+        adapter.pointer_down(7, 0, 52, point(50., 10.), 3.).unwrap();
+        adapter.pointer_move(52, point(79., 29.)).unwrap();
+        let preview = adapter.document_scene(7, 0);
+        let line = preview
+            .straight_lines
+            .iter()
+            .find(|line| line.id == line_id)
+            .unwrap();
+        assert_eq!((line.start, line.end), (point(40., 30.), point(130., 30.)));
+        assert_eq!(
+            line.feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: false,
+            }
+        );
+        assert_snap_evidence_references(&adapter, &target_id, SemanticSnapRole::Endpoint);
+        assert_eq!(adapter.history_depths(7), history_before);
+        adapter.pointer_up(52, point(79., 29.)).unwrap();
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
+
+        let document = adapter.documents.get_mut(&7).unwrap();
+        assert!(document.select(&length_id));
+        adapter.pointer_down(7, 0, 54, point(50., 50.), 3.).unwrap();
+        adapter.pointer_move(54, point(79., 31.)).unwrap();
+        let preview = adapter.document_scene(7, 0);
+        let length = preview
+            .lengths
+            .iter()
+            .find(|length| length.id == length_id)
+            .unwrap();
+        assert_eq!(
+            (length.start, length.end),
+            (point(40., 30.), point(130., 30.))
+        );
+        assert_eq!(
+            length.feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: false,
+            }
+        );
+        adapter.cancel(PointerCancelReason::ToolChanged).unwrap();
+
+        let document = adapter.documents.get_mut(&7).unwrap();
+        assert!(document.select(&line_id));
+        document.toggle_selection(&length_id);
+        let history_before = adapter.history_depths(7);
+        adapter.pointer_down(7, 0, 53, point(70., 30.), 3.).unwrap();
+        adapter.pointer_move(53, point(99., 49.)).unwrap();
+        let preview = adapter.document_scene(7, 0);
+        let line = preview
+            .straight_lines
+            .iter()
+            .find(|line| line.id == line_id)
+            .unwrap();
+        let length = preview
+            .lengths
+            .iter()
+            .find(|length| length.id == length_id)
+            .unwrap();
+        assert_eq!(
+            line.feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: false
+            }
+        );
+        assert_eq!(
+            length.feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: false
+            }
+        );
+        assert_eq!(adapter.history_depths(7), history_before);
+        adapter.cancel(PointerCancelReason::ToolChanged).unwrap();
+        assert_eq!(adapter.history_depths(7), history_before);
+
+        adapter.pointer_down(7, 0, 55, point(70., 30.), 3.).unwrap();
+        adapter.pointer_move(55, point(99., 49.)).unwrap();
+        let preview = adapter.document_scene(7, 0);
+        let preview_line = preview
+            .straight_lines
+            .iter()
+            .find(|line| line.id == line_id)
+            .unwrap()
+            .start;
+        let preview_length = preview
+            .lengths
+            .iter()
+            .find(|length| length.id == length_id)
+            .unwrap()
+            .start;
+        adapter.pointer_up(55, point(99., 49.)).unwrap();
+        let committed = adapter.snapshot(7).unwrap();
+        assert_eq!(
+            committed
+                .straight_lines
+                .iter()
+                .find(|line| line.id == line_id)
+                .unwrap()
+                .start,
+            preview_line
+        );
+        assert_eq!(
+            committed
+                .lengths
+                .iter()
+                .find(|length| length.id == length_id)
+                .unwrap()
+                .start,
+            preview_length
+        );
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
+    }
+
+    #[test]
+    fn selected_cloud_plus_double_click_and_existing_text_edit_use_ordinary_history() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_cloud_plus(&mut adapter);
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&id));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let original = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        let history_before = adapter.history_depths(7);
+
+        for point in [point(120., 30.), point(75., 30.), point(30., 10.)] {
+            assert_eq!(
+                adapter.pointer_double_click(7, 0, point, 2.).unwrap(),
+                PointerPhaseOutcome::SelectionChanged(Some(id.clone()))
+            );
+            assert_eq!(adapter.history_depths(7), history_before);
+        }
+
+        adapter
+            .replace_cloud_plus_text(7, &id, "one\ntwo\nthree")
+            .unwrap();
+        let edited = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        assert_eq!(edited.content(), "one\ntwo\nthree");
+        assert!(edited.text_box.height > original.text_box.height);
+        assert_eq!(edited.text_box.x, original.text_box.x);
+        assert_eq!(edited.text_box.width, original.text_box.width);
+        assert_eq!(
+            edited.text_box.y + edited.text_box.height * 0.5,
+            original.leader_points().last().unwrap().y,
+            "a vertical-side leader connection must keep its centre while the caption grows"
+        );
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
+
+        adapter.undo(7).unwrap();
+        assert!(adapter.snapshot(7).unwrap().cloud_pluses[0].same_persisted_state_as(&original));
+        adapter.redo(7).unwrap();
+        assert!(adapter.snapshot(7).unwrap().cloud_pluses[0].same_persisted_state_as(&edited));
+        let history_after_redo = adapter.history_depths(7);
+        adapter
+            .replace_cloud_plus_text(7, &id, edited.content())
+            .unwrap();
+        assert_eq!(adapter.history_depths(7), history_after_redo);
+
+        adapter.set_primary_selected_locked(7, &id, true).unwrap();
+        assert_eq!(
+            adapter
+                .pointer_double_click(7, 0, point(120., 30.), 2.)
+                .unwrap(),
+            PointerPhaseOutcome::Ignored
+        );
+    }
+
+    #[test]
     fn hover_markup_id_mirrors_select_hit_order() {
         let mut adapter = AnnotationAdapter::default();
         let id = MarkupId::new("rectangle:hover").unwrap();
@@ -11343,5 +19953,1442 @@ mod tests {
                 .hover_markup_id(99, 0, point(50., 40.), 1.0)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn measurement_caption_bodies_hover_move_commit_and_undo() {
+        let calibration = LengthCalibration::from_scale(72., 1., "m", 2, false).unwrap();
+        let length_id = MarkupId::new("caption-body:length").unwrap();
+        let polylength_id = MarkupId::new("caption-body:polylength").unwrap();
+        let area_id = MarkupId::new("caption-body:area").unwrap();
+        let dimension_id = MarkupId::new("caption-body:dimension").unwrap();
+        let annotations = vec![
+            Annotation::Length(
+                LengthAnnotation::new(
+                    length_id.clone(),
+                    0,
+                    point(10., 10.),
+                    point(80., 10.),
+                    calibration.clone(),
+                )
+                .unwrap(),
+            ),
+            Annotation::MeasurementPath(
+                MeasurementPathAnnotation::new(
+                    polylength_id.clone(),
+                    0,
+                    vec![point(10., 30.), point(80., 30.), point(80., 50.)],
+                    MeasurementPathKind::Polylength,
+                    calibration.clone(),
+                    RectangleAppearance::default(),
+                )
+                .unwrap(),
+            ),
+            Annotation::MeasurementPath(
+                MeasurementPathAnnotation::new(
+                    area_id.clone(),
+                    0,
+                    vec![point(10., 60.), point(80., 60.), point(80., 90.)],
+                    MeasurementPathKind::Area,
+                    calibration,
+                    RectangleAppearance::default(),
+                )
+                .unwrap(),
+            ),
+            Annotation::Dimension(
+                DimensionAnnotation::new(
+                    dimension_id.clone(),
+                    0,
+                    point(10., 110.),
+                    point(80., 110.),
+                    20.,
+                    "70 mm",
+                    default_dimension_appearance().unwrap(),
+                )
+                .unwrap(),
+            ),
+        ];
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .load_imported_annotations(annotations, Vec::new())
+            .unwrap();
+        let caption_hits = [
+            (length_id, point(210., 20.)),
+            (polylength_id, point(210., 50.)),
+            (area_id, point(210., 80.)),
+            (dimension_id, point(210., 110.)),
+        ];
+        let supplement = caption_hits
+            .iter()
+            .map(|(id, centre)| {
+                (
+                    id.clone(),
+                    vec![
+                        point(centre.x - 8., centre.y - 5.),
+                        point(centre.x + 8., centre.y - 5.),
+                        point(centre.x + 8., centre.y + 5.),
+                        point(centre.x - 8., centre.y + 5.),
+                    ],
+                )
+            })
+            .collect::<AnnotationSelectionSupplement>();
+
+        assert_eq!(
+            adapter
+                .hover_markup_id_with_selection_paths(
+                    7,
+                    0,
+                    caption_hits[0].1,
+                    1.,
+                    &AnnotationSelectionSupplement::new(),
+                )
+                .unwrap(),
+            None,
+            "caption bodies must come from the paint-owned measured supplement"
+        );
+        assert_eq!(
+            adapter
+                .hover_markup_id_with_selection_paths(7, 1, caption_hits[0].1, 1., &supplement)
+                .unwrap(),
+            None,
+            "a caption supplement must not leak across pages"
+        );
+
+        for (index, (id, hit)) in caption_hits.iter().enumerate() {
+            adapter.documents.get_mut(&7).unwrap().clear_selection();
+            assert_eq!(
+                adapter
+                    .hover_markup_id_with_selection_paths(7, 0, *hit, 1., &supplement)
+                    .unwrap(),
+                Some(id.clone())
+            );
+            let before = adapter.snapshot(7).unwrap();
+            let pointer_id = index as u64 + 100;
+            assert_eq!(
+                adapter
+                    .pointer_down_with_viewport_input_and_selection_paths(
+                        7,
+                        0,
+                        pointer_id,
+                        0,
+                        *hit,
+                        SelectionPoint::new(hit.x, hit.y),
+                        1.,
+                        PointerInputModifiers::default(),
+                        &supplement,
+                    )
+                    .unwrap(),
+                PointerPhaseOutcome::GestureStarted
+            );
+            let moved = point(hit.x + 12., hit.y + 7.);
+            adapter.pointer_move(pointer_id, moved).unwrap();
+            let during = adapter.snapshot(7).unwrap();
+            assert_eq!(during.revision, before.revision);
+            assert_eq!(during.undo_depth, before.undo_depth);
+            assert_eq!(during.lengths, before.lengths);
+            assert_eq!(during.measurement_paths, before.measurement_paths);
+            assert_eq!(during.dimensions, before.dimensions);
+            assert!(matches!(
+                adapter
+                    .pointer_up_with_viewport_input_and_selection_paths(
+                        pointer_id,
+                        moved,
+                        SelectionPoint::new(moved.x, moved.y),
+                        PointerInputModifiers::default(),
+                        &supplement,
+                    )
+                    .unwrap(),
+                PointerPhaseOutcome::AnnotationEdited(_)
+            ));
+            let committed = adapter.snapshot(7).unwrap();
+            assert!(committed.revision > before.revision);
+            assert_eq!(committed.undo_depth, before.undo_depth + 1);
+            adapter.undo(7).unwrap();
+            let undone = adapter.snapshot(7).unwrap();
+            assert_eq!(undone.lengths, before.lengths);
+            assert_eq!(undone.measurement_paths, before.measurement_paths);
+            assert_eq!(undone.dimensions, before.dimensions);
+        }
+    }
+
+    #[test]
+    fn cross_family_body_hit_uses_document_order_for_hover_press_commit_and_lock() {
+        let rect = PdfRect::new(10., 20., 100., 50.).unwrap();
+        let redact_appearance = RectangleAppearance::new("#ff0000", 1., Some("#000000"), 0.35)
+            .unwrap()
+            .with_fill_opacity(0.35)
+            .unwrap();
+        let redact_id = MarkupId::new("cross-family:redact").unwrap();
+        let redact = RedactAnnotation::new(
+            redact_id.clone(),
+            0,
+            rect,
+            "#000000",
+            None::<String>,
+            redact_appearance.clone(),
+        )
+        .unwrap();
+        let image_id = MarkupId::new("cross-family:image").unwrap();
+        let image = ImageAnnotation::new(
+            image_id.clone(),
+            0,
+            rect,
+            DecodedRgbaAsset::new(1, 1, vec![255; 4]).unwrap(),
+            false,
+        )
+        .unwrap();
+        let pen_id = MarkupId::new("cross-family:pen").unwrap();
+        let pen = PenAnnotation::new(
+            pen_id.clone(),
+            0,
+            vec![point(20., 45.), point(100., 45.)],
+            PenAppearance::new("#ff0000", 2., 1.).unwrap(),
+        )
+        .unwrap();
+
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .load_imported_annotations(
+                vec![
+                    Annotation::Redact(redact.clone()),
+                    Annotation::Image(image.clone()),
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+        let hit = point(60., 45.);
+        assert_eq!(
+            adapter.hover_markup_id(7, 0, hit, 2.).unwrap(),
+            Some(image_id.clone()),
+            "the visually top Image must win over a lower Redact"
+        );
+        let before = adapter.snapshot(7).unwrap();
+        assert_eq!(
+            adapter.pointer_down(7, 0, 1, hit, 2.).unwrap(),
+            PointerPhaseOutcome::GestureStarted
+        );
+        adapter.pointer_move(1, point(72., 53.)).unwrap();
+        let preview = adapter.document_scene(7, 0);
+        let preview_image = preview
+            .images
+            .iter()
+            .find(|annotation| annotation.id == image_id)
+            .unwrap();
+        assert!(matches!(
+            preview_image.feedback,
+            SceneInteractionFeedback::Move { .. }
+        ));
+        assert_ne!(preview_image.rect, image.rect);
+        let during = adapter.snapshot(7).unwrap();
+        assert_eq!(during.images, before.images);
+        assert_eq!(
+            (during.revision, during.undo_depth),
+            (before.revision, before.undo_depth)
+        );
+        assert_eq!(during.selected_id.as_ref(), Some(&image_id));
+        adapter.pointer_up(1, point(72., 53.)).unwrap();
+        let committed = adapter.snapshot(7).unwrap();
+        assert_eq!(committed.revision, before.revision + 1);
+        assert_eq!(committed.undo_depth, before.undo_depth + 1);
+        assert_ne!(committed.images[0].rect, image.rect);
+        adapter.undo(7).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap().images, before.images);
+
+        let mut reversed = AnnotationAdapter::default();
+        reversed.set_tool(AnnotationTool::Select).unwrap();
+        reversed
+            .documents
+            .entry(8)
+            .or_default()
+            .load_imported_annotations(
+                vec![
+                    Annotation::Image(image.clone()),
+                    Annotation::Redact(redact.clone()),
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            reversed.hover_markup_id(8, 0, hit, 2.).unwrap(),
+            Some(redact_id.clone()),
+            "reversing document order must reverse the cross-family winner"
+        );
+
+        reversed
+            .documents
+            .get_mut(&8)
+            .unwrap()
+            .load_imported_annotations(
+                vec![Annotation::Redact(redact), Annotation::Pen(pen)],
+                Vec::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            reversed.hover_markup_id(8, 0, hit, 2.).unwrap(),
+            Some(pen_id),
+            "a top Pen stroke must win over a lower filled family"
+        );
+
+        let rectangle_id = MarkupId::new("cross-family:rectangle").unwrap();
+        let rectangle = RectangleAnnotation {
+            id: rectangle_id.clone(),
+            page_index: 0,
+            rect,
+            rotation_degrees: 0.,
+            appearance: RectangleAppearance::default(),
+            locked: false,
+        };
+        let mut rectangle_top = AnnotationAdapter::default();
+        rectangle_top.set_tool(AnnotationTool::Select).unwrap();
+        rectangle_top
+            .documents
+            .entry(9)
+            .or_default()
+            .load_imported_annotations(
+                vec![
+                    Annotation::Image(image.clone()),
+                    Annotation::Rectangle(rectangle.clone()),
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            rectangle_top.hover_markup_id(9, 0, hit, 2.).unwrap(),
+            Some(rectangle_id.clone())
+        );
+        assert_eq!(
+            rectangle_top.pointer_down(9, 0, 3, hit, 2.).unwrap(),
+            PointerPhaseOutcome::GestureStarted
+        );
+        rectangle_top.pointer_move(3, point(70., 55.)).unwrap();
+        assert_ne!(
+            rectangle_top.document_scene(9, 0).rectangles[0].rect,
+            rectangle.rect,
+            "the unified body route must retain the Rectangle model gesture"
+        );
+        rectangle_top
+            .cancel(PointerCancelReason::CaptureLost)
+            .unwrap();
+
+        let line_id = MarkupId::new("cross-family:line").unwrap();
+        let line = StraightLineAnnotation::new(
+            line_id.clone(),
+            0,
+            point(20., 45.),
+            point(100., 45.),
+            LineKind::Line,
+            StraightLineAppearance::default_for(LineKind::Line),
+        )
+        .unwrap();
+        reversed
+            .documents
+            .get_mut(&8)
+            .unwrap()
+            .load_imported_annotations(
+                vec![
+                    Annotation::Redact(
+                        RedactAnnotation::new(
+                            MarkupId::new("cross-family:line-redact").unwrap(),
+                            0,
+                            rect,
+                            "#000000",
+                            None::<String>,
+                            redact_appearance.clone(),
+                        )
+                        .unwrap(),
+                    ),
+                    Annotation::StraightLine(line),
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            reversed.hover_markup_id(8, 0, hit, 2.).unwrap(),
+            Some(line_id),
+            "a top straight line must share the same cross-family ordering"
+        );
+
+        let mut locked_image = image;
+        locked_image.locked = true;
+        let locked_id = locked_image.id.clone();
+        let locked_document = reversed.documents.get_mut(&8).unwrap();
+        locked_document
+            .load_imported_annotations(
+                vec![
+                    Annotation::Redact(
+                        RedactAnnotation::new(
+                            redact_id,
+                            0,
+                            rect,
+                            "#000000",
+                            None::<String>,
+                            redact_appearance,
+                        )
+                        .unwrap(),
+                    ),
+                    Annotation::Image(locked_image),
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+        let locked_before = reversed.snapshot(8).unwrap();
+        assert_eq!(
+            reversed.pointer_down(8, 0, 2, hit, 2.).unwrap(),
+            PointerPhaseOutcome::SelectionChanged(Some(locked_id.clone()))
+        );
+        let locked_after = reversed.snapshot(8).unwrap();
+        assert_eq!(locked_after.images, locked_before.images);
+        assert_eq!(
+            (locked_after.revision, locked_after.undo_depth),
+            (locked_before.revision, locked_before.undo_depth)
+        );
+        assert_eq!(locked_after.selected_id.as_ref(), Some(&locked_id));
+    }
+
+    #[test]
+    fn select_hover_hit_preserves_selected_rectangle_hit_semantics_without_mutation() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = MarkupId::new("rectangle:select-hover").unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Rectangle(
+                RectangleAnnotation {
+                    id: id.clone(),
+                    page_index: 0,
+                    rect: PdfRect::new(10., 20., 100., 50.).unwrap(),
+                    rotation_degrees: 0.,
+                    appearance: RectangleAppearance::default(),
+                    locked: false,
+                },
+            )))
+            .unwrap();
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&id));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let before = adapter.snapshot(7).unwrap();
+
+        assert_eq!(
+            adapter
+                .select_hover_hit(7, 0, point(110., 45.), 1.)
+                .unwrap(),
+            Some(HitTarget::ResizeHandle {
+                id: id.clone(),
+                handle: RectangleResizeHandle::East,
+            })
+        );
+        assert_eq!(
+            adapter.select_hover_hit(7, 0, point(60., 82.), 1.).unwrap(),
+            Some(HitTarget::RotationHandle(id.clone()))
+        );
+        assert_eq!(
+            adapter.select_hover_hit(7, 0, point(50., 40.), 1.).unwrap(),
+            Some(HitTarget::Body(id))
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+    }
+
+    #[test]
+    fn select_hover_hit_requires_select_and_suppresses_locked_rectangle_controls() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = MarkupId::new("rectangle:locked-select-hover").unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Rectangle(
+                RectangleAnnotation {
+                    id: id.clone(),
+                    page_index: 0,
+                    rect: PdfRect::new(10., 20., 100., 50.).unwrap(),
+                    rotation_degrees: 0.,
+                    appearance: RectangleAppearance::default(),
+                    locked: false,
+                },
+            )))
+            .unwrap();
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&id));
+        adapter.set_tool(AnnotationTool::Rectangle).unwrap();
+        assert_eq!(
+            adapter
+                .select_hover_hit(7, 0, point(110., 45.), 1.)
+                .unwrap(),
+            None
+        );
+
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter.set_primary_selected_locked(7, &id, true).unwrap();
+        let before = adapter.snapshot(7).unwrap();
+        assert_eq!(
+            adapter
+                .select_hover_hit(7, 0, point(110., 45.), 1.)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            adapter.select_hover_hit(7, 0, point(60., 82.), 1.).unwrap(),
+            None
+        );
+        assert_eq!(
+            adapter.select_hover_hit(7, 0, point(50., 40.), 1.).unwrap(),
+            Some(HitTarget::Body(id))
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+    }
+
+    #[test]
+    fn rectangle_hover_handle_is_selected_first_topmost_and_read_only() {
+        let mut adapter = AnnotationAdapter::default();
+        let bottom_id = MarkupId::new("rectangle:hover-bottom").unwrap();
+        let top_id = MarkupId::new("rectangle:hover-top").unwrap();
+        let rect = PdfRect::new(10., 20., 100., 50.).unwrap();
+        for id in [&bottom_id, &top_id] {
+            adapter
+                .documents
+                .entry(7)
+                .or_default()
+                .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Rectangle(
+                    RectangleAnnotation {
+                        id: id.clone(),
+                        page_index: 0,
+                        rect,
+                        rotation_degrees: 30.,
+                        appearance: RectangleAppearance::default(),
+                        locked: false,
+                    },
+                )))
+                .unwrap();
+        }
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let east = RectangleResizeHandle::East.world_point(rect, 30.);
+        let before = adapter.snapshot(7).unwrap();
+
+        assert_eq!(
+            adapter.hover_rectangle_handle(7, 0, east, 1.).unwrap(),
+            Some((top_id.clone(), 3)),
+            "the topmost unselected Rectangle must win an overlapping rotated handle"
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&bottom_id));
+        assert_eq!(
+            adapter.hover_rectangle_handle(7, 0, east, 1.).unwrap(),
+            Some((bottom_id.clone(), 3)),
+            "the selected Rectangle must win before a topmost unselected overlap"
+        );
+        adapter
+            .set_primary_selected_locked(7, &bottom_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(
+            adapter.hover_rectangle_handle(7, 0, east, 1.).unwrap(),
+            Some((top_id.clone(), 3)),
+            "locked Rectangle controls must be skipped"
+        );
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&top_id));
+        adapter
+            .set_primary_selected_locked(7, &top_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(
+            adapter.hover_rectangle_handle(7, 0, east, 1.).unwrap(),
+            None
+        );
+        adapter.set_tool(AnnotationTool::Rectangle).unwrap();
+        assert_eq!(
+            adapter.hover_rectangle_handle(7, 0, east, 1.).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn ellipse_hover_handle_is_selected_first_topmost_and_read_only() {
+        let mut adapter = AnnotationAdapter::default();
+        let bottom_id = MarkupId::new("ellipse:hover-bottom").unwrap();
+        let top_id = MarkupId::new("ellipse:hover-top").unwrap();
+        let rect = PdfRect::new(10., 20., 100., 50.).unwrap();
+        for id in [&bottom_id, &top_id] {
+            let mut ellipse =
+                EllipseAnnotation::new(id.clone(), 0, rect, RectangleAppearance::default())
+                    .unwrap();
+            ellipse.rotation_degrees = 30.;
+            adapter
+                .documents
+                .entry(7)
+                .or_default()
+                .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Ellipse(
+                    ellipse,
+                )))
+                .unwrap();
+        }
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let east = ellipse_resize_handle_point_for_rect(rect, 30., RectangleResizeHandle::East);
+        let before = adapter.snapshot(7).unwrap();
+
+        assert_eq!(
+            adapter.hover_ellipse_handle(7, 0, east, 1.).unwrap(),
+            Some((top_id.clone(), 3)),
+            "the topmost unselected Ellipse must win an overlapping rotated handle"
+        );
+        assert_eq!(
+            adapter.hover_transform_handle(7, 0, east, 1.).unwrap(),
+            Some((top_id.clone(), 3))
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&bottom_id));
+        assert_eq!(
+            adapter.hover_ellipse_handle(7, 0, east, 1.).unwrap(),
+            Some((bottom_id.clone(), 3)),
+            "the selected Ellipse must win before a topmost unselected overlap"
+        );
+        adapter
+            .set_primary_selected_locked(7, &bottom_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(
+            adapter.hover_ellipse_handle(7, 0, east, 1.).unwrap(),
+            Some((top_id.clone(), 3)),
+            "locked Ellipse controls must be skipped"
+        );
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&top_id));
+        adapter
+            .set_primary_selected_locked(7, &top_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(adapter.hover_ellipse_handle(7, 0, east, 1.).unwrap(), None);
+        adapter.set_tool(AnnotationTool::Ellipse).unwrap();
+        assert_eq!(adapter.hover_ellipse_handle(7, 0, east, 1.).unwrap(), None);
+    }
+
+    #[test]
+    fn line_arrow_and_length_hover_handles_are_selected_first_topmost_and_read_only() {
+        let mut adapter = AnnotationAdapter::default();
+        let bottom_line_id = MarkupId::new("line:hover-bottom").unwrap();
+        let length_id = MarkupId::new("length:hover-middle").unwrap();
+        let top_arrow_id = MarkupId::new("arrow:hover-top").unwrap();
+        let start = point(10., 20.);
+        let end = point(110., 20.);
+        let document = adapter.documents.entry(7).or_default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(
+                Annotation::StraightLine(
+                    StraightLineAnnotation::new(
+                        bottom_line_id.clone(),
+                        0,
+                        start,
+                        end,
+                        LineKind::Line,
+                        StraightLineAppearance::default_for(LineKind::Line),
+                    )
+                    .unwrap(),
+                ),
+            ))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Length(
+                LengthAnnotation::new(
+                    length_id.clone(),
+                    0,
+                    start,
+                    end,
+                    LengthCalibration::from_scale(72., 1., "m", 2, false).unwrap(),
+                )
+                .unwrap(),
+            )))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(
+                Annotation::StraightLine(
+                    StraightLineAnnotation::new(
+                        top_arrow_id.clone(),
+                        0,
+                        start,
+                        end,
+                        LineKind::Arrow,
+                        StraightLineAppearance::default_for(LineKind::Arrow),
+                    )
+                    .unwrap(),
+                ),
+            ))
+            .unwrap();
+        document.clear_selection();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let before = adapter.snapshot(7).unwrap();
+
+        assert_eq!(
+            adapter.hover_straight_line_handle(7, 0, end, 1.).unwrap(),
+            Some((top_arrow_id.clone(), 1)),
+            "the topmost unselected Line/Arrow must win within its family"
+        );
+        assert_eq!(
+            adapter.hover_length_handle(7, 0, start, 1.).unwrap(),
+            Some((length_id.clone(), 0))
+        );
+        assert_eq!(
+            adapter.hover_transform_handle(7, 0, end, 1.).unwrap(),
+            Some((top_arrow_id.clone(), 1)),
+            "global hover priority must follow document order rather than family order"
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+
+        assert!(
+            adapter
+                .documents
+                .get_mut(&7)
+                .unwrap()
+                .select(&bottom_line_id)
+        );
+        assert_eq!(
+            adapter.hover_transform_handle(7, 0, end, 1.).unwrap(),
+            Some((bottom_line_id.clone(), 1)),
+            "the selected line must beat later unselected families"
+        );
+        adapter
+            .set_primary_selected_locked(7, &bottom_line_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&length_id));
+        assert_eq!(
+            adapter.hover_transform_handle(7, 0, end, 1.).unwrap(),
+            Some((length_id.clone(), 1)),
+            "the selected Length must beat the topmost unselected Arrow"
+        );
+        adapter
+            .set_primary_selected_locked(7, &length_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(
+            adapter.hover_transform_handle(7, 0, end, 1.).unwrap(),
+            Some((top_arrow_id.clone(), 1)),
+            "locked Length controls must be skipped"
+        );
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&top_arrow_id));
+        adapter
+            .set_primary_selected_locked(7, &top_arrow_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(
+            adapter.hover_transform_handle(7, 0, end, 1.).unwrap(),
+            None,
+            "only locked overlapping endpoints remain"
+        );
+        adapter.set_tool(AnnotationTool::Line).unwrap();
+        assert_eq!(
+            adapter.hover_straight_line_handle(7, 0, end, 1.).unwrap(),
+            None
+        );
+        assert_eq!(adapter.hover_length_handle(7, 0, end, 1.).unwrap(), None);
+    }
+
+    #[test]
+    fn redact_hover_handle_is_topmost_select_only_and_read_only() {
+        let mut adapter = AnnotationAdapter::default();
+        let bottom_id = MarkupId::new("redact:hover-bottom").unwrap();
+        let top_id = MarkupId::new("redact:hover-top").unwrap();
+        let rect = PdfRect::new(10., 20., 100., 50.).unwrap();
+        let appearance = RectangleAppearance::new("#ff0000", 1., Some("#000000"), 0.35)
+            .unwrap()
+            .with_fill_opacity(0.35)
+            .unwrap();
+        for id in [&bottom_id, &top_id] {
+            adapter
+                .documents
+                .entry(7)
+                .or_default()
+                .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Redact(
+                    RedactAnnotation::new(
+                        id.clone(),
+                        0,
+                        rect,
+                        "#000000",
+                        None::<String>,
+                        appearance.clone(),
+                    )
+                    .unwrap(),
+                )))
+                .unwrap();
+        }
+        let rectangle_id = MarkupId::new("rectangle:hover-over-redact").unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Rectangle(
+                RectangleAnnotation {
+                    id: rectangle_id.clone(),
+                    page_index: 0,
+                    rect,
+                    rotation_degrees: 0.,
+                    appearance: RectangleAppearance::default(),
+                    locked: false,
+                },
+            )))
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let east = axis_aligned_resize_handle_point(rect, RectangleResizeHandle::East);
+        let before = adapter.snapshot(7).unwrap();
+        assert_eq!(
+            adapter.hover_redact_handle(7, 0, east, 1.).unwrap(),
+            Some((top_id.clone(), 3))
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+        assert_eq!(
+            adapter.hover_transform_handle(7, 0, east, 1.).unwrap(),
+            Some((rectangle_id, 3)),
+            "without selection the globally topmost family must win"
+        );
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&bottom_id));
+        assert_eq!(
+            adapter.hover_redact_handle(7, 0, east, 1.).unwrap(),
+            Some((bottom_id.clone(), 3))
+        );
+        assert_eq!(
+            adapter.hover_transform_handle(7, 0, east, 1.).unwrap(),
+            Some((bottom_id.clone(), 3)),
+            "a selected Redact must beat an overlapping unselected Rectangle"
+        );
+        adapter
+            .set_primary_selected_locked(7, &bottom_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(
+            adapter.hover_redact_handle(7, 0, east, 1.).unwrap(),
+            Some((top_id.clone(), 3))
+        );
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&top_id));
+        adapter
+            .set_primary_selected_locked(7, &top_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(adapter.hover_redact_handle(7, 0, east, 1.).unwrap(), None);
+        adapter.set_tool(AnnotationTool::Redact).unwrap();
+        assert_eq!(adapter.hover_redact_handle(7, 0, east, 1.).unwrap(), None);
+    }
+
+    #[test]
+    fn cloud_hover_handles_are_selected_first_topmost_and_read_only() {
+        let mut adapter = AnnotationAdapter::default();
+        let bottom_id = MarkupId::new("cloud:hover-bottom").unwrap();
+        let top_id = MarkupId::new("cloud:hover-top").unwrap();
+        let overlapping_points = vec![
+            point(20., 20.),
+            point(100., 20.),
+            point(20., 20.),
+            point(100., 80.),
+        ];
+        for id in [&bottom_id, &top_id] {
+            adapter
+                .documents
+                .entry(7)
+                .or_default()
+                .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Cloud(
+                    CloudAnnotation::new(
+                        id.clone(),
+                        0,
+                        overlapping_points.clone(),
+                        3.,
+                        RectangleAppearance::default(),
+                    )
+                    .unwrap(),
+                )))
+                .unwrap();
+        }
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let before = adapter.snapshot(7).unwrap();
+
+        assert_eq!(
+            adapter
+                .hover_cloud_handle(7, 0, overlapping_points[0], 1.)
+                .unwrap(),
+            Some((top_id.clone(), 2)),
+            "the topmost Cloud and last overlapping vertex must win"
+        );
+        assert_eq!(
+            adapter
+                .hover_transform_handle(7, 0, overlapping_points[0], 1.)
+                .unwrap(),
+            Some((top_id.clone(), 2))
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&bottom_id));
+        assert_eq!(
+            adapter
+                .hover_transform_handle(7, 0, overlapping_points[0], 1.)
+                .unwrap(),
+            Some((bottom_id.clone(), 2)),
+            "the selected Cloud must win before a topmost unselected overlap"
+        );
+        adapter
+            .set_primary_selected_locked(7, &bottom_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(
+            adapter
+                .hover_cloud_handle(7, 0, overlapping_points[0], 1.)
+                .unwrap(),
+            Some((top_id.clone(), 2))
+        );
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&top_id));
+        adapter
+            .set_primary_selected_locked(7, &top_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(
+            adapter
+                .hover_cloud_handle(7, 0, overlapping_points[0], 1.)
+                .unwrap(),
+            None
+        );
+        adapter.set_tool(AnnotationTool::Cloud).unwrap();
+        assert_eq!(
+            adapter
+                .hover_cloud_handle(7, 0, overlapping_points[0], 1.)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn arc_hover_handles_are_selected_first_topmost_and_read_only() {
+        let mut adapter = AnnotationAdapter::default();
+        let bottom_id = MarkupId::new("arc:hover-bottom").unwrap();
+        let top_id = MarkupId::new("arc:hover-top").unwrap();
+        for id in [&bottom_id, &top_id] {
+            adapter
+                .documents
+                .entry(7)
+                .or_default()
+                .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Arc(
+                    ArcAnnotation::new(
+                        id.clone(),
+                        0,
+                        point(20., 20.),
+                        point(28., 20.),
+                        point(24., 24.),
+                        RectangleAppearance::default(),
+                    )
+                    .unwrap(),
+                )))
+                .unwrap();
+        }
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let overlap = point(24., 20.);
+        let before = adapter.snapshot(7).unwrap();
+
+        assert_eq!(
+            adapter.hover_arc_handle(7, 0, overlap, 1.).unwrap(),
+            Some((top_id.clone(), 2)),
+            "the topmost Arc and last overlapping control must win"
+        );
+        assert_eq!(
+            adapter.hover_transform_handle(7, 0, overlap, 1.).unwrap(),
+            Some((top_id.clone(), 2))
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&bottom_id));
+        assert_eq!(
+            adapter.hover_transform_handle(7, 0, overlap, 1.).unwrap(),
+            Some((bottom_id.clone(), 2)),
+            "the selected Arc must win before a topmost unselected overlap"
+        );
+        adapter
+            .set_primary_selected_locked(7, &bottom_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(
+            adapter.hover_arc_handle(7, 0, overlap, 1.).unwrap(),
+            Some((top_id.clone(), 2))
+        );
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&top_id));
+        adapter
+            .set_primary_selected_locked(7, &top_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(adapter.hover_arc_handle(7, 0, overlap, 1.).unwrap(), None);
+        adapter.set_tool(AnnotationTool::Arc).unwrap();
+        assert_eq!(adapter.hover_arc_handle(7, 0, overlap, 1.).unwrap(), None);
+    }
+
+    #[test]
+    fn vertex_path_hover_handles_are_selected_first_topmost_and_read_only() {
+        let mut adapter = AnnotationAdapter::default();
+        let bottom_id = MarkupId::new("vertex-path:hover-bottom").unwrap();
+        let top_id = MarkupId::new("vertex-path:hover-top").unwrap();
+        let points = vec![
+            point(20., 20.),
+            point(100., 20.),
+            point(20., 20.),
+            point(100., 80.),
+        ];
+        for id in [&bottom_id, &top_id] {
+            adapter
+                .documents
+                .entry(7)
+                .or_default()
+                .apply_command(AnnotationCommand::CreateAnnotation(Annotation::VertexPath(
+                    VertexPathAnnotation::new(
+                        id.clone(),
+                        0,
+                        points.clone(),
+                        VertexPathKind::Polyline,
+                        RectangleAppearance::default(),
+                    )
+                    .unwrap(),
+                )))
+                .unwrap();
+        }
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let before = adapter.snapshot(7).unwrap();
+
+        assert_eq!(
+            adapter
+                .hover_vertex_path_handle(7, 0, points[0], 1.)
+                .unwrap(),
+            Some((top_id.clone(), 2)),
+            "the topmost path and last overlapping vertex must win"
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&bottom_id));
+        assert_eq!(
+            adapter.hover_transform_handle(7, 0, points[0], 1.).unwrap(),
+            Some((bottom_id.clone(), 2))
+        );
+        adapter
+            .set_primary_selected_locked(7, &bottom_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(
+            adapter
+                .hover_vertex_path_handle(7, 0, points[0], 1.)
+                .unwrap(),
+            Some((top_id.clone(), 2))
+        );
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&top_id));
+        adapter
+            .set_primary_selected_locked(7, &top_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(
+            adapter
+                .hover_vertex_path_handle(7, 0, points[0], 1.)
+                .unwrap(),
+            None
+        );
+        adapter.set_tool(AnnotationTool::Polyline).unwrap();
+        assert_eq!(
+            adapter
+                .hover_vertex_path_handle(7, 0, points[0], 1.)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn measurement_path_hover_handles_are_selected_first_topmost_and_read_only() {
+        let mut adapter = AnnotationAdapter::default();
+        let bottom_id = MarkupId::new("measurement-path:hover-bottom").unwrap();
+        let top_id = MarkupId::new("measurement-path:hover-top").unwrap();
+        let points = vec![
+            point(20., 20.),
+            point(100., 20.),
+            point(20., 20.),
+            point(100., 80.),
+        ];
+        let calibration = LengthCalibration::from_scale(72., 1., "m", 2, false).unwrap();
+        for (id, kind) in [
+            (&bottom_id, MeasurementPathKind::Polylength),
+            (&top_id, MeasurementPathKind::Area),
+        ] {
+            adapter
+                .documents
+                .entry(7)
+                .or_default()
+                .apply_command(AnnotationCommand::CreateAnnotation(
+                    Annotation::MeasurementPath(
+                        MeasurementPathAnnotation::new(
+                            id.clone(),
+                            0,
+                            points.clone(),
+                            kind,
+                            calibration.clone(),
+                            RectangleAppearance::default(),
+                        )
+                        .unwrap(),
+                    ),
+                ))
+                .unwrap();
+        }
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let before = adapter.snapshot(7).unwrap();
+
+        assert_eq!(
+            adapter
+                .hover_measurement_path_handle(7, 0, points[0], 1.)
+                .unwrap(),
+            Some((top_id.clone(), 2)),
+            "the topmost measurement and last overlapping vertex must win"
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&bottom_id));
+        assert_eq!(
+            adapter.hover_transform_handle(7, 0, points[0], 1.).unwrap(),
+            Some((bottom_id.clone(), 2))
+        );
+        adapter
+            .set_primary_selected_locked(7, &bottom_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(
+            adapter
+                .hover_measurement_path_handle(7, 0, points[0], 1.)
+                .unwrap(),
+            Some((top_id.clone(), 2))
+        );
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&top_id));
+        adapter
+            .set_primary_selected_locked(7, &top_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(
+            adapter
+                .hover_measurement_path_handle(7, 0, points[0], 1.)
+                .unwrap(),
+            None
+        );
+        adapter.set_tool(AnnotationTool::Area).unwrap();
+        assert_eq!(
+            adapter
+                .hover_measurement_path_handle(7, 0, points[0], 1.)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_handles_are_selected_first_topmost_and_read_only() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_observed_pixels_per_point(1.).unwrap();
+        let bottom_id = MarkupId::new("snapshot:hover-bottom").unwrap();
+        let top_id = MarkupId::new("snapshot:hover-top").unwrap();
+        let rect = PdfRect::new(20., 20., 100., 80.).unwrap();
+        let asset = DecodedRgbaAsset::new(2, 2, vec![255; 16]).unwrap();
+        let bottom =
+            SnapshotAnnotation::new(bottom_id.clone(), 0, rect, asset.clone(), 1.).unwrap();
+        let top = SnapshotAnnotation::new(top_id.clone(), 0, rect, asset, 1.).unwrap();
+        for snapshot in [bottom.clone(), top.clone()] {
+            adapter
+                .documents
+                .entry(7)
+                .or_default()
+                .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Snapshot(
+                    snapshot,
+                )))
+                .unwrap();
+        }
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let before = adapter.snapshot(7).unwrap();
+        let handle = RectangleResizeHandle::SouthEast;
+        let handle_index = RectangleResizeHandle::ALL
+            .iter()
+            .position(|candidate| *candidate == handle)
+            .unwrap();
+        let resize_point = snapshot_resize_handle_point(&top, handle);
+
+        assert_eq!(
+            adapter
+                .hover_snapshot_handle(7, 0, resize_point, 1.)
+                .unwrap(),
+            Some((top_id.clone(), handle_index))
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before);
+        let rotation_point = snapshot_rotation_handle_point(&top, 1.).unwrap();
+        assert_eq!(
+            adapter
+                .hover_snapshot_handle(7, 0, rotation_point, 1.)
+                .unwrap(),
+            None,
+            "an unselected Snapshot must withhold its rotation control"
+        );
+
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&bottom_id));
+        assert_eq!(
+            adapter
+                .hover_transform_handle(7, 0, resize_point, 1.)
+                .unwrap(),
+            Some((bottom_id.clone(), handle_index))
+        );
+        let bottom_rotation = snapshot_rotation_handle_point(&bottom, 1.).unwrap();
+        assert_eq!(
+            adapter
+                .hover_snapshot_handle(7, 0, bottom_rotation, 1.)
+                .unwrap(),
+            Some((bottom_id.clone(), RectangleResizeHandle::ALL.len()))
+        );
+        adapter
+            .set_primary_selected_locked(7, &bottom_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(
+            adapter
+                .hover_snapshot_handle(7, 0, resize_point, 1.)
+                .unwrap(),
+            Some((top_id.clone(), handle_index))
+        );
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&top_id));
+        adapter
+            .set_primary_selected_locked(7, &top_id, true)
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(
+            adapter
+                .hover_snapshot_handle(7, 0, resize_point, 1.)
+                .unwrap(),
+            None
+        );
+        adapter.set_tool(AnnotationTool::Snapshot).unwrap();
+        assert_eq!(
+            adapter
+                .hover_snapshot_handle(7, 0, resize_point, 1.)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn cloud_plus_direct_pointer_routes_composite_bodies_handles_preview_and_history() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = MarkupId::new("cloud-plus:pointer").unwrap();
+        let original = CloudPlusAnnotation::new(
+            id.clone(),
+            0,
+            vec![
+                point(10., 10.),
+                point(50., 10.),
+                point(50., 50.),
+                point(10., 50.),
+            ],
+            2.,
+            vec![point(50., 30.), point(75., 30.), point(100., 30.)],
+            PdfRect::new(100., 20., 40., 20.).unwrap(),
+            "Cloud+ pointer",
+            default_cloud_plus_appearance().unwrap(),
+        )
+        .unwrap();
+        let document = adapter.documents.entry(7).or_default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::CloudPlus(
+                original.clone(),
+            )))
+            .unwrap();
+        document.clear_selection();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+
+        let before_hover = adapter.snapshot(7).unwrap();
+        assert_eq!(
+            adapter
+                .hover_cloud_plus_handle(7, 0, point(50., 10.), 1.)
+                .unwrap(),
+            Some((id.clone(), 1))
+        );
+        assert_eq!(adapter.snapshot(7).unwrap(), before_hover);
+        adapter.set_tool(AnnotationTool::Rectangle).unwrap();
+        assert_eq!(
+            adapter
+                .hover_cloud_plus_handle(7, 0, point(50., 10.), 1.)
+                .unwrap(),
+            None
+        );
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+
+        assert_eq!(
+            adapter.pointer_down(7, 0, 1, point(62., 30.), 1.).unwrap(),
+            PointerPhaseOutcome::SelectionChanged(Some(id.clone())),
+            "the leader body selects the composite but remains adjust-only"
+        );
+        assert!(adapter.active.is_none());
+
+        let history_before = adapter.history_depths(7);
+        assert_eq!(
+            adapter.pointer_down(7, 0, 2, point(50., 10.), 1.).unwrap(),
+            PointerPhaseOutcome::GestureStarted
+        );
+        adapter.pointer_move(2, point(64., 6.)).unwrap();
+        let preview = adapter.document_scene(7, 0).cloud_pluses.remove(0);
+        assert!(preview.draft);
+        assert_eq!(preview.cloud_points[1], point(64., 6.));
+        assert_ne!(preview.leader_points, original.leader_points());
+        assert_eq!(
+            preview.feedback,
+            SceneInteractionFeedback::Transform {
+                chrome_visible: false,
+                active_handle: 1,
+            }
+        );
+        assert_eq!(adapter.history_depths(7), history_before);
+        adapter.cancel(PointerCancelReason::ToolChanged).unwrap();
+        assert!(adapter.snapshot(7).unwrap().cloud_pluses[0].same_persisted_state_as(&original));
+        assert_eq!(adapter.history_depths(7), history_before);
+
+        adapter.pointer_down(7, 0, 3, point(120., 30.), 1.).unwrap();
+        adapter.pointer_move(3, point(140., 42.)).unwrap();
+        let preview = adapter.document_scene(7, 0).cloud_pluses.remove(0);
+        assert_eq!(preview.text_box, PdfRect::new(120., 32., 40., 20.).unwrap());
+        assert_eq!(
+            preview.feedback,
+            SceneInteractionFeedback::Move {
+                chrome_visible: false,
+            }
+        );
+        assert_eq!(adapter.history_depths(7), history_before);
+        adapter.pointer_up(3, point(140., 42.)).unwrap();
+        let moved_snapshot = adapter.snapshot(7).unwrap();
+        let moved = &moved_snapshot.cloud_pluses[0];
+        assert_eq!(moved.text_box, preview.text_box);
+        assert_eq!(moved.leader_points(), preview.leader_points.as_slice());
+        assert_eq!(moved.content(), original.content());
+        assert_eq!(moved.appearance, original.appearance);
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
+
+        let knee = moved.leader_points()[1];
+        let next_knee = point(knee.x + 12., knee.y + 8.);
+        adapter.pointer_down(7, 0, 4, knee, 1.).unwrap();
+        adapter.pointer_move(4, next_knee).unwrap();
+        let preview = adapter.document_scene(7, 0).cloud_pluses.remove(0);
+        assert_eq!(preview.leader_points[1], next_knee);
+        adapter.pointer_up(4, next_knee).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().cloud_pluses[0].leader_points()[1],
+            next_knee
+        );
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 2, 0));
+
+        let before_group = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        adapter.pointer_down(7, 0, 5, point(30., 10.), 1.).unwrap();
+        adapter.pointer_move(5, point(40., 16.)).unwrap();
+        let preview = adapter.document_scene(7, 0).cloud_pluses.remove(0);
+        assert_eq!(preview.cloud_points[0], point(20., 16.));
+        assert_eq!(
+            preview.text_box,
+            PdfRect::new(
+                before_group.text_box.x + 10.,
+                before_group.text_box.y + 6.,
+                before_group.text_box.width,
+                before_group.text_box.height,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            preview.leader_points[1],
+            point(next_knee.x + 10., next_knee.y + 6.)
+        );
+        adapter.pointer_up(5, point(40., 16.)).unwrap();
+        assert!(
+            adapter.snapshot(7).unwrap().cloud_pluses[0].same_persisted_state_as(
+                &CloudPlusAnnotation::new(
+                    id.clone(),
+                    0,
+                    preview.cloud_points.clone(),
+                    preview.border_effect_intensity,
+                    preview.leader_points.clone(),
+                    preview.text_box,
+                    preview.content.clone(),
+                    preview.appearance.clone(),
+                )
+                .unwrap()
+            )
+        );
+
+        let before_resize = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        let north =
+            axis_aligned_resize_handle_point(before_resize.text_box, RectangleResizeHandle::North);
+        adapter.pointer_down(7, 0, 6, north, 1.).unwrap();
+        adapter
+            .pointer_move(6, point(north.x, north.y + 10.))
+            .unwrap();
+        let preview = adapter.document_scene(7, 0).cloud_pluses.remove(0);
+        assert_eq!(preview.text_box.height, before_resize.text_box.height + 10.);
+        assert_ne!(preview.leader_points, before_resize.leader_points());
+        adapter
+            .pointer_up(6, point(north.x, north.y + 10.))
+            .unwrap();
+
+        let before_connection = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        let connection = *before_connection.leader_points().last().unwrap();
+        assert_eq!(
+            adapter
+                .hover_cloud_plus_handle(7, 0, connection, 1.)
+                .unwrap(),
+            Some((id.clone(), 14)),
+            "leader connection must have reverse-order priority over its overlapping resize handle"
+        );
+        let hinted_connection = point(connection.x + 35., connection.y + 18.);
+        adapter.pointer_down(7, 0, 7, connection, 1.).unwrap();
+        adapter.pointer_move(7, hinted_connection).unwrap();
+        let preview = adapter.document_scene(7, 0).cloud_pluses.remove(0);
+        assert_eq!(preview.text_box, before_connection.text_box);
+        assert_eq!(
+            preview.feedback,
+            SceneInteractionFeedback::Transform {
+                chrome_visible: false,
+                active_handle: 14,
+            }
+        );
+        assert_ne!(*preview.leader_points.last().unwrap(), hinted_connection);
+        assert!(
+            (*preview.leader_points.last().unwrap()).x == preview.text_box.x
+                || (*preview.leader_points.last().unwrap()).x
+                    == preview.text_box.x + preview.text_box.width,
+            "connection drag must reroute to a text-box edge and win over its overlapping resize handle"
+        );
+        adapter.pointer_up(7, hinted_connection).unwrap();
+
+        let before_tip = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        let tip = before_tip.leader_points()[0];
+        let raw_tip = point(tip.x - 30., tip.y + 15.);
+        adapter.pointer_down(7, 0, 8, tip, 1.).unwrap();
+        adapter.pointer_move(8, raw_tip).unwrap();
+        let preview = adapter.document_scene(7, 0).cloud_pluses.remove(0);
+        assert_ne!(preview.leader_points[0], raw_tip);
+        assert_eq!(preview.text_box, before_tip.text_box);
+        adapter.pointer_up(8, raw_tip).unwrap();
+
+        let history_after_edits = adapter.history_depths(7);
+        adapter
+            .documents
+            .get_mut(&7)
+            .unwrap()
+            .apply_command(AnnotationCommand::SetLocked {
+                id: id.clone(),
+                locked: true,
+            })
+            .unwrap();
+        let locked = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        assert_eq!(
+            adapter
+                .pointer_down(7, 0, 9, locked.cloud_points()[0], 1.)
+                .unwrap(),
+            PointerPhaseOutcome::SelectionChanged(Some(id))
+        );
+        assert!(adapter.active.is_none());
+        assert_eq!(adapter.history_depths(7).0, history_after_edits.0 + 1);
     }
 }

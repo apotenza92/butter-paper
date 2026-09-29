@@ -1,20 +1,48 @@
+#[cfg(target_os = "macos")]
+use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt as _;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
-use butter_paper_gpui_migration::cad_view_control::{
-    CAD_VIEW_PRIMARY_ID, CAD_VIEW_SETTINGS_ID,
+use butter_paper_gpui_migration::annotation_adapter::{
+    AnnotationAdapter, AnnotationTool, LENGTH_SCALE_REQUIRED_MESSAGE, PointerPhaseOutcome,
+    StraightLinePropertyEdit, ellipse_resize_handle_point_for_rect,
+    ellipse_rotation_handle_point_for_rect, snapshot_resize_handle_point,
+    snapshot_rotation_handle_point,
 };
+use butter_paper_gpui_migration::annotation_model::{
+    Annotation, AnnotationSnapshot, ArcAnnotation, ArcControlPoint, BlendMode, CloudAnnotation,
+    DecodedRgbaAsset, DimensionAppearance, EllipseAnnotation, ImageAnnotation, InkTool,
+    LengthAnnotation, LengthCalibration, LengthEndpoint, LineKind, MarkupId,
+    MeasurementPathAnnotation, MeasurementPathKind, PageRotation, PageRotationDirection, PageScale,
+    PageScaleApplyTarget, PageTransform, PdfPoint, PdfRect, PenAnnotation, PenAppearance,
+    RectangleAnnotation, RectangleAppearance, RectangleResizeHandle, RedactAnnotation,
+    ScalePrecision, ScaleSource, ScaleUnit, SceneInteractionFeedback, SnapshotAnnotation,
+    StraightLineAnnotation, StraightLineAppearance, StrokeStyle, TextAlignment, TextBoxAnnotation,
+    TextBoxRichTextRun, TextBoxStyle, VertexPathAnnotation, VertexPathKind,
+    ellipse_cubic_bezier_points,
+};
+use butter_paper_gpui_migration::cad_view_control::{CAD_VIEW_PRIMARY_ID, CAD_VIEW_SETTINGS_ID};
+use butter_paper_gpui_migration::dimension_property_inspector::{
+    DIMENSION_INSPECTOR_FONT_SIZE_ID, DIMENSION_INSPECTOR_LOCKED_ID, DIMENSION_INSPECTOR_OFFSET_ID,
+    DIMENSION_INSPECTOR_OPACITY_ID, DIMENSION_INSPECTOR_STROKE_COLOR_ID,
+    DIMENSION_INSPECTOR_TEXT_COLOR_ID, DIMENSION_INSPECTOR_WIDTH_ID,
+    DIMENSION_PROPERTY_INSPECTOR_ID, DimensionPropertyEvent, DimensionPropertyPatch,
+};
+use butter_paper_gpui_migration::document_recovery_store::{
+    DocumentRecoveryStore, RecoveryPublication, RecoverySourceKind, StagedRecoveryPublication,
+};
+use butter_paper_gpui_migration::document_session::DocumentRecoveryPreparation;
 use butter_paper_gpui_migration::document_tab_bar::{
     DOCUMENT_TAB_OPEN_ID, DOCUMENT_TAB_POINTER_DRAG_THRESHOLD, DOCUMENT_TAB_REORDER_STATUS_ID,
     TEMPLATE_CONTROL_GROUP_ID, TEMPLATE_CREATE_ID, TEMPLATE_ITEM_IDS, TEMPLATE_PICKER_ID,
@@ -22,81 +50,77 @@ use butter_paper_gpui_migration::document_tab_bar::{
 };
 use butter_paper_gpui_migration::document_workspace::{
     ActualSize, ApplyDisposition, CloseDocument, CloseRequestDisposition, ContinuousView,
-    DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID,
-
+    DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID, DOCUMENT_ACTIVE_INSPECTOR_SLOT_ID,
     DOCUMENT_ARC_PREVIEW_MARKER_ID, DOCUMENT_ARC_TOOL_ID, DOCUMENT_AREA_TOOL_ID,
-    DOCUMENT_ACTIVE_INSPECTOR_SLOT_ID,
-    DOCUMENT_ARROW_TOOL_ID, DOCUMENT_CALLOUT_TOOL_ID,
-    DOCUMENT_CLOUD_PLUS_TOOL_ID, DOCUMENT_CLOUD_TOOL_ID,
-    DOCUMENT_DIMENSION_TOOL_ID,
-    DOCUMENT_DIRTY_CLOSE_CANCEL_ID, DOCUMENT_DIRTY_CLOSE_DISCARD_ID, DOCUMENT_DIRTY_CLOSE_ID,
-    DOCUMENT_DIRTY_CLOSE_SAVE_ID, DOCUMENT_ELLIPSE_TOOL_ID,
-    DOCUMENT_HIGHLIGHT_COLOR_GREEN_ID,
-    DOCUMENT_HIGHLIGHT_TOOL_ID, DOCUMENT_IMAGE_TOOL_ID,
-    DOCUMENT_LENGTH_TOOL_ID, DOCUMENT_LINE_TOOL_ID, DOCUMENT_OPEN_ERROR_ALERT_ID,
-    DOCUMENT_OPEN_ERROR_DISMISS_ID, DOCUMENT_OPEN_PROGRESS_ID, DOCUMENT_OPEN_STATUS_ID,
-    DOCUMENT_PAGE_ID, DOCUMENT_PEN_TOOL_ID, DOCUMENT_POLYGON_TOOL_ID, DOCUMENT_POLYLENGTH_TOOL_ID,
-    DOCUMENT_POLYLINE_TOOL_ID, DOCUMENT_RECOVERY_ALERT_ID, DOCUMENT_RECOVERY_RETRY_ID,
-    DOCUMENT_RECTANGLE_TOOL_ID,
-    DOCUMENT_REDACT_PENDING_ALERT_ID, DOCUMENT_REDACT_TOOL_ID,
-    DOCUMENT_SAVE_ERROR_ALERT_ID,
+    DOCUMENT_ARROW_TOOL_ID, DOCUMENT_CALLOUT_TOOL_ID, DOCUMENT_CLOUD_PLUS_TOOL_ID,
+    DOCUMENT_CLOUD_TOOL_ID, DOCUMENT_DIMENSION_TOOL_ID, DOCUMENT_DIRTY_CLOSE_CANCEL_ID,
+    DOCUMENT_DIRTY_CLOSE_DISCARD_ID, DOCUMENT_DIRTY_CLOSE_ID, DOCUMENT_DIRTY_CLOSE_SAVE_ID,
+    DOCUMENT_ELLIPSE_TOOL_ID, DOCUMENT_HIGHLIGHT_COLOR_GREEN_ID, DOCUMENT_HIGHLIGHT_TOOL_ID,
+    DOCUMENT_IMAGE_TOOL_ID, DOCUMENT_LENGTH_TOOL_ID, DOCUMENT_LINE_TOOL_ID,
+    DOCUMENT_OPEN_ERROR_ALERT_ID, DOCUMENT_OPEN_ERROR_DISMISS_ID, DOCUMENT_OPEN_PROGRESS_ID,
+    DOCUMENT_OPEN_STATUS_ID, DOCUMENT_PAGE_ID, DOCUMENT_PEN_TOOL_ID, DOCUMENT_POLYGON_TOOL_ID,
+    DOCUMENT_POLYLENGTH_TOOL_ID, DOCUMENT_POLYLINE_TOOL_ID,
+    DOCUMENT_PUBLICATION_WARNING_CLOSE_CANCEL_ID, DOCUMENT_PUBLICATION_WARNING_CLOSE_CONTINUE_ID,
+    DOCUMENT_PUBLICATION_WARNING_CLOSE_ID, DOCUMENT_RECOVERY_ALERT_ID,
+    DOCUMENT_RECOVERY_PREPARATION_ALERT_ID, DOCUMENT_RECOVERY_PREPARATION_RETRY_ID,
+    DOCUMENT_RECOVERY_REBASE_RETRY_ID, DOCUMENT_RECOVERY_RETRY_ID, DOCUMENT_RECTANGLE_TOOL_ID,
+    DOCUMENT_REDACT_PENDING_ALERT_ID, DOCUMENT_REDACT_TOOL_ID, DOCUMENT_SAVE_ERROR_ALERT_ID,
     DOCUMENT_SAVE_ERROR_DISMISS_ID, DOCUMENT_SAVE_ERROR_RETRY_ID, DOCUMENT_SAVE_ERROR_SAVE_AS_ID,
     DOCUMENT_SELECT_TOOL_ID, DOCUMENT_SESSION_TABS_ID, DOCUMENT_SIGNATURE_ADD_ID,
     DOCUMENT_SIGNATURE_CANVAS_ID, DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID, DOCUMENT_SIGNATURE_CLEAR_ID,
     DOCUMENT_SIGNATURE_ERROR_ALERT_ID, DOCUMENT_SIGNATURE_LOADING_ID,
     DOCUMENT_SIGNATURE_MODE_IMAGE_ID, DOCUMENT_SIGNATURE_MODE_TYPE_ID,
-    DOCUMENT_SIGNATURE_NAME_INPUT_ID,
-    DOCUMENT_SIGNATURE_PREVIEW_ID, DOCUMENT_SIGNATURE_TOOL_ID,
+    DOCUMENT_SIGNATURE_NAME_INPUT_ID, DOCUMENT_SIGNATURE_PREVIEW_ID, DOCUMENT_SIGNATURE_TOOL_ID,
     DOCUMENT_SNAP_CONSTRUCTION_GRID_ID, DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID,
     DOCUMENT_SNAP_DIMENSION_INCREMENT_ID, DOCUMENT_SNAP_GUIDES_ID, DOCUMENT_SNAP_MARKUP_ID,
     DOCUMENT_SNAP_POPOVER_ID, DOCUMENT_SNAP_SETTINGS_ID, DOCUMENT_SNAPSHOT_TOOL_ID,
-
-    DOCUMENT_TEXT_BOX_EDITOR_ID, DOCUMENT_TEXT_BOX_TOOL_ID,
-    DOCUMENT_THUMBNAIL_STRIP_ID, DOCUMENT_TOOLBAR_SCROLL_ID, DOCUMENT_VIEWER_PROGRESS_ID,
-    DOCUMENT_VIEWER_STATUS_ID, DOCUMENT_VIEWPORT_ID, DOCUMENT_WORKSPACE_ID, DirtyCloseResolution,
+    DOCUMENT_TEXT_BOX_EDITOR_ID, DOCUMENT_TEXT_BOX_TOOL_ID, DOCUMENT_THUMBNAIL_STRIP_ID,
+    DOCUMENT_TOOLBAR_SCROLL_ID, DOCUMENT_VIEWER_PROGRESS_ID, DOCUMENT_VIEWER_STATUS_ID,
+    DOCUMENT_VIEWPORT_ID, DOCUMENT_WORKSPACE_ID, DeferredStartupOpen, DirtyCloseResolution,
     DocumentId, DocumentOpenBatchDisposition, DocumentOpenBatchRequest, DocumentOpenBatchStatus,
-    DocumentOpenOrigin, DocumentSaveFailureOperation, DocumentSaveRoute, DocumentWorkspace,
-    FitPage, FitWidth, GeneratedTemplateRequestDisposition, NativeDocumentOpener,
-    NativeDocumentResource, NativeDocumentSaveStatus, NativeDocumentSaver, NativeDocumentStatus,
-    NavigateNextPage, NavigatePreviousPage, OpenDocumentRequest, OpenedNativeDocument,
-    PdfDocumentSaver, PdfiumWorkerBackend, RasterSurface, RotatePageRight, SaveDestination,
-    SaveDocumentRequest, SavedNativeDocument, SinglePageView, ThumbnailSurface,
-    VIEWPORT_OPEN_DOCUMENT_ID, ViewerFitPreset, ViewerRenderQuality, ZoomIn, ZoomOut,
+    DocumentOpenOrigin, DocumentSaveFailureKind, DocumentSaveFailureOperation, DocumentSaveRoute,
+    DocumentWorkspace, FitPage, FitWidth, GeneratedTemplateRequestDisposition,
+    NativeDocumentOpener, NativeDocumentResource, NativeDocumentSaveStatus, NativeDocumentSaver,
+    NativeDocumentStatus, NavigateNextPage, NavigatePreviousPage, OpenDocumentRequest,
+    OpenedNativeDocument, PdfDocumentSaver, PdfiumWorkerBackend, RasterSurface, RotatePageRight,
+    Save, SaveAs, SaveDestination, SaveDocumentRequest, SavedNativeDocument, SinglePageView,
+    StartupRecoveryAvailability, StartupRecoveryItem, ThumbnailSurface, VIEWPORT_OPEN_DOCUMENT_ID,
+    ViewerFitPreset, ViewerRenderQuality, ZoomIn, ZoomOut, annotation_resize_cursor_style,
     document_annotation_layer_id, document_session_close_id, document_session_tab_id,
     document_thumbnail_id, document_viewer_error_id, document_viewer_page_id,
     document_viewer_quality_id, document_viewer_retry_id, document_viewer_tile_id,
-    init_document_workspace_actions, register_document_workspace_global_actions, Save, SaveAs,
-    resolve_document_save_route, save_as_command_label,
-    save_as_prompt_spec, straight_line_arrowhead_points,
+    init_document_workspace_actions, register_document_workspace_global_actions,
+    resolve_document_save_route, save_as_command_label, save_as_prompt_spec,
+    straight_line_arrowhead_points,
 };
+use butter_paper_gpui_migration::engineering_visual_property_inspector::{
+    ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID, ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID,
+    ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID, ENGINEERING_VISUAL_INSPECTOR_LOCKED_ID,
+    ENGINEERING_VISUAL_INSPECTOR_OPACITY_TRACK_ID, ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID,
+    ENGINEERING_VISUAL_PROPERTY_INSPECTOR_ID, EngineeringVisualPropertyEvent,
+    EngineeringVisualPropertyKind, EngineeringVisualPropertyPatch,
+};
+use butter_paper_gpui_migration::generated_document::{
+    GeneratedDocumentRequest, GeneratedDocumentStore, GeneratedPattern,
+};
+use butter_paper_gpui_migration::highlight_compositor::{
+    HighlightRasterMapping, precompose_highlights_multiply_bgra_mapped,
+};
+use butter_paper_gpui_migration::image_asset_decode::{DecodedImageFormat, decode_image_path};
 use butter_paper_gpui_migration::ink_property_inspector::{
     INK_INSPECTOR_APPLY_COLOR_ID, INK_INSPECTOR_COLOR_ID, INK_INSPECTOR_COLOR_TRIGGER_ID,
     INK_INSPECTOR_LOCKED_ID, INK_INSPECTOR_OPACITY_ID, INK_INSPECTOR_OPACITY_TRACK_ID,
     INK_INSPECTOR_WIDTH_ID, INK_PROPERTY_INSPECTOR_ID,
 };
-use butter_paper_gpui_migration::dimension_property_inspector::{
-    DIMENSION_INSPECTOR_FONT_SIZE_ID, DIMENSION_INSPECTOR_LOCKED_ID,
-    DIMENSION_INSPECTOR_OFFSET_ID, DIMENSION_INSPECTOR_OPACITY_ID,
-    DIMENSION_INSPECTOR_STROKE_COLOR_ID, DIMENSION_INSPECTOR_TEXT_COLOR_ID,
-    DIMENSION_INSPECTOR_WIDTH_ID, DIMENSION_PROPERTY_INSPECTOR_ID, DimensionPropertyEvent,
-    DimensionPropertyPatch,
-};
-use butter_paper_gpui_migration::engineering_visual_property_inspector::{
-    ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID, ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID, ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID,
-    ENGINEERING_VISUAL_INSPECTOR_LOCKED_ID, ENGINEERING_VISUAL_INSPECTOR_OPACITY_TRACK_ID,
-    ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID,
-    ENGINEERING_VISUAL_PROPERTY_INSPECTOR_ID, EngineeringVisualPropertyEvent,
-    EngineeringVisualPropertyKind, EngineeringVisualPropertyPatch,
-};
-use butter_paper_gpui_migration::local_signature::{
-    DrawnSignature, NormalizedSignaturePoint,
-};
+use butter_paper_gpui_migration::local_signature::{DrawnSignature, NormalizedSignaturePoint};
 use butter_paper_gpui_migration::measurement_property_inspector::{
     MEASUREMENT_INSPECTOR_SET_PAGE_SCALE_ID, MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID,
     MEASUREMENT_PROPERTY_INSPECTOR_ID,
 };
-use butter_paper_gpui_migration::native_document_view_state::{
-    RestartView, RestartZoom,
+use butter_paper_gpui_migration::native_document_view_state::{RestartView, RestartZoom};
+use butter_paper_gpui_migration::page_geometry::{
+    PageCoordinateSpace, PdfPoint as CoordinatePoint, PdfRect as CoordinateRect,
+    Rotation as CoordinateRotation,
 };
 use butter_paper_gpui_migration::page_scale_control::{
     CalibrationPointDisposition, PAGE_SCALE_APPLY_ID, PAGE_SCALE_CUSTOM_PDF_LENGTH_ID,
@@ -113,6 +137,10 @@ use butter_paper_gpui_migration::page_view_control::{
     CONTINUOUS_PRIMARY_ID, SINGLE_PAGE_PRIMARY_ID,
 };
 use butter_paper_gpui_migration::page_view_control::{PageViewMode, WheelBehavior};
+use butter_paper_gpui_migration::pdf_engine::{
+    InPlacePublicationCapability, PdfPersistenceSession, PdfPublicationOutcome,
+};
+use butter_paper_gpui_migration::pdf_file_authority::{SaveAsTargetAuthority, SaveTargetErrorKind};
 use butter_paper_gpui_migration::rectangle_property_inspector::{
     ELLIPSE_INSPECTOR_FILL_COLOR_ID, ELLIPSE_INSPECTOR_FILL_ENABLED_ID,
     ELLIPSE_INSPECTOR_FILL_OPACITY_ID, ELLIPSE_INSPECTOR_HEIGHT_ID, ELLIPSE_INSPECTOR_LOCKED_ID,
@@ -128,20 +156,14 @@ use butter_paper_gpui_migration::rectangle_property_inspector::{
     RECTANGLE_INSPECTOR_Y_ID, RECTANGLE_PROPERTY_INSPECTOR_ID, RectanglePropertyEvent,
     RectanglePropertyPatch, RectangularShapePropertyKind,
 };
-use butter_paper_gpui_migration::session_manifest::{SessionManifestStore, SessionSnapshot};
+use butter_paper_gpui_migration::session_manifest::{
+    SessionManifestStore, SessionRecoveryDocument, SessionRecoverySnapshot, SessionSnapshot,
+};
 use butter_paper_gpui_migration::straight_line_property_inspector::{
     STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID, STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID,
     STRAIGHT_LINE_INSPECTOR_LOCKED_ID, STRAIGHT_LINE_INSPECTOR_OPACITY_TRACK_ID,
     STRAIGHT_LINE_INSPECTOR_WIDTH_ID, STRAIGHT_LINE_PROPERTY_INSPECTOR_ID,
     StraightLinePropertyEvent, StraightLinePropertyPatch,
-};
-use butter_paper_gpui_migration::vertex_path_property_inspector::{
-    VERTEX_PATH_INSPECTOR_APPLY_FILL_ID, VERTEX_PATH_INSPECTOR_APPLY_STROKE_ID,
-    VERTEX_PATH_INSPECTOR_FILL_COLOR_ID, VERTEX_PATH_INSPECTOR_LOCKED_ID,
-    VERTEX_PATH_INSPECTOR_NO_FILL_ID, VERTEX_PATH_INSPECTOR_OPACITY_ID,
-    VERTEX_PATH_INSPECTOR_STROKE_COLOR_ID, VERTEX_PATH_INSPECTOR_WIDTH_ID,
-    VERTEX_PATH_PROPERTY_INSPECTOR_ID, PathPropertyKind, VertexPathPropertyEvent,
-    VertexPathPropertyPatch,
 };
 use butter_paper_gpui_migration::template_manager::PersistentTemplateManager;
 use butter_paper_gpui_migration::text_box_property_inspector::{
@@ -150,40 +172,18 @@ use butter_paper_gpui_migration::text_box_property_inspector::{
     TEXT_BOX_INSPECTOR_LOCKED_ID, TEXT_BOX_INSPECTOR_OPACITY_TRACK_ID, TEXT_BOX_INSPECTOR_SIZE_ID,
     TEXT_BOX_PROPERTY_INSPECTOR_ID, TextBoxPropertyEvent, TextBoxPropertyPatch,
 };
+use butter_paper_gpui_migration::vertex_path_property_inspector::{
+    PathPropertyKind, VERTEX_PATH_INSPECTOR_APPLY_FILL_ID, VERTEX_PATH_INSPECTOR_APPLY_STROKE_ID,
+    VERTEX_PATH_INSPECTOR_FILL_COLOR_ID, VERTEX_PATH_INSPECTOR_LOCKED_ID,
+    VERTEX_PATH_INSPECTOR_NO_FILL_ID, VERTEX_PATH_INSPECTOR_OPACITY_ID,
+    VERTEX_PATH_INSPECTOR_STROKE_COLOR_ID, VERTEX_PATH_INSPECTOR_WIDTH_ID,
+    VERTEX_PATH_PROPERTY_INSPECTOR_ID, VertexPathPropertyEvent, VertexPathPropertyPatch,
+};
 use butter_paper_gpui_migration::viewer_toolbar_strip::{
     FIT_PAGE_ID, FIT_WIDTH_ID, VIEWER_TOOLBAR_CONTENT_ID, VIEWER_TOOLBAR_ID,
     VIEWER_TOOLBAR_SCROLL_ID,
 };
 use butter_paper_gpui_migration::zoom_control::ZOOM_MENU_ID;
-use butter_paper_gpui_migration::annotation_adapter::{
-    AnnotationAdapter, AnnotationTool, LENGTH_SCALE_REQUIRED_MESSAGE, PointerPhaseOutcome,
-    StraightLinePropertyEdit, ellipse_resize_handle_point_for_rect,
-    ellipse_rotation_handle_point_for_rect,
-    snapshot_resize_handle_point,
-    snapshot_rotation_handle_point,
-};
-use butter_paper_gpui_migration::annotation_model::{
-    Annotation, AnnotationSnapshot, ArcAnnotation, ArcControlPoint, BlendMode, CloudAnnotation,
-    DecodedRgbaAsset, EllipseAnnotation, InkTool, LengthAnnotation, LengthCalibration, LengthEndpoint, LineKind,
-    DimensionAppearance, MarkupId, MeasurementPathAnnotation, MeasurementPathKind, PageRotation, PageRotationDirection,
-    PageScale, PageScaleApplyTarget, PageTransform, PdfPoint, PdfRect, PenAnnotation,
-    PenAppearance, RectangleAnnotation, RectangleAppearance, RectangleResizeHandle, RedactAnnotation, ScalePrecision,
-    ScaleSource, ScaleUnit, SnapshotAnnotation, StraightLineAnnotation, StraightLineAppearance, StrokeStyle,
-    TextAlignment, TextBoxAnnotation, TextBoxStyle, VertexPathAnnotation, VertexPathKind, ellipse_cubic_bezier_points,
-};
-use butter_paper_gpui_migration::generated_document::{
-    GeneratedDocumentRequest, GeneratedDocumentStore, GeneratedPattern,
-};
-use butter_paper_gpui_migration::highlight_compositor::precompose_highlights_multiply_rgba;
-use butter_paper_gpui_migration::image_asset_decode::{DecodedImageFormat, decode_image_path};
-use butter_paper_gpui_migration::page_geometry::{
-    PageCoordinateSpace, PdfPoint as CoordinatePoint, PdfRect as CoordinateRect,
-    Rotation as CoordinateRotation,
-};
-use butter_paper_gpui_migration::pdf_engine::{
-    InPlacePublicationCapability, PdfPersistenceSession, PdfPublicationOutcome,
-};
-use butter_paper_gpui_migration::pdf_file_authority::{SaveAsTargetAuthority, SaveTargetErrorKind};
 
 #[test]
 fn in_place_save_route_requires_a_new_target_for_provenance_or_platform_capability() {
@@ -210,16 +210,21 @@ fn in_place_save_route_requires_a_new_target_for_provenance_or_platform_capabili
         DocumentSaveRoute::NewTargetRequired,
     );
 }
-use butter_paper_gpui_migration::semantic_snapping::{SemanticSnapRole, SemanticSnapSource};
+use butter_paper_gpui_migration::pdf_content_geometry::{
+    PageSnapGeometry, PdfContentPrimitive, PdfPoint as ContentPoint,
+};
+use butter_paper_gpui_migration::semantic_snapping::{
+    PageGridDefinition, PageGridKind, PageGridSource, SemanticSnapRole, SemanticSnapSource,
+};
 use butter_paper_gpui_migration::template_library::{BUILT_IN_BLANK_ID, TemplateLibrary};
 use gpui::{
-    AppContext as _, ClipboardItem, EntityInputHandler as _, Focusable as _, KeyDownEvent,
-    KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent, MouseUpEvent,
-    ScrollDelta, ScrollWheelEvent, TestAppContext, point, px, size,
+    AppContext as _, ClipboardItem, CursorStyle, EntityInputHandler as _, Focusable as _,
+    KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent,
+    MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, TestAppContext, point, px, size,
 };
 use gpui_component::{Root, Theme, ThemeMode, WindowExt as _};
 use image::{ImageBuffer, ImageFormat, Rgba};
-use lopdf::{Document as LopdfDocument, Object as LopdfObject, ObjectId};
+use lopdf::{Document as LopdfDocument, Object as LopdfObject, ObjectId, dictionary};
 use sha2::{Digest as _, Sha256};
 
 #[cfg(target_os = "macos")]
@@ -270,6 +275,35 @@ impl Drop for ScratchDirectories {
         for path in &self.0 {
             let _ = std::fs::remove_dir_all(path);
         }
+    }
+}
+
+fn run_gpui_test_with_native_main_stack(name: &'static str, test: fn(&mut TestAppContext)) {
+    let result = std::thread::Builder::new()
+        .name(name.to_owned())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            gpui::run_test_once(
+                0,
+                Box::new(move |dispatcher| {
+                    let mut cx = TestAppContext::build(dispatcher.clone(), Some(name));
+                    let _entity_refcounts = cx.app.borrow().ref_counts_drop_handle();
+                    test(&mut cx);
+                    cx.run_until_parked();
+                    cx.update(|cx| {
+                        cx.background_executor().forbid_parking();
+                        cx.quit();
+                    });
+                    cx.run_until_parked();
+                    drop(cx);
+                    dispatcher.drain_tasks();
+                }),
+            );
+        })
+        .expect("the native-stack GPUI test thread must start")
+        .join();
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
     }
 }
 
@@ -465,7 +499,9 @@ fn first_length_oracle(path: &Path) -> NativeAnnotationGraphOracle {
     for (_, page_id) in document.get_pages() {
         let page = document.get_object(page_id).unwrap().as_dict().unwrap();
         let annotations = match page.get(b"Annots").unwrap() {
-            LopdfObject::Reference(array_id) => document.get_object(*array_id).unwrap().as_array().unwrap(),
+            LopdfObject::Reference(array_id) => {
+                document.get_object(*array_id).unwrap().as_array().unwrap()
+            }
             LopdfObject::Array(values) => values,
             _ => continue,
         };
@@ -547,6 +583,863 @@ fn append_page_one_annotation(document: &mut LopdfDocument, annotation: LopdfObj
     }
 }
 
+fn append_opaque_stamp_probe(
+    document: &mut LopdfDocument,
+    name: &str,
+    rect: PdfRect,
+    fill_rgb: (f32, f32, f32),
+    optional_content: Option<ObjectId>,
+) {
+    let appearance = document.add_object(lopdf::Stream::new(
+        lopdf::dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "FormType" => 1,
+            "BBox" => LopdfObject::Array(vec![
+                0.into(),
+                0.into(),
+                LopdfObject::Real(rect.width as f32),
+                LopdfObject::Real(rect.height as f32),
+            ]),
+            "Resources" => lopdf::Dictionary::new(),
+        },
+        format!(
+            "q {} {} {} rg 0 0 {} {} re f Q\n",
+            fill_rgb.0, fill_rgb.1, fill_rgb.2, rect.width, rect.height,
+        )
+        .into_bytes(),
+    ));
+    let mut annotation = lopdf::dictionary! {
+        "Type" => "Annot",
+        "Subtype" => "Stamp",
+        "NM" => lopdf::text_string(name),
+        "Rect" => LopdfObject::Array(vec![
+            LopdfObject::Real(rect.x as f32),
+            LopdfObject::Real(rect.y as f32),
+            LopdfObject::Real((rect.x + rect.width) as f32),
+            LopdfObject::Real((rect.y + rect.height) as f32),
+        ]),
+        "F" => 4,
+        "AP" => lopdf::dictionary! { "N" => appearance },
+    };
+    if let Some(optional_content) = optional_content {
+        annotation.set("OC", optional_content);
+    }
+    append_page_one_annotation(document, LopdfObject::Dictionary(annotation));
+}
+
+fn write_default_off_optional_content_fixture(source: &Path, target: &Path) {
+    let mut document = LopdfDocument::load(source).expect("the OCG fixture source must load");
+    let hidden_group = document.add_object(lopdf::dictionary! {
+        "Type" => "OCG",
+        "Name" => lopdf::text_string("Default-off hidden pixel probe"),
+    });
+    let visible_group = document.add_object(lopdf::dictionary! {
+        "Type" => "OCG",
+        "Name" => lopdf::text_string("Explicitly enabled pixel probe"),
+    });
+    let view_off_enabled_group = document.add_object(lopdf::dictionary! {
+        "Type" => "OCG",
+        "Name" => lopdf::text_string("Enabled but hidden for display"),
+        "Usage" => lopdf::dictionary! {
+            "View" => lopdf::dictionary! { "ViewState" => "OFF" },
+        },
+    });
+    let view_on_default_off_group = document.add_object(lopdf::dictionary! {
+        "Type" => "OCG",
+        "Name" => lopdf::text_string("Display-on but disabled by configuration"),
+        "Usage" => lopdf::dictionary! {
+            "View" => lopdf::dictionary! { "ViewState" => "ON" },
+        },
+    });
+    let view_on_enabled_group = document.add_object(lopdf::dictionary! {
+        "Type" => "OCG",
+        "Name" => lopdf::text_string("Enabled display layer"),
+        "Usage" => lopdf::dictionary! {
+            "View" => lopdf::dictionary! { "ViewState" => "ON" },
+        },
+    });
+    let hidden_membership = document.add_object(lopdf::dictionary! {
+        "Type" => "OCMD",
+        "OCGs" => LopdfObject::Array(vec![visible_group.into(), hidden_group.into()]),
+        "P" => "AllOn",
+    });
+    let visible_membership = document.add_object(lopdf::dictionary! {
+        "Type" => "OCMD",
+        "OCGs" => LopdfObject::Array(vec![visible_group.into(), hidden_group.into()]),
+        "P" => "AnyOn",
+    });
+    let visible_expression_membership = document.add_object(lopdf::dictionary! {
+        "Type" => "OCMD",
+        "OCGs" => LopdfObject::Array(vec![visible_group.into(), hidden_group.into()]),
+        "P" => "AllOn",
+        "VE" => LopdfObject::Array(vec![
+            LopdfObject::Name(b"And".to_vec()),
+            LopdfObject::Array(vec![
+                LopdfObject::Name(b"Or".to_vec()),
+                hidden_group.into(),
+                visible_group.into(),
+            ]),
+            LopdfObject::Array(vec![
+                LopdfObject::Name(b"Not".to_vec()),
+                hidden_group.into(),
+            ]),
+        ]),
+    });
+    let hidden_expression_membership = document.add_object(lopdf::dictionary! {
+        "Type" => "OCMD",
+        "OCGs" => LopdfObject::Array(vec![visible_group.into(), hidden_group.into()]),
+        "P" => "AnyOn",
+        "VE" => LopdfObject::Array(vec![
+            LopdfObject::Name(b"And".to_vec()),
+            visible_group.into(),
+            hidden_group.into(),
+        ]),
+    });
+    let catalog_id = document
+        .trailer
+        .get(b"Root")
+        .and_then(LopdfObject::as_reference)
+        .expect("the OCG fixture must expose an indirect catalog");
+    document
+        .get_object_mut(catalog_id)
+        .and_then(LopdfObject::as_dict_mut)
+        .expect("the OCG fixture catalog must be a dictionary")
+        .set(
+            "OCProperties",
+            lopdf::dictionary! {
+                "OCGs" => LopdfObject::Array(vec![
+                    visible_group.into(),
+                    hidden_group.into(),
+                    view_off_enabled_group.into(),
+                    view_on_default_off_group.into(),
+                    view_on_enabled_group.into(),
+                ]),
+                "D" => lopdf::dictionary! {
+                    "BaseState" => "OFF",
+                    "ON" => LopdfObject::Array(vec![
+                        visible_group.into(),
+                        view_off_enabled_group.into(),
+                        view_on_enabled_group.into(),
+                    ]),
+                    "Order" => LopdfObject::Array(vec![
+                        visible_group.into(),
+                        hidden_group.into(),
+                        view_off_enabled_group.into(),
+                        view_on_default_off_group.into(),
+                        view_on_enabled_group.into(),
+                    ]),
+                    "AS" => LopdfObject::Array(vec![lopdf::dictionary! {
+                        "Event" => "View",
+                        "OCGs" => LopdfObject::Array(vec![view_on_default_off_group.into()]),
+                        "Category" => LopdfObject::Array(vec![LopdfObject::Name(b"View".to_vec())]),
+                    }.into()]),
+                },
+            },
+        );
+    append_opaque_stamp_probe(
+        &mut document,
+        "ocg-hidden-probe",
+        PdfRect::new(72., 620., 80., 80.).unwrap(),
+        (1., 0., 0.),
+        Some(hidden_group),
+    );
+    append_opaque_stamp_probe(
+        &mut document,
+        "ocg-visible-control",
+        PdfRect::new(200., 620., 80., 80.).unwrap(),
+        (0., 0.75, 0.),
+        None,
+    );
+    append_opaque_stamp_probe(
+        &mut document,
+        "ocmd-all-on-hidden-probe",
+        PdfRect::new(328., 620., 80., 80.).unwrap(),
+        (0., 0., 1.),
+        Some(hidden_membership),
+    );
+    append_opaque_stamp_probe(
+        &mut document,
+        "ocmd-any-on-visible-control",
+        PdfRect::new(456., 620., 80., 80.).unwrap(),
+        (0.75, 0., 0.75),
+        Some(visible_membership),
+    );
+    append_opaque_stamp_probe(
+        &mut document,
+        "ocmd-ve-visible-opposes-policy",
+        PdfRect::new(328., 492., 80., 80.).unwrap(),
+        (1., 0.5, 0.),
+        Some(visible_expression_membership),
+    );
+    append_opaque_stamp_probe(
+        &mut document,
+        "ocmd-ve-hidden-opposes-policy",
+        PdfRect::new(456., 492., 80., 80.).unwrap(),
+        (0., 0.75, 0.75),
+        Some(hidden_expression_membership),
+    );
+    append_opaque_stamp_probe(
+        &mut document,
+        "ocg-view-off-enabled-probe",
+        PdfRect::new(72., 364., 80., 80.).unwrap(),
+        (0.9, 0.3, 0.1),
+        Some(view_off_enabled_group),
+    );
+    append_opaque_stamp_probe(
+        &mut document,
+        "ocg-view-on-default-off-probe",
+        PdfRect::new(200., 364., 80., 80.).unwrap(),
+        (0.1, 0.3, 0.9),
+        Some(view_on_default_off_group),
+    );
+    append_opaque_stamp_probe(
+        &mut document,
+        "ocg-view-on-enabled-control",
+        PdfRect::new(328., 364., 80., 80.).unwrap(),
+        (0.1, 0.8, 0.3),
+        Some(view_on_enabled_group),
+    );
+    document
+        .save(target)
+        .expect("the owned default-off OCG fixture must serialize");
+}
+
+const PAGE_CONTENT_OPTIONAL_CONTENT_STREAM: &str = concat!(
+    "q 1 1 1 rg ",
+    "72 620 80 80 re f 200 620 80 80 re f 328 620 80 80 re f 456 620 80 80 re f ",
+    "72 492 80 80 re f 200 492 80 80 re f 328 492 80 80 re f 456 492 80 80 re f ",
+    "72 364 80 80 re f 200 364 80 80 re f ",
+    "72 236 80 80 re f 200 236 80 80 re f 328 236 80 80 re f 456 236 80 80 re f ",
+    "72 108 80 80 re f 200 108 80 80 re f 328 108 80 80 re f 456 108 80 80 re f Q\n",
+    "/OC /PageAnyOn BDC q 0.1 0.7 0.2 rg 72 620 80 80 re f Q EMC\n",
+    "/OC /PageAllOn BDC q 0.8 0.2 0.1 rg 200 620 80 80 re f Q EMC\n",
+    "q 1 0 0 1 328 620 cm /FormAnyOn Do Q\n",
+    "q 1 0 0 1 456 620 cm /FormAllOn Do Q\n",
+    "/OC /PageViewOffEnabled BDC q 0.9 0.3 0.1 rg 72 492 80 80 re f Q EMC\n",
+    "/OC /PageViewOnDefaultOff BDC q 0.1 0.3 0.9 rg 200 492 80 80 re f Q EMC\n",
+    "/OC /PageViewOnEnabled BDC q 0.1 0.8 0.3 rg 328 492 80 80 re f Q EMC\n",
+    "q 1 0 0 1 456 492 cm /FormViewOffEnabled Do Q\n",
+    "q 1 0 0 1 72 364 cm /FormViewOnDefaultOff Do Q\n",
+    "q 1 0 0 1 200 364 cm /FormViewOnEnabled Do Q\n",
+    "/OC /PageOff BDC q 1 0 0 rg 72 236 80 80 re f Q EMC\n",
+    "/OC /PageOn BDC q 0 0.75 0 rg 200 236 80 80 re f Q EMC\n",
+    "/OC /PageVeVisible BDC q 0 0 1 rg 328 236 80 80 re f Q EMC\n",
+    "/OC /PageVeHidden BDC q 0.75 0 0.75 rg 456 236 80 80 re f Q EMC\n",
+    "q 1 0 0 1 72 108 cm /FormOff Do Q\n",
+    "q 1 0 0 1 200 108 cm /FormOn Do Q\n",
+    "q 1 0 0 1 328 108 cm /FormVeVisible Do Q\n",
+    "q 1 0 0 1 456 108 cm /FormVeHidden Do Q\n",
+);
+
+fn optional_content_form(optional_content: ObjectId, fill_rgb: (f32, f32, f32)) -> lopdf::Stream {
+    lopdf::Stream::new(
+        lopdf::dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "FormType" => 1,
+            "BBox" => LopdfObject::Array(vec![0.into(), 0.into(), 80.into(), 80.into()]),
+            "Resources" => lopdf::dictionary! {},
+            "OC" => optional_content,
+        },
+        format!(
+            "q {} {} {} rg 0 0 80 80 re f Q\n",
+            fill_rgb.0, fill_rgb.1, fill_rgb.2,
+        )
+        .into_bytes(),
+    )
+}
+
+fn write_page_content_optional_content_fixture(source: &Path, target: &Path) {
+    let mut document =
+        LopdfDocument::load(source).expect("the page-content OCG fixture source must load");
+    let off_group = document.add_object(lopdf::dictionary! {
+        "Type" => "OCG",
+        "Name" => lopdf::text_string("Page-content default-off layer"),
+    });
+    let on_group = document.add_object(lopdf::dictionary! {
+        "Type" => "OCG",
+        "Name" => lopdf::text_string("Page-content default-on layer"),
+    });
+    let view_off_enabled_group = document.add_object(lopdf::dictionary! {
+        "Type" => "OCG",
+        "Name" => lopdf::text_string("Page-content enabled but hidden for display"),
+        "Usage" => lopdf::dictionary! {
+            "View" => lopdf::dictionary! { "ViewState" => "OFF" },
+        },
+    });
+    let view_on_default_off_group = document.add_object(lopdf::dictionary! {
+        "Type" => "OCG",
+        "Name" => lopdf::text_string("Page-content display-on but default-off"),
+        "Usage" => lopdf::dictionary! {
+            "View" => lopdf::dictionary! { "ViewState" => "ON" },
+        },
+    });
+    let view_on_enabled_group = document.add_object(lopdf::dictionary! {
+        "Type" => "OCG",
+        "Name" => lopdf::text_string("Page-content enabled display layer"),
+        "Usage" => lopdf::dictionary! {
+            "View" => lopdf::dictionary! { "ViewState" => "ON" },
+        },
+    });
+    let any_on_membership = document.add_object(lopdf::dictionary! {
+        "Type" => "OCMD",
+        "OCGs" => LopdfObject::Array(vec![on_group.into(), off_group.into()]),
+        "P" => "AnyOn",
+    });
+    let all_on_membership = document.add_object(lopdf::dictionary! {
+        "Type" => "OCMD",
+        "OCGs" => LopdfObject::Array(vec![on_group.into(), off_group.into()]),
+        "P" => "AllOn",
+    });
+    let visible_expression = document.add_object(lopdf::dictionary! {
+        "Type" => "OCMD",
+        "OCGs" => LopdfObject::Array(vec![on_group.into(), off_group.into()]),
+        "P" => "AllOn",
+        "VE" => LopdfObject::Array(vec![
+            LopdfObject::Name(b"And".to_vec()),
+            on_group.into(),
+            LopdfObject::Array(vec![
+                LopdfObject::Name(b"Not".to_vec()),
+                off_group.into(),
+            ]),
+        ]),
+    });
+    let hidden_expression = document.add_object(lopdf::dictionary! {
+        "Type" => "OCMD",
+        "OCGs" => LopdfObject::Array(vec![on_group.into(), off_group.into()]),
+        "P" => "AnyOn",
+        "VE" => LopdfObject::Array(vec![
+            LopdfObject::Name(b"And".to_vec()),
+            on_group.into(),
+            off_group.into(),
+        ]),
+    });
+    let alternate_configuration = document.add_object(lopdf::dictionary! {
+        "Name" => lopdf::text_string("Alternate optional-content configuration"),
+        "BaseState" => "ON",
+        "OFF" => LopdfObject::Array(vec![on_group.into()]),
+        "Order" => LopdfObject::Array(vec![off_group.into(), on_group.into()]),
+        "RBGroups" => LopdfObject::Array(vec![LopdfObject::Array(vec![
+            on_group.into(),
+            off_group.into(),
+        ])]),
+    });
+    let set_ocg_state_action = document.add_object(lopdf::dictionary! {
+        "S" => "SetOCGState",
+        "State" => LopdfObject::Array(vec![
+            LopdfObject::Name(b"Toggle".to_vec()),
+            on_group.into(),
+            LopdfObject::Name(b"OFF".to_vec()),
+            off_group.into(),
+        ]),
+        "PreserveRB" => LopdfObject::Boolean(false),
+    });
+    let form_off = document.add_object(optional_content_form(off_group, (0.9, 0.3, 0.1)));
+    let form_on = document.add_object(optional_content_form(on_group, (0.1, 0.3, 0.9)));
+    let form_visible_expression =
+        document.add_object(optional_content_form(visible_expression, (0.1, 0.8, 0.3)));
+    let form_hidden_expression =
+        document.add_object(optional_content_form(hidden_expression, (0.75, 0.25, 0.75)));
+    let form_any_on =
+        document.add_object(optional_content_form(any_on_membership, (0.1, 0.7, 0.2)));
+    let form_all_on =
+        document.add_object(optional_content_form(all_on_membership, (0.8, 0.2, 0.1)));
+    let form_view_off_enabled = document.add_object(optional_content_form(
+        view_off_enabled_group,
+        (0.9, 0.3, 0.1),
+    ));
+    let form_view_on_default_off = document.add_object(optional_content_form(
+        view_on_default_off_group,
+        (0.1, 0.3, 0.9),
+    ));
+    let form_view_on_enabled = document.add_object(optional_content_form(
+        view_on_enabled_group,
+        (0.1, 0.8, 0.3),
+    ));
+
+    let catalog_id = document
+        .trailer
+        .get(b"Root")
+        .and_then(LopdfObject::as_reference)
+        .expect("the fixture must expose an indirect catalog");
+    document
+        .get_object_mut(catalog_id)
+        .and_then(LopdfObject::as_dict_mut)
+        .expect("the fixture catalog must be a dictionary")
+        .set(
+            "OCProperties",
+            lopdf::dictionary! {
+                "OCGs" => LopdfObject::Array(vec![
+                    on_group.into(),
+                    off_group.into(),
+                    view_off_enabled_group.into(),
+                    view_on_default_off_group.into(),
+                    view_on_enabled_group.into(),
+                ]),
+                "D" => lopdf::dictionary! {
+                    "BaseState" => "OFF",
+                    "ON" => LopdfObject::Array(vec![
+                        on_group.into(),
+                        view_off_enabled_group.into(),
+                        view_on_enabled_group.into(),
+                    ]),
+                    "Order" => LopdfObject::Array(vec![
+                        on_group.into(),
+                        off_group.into(),
+                        view_off_enabled_group.into(),
+                        view_on_default_off_group.into(),
+                        view_on_enabled_group.into(),
+                    ]),
+                    "RBGroups" => LopdfObject::Array(vec![LopdfObject::Array(vec![
+                        on_group.into(),
+                        off_group.into(),
+                    ])]),
+                },
+                "Configs" => LopdfObject::Array(vec![alternate_configuration.into()]),
+            },
+        );
+
+    let appended_content = document.add_object(lopdf::Stream::new(
+        lopdf::dictionary! {},
+        PAGE_CONTENT_OPTIONAL_CONTENT_STREAM.as_bytes().to_vec(),
+    ));
+    let page_id = *document
+        .get_pages()
+        .get(&1)
+        .expect("the fixture must retain page one");
+    let page = document
+        .get_object_mut(page_id)
+        .and_then(LopdfObject::as_dict_mut)
+        .expect("fixture page one must be a dictionary");
+    let original_contents = page
+        .get(b"Contents")
+        .expect("fixture page one must retain its original stream")
+        .clone();
+    page.set(
+        "Contents",
+        LopdfObject::Array(vec![original_contents, appended_content.into()]),
+    );
+    page.set(
+        "Resources",
+        lopdf::dictionary! {
+            "Properties" => lopdf::dictionary! {
+                "PageOff" => off_group,
+                "PageOn" => on_group,
+                "PageVeVisible" => visible_expression,
+                "PageVeHidden" => hidden_expression,
+                "PageAnyOn" => any_on_membership,
+                "PageAllOn" => all_on_membership,
+                "PageViewOffEnabled" => view_off_enabled_group,
+                "PageViewOnDefaultOff" => view_on_default_off_group,
+                "PageViewOnEnabled" => view_on_enabled_group,
+            },
+            "XObject" => lopdf::dictionary! {
+                "FormOff" => form_off,
+                "FormOn" => form_on,
+                "FormVeVisible" => form_visible_expression,
+                "FormVeHidden" => form_hidden_expression,
+                "FormAnyOn" => form_any_on,
+                "FormAllOn" => form_all_on,
+                "FormViewOffEnabled" => form_view_off_enabled,
+                "FormViewOnDefaultOff" => form_view_on_default_off,
+                "FormViewOnEnabled" => form_view_on_enabled,
+            },
+        },
+    );
+    append_page_one_annotation(
+        &mut document,
+        lopdf::dictionary! {
+            "Type" => "Annot",
+            "Subtype" => "Link",
+            "NM" => lopdf::text_string("ocg-set-state-action"),
+            "Rect" => LopdfObject::Array(vec![0.into(), 0.into(), 1.into(), 1.into()]),
+            "Border" => LopdfObject::Array(vec![0.into(), 0.into(), 0.into()]),
+            "A" => set_ocg_state_action,
+        }
+        .into(),
+    );
+    document
+        .save(target)
+        .expect("the page-content optional-content fixture must serialize");
+}
+
+fn assert_page_content_optional_content_graph(path: &Path) {
+    let document = LopdfDocument::load(path).expect("the optional-content graph must reopen");
+    let page_id = *document.get_pages().get(&1).unwrap();
+    let page = document.get_object(page_id).unwrap().as_dict().unwrap();
+    let contents = page
+        .get(b"Contents")
+        .and_then(LopdfObject::as_array)
+        .expect("the page must retain its original and appended content streams");
+    assert_eq!(contents.len(), 2);
+    let appended_content_id = contents[1]
+        .as_reference()
+        .expect("the appended optional-content stream must remain indirect");
+    assert_eq!(
+        document
+            .get_object(appended_content_id)
+            .and_then(LopdfObject::as_stream)
+            .unwrap()
+            .decompressed_content()
+            .unwrap(),
+        PAGE_CONTENT_OPTIONAL_CONTENT_STREAM.as_bytes(),
+        "the exact marked-content and Form invocation program must survive",
+    );
+
+    let resources = page.get(b"Resources").unwrap().as_dict().unwrap();
+    let properties = resources.get(b"Properties").unwrap().as_dict().unwrap();
+    let on_group = properties
+        .get(b"PageOn")
+        .and_then(LopdfObject::as_reference)
+        .unwrap();
+    let off_group = properties
+        .get(b"PageOff")
+        .and_then(LopdfObject::as_reference)
+        .unwrap();
+    let visible_expression = properties
+        .get(b"PageVeVisible")
+        .and_then(LopdfObject::as_reference)
+        .unwrap();
+    let hidden_expression = properties
+        .get(b"PageVeHidden")
+        .and_then(LopdfObject::as_reference)
+        .unwrap();
+    let any_on_membership = properties
+        .get(b"PageAnyOn")
+        .and_then(LopdfObject::as_reference)
+        .unwrap();
+    let all_on_membership = properties
+        .get(b"PageAllOn")
+        .and_then(LopdfObject::as_reference)
+        .unwrap();
+    let view_off_enabled_group = properties
+        .get(b"PageViewOffEnabled")
+        .and_then(LopdfObject::as_reference)
+        .unwrap();
+    let view_on_default_off_group = properties
+        .get(b"PageViewOnDefaultOff")
+        .and_then(LopdfObject::as_reference)
+        .unwrap();
+    let view_on_enabled_group = properties
+        .get(b"PageViewOnEnabled")
+        .and_then(LopdfObject::as_reference)
+        .unwrap();
+    assert_eq!(
+        document.get_object(on_group).unwrap().as_dict().unwrap(),
+        &lopdf::dictionary! {
+            "Type" => "OCG",
+            "Name" => lopdf::text_string("Page-content default-on layer"),
+        },
+    );
+    assert_eq!(
+        document.get_object(off_group).unwrap().as_dict().unwrap(),
+        &lopdf::dictionary! {
+            "Type" => "OCG",
+            "Name" => lopdf::text_string("Page-content default-off layer"),
+        },
+    );
+    assert_eq!(
+        document
+            .get_object(visible_expression)
+            .unwrap()
+            .as_dict()
+            .unwrap(),
+        &lopdf::dictionary! {
+            "Type" => "OCMD",
+            "OCGs" => LopdfObject::Array(vec![on_group.into(), off_group.into()]),
+            "P" => "AllOn",
+            "VE" => LopdfObject::Array(vec![
+                LopdfObject::Name(b"And".to_vec()),
+                on_group.into(),
+                LopdfObject::Array(vec![
+                    LopdfObject::Name(b"Not".to_vec()),
+                    off_group.into(),
+                ]),
+            ]),
+        },
+        "the true /VE must survive with its deliberately false fallback policy",
+    );
+    assert_eq!(
+        document
+            .get_object(hidden_expression)
+            .unwrap()
+            .as_dict()
+            .unwrap(),
+        &lopdf::dictionary! {
+            "Type" => "OCMD",
+            "OCGs" => LopdfObject::Array(vec![on_group.into(), off_group.into()]),
+            "P" => "AnyOn",
+            "VE" => LopdfObject::Array(vec![
+                LopdfObject::Name(b"And".to_vec()),
+                on_group.into(),
+                off_group.into(),
+            ]),
+        },
+        "the false /VE must survive with its deliberately true fallback policy",
+    );
+    for (membership, policy) in [
+        (any_on_membership, b"AnyOn".as_slice()),
+        (all_on_membership, b"AllOn".as_slice()),
+    ] {
+        let membership = document.get_object(membership).unwrap().as_dict().unwrap();
+        assert_eq!(
+            membership
+                .get(b"Type")
+                .and_then(LopdfObject::as_name)
+                .unwrap(),
+            b"OCMD",
+        );
+        assert_eq!(
+            membership
+                .get(b"OCGs")
+                .and_then(LopdfObject::as_array)
+                .unwrap(),
+            &vec![on_group.into(), off_group.into()],
+        );
+        assert_eq!(
+            membership.get(b"P").and_then(LopdfObject::as_name).unwrap(),
+            policy,
+        );
+        assert!(membership.get(b"VE").is_err());
+    }
+    for (group, name, view_state) in [
+        (
+            view_off_enabled_group,
+            "Page-content enabled but hidden for display",
+            b"OFF".as_slice(),
+        ),
+        (
+            view_on_default_off_group,
+            "Page-content display-on but default-off",
+            b"ON".as_slice(),
+        ),
+        (
+            view_on_enabled_group,
+            "Page-content enabled display layer",
+            b"ON".as_slice(),
+        ),
+    ] {
+        assert_eq!(
+            document.get_object(group).unwrap().as_dict().unwrap(),
+            &lopdf::dictionary! {
+                "Type" => "OCG",
+                "Name" => lopdf::text_string(name),
+                "Usage" => lopdf::dictionary! {
+                    "View" => lopdf::dictionary! {
+                        "ViewState" => LopdfObject::Name(view_state.to_vec()),
+                    },
+                },
+            },
+            "each exact display-usage graph must survive",
+        );
+    }
+
+    let xobjects = resources.get(b"XObject").unwrap().as_dict().unwrap();
+    for (name, expected_optional_content, expected_program) in [
+        (
+            b"FormOff".as_slice(),
+            off_group,
+            "q 0.9 0.3 0.1 rg 0 0 80 80 re f Q\n",
+        ),
+        (
+            b"FormOn".as_slice(),
+            on_group,
+            "q 0.1 0.3 0.9 rg 0 0 80 80 re f Q\n",
+        ),
+        (
+            b"FormVeVisible".as_slice(),
+            visible_expression,
+            "q 0.1 0.8 0.3 rg 0 0 80 80 re f Q\n",
+        ),
+        (
+            b"FormVeHidden".as_slice(),
+            hidden_expression,
+            "q 0.75 0.25 0.75 rg 0 0 80 80 re f Q\n",
+        ),
+        (
+            b"FormAnyOn".as_slice(),
+            any_on_membership,
+            "q 0.1 0.7 0.2 rg 0 0 80 80 re f Q\n",
+        ),
+        (
+            b"FormAllOn".as_slice(),
+            all_on_membership,
+            "q 0.8 0.2 0.1 rg 0 0 80 80 re f Q\n",
+        ),
+        (
+            b"FormViewOffEnabled".as_slice(),
+            view_off_enabled_group,
+            "q 0.9 0.3 0.1 rg 0 0 80 80 re f Q\n",
+        ),
+        (
+            b"FormViewOnDefaultOff".as_slice(),
+            view_on_default_off_group,
+            "q 0.1 0.3 0.9 rg 0 0 80 80 re f Q\n",
+        ),
+        (
+            b"FormViewOnEnabled".as_slice(),
+            view_on_enabled_group,
+            "q 0.1 0.8 0.3 rg 0 0 80 80 re f Q\n",
+        ),
+    ] {
+        let form_id = xobjects
+            .get(name)
+            .and_then(LopdfObject::as_reference)
+            .expect("each Form XObject must remain indirect");
+        let form = document
+            .get_object(form_id)
+            .and_then(LopdfObject::as_stream)
+            .expect("each optional-content XObject must remain a stream");
+        assert_eq!(
+            form.dict
+                .get(b"Type")
+                .and_then(LopdfObject::as_name)
+                .unwrap(),
+            b"XObject"
+        );
+        assert_eq!(
+            form.dict
+                .get(b"Subtype")
+                .and_then(LopdfObject::as_name)
+                .unwrap(),
+            b"Form"
+        );
+        assert_eq!(
+            form.dict
+                .get(b"FormType")
+                .and_then(LopdfObject::as_i64)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            form.dict
+                .get(b"BBox")
+                .and_then(LopdfObject::as_array)
+                .unwrap(),
+            &vec![0.into(), 0.into(), 80.into(), 80.into()],
+        );
+        assert_eq!(
+            form.dict
+                .get(b"OC")
+                .and_then(LopdfObject::as_reference)
+                .unwrap(),
+            expected_optional_content,
+            "each Form dictionary must retain the exact optional-content object that gates it",
+        );
+        assert_eq!(
+            form.dict
+                .get(b"Resources")
+                .and_then(LopdfObject::as_dict)
+                .unwrap(),
+            &lopdf::dictionary! {},
+            "Form-level /OC probes must not be conflated with internal BDC resources",
+        );
+        assert_eq!(
+            form.decompressed_content().unwrap(),
+            expected_program.as_bytes(),
+            "each Form must retain its exact internal marked-content program",
+        );
+    }
+
+    let catalog_id = document
+        .trailer
+        .get(b"Root")
+        .and_then(LopdfObject::as_reference)
+        .unwrap();
+    let properties = document
+        .get_object(catalog_id)
+        .and_then(LopdfObject::as_dict)
+        .and_then(|catalog| catalog.get(b"OCProperties"))
+        .and_then(LopdfObject::as_dict)
+        .unwrap();
+    assert_eq!(
+        properties
+            .get(b"OCGs")
+            .and_then(LopdfObject::as_array)
+            .unwrap(),
+        &vec![
+            on_group.into(),
+            off_group.into(),
+            view_off_enabled_group.into(),
+            view_on_default_off_group.into(),
+            view_on_enabled_group.into(),
+        ],
+    );
+    assert_eq!(
+        properties.get(b"D").and_then(LopdfObject::as_dict).unwrap(),
+        &lopdf::dictionary! {
+            "BaseState" => "OFF",
+            "ON" => LopdfObject::Array(vec![
+                on_group.into(),
+                view_off_enabled_group.into(),
+                view_on_enabled_group.into(),
+            ]),
+            "Order" => LopdfObject::Array(vec![
+                on_group.into(),
+                off_group.into(),
+                view_off_enabled_group.into(),
+                view_on_default_off_group.into(),
+                view_on_enabled_group.into(),
+            ]),
+            "RBGroups" => LopdfObject::Array(vec![LopdfObject::Array(vec![
+                on_group.into(),
+                off_group.into(),
+            ])]),
+        },
+        "the exact default optional-content configuration must survive",
+    );
+    let configurations = properties
+        .get(b"Configs")
+        .and_then(LopdfObject::as_array)
+        .expect("the catalog must retain alternate configurations");
+    assert_eq!(configurations.len(), 1);
+    let alternate_configuration = configurations[0]
+        .as_reference()
+        .expect("the alternate configuration must remain indirect");
+    assert_eq!(
+        document
+            .get_object(alternate_configuration)
+            .and_then(LopdfObject::as_dict)
+            .unwrap(),
+        &lopdf::dictionary! {
+            "Name" => lopdf::text_string("Alternate optional-content configuration"),
+            "BaseState" => "ON",
+            "OFF" => LopdfObject::Array(vec![on_group.into()]),
+            "Order" => LopdfObject::Array(vec![off_group.into(), on_group.into()]),
+            "RBGroups" => LopdfObject::Array(vec![LopdfObject::Array(vec![
+                on_group.into(),
+                off_group.into(),
+            ])]),
+        },
+        "the exact alternate configuration graph must survive",
+    );
+    let link_id = native_annotation_object_id(&document, "ocg-set-state-action");
+    let action_id = document
+        .get_object(link_id)
+        .and_then(LopdfObject::as_dict)
+        .and_then(|link| link.get(b"A"))
+        .and_then(LopdfObject::as_reference)
+        .expect("the untouched Link must retain its indirect SetOCGState action");
+    assert_eq!(
+        document
+            .get_object(action_id)
+            .and_then(LopdfObject::as_dict)
+            .unwrap(),
+        &lopdf::dictionary! {
+            "S" => "SetOCGState",
+            "State" => LopdfObject::Array(vec![
+                LopdfObject::Name(b"Toggle".to_vec()),
+                on_group.into(),
+                LopdfObject::Name(b"OFF".to_vec()),
+                off_group.into(),
+            ]),
+            "PreserveRB" => LopdfObject::Boolean(false),
+        },
+        "the exact unsupported SetOCGState action graph must survive as opaque data",
+    );
+}
+
 fn persistence_annotation_snapshot(session: &PdfPersistenceSession) -> AnnotationSnapshot {
     AnnotationSnapshot {
         revision: 1,
@@ -588,6 +1481,842 @@ fn persistence_annotation_snapshot(session: &PdfPersistenceSession) -> Annotatio
 }
 
 #[test]
+#[ignore = "requires the checksum-pinned development PDFium library; production redistribution remains blocked"]
+fn real_retained_render_honours_default_off_optional_content_before_and_after_unrelated_save() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let test_executable = std::env::current_exe().expect("the test executable path must exist");
+    let worker = test_executable
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("the Cargo target layout must have a debug directory")
+        .join(if cfg!(windows) {
+            "butter-paper-pdf-worker.exe"
+        } else {
+            "butter-paper-pdf-worker"
+        });
+    let library = std::env::var_os("BP_PDFIUM_LIBRARY")
+        .map(PathBuf::from)
+        .expect("BP_PDFIUM_LIBRARY must select the checksum-pinned development library");
+    let fixture = manifest_dir
+        .join("../performance/results/public-fixtures-v1/bp-annotation-all-v1.pdf")
+        .canonicalize()
+        .expect("the provenance-controlled fixture path must canonicalize");
+    let fixture_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&fixture).unwrap()));
+    assert_eq!(
+        fixture_sha256,
+        "4a0a94cdbcc08e7ee06504914e5b84d218f2aeb01035b42d62f2275e38d02cbd",
+    );
+    assert!(worker.is_file());
+    assert!(library.is_file());
+
+    let owned_root = manifest_dir
+        .join(".prepared/real-optional-content-pixels")
+        .join(std::process::id().to_string());
+    assert!(!owned_root.exists());
+    std::fs::create_dir_all(&owned_root).unwrap();
+    let scratch = ScratchDirectories(vec![owned_root.clone()]);
+    let source_path = owned_root.join("default-off-source.pdf");
+    let saved_path = owned_root.join("default-off-saved.pdf");
+    let surface_root = owned_root.join("surfaces");
+    write_default_off_optional_content_fixture(&fixture, &source_path);
+    let backend = Arc::new(PdfiumWorkerBackend::new(
+        worker,
+        library,
+        surface_root.clone(),
+    ));
+    let hidden_region = PdfRect::new(72., 620., 80., 80.).unwrap();
+    let visible_region = PdfRect::new(200., 620., 80., 80.).unwrap();
+    let membership_hidden_region = PdfRect::new(328., 620., 80., 80.).unwrap();
+    let membership_visible_region = PdfRect::new(456., 620., 80., 80.).unwrap();
+    let expression_visible_region = PdfRect::new(328., 492., 80., 80.).unwrap();
+    let expression_hidden_region = PdfRect::new(456., 492., 80., 80.).unwrap();
+    let view_off_enabled_region = PdfRect::new(72., 364., 80., 80.).unwrap();
+    let view_on_default_off_region = PdfRect::new(200., 364., 80., 80.).unwrap();
+    let view_on_enabled_region = PdfRect::new(328., 364., 80., 80.).unwrap();
+
+    #[derive(Debug)]
+    struct OptionalContentPixels {
+        direct_hidden: usize,
+        direct_visible: usize,
+        membership_hidden: usize,
+        membership_visible: usize,
+        expression_visible: usize,
+        expression_hidden: usize,
+        view_off_enabled: usize,
+        view_on_default_off: usize,
+        view_on_enabled: usize,
+        oracle_direct_hidden: usize,
+        oracle_direct_visible: usize,
+        oracle_membership_hidden: usize,
+        oracle_membership_visible: usize,
+        oracle_expression_visible: usize,
+        oracle_expression_hidden: usize,
+        oracle_view_off_enabled: usize,
+        oracle_view_on_default_off: usize,
+        oracle_view_on_enabled: usize,
+    }
+
+    let qualify = |path: &Path, document_id: u64| {
+        let opened = backend
+            .open(&OpenDocumentRequest {
+                document_id: DocumentId::new(document_id),
+                generation: 1,
+                path: path.to_path_buf(),
+            })
+            .expect("the OCG fixture must open through the real worker");
+        let retained = opened
+            .render_page(0, 612)
+            .expect("the production retained-only page must render");
+        let annotation_free = opened
+            .render_page_without_pdf_annotations(0, 612)
+            .expect("the annotation-free pixel baseline must render");
+        let retained_hidden =
+            raster_region_difference_count(&retained, &annotation_free, hidden_region);
+        let retained_visible =
+            raster_region_difference_count(&retained, &annotation_free, visible_region);
+        let retained_membership_hidden =
+            raster_region_difference_count(&retained, &annotation_free, membership_hidden_region);
+        let retained_membership_visible =
+            raster_region_difference_count(&retained, &annotation_free, membership_visible_region);
+        let retained_expression_visible =
+            raster_region_difference_count(&retained, &annotation_free, expression_visible_region);
+        let retained_expression_hidden =
+            raster_region_difference_count(&retained, &annotation_free, expression_hidden_region);
+        let retained_view_off_enabled =
+            raster_region_difference_count(&retained, &annotation_free, view_off_enabled_region);
+        let retained_view_on_default_off =
+            raster_region_difference_count(&retained, &annotation_free, view_on_default_off_region);
+        let retained_view_on_enabled =
+            raster_region_difference_count(&retained, &annotation_free, view_on_enabled_region);
+        assert!(
+            retained_visible > 4_000,
+            "the visible opaque control must prove that retained annotations were rendered",
+        );
+        assert!(
+            retained_membership_visible > 4_000,
+            "the AnyOn OCMD control must prove that a visible membership dictionary remains rendered",
+        );
+        assert!(
+            retained_expression_visible > 4_000,
+            "the nested true /VE must override its false AllOn policy and remain rendered",
+        );
+        assert!(
+            retained_view_on_enabled > 4_000,
+            "a base-enabled OCG with display ViewState ON must remain rendered",
+        );
+        let all_annotations = opened
+            .render_page_with_pdf_annotations(0, 612)
+            .expect("the independent all-annotation oracle must render");
+        let all_hidden =
+            raster_region_difference_count(&all_annotations, &annotation_free, hidden_region);
+        let all_visible =
+            raster_region_difference_count(&all_annotations, &annotation_free, visible_region);
+        let all_membership_hidden = raster_region_difference_count(
+            &all_annotations,
+            &annotation_free,
+            membership_hidden_region,
+        );
+        let all_membership_visible = raster_region_difference_count(
+            &all_annotations,
+            &annotation_free,
+            membership_visible_region,
+        );
+        let all_expression_visible = raster_region_difference_count(
+            &all_annotations,
+            &annotation_free,
+            expression_visible_region,
+        );
+        let all_expression_hidden = raster_region_difference_count(
+            &all_annotations,
+            &annotation_free,
+            expression_hidden_region,
+        );
+        let all_view_off_enabled = raster_region_difference_count(
+            &all_annotations,
+            &annotation_free,
+            view_off_enabled_region,
+        );
+        let all_view_on_default_off = raster_region_difference_count(
+            &all_annotations,
+            &annotation_free,
+            view_on_default_off_region,
+        );
+        let all_view_on_enabled = raster_region_difference_count(
+            &all_annotations,
+            &annotation_free,
+            view_on_enabled_region,
+        );
+        assert!(all_visible > 4_000);
+        assert!(all_membership_visible > 4_000);
+        assert!(all_expression_visible > 4_000);
+        assert!(all_expression_hidden > 4_000);
+        assert!(all_view_off_enabled > 4_000);
+        assert!(all_view_on_default_off > 4_000);
+        assert!(all_view_on_enabled > 4_000);
+        let worker_pid = opened
+            .worker_pid()
+            .expect("the real worker must expose its PID");
+        opened
+            .close()
+            .expect("the OCG pixel worker must close cleanly");
+        assert!(!worker_process_exists(worker_pid));
+        OptionalContentPixels {
+            direct_hidden: retained_hidden,
+            direct_visible: retained_visible,
+            membership_hidden: retained_membership_hidden,
+            membership_visible: retained_membership_visible,
+            expression_visible: retained_expression_visible,
+            expression_hidden: retained_expression_hidden,
+            view_off_enabled: retained_view_off_enabled,
+            view_on_default_off: retained_view_on_default_off,
+            view_on_enabled: retained_view_on_enabled,
+            oracle_direct_hidden: all_hidden,
+            oracle_direct_visible: all_visible,
+            oracle_membership_hidden: all_membership_hidden,
+            oracle_membership_visible: all_membership_visible,
+            oracle_expression_visible: all_expression_visible,
+            oracle_expression_hidden: all_expression_hidden,
+            oracle_view_off_enabled: all_view_off_enabled,
+            oracle_view_on_default_off: all_view_on_default_off,
+            oracle_view_on_enabled: all_view_on_enabled,
+        }
+    };
+
+    let source_pixels = qualify(&source_path, 9_171);
+    save_with_unrelated_rectangle_edit(&source_path, &saved_path, 1);
+    let status = std::process::Command::new("qpdf")
+        .arg("--check")
+        .arg(&saved_path)
+        .status()
+        .expect("qpdf must be available for the OCG saved output");
+    assert!(status.success());
+
+    let saved = LopdfDocument::load(&saved_path).expect("the saved OCG fixture must reopen");
+    let hidden_id = native_annotation_object_id(&saved, "ocg-hidden-probe");
+    let hidden = saved
+        .get_object(hidden_id)
+        .and_then(LopdfObject::as_dict)
+        .expect("the saved hidden probe must remain an annotation dictionary");
+    let hidden_group = hidden
+        .get(b"OC")
+        .and_then(LopdfObject::as_reference)
+        .expect("the saved hidden probe must retain its OCG reference");
+    let visible_id = native_annotation_object_id(&saved, "ocg-visible-control");
+    assert!(
+        saved
+            .get_object(visible_id)
+            .and_then(LopdfObject::as_dict)
+            .unwrap()
+            .get(b"OC")
+            .is_err(),
+        "the visible control must remain independent of optional content",
+    );
+    let hidden_membership_id = native_annotation_object_id(&saved, "ocmd-all-on-hidden-probe");
+    let hidden_membership = saved
+        .get_object(hidden_membership_id)
+        .and_then(LopdfObject::as_dict)
+        .and_then(|annotation| annotation.get(b"OC"))
+        .and_then(LopdfObject::as_reference)
+        .and_then(|membership| saved.get_object(membership))
+        .and_then(LopdfObject::as_dict)
+        .expect("the saved hidden probe must retain its OCMD dictionary");
+    assert_eq!(
+        hidden_membership
+            .get(b"P")
+            .and_then(LopdfObject::as_name)
+            .unwrap(),
+        b"AllOn",
+    );
+    let membership_groups = hidden_membership
+        .get(b"OCGs")
+        .and_then(LopdfObject::as_array)
+        .expect("the saved OCMD must retain both membership groups");
+    assert_eq!(membership_groups.len(), 2);
+    assert_eq!(membership_groups[1], hidden_group.into());
+    let visible_group = membership_groups[0]
+        .as_reference()
+        .expect("the enabled OCMD member must stay indirect");
+    let visible_expression_id =
+        native_annotation_object_id(&saved, "ocmd-ve-visible-opposes-policy");
+    let visible_expression_membership = saved
+        .get_object(visible_expression_id)
+        .and_then(LopdfObject::as_dict)
+        .and_then(|annotation| annotation.get(b"OC"))
+        .and_then(LopdfObject::as_reference)
+        .and_then(|membership| saved.get_object(membership))
+        .and_then(LopdfObject::as_dict)
+        .expect("the saved visible /VE probe must retain its OCMD dictionary");
+    assert_eq!(
+        visible_expression_membership
+            .get(b"P")
+            .and_then(LopdfObject::as_name)
+            .unwrap(),
+        b"AllOn",
+        "the deliberately false fallback policy must remain opaque alongside /VE",
+    );
+    assert_eq!(
+        visible_expression_membership
+            .get(b"OCGs")
+            .and_then(LopdfObject::as_array)
+            .unwrap(),
+        &vec![visible_group.into(), hidden_group.into()],
+        "the visible /VE membership must retain its complete OCG graph",
+    );
+    assert_eq!(
+        visible_expression_membership
+            .get(b"VE")
+            .and_then(LopdfObject::as_array)
+            .unwrap(),
+        &vec![
+            LopdfObject::Name(b"And".to_vec()),
+            LopdfObject::Array(vec![
+                LopdfObject::Name(b"Or".to_vec()),
+                hidden_group.into(),
+                visible_group.into(),
+            ]),
+            LopdfObject::Array(vec![
+                LopdfObject::Name(b"Not".to_vec()),
+                hidden_group.into(),
+            ]),
+        ],
+        "the nested true /VE graph must survive the unrelated save exactly",
+    );
+    let hidden_expression_id = native_annotation_object_id(&saved, "ocmd-ve-hidden-opposes-policy");
+    let hidden_expression_membership = saved
+        .get_object(hidden_expression_id)
+        .and_then(LopdfObject::as_dict)
+        .and_then(|annotation| annotation.get(b"OC"))
+        .and_then(LopdfObject::as_reference)
+        .and_then(|membership| saved.get_object(membership))
+        .and_then(LopdfObject::as_dict)
+        .expect("the saved hidden /VE probe must retain its OCMD dictionary");
+    assert_eq!(
+        hidden_expression_membership
+            .get(b"P")
+            .and_then(LopdfObject::as_name)
+            .unwrap(),
+        b"AnyOn",
+        "the deliberately true fallback policy must remain opaque alongside /VE",
+    );
+    assert_eq!(
+        hidden_expression_membership
+            .get(b"OCGs")
+            .and_then(LopdfObject::as_array)
+            .unwrap(),
+        &vec![visible_group.into(), hidden_group.into()],
+        "the hidden /VE membership must retain its complete OCG graph",
+    );
+    assert_eq!(
+        hidden_expression_membership
+            .get(b"VE")
+            .and_then(LopdfObject::as_array)
+            .unwrap(),
+        &vec![
+            LopdfObject::Name(b"And".to_vec()),
+            visible_group.into(),
+            hidden_group.into(),
+        ],
+        "the false /VE graph must survive the unrelated save exactly",
+    );
+    let saved_view_group = |annotation_name: &str, expected_name: &str, expected_state: &[u8]| {
+        let annotation_id = native_annotation_object_id(&saved, annotation_name);
+        let group_id = saved
+            .get_object(annotation_id)
+            .and_then(LopdfObject::as_dict)
+            .and_then(|annotation| annotation.get(b"OC"))
+            .and_then(LopdfObject::as_reference)
+            .expect("the saved display-usage probe must retain its OCG reference");
+        assert_eq!(
+            saved
+                .get_object(group_id)
+                .and_then(LopdfObject::as_dict)
+                .unwrap(),
+            &lopdf::dictionary! {
+                "Type" => "OCG",
+                "Name" => lopdf::text_string(expected_name),
+                "Usage" => lopdf::dictionary! {
+                    "View" => lopdf::dictionary! {
+                        "ViewState" => LopdfObject::Name(expected_state.to_vec()),
+                    },
+                },
+            },
+            "the saved OCG must retain its exact display-usage graph",
+        );
+        group_id
+    };
+    let view_off_enabled_group = saved_view_group(
+        "ocg-view-off-enabled-probe",
+        "Enabled but hidden for display",
+        b"OFF",
+    );
+    let view_on_default_off_group = saved_view_group(
+        "ocg-view-on-default-off-probe",
+        "Display-on but disabled by configuration",
+        b"ON",
+    );
+    let view_on_enabled_group = saved_view_group(
+        "ocg-view-on-enabled-control",
+        "Enabled display layer",
+        b"ON",
+    );
+    let catalog_id = saved
+        .trailer
+        .get(b"Root")
+        .and_then(LopdfObject::as_reference)
+        .unwrap();
+    let optional_content_properties = saved
+        .get_object(catalog_id)
+        .and_then(LopdfObject::as_dict)
+        .and_then(|catalog| catalog.get(b"OCProperties"))
+        .and_then(LopdfObject::as_dict)
+        .expect("the saved catalog must retain its optional-content properties");
+    assert_eq!(
+        optional_content_properties
+            .get(b"OCGs")
+            .and_then(LopdfObject::as_array)
+            .unwrap(),
+        &vec![
+            visible_group.into(),
+            hidden_group.into(),
+            view_off_enabled_group.into(),
+            view_on_default_off_group.into(),
+            view_on_enabled_group.into(),
+        ],
+        "the saved catalog must retain the complete registered OCG graph",
+    );
+    let default_configuration = optional_content_properties
+        .get(b"D")
+        .and_then(LopdfObject::as_dict)
+        .expect("the saved catalog must retain its default optional-content configuration");
+    assert_eq!(
+        default_configuration
+            .get(b"BaseState")
+            .and_then(LopdfObject::as_name)
+            .unwrap(),
+        b"OFF",
+    );
+    assert_eq!(
+        default_configuration
+            .get(b"ON")
+            .and_then(LopdfObject::as_array)
+            .unwrap(),
+        &vec![
+            visible_group.into(),
+            view_off_enabled_group.into(),
+            view_on_enabled_group.into(),
+        ],
+        "the saved default configuration must retain its explicit enabled set",
+    );
+    assert_eq!(
+        default_configuration
+            .get(b"Order")
+            .and_then(LopdfObject::as_array)
+            .unwrap(),
+        &vec![
+            visible_group.into(),
+            hidden_group.into(),
+            view_off_enabled_group.into(),
+            view_on_default_off_group.into(),
+            view_on_enabled_group.into(),
+        ],
+        "the saved default configuration must retain its complete presentation order",
+    );
+    assert_eq!(
+        default_configuration.get(b"AS").unwrap(),
+        &LopdfObject::Array(vec![
+            lopdf::dictionary! {
+                "Event" => "View",
+                "OCGs" => LopdfObject::Array(vec![view_on_default_off_group.into()]),
+                "Category" => LopdfObject::Array(vec![LopdfObject::Name(b"View".to_vec())]),
+            }
+            .into()
+        ]),
+        "the contradictory /AS graph must survive even though PDF.js-compatible display evaluation ignores it",
+    );
+    drop(saved);
+
+    let saved_pixels = qualify(&saved_path, 9_172);
+    assert!(
+        !surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none(),
+        "both OCG pixel sessions must release their mapped surfaces",
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(std::fs::read(&fixture).unwrap())),
+        fixture_sha256,
+        "the provenance-controlled fixture must remain byte-identical",
+    );
+    drop(scratch);
+    assert!(
+        !owned_root.exists(),
+        "the exact owned OCG test root must be removed"
+    );
+    assert_eq!(
+        (source_pixels.direct_hidden, saved_pixels.direct_hidden),
+        (0, 0),
+        "a default-off OCG annotation must contribute no retained-render pixels before or after save",
+    );
+    assert_eq!(
+        (
+            source_pixels.membership_hidden,
+            saved_pixels.membership_hidden,
+        ),
+        (0, 0),
+        "an AllOn OCMD with one disabled member must contribute no retained-render pixels before or after save",
+    );
+    assert_eq!(
+        (
+            source_pixels.expression_hidden,
+            saved_pixels.expression_hidden,
+        ),
+        (0, 0),
+        "a false /VE must override its true AnyOn policy before and after save",
+    );
+    assert_eq!(
+        (
+            source_pixels.view_off_enabled,
+            saved_pixels.view_off_enabled,
+        ),
+        (0, 0),
+        "display ViewState OFF must hide a base-enabled OCG before and after save",
+    );
+    assert_eq!(
+        (
+            source_pixels.view_on_default_off,
+            saved_pixels.view_on_default_off,
+        ),
+        (0, 0),
+        "display ViewState ON and a contradictory /AS entry must not enable a base-disabled OCG before or after save",
+    );
+    assert!(
+        source_pixels.oracle_direct_hidden > 4_000 && saved_pixels.oracle_direct_hidden > 4_000,
+        "the unfiltered PDFium oracle must prove that the hidden probe has opaque pixels before and after save",
+    );
+    assert!(
+        source_pixels.oracle_membership_hidden > 4_000
+            && saved_pixels.oracle_membership_hidden > 4_000,
+        "the unfiltered PDFium oracle must prove that the hidden OCMD probe has opaque pixels before and after save",
+    );
+    assert!(
+        source_pixels.oracle_expression_hidden > 4_000
+            && saved_pixels.oracle_expression_hidden > 4_000,
+        "the unfiltered PDFium oracle must prove that the false-/VE probe has opaque pixels before and after save",
+    );
+    assert!(
+        source_pixels.oracle_view_off_enabled > 4_000
+            && saved_pixels.oracle_view_off_enabled > 4_000
+            && source_pixels.oracle_view_on_default_off > 4_000
+            && saved_pixels.oracle_view_on_default_off > 4_000,
+        "the unfiltered PDFium oracle must prove that both hidden display-usage probes have opaque pixels before and after save",
+    );
+    assert!(
+        source_pixels.direct_visible > 4_000
+            && saved_pixels.direct_visible > 4_000
+            && source_pixels.membership_visible > 4_000
+            && saved_pixels.membership_visible > 4_000
+            && source_pixels.oracle_direct_visible > 4_000
+            && saved_pixels.oracle_direct_visible > 4_000
+            && source_pixels.oracle_membership_visible > 4_000
+            && saved_pixels.oracle_membership_visible > 4_000,
+        "the independent and AnyOn visible controls must remain opaque in retained and oracle renders",
+    );
+    assert!(
+        source_pixels.expression_visible > 4_000
+            && saved_pixels.expression_visible > 4_000
+            && source_pixels.oracle_expression_visible > 4_000
+            && saved_pixels.oracle_expression_visible > 4_000,
+        "the nested true /VE must override AllOn and remain opaque in retained and oracle renders before and after save",
+    );
+    assert!(
+        source_pixels.view_on_enabled > 4_000
+            && saved_pixels.view_on_enabled > 4_000
+            && source_pixels.oracle_view_on_enabled > 4_000
+            && saved_pixels.oracle_view_on_enabled > 4_000,
+        "a base-enabled OCG with display ViewState ON must remain opaque in retained and oracle renders before and after save",
+    );
+}
+
+#[test]
+#[ignore = "requires the checksum-pinned development PDFium library; production redistribution remains blocked"]
+fn real_page_content_and_form_xobjects_honour_optional_content_before_and_after_unrelated_save() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let test_executable = std::env::current_exe().expect("the test executable path must exist");
+    let worker = test_executable
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("the Cargo target layout must have a debug directory")
+        .join(if cfg!(windows) {
+            "butter-paper-pdf-worker.exe"
+        } else {
+            "butter-paper-pdf-worker"
+        });
+    let library = std::env::var_os("BP_PDFIUM_LIBRARY")
+        .map(PathBuf::from)
+        .expect("BP_PDFIUM_LIBRARY must select the checksum-pinned development library");
+    let fixture = manifest_dir
+        .join("../performance/results/public-fixtures-v1/bp-annotation-all-v1.pdf")
+        .canonicalize()
+        .expect("the provenance-controlled fixture path must canonicalize");
+    let fixture_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&fixture).unwrap()));
+    assert_eq!(
+        fixture_sha256,
+        "4a0a94cdbcc08e7ee06504914e5b84d218f2aeb01035b42d62f2275e38d02cbd",
+    );
+    assert!(worker.is_file());
+    assert!(library.is_file());
+
+    let owned_root = manifest_dir
+        .join(".prepared/real-page-content-optional-content")
+        .join(std::process::id().to_string());
+    assert!(!owned_root.exists());
+    std::fs::create_dir_all(&owned_root).unwrap();
+    let scratch = ScratchDirectories(vec![owned_root.clone()]);
+    let source_path = owned_root.join("page-content-source.pdf");
+    let saved_path = owned_root.join("page-content-saved.pdf");
+    let surface_root = owned_root.join("surfaces");
+    write_page_content_optional_content_fixture(&fixture, &source_path);
+    assert_page_content_optional_content_graph(&source_path);
+    let source_qpdf = std::process::Command::new("qpdf")
+        .arg("--check")
+        .arg(&source_path)
+        .status()
+        .expect("qpdf must be available for the page-content source");
+    assert!(source_qpdf.success());
+
+    let backend = Arc::new(PdfiumWorkerBackend::new(
+        worker,
+        library,
+        surface_root.clone(),
+    ));
+    let page_off_region = PdfRect::new(72., 236., 80., 80.).unwrap();
+    let page_on_region = PdfRect::new(200., 236., 80., 80.).unwrap();
+    let page_ve_visible_region = PdfRect::new(328., 236., 80., 80.).unwrap();
+    let page_ve_hidden_region = PdfRect::new(456., 236., 80., 80.).unwrap();
+    let form_off_region = PdfRect::new(72., 108., 80., 80.).unwrap();
+    let form_on_region = PdfRect::new(200., 108., 80., 80.).unwrap();
+    let form_ve_visible_region = PdfRect::new(328., 108., 80., 80.).unwrap();
+    let form_ve_hidden_region = PdfRect::new(456., 108., 80., 80.).unwrap();
+    let page_any_on_region = PdfRect::new(72., 620., 80., 80.).unwrap();
+    let page_all_on_region = PdfRect::new(200., 620., 80., 80.).unwrap();
+    let form_any_on_region = PdfRect::new(328., 620., 80., 80.).unwrap();
+    let form_all_on_region = PdfRect::new(456., 620., 80., 80.).unwrap();
+    let page_view_off_enabled_region = PdfRect::new(72., 492., 80., 80.).unwrap();
+    let page_view_on_default_off_region = PdfRect::new(200., 492., 80., 80.).unwrap();
+    let page_view_on_enabled_region = PdfRect::new(328., 492., 80., 80.).unwrap();
+    let form_view_off_enabled_region = PdfRect::new(456., 492., 80., 80.).unwrap();
+    let form_view_on_default_off_region = PdfRect::new(72., 364., 80., 80.).unwrap();
+    let form_view_on_enabled_region = PdfRect::new(200., 364., 80., 80.).unwrap();
+
+    #[derive(Debug)]
+    struct OptionalContentPixels {
+        page_off: usize,
+        page_on: usize,
+        page_ve_visible: usize,
+        page_ve_hidden: usize,
+        form_off: usize,
+        form_on: usize,
+        form_ve_visible: usize,
+        form_ve_hidden: usize,
+        page_any_on: usize,
+        page_all_on: usize,
+        form_any_on: usize,
+        form_all_on: usize,
+        page_view_off_enabled: usize,
+        page_view_on_default_off: usize,
+        page_view_on_enabled: usize,
+        form_view_off_enabled: usize,
+        form_view_on_default_off: usize,
+        form_view_on_enabled: usize,
+    }
+
+    let coloured_pixels = |surface: &RasterSurface, rect: PdfRect| {
+        let scale_x = f64::from(surface.width()) / 612.;
+        let scale_y = f64::from(surface.height()) / 792.;
+        let inset = 4.;
+        let left = ((rect.x + inset) * scale_x).floor().max(0.) as u32;
+        let right = ((rect.x + rect.width - inset) * scale_x)
+            .ceil()
+            .min(f64::from(surface.width())) as u32;
+        let top = ((792. - rect.y - rect.height + inset) * scale_y)
+            .floor()
+            .max(0.) as u32;
+        let bottom = ((792. - rect.y - inset) * scale_y)
+            .ceil()
+            .min(f64::from(surface.height())) as u32;
+        let width = surface.width() as usize;
+        let mut coloured = 0;
+        for y in top..bottom {
+            for x in left..right {
+                let offset = (y as usize * width + x as usize) * 4;
+                let bgra = &surface.pixels_bgra()[offset..offset + 4];
+                if bgra[0] < 220 || bgra[1] < 220 || bgra[2] < 220 {
+                    coloured += 1;
+                }
+            }
+        }
+        coloured
+    };
+    let qualify = |path: &Path, document_id: u64| {
+        let opened = backend
+            .open(&OpenDocumentRequest {
+                document_id: DocumentId::new(document_id),
+                generation: 1,
+                path: path.to_path_buf(),
+            })
+            .expect("the page-content optional-content fixture must open through the real worker");
+        let surface = opened
+            .render_page_without_pdf_annotations(0, 612)
+            .expect("the annotation-free page-content pixel oracle must render");
+        let pixels = OptionalContentPixels {
+            page_off: coloured_pixels(&surface, page_off_region),
+            page_on: coloured_pixels(&surface, page_on_region),
+            page_ve_visible: coloured_pixels(&surface, page_ve_visible_region),
+            page_ve_hidden: coloured_pixels(&surface, page_ve_hidden_region),
+            form_off: coloured_pixels(&surface, form_off_region),
+            form_on: coloured_pixels(&surface, form_on_region),
+            form_ve_visible: coloured_pixels(&surface, form_ve_visible_region),
+            form_ve_hidden: coloured_pixels(&surface, form_ve_hidden_region),
+            page_any_on: coloured_pixels(&surface, page_any_on_region),
+            page_all_on: coloured_pixels(&surface, page_all_on_region),
+            form_any_on: coloured_pixels(&surface, form_any_on_region),
+            form_all_on: coloured_pixels(&surface, form_all_on_region),
+            page_view_off_enabled: coloured_pixels(&surface, page_view_off_enabled_region),
+            page_view_on_default_off: coloured_pixels(&surface, page_view_on_default_off_region),
+            page_view_on_enabled: coloured_pixels(&surface, page_view_on_enabled_region),
+            form_view_off_enabled: coloured_pixels(&surface, form_view_off_enabled_region),
+            form_view_on_default_off: coloured_pixels(&surface, form_view_on_default_off_region),
+            form_view_on_enabled: coloured_pixels(&surface, form_view_on_enabled_region),
+        };
+        assert!(
+            pixels.page_on > 4_000,
+            "the default-on page-stream control must visibly render: {pixels:?}",
+        );
+        assert!(
+            pixels.page_ve_visible > 4_000,
+            "the true /VE page-stream control must visibly render: {pixels:?}",
+        );
+        assert!(
+            pixels.form_on > 4_000,
+            "the default-on Form-XObject control must visibly render: {pixels:?}",
+        );
+        assert!(
+            pixels.form_ve_visible > 4_000,
+            "the true /VE Form-XObject control must visibly render: {pixels:?}",
+        );
+        assert!(
+            pixels.page_any_on > 4_000 && pixels.form_any_on > 4_000,
+            "policy-only AnyOn controls must visibly render in both paths: {pixels:?}",
+        );
+        assert!(
+            pixels.page_view_on_enabled > 4_000 && pixels.form_view_on_enabled > 4_000,
+            "base-enabled ViewState ON controls must visibly render in both paths: {pixels:?}",
+        );
+        let worker_pid = opened
+            .worker_pid()
+            .expect("the real worker must expose its PID");
+        opened
+            .close()
+            .expect("the page-content optional-content worker must close cleanly");
+        assert!(!worker_process_exists(worker_pid));
+        pixels
+    };
+
+    let source_pixels = qualify(&source_path, 9_173);
+    save_with_unrelated_rectangle_edit(&source_path, &saved_path, 2);
+    let saved_qpdf = std::process::Command::new("qpdf")
+        .arg("--check")
+        .arg(&saved_path)
+        .status()
+        .expect("qpdf must be available for the page-content saved output");
+    assert!(saved_qpdf.success());
+    assert_page_content_optional_content_graph(&saved_path);
+    let saved_pixels = qualify(&saved_path, 9_174);
+
+    assert_eq!(
+        (source_pixels.page_off, saved_pixels.page_off),
+        (0, 0),
+        "a default-off page-stream OCG must contribute no pixels before or after save",
+    );
+    assert_eq!(
+        (source_pixels.page_ve_hidden, saved_pixels.page_ve_hidden,),
+        (0, 0),
+        "a false /VE must hide page-stream content despite its true AnyOn fallback",
+    );
+    assert_eq!(
+        (source_pixels.form_off, saved_pixels.form_off),
+        (0, 0),
+        "a default-off OCG inside a Form XObject must contribute no pixels before or after save",
+    );
+    assert_eq!(
+        (source_pixels.form_ve_hidden, saved_pixels.form_ve_hidden,),
+        (0, 0),
+        "a false /VE inside a Form XObject must hide despite its true AnyOn fallback",
+    );
+    assert_eq!(
+        (source_pixels.page_all_on, saved_pixels.page_all_on),
+        (0, 0),
+        "policy-only AllOn must hide page-stream content when one member is disabled",
+    );
+    assert_eq!(
+        (source_pixels.form_all_on, saved_pixels.form_all_on),
+        (0, 0),
+        "policy-only AllOn must hide a Form XObject when one member is disabled",
+    );
+    assert_eq!(
+        (
+            source_pixels.page_view_off_enabled,
+            saved_pixels.page_view_off_enabled,
+            source_pixels.form_view_off_enabled,
+            saved_pixels.form_view_off_enabled,
+        ),
+        (0, 0, 0, 0),
+        "ViewState OFF must hide base-enabled page-stream and Form-XObject content",
+    );
+    assert_eq!(
+        (
+            source_pixels.page_view_on_default_off,
+            saved_pixels.page_view_on_default_off,
+            source_pixels.form_view_on_default_off,
+            saved_pixels.form_view_on_default_off,
+        ),
+        (0, 0, 0, 0),
+        "ViewState ON must not resurrect base-disabled page-stream or Form-XObject content",
+    );
+    assert!(
+        source_pixels.page_on > 4_000
+            && saved_pixels.page_on > 4_000
+            && source_pixels.page_ve_visible > 4_000
+            && saved_pixels.page_ve_visible > 4_000
+            && source_pixels.form_on > 4_000
+            && saved_pixels.form_on > 4_000
+            && source_pixels.form_ve_visible > 4_000
+            && saved_pixels.form_ve_visible > 4_000
+            && source_pixels.page_any_on > 4_000
+            && saved_pixels.page_any_on > 4_000
+            && source_pixels.form_any_on > 4_000
+            && saved_pixels.form_any_on > 4_000
+            && source_pixels.page_view_on_enabled > 4_000
+            && saved_pixels.page_view_on_enabled > 4_000
+            && source_pixels.form_view_on_enabled > 4_000
+            && saved_pixels.form_view_on_enabled > 4_000,
+        "all default-on, AnyOn, true-/VE and enabled ViewState-ON controls must remain visible before and after save",
+    );
+    assert!(
+        !surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none(),
+        "both page-content optional-content sessions must release their mapped surfaces",
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(std::fs::read(&fixture).unwrap())),
+        fixture_sha256,
+        "the provenance-controlled fixture must remain byte-identical",
+    );
+    drop(scratch);
+    assert!(
+        !owned_root.exists(),
+        "the exact owned page-content optional-content root must be removed",
+    );
+}
+
+#[test]
 fn legacy_length_preserves_external_identity_until_edit_and_rejects_ambiguity() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let source =
@@ -617,11 +2346,16 @@ fn legacy_length_preserves_external_identity_until_edit_and_rejects_ambiguity() 
         "a structurally valid external /Line + /Measure must import as Length",
     );
     assert!(source_session.straight_lines().is_empty());
-    assert!(!source_session.length_has_canonical_native_identity(&MarkupId::new("length-1").unwrap()));
+    assert!(
+        !source_session.length_has_canonical_native_identity(&MarkupId::new("length-1").unwrap())
+    );
     let source_order = source_session.annotation_order().to_vec();
-    assert!(source_session.untouched_annotations().iter().any(|annotation| {
-        annotation.name == "unknown-1" && annotation.subtype == "Text"
-    }));
+    assert!(
+        source_session
+            .untouched_annotations()
+            .iter()
+            .any(|annotation| { annotation.name == "unknown-1" && annotation.subtype == "Text" })
+    );
 
     let mut unrelated_snapshot = persistence_annotation_snapshot(&source_session);
     let unrelated = unrelated_snapshot
@@ -799,21 +2533,34 @@ fn legacy_length_hardening_preserves_unnamed_and_ambiguous_inputs_and_cleans_own
     let edited = PdfPersistenceSession::open(&unnamed_edited).unwrap();
     assert!(edited.length_has_canonical_native_identity(&synthetic_id));
     let text_before = native_annotation_graph_oracle(&unnamed_source, "text-1");
-    let shared_ids = text_before.resolved_appearance_graph.iter()
-        .map(|(id, _)| *id).collect::<std::collections::BTreeSet<_>>();
-    let private_ids = old_graph_ids.iter().copied()
-        .filter(|id| !shared_ids.contains(id)).collect::<Vec<_>>();
+    let shared_ids = text_before
+        .resolved_appearance_graph
+        .iter()
+        .map(|(id, _)| *id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let private_ids = old_graph_ids
+        .iter()
+        .copied()
+        .filter(|id| !shared_ids.contains(id))
+        .collect::<Vec<_>>();
     assert!(!private_ids.is_empty());
-    assert!(old_graph_ids.iter().any(|id| shared_ids.contains(id)),
-        "the fixture exercises a font shared by Length and FreeText");
     assert!(
-        object_ids_exist(&unnamed_edited, &private_ids).into_iter().all(|exists| !exists),
+        old_graph_ids.iter().any(|id| shared_ids.contains(id)),
+        "the fixture exercises a font shared by Length and FreeText"
+    );
+    assert!(
+        object_ids_exist(&unnamed_edited, &private_ids)
+            .into_iter()
+            .all(|exists| !exists),
         "editing must remove the obsolete private appearance objects",
     );
     let edited_objects = LopdfDocument::load(&unnamed_edited).unwrap();
     for (id, expected) in &text_before.resolved_appearance_graph {
-        assert_eq!(format!("{:?}", edited_objects.get_object(*id).unwrap()), *expected,
-            "cleanup must preserve the retained external appearance and its shared font");
+        assert_eq!(
+            format!("{:?}", edited_objects.get_object(*id).unwrap()),
+            *expected,
+            "cleanup must preserve the retained external appearance and its shared font"
+        );
     }
     let edited_graph_ids = first_length_oracle(&unnamed_edited)
         .resolved_appearance_graph
@@ -864,7 +2611,11 @@ fn legacy_length_hardening_preserves_unnamed_and_ambiguous_inputs_and_cleans_own
         Ok(_) => panic!("managed families must not expose the same normalized stable ID"),
         Err(error) => error,
     };
-    assert!(collision.to_string().contains("ambiguous managed annotation identity foo"));
+    assert!(
+        collision
+            .to_string()
+            .contains("ambiguous managed annotation identity foo")
+    );
     assert_eq!(std::fs::read(&collision_source).unwrap(), collision_bytes);
 
     let malformed_source = root.join("malformed-source.pdf");
@@ -946,10 +2697,7 @@ fn legacy_length_hardening_preserves_unnamed_and_ambiguous_inputs_and_cleans_own
         shared.set("NM", lopdf::text_string("shared-length-appearance"));
         shared.set("Rect", vec![0.into(), 0.into(), 12.into(), 12.into()]);
         shared.set("AP", shared_ap);
-        append_page_one_annotation(
-            document,
-            LopdfObject::Dictionary(shared),
-        );
+        append_page_one_annotation(document, LopdfObject::Dictionary(shared));
     });
     let shared_old_ids = first_length_oracle(&shared_source)
         .resolved_appearance_graph
@@ -987,11 +2735,13 @@ fn legacy_length_hardening_preserves_unnamed_and_ambiguous_inputs_and_cleans_own
     );
 
     assert_eq!(std::fs::read(&fixture).unwrap(), fixture_bytes);
-    assert!(
-        std::fs::read_dir(&root)
+    assert!(std::fs::read_dir(&root).unwrap().all(|entry| {
+        !entry
             .unwrap()
-            .all(|entry| !entry.unwrap().file_name().to_string_lossy().contains(".tmp")),
-    );
+            .file_name()
+            .to_string_lossy()
+            .contains(".tmp")
+    }),);
 }
 
 fn scroll_annotation_target_into_view(
@@ -1019,7 +2769,9 @@ fn scroll_annotation_target_into_view(
     let target = cx
         .debug_bounds(target_id)
         .unwrap_or_else(|| panic!("{target_id} must render after scrolling the annotation rail"));
-    let rail = cx.debug_bounds("document-workspace-right-rail-scroll").unwrap();
+    let rail = cx
+        .debug_bounds("document-workspace-right-rail-scroll")
+        .unwrap();
     let scroll_id = if target.left() >= rail.left() {
         "document-workspace-right-rail-scroll"
     } else {
@@ -1070,7 +2822,9 @@ fn engineering_visual_apply_color(
     color: &str,
 ) {
     let inspector = workspace
-        .read_with(cx, |workspace, _| workspace.engineering_visual_property_inspector())
+        .read_with(cx, |workspace, _| {
+            workspace.engineering_visual_property_inspector()
+        })
         .expect("the engineering visual inspector must be retained");
     let picker = inspector.read_with(cx, |inspector, _| inspector.color_picker());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -1103,7 +2857,9 @@ fn engineering_visual_enter_number(
         .unwrap_or_else(|| panic!("{selector} must render a NumberInput"));
     cx.simulate_click(bounds.center(), Modifiers::default());
     let inspector = workspace
-        .read_with(cx, |workspace, _| workspace.engineering_visual_property_inspector())
+        .read_with(cx, |workspace, _| {
+            workspace.engineering_visual_property_inspector()
+        })
         .unwrap();
     let input = if selector == ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID {
         inspector.read_with(cx, |inspector, _| inspector.intensity_input())
@@ -1117,16 +2873,26 @@ fn engineering_visual_enter_number(
 fn show_page_thumbnails(cx: &mut gpui::VisualTestContext) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
     if cx.debug_bounds(DOCUMENT_THUMBNAIL_STRIP_ID).is_none() {
-        let pages = cx.debug_bounds("document-left-rail-pages").expect("Pages must be available in the left rail");
+        let pages = cx
+            .debug_bounds("document-left-rail-pages")
+            .expect("Pages must be available in the left rail");
         cx.simulate_click(pages.center(), Modifiers::default());
         cx.run_until_parked();
         cx.update(|window, cx| window.draw(cx).clear(cx));
     }
 }
 
-fn native_save_command(cx: &mut gpui::VisualTestContext, workspace: &gpui::Entity<DocumentWorkspace>, save_as: bool) {
+fn native_save_command(
+    cx: &mut gpui::VisualTestContext,
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    save_as: bool,
+) {
     cx.update(|_, cx| register_document_workspace_global_actions(workspace, cx));
-    if save_as { cx.dispatch_action(SaveAs); } else { cx.dispatch_action(Save); }
+    if save_as {
+        cx.dispatch_action(SaveAs);
+    } else {
+        cx.dispatch_action(Save);
+    }
 }
 
 fn workspace_edit_shortcut(
@@ -1149,14 +2915,28 @@ fn engineering_visual_release_opacity(
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let track = cx
         .debug_bounds(ENGINEERING_VISUAL_INSPECTOR_OPACITY_TRACK_ID)
-        .unwrap_or_else(|| panic!("selected engineering visual must expose opacity at {fraction}: {:?}", workspace.read_with(cx, |workspace, cx| workspace.engineering_visual_property_inspector().map(|i| i.read(cx).snapshot().cloned()))));
-    let target = point(track.origin.x + track.size.width * fraction, track.center().y);
+        .unwrap_or_else(|| {
+            panic!(
+                "selected engineering visual must expose opacity at {fraction}: {:?}",
+                workspace.read_with(cx, |workspace, cx| workspace
+                    .engineering_visual_property_inspector()
+                    .map(|i| i.read(cx).snapshot().cloned()))
+            )
+        });
+    let target = point(
+        track.origin.x + track.size.width * fraction,
+        track.center().y,
+    );
     let before = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     cx.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
     let preview = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!(
         (preview.revision, preview.undo_depth),
@@ -1180,7 +2960,9 @@ fn straight_line_apply_color(
     color: &str,
 ) {
     let inspector = workspace
-        .read_with(cx, |workspace, _| workspace.straight_line_property_inspector())
+        .read_with(cx, |workspace, _| {
+            workspace.straight_line_property_inspector()
+        })
         .expect("the straight-line inspector must be retained");
     let picker = inspector.read_with(cx, |inspector, _| inspector.color_picker());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -1212,7 +2994,9 @@ fn straight_line_enter_width(
         .expect("Line Width must render a NumberInput");
     cx.simulate_click(bounds.center(), Modifiers::default());
     let inspector = workspace
-        .read_with(cx, |workspace, _| workspace.straight_line_property_inspector())
+        .read_with(cx, |workspace, _| {
+            workspace.straight_line_property_inspector()
+        })
         .unwrap();
     let input = inspector.read_with(cx, |inspector, _| inspector.width_input());
     assert!(cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)));
@@ -1229,13 +3013,20 @@ fn straight_line_release_opacity(
     let track = cx
         .debug_bounds(STRAIGHT_LINE_INSPECTOR_OPACITY_TRACK_ID)
         .expect("Line and Arrow must expose opacity");
-    let target = point(track.origin.x + track.size.width * fraction, track.center().y);
+    let target = point(
+        track.origin.x + track.size.width * fraction,
+        track.center().y,
+    );
     let before = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     cx.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
     let preview = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!(
         (preview.revision, preview.undo_depth),
@@ -1259,10 +3050,26 @@ fn vertex_path_preview_color(
     fill: bool,
     color: &str,
 ) {
-    let inspector = workspace.read_with(cx, |workspace, _| workspace.vertex_path_property_inspector()).unwrap();
-    let picker = inspector.read_with(cx, |inspector, _| if fill { inspector.fill_color_picker() } else { inspector.stroke_color_picker() });
+    let inspector = workspace
+        .read_with(cx, |workspace, _| {
+            workspace.vertex_path_property_inspector()
+        })
+        .unwrap();
+    let picker = inspector.read_with(cx, |inspector, _| {
+        if fill {
+            inspector.fill_color_picker()
+        } else {
+            inspector.stroke_color_picker()
+        }
+    });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let trigger = cx.debug_bounds(if fill { VERTEX_PATH_INSPECTOR_FILL_COLOR_ID } else { VERTEX_PATH_INSPECTOR_STROKE_COLOR_ID }).unwrap();
+    let trigger = cx
+        .debug_bounds(if fill {
+            VERTEX_PATH_INSPECTOR_FILL_COLOR_ID
+        } else {
+            VERTEX_PATH_INSPECTOR_STROKE_COLOR_ID
+        })
+        .unwrap();
     cx.simulate_click(trigger.center(), Modifiers::default());
     cx.executor().advance_clock(Duration::from_millis(200));
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -1274,15 +3081,29 @@ fn vertex_path_preview_color(
 
 fn vertex_path_click_apply(cx: &mut gpui::VisualTestContext, fill: bool) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply = cx.debug_bounds(if fill { VERTEX_PATH_INSPECTOR_APPLY_FILL_ID } else { VERTEX_PATH_INSPECTOR_APPLY_STROKE_ID }).unwrap();
+    let apply = cx
+        .debug_bounds(if fill {
+            VERTEX_PATH_INSPECTOR_APPLY_FILL_ID
+        } else {
+            VERTEX_PATH_INSPECTOR_APPLY_STROKE_ID
+        })
+        .unwrap();
     cx.simulate_click(apply.center(), Modifiers::default());
 }
 
-fn vertex_path_enter_width(cx: &mut gpui::VisualTestContext, workspace: &gpui::Entity<DocumentWorkspace>, value: &str) {
+fn vertex_path_enter_width(
+    cx: &mut gpui::VisualTestContext,
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    value: &str,
+) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let bounds = cx.debug_bounds(VERTEX_PATH_INSPECTOR_WIDTH_ID).unwrap();
     cx.simulate_click(bounds.center(), Modifiers::default());
-    let inspector = workspace.read_with(cx, |workspace, _| workspace.vertex_path_property_inspector()).unwrap();
+    let inspector = workspace
+        .read_with(cx, |workspace, _| {
+            workspace.vertex_path_property_inspector()
+        })
+        .unwrap();
     let input = inspector.read_with(cx, |inspector, _| inspector.width_input());
     cx.update(|window, cx| input.read(cx).focus_handle(cx).focus(window, cx));
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {value} enter"));
@@ -1295,7 +3116,9 @@ fn vertex_path_enter_opacity(
 ) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let inspector = workspace
-        .read_with(cx, |workspace, _| workspace.vertex_path_property_inspector())
+        .read_with(cx, |workspace, _| {
+            workspace.vertex_path_property_inspector()
+        })
         .unwrap();
     let input = inspector.read_with(cx, |inspector, _| inspector.opacity_input());
     cx.update(|window, cx| input.read(cx).focus_handle(cx).focus(window, cx));
@@ -1313,7 +3136,10 @@ fn raster_region_difference_count(
     base: &RasterSurface,
     rect: PdfRect,
 ) -> usize {
-    assert_eq!((annotated.width(), annotated.height()), (base.width(), base.height()));
+    assert_eq!(
+        (annotated.width(), annotated.height()),
+        (base.width(), base.height())
+    );
     let scale_x = f64::from(annotated.width()) / 612.;
     let scale_y = f64::from(annotated.height()) / 792.;
     let left = (rect.x * scale_x).floor().max(0.) as u32;
@@ -1329,8 +3155,7 @@ fn raster_region_difference_count(
     for y in top..bottom {
         for x in left..right {
             let offset = (y as usize * width + x as usize) * 4;
-            if annotated.pixels_bgra()[offset..offset + 4]
-                != base.pixels_bgra()[offset..offset + 4]
+            if annotated.pixels_bgra()[offset..offset + 4] != base.pixels_bgra()[offset..offset + 4]
             {
                 changed += 1;
             }
@@ -1339,7 +3164,11 @@ fn raster_region_difference_count(
     changed
 }
 
-fn qpdf_canonical_straight_line_dictionary(path: &Path, id: &MarkupId, kind: LineKind) -> serde_json::Value {
+fn qpdf_canonical_straight_line_dictionary(
+    path: &Path,
+    id: &MarkupId,
+    kind: LineKind,
+) -> serde_json::Value {
     let output = std::process::Command::new("qpdf")
         .args(["--json=1", "--json-key=objects"])
         .arg(path)
@@ -1355,22 +3184,42 @@ fn qpdf_canonical_straight_line_dictionary(path: &Path, id: &MarkupId, kind: Lin
         .find(|value| value.get("/NM").and_then(serde_json::Value::as_str) == Some(&native_name))
         .unwrap_or_else(|| panic!("qpdf must expose the canonical dictionary for {native_name}"));
     assert_eq!(dictionary["/Subtype"], "/Line");
-    for key in ["/L", "/Rect", "/Border", "/BS", "/C", "/CA", "/ca", "/F", "/NM", "/Subj"] {
-        assert!(!dictionary[key].is_null(), "{native_name} must contain {key}");
+    for key in [
+        "/L", "/Rect", "/Border", "/BS", "/C", "/CA", "/ca", "/F", "/NM", "/Subj",
+    ] {
+        assert!(
+            !dictionary[key].is_null(),
+            "{native_name} must contain {key}"
+        );
     }
     assert_eq!(dictionary["/BS"]["/S"], "/S");
     assert!(dictionary["/BS"].get("/D").is_none());
-    assert!(!dictionary["/AP"].is_null(), "managed Line and Arrow annotations must have a normal appearance");
-    assert_eq!(dictionary["/Subj"], match kind { LineKind::Line => "Line", LineKind::Arrow => "Arrow" });
+    assert!(
+        !dictionary["/AP"].is_null(),
+        "managed Line and Arrow annotations must have a normal appearance"
+    );
+    assert_eq!(
+        dictionary["/Subj"],
+        match kind {
+            LineKind::Line => "Line",
+            LineKind::Arrow => "Arrow",
+        }
+    );
     match kind {
         LineKind::Line => {
             for key in ["/IT", "/LE", "/IC"] {
-                assert!(dictionary.get(key).is_none(), "plain Line must not contain {key}");
+                assert!(
+                    dictionary.get(key).is_none(),
+                    "plain Line must not contain {key}"
+                );
             }
         }
         LineKind::Arrow => {
             assert_eq!(dictionary["/IT"], "/LineArrow");
-            assert_eq!(dictionary["/LE"], serde_json::json!(["/None", "/ClosedArrow"]));
+            assert_eq!(
+                dictionary["/LE"],
+                serde_json::json!(["/None", "/ClosedArrow"])
+            );
             assert_eq!(dictionary["/IC"], dictionary["/C"]);
         }
     }
@@ -1396,15 +3245,23 @@ fn qpdf_assert_pending_redact_native(path: &Path, expected: &RedactAnnotation) -
         .as_object()
         .unwrap()
         .iter()
-        .find(|(_, value)| value.get("/NM").and_then(serde_json::Value::as_str) == Some(&native_name))
+        .find(|(_, value)| {
+            value.get("/NM").and_then(serde_json::Value::as_str) == Some(&native_name)
+        })
         .unwrap_or_else(|| panic!("qpdf JSON v1 must expose {native_name}"));
     assert_eq!(dictionary["/Type"], "/Annot");
     assert_eq!(dictionary["/Subtype"], "/Redact");
     assert_eq!(dictionary["/NM"], native_name);
     assert_eq!(dictionary["/Subj"], "Redaction");
     assert_eq!(dictionary["/Contents"], "Marked for redaction");
-    assert_eq!(dictionary["/F"], 4, "Print must remain set and the lock bit cleared");
-    assert!(dictionary.get("/AP").is_none(), "a pending mark must never carry /AP");
+    assert_eq!(
+        dictionary["/F"], 4,
+        "Print must remain set and the lock bit cleared"
+    );
+    assert!(
+        dictionary.get("/AP").is_none(),
+        "a pending mark must never carry /AP"
+    );
     assert!(
         dictionary.get("/OverlayText").is_none(),
         "the default pending mark must omit /OverlayText",
@@ -1425,7 +3282,10 @@ fn qpdf_assert_pending_redact_native(path: &Path, expected: &RedactAnnotation) -
         .map(number)
         .zip(expected_rect)
     {
-        assert!((actual - expected).abs() < 0.001, "pending Redact /Rect changed");
+        assert!(
+            (actual - expected).abs() < 0.001,
+            "pending Redact /Rect changed"
+        );
     }
     let expected_quad_points = [
         expected.rect.x,
@@ -1503,13 +3363,22 @@ fn qpdf_assert_snapshot_native(
     assert!((number(&dictionary["/Rotation"]) - expected.rotation_degrees()).abs() < 0.001);
     assert!((number(&dictionary["/CA"]) - expected.opacity()).abs() < 0.001);
     assert!((number(&dictionary["/ca"]) - expected.opacity()).abs() < 0.001);
-    for (actual, expected) in dictionary["/Rect"].as_array().unwrap().iter().map(number).zip([
-        expected_bounds.x,
-        expected_bounds.y,
-        expected_bounds.x + expected_bounds.width,
-        expected_bounds.y + expected_bounds.height,
-    ]) {
-        assert!((actual - expected).abs() < 0.001, "rotated Snapshot /Rect changed");
+    for (actual, expected) in dictionary["/Rect"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(number)
+        .zip([
+            expected_bounds.x,
+            expected_bounds.y,
+            expected_bounds.x + expected_bounds.width,
+            expected_bounds.y + expected_bounds.height,
+        ])
+    {
+        assert!(
+            (actual - expected).abs() < 0.001,
+            "rotated Snapshot /Rect changed"
+        );
     }
     let appearance_ref = dictionary["/AP"]["/N"].as_str().unwrap().to_owned();
 
@@ -1525,14 +3394,20 @@ fn qpdf_assert_snapshot_native(
     assert_eq!(form["/Type"], "/XObject");
     assert_eq!(form["/Subtype"], "/Form");
     assert_eq!(form["/FormType"], 1);
-    assert!(form.get("/Matrix").is_none(), "the page-space Form uses the identity matrix");
+    assert!(
+        form.get("/Matrix").is_none(),
+        "the page-space Form uses the identity matrix"
+    );
     for (actual, expected) in form["/BBox"].as_array().unwrap().iter().map(number).zip([
         0.,
         0.,
         expected_bounds.width,
         expected_bounds.height,
     ]) {
-        assert!((actual - expected).abs() < 0.001, "local Snapshot Form /BBox changed");
+        assert!(
+            (actual - expected).abs() < 0.001,
+            "local Snapshot Form /BBox changed"
+        );
     }
     let gs = &form["/Resources"]["/ExtGState"]["/GS0"];
     assert!((number(&gs["/CA"]) - expected.opacity()).abs() < 0.001);
@@ -1582,8 +3457,8 @@ fn qpdf_assert_snapshot_native(
     let content = String::from_utf8(content.stdout).unwrap();
     let radians = expected.rotation_degrees().to_radians();
     let a = expected.rect.width * radians.cos();
-    let b = -expected.rect.width * radians.sin();
-    let c = expected.rect.height * radians.sin();
+    let b = expected.rect.width * radians.sin();
+    let c = -expected.rect.height * radians.sin();
     let d = expected.rect.height * radians.cos();
     let center = PdfPoint {
         x: expected.rect.x + expected.rect.width * 0.5,
@@ -1606,40 +3481,118 @@ fn qpdf_assert_vertex_path_native(path: &Path, expected: &VertexPathAnnotation) 
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let native_name = format!("bp:{}", expected.id.as_str());
-    let dictionary = json["objects"].as_object().unwrap().values().find(|value| {
-        value.get("/NM").and_then(serde_json::Value::as_str) == Some(&native_name)
-    }).unwrap_or_else(|| panic!("qpdf must expose {native_name}"));
+    let dictionary = json["objects"]
+        .as_object()
+        .unwrap()
+        .values()
+        .find(|value| value.get("/NM").and_then(serde_json::Value::as_str) == Some(&native_name))
+        .unwrap_or_else(|| panic!("qpdf must expose {native_name}"));
     let number = |value: &serde_json::Value| value.as_f64().expect("native PDF number");
     let close = |actual: f64, expected: f64| (actual - expected).abs() <= 0.000_1;
-    assert_eq!(dictionary["/Subtype"], match expected.kind { VertexPathKind::Polyline => "/PolyLine", VertexPathKind::Polygon => "/Polygon" });
+    assert_eq!(
+        dictionary["/Subtype"],
+        match expected.kind {
+            VertexPathKind::Polyline => "/PolyLine",
+            VertexPathKind::Polygon => "/Polygon",
+        }
+    );
     assert_eq!(dictionary["/NM"], native_name);
     let vertices = dictionary["/Vertices"].as_array().unwrap();
     assert_eq!(vertices.len(), expected.points().len() * 2);
-    for (actual, expected) in vertices.iter().map(number).zip(expected.points().iter().flat_map(|point| [point.x, point.y])) {
-        assert!(close(actual, expected), "raw /Vertices order or value changed");
+    for (actual, expected) in vertices.iter().map(number).zip(
+        expected
+            .points()
+            .iter()
+            .flat_map(|point| [point.x, point.y]),
+    ) {
+        assert!(
+            close(actual, expected),
+            "raw /Vertices order or value changed"
+        );
     }
     let padding = expected.appearance.stroke_width_pt() / 2. + 1.;
-    let min_x = expected.points().iter().map(|point| point.x).fold(f64::INFINITY, f64::min);
-    let max_x = expected.points().iter().map(|point| point.x).fold(f64::NEG_INFINITY, f64::max);
-    let min_y = expected.points().iter().map(|point| point.y).fold(f64::INFINITY, f64::min);
-    let max_y = expected.points().iter().map(|point| point.y).fold(f64::NEG_INFINITY, f64::max);
-    let bounds = [min_x - padding, min_y - padding, max_x + padding, max_y + padding];
-    for (actual, expected) in dictionary["/Rect"].as_array().unwrap().iter().map(number).zip(bounds) {
+    let min_x = expected
+        .points()
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = expected
+        .points()
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = expected
+        .points()
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::INFINITY, f64::min);
+    let max_y = expected
+        .points()
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let bounds = [
+        min_x - padding,
+        min_y - padding,
+        max_x + padding,
+        max_y + padding,
+    ];
+    for (actual, expected) in dictionary["/Rect"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(number)
+        .zip(bounds)
+    {
         assert!(close(actual, expected), "raw /Rect changed");
     }
-    let rgb = |color: &str| [1, 3, 5].map(|index| u8::from_str_radix(&color[index..index + 2], 16).unwrap() as f64 / 255.);
-    for (actual, expected) in dictionary["/C"].as_array().unwrap().iter().map(number).zip(rgb(expected.appearance.stroke_color())) {
+    let rgb = |color: &str| {
+        [1, 3, 5]
+            .map(|index| u8::from_str_radix(&color[index..index + 2], 16).unwrap() as f64 / 255.)
+    };
+    for (actual, expected) in dictionary["/C"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(number)
+        .zip(rgb(expected.appearance.stroke_color()))
+    {
         assert!(close(actual, expected), "raw /C changed");
     }
     match (expected.kind, expected.appearance.fill_color()) {
-        (VertexPathKind::Polygon, Some(fill)) => for (actual, expected) in dictionary["/IC"].as_array().unwrap().iter().map(number).zip(rgb(fill)) { assert!(close(actual, expected), "raw /IC changed"); },
-        _ => assert!(dictionary.get("/IC").is_none(), "unfilled vertex path must omit /IC"),
+        (VertexPathKind::Polygon, Some(fill)) => {
+            for (actual, expected) in dictionary["/IC"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(number)
+                .zip(rgb(fill))
+            {
+                assert!(close(actual, expected), "raw /IC changed");
+            }
+        }
+        _ => assert!(
+            dictionary.get("/IC").is_none(),
+            "unfilled vertex path must omit /IC"
+        ),
     }
-    assert!(close(number(&dictionary["/BS"]["/W"]), expected.appearance.stroke_width_pt()));
+    assert!(close(
+        number(&dictionary["/BS"]["/W"]),
+        expected.appearance.stroke_width_pt()
+    ));
     assert_eq!(dictionary["/BS"]["/S"], "/S");
-    assert!(dictionary["/BS"].get("/D").is_none(), "solid style must omit a dash array");
-    assert!(close(number(&dictionary["/CA"]), expected.appearance.opacity()));
-    assert!(close(number(&dictionary["/ca"]), expected.appearance.opacity() * expected.appearance.fill_opacity()));
+    assert!(
+        dictionary["/BS"].get("/D").is_none(),
+        "solid style must omit a dash array"
+    );
+    assert!(close(
+        number(&dictionary["/CA"]),
+        expected.appearance.opacity()
+    ));
+    assert!(close(
+        number(&dictionary["/ca"]),
+        expected.appearance.opacity() * expected.appearance.fill_opacity()
+    ));
     assert_eq!(dictionary["/F"], 4);
     let appearance_ref = dictionary["/AP"]["/N"].as_str().expect("/AP /N reference");
 
@@ -1657,11 +3610,22 @@ fn qpdf_assert_vertex_path_native(path: &Path, expected: &VertexPathAnnotation) 
     assert_eq!(stream["/Subtype"], "/Form");
     assert_eq!(stream["/FormType"], 1);
     let expected_bbox = [0., 0., bounds[2] - bounds[0], bounds[3] - bounds[1]];
-    for (actual, expected) in stream["/BBox"].as_array().unwrap().iter().map(number).zip(expected_bbox) { assert!(close(actual, expected), "appearance /BBox changed"); }
+    for (actual, expected) in stream["/BBox"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(number)
+        .zip(expected_bbox)
+    {
+        assert!(close(actual, expected), "appearance /BBox changed");
+    }
     let gs = &stream["/Resources"]["/ExtGState"]["/GS0"];
     assert_eq!(gs["/Type"], "/ExtGState");
     assert!(close(number(&gs["/CA"]), expected.appearance.opacity()));
-    assert!(close(number(&gs["/ca"]), expected.appearance.opacity() * expected.appearance.fill_opacity()));
+    assert!(close(
+        number(&gs["/ca"]),
+        expected.appearance.opacity() * expected.appearance.fill_opacity()
+    ));
     let object_number = appearance_ref.split_whitespace().next().unwrap();
     let content = std::process::Command::new("qpdf")
         .arg(format!("--show-object={object_number}"))
@@ -1672,14 +3636,20 @@ fn qpdf_assert_vertex_path_native(path: &Path, expected: &VertexPathAnnotation) 
     assert!(content.status.success());
     let content = String::from_utf8(content.stdout).unwrap();
     let stroke = rgb(expected.appearance.stroke_color());
-    assert!(content.starts_with(&format!("q\n/GS0 gs\n1 J 1 j\n{:.6} {:.6} {:.6} RG\n", stroke[0], stroke[1], stroke[2])));
+    assert!(content.starts_with(&format!(
+        "q\n/GS0 gs\n1 J 1 j\n{:.6} {:.6} {:.6} RG\n",
+        stroke[0], stroke[1], stroke[2]
+    )));
     assert!(content.contains(&format!("{:.6} w\n", expected.appearance.stroke_width_pt())));
-    let path_operands = content.lines().filter_map(|line| {
-        let mut values = line.split_whitespace();
-        let x = values.next()?.parse::<f64>().ok()?;
-        let y = values.next()?.parse::<f64>().ok()?;
-        matches!(values.next(), Some("m" | "l")).then_some((x, y))
-    }).collect::<Vec<_>>();
+    let path_operands = content
+        .lines()
+        .filter_map(|line| {
+            let mut values = line.split_whitespace();
+            let x = values.next()?.parse::<f64>().ok()?;
+            let y = values.next()?.parse::<f64>().ok()?;
+            matches!(values.next(), Some("m" | "l")).then_some((x, y))
+        })
+        .collect::<Vec<_>>();
     assert_eq!(path_operands.len(), expected.points().len());
     for ((actual_x, actual_y), point) in path_operands.into_iter().zip(expected.points()) {
         assert!((actual_x - (point.x - bounds[0])).abs() <= 0.001);
@@ -1708,14 +3678,50 @@ fn qpdf_assert_measurement_path_native(path: &Path, expected: &MeasurementPathAn
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let native_name = format!("bp:{}", expected.id.as_str());
-    let dictionary = json["objects"].as_object().unwrap().values().find(|value| {
-        value.get("/NM").and_then(serde_json::Value::as_str) == Some(&native_name)
-    }).unwrap_or_else(|| panic!("qpdf must expose {native_name}"));
+    let dictionary = json["objects"]
+        .as_object()
+        .unwrap()
+        .values()
+        .find(|value| value.get("/NM").and_then(serde_json::Value::as_str) == Some(&native_name))
+        .unwrap_or_else(|| panic!("qpdf must expose {native_name}"));
     let number = |value: &serde_json::Value| value.as_f64().expect("native PDF number");
     let close = |actual: f64, expected: f64| (actual - expected).abs() <= 0.000_1;
-    let (subtype, intent, subject, measurement_types, stroke_color, stroke_width, opacity, fill_color, caption, path_operator) = match expected.kind {
-        MeasurementPathKind::Polylength => ("/PolyLine", "/PolyLineDimension", "Polylength Measurement", 130, "#1d4ed8", 3.25, 0.55, None, "4.35 ft", "S\nQ\n"),
-        MeasurementPathKind::Area => ("/Polygon", "/PolygonDimension", "Area Measurement", 129, "#ff0000", 4., 0.7, Some("#22c55e"), "2.00 ft^2", "h B\nQ\n"),
+    let (
+        subtype,
+        intent,
+        subject,
+        measurement_types,
+        stroke_color,
+        stroke_width,
+        opacity,
+        fill_color,
+        caption,
+        path_operator,
+    ) = match expected.kind {
+        MeasurementPathKind::Polylength => (
+            "/PolyLine",
+            "/PolyLineDimension",
+            "Polylength Measurement",
+            130,
+            "#1d4ed8",
+            3.25,
+            0.55,
+            None,
+            "4.35 ft",
+            "S\nQ\n",
+        ),
+        MeasurementPathKind::Area => (
+            "/Polygon",
+            "/PolygonDimension",
+            "Area Measurement",
+            129,
+            "#ff0000",
+            4.,
+            0.7,
+            Some("#22c55e"),
+            "2.00 ft^2",
+            "h B\nQ\n",
+        ),
     };
     assert_eq!(expected.appearance.stroke_color(), stroke_color);
     assert!(close(expected.appearance.stroke_width_pt(), stroke_width));
@@ -1729,18 +3735,46 @@ fn qpdf_assert_measurement_path_native(path: &Path, expected: &MeasurementPathAn
     assert_eq!(dictionary["/NM"], native_name);
     assert_eq!(dictionary["/MeasurementTypes"], measurement_types);
     assert_eq!(dictionary["/Cap"], expected.calibration().show_caption());
+    assert!(!expected.calibration().show_caption());
     assert_eq!(dictionary["/Contents"], expected.caption());
     assert_eq!(dictionary["/F"], 132);
     let vertices = dictionary["/Vertices"].as_array().unwrap();
     assert_eq!(vertices.len(), expected.points().len() * 2);
-    for (actual, expected) in vertices.iter().map(number).zip(expected.points().iter().flat_map(|point| [point.x, point.y])) {
+    for (actual, expected) in vertices.iter().map(number).zip(
+        expected
+            .points()
+            .iter()
+            .flat_map(|point| [point.x, point.y]),
+    ) {
         assert!(close(actual, expected), "raw measurement /Vertices changed");
     }
-    let min_x = expected.points().iter().map(|point| point.x).fold(f64::INFINITY, f64::min);
-    let max_x = expected.points().iter().map(|point| point.x).fold(f64::NEG_INFINITY, f64::max);
-    let min_y = expected.points().iter().map(|point| point.y).fold(f64::INFINITY, f64::min);
-    let max_y = expected.points().iter().map(|point| point.y).fold(f64::NEG_INFINITY, f64::max);
-    let bounds = [min_x - 18., min_y - 18., max_x + 18., max_y + 18.];
+    let min_x = expected
+        .points()
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = expected
+        .points()
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = expected
+        .points()
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::INFINITY, f64::min);
+    let max_y = expected
+        .points()
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let padding = 8_f64.max(stroke_width * 0.5);
+    let bounds = [
+        min_x - padding,
+        min_y - padding,
+        max_x + padding,
+        max_y + padding,
+    ];
     let rect = dictionary["/Rect"].as_array().unwrap();
     assert_eq!(rect.len(), 4);
     for (actual, expected) in rect.iter().map(number).zip(bounds) {
@@ -1755,7 +3789,10 @@ fn qpdf_assert_measurement_path_native(path: &Path, expected: &MeasurementPathAn
     assert_eq!(dictionary["/BS"]["/S"], "/S");
     assert!(close(number(&dictionary["/BS"]["/W"]), stroke_width));
     assert!(dictionary["/BS"].get("/D").is_none());
-    let rgb = |color: &str| [1, 3, 5].map(|index| u8::from_str_radix(&color[index..index + 2], 16).unwrap() as f64 / 255.);
+    let rgb = |color: &str| {
+        [1, 3, 5]
+            .map(|index| u8::from_str_radix(&color[index..index + 2], 16).unwrap() as f64 / 255.)
+    };
     let color = dictionary["/C"].as_array().unwrap();
     assert_eq!(color.len(), 3);
     for (actual, expected) in color.iter().map(number).zip(rgb(stroke_color)) {
@@ -1785,7 +3822,9 @@ fn qpdf_assert_measurement_path_native(path: &Path, expected: &MeasurementPathAn
         ("/T", "°", 1., true),
         ("/V", "ft^3", 1., true),
     ] {
-        let formats = measure[key].as_array().unwrap_or_else(|| panic!("native /Measure must contain {key}"));
+        let formats = measure[key]
+            .as_array()
+            .unwrap_or_else(|| panic!("native /Measure must contain {key}"));
         assert_eq!(formats.len(), 1, "native /Measure {key} length");
         let format = &formats[0];
         assert_eq!(format["/Type"], "/NumberFormat");
@@ -1814,10 +3853,17 @@ fn qpdf_assert_measurement_path_native(path: &Path, expected: &MeasurementPathAn
     assert_eq!(stream["/FormType"], 1);
     let bbox = stream["/BBox"].as_array().unwrap();
     assert_eq!(bbox.len(), 4);
-    for (actual, expected) in bbox.iter().map(number).zip([0., 0., bounds[2] - bounds[0], bounds[3] - bounds[1]]) {
-        assert!(close(actual, expected), "measurement appearance /BBox changed");
+    for (actual, expected) in
+        bbox.iter()
+            .map(number)
+            .zip([0., 0., bounds[2] - bounds[0], bounds[3] - bounds[1]])
+    {
+        assert!(
+            close(actual, expected),
+            "measurement appearance /BBox changed"
+        );
     }
-    assert!(!stream["/Resources"]["/Font"]["/Helv"].is_null());
+    assert!(stream["/Resources"]["/Font"]["/Helv"].is_null());
     let path_state = &stream["/Resources"]["/ExtGState"]["/GSPath"];
     assert_eq!(path_state["/Type"], "/ExtGState");
     assert!(close(number(&path_state["/CA"]), opacity));
@@ -1836,20 +3882,29 @@ fn qpdf_assert_measurement_path_native(path: &Path, expected: &MeasurementPathAn
     assert!(content.status.success());
     let content = String::from_utf8(content.stdout).unwrap();
     let stroke = rgb(stroke_color);
-    assert!(content.starts_with(&format!("q\n/GSPath gs\n1 J 1 j\n{:.6} {:.6} {:.6} RG\n", stroke[0], stroke[1], stroke[2])));
+    assert!(content.starts_with(&format!(
+        "q\n/GSPath gs\n1 J 1 j\n{:.6} {:.6} {:.6} RG\n",
+        stroke[0], stroke[1], stroke[2]
+    )));
     if let Some(fill_color) = fill_color {
         let fill = rgb(fill_color);
-        assert!(content.contains(&format!("{:.6} {:.6} {:.6} rg\n", fill[0], fill[1], fill[2])));
+        assert!(content.contains(&format!(
+            "{:.6} {:.6} {:.6} rg\n",
+            fill[0], fill[1], fill[2]
+        )));
     } else {
         assert!(!content.contains(" rg\n"));
     }
     assert!(content.contains(&format!("{stroke_width:.6} w\n")));
-    let path_operands = content.lines().filter_map(|line| {
-        let mut values = line.split_whitespace();
-        let x = values.next()?.parse::<f64>().ok()?;
-        let y = values.next()?.parse::<f64>().ok()?;
-        matches!(values.next(), Some("m" | "l")).then_some((x, y))
-    }).collect::<Vec<_>>();
+    let path_operands = content
+        .lines()
+        .filter_map(|line| {
+            let mut values = line.split_whitespace();
+            let x = values.next()?.parse::<f64>().ok()?;
+            let y = values.next()?.parse::<f64>().ok()?;
+            matches!(values.next(), Some("m" | "l")).then_some((x, y))
+        })
+        .collect::<Vec<_>>();
     assert_eq!(path_operands.len(), expected.points().len());
     for ((actual_x, actual_y), point) in path_operands.into_iter().zip(expected.points()) {
         assert!((actual_x - (point.x - bounds[0])).abs() <= 0.001);
@@ -1859,7 +3914,10 @@ fn qpdf_assert_measurement_path_native(path: &Path, expected: &MeasurementPathAn
     assert!(!content.contains(" BT "));
 }
 
-fn straight_line_pixel_region(annotation: &StraightLineAnnotation, arrowhead_padding_pt: f64) -> PdfRect {
+fn straight_line_pixel_region(
+    annotation: &StraightLineAnnotation,
+    arrowhead_padding_pt: f64,
+) -> PdfRect {
     let padding = if annotation.kind == LineKind::Arrow {
         arrowhead_padding_pt
     } else {
@@ -1910,7 +3968,10 @@ fn exercise_rendered_pointer_semantics(
                 workspace.annotation_snapshot(document_id, cx)
             })
             .unwrap();
-        assert_eq!(after.selected_id, before.selected_id, "{selector} changed identity");
+        assert_eq!(
+            after.selected_id, before.selected_id,
+            "{selector} changed identity"
+        );
         assert_eq!(after.revision, before.revision + 1, "{selector} revision");
         assert_eq!(after.undo_depth, before.undo_depth + 1, "{selector} undo");
     }
@@ -1936,13 +3997,20 @@ fn assert_rendered_pointer_cancel_and_locked_inert(
     let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
     cx.update(|window, cx| focus.focus(window, cx));
     cx.simulate_keystrokes("escape");
+    let selected_id = before_cancel.selected_id.clone().unwrap();
+    let mut expected_cancel = before_cancel;
+    expected_cancel.selected_id = None;
     assert_eq!(
         workspace
-            .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(document_id, cx))
             .unwrap(),
-        before_cancel,
-        "{selector} Escape must restore the exact retained state",
+        expected_cancel,
+        "{selector} Escape must discard the preview and clear selection without changing document history",
     );
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace.select_annotation(document_id, &selected_id, cx)
+    }));
 
     workspace
         .update(cx, |workspace, cx| {
@@ -1963,7 +4031,8 @@ fn assert_rendered_pointer_cancel_and_locked_inert(
     cx.simulate_mouse_up(locked_end, MouseButton::Left, Modifiers::default());
     assert_eq!(
         workspace
-            .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(document_id, cx))
             .unwrap(),
         locked,
         "{selector} must be inert while locked",
@@ -2014,6 +4083,22 @@ fn rendered_engineering_pointer_point(
             "callout.leader.0" => annotation.leader_points[0],
             "callout.leader.1" => annotation.leader_points[1],
             "callout.leader.2" => *annotation.leader_points.last().unwrap(),
+            "callout.textBox.resize.nw" => {
+                RectangleResizeHandle::NorthWest.point(annotation.text_box)
+            }
+            "callout.textBox.resize.n" => RectangleResizeHandle::North.point(annotation.text_box),
+            "callout.textBox.resize.ne" => {
+                RectangleResizeHandle::NorthEast.point(annotation.text_box)
+            }
+            "callout.textBox.resize.e" => RectangleResizeHandle::East.point(annotation.text_box),
+            "callout.textBox.resize.se" => {
+                RectangleResizeHandle::SouthEast.point(annotation.text_box)
+            }
+            "callout.textBox.resize.s" => RectangleResizeHandle::South.point(annotation.text_box),
+            "callout.textBox.resize.sw" => {
+                RectangleResizeHandle::SouthWest.point(annotation.text_box)
+            }
+            "callout.textBox.resize.w" => RectangleResizeHandle::West.point(annotation.text_box),
             "callout.text-box" => PdfPoint {
                 x: annotation.text_box.x + annotation.text_box.width * 0.5,
                 y: annotation.text_box.y + annotation.text_box.height * 0.5,
@@ -2034,9 +4119,10 @@ fn rendered_engineering_pointer_point(
                 .iter()
                 .copied()
                 .find(|candidate| {
-                    annotation.points.iter().all(|vertex| {
-                        (candidate.x - vertex.x).hypot(candidate.y - vertex.y) > 12.
-                    })
+                    annotation
+                        .points
+                        .iter()
+                        .all(|vertex| (candidate.x - vertex.x).hypot(candidate.y - vertex.y) > 12.)
                 })
                 .expect("Cloud visible path must expose a body point away from vertex handles"),
             _ => panic!("unknown Cloud pointer selector {selector}"),
@@ -2164,9 +4250,19 @@ struct FailingRestartPageResource {
     released: Arc<AtomicBool>,
 }
 
+struct ContentGeometryRecordingResource {
+    released: Arc<AtomicBool>,
+    calls: Arc<Mutex<Vec<u32>>>,
+    failures_remaining: AtomicUsize,
+}
+
 struct RejectingOpener;
 
 struct SuccessfulOpener;
+
+struct DigestOpener([u8; 32]);
+
+struct FileDigestOpener;
 
 #[derive(Default)]
 struct RestartPageFailureOpener {
@@ -2200,6 +4296,20 @@ impl NativeDocumentOpener for RejectingOpener {
 impl NativeDocumentOpener for SuccessfulOpener {
     fn open(&self, _: &OpenDocumentRequest) -> Result<OpenedNativeDocument, String> {
         Ok(opened_document(Arc::new(AtomicBool::new(false))))
+    }
+}
+
+impl NativeDocumentOpener for DigestOpener {
+    fn open(&self, _: &OpenDocumentRequest) -> Result<OpenedNativeDocument, String> {
+        Ok(opened_document(Arc::new(AtomicBool::new(false))).with_source_sha256(self.0))
+    }
+}
+
+impl NativeDocumentOpener for FileDigestOpener {
+    fn open(&self, request: &OpenDocumentRequest) -> Result<OpenedNativeDocument, String> {
+        let bytes = std::fs::read(&request.path).map_err(|error| error.to_string())?;
+        let source_sha256: [u8; 32] = Sha256::digest(&bytes).into();
+        Ok(opened_document(Arc::new(AtomicBool::new(false))).with_source_sha256(source_sha256))
     }
 }
 
@@ -2285,6 +4395,55 @@ impl NativeDocumentResource for RecordingResource {
             request.crop.width as u32,
             request.crop.height as u32,
         ))
+    }
+
+    fn close(&self) -> Result<(), String> {
+        self.released.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn is_released(&self) -> bool {
+        self.released.load(Ordering::Acquire)
+    }
+}
+
+impl NativeDocumentResource for ContentGeometryRecordingResource {
+    fn worker_pid(&self) -> Option<u32> {
+        Some(4245)
+    }
+
+    fn render_page(&self, page_index: u32, width: u32) -> Result<RasterSurface, String> {
+        Ok(raster(width, page_index + 2))
+    }
+
+    fn render_tile(
+        &self,
+        request: butter_paper_gpui_migration::viewer::TileRequest,
+    ) -> Result<RasterSurface, String> {
+        Ok(raster(
+            request.crop.width as u32,
+            request.crop.height as u32,
+        ))
+    }
+
+    fn page_snap_geometry(&self, page_index: u32) -> Result<PageSnapGeometry, String> {
+        self.calls.lock().unwrap().push(page_index);
+        if self
+            .failures_remaining
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err("deterministic content geometry failure".into());
+        }
+        Ok(PageSnapGeometry {
+            page_index,
+            primitives: vec![PdfContentPrimitive::Line {
+                start: ContentPoint { x: 10., y: 10. },
+                end: ContentPoint { x: 30., y: 10. },
+            }],
+        })
     }
 
     fn close(&self) -> Result<(), String> {
@@ -2855,6 +5014,9 @@ fn opened_document_retains_coordinate_space_metadata() {
         retained.viewport_to_pdf(CoordinatePoint::new(72.0, 72.0)),
         CoordinatePoint::new(72.0, 108.0)
     );
+    let snap_geometry = document.page_snap_geometry(0).unwrap();
+    assert_eq!(snap_geometry.page_index, 0);
+    assert!(snap_geometry.primitives.is_empty());
 }
 
 fn opened_annotation_all_document(released: Arc<AtomicBool>) -> OpenedNativeDocument {
@@ -3292,6 +5454,14 @@ fn native_open_session_snapshot_filters_remaps_and_restores_stored_tab_order(
         expected,
         "opening, failed, and generated Save-As-required sessions must not enter the manifest",
     );
+    let recovery = workspace.read_with(cx, |workspace, cx| workspace.session_recovery_snapshot(cx));
+    assert_eq!(recovery.documents().len(), 1);
+    assert!(recovery.documents()[0].requires_save_as());
+    assert_eq!(recovery.documents()[0].dirty_revision(), 0);
+    assert!(
+        recovery.documents()[0].path().is_absolute(),
+        "the warning marker must retain the exact durable generated-original path"
+    );
 
     let (manifest_root, store) = native_open_manifest_store("roundtrip");
     let _manifest_scratch = ScratchDirectories(vec![manifest_root]);
@@ -3371,6 +5541,525 @@ fn native_open_session_snapshot_filters_remaps_and_restores_stored_tab_order(
             .iter()
             .all(|(_, released)| released.load(Ordering::Acquire))
     );
+}
+
+#[gpui::test]
+fn session_recovery_warning_names_lost_documents_and_requires_explicit_dismissal(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let workspace = cx.new(DocumentWorkspace::new);
+    let snapshot = SessionRecoverySnapshot::new(vec![
+        SessionRecoveryDocument::new(workspace_save_target("B-plan.pdf"), "B-plan.pdf", 3, false),
+        SessionRecoveryDocument::new(workspace_save_target("A-plan.pdf"), "A-plan.pdf", 7, true),
+    ]);
+
+    workspace.update(cx, |workspace, cx| {
+        workspace.show_session_recovery_warning(&snapshot, cx)
+    });
+    let warning = workspace
+        .read_with(cx, |workspace, _| {
+            workspace.session_recovery_warning().map(str::to_owned)
+        })
+        .unwrap();
+    assert!(warning.contains("A-plan.pdf and B-plan.pdf"), "{warning}");
+    assert!(
+        warning.contains("found evidence of unsaved edits"),
+        "{warning}"
+    );
+    assert!(
+        warning.contains("last successfully saved version"),
+        "{warning}"
+    );
+
+    workspace.update(cx, |workspace, cx| {
+        workspace.dismiss_session_recovery_warning(cx)
+    });
+    assert!(workspace.read_with(cx, |workspace, _| {
+        workspace.session_recovery_warning().is_none()
+    }));
+}
+
+#[gpui::test]
+fn startup_recovery_inspection_blocks_open_until_the_inbox_is_resolved(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let workspace = cx.new(DocumentWorkspace::new);
+    workspace.update(cx, |workspace, cx| {
+        let deferred = DeferredStartupOpen::Explicit(DocumentOpenBatchRequest::new(
+            DocumentOpenOrigin::System,
+            vec![workspace_save_target("deferred.pdf")],
+        ));
+        workspace.defer_startup_open(deferred.clone());
+        workspace.begin_startup_recovery_inspection(cx);
+        assert!(workspace.startup_recovery_inspecting());
+        assert_eq!(
+            workspace.open_documents(
+                DocumentOpenBatchRequest::new(
+                    DocumentOpenOrigin::System,
+                    vec![workspace_save_target("deferred.pdf")],
+                ),
+                cx,
+            ),
+            DocumentOpenBatchDisposition::DeferredForRecovery,
+        );
+        workspace.finish_startup_recovery_inspection(
+            vec![StartupRecoveryItem {
+                id: butter_paper_gpui_migration::document_recovery_store::RecoveryDocumentId::generate()
+                    .unwrap(),
+                authority: None,
+                source_path: Some(workspace_save_target("deferred.pdf")),
+                current_revision: None,
+                saved_revision: None,
+                availability: StartupRecoveryAvailability::Unavailable("corrupt recovery".into()),
+            }],
+            cx,
+        );
+        assert!(!workspace.startup_recovery_inspecting());
+        assert_eq!(workspace.startup_recovery_items().len(), 1);
+        assert_eq!(workspace.deferred_startup_open(), Some(&deferred));
+        assert_eq!(
+            workspace.open_documents(
+                DocumentOpenBatchRequest::new(
+                    DocumentOpenOrigin::System,
+                    vec![workspace_save_target("deferred.pdf")],
+                ),
+                cx,
+            ),
+            DocumentOpenBatchDisposition::DeferredForRecovery,
+        );
+    });
+}
+
+#[gpui::test]
+fn discarding_the_exact_startup_recovery_retires_it_and_resumes_deferred_launch(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let root = std::env::temp_dir().join(format!(
+        "bp-startup-recovery-discard-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _scratch = ScratchDirectories(vec![root.clone()]);
+    let source = root.join("discard.pdf");
+    let base_pdf = b"%PDF-1.7\ndiscard recovery base\n%%EOF\n";
+    let timeline = b"dirty timeline";
+    let store = Arc::new(DocumentRecoveryStore::open(&root).unwrap());
+    let id = store
+        .publish_new(&RecoveryPublication {
+            source_path: &source,
+            source_kind: RecoverySourceKind::Opened,
+            source_sha256: Sha256::digest(base_pdf).into(),
+            base_pdf,
+            timeline,
+            current_revision: 1,
+            saved_revision: 0,
+            requires_save_as: false,
+        })
+        .unwrap();
+    let recovered = store.load(id).unwrap().unwrap();
+    let authority = recovered.authority;
+    let workspace = cx.new(DocumentWorkspace::new);
+    workspace.update(cx, |workspace, cx| {
+        workspace.bind_document_recovery_store(store.clone());
+        workspace.defer_startup_open(DeferredStartupOpen::None);
+        workspace.finish_startup_recovery_inspection(
+            vec![StartupRecoveryItem {
+                id,
+                authority: Some(authority),
+                source_path: Some(source),
+                current_revision: Some(1),
+                saved_revision: Some(0),
+                availability: StartupRecoveryAvailability::OpenedSourceNeedsVerification,
+            }],
+            cx,
+        );
+        workspace.discard_startup_recovery(id, cx);
+        assert_eq!(workspace.startup_recovery_operation(), Some(id));
+    });
+
+    cx.run_until_parked();
+
+    assert!(store.active_document_ids().unwrap().is_empty());
+    workspace.update(cx, |workspace, _| {
+        assert!(workspace.startup_recovery_items().is_empty());
+        assert_eq!(workspace.startup_recovery_operation(), None);
+        assert_eq!(workspace.deferred_startup_open(), None);
+    });
+}
+
+#[gpui::test]
+fn discarding_a_stale_startup_recovery_refreshes_without_erasing_the_new_checkpoint(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let root = std::env::temp_dir().join(format!(
+        "bp-startup-recovery-stale-discard-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _scratch = ScratchDirectories(vec![root.clone()]);
+    let source = root.join("changed.pdf");
+    let base_pdf = b"%PDF-1.7\nstale recovery base\n%%EOF\n";
+    let store = Arc::new(DocumentRecoveryStore::open(&root).unwrap());
+    let id = store
+        .publish_new(&RecoveryPublication {
+            source_path: &source,
+            source_kind: RecoverySourceKind::Opened,
+            source_sha256: Sha256::digest(base_pdf).into(),
+            base_pdf,
+            timeline: b"revision one",
+            current_revision: 1,
+            saved_revision: 0,
+            requires_save_as: false,
+        })
+        .unwrap();
+    let stale = store.load(id).unwrap().unwrap().authority;
+    let current = store
+        .replace_timeline(
+            &stale,
+            &StagedRecoveryPublication {
+                source_path: &source,
+                source_kind: RecoverySourceKind::Opened,
+                timeline: b"revision two",
+                current_revision: 2,
+                saved_revision: 0,
+                requires_save_as: false,
+            },
+        )
+        .unwrap();
+    let workspace = cx.new(DocumentWorkspace::new);
+    workspace.update(cx, |workspace, cx| {
+        workspace.bind_document_recovery_store(store.clone());
+        workspace.defer_startup_open(DeferredStartupOpen::None);
+        workspace.finish_startup_recovery_inspection(
+            vec![StartupRecoveryItem {
+                id,
+                authority: Some(stale),
+                source_path: Some(source.clone()),
+                current_revision: Some(1),
+                saved_revision: Some(0),
+                availability: StartupRecoveryAvailability::OpenedSourceNeedsVerification,
+            }],
+            cx,
+        );
+        workspace.discard_startup_recovery(id, cx);
+    });
+
+    cx.run_until_parked();
+
+    assert_eq!(store.active_document_ids().unwrap(), vec![id]);
+    workspace.update(cx, |workspace, _| {
+        let item = &workspace.startup_recovery_items()[0];
+        assert_eq!(item.authority, Some(current));
+        assert_eq!(item.current_revision, Some(2));
+        assert_eq!(workspace.startup_recovery_operation(), None);
+        assert_eq!(
+            workspace.deferred_startup_open(),
+            Some(&DeferredStartupOpen::None)
+        );
+    });
+}
+
+#[gpui::test]
+fn recovering_an_unchanged_opened_source_restores_the_exact_dirty_timeline(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let root = std::env::temp_dir().join(format!(
+        "bp-startup-recovery-open-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _scratch = ScratchDirectories(vec![root.clone()]);
+    let source = root.join("unchanged.pdf");
+    let base_pdf = b"%PDF-1.7\nunchanged recovery base\n%%EOF\n";
+    let source_sha256: [u8; 32] = Sha256::digest(base_pdf).into();
+    let recovered_id = MarkupId::new("workspace:rectangle:41").unwrap();
+    let mut adapter = AnnotationAdapter::default();
+    adapter
+        .load_imported_annotations(
+            1,
+            vec![Annotation::Rectangle(RectangleAnnotation {
+                id: recovered_id.clone(),
+                page_index: 0,
+                rect: PdfRect::new(72., 96., 144., 96.).unwrap(),
+                rotation_degrees: 0.,
+                appearance: RectangleAppearance::default(),
+                locked: false,
+            })],
+        )
+        .unwrap();
+    assert!(adapter.select_id(1, &recovered_id));
+    let recovered_rect = PdfRect::new(96., 120., 180., 108.).unwrap();
+    adapter
+        .set_selected_rectangle_rect(1, recovered_rect)
+        .unwrap();
+    let expected = adapter.snapshot(1).unwrap();
+    assert_eq!((expected.revision, expected.saved_revision), (1, 0));
+    let timeline = adapter.encode_document_recovery_timeline(1).unwrap();
+
+    let store = Arc::new(DocumentRecoveryStore::open(&root).unwrap());
+    let id = store
+        .publish_new(&RecoveryPublication {
+            source_path: &source,
+            source_kind: RecoverySourceKind::Opened,
+            source_sha256,
+            base_pdf,
+            timeline: &timeline,
+            current_revision: 1,
+            saved_revision: 0,
+            requires_save_as: false,
+        })
+        .unwrap();
+    let recovered = store.load(id).unwrap().unwrap();
+    let workspace =
+        cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(DigestOpener(source_sha256)), cx));
+    workspace.update(cx, |workspace, cx| {
+        workspace.bind_document_recovery_store(store.clone());
+        workspace.defer_startup_open(DeferredStartupOpen::None);
+        workspace.finish_startup_recovery_inspection(
+            vec![StartupRecoveryItem {
+                id,
+                authority: Some(recovered.authority),
+                source_path: Some(source),
+                current_revision: Some(1),
+                saved_revision: Some(0),
+                availability: StartupRecoveryAvailability::OpenedSourceNeedsVerification,
+            }],
+            cx,
+        );
+        workspace.recover_startup_opened_source(id, cx);
+    });
+
+    cx.run_until_parked();
+
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.startup_recovery_items().is_empty());
+        assert_eq!(workspace.startup_recovery_operation(), None);
+        assert_eq!(workspace.deferred_startup_open(), None);
+        let document_id = workspace.active_document_id().unwrap();
+        let snapshot = workspace.annotation_snapshot(document_id, cx).unwrap();
+        assert_eq!((snapshot.revision, snapshot.saved_revision), (1, 0));
+        assert!(snapshot.dirty);
+        assert_eq!(snapshot.rectangles.len(), 1);
+        assert_eq!(snapshot.rectangles[0].id, recovered_id);
+        assert!(
+            snapshot.rectangles[0]
+                .rect
+                .same_pdf_geometry_as(recovered_rect)
+        );
+    });
+    let still_authoritative = store.load(id).unwrap().unwrap();
+    assert_eq!(still_authoritative.authority, recovered.authority);
+}
+
+#[gpui::test]
+fn changed_opened_source_keeps_recovery_and_requires_a_copy(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let root = std::env::temp_dir().join(format!(
+        "bp-startup-recovery-changed-source-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _scratch = ScratchDirectories(vec![root.clone()]);
+    let source = root.join("changed.pdf");
+    let base_pdf = b"%PDF-1.7\noriginal recovery base\n%%EOF\n";
+    let source_sha256: [u8; 32] = Sha256::digest(base_pdf).into();
+    let mut adapter = AnnotationAdapter::default();
+    let changed_id = MarkupId::new("workspace:rectangle:52").unwrap();
+    adapter
+        .load_imported_annotations(
+            1,
+            vec![Annotation::Rectangle(RectangleAnnotation {
+                id: changed_id.clone(),
+                page_index: 0,
+                rect: PdfRect::new(72., 96., 144., 96.).unwrap(),
+                rotation_degrees: 0.,
+                appearance: RectangleAppearance::default(),
+                locked: false,
+            })],
+        )
+        .unwrap();
+    assert!(adapter.select_id(1, &changed_id));
+    adapter
+        .set_selected_rectangle_rect(1, PdfRect::new(84., 108., 156., 104.).unwrap())
+        .unwrap();
+    let timeline = adapter.encode_document_recovery_timeline(1).unwrap();
+    let store = Arc::new(DocumentRecoveryStore::open(&root).unwrap());
+    let id = store
+        .publish_new(&RecoveryPublication {
+            source_path: &source,
+            source_kind: RecoverySourceKind::Opened,
+            source_sha256,
+            base_pdf,
+            timeline: &timeline,
+            current_revision: 1,
+            saved_revision: 0,
+            requires_save_as: false,
+        })
+        .unwrap();
+    let recovered = store.load(id).unwrap().unwrap();
+    let changed_sha256: [u8; 32] = Sha256::digest(b"changed source bytes").into();
+    let workspace =
+        cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(DigestOpener(changed_sha256)), cx));
+    workspace.update(cx, |workspace, cx| {
+        workspace.bind_document_recovery_store(store.clone());
+        workspace.defer_startup_open(DeferredStartupOpen::None);
+        workspace.finish_startup_recovery_inspection(
+            vec![StartupRecoveryItem {
+                id,
+                authority: Some(recovered.authority),
+                source_path: Some(source),
+                current_revision: Some(1),
+                saved_revision: Some(0),
+                availability: StartupRecoveryAvailability::OpenedSourceNeedsVerification,
+            }],
+            cx,
+        );
+        workspace.recover_startup_opened_source(id, cx);
+    });
+
+    cx.run_until_parked();
+
+    workspace.update(cx, |workspace, _| {
+        assert_eq!(workspace.startup_recovery_items().len(), 1);
+        assert!(matches!(
+            workspace.startup_recovery_items()[0].availability,
+            StartupRecoveryAvailability::GeneratedCopyRequired
+        ));
+        assert_eq!(workspace.startup_recovery_operation(), None);
+        assert_eq!(
+            workspace.deferred_startup_open(),
+            Some(&DeferredStartupOpen::None)
+        );
+    });
+    assert_eq!(
+        store.load(id).unwrap().unwrap().authority,
+        recovered.authority
+    );
+}
+
+#[gpui::test]
+fn recovering_a_copy_rebinds_authority_and_restores_a_generated_save_as_session(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let root = std::env::temp_dir().join(format!(
+        "bp-startup-recovery-copy-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _scratch = ScratchDirectories(vec![root.clone()]);
+    let source = root.join("missing.pdf");
+    let base_pdf = b"%PDF-1.7\ncopy recovery base\n%%EOF\n";
+    let source_sha256: [u8; 32] = Sha256::digest(base_pdf).into();
+    let recovered_id = MarkupId::new("workspace:rectangle:63").unwrap();
+    let mut adapter = AnnotationAdapter::default();
+    adapter
+        .load_imported_annotations(
+            1,
+            vec![Annotation::Rectangle(RectangleAnnotation {
+                id: recovered_id.clone(),
+                page_index: 0,
+                rect: PdfRect::new(72., 96., 144., 96.).unwrap(),
+                rotation_degrees: 0.,
+                appearance: RectangleAppearance::default(),
+                locked: false,
+            })],
+        )
+        .unwrap();
+    assert!(adapter.select_id(1, &recovered_id));
+    adapter
+        .set_selected_rectangle_rect(1, PdfRect::new(110., 130., 190., 120.).unwrap())
+        .unwrap();
+    let timeline = adapter.encode_document_recovery_timeline(1).unwrap();
+    let store = Arc::new(DocumentRecoveryStore::open(&root).unwrap());
+    let id = store
+        .publish_new(&RecoveryPublication {
+            source_path: &source,
+            source_kind: RecoverySourceKind::Opened,
+            source_sha256,
+            base_pdf,
+            timeline: &timeline,
+            current_revision: 1,
+            saved_revision: 0,
+            requires_save_as: false,
+        })
+        .unwrap();
+    let original = store.load(id).unwrap().unwrap();
+    let generated_root = root.join("generated");
+    let generated_store = GeneratedDocumentStore::new(generated_root.clone()).unwrap();
+    let workspace = cx.new(|cx| {
+        DocumentWorkspace::with_opener_and_generated_store(
+            Arc::new(DigestOpener(source_sha256)),
+            generated_store,
+            cx,
+        )
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.bind_document_recovery_store(store.clone());
+        workspace.defer_startup_open(DeferredStartupOpen::None);
+        workspace.finish_startup_recovery_inspection(
+            vec![StartupRecoveryItem {
+                id,
+                authority: Some(original.authority),
+                source_path: Some(source),
+                current_revision: Some(1),
+                saved_revision: Some(0),
+                availability: StartupRecoveryAvailability::GeneratedCopyRequired,
+            }],
+            cx,
+        );
+        workspace.recover_startup_copy(id, cx);
+    });
+
+    cx.run_until_parked();
+
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.startup_recovery_items().is_empty());
+        assert_eq!(workspace.startup_recovery_operation(), None);
+        let document_id = workspace.active_document_id().unwrap();
+        assert!(workspace.document_requires_save_as(document_id, cx));
+        let snapshot = workspace.annotation_snapshot(document_id, cx).unwrap();
+        assert_eq!((snapshot.revision, snapshot.saved_revision), (1, 0));
+        assert_eq!(snapshot.rectangles[0].id, recovered_id);
+    });
+    let rebound = store.load(id).unwrap().unwrap();
+    assert_eq!(rebound.source_kind, RecoverySourceKind::Generated);
+    assert!(rebound.requires_save_as);
+    assert_eq!(rebound.current_revision, 1);
+    assert_eq!(rebound.saved_revision, 0);
+    assert_eq!(
+        rebound.authority.checkpoint_sequence(),
+        original.authority.checkpoint_sequence() + 1
+    );
+    assert!(
+        rebound
+            .source_path
+            .starts_with(generated_root.canonicalize().unwrap())
+    );
+    assert_eq!(std::fs::read(&rebound.source_path).unwrap(), base_pdf);
 }
 
 #[gpui::test]
@@ -3854,6 +6543,167 @@ fn imported_rectangle(id: &str) -> RectangleAnnotation {
             .unwrap(),
         locked: false,
     }
+}
+
+#[test]
+fn imported_ellipse_first_press_resizes_preview_and_commits_once() {
+    run_gpui_test_with_native_main_stack(
+        "imported_ellipse_first_press_resizes_preview_and_commits_once",
+        imported_ellipse_first_press_resizes_preview_and_commits_once_on_native_stack,
+    );
+}
+
+fn imported_ellipse_first_press_resizes_preview_and_commits_once_on_native_stack(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("ellipse-hover.pdf"), cx)
+    });
+    let mut ellipse = EllipseAnnotation::new(
+        MarkupId::new("pdf:ellipse-hover").unwrap(),
+        0,
+        PdfRect::new(120., 400., 160., 96.).unwrap(),
+        RectangleAppearance::default(),
+    )
+    .unwrap();
+    ellipse.rotation_degrees = 0.;
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))
+                .with_annotations(vec![Annotation::Ellipse(ellipse.clone())])),
+            cx,
+        )
+    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let layer_id = Box::leak(document_annotation_layer_id(request.document_id, 0).into_boxed_str());
+    let layer = cx.debug_bounds(layer_id).unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let project = |sample: PdfPoint| {
+        point(
+            origin.x + px(sample.x as f32 * scale),
+            origin.y + px((792. - sample.y as f32) * scale),
+        )
+    };
+    let east_pdf = ellipse_resize_handle_point_for_rect(
+        ellipse.rect,
+        ellipse.rotation_degrees,
+        RectangleResizeHandle::East,
+    );
+    let north_west_pdf = ellipse_resize_handle_point_for_rect(
+        ellipse.rect,
+        ellipse.rotation_degrees,
+        RectangleResizeHandle::NorthWest,
+    );
+    let rotation_pdf = ellipse_rotation_handle_point_for_rect(
+        ellipse.rect,
+        ellipse.rotation_degrees,
+        scale as f64,
+    )
+    .unwrap();
+    let east = project(east_pdf);
+    let north_west = project(north_west_pdf);
+    let rotation = project(rotation_pdf);
+    let feedback_handles_at = |cx: &mut gpui::VisualTestContext, center: gpui::Point<Pixels>| {
+        let device_scale = cx.update(|window, _| window.scale_factor());
+        cx.update(|window, _| window.painted_quads())
+            .into_iter()
+            .filter(|quad| {
+                let quad_x = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                let quad_y = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                (quad_x - f32::from(center.x) * device_scale).abs() < 1.
+                    && (quad_y - f32::from(center.y) * device_scale).abs() < 1.
+                    && quad.border_widths.top.0 > 0.
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(feedback_handles_at(cx, east).is_empty());
+    cx.simulate_mouse_move(east, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let hot = feedback_handles_at(cx, east);
+    let ordinary = feedback_handles_at(cx, north_west);
+    assert_eq!(hot.len(), 1);
+    assert_eq!(ordinary.len(), 1);
+    assert!(hot[0].bounds.size.width.0 > ordinary[0].bounds.size.width.0);
+    let hover_scene = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(request.document_id, 0, cx)
+    });
+    assert_eq!(
+        annotation_resize_cursor_style(&hover_scene, &ellipse.id, 3),
+        Some(CursorStyle::ResizeLeftRight),
+        "the unselected Ellipse hot handle must drive the nearest native resize cursor"
+    );
+    assert!(
+        feedback_handles_at(cx, rotation).is_empty(),
+        "Electron withholds Ellipse rotation until selection"
+    );
+
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    let moved_east = project(PdfPoint::new(east_pdf.x + 24., east_pdf.y).unwrap());
+    cx.simulate_mouse_down(east, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(moved_east, Some(MouseButton::Left), Modifiers::default());
+    let preview = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(request.document_id, 0, cx)
+    });
+    assert!(preview.ellipses[0].preview);
+    assert_ne!(preview.ellipses[0].rect, before.ellipses[0].rect);
+    let during = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(during.ellipses, before.ellipses);
+    assert_eq!(
+        (during.revision, during.undo_depth),
+        (before.revision, before.undo_depth)
+    );
+    assert_eq!(during.selected_id.as_ref(), Some(&ellipse.id));
+    cx.simulate_mouse_up(moved_east, MouseButton::Left, Modifiers::default());
+    let after = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(after.undo_depth, before.undo_depth + 1);
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .ellipses,
+        before.ellipses
+    );
 }
 
 #[gpui::test]
@@ -4568,8 +7418,15 @@ fn document_workspace_preserves_live_state_rejects_stale_results_and_releases_re
     );
 }
 
-#[gpui::test]
-fn document_worker_recovery_preserves_dirty_state_and_rejects_stale_replacements(
+#[test]
+fn document_worker_recovery_preserves_dirty_state_and_rejects_stale_replacements() {
+    run_gpui_test_with_native_main_stack(
+        "document_worker_recovery_preserves_dirty_state_and_rejects_stale_replacements",
+        document_worker_recovery_preserves_dirty_state_and_rejects_stale_replacements_on_native_stack,
+    );
+}
+
+fn document_worker_recovery_preserves_dirty_state_and_rejects_stale_replacements_on_native_stack(
     cx: &mut TestAppContext,
 ) {
     cx.update(gpui_component::init);
@@ -4776,6 +7633,81 @@ fn document_worker_recovery_preserves_dirty_state_and_rejects_stale_replacements
 }
 
 #[gpui::test]
+fn workspace_tool_shortcuts_match_electron_and_preserve_modified_key_collisions(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("tool-shortcuts.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| focus.focus(window, cx));
+
+    let assert_shortcut =
+        |cx: &mut gpui::VisualTestContext, shortcut: &str, expected: AnnotationTool| {
+            cx.simulate_keystrokes(shortcut);
+            assert_eq!(
+                workspace.read_with(cx, |workspace, cx| workspace
+                    .annotation_tool(request.document_id, cx)),
+                Some(expected),
+                "{shortcut} must select {expected:?}"
+            );
+        };
+
+    for (shortcut, expected) in [
+        ("t", AnnotationTool::TextBox),
+        ("r", AnnotationTool::Rectangle),
+        ("e", AnnotationTool::Ellipse),
+        ("p", AnnotationTool::Pen),
+        ("c", AnnotationTool::Cloud),
+        ("q", AnnotationTool::Callout),
+        ("shift-c", AnnotationTool::Arc),
+        ("shift-p", AnnotationTool::Polygon),
+        ("shift-alt-q", AnnotationTool::Polylength),
+        ("a", AnnotationTool::Arrow),
+        ("shift-alt-a", AnnotationTool::Area),
+        ("l", AnnotationTool::Line),
+        ("shift-l", AnnotationTool::Dimension),
+        ("shift-alt-l", AnnotationTool::Length),
+        ("shift-n", AnnotationTool::Polyline),
+        ("h", AnnotationTool::Highlight),
+        ("k", AnnotationTool::CloudPlus),
+        ("g", AnnotationTool::Snapshot),
+    ] {
+        assert_shortcut(cx, shortcut, expected);
+    }
+
+    assert_shortcut(cx, "r", AnnotationTool::Rectangle);
+    assert_shortcut(cx, "v", AnnotationTool::Select);
+    assert_shortcut(cx, "i", AnnotationTool::Image);
+    assert!(
+        cx.did_prompt_for_paths(),
+        "the Image shortcut must enter the existing picker-backed activation path"
+    );
+}
+
+#[gpui::test]
 fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_history_contract(
     cx: &mut TestAppContext,
 ) {
@@ -4843,8 +7775,7 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
     };
     let assert_point = |actual: PdfPoint, expected: PdfPoint| {
         assert!(
-            (actual.x - expected.x).abs() <= 0.000_1
-                && (actual.y - expected.y).abs() <= 0.000_1,
+            (actual.x - expected.x).abs() <= 0.000_1 && (actual.y - expected.y).abs() <= 0.000_1,
             "expected {actual:?} to match {expected:?} within pointer projection tolerance"
         );
     };
@@ -4987,11 +7918,7 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
     );
 
     let line_midpoint = project(162., 192.);
-    cx.simulate_mouse_down(
-        line_midpoint,
-        MouseButton::Left,
-        Modifiers::default(),
-    );
+    cx.simulate_mouse_down(line_midpoint, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_up(line_midpoint, MouseButton::Left, Modifiers::default());
     let line_id = MarkupId::new("workspace:line:1").unwrap();
     let selected_line = workspace
@@ -5003,16 +7930,8 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
     assert_eq!((selected_line.revision, selected_line.undo_depth), (2, 2));
 
     let line_move_end = project(198., 168.);
-    cx.simulate_mouse_down(
-        line_midpoint,
-        MouseButton::Left,
-        Modifiers::default(),
-    );
-    cx.simulate_mouse_move(
-        line_move_end,
-        Some(MouseButton::Left),
-        Modifiers::default(),
-    );
+    cx.simulate_mouse_down(line_midpoint, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(line_move_end, Some(MouseButton::Left), Modifiers::default());
     let line_move_preview = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(document_id, cx)
@@ -5043,11 +7962,7 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
 
     let arrow_id = MarkupId::new("workspace:arrow:2").unwrap();
     let arrow_midpoint = project(198., 300.);
-    cx.simulate_mouse_down(
-        arrow_midpoint,
-        MouseButton::Left,
-        Modifiers::default(),
-    );
+    cx.simulate_mouse_down(arrow_midpoint, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_up(arrow_midpoint, MouseButton::Left, Modifiers::default());
     let selected_arrow = workspace
         .read_with(cx, |workspace, cx| {
@@ -5065,11 +7980,7 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
 
     let arrow_end_handle = project(306., 300.);
     let arrow_edit_end = project(330., 360.);
-    cx.simulate_mouse_down(
-        arrow_end_handle,
-        MouseButton::Left,
-        Modifiers::default(),
-    );
+    cx.simulate_mouse_down(arrow_end_handle, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(
         arrow_edit_end,
         Some(MouseButton::Left),
@@ -5099,7 +8010,10 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
     assert_point(edited_arrow.start, original_arrow.start);
     assert_point(edited_arrow.end, PdfPoint::new(330., 360.).unwrap());
     assert_eq!(
-        (edited_arrow_snapshot.revision, edited_arrow_snapshot.undo_depth),
+        (
+            edited_arrow_snapshot.revision,
+            edited_arrow_snapshot.undo_depth
+        ),
         (4, 4)
     );
 
@@ -5119,7 +8033,10 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
         })
         .unwrap();
     assert_eq!(
-        (pointer_edits_undone.undo_depth, pointer_edits_undone.redo_depth),
+        (
+            pointer_edits_undone.undo_depth,
+            pointer_edits_undone.redo_depth
+        ),
         (2, 2)
     );
     assert_point(
@@ -5147,7 +8064,10 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
         })
         .unwrap();
     assert_eq!(
-        (pointer_edits_redone.undo_depth, pointer_edits_redone.redo_depth),
+        (
+            pointer_edits_redone.undo_depth,
+            pointer_edits_redone.redo_depth
+        ),
         (4, 0)
     );
     assert_eq!(
@@ -5179,32 +8099,20 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
         .unwrap();
     let locked_body_start = project(210., 330.);
     let locked_body_end = project(246., 354.);
-    cx.simulate_mouse_down(
-        locked_body_start,
-        MouseButton::Left,
-        Modifiers::default(),
-    );
+    cx.simulate_mouse_down(locked_body_start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(
         locked_body_end,
         Some(MouseButton::Left),
         Modifiers::default(),
     );
     cx.simulate_mouse_up(locked_body_end, MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_down(
-        arrow_edit_end,
-        MouseButton::Left,
-        Modifiers::default(),
-    );
+    cx.simulate_mouse_down(arrow_edit_end, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(
         project(354., 384.),
         Some(MouseButton::Left),
         Modifiers::default(),
     );
-    cx.simulate_mouse_up(
-        project(354., 384.),
-        MouseButton::Left,
-        Modifiers::default(),
-    );
+    cx.simulate_mouse_up(project(354., 384.), MouseButton::Left, Modifiers::default());
     let locked_after_pointer = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(document_id, cx)
@@ -5223,13 +8131,19 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
         ),
         "locked body and endpoint gestures must not create history"
     );
-    assert_eq!(locked_after_pointer.straight_lines, locked_before_pointer.straight_lines);
+    assert_eq!(
+        locked_after_pointer.straight_lines,
+        locked_before_pointer.straight_lines
+    );
 
     assert!(workspace.update(cx, |workspace, cx| {
         workspace.select_annotation(document_id, &line_id, cx)
     }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    if cx.debug_bounds(STRAIGHT_LINE_PROPERTY_INSPECTOR_ID).is_none() {
+    if cx
+        .debug_bounds(STRAIGHT_LINE_PROPERTY_INSPECTOR_ID)
+        .is_none()
+    {
         toggle_document_actions(cx);
     }
     let before_properties = workspace
@@ -5344,9 +8258,7 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
 }
 
 #[gpui::test]
-fn contextual_actions_workspace_canvas_menu_routes_shared_select_action(
-    cx: &mut TestAppContext,
-) {
+fn contextual_actions_workspace_canvas_menu_routes_shared_select_action(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -5462,14 +8374,19 @@ fn semantic_snapping_workspace_uses_real_component_controls_and_controlled_state
         DOCUMENT_SNAP_DIMENSION_INCREMENT_ID,
         DOCUMENT_SNAP_GUIDES_ID,
     ] {
-        assert!(cx.debug_bounds(id).is_some(), "{id} must render in the snap settings surface");
+        assert!(
+            cx.debug_bounds(id).is_some(),
+            "{id} must render in the snap settings surface"
+        );
     }
     let construction_grid = cx
         .debug_bounds(DOCUMENT_SNAP_CONSTRUCTION_GRID_ID)
         .expect("the construction-grid control must render");
     cx.simulate_click(construction_grid.center(), Modifiers::default());
     let settings = workspace
-        .read_with(cx, |workspace, cx| workspace.semantic_snap_settings(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.semantic_snap_settings(document_id, cx)
+        })
         .unwrap();
     assert!(settings.is_source_enabled(SemanticSnapSource::ConstructionGrid));
     assert_eq!(settings.construction_grid_spacing_mm(), 10.);
@@ -5600,6 +8517,89 @@ fn semantic_snapping_workspace_routes_real_line_input_and_transient_guide_eviden
         "the guide decision must clear after commit",
     );
     assert!(cx.debug_bounds("snap-indicator").is_none());
+}
+
+#[gpui::test]
+fn opened_page_grid_metadata_reaches_real_workspace_pointer_routes(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("bp-page-grid-snapping.pdf"), cx)
+    });
+    let document_id = request.document_id;
+    let grid = PageGridDefinition::new(
+        PageGridKind::Rectangular,
+        PdfPoint::new(0., 0.).unwrap(),
+        50.,
+        612.,
+        792.,
+        0.,
+        PageGridSource::Generated,
+    )
+    .unwrap();
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))
+                .with_page_grid_definition(Some(grid))),
+            cx,
+        )),
+        ApplyDisposition::Applied,
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_LINE_TOOL_ID);
+    let line_button = cx.debug_bounds(DOCUMENT_LINE_TOOL_ID).unwrap();
+    cx.simulate_click(line_button.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
+    let layer = cx.debug_bounds(layer_id).unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let to_view =
+        |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale));
+    cx.simulate_mouse_down(to_view(102., 101.), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        to_view(149., 151.),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    let decision = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.semantic_snap_decision(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(decision.point, PdfPoint::new(150., 150.).unwrap());
+    assert_eq!(decision.role, SemanticSnapRole::GridPoint);
+    cx.simulate_mouse_up(to_view(149., 151.), MouseButton::Left, Modifiers::default());
+    let snapshot = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    let created = snapshot
+        .straight_lines
+        .iter()
+        .find(|line| line.id.as_str() == "workspace:line:1")
+        .unwrap();
+    assert_eq!(created.start, PdfPoint::new(100., 100.).unwrap());
+    assert_eq!(created.end, PdfPoint::new(150., 150.).unwrap());
 }
 
 #[test]
@@ -6269,6 +9269,917 @@ fn save_as_swaps_only_a_validated_reopen_and_preserves_the_live_document_on_fail
 }
 
 #[gpui::test]
+fn ordinary_edit_undo_and_redo_publish_the_exact_recovery_timeline(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let root = std::env::temp_dir().join(format!(
+        "bp-workspace-history-recovery-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _scratch = ScratchDirectories(vec![root.clone()]);
+    let source = root.join("source.pdf");
+    let source_bytes = b"%PDF-1.7\nworkspace history recovery\n%%EOF\n";
+    std::fs::write(&source, source_bytes).unwrap();
+    let source = source.canonicalize().unwrap();
+    let source_sha256: [u8; 32] = Sha256::digest(source_bytes).into();
+    let store = Arc::new(DocumentRecoveryStore::open(&root).unwrap());
+    let workspace = cx.new(DocumentWorkspace::new);
+    workspace.update(cx, |workspace, _| {
+        workspace.bind_document_recovery_store(store.clone())
+    });
+    let open_request = workspace.update(cx, |workspace, cx| workspace.begin_open(source, cx));
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| workspace.apply_open_result(
+            &open_request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false))).with_source_sha256(source_sha256)),
+            cx,
+        )),
+        ApplyDisposition::Applied,
+    );
+    cx.run_until_parked();
+    let recovery_id = store.active_document_ids().unwrap()[0];
+    let rectangle_id = MarkupId::new("workspace:rectangle:history-recovery").unwrap();
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                open_request.document_id,
+                0,
+                rectangle_id.clone(),
+                PdfPoint::new(72., 96.).unwrap(),
+                PdfPoint::new(216., 192.).unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
+    let after_edit = store.load(recovery_id).unwrap().unwrap();
+    assert_eq!(
+        (after_edit.current_revision, after_edit.saved_revision),
+        (1, 0)
+    );
+    let mut restored = AnnotationAdapter::default();
+    restored
+        .restore_document_recovery_timeline(91, &after_edit.timeline)
+        .unwrap();
+    let restored_edit = restored.snapshot(91).unwrap();
+    assert_eq!((restored_edit.undo_depth, restored_edit.redo_depth), (1, 0));
+    assert_eq!(restored_edit.rectangles[0].id, rectangle_id);
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(open_request.document_id, cx)
+        })
+        .unwrap();
+    let after_undo = store.load(recovery_id).unwrap().unwrap();
+    assert_eq!(
+        (after_undo.current_revision, after_undo.saved_revision),
+        (0, 0)
+    );
+    restored
+        .restore_document_recovery_timeline(91, &after_undo.timeline)
+        .unwrap();
+    let restored_undo = restored.snapshot(91).unwrap();
+    assert!(restored_undo.rectangles.is_empty());
+    assert_eq!((restored_undo.undo_depth, restored_undo.redo_depth), (0, 1));
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.redo_annotations(open_request.document_id, cx)
+        })
+        .unwrap();
+    let after_redo = store.load(recovery_id).unwrap().unwrap();
+    assert_eq!(
+        (after_redo.current_revision, after_redo.saved_revision),
+        (1, 0)
+    );
+    assert!(
+        after_redo.authority.checkpoint_sequence() > after_undo.authority.checkpoint_sequence()
+    );
+    restored
+        .restore_document_recovery_timeline(91, &after_redo.timeline)
+        .unwrap();
+    let restored_redo = restored.snapshot(91).unwrap();
+    assert_eq!((restored_redo.undo_depth, restored_redo.redo_depth), (1, 0));
+    assert_eq!(restored_redo.rectangles[0].id, rectangle_id);
+}
+
+#[gpui::test]
+fn rich_text_clipboard_paste_undo_redo_publishes_exact_recovery_timeline(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let root = std::env::temp_dir().join(format!(
+        "bp-workspace-rich-clipboard-recovery-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _scratch = ScratchDirectories(vec![root.clone()]);
+    let source = root.join("source.pdf");
+    let source_bytes = b"%PDF-1.7\nworkspace rich clipboard recovery\n%%EOF\n";
+    std::fs::write(&source, source_bytes).unwrap();
+    let source_sha256: [u8; 32] = Sha256::digest(source_bytes).into();
+    let store = Arc::new(DocumentRecoveryStore::open(&root).unwrap());
+    let workspace = cx.new(DocumentWorkspace::new);
+    workspace.update(cx, |workspace, _| {
+        workspace.bind_document_recovery_store(store.clone())
+    });
+    let open_request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(source.canonicalize().unwrap(), cx)
+    });
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| workspace.apply_open_result(
+            &open_request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false))).with_source_sha256(source_sha256)),
+            cx,
+        )),
+        ApplyDisposition::Applied,
+    );
+    cx.run_until_parked();
+    let recovery_id = store.active_document_ids().unwrap()[0];
+    let source_id = MarkupId::new("workspace:text:rich-clipboard-source").unwrap();
+    let runs = vec![
+        TextBoxRichTextRun::new("Normal ")
+            .unwrap()
+            .with_font_family("Helvetica")
+            .unwrap()
+            .with_color("#111827")
+            .unwrap()
+            .with_font_size_pt(12.)
+            .unwrap(),
+        TextBoxRichTextRun::new("bold ")
+            .unwrap()
+            .with_font_family("Arimo")
+            .unwrap()
+            .with_emphasis(true, false)
+            .with_color("#2563eb")
+            .unwrap()
+            .with_font_size_pt(14.)
+            .unwrap(),
+        TextBoxRichTextRun::new("italic ")
+            .unwrap()
+            .with_font_family("Roboto Mono")
+            .unwrap()
+            .with_emphasis(false, true)
+            .with_color("#008000")
+            .unwrap()
+            .with_font_size_pt(11.)
+            .unwrap(),
+        TextBoxRichTextRun::new("colour")
+            .unwrap()
+            .with_font_family("Tinos")
+            .unwrap()
+            .with_emphasis(true, true)
+            .with_color("#dc2626")
+            .unwrap()
+            .with_font_size_pt(16.)
+            .unwrap(),
+    ];
+    let mut source_text = TextBoxAnnotation::new(
+        source_id.clone(),
+        0,
+        PdfRect::new(72., 180., 240., 72.).unwrap(),
+        "Normal bold italic colour",
+        TextBoxStyle::new("Helvetica", 12., "#111827", 0.8)
+            .unwrap()
+            .with_weight_and_alignment(400, TextAlignment::Center)
+            .unwrap()
+            .with_layout_metrics(16., 4.)
+            .unwrap(),
+    )
+    .unwrap()
+    .with_rich_text_runs(runs)
+    .unwrap()
+    .with_rotation_degrees(23.)
+    .unwrap();
+    source_text.locked = true;
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_text_box(open_request.document_id, source_text.clone(), cx)
+        })
+        .unwrap();
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace.select_annotation(open_request.document_id, &source_id, cx)
+    }));
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| {
+            workspace.copy_selected_annotations(open_request.document_id, cx)
+        }),
+        1,
+    );
+    let before_paste = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(open_request.document_id, cx)
+        })
+        .unwrap();
+    let before_checkpoint = store.load(recovery_id).unwrap().unwrap();
+
+    workspace.update(cx, |workspace, _| {
+        workspace.bind_document_recovery_store_error("injected recovery store failure")
+    });
+    let paste_error = workspace
+        .update(cx, |workspace, cx| {
+            workspace.paste_annotations(open_request.document_id, 1, cx)
+        })
+        .expect_err("paste must roll back when its recovery checkpoint cannot publish");
+    assert!(
+        paste_error.contains("document recovery store is unavailable"),
+        "{paste_error}"
+    );
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(open_request.document_id, cx)
+            })
+            .unwrap(),
+        before_paste,
+    );
+    let retained_checkpoint = store.load(recovery_id).unwrap().unwrap();
+    assert_eq!(retained_checkpoint.authority, before_checkpoint.authority);
+    assert_eq!(retained_checkpoint.timeline, before_checkpoint.timeline);
+
+    workspace.update(cx, |workspace, _| {
+        workspace.bind_document_recovery_store(store.clone())
+    });
+    let pasted_id = MarkupId::new("workspace:paste:text:1").unwrap();
+    assert_eq!(
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.paste_annotations(open_request.document_id, 1, cx)
+            })
+            .unwrap(),
+        vec![pasted_id.clone()],
+        "a rolled-back paste must not consume its generated ID",
+    );
+    let expected_pasted = match Annotation::TextBox(source_text.clone())
+        .translated_copy(pasted_id.clone(), 1, 12., -12.)
+        .unwrap()
+    {
+        Annotation::TextBox(annotation) => annotation,
+        _ => unreachable!(),
+    };
+    let after_paste = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(open_request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        after_paste.text_boxes,
+        vec![source_text.clone(), expected_pasted.clone()]
+    );
+    let pasted_checkpoint = store.load(recovery_id).unwrap().unwrap();
+    assert!(
+        pasted_checkpoint.authority.checkpoint_sequence()
+            > before_checkpoint.authority.checkpoint_sequence()
+    );
+    let mut restored = AnnotationAdapter::default();
+    restored
+        .restore_document_recovery_timeline(93, &pasted_checkpoint.timeline)
+        .unwrap();
+    let mut expected_recovered_paste = after_paste.clone();
+    expected_recovered_paste.selected_id = None;
+    assert_eq!(restored.snapshot(93).unwrap(), expected_recovered_paste);
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(open_request.document_id, cx)
+        })
+        .unwrap();
+    let after_undo = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(open_request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(after_undo.text_boxes, vec![source_text.clone()]);
+    let undo_checkpoint = store.load(recovery_id).unwrap().unwrap();
+    restored
+        .restore_document_recovery_timeline(93, &undo_checkpoint.timeline)
+        .unwrap();
+    let mut expected_recovered_undo = after_undo.clone();
+    expected_recovered_undo.selected_id = None;
+    assert_eq!(restored.snapshot(93).unwrap(), expected_recovered_undo);
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.redo_annotations(open_request.document_id, cx)
+        })
+        .unwrap();
+    let after_redo = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(open_request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(after_redo.text_boxes, vec![source_text, expected_pasted]);
+    let redo_checkpoint = store.load(recovery_id).unwrap().unwrap();
+    assert!(
+        redo_checkpoint.authority.checkpoint_sequence()
+            > undo_checkpoint.authority.checkpoint_sequence()
+    );
+    restored
+        .restore_document_recovery_timeline(93, &redo_checkpoint.timeline)
+        .unwrap();
+    let mut expected_recovered_redo = after_redo.clone();
+    expected_recovered_redo.selected_id = None;
+    assert_eq!(restored.snapshot(93).unwrap(), expected_recovered_redo);
+}
+
+#[gpui::test]
+fn stale_recovery_authority_rolls_back_an_ordinary_edit_and_blocks_later_edits(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let root = std::env::temp_dir().join(format!(
+        "bp-workspace-edit-rollback-recovery-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _scratch = ScratchDirectories(vec![root.clone()]);
+    let source = root.join("source.pdf");
+    let source_bytes = b"%PDF-1.7\nworkspace edit rollback recovery\n%%EOF\n";
+    std::fs::write(&source, source_bytes).unwrap();
+    let source = source.canonicalize().unwrap();
+    let source_sha256: [u8; 32] = Sha256::digest(source_bytes).into();
+    let store = Arc::new(DocumentRecoveryStore::open(&root).unwrap());
+    let workspace = cx.new(DocumentWorkspace::new);
+    workspace.update(cx, |workspace, _| {
+        workspace.bind_document_recovery_store(store.clone())
+    });
+    let open_request =
+        workspace.update(cx, |workspace, cx| workspace.begin_open(source.clone(), cx));
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| workspace.apply_open_result(
+            &open_request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false))).with_source_sha256(source_sha256)),
+            cx,
+        )),
+        ApplyDisposition::Applied,
+    );
+    cx.run_until_parked();
+    let recovery_id = store.active_document_ids().unwrap()[0];
+    let retained_id = MarkupId::new("workspace:rectangle:retained-recovery").unwrap();
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                open_request.document_id,
+                0,
+                retained_id.clone(),
+                PdfPoint::new(72., 96.).unwrap(),
+                PdfPoint::new(216., 192.).unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
+    let local = store.load(recovery_id).unwrap().unwrap();
+    let external_timeline = b"externally newer recovery timeline";
+    let external = store
+        .replace_timeline(
+            &local.authority,
+            &StagedRecoveryPublication {
+                source_path: &source,
+                source_kind: RecoverySourceKind::Opened,
+                timeline: external_timeline,
+                current_revision: 2,
+                saved_revision: 0,
+                requires_save_as: false,
+            },
+        )
+        .unwrap();
+    assert_ne!(external, local.authority);
+
+    let rejected = workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                open_request.document_id,
+                0,
+                MarkupId::new("workspace:rectangle:must-roll-back").unwrap(),
+                PdfPoint::new(240., 240.).unwrap(),
+                PdfPoint::new(300., 300.).unwrap(),
+                cx,
+            )
+        })
+        .expect_err("the stale authority must reject and roll back the local edit");
+    assert!(
+        rejected.contains("changed outside this session"),
+        "{rejected}"
+    );
+    let after_rejection = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(open_request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        (after_rejection.revision, after_rejection.undo_depth),
+        (1, 1)
+    );
+    assert_eq!(after_rejection.rectangles.len(), 1);
+    assert_eq!(after_rejection.rectangles[0].id, retained_id);
+    let still_external = store.load(recovery_id).unwrap().unwrap();
+    assert_eq!(still_external.authority, external);
+    assert_eq!(still_external.timeline, external_timeline);
+
+    let blocked = workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(open_request.document_id, cx)
+        })
+        .expect_err("the authority conflict must block later edits");
+    assert!(
+        blocked.contains("changed outside this session"),
+        "{blocked}"
+    );
+    assert_eq!(
+        store.load(recovery_id).unwrap().unwrap().authority,
+        external
+    );
+    let final_snapshot = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(open_request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(final_snapshot, after_rejection);
+}
+
+#[gpui::test]
+fn unavailable_recovery_store_rolls_back_undo_and_redo_without_changing_the_checkpoint(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let root = std::env::temp_dir().join(format!(
+        "bp-workspace-history-rollback-recovery-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _scratch = ScratchDirectories(vec![root.clone()]);
+    let source = root.join("source.pdf");
+    let source_bytes = b"%PDF-1.7\nworkspace history rollback recovery\n%%EOF\n";
+    std::fs::write(&source, source_bytes).unwrap();
+    let source_sha256: [u8; 32] = Sha256::digest(source_bytes).into();
+    let store = Arc::new(DocumentRecoveryStore::open(&root).unwrap());
+    let workspace = cx.new(DocumentWorkspace::new);
+    workspace.update(cx, |workspace, _| {
+        workspace.bind_document_recovery_store(store.clone())
+    });
+    let open_request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(source.canonicalize().unwrap(), cx)
+    });
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| workspace.apply_open_result(
+            &open_request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false))).with_source_sha256(source_sha256)),
+            cx,
+        )),
+        ApplyDisposition::Applied,
+    );
+    cx.run_until_parked();
+    let recovery_id = store.active_document_ids().unwrap()[0];
+    let rectangle_id = MarkupId::new("workspace:rectangle:history-rollback").unwrap();
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                open_request.document_id,
+                0,
+                rectangle_id.clone(),
+                PdfPoint::new(72., 96.).unwrap(),
+                PdfPoint::new(216., 192.).unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
+
+    let edited = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(open_request.document_id, cx)
+        })
+        .unwrap();
+    let edited_scene = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(open_request.document_id, 0, cx)
+    });
+    let edited_thumbnail = workspace.read_with(cx, |workspace, cx| {
+        workspace.thumbnail_annotation_scene(open_request.document_id, 0, cx)
+    });
+    let edited_checkpoint = store.load(recovery_id).unwrap().unwrap();
+
+    workspace.update(cx, |workspace, _| {
+        workspace.bind_document_recovery_store_error("injected recovery store failure")
+    });
+    let undo_error = workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(open_request.document_id, cx)
+        })
+        .expect_err("undo must roll back when its checkpoint cannot publish");
+    assert!(
+        undo_error.contains("document recovery store is unavailable"),
+        "{undo_error}"
+    );
+    let rolled_back_edit = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(open_request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(rolled_back_edit, edited);
+    for scene in [
+        workspace.read_with(cx, |workspace, cx| {
+            workspace.annotation_scene(open_request.document_id, 0, cx)
+        }),
+        workspace.read_with(cx, |workspace, cx| {
+            workspace.thumbnail_annotation_scene(open_request.document_id, 0, cx)
+        }),
+    ] {
+        assert_eq!(scene.rectangles.len(), 1);
+        assert_eq!(scene.rectangles[0].id, rectangle_id);
+    }
+    assert_eq!(edited_scene.rectangles.len(), 1);
+    assert_eq!(edited_thumbnail.rectangles.len(), 1);
+    let retained_edit = store.load(recovery_id).unwrap().unwrap();
+    assert_eq!(retained_edit.authority, edited_checkpoint.authority);
+    assert_eq!(retained_edit.timeline, edited_checkpoint.timeline);
+
+    workspace.update(cx, |workspace, _| {
+        workspace.bind_document_recovery_store(store.clone())
+    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(open_request.document_id, cx)
+        })
+        .unwrap();
+    let undone = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(open_request.document_id, cx)
+        })
+        .unwrap();
+    let undo_checkpoint = store.load(recovery_id).unwrap().unwrap();
+    let mut restored = AnnotationAdapter::default();
+    restored
+        .restore_document_recovery_timeline(92, &undo_checkpoint.timeline)
+        .unwrap();
+    assert_eq!(restored.snapshot(92).unwrap(), undone);
+
+    workspace.update(cx, |workspace, _| {
+        workspace.bind_document_recovery_store_error("injected recovery store failure")
+    });
+    let redo_error = workspace
+        .update(cx, |workspace, cx| {
+            workspace.redo_annotations(open_request.document_id, cx)
+        })
+        .expect_err("redo must roll back when its checkpoint cannot publish");
+    assert!(
+        redo_error.contains("document recovery store is unavailable"),
+        "{redo_error}"
+    );
+    let rolled_back_undo = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(open_request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(rolled_back_undo, undone);
+    let retained_undo = store.load(recovery_id).unwrap().unwrap();
+    assert_eq!(retained_undo.authority, undo_checkpoint.authority);
+    assert_eq!(retained_undo.timeline, undo_checkpoint.timeline);
+
+    workspace.update(cx, |workspace, _| {
+        workspace.bind_document_recovery_store(store.clone())
+    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.redo_annotations(open_request.document_id, cx)
+        })
+        .unwrap();
+    let redone = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(open_request.document_id, cx)
+        })
+        .unwrap();
+    let mut expected_redone = edited.clone();
+    expected_redone.selected_id = None;
+    assert_eq!(redone, expected_redone);
+    let redo_checkpoint = store.load(recovery_id).unwrap().unwrap();
+    restored
+        .restore_document_recovery_timeline(92, &redo_checkpoint.timeline)
+        .unwrap();
+    assert_eq!(restored.snapshot(92).unwrap(), redone);
+    assert!(
+        redo_checkpoint.authority.checkpoint_sequence()
+            > undo_checkpoint.authority.checkpoint_sequence()
+    );
+}
+
+#[gpui::test]
+fn successful_save_as_rebases_recovery_to_the_clean_opened_target_before_editing_resumes(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let root = std::env::temp_dir().join(format!(
+        "bp-workspace-save-recovery-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _scratch = ScratchDirectories(vec![root.clone()]);
+    let source = root.join("source.pdf");
+    let target = root.join("saved.pdf");
+    let source_bytes = b"%PDF-1.7\nsource recovery base\n%%EOF\n";
+    let target_bytes = b"%PDF-1.7\nsaved recovery base\n%%EOF\n";
+    std::fs::write(&source, source_bytes).unwrap();
+    let source = source.canonicalize().unwrap();
+    let store = Arc::new(DocumentRecoveryStore::open(&root).unwrap());
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    workspace.update(cx, |workspace, _| {
+        workspace.bind_document_recovery_store(store.clone())
+    });
+    let open_request =
+        workspace.update(cx, |workspace, cx| workspace.begin_open(source.clone(), cx));
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &open_request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))
+                .with_source_sha256(Sha256::digest(source_bytes).into())),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    let recovery_id = store.active_document_ids().unwrap()[0];
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                open_request.document_id,
+                0,
+                MarkupId::new("workspace:rectangle:save-recovery").unwrap(),
+                PdfPoint::new(72., 96.).unwrap(),
+                PdfPoint::new(216., 192.).unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
+    let dirty = store.load(recovery_id).unwrap().unwrap();
+    assert_eq!(dirty.current_revision, 1);
+    assert_eq!(dirty.saved_revision, 0);
+
+    let save = workspace
+        .update(cx, |workspace, cx| {
+            workspace.begin_save_as(open_request.document_id, target.clone(), cx)
+        })
+        .unwrap();
+    std::fs::write(&target, target_bytes).unwrap();
+    let saved = SavedNativeDocument::new(
+        opened_document(Arc::new(AtomicBool::new(false)))
+            .with_source_sha256(Sha256::digest(target_bytes).into()),
+        save.annotation_revision,
+    );
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| {
+            workspace.apply_save_result(&save, Ok(saved), cx)
+        }),
+        ApplyDisposition::Applied,
+    );
+
+    let recovered = store.load(recovery_id).unwrap().unwrap();
+    assert_eq!(recovered.source_path, target.canonicalize().unwrap());
+    assert_eq!(recovered.source_kind, RecoverySourceKind::Opened);
+    assert_eq!(recovered.base_pdf, target_bytes);
+    assert_eq!(recovered.current_revision, 1);
+    assert_eq!(recovered.saved_revision, 1);
+    assert!(!recovered.requires_save_as);
+    assert!(
+        !workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(open_request.document_id, cx))
+            .unwrap()
+            .dirty
+    );
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                open_request.document_id,
+                0,
+                MarkupId::new("workspace:rectangle:post-save-recovery").unwrap(),
+                PdfPoint::new(240., 240.).unwrap(),
+                PdfPoint::new(300., 300.).unwrap(),
+                cx,
+            )
+        })
+        .expect("editing resumes only after the clean saved checkpoint is authoritative");
+    let after_edit = store.load(recovery_id).unwrap().unwrap();
+    assert_eq!(after_edit.current_revision, 2);
+    assert_eq!(after_edit.saved_revision, 1);
+
+    let authority_before_failed_rebase = after_edit.authority;
+    let recovery_namespace = root.join("document-recovery-v1");
+    let recovery_mode = std::fs::metadata(&recovery_namespace)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    struct RestoreMode {
+        path: PathBuf,
+        mode: u32,
+    }
+    impl Drop for RestoreMode {
+        fn drop(&mut self) {
+            let _ =
+                std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(self.mode));
+        }
+    }
+    let _restore_mode = RestoreMode {
+        path: recovery_namespace.clone(),
+        mode: recovery_mode,
+    };
+    std::fs::set_permissions(&recovery_namespace, std::fs::Permissions::from_mode(0)).unwrap();
+    let repaired_target_bytes = b"%PDF-1.7\nsaved recovery base revision two\n%%EOF\n";
+    std::fs::write(&target, repaired_target_bytes).unwrap();
+    let failed_save = workspace
+        .update(cx, |workspace, cx| {
+            workspace.begin_save(open_request.document_id, cx)
+        })
+        .unwrap();
+    let published_saved = SavedNativeDocument::new(
+        opened_document(Arc::new(AtomicBool::new(false)))
+            .with_source_sha256(Sha256::digest(repaired_target_bytes).into()),
+        failed_save.annotation_revision,
+    );
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| {
+            workspace.apply_save_result(&failed_save, Ok(published_saved), cx)
+        }),
+        ApplyDisposition::Applied,
+    );
+    std::fs::set_permissions(
+        &recovery_namespace,
+        std::fs::Permissions::from_mode(recovery_mode),
+    )
+    .unwrap();
+    let retained = store.load(recovery_id).unwrap().unwrap();
+    assert_eq!(retained.authority, authority_before_failed_rebase);
+    assert_eq!(retained.current_revision, 2);
+    assert_eq!(retained.saved_revision, 1);
+    assert!(
+        !workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(open_request.document_id, cx))
+            .unwrap()
+            .dirty
+    );
+    let session = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.session(open_request.document_id, cx).cloned()
+        })
+        .unwrap();
+    let canonical_target = target.canonicalize().unwrap();
+    assert_eq!(
+        session.read_with(cx, |session, _| session.path().to_path_buf()),
+        canonical_target
+    );
+    let repaired_target_sha256: [u8; 32] = Sha256::digest(repaired_target_bytes).into();
+    assert!(matches!(
+        session.read_with(cx, |session, _| session.recovery_preparation().clone()),
+        DocumentRecoveryPreparation::RebaseFailed {
+            authority,
+            target_sha256,
+            saved_revision: 2,
+            ..
+        } if authority == authority_before_failed_rebase
+            && target_sha256 == repaired_target_sha256
+    ));
+    assert_eq!(
+        session.read_with(cx, |session, _| session.save_status().clone()),
+        NativeDocumentSaveStatus::Idle
+    );
+    assert!(
+        workspace
+            .update(cx, |workspace, cx| workspace.create_rectangle(
+                open_request.document_id,
+                0,
+                MarkupId::new("workspace:rectangle:blocked-before-repair").unwrap(),
+                PdfPoint::new(320., 320.).unwrap(),
+                PdfPoint::new(360., 360.).unwrap(),
+                cx,
+            ))
+            .unwrap_err()
+            .contains("Crash recovery is unavailable")
+    );
+
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds(DOCUMENT_RECOVERY_PREPARATION_ALERT_ID)
+            .is_some()
+    );
+    let repair = cx
+        .debug_bounds(DOCUMENT_RECOVERY_REBASE_RETRY_ID)
+        .expect("the saved recovery failure must expose Retry recovery");
+    cx.simulate_click(repair.center(), Modifiers::default());
+    cx.run_until_parked();
+    let repaired = store.load(recovery_id).unwrap().unwrap();
+    assert_eq!(repaired.source_path, canonical_target);
+    assert_eq!(repaired.base_pdf, repaired_target_bytes);
+    assert_eq!((repaired.current_revision, repaired.saved_revision), (2, 2));
+    assert!(matches!(
+        session.read_with(cx, |session, _| session.recovery_preparation().clone()),
+        DocumentRecoveryPreparation::Ready { authority, .. } if authority == repaired.authority
+    ));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds(DOCUMENT_RECOVERY_PREPARATION_ALERT_ID)
+            .is_none()
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                open_request.document_id,
+                0,
+                MarkupId::new("workspace:rectangle:after-repair").unwrap(),
+                PdfPoint::new(320., 320.).unwrap(),
+                PdfPoint::new(360., 360.).unwrap(),
+                cx,
+            )
+        })
+        .expect("editing resumes only after the clean saved checkpoint is repaired");
+    let after_repair_edit = store.load(recovery_id).unwrap().unwrap();
+    assert_eq!(
+        (
+            after_repair_edit.current_revision,
+            after_repair_edit.saved_revision
+        ),
+        (3, 2)
+    );
+
+    std::fs::set_permissions(&recovery_namespace, std::fs::Permissions::from_mode(0)).unwrap();
+    let close_target_bytes = b"%PDF-1.7\nclean close after failed recovery rebase\n%%EOF\n";
+    std::fs::write(&target, close_target_bytes).unwrap();
+    let close_save = workspace
+        .update(cx, |workspace, cx| {
+            workspace.begin_save(open_request.document_id, cx)
+        })
+        .unwrap();
+    let close_saved = SavedNativeDocument::new(
+        opened_document(Arc::new(AtomicBool::new(false)))
+            .with_source_sha256(Sha256::digest(close_target_bytes).into()),
+        close_save.annotation_revision,
+    );
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| {
+            workspace.apply_save_result(&close_save, Ok(close_saved), cx)
+        }),
+        ApplyDisposition::Applied,
+    );
+    std::fs::set_permissions(
+        &recovery_namespace,
+        std::fs::Permissions::from_mode(recovery_mode),
+    )
+    .unwrap();
+    assert!(matches!(
+        session.read_with(cx, |session, _| session.recovery_preparation().clone()),
+        DocumentRecoveryPreparation::RebaseFailed {
+            authority,
+            saved_revision: 3,
+            ..
+        } if authority == after_repair_edit.authority
+    ));
+    assert!(
+        !workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(open_request.document_id, cx))
+            .unwrap()
+            .dirty
+    );
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| {
+            workspace.request_close_document(open_request.document_id, cx)
+        }),
+        CloseRequestDisposition::Closed,
+    );
+    assert!(
+        store.load(recovery_id).unwrap().is_none(),
+        "closing an independently validated clean save must retire its retained pre-save authority"
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), close_target_bytes);
+}
+
+#[gpui::test]
 fn in_place_save_targets_the_opened_path_and_preserves_the_live_dirty_session_on_failure(
     cx: &mut TestAppContext,
 ) {
@@ -6363,22 +10274,97 @@ fn in_place_save_targets_the_opened_path_and_preserves_the_live_dirty_session_on
 }
 
 #[gpui::test]
+#[cfg(unix)]
+fn opening_an_existing_pdf_through_a_filesystem_alias_retains_its_canonical_save_identity(
+    cx: &mut TestAppContext,
+) {
+    let root = std::env::temp_dir().join(format!("bp-canonical-open-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let actual_parent = root.join("actual");
+    let alias_parent = root.join("alias");
+    std::fs::create_dir_all(&actual_parent).unwrap();
+    symlink(&actual_parent, &alias_parent).unwrap();
+    let source = actual_parent.join("source.pdf");
+    std::fs::write(&source, b"test source identity").unwrap();
+    let _scratch = ScratchDirectories(vec![root]);
+
+    cx.update(gpui_component::init);
+    let workspace = cx.new(DocumentWorkspace::new);
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(alias_parent.join("source.pdf"), cx)
+    });
+    let canonical_source = source.canonicalize().unwrap();
+    assert_eq!(request.path, canonical_source);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .session(request.document_id, cx)
+                .unwrap()
+                .read(cx)
+                .path()
+                .to_path_buf()
+        }),
+        canonical_source
+    );
+}
+
+#[gpui::test]
 fn in_place_save_keeps_the_published_document_live_when_durability_has_a_warning(
     cx: &mut TestAppContext,
 ) {
     cx.update(gpui_component::init);
-    let workspace = cx.new(DocumentWorkspace::new);
-    let open_request = workspace.update(cx, |workspace, cx| {
-        workspace.begin_open(PathBuf::from("published-with-warning.pdf"), cx)
+    let root = std::env::temp_dir().join(format!(
+        "bp-workspace-publication-warning-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _scratch = ScratchDirectories(vec![root.clone()]);
+    let source = root.join("published-with-warning.pdf");
+    let source_bytes = b"%PDF-1.7\npublished with warning\n%%EOF\n";
+    std::fs::write(&source, source_bytes).unwrap();
+    let source = source.canonicalize().unwrap();
+    let store = Arc::new(DocumentRecoveryStore::open(&root).unwrap());
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
     });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    workspace.update(cx, |workspace, _| {
+        workspace.bind_document_recovery_store(store.clone())
+    });
+    let open_request = workspace.update(cx, |workspace, cx| workspace.begin_open(source, cx));
     let original_released = Arc::new(AtomicBool::new(false));
     workspace.update(cx, |workspace, cx| {
         workspace.apply_open_result(
             &open_request,
-            Ok(opened_document(original_released.clone())),
+            Ok(opened_document(original_released.clone())
+                .with_source_sha256(Sha256::digest(source_bytes).into())),
             cx,
         )
     });
+    cx.run_until_parked();
+    let recovery_id = store.active_document_ids().unwrap()[0];
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                open_request.document_id,
+                0,
+                MarkupId::new("workspace:rectangle:publication-warning").unwrap(),
+                PdfPoint::new(72., 96.).unwrap(),
+                PdfPoint::new(216., 192.).unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
     let request = workspace
         .update(cx, |workspace, cx| {
             workspace.begin_save(open_request.document_id, cx)
@@ -6387,7 +10373,8 @@ fn in_place_save_keeps_the_published_document_live_when_durability_has_a_warning
     let warning = "saved PDF was published, but its directory durability sync failed: injected";
     let reopened_released = Arc::new(AtomicBool::new(false));
     let saved = SavedNativeDocument::new(
-        opened_document(reopened_released.clone()),
+        opened_document(reopened_released.clone())
+            .with_source_sha256(Sha256::digest(source_bytes).into()),
         request.annotation_revision,
     )
     .with_publication_warning(warning);
@@ -6415,12 +10402,63 @@ fn in_place_save_keeps_the_published_document_live_when_durability_has_a_warning
         }),
         request.source_path
     );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .session(open_request.document_id, cx)
+                .unwrap()
+                .read(cx)
+                .publication_durability_warning()
+                .map(str::to_owned)
+        }),
+        Some(warning.to_owned())
+    );
+    let retained = store.load(recovery_id).unwrap().unwrap();
+    assert_eq!((retained.current_revision, retained.saved_revision), (1, 1));
+
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| {
+            workspace.request_close_document(open_request.document_id, cx)
+        }),
+        CloseRequestDisposition::ConfirmationRequired
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds(DOCUMENT_PUBLICATION_WARNING_CLOSE_ID)
+            .is_some()
+    );
+    let keep_open = cx
+        .debug_bounds(DOCUMENT_PUBLICATION_WARNING_CLOSE_CANCEL_ID)
+        .unwrap();
+    cx.simulate_click(keep_open.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert!(workspace.read_with(cx, |workspace, cx| {
+        workspace.session(open_request.document_id, cx).is_some()
+            && workspace.pending_close_document_id().is_none()
+    }));
+    assert!(store.load(recovery_id).unwrap().is_some());
+
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| {
+            workspace.request_close_document(open_request.document_id, cx)
+        }),
+        CloseRequestDisposition::ConfirmationRequired
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let continue_closing = cx
+        .debug_bounds(DOCUMENT_PUBLICATION_WARNING_CLOSE_CONTINUE_ID)
+        .unwrap();
+    cx.simulate_click(continue_closing.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert!(workspace.read_with(cx, |workspace, cx| {
+        workspace.session(open_request.document_id, cx).is_none()
+    }));
+    assert!(store.load(recovery_id).unwrap().is_none());
+    assert!(reopened_released.load(Ordering::Acquire));
 }
 
 #[gpui::test]
-fn in_place_save_registered_command_dispatches_the_active_opened_document(
-    cx: &mut TestAppContext,
-) {
+fn in_place_save_registered_command_dispatches_the_active_opened_document(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -6456,8 +10494,15 @@ fn in_place_save_registered_command_dispatches_the_active_opened_document(
     ));
 }
 
-#[gpui::test]
-fn in_place_save_failure_renders_real_recovery_actions_without_losing_the_document(
+#[test]
+fn in_place_save_failure_renders_real_recovery_actions_without_losing_the_document() {
+    run_gpui_test_with_native_main_stack(
+        "in_place_save_failure_renders_real_recovery_actions_without_losing_the_document",
+        in_place_save_failure_renders_real_recovery_actions_without_losing_the_document_on_native_stack,
+    );
+}
+
+fn in_place_save_failure_renders_real_recovery_actions_without_losing_the_document_on_native_stack(
     cx: &mut TestAppContext,
 ) {
     cx.update(gpui_component::init);
@@ -6561,6 +10606,649 @@ fn in_place_save_failure_renders_real_recovery_actions_without_losing_the_docume
                 .dirty
     }));
     assert!(!original_released.load(Ordering::Acquire));
+}
+
+#[test]
+fn recovery_preparation_failure_blocks_edits_and_retries_from_the_visible_alert() {
+    run_gpui_test_with_native_main_stack(
+        "recovery_preparation_failure_blocks_edits_and_retries_from_the_visible_alert",
+        recovery_preparation_failure_blocks_edits_and_retries_from_the_visible_alert_on_native_stack,
+    );
+}
+
+fn recovery_preparation_failure_blocks_edits_and_retries_from_the_visible_alert_on_native_stack(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let root = std::env::temp_dir().join(format!(
+        "bp-workspace-recovery-retry-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _scratch = ScratchDirectories(vec![root.clone()]);
+    let source = root.join("source.pdf");
+    let source_bytes = b"%PDF-1.7\nrecovery retry source\n%%EOF\n";
+    std::fs::write(&source, source_bytes).unwrap();
+    let source_sha256: [u8; 32] = Sha256::digest(source_bytes).into();
+    let store = Arc::new(DocumentRecoveryStore::open(&root).unwrap());
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    workspace.update(cx, |workspace, _| {
+        workspace.bind_document_recovery_store_error("the recovery volume is full")
+    });
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(source.canonicalize().unwrap(), cx)
+    });
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false))).with_source_sha256(source_sha256)),
+            cx,
+        )),
+        ApplyDisposition::Applied,
+    );
+    assert!(matches!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .session(request.document_id, cx)
+            .unwrap()
+            .read(cx)
+            .recovery_preparation()
+            .clone()),
+        DocumentRecoveryPreparation::Failed { message, .. }
+            if message == "the recovery volume is full"
+    ));
+
+    let blocked = workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                request.document_id,
+                0,
+                MarkupId::new("workspace:rectangle:recovery-retry").unwrap(),
+                PdfPoint::new(72., 96.).unwrap(),
+                PdfPoint::new(216., 192.).unwrap(),
+                cx,
+            )
+        })
+        .expect_err("editing must remain blocked without durable recovery");
+    assert!(
+        blocked.contains("Crash recovery is unavailable"),
+        "{blocked}"
+    );
+    assert!(workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_snapshot(request.document_id, cx)
+            .unwrap()
+            .rectangles
+            .is_empty()
+    }));
+
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds(DOCUMENT_RECOVERY_PREPARATION_ALERT_ID)
+            .is_some()
+    );
+    let retry = cx
+        .debug_bounds(DOCUMENT_RECOVERY_PREPARATION_RETRY_ID)
+        .expect("the recovery failure must expose Retry");
+    workspace.update(cx, |workspace, _| {
+        workspace.bind_document_recovery_store(store.clone())
+    });
+    cx.simulate_click(retry.center(), Modifiers::default());
+    cx.run_until_parked();
+
+    assert!(matches!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .session(request.document_id, cx)
+            .unwrap()
+            .read(cx)
+            .recovery_preparation()
+            .clone()),
+        DocumentRecoveryPreparation::Ready { .. }
+    ));
+    assert_eq!(store.active_document_ids().unwrap().len(), 1);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds(DOCUMENT_RECOVERY_PREPARATION_ALERT_ID)
+            .is_none()
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                request.document_id,
+                0,
+                MarkupId::new("workspace:rectangle:recovery-retry").unwrap(),
+                PdfPoint::new(72., 96.).unwrap(),
+                PdfPoint::new(216., 192.).unwrap(),
+                cx,
+            )
+        })
+        .expect("editing must resume after recovery publication succeeds");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires the opt-in fixed-size macOS recovery-volume harness"]
+fn real_enospc_initial_recovery_stream_blocks_edits_and_visible_retry_recovers() {
+    run_gpui_test_with_native_main_stack(
+        "real_enospc_initial_recovery_stream_blocks_edits_and_visible_retry_recovers",
+        real_enospc_initial_recovery_stream_blocks_edits_and_visible_retry_recovers_on_native_stack,
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn real_enospc_initial_recovery_stream_blocks_edits_and_visible_retry_recovers_on_native_stack(
+    cx: &mut TestAppContext,
+) {
+    const SOURCE_BYTES: usize = 16 * 1024 * 1024;
+    const RESERVE_BYTES: usize = 8 * 1024 * 1024;
+    const MAX_FIXTURE_BYTES: u64 = 256 * 1024 * 1024;
+    const WRITE_BYTES: usize = 1024 * 1024;
+
+    cx.update(gpui_component::init);
+    let mount_root = PathBuf::from(
+        std::env::var_os("BP_RECOVERY_ENOSPC_MOUNT_ROOT")
+            .expect("the fixed-size recovery-volume harness must provide its mount root"),
+    )
+    .canonicalize()
+    .expect("the recovery-volume mount root must exist");
+    let expected_filesystem = std::env::var("BP_RECOVERY_ENOSPC_EXPECTED_FILESYSTEM")
+        .expect("the fixed-size recovery-volume harness must name its filesystem");
+    assert!(matches!(expected_filesystem.as_str(), "apfs" | "hfs"));
+    let fixture_nonce = std::env::var("BP_RECOVERY_ENOSPC_FIXTURE_NONCE")
+        .expect("the fixed-size recovery-volume harness must provide its nonce");
+    let sentinel = PathBuf::from(
+        std::env::var_os("BP_RECOVERY_ENOSPC_FIXTURE_SENTINEL")
+            .expect("the fixed-size recovery-volume harness must provide its sentinel"),
+    );
+    assert_eq!(
+        sentinel,
+        mount_root.join(format!(".bp-recovery-enospc-fixture-{fixture_nonce}"))
+    );
+    let sentinel_metadata = std::fs::symlink_metadata(&sentinel).unwrap();
+    assert!(sentinel_metadata.file_type().is_file());
+    assert!(!sentinel_metadata.file_type().is_symlink());
+    assert_eq!(sentinel_metadata.uid(), rustix::process::getuid().as_raw());
+    assert_eq!(sentinel_metadata.nlink(), 1);
+    assert_eq!(sentinel_metadata.mode() & 0o777, 0o600);
+    assert_eq!(
+        std::fs::read_to_string(&sentinel).unwrap().trim(),
+        fixture_nonce
+    );
+    let mount_metadata = std::fs::metadata(&mount_root).unwrap();
+    assert_eq!(mount_metadata.uid(), rustix::process::getuid().as_raw());
+    assert_eq!(mount_metadata.mode() & 0o777, 0o700);
+    assert_ne!(
+        mount_metadata.dev(),
+        std::fs::metadata(mount_root.parent().unwrap())
+            .unwrap()
+            .dev(),
+        "the disposable fill target must be a mounted filesystem, not a host directory"
+    );
+    let mut diskutil = std::process::Command::new("/usr/sbin/diskutil")
+        .args(["info", "-plist"])
+        .arg(&mount_root)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let reported_filesystem = std::process::Command::new("/usr/bin/plutil")
+        .args(["-extract", "FilesystemType", "raw", "-o", "-", "-"])
+        .stdin(diskutil.stdout.take().unwrap())
+        .output()
+        .unwrap();
+    assert!(diskutil.wait().unwrap().success());
+    assert!(reported_filesystem.status.success());
+    assert_eq!(
+        String::from_utf8(reported_filesystem.stdout)
+            .unwrap()
+            .trim(),
+        expected_filesystem
+    );
+    let capacity =
+        rustix::fs::statvfs(&mount_root).expect("the mounted volume must be inspectable");
+    let total_bytes = capacity.f_blocks.saturating_mul(capacity.f_frsize);
+    assert!(
+        (48 * 1024 * 1024..=MAX_FIXTURE_BYTES).contains(&total_bytes),
+        "refusing to fill an unexpected filesystem with {total_bytes} bytes of capacity"
+    );
+    let fill_limit_bytes = usize::try_from(total_bytes)
+        .unwrap()
+        .saturating_add(WRITE_BYTES);
+
+    let store_root = mount_root.join("session");
+    std::fs::create_dir(&store_root).unwrap();
+    let store = Arc::new(DocumentRecoveryStore::open(&store_root).unwrap());
+    let reserve_path = mount_root.join("reserve.bin");
+    let filler_path = mount_root.join("filler.bin");
+    let block = vec![0xa5; WRITE_BYTES];
+    let mut reserve = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&reserve_path)
+        .unwrap();
+    for _ in 0..(RESERVE_BYTES / WRITE_BYTES) {
+        reserve.write_all(&block).unwrap();
+    }
+    reserve.sync_all().unwrap();
+    drop(reserve);
+
+    let mut filler = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&filler_path)
+        .unwrap();
+    let mut attempted = 0usize;
+    let enospc = loop {
+        assert!(
+            attempted < fill_limit_bytes,
+            "the fixed-size fixture did not reach ENOSPC within its measured capacity"
+        );
+        attempted += WRITE_BYTES;
+        match filler.write_all(&block) {
+            Ok(()) => match filler.sync_data() {
+                Ok(()) => {}
+                Err(error) => break error,
+            },
+            Err(error) => break error,
+        }
+    };
+    assert_eq!(enospc.raw_os_error(), Some(libc::ENOSPC));
+    drop(filler);
+    std::fs::remove_file(&reserve_path).unwrap();
+    std::fs::File::open(&mount_root)
+        .unwrap()
+        .sync_all()
+        .unwrap();
+
+    let available_bytes = (0..50)
+        .find_map(|_| {
+            let capacity = rustix::fs::statvfs(&mount_root).unwrap();
+            let available = capacity.f_bavail.saturating_mul(capacity.f_frsize);
+            if available >= 64 * 1024 && available < SOURCE_BYTES as u64 {
+                Some(available)
+            } else {
+                std::thread::sleep(Duration::from_millis(100));
+                None
+            }
+        })
+        .expect("the disposable volume must reclaim only the bounded reserve before the test");
+    assert!(available_bytes >= 64 * 1024, "{available_bytes}");
+    assert!(available_bytes < SOURCE_BYTES as u64, "{available_bytes}");
+
+    let host_root = std::env::temp_dir().join(format!(
+        "bp-real-recovery-enospc-source-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir(&host_root).unwrap();
+    let _scratch = ScratchDirectories(vec![host_root.clone()]);
+    let source = host_root.join("source.pdf");
+    let mut source_bytes = vec![0x5a; SOURCE_BYTES];
+    source_bytes[..9].copy_from_slice(b"%PDF-1.7\n");
+    std::fs::write(&source, &source_bytes).unwrap();
+    let source = source.canonicalize().unwrap();
+    assert!(!source.starts_with(&mount_root));
+    let source_sha256: [u8; 32] = Sha256::digest(&source_bytes).into();
+
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    workspace.update(cx, |workspace, _| {
+        workspace.bind_document_recovery_store(store.clone())
+    });
+    let request = workspace.update(cx, |workspace, cx| workspace.begin_open(source.clone(), cx));
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false))).with_source_sha256(source_sha256)),
+            cx,
+        )),
+        ApplyDisposition::Applied,
+    );
+    cx.run_until_parked();
+
+    let failure = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .session(request.document_id, cx)
+            .unwrap()
+            .read(cx)
+            .recovery_preparation()
+            .clone()
+    });
+    let DocumentRecoveryPreparation::Failed { message, .. } = failure else {
+        panic!("the real ENOSPC stream must fail closed: {failure:?}");
+    };
+    let expected_kind = std::io::Error::from_raw_os_error(libc::ENOSPC).kind();
+    assert!(message.contains("write staged base PDF"), "{message}");
+    assert!(message.contains(&format!("{expected_kind:?}")), "{message}");
+    assert!(store.active_document_ids().unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_dir(store_root.join("document-recovery-v1/staging"))
+            .unwrap()
+            .count(),
+        0,
+        "the failed stream must remove its partial staging file"
+    );
+    assert_eq!(
+        std::fs::read_dir(store_root.join("document-recovery-v1/objects"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_eq!(
+        std::fs::read_dir(store_root.join("document-recovery-v1/heads"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_eq!(std::fs::read(&source).unwrap(), source_bytes);
+
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    let edit_error = workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                request.document_id,
+                0,
+                MarkupId::new("workspace:rectangle:real-enospc").unwrap(),
+                PdfPoint::new(72., 96.).unwrap(),
+                PdfPoint::new(216., 192.).unwrap(),
+                cx,
+            )
+        })
+        .expect_err("editing must remain blocked after the real stream failure");
+    assert!(edit_error.contains("Crash recovery is unavailable"));
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap(),
+        before
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds(DOCUMENT_RECOVERY_PREPARATION_ALERT_ID)
+            .is_some()
+    );
+    let retry = cx
+        .debug_bounds(DOCUMENT_RECOVERY_PREPARATION_RETRY_ID)
+        .expect("real ENOSPC must expose the visible Retry action");
+
+    std::fs::remove_file(&filler_path).unwrap();
+    std::fs::File::open(&mount_root)
+        .unwrap()
+        .sync_all()
+        .unwrap();
+    let retry_required_bytes = (SOURCE_BYTES + 4 * 1024 * 1024) as u64;
+    let reclaimed_bytes = (0..100)
+        .find_map(|_| {
+            let capacity = rustix::fs::statvfs(&mount_root).unwrap();
+            let available = capacity.f_bavail.saturating_mul(capacity.f_frsize);
+            if available >= retry_required_bytes {
+                Some(available)
+            } else {
+                std::thread::sleep(Duration::from_millis(100));
+                None
+            }
+        })
+        .expect("the disposable volume must reclaim the filler before Retry");
+    assert!(reclaimed_bytes <= total_bytes);
+    cx.simulate_click(retry.center(), Modifiers::default());
+    cx.run_until_parked();
+
+    let authority = match workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .session(request.document_id, cx)
+            .unwrap()
+            .read(cx)
+            .recovery_preparation()
+            .clone()
+    }) {
+        DocumentRecoveryPreparation::Ready { authority, .. } => authority,
+        preparation => panic!("Retry must publish durable authority: {preparation:?}"),
+    };
+    assert_eq!(
+        store.active_document_ids().unwrap(),
+        vec![authority.document_id()]
+    );
+    let recovered = store.load(authority.document_id()).unwrap().unwrap();
+    assert_eq!(recovered.authority, authority);
+    assert_eq!(recovered.base_pdf, source_bytes);
+    assert_eq!(
+        (recovered.current_revision, recovered.saved_revision),
+        (0, 0)
+    );
+    let mut restored = AnnotationAdapter::default();
+    restored
+        .restore_document_recovery_timeline(991, &recovered.timeline)
+        .unwrap();
+    let restored = restored.snapshot(991).unwrap();
+    assert!(restored.rectangles.is_empty());
+    assert_eq!((restored.revision, restored.saved_revision), (0, 0));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds(DOCUMENT_RECOVERY_PREPARATION_ALERT_ID)
+            .is_none()
+    );
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                request.document_id,
+                0,
+                MarkupId::new("workspace:rectangle:real-enospc").unwrap(),
+                PdfPoint::new(72., 96.).unwrap(),
+                PdfPoint::new(216., 192.).unwrap(),
+                cx,
+            )
+        })
+        .expect("editing must resume after space is freed and Retry succeeds");
+    let edited = store.load(authority.document_id()).unwrap().unwrap();
+    assert_eq!((edited.current_revision, edited.saved_revision), (1, 0));
+    store.clear(edited.authority.document_id()).unwrap();
+}
+
+#[test]
+fn external_source_change_save_failure_keeps_recovery_and_offers_save_as_without_retry() {
+    run_gpui_test_with_native_main_stack(
+        "external_source_change_save_failure_keeps_recovery_and_offers_save_as_without_retry",
+        external_source_change_save_failure_keeps_recovery_and_offers_save_as_without_retry_on_native_stack,
+    );
+}
+
+fn external_source_change_save_failure_keeps_recovery_and_offers_save_as_without_retry_on_native_stack(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let scratch = std::env::temp_dir().join(format!(
+        "bp-workspace-external-source-save-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir(&scratch).unwrap();
+    let root = scratch.canonicalize().unwrap();
+    let _scratch = ScratchDirectories(vec![root.clone()]);
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../performance/results/public-fixtures-v1/bp-multi-page-v1.pdf");
+    let source = root.join("source.pdf");
+    let save_as_target = root.join("recovered.pdf");
+    std::fs::copy(&fixture, &source).unwrap();
+    let source = source.canonicalize().unwrap();
+    let original_source_bytes = std::fs::read(&source).unwrap();
+    let store = Arc::new(DocumentRecoveryStore::open(&root).unwrap());
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        let store = store.clone();
+        move |window, cx| {
+            let workspace =
+                cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(FileDigestOpener), cx));
+            workspace.update(cx, |workspace, _| {
+                workspace.bind_document_recovery_store(store)
+            });
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let document_id = workspace.update(cx, |workspace, cx| workspace.open_path(source.clone(), cx));
+    cx.run_until_parked();
+    let recovery_id = store.active_document_ids().unwrap()[0];
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                document_id,
+                0,
+                MarkupId::new("workspace:rectangle:external-source-conflict").unwrap(),
+                PdfPoint::new(72., 96.).unwrap(),
+                PdfPoint::new(216., 192.).unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
+    let before_failure = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    let before_checkpoint = store.load(recovery_id).unwrap().unwrap();
+    assert_eq!(before_checkpoint.base_pdf, original_source_bytes);
+
+    const EXTERNAL_MARKER: &[u8] = b"\n% external mutation must remain only in source\n";
+    let mut external_source_bytes = original_source_bytes.clone();
+    external_source_bytes.extend_from_slice(EXTERNAL_MARKER);
+    std::fs::write(&source, &external_source_bytes).unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    native_save_command(cx, &workspace, false);
+    cx.run_until_parked();
+
+    let failure = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.document_save_failure(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(failure.operation, DocumentSaveFailureOperation::InPlace);
+    assert_eq!(failure.kind, DocumentSaveFailureKind::ExternalSourceChanged);
+    assert!(!failure.can_retry());
+    assert!(
+        failure
+            .presentation_message()
+            .contains("changed outside Butter Paper")
+    );
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(document_id, cx)
+            })
+            .unwrap(),
+        before_failure,
+    );
+    let after_checkpoint = store.load(recovery_id).unwrap().unwrap();
+    assert_eq!(after_checkpoint.authority, before_checkpoint.authority);
+    assert_eq!(after_checkpoint.timeline, before_checkpoint.timeline);
+    assert_eq!(std::fs::read(&source).unwrap(), external_source_bytes);
+
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds(DOCUMENT_SAVE_ERROR_ALERT_ID).is_some());
+    assert!(cx.debug_bounds(DOCUMENT_SAVE_ERROR_RETRY_ID).is_none());
+    assert!(cx.debug_bounds(DOCUMENT_SAVE_ERROR_SAVE_AS_ID).is_some());
+    assert!(cx.debug_bounds(DOCUMENT_SAVE_ERROR_DISMISS_ID).is_some());
+
+    let save_as = cx.debug_bounds(DOCUMENT_SAVE_ERROR_SAVE_AS_ID).unwrap();
+    cx.simulate_click(save_as.center(), Modifiers::default());
+    assert!(cx.did_prompt_for_new_path());
+    let selected_target = save_as_target.clone();
+    cx.simulate_new_path_selection(move |_| Some(selected_target));
+    cx.run_until_parked();
+
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds(DOCUMENT_SAVE_ERROR_ALERT_ID).is_none());
+    assert!(workspace.read_with(cx, |workspace, cx| {
+        workspace.document_save_failure(document_id, cx).is_none()
+    }));
+    let clean = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!((clean.revision, clean.saved_revision), (1, 1));
+    assert!(!clean.dirty);
+    assert_eq!(std::fs::read(&source).unwrap(), external_source_bytes);
+    let save_as_bytes = std::fs::read(&save_as_target).unwrap();
+    assert!(
+        !save_as_bytes
+            .windows(EXTERNAL_MARKER.len())
+            .any(|window| window == EXTERNAL_MARKER)
+    );
+    let save_as_sha256: [u8; 32] = Sha256::digest(&save_as_bytes).into();
+    let canonical_target = save_as_target.canonicalize().unwrap();
+    assert!(workspace.read_with(cx, |workspace, cx| {
+        workspace.session(document_id, cx).unwrap().read(cx).path() == canonical_target.as_path()
+    }));
+    let persisted = PdfPersistenceSession::open(&canonical_target).unwrap();
+    assert!(persisted.rectangles().iter().any(|rectangle| {
+        rectangle.id.as_str() == "workspace:rectangle:external-source-conflict"
+    }));
+
+    let rebased = store.load(recovery_id).unwrap().unwrap();
+    assert_ne!(rebased.authority, before_checkpoint.authority);
+    assert_eq!(rebased.source_path, canonical_target);
+    assert_eq!(rebased.source_kind, RecoverySourceKind::Opened);
+    assert_eq!(rebased.source_sha256, save_as_sha256);
+    assert_eq!(rebased.base_pdf, save_as_bytes);
+    assert_eq!((rebased.current_revision, rebased.saved_revision), (1, 1));
+    assert!(!rebased.requires_save_as);
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                document_id,
+                0,
+                MarkupId::new("workspace:rectangle:after-conflict-save-as").unwrap(),
+                PdfPoint::new(240., 240.).unwrap(),
+                PdfPoint::new(300., 300.).unwrap(),
+                cx,
+            )
+        })
+        .expect("editing must resume after the clean Save As authority is durable");
+    let after_edit = store.load(recovery_id).unwrap().unwrap();
+    assert!(after_edit.authority.checkpoint_sequence() > rebased.authority.checkpoint_sequence());
+    assert_eq!(
+        (after_edit.current_revision, after_edit.saved_revision),
+        (2, 1)
+    );
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace.close_document(document_id, cx)
+    }));
+    assert!(store.load(recovery_id).unwrap().is_none());
 }
 
 #[gpui::test]
@@ -6715,11 +11403,13 @@ fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each
     workspace.update(cx, |workspace, cx| {
         workspace.apply_open_result(
             &request,
-            Ok(opened_document(Arc::new(AtomicBool::new(false))).with_annotations(vec![
-                Annotation::Arc(arc.clone()),
-                Annotation::Cloud(cloud.clone()),
-                Annotation::Snapshot(snapshot.clone()),
-            ])),
+            Ok(
+                opened_document(Arc::new(AtomicBool::new(false))).with_annotations(vec![
+                    Annotation::Arc(arc.clone()),
+                    Annotation::Cloud(cloud.clone()),
+                    Annotation::Snapshot(snapshot.clone()),
+                ]),
+            ),
             cx,
         )
     });
@@ -6749,21 +11439,30 @@ fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each
     ] {
         assert!(cx.debug_bounds(id).is_some(), "Arc must render {id}");
     }
-    assert!(cx.debug_bounds(ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID).is_none());
+    assert!(
+        cx.debug_bounds(ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID)
+            .is_none()
+    );
 
     let revision = |workspace: &gpui::Entity<DocumentWorkspace>, cx: &gpui::VisualTestContext| {
         workspace.read_with(cx, |workspace, cx| {
-            let snapshot = workspace.annotation_snapshot(request.document_id, cx).unwrap();
+            let snapshot = workspace
+                .annotation_snapshot(request.document_id, cx)
+                .unwrap();
             (snapshot.revision, snapshot.undo_depth, snapshot.redo_depth)
         })
     };
 
     let before_color = revision(&workspace, cx);
     let inspector = workspace
-        .read_with(cx, |workspace, _| workspace.engineering_visual_property_inspector())
+        .read_with(cx, |workspace, _| {
+            workspace.engineering_visual_property_inspector()
+        })
         .unwrap();
     let picker = inspector.read_with(cx, |inspector, _| inspector.color_picker());
-    let picker_trigger = cx.debug_bounds(ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID).unwrap();
+    let picker_trigger = cx
+        .debug_bounds(ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID)
+        .unwrap();
     cx.simulate_click(picker_trigger.center(), Modifiers::default());
     cx.executor().advance_clock(Duration::from_millis(200));
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -6771,22 +11470,41 @@ fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each
     cx.update(|window, cx| color_input.read(cx).focus_handle(cx).focus(window, cx));
     cx.write_to_clipboard(ClipboardItem::new_string("#00ff0066".into()));
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE} enter"));
-    assert_eq!(revision(&workspace, cx), before_color, "ColorPicker preview must be history-free");
+    assert_eq!(
+        revision(&workspace, cx),
+        before_color,
+        "ColorPicker preview must be history-free"
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply = cx.debug_bounds(ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID).unwrap();
+    let apply = cx
+        .debug_bounds(ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID)
+        .unwrap();
     cx.simulate_click(apply.center(), Modifiers::default());
     assert_eq!(revision(&workspace, cx), (1, 1, 0));
     let color_applied = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
     assert_eq!(color_applied.arcs[0].appearance.stroke_color(), "#00ff00");
-    assert!((color_applied.arcs[0].appearance.opacity() - 102. / 255.).abs() < 0.0001,
-        "the colour picker's alpha must update native opacity in the same edit");
-    assert_eq!(color_applied.arcs[0].appearance.stroke_style(), StrokeStyle::Dashed);
+    assert!(
+        (color_applied.arcs[0].appearance.opacity() - 102. / 255.).abs() < 0.0001,
+        "the colour picker's alpha must update native opacity in the same edit"
+    );
+    assert_eq!(
+        color_applied.arcs[0].appearance.stroke_style(),
+        StrokeStyle::Dashed
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply = cx.debug_bounds(ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID).unwrap();
+    let apply = cx
+        .debug_bounds(ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID)
+        .unwrap();
     cx.simulate_click(apply.center(), Modifiers::default());
-    assert_eq!(revision(&workspace, cx), (1, 1, 0), "Apply no-op must be history-free");
+    assert_eq!(
+        revision(&workspace, cx),
+        (1, 1, 0),
+        "Apply no-op must be history-free"
+    );
 
     engineering_visual_enter_number(
         cx,
@@ -6796,10 +11514,11 @@ fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each
     );
     assert_eq!(revision(&workspace, cx), (2, 2, 0));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let arc_after_width = workspace
-        .read_with(cx, |workspace, cx| {
-            workspace.annotation_snapshot(request.document_id, cx).unwrap()
-        });
+    let arc_after_width = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_snapshot(request.document_id, cx)
+            .unwrap()
+    });
     let inspector_after_width =
         inspector.read_with(cx, |inspector, _| inspector.snapshot().cloned());
     assert!(
@@ -6812,21 +11531,35 @@ fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each
     );
     let inspector_snapshot = inspector_after_width.unwrap();
     assert_eq!(inspector_snapshot.annotation_id, arc.id);
-    assert_eq!(inspector_snapshot.expected_revision, arc_after_width.revision);
-    assert_eq!(inspector_snapshot.values.kind(), EngineeringVisualPropertyKind::Arc);
+    assert_eq!(
+        inspector_snapshot.expected_revision,
+        arc_after_width.revision
+    );
+    assert_eq!(
+        inspector_snapshot.values.kind(),
+        EngineeringVisualPropertyKind::Arc
+    );
     engineering_visual_release_opacity(cx, &workspace, request.document_id, 0.6);
     assert_eq!(revision(&workspace, cx), (3, 3, 0));
     engineering_visual_toggle_lock(cx);
     assert_eq!(revision(&workspace, cx), (4, 4, 0));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply = cx.debug_bounds(ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID).unwrap();
+    let apply = cx
+        .debug_bounds(ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID)
+        .unwrap();
     cx.simulate_click(apply.center(), Modifiers::default());
-    let locked_width = cx.debug_bounds(ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID).unwrap();
+    let locked_width = cx
+        .debug_bounds(ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID)
+        .unwrap();
     cx.simulate_click(locked_width.center(), Modifiers::default());
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} 9 enter"));
     engineering_visual_release_opacity(cx, &workspace, request.document_id, 0.2);
-    assert_eq!(revision(&workspace, cx), (4, 4, 0), "locked controls must be inert");
+    assert_eq!(
+        revision(&workspace, cx),
+        (4, 4, 0),
+        "locked controls must be inert"
+    );
     engineering_visual_toggle_lock(cx);
     assert_eq!(revision(&workspace, cx), (5, 5, 0));
 
@@ -6842,20 +11575,25 @@ fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each
         })
         .unwrap();
     assert_eq!(revision(&workspace, cx), (5, 5, 0));
-    assert!(!workspace.update(cx, |workspace, cx| workspace
-        .apply_engineering_visual_property_event(
-            &EngineeringVisualPropertyEvent {
-                document_id: request.document_id,
-                annotation_id: arc.id.clone(),
-                expected_revision: 4,
-                expected_kind: EngineeringVisualPropertyKind::Arc,
-                patch: EngineeringVisualPropertyPatch::Opacity(0.25),
-            },
-            cx,
-        )
-        .unwrap()), "a stale event must be inert");
+    assert!(
+        !workspace.update(cx, |workspace, cx| workspace
+            .apply_engineering_visual_property_event(
+                &EngineeringVisualPropertyEvent {
+                    document_id: request.document_id,
+                    annotation_id: arc.id.clone(),
+                    expected_revision: 4,
+                    expected_kind: EngineeringVisualPropertyKind::Arc,
+                    patch: EngineeringVisualPropertyPatch::Opacity(0.25),
+                },
+                cx,
+            )
+            .unwrap()),
+        "a stale event must be inert"
+    );
 
-    let picker_trigger = cx.debug_bounds(ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID).unwrap();
+    let picker_trigger = cx
+        .debug_bounds(ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID)
+        .unwrap();
     cx.simulate_click(picker_trigger.center(), Modifiers::default());
     cx.executor().advance_clock(Duration::from_millis(200));
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -6867,19 +11605,23 @@ fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each
         workspace.select_annotation(request.document_id, &cloud.id, cx)
     }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply = cx.debug_bounds(ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID).unwrap();
+    let apply = cx
+        .debug_bounds(ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID)
+        .unwrap();
     cx.simulate_click(apply.center(), Modifiers::default());
-    assert_eq!(revision(&workspace, cx), (5, 5, 0), "Arc preview must not cross into Cloud");
-    assert!(cx.debug_bounds(ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID).is_some());
+    assert_eq!(
+        revision(&workspace, cx),
+        (5, 5, 0),
+        "Arc preview must not cross into Cloud"
+    );
+    assert!(
+        cx.debug_bounds(ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID)
+            .is_some()
+    );
 
     engineering_visual_apply_color(cx, &workspace, "#aa5500");
     assert_eq!(revision(&workspace, cx), (6, 6, 0));
-    engineering_visual_enter_number(
-        cx,
-        &workspace,
-        ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID,
-        "4.5",
-    );
+    engineering_visual_enter_number(cx, &workspace, ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID, "4.5");
     assert_eq!(revision(&workspace, cx), (7, 7, 0));
     engineering_visual_release_opacity(cx, &workspace, request.document_id, 0.5);
     assert_eq!(revision(&workspace, cx), (8, 8, 0));
@@ -6899,9 +11641,18 @@ fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each
         workspace.select_annotation(request.document_id, &snapshot.id, cx)
     }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.debug_bounds(ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID).is_none());
-    assert!(cx.debug_bounds(ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID).is_none());
-    assert!(cx.debug_bounds(ENGINEERING_VISUAL_INSPECTOR_OPACITY_TRACK_ID).is_some());
+    assert!(
+        cx.debug_bounds(ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID)
+            .is_none()
+    );
+    assert!(
+        cx.debug_bounds(ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID)
+            .is_none()
+    );
+    assert!(
+        cx.debug_bounds(ENGINEERING_VISUAL_INSPECTOR_OPACITY_TRACK_ID)
+            .is_some()
+    );
     engineering_visual_release_opacity(cx, &workspace, request.document_id, 0.45);
     assert_eq!(revision(&workspace, cx), (12, 12, 0));
     engineering_visual_toggle_lock(cx);
@@ -6910,12 +11661,18 @@ fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each
     assert_eq!(revision(&workspace, cx), (14, 14, 0));
 
     let save_request = workspace
-        .update(cx, |workspace, cx| workspace.begin_save(request.document_id, cx))
+        .update(cx, |workspace, cx| {
+            workspace.begin_save(request.document_id, cx)
+        })
         .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     engineering_visual_release_opacity(cx, &workspace, request.document_id, 0.2);
     engineering_visual_toggle_lock(cx);
-    assert_eq!(revision(&workspace, cx), (14, 14, 0), "busy controls must be inert");
+    assert_eq!(
+        revision(&workspace, cx),
+        (14, 14, 0),
+        "busy controls must be inert"
+    );
     workspace.update(cx, |workspace, cx| {
         workspace.apply_save_result(&save_request, Err("end busy evidence".into()), cx)
     });
@@ -6931,7 +11688,9 @@ fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each
     );
     engineering_visual_toggle_lock(cx);
     let edited = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
     assert!(edited.snapshots[0].locked);
     assert!(!edited.arcs[0].locked);
@@ -6941,8 +11700,14 @@ fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each
             .selected_annotation_ids(request.document_id, cx)),
         vec![snapshot.id.clone(), arc.id.clone()],
     );
-    assert_eq!(edited.arcs[0].appearance.stroke_style(), StrokeStyle::Dashed);
-    assert_eq!(edited.clouds[0].appearance.stroke_style(), StrokeStyle::Dotted);
+    assert_eq!(
+        edited.arcs[0].appearance.stroke_style(),
+        StrokeStyle::Dashed
+    );
+    assert_eq!(
+        edited.clouds[0].appearance.stroke_style(),
+        StrokeStyle::Dotted
+    );
     assert_eq!(edited.clouds[0].border_effect_intensity(), 2.75);
     assert_eq!(edited.snapshots[0].opacity(), 0.45);
 }
@@ -6986,10 +11751,12 @@ fn straight_line_inspector_renders_exact_line_arrow_controls_and_revalidates_eac
     workspace.update(cx, |workspace, cx| {
         workspace.apply_open_result(
             &request,
-            Ok(opened_document(Arc::new(AtomicBool::new(false))).with_annotations(vec![
-                Annotation::StraightLine(line.clone()),
-                Annotation::StraightLine(arrow.clone()),
-            ])),
+            Ok(
+                opened_document(Arc::new(AtomicBool::new(false))).with_annotations(vec![
+                    Annotation::StraightLine(line.clone()),
+                    Annotation::StraightLine(arrow.clone()),
+                ]),
+            ),
             cx,
         )
     });
@@ -7023,14 +11790,20 @@ fn straight_line_inspector_renders_exact_line_arrow_controls_and_revalidates_eac
 
     let revision = |workspace: &gpui::Entity<DocumentWorkspace>, cx: &gpui::VisualTestContext| {
         workspace.read_with(cx, |workspace, cx| {
-            let snapshot = workspace.annotation_snapshot(request.document_id, cx).unwrap();
+            let snapshot = workspace
+                .annotation_snapshot(request.document_id, cx)
+                .unwrap();
             (snapshot.revision, snapshot.undo_depth, snapshot.redo_depth)
         })
     };
     let inspector = workspace
-        .read_with(cx, |workspace, _| workspace.straight_line_property_inspector())
+        .read_with(cx, |workspace, _| {
+            workspace.straight_line_property_inspector()
+        })
         .unwrap();
-    let initial_inspector = inspector.read_with(cx, |inspector, _| inspector.snapshot().cloned()).unwrap();
+    let initial_inspector = inspector
+        .read_with(cx, |inspector, _| inspector.snapshot().cloned())
+        .unwrap();
     assert_eq!(initial_inspector.annotation_id, line.id);
     assert_eq!(initial_inspector.expected_revision, 0);
     assert_eq!(initial_inspector.kind, LineKind::Line);
@@ -7038,16 +11811,32 @@ fn straight_line_inspector_renders_exact_line_arrow_controls_and_revalidates_eac
     straight_line_apply_color(cx, &workspace, "#00ff0066");
     assert_eq!(revision(&workspace, cx), (1, 1, 0));
     let color_applied = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
-    assert_eq!(color_applied.straight_lines[0].appearance.stroke_color(), "#00ff00");
-    assert!((color_applied.straight_lines[0].appearance.opacity() - 102. / 255.).abs() < 0.0001,
-        "the colour picker's alpha must update native opacity in the same edit");
-    assert_eq!(color_applied.straight_lines[0].appearance.stroke_style(), StrokeStyle::Dashed);
+    assert_eq!(
+        color_applied.straight_lines[0].appearance.stroke_color(),
+        "#00ff00"
+    );
+    assert!(
+        (color_applied.straight_lines[0].appearance.opacity() - 102. / 255.).abs() < 0.0001,
+        "the colour picker's alpha must update native opacity in the same edit"
+    );
+    assert_eq!(
+        color_applied.straight_lines[0].appearance.stroke_style(),
+        StrokeStyle::Dashed
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply = cx.debug_bounds(STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID).unwrap();
+    let apply = cx
+        .debug_bounds(STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID)
+        .unwrap();
     cx.simulate_click(apply.center(), Modifiers::default());
-    assert_eq!(revision(&workspace, cx), (1, 1, 0), "Apply no-op must be history-free");
+    assert_eq!(
+        revision(&workspace, cx),
+        (1, 1, 0),
+        "Apply no-op must be history-free"
+    );
 
     straight_line_enter_width(cx, &workspace, "3.25");
     assert_eq!(revision(&workspace, cx), (2, 2, 0));
@@ -7057,45 +11846,62 @@ fn straight_line_inspector_renders_exact_line_arrow_controls_and_revalidates_eac
     assert_eq!(revision(&workspace, cx), (4, 4, 0));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.debug_bounds(STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID).is_some());
-    let apply = cx.debug_bounds(STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID).unwrap();
+    assert!(
+        cx.debug_bounds(STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID)
+            .is_some()
+    );
+    let apply = cx
+        .debug_bounds(STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID)
+        .unwrap();
     cx.simulate_click(apply.center(), Modifiers::default());
     let width = cx.debug_bounds(STRAIGHT_LINE_INSPECTOR_WIDTH_ID).unwrap();
     cx.simulate_click(width.center(), Modifiers::default());
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} 9 enter"));
     straight_line_release_opacity(cx, &workspace, request.document_id, 0.2);
-    assert_eq!(revision(&workspace, cx), (4, 4, 0), "locked controls must be inert");
+    assert_eq!(
+        revision(&workspace, cx),
+        (4, 4, 0),
+        "locked controls must be inert"
+    );
     straight_line_toggle_lock(cx);
     assert_eq!(revision(&workspace, cx), (5, 5, 0));
 
-    assert!(!workspace.update(cx, |workspace, cx| workspace
-        .apply_straight_line_property_event(
-            &StraightLinePropertyEvent {
-                document_id: request.document_id,
-                annotation_id: line.id.clone(),
-                expected_revision: 4,
-                expected_kind: LineKind::Line,
-                patch: StraightLinePropertyPatch::Opacity(0.25),
-            },
-            cx,
-        )
-        .unwrap()), "a stale event must be inert");
-    assert!(!workspace.update(cx, |workspace, cx| workspace
-        .apply_straight_line_property_event(
-            &StraightLinePropertyEvent {
-                document_id: request.document_id,
-                annotation_id: line.id.clone(),
-                expected_revision: 5,
-                expected_kind: LineKind::Line,
-                patch: StraightLinePropertyPatch::Opacity(0.6),
-            },
-            cx,
-        )
-        .unwrap()), "a no-op event must be inert");
+    assert!(
+        !workspace.update(cx, |workspace, cx| workspace
+            .apply_straight_line_property_event(
+                &StraightLinePropertyEvent {
+                    document_id: request.document_id,
+                    annotation_id: line.id.clone(),
+                    expected_revision: 4,
+                    expected_kind: LineKind::Line,
+                    patch: StraightLinePropertyPatch::Opacity(0.25),
+                },
+                cx,
+            )
+            .unwrap()),
+        "a stale event must be inert"
+    );
+    assert!(
+        !workspace.update(cx, |workspace, cx| workspace
+            .apply_straight_line_property_event(
+                &StraightLinePropertyEvent {
+                    document_id: request.document_id,
+                    annotation_id: line.id.clone(),
+                    expected_revision: 5,
+                    expected_kind: LineKind::Line,
+                    patch: StraightLinePropertyPatch::Opacity(0.6),
+                },
+                cx,
+            )
+            .unwrap()),
+        "a no-op event must be inert"
+    );
 
     let picker = inspector.read_with(cx, |inspector, _| inspector.color_picker());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let picker_trigger = cx.debug_bounds(STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID).unwrap();
+    let picker_trigger = cx
+        .debug_bounds(STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID)
+        .unwrap();
     cx.simulate_click(picker_trigger.center(), Modifiers::default());
     cx.executor().advance_clock(Duration::from_millis(200));
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -7107,24 +11913,41 @@ fn straight_line_inspector_renders_exact_line_arrow_controls_and_revalidates_eac
         workspace.select_annotation(request.document_id, &arrow.id, cx)
     }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let resynced = inspector.read_with(cx, |inspector, _| inspector.snapshot().cloned()).unwrap();
+    let resynced = inspector
+        .read_with(cx, |inspector, _| inspector.snapshot().cloned())
+        .unwrap();
     assert_eq!(resynced.annotation_id, arrow.id);
     assert_eq!(resynced.expected_revision, 5);
     assert_eq!(resynced.kind, LineKind::Arrow);
-    assert_eq!(resynced.appearance, StraightLineAppearance::default_for(LineKind::Arrow));
-    let apply = cx.debug_bounds(STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID).unwrap();
+    assert_eq!(
+        resynced.appearance,
+        StraightLineAppearance::default_for(LineKind::Arrow)
+    );
+    let apply = cx
+        .debug_bounds(STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID)
+        .unwrap();
     cx.simulate_click(apply.center(), Modifiers::default());
-    assert_eq!(revision(&workspace, cx), (5, 5, 0), "Line preview must not cross into Arrow");
+    assert_eq!(
+        revision(&workspace, cx),
+        (5, 5, 0),
+        "Line preview must not cross into Arrow"
+    );
     straight_line_apply_color(cx, &workspace, "#aa5500");
     assert_eq!(revision(&workspace, cx), (6, 6, 0));
 
     let save_request = workspace
-        .update(cx, |workspace, cx| workspace.begin_save(request.document_id, cx))
+        .update(cx, |workspace, cx| {
+            workspace.begin_save(request.document_id, cx)
+        })
         .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     straight_line_release_opacity(cx, &workspace, request.document_id, 0.2);
     straight_line_toggle_lock(cx);
-    assert_eq!(revision(&workspace, cx), (6, 6, 0), "busy controls must be inert");
+    assert_eq!(
+        revision(&workspace, cx),
+        (6, 6, 0),
+        "busy controls must be inert"
+    );
     workspace.update(cx, |workspace, cx| {
         workspace.apply_save_result(&save_request, Err("end busy evidence".into()), cx)
     });
@@ -7140,7 +11963,9 @@ fn straight_line_inspector_renders_exact_line_arrow_controls_and_revalidates_eac
     );
     straight_line_toggle_lock(cx);
     let primary_only = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
     assert!(
         primary_only
@@ -7169,32 +11994,93 @@ fn straight_line_inspector_renders_exact_line_arrow_controls_and_revalidates_eac
         workspace.toggle_annotation_selection(request.document_id, &line.id, cx)
     }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.debug_bounds(STRAIGHT_LINE_PROPERTY_INSPECTOR_ID).is_some());
+    assert!(
+        cx.debug_bounds(STRAIGHT_LINE_PROPERTY_INSPECTOR_ID)
+            .is_some()
+    );
     assert!(workspace.update(cx, |workspace, cx| {
         workspace.toggle_annotation_selection(request.document_id, &arrow.id, cx)
     }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.debug_bounds(STRAIGHT_LINE_PROPERTY_INSPECTOR_ID).is_none());
+    assert!(
+        cx.debug_bounds(STRAIGHT_LINE_PROPERTY_INSPECTOR_ID)
+            .is_none()
+    );
 
     let final_snapshot = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
-    assert_eq!(final_snapshot.straight_lines[0].appearance.stroke_style(), StrokeStyle::Dashed);
-    assert_eq!(final_snapshot.straight_lines[1].appearance.stroke_style(), StrokeStyle::Solid);
+    assert_eq!(
+        final_snapshot.straight_lines[0].appearance.stroke_style(),
+        StrokeStyle::Dashed
+    );
+    assert_eq!(
+        final_snapshot.straight_lines[1].appearance.stroke_style(),
+        StrokeStyle::Solid
+    );
 }
 
 #[gpui::test]
-fn vertex_path_inspector_exact_controls_revalidate_and_preserve_hidden_state(cx: &mut TestAppContext) {
+fn vertex_path_inspector_exact_controls_revalidate_and_preserve_hidden_state(
+    cx: &mut TestAppContext,
+) {
     cx.update(gpui_component::init);
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let (_, cx) = cx.add_window_view({ let slot = slot.clone(); move |window, cx| { let workspace = cx.new(DocumentWorkspace::new); slot.replace(Some(workspace.clone())); Root::new(workspace, window, cx) } });
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
     cx.simulate_resize(size(px(1920.), px(1600.)));
     let workspace = slot.borrow_mut().take().unwrap();
-    let request = workspace.update(cx, |workspace, cx| workspace.begin_open(PathBuf::from("vertex-path-properties.pdf"), cx));
-    let hidden = RectangleAppearance::new("#112233", 1.5, Some("#445566"), 0.8).unwrap().with_fill_opacity(0.35).unwrap().with_stroke_style(StrokeStyle::Dashed);
-    let polyline = VertexPathAnnotation::new(MarkupId::new("pdf:inspector-polyline").unwrap(), 0, vec![PdfPoint::new(72., 144.).unwrap(), PdfPoint::new(252., 240.).unwrap()], VertexPathKind::Polyline, hidden.clone()).unwrap();
-    let polygon = VertexPathAnnotation::new(MarkupId::new("pdf:inspector-polygon").unwrap(), 0, vec![PdfPoint::new(90., 300.).unwrap(), PdfPoint::new(306., 300.).unwrap(), PdfPoint::new(180., 420.).unwrap()], VertexPathKind::Polygon, hidden.clone()).unwrap();
-    workspace.update(cx, |workspace, cx| workspace.apply_open_result(&request, Ok(opened_document(Arc::new(AtomicBool::new(false))).with_annotations(vec![Annotation::VertexPath(polyline.clone()), Annotation::VertexPath(polygon.clone())])), cx));
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("vertex-path-properties.pdf"), cx)
+    });
+    let hidden = RectangleAppearance::new("#112233", 1.5, Some("#445566"), 0.8)
+        .unwrap()
+        .with_fill_opacity(0.35)
+        .unwrap()
+        .with_stroke_style(StrokeStyle::Dashed);
+    let polyline = VertexPathAnnotation::new(
+        MarkupId::new("pdf:inspector-polyline").unwrap(),
+        0,
+        vec![
+            PdfPoint::new(72., 144.).unwrap(),
+            PdfPoint::new(252., 240.).unwrap(),
+        ],
+        VertexPathKind::Polyline,
+        hidden.clone(),
+    )
+    .unwrap();
+    let polygon = VertexPathAnnotation::new(
+        MarkupId::new("pdf:inspector-polygon").unwrap(),
+        0,
+        vec![
+            PdfPoint::new(90., 300.).unwrap(),
+            PdfPoint::new(306., 300.).unwrap(),
+            PdfPoint::new(180., 420.).unwrap(),
+        ],
+        VertexPathKind::Polygon,
+        hidden.clone(),
+    )
+    .unwrap();
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(
+                opened_document(Arc::new(AtomicBool::new(false))).with_annotations(vec![
+                    Annotation::VertexPath(polyline.clone()),
+                    Annotation::VertexPath(polygon.clone()),
+                ]),
+            ),
+            cx,
+        )
+    });
     assert!(workspace.update(cx, |workspace, cx| {
         workspace
             .set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
@@ -7213,16 +12099,56 @@ fn vertex_path_inspector_exact_controls_revalidate_and_preserve_hidden_state(cx:
     let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
     assert_eq!(panel.right(), rail.left());
     assert!(panel.top() >= rail.top() && panel.bottom() <= rail.bottom());
-    for id in [VERTEX_PATH_PROPERTY_INSPECTOR_ID, VERTEX_PATH_INSPECTOR_LOCKED_ID, VERTEX_PATH_INSPECTOR_STROKE_COLOR_ID, VERTEX_PATH_INSPECTOR_APPLY_STROKE_ID, VERTEX_PATH_INSPECTOR_WIDTH_ID, VERTEX_PATH_INSPECTOR_OPACITY_ID, VERTEX_PATH_INSPECTOR_FILL_COLOR_ID, VERTEX_PATH_INSPECTOR_APPLY_FILL_ID, VERTEX_PATH_INSPECTOR_NO_FILL_ID] { assert!(cx.debug_bounds(id).is_some(), "Polygon must render {id}"); }
-    let initial = workspace.read_with(cx, |workspace, _| workspace.vertex_path_property_inspector()).unwrap().read_with(cx, |inspector, _| inspector.snapshot().cloned()).unwrap();
-    assert_eq!((initial.annotation_id, initial.expected_revision, initial.kind), (polygon.id.clone(), 0, PathPropertyKind::Polygon));
-    let authority = |workspace: &gpui::Entity<DocumentWorkspace>, cx: &gpui::VisualTestContext| workspace.read_with(cx, |workspace, cx| { let snapshot = workspace.annotation_snapshot(request.document_id, cx).unwrap(); (snapshot.revision, snapshot.undo_depth) });
+    for id in [
+        VERTEX_PATH_PROPERTY_INSPECTOR_ID,
+        VERTEX_PATH_INSPECTOR_LOCKED_ID,
+        VERTEX_PATH_INSPECTOR_STROKE_COLOR_ID,
+        VERTEX_PATH_INSPECTOR_APPLY_STROKE_ID,
+        VERTEX_PATH_INSPECTOR_WIDTH_ID,
+        VERTEX_PATH_INSPECTOR_OPACITY_ID,
+        VERTEX_PATH_INSPECTOR_FILL_COLOR_ID,
+        VERTEX_PATH_INSPECTOR_APPLY_FILL_ID,
+        VERTEX_PATH_INSPECTOR_NO_FILL_ID,
+    ] {
+        assert!(cx.debug_bounds(id).is_some(), "Polygon must render {id}");
+    }
+    let initial = workspace
+        .read_with(cx, |workspace, _| {
+            workspace.vertex_path_property_inspector()
+        })
+        .unwrap()
+        .read_with(cx, |inspector, _| inspector.snapshot().cloned())
+        .unwrap();
+    assert_eq!(
+        (
+            initial.annotation_id,
+            initial.expected_revision,
+            initial.kind
+        ),
+        (polygon.id.clone(), 0, PathPropertyKind::Polygon)
+    );
+    let authority = |workspace: &gpui::Entity<DocumentWorkspace>, cx: &gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            let snapshot = workspace
+                .annotation_snapshot(request.document_id, cx)
+                .unwrap();
+            (snapshot.revision, snapshot.undo_depth)
+        })
+    };
 
     vertex_path_preview_color(cx, &workspace, false, "#abcdef80");
-    assert_eq!(authority(&workspace, cx), (0, 0), "ColorPicker Change is preview-only");
+    assert_eq!(
+        authority(&workspace, cx),
+        (0, 0),
+        "ColorPicker Change is preview-only"
+    );
     vertex_path_click_apply(cx, false);
     assert_eq!(authority(&workspace, cx), (1, 1));
-    let coloured = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
+    let coloured = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
     assert!((coloured.vertex_paths[1].appearance.opacity() - 128. / 255.).abs() < 0.0001);
     vertex_path_enter_width(cx, &workspace, "4.25");
     assert_eq!(authority(&workspace, cx), (2, 2));
@@ -7236,66 +12162,251 @@ fn vertex_path_inspector_exact_controls_revalidate_and_preserve_hidden_state(cx:
     let no_fill = cx.debug_bounds(VERTEX_PATH_INSPECTOR_NO_FILL_ID).unwrap();
     cx.simulate_click(no_fill.center(), Modifiers::default());
     assert_eq!(authority(&workspace, cx), (5, 5));
-    let edited = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
+    let edited = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
     let appearance = &edited.vertex_paths[1].appearance;
     assert_eq!(appearance.stroke_color(), "#abcdef");
     assert_eq!(appearance.stroke_width_pt(), 4.25);
     assert_eq!(appearance.opacity(), 0.6);
     assert_eq!(appearance.fill_color(), None);
-    assert!((appearance.fill_opacity() - 128. / 255.).abs() < 0.0001,
-        "removing fill must retain the alpha last committed from the fill picker");
+    assert!(
+        (appearance.fill_opacity() - 128. / 255.).abs() < 0.0001,
+        "removing fill must retain the alpha last committed from the fill picker"
+    );
     assert_eq!(appearance.stroke_style(), StrokeStyle::Dashed);
 
     for event in [
-        VertexPathPropertyEvent { document_id: request.document_id, annotation_id: polygon.id.clone(), expected_revision: 4, expected_kind: PathPropertyKind::Polygon, patch: VertexPathPropertyPatch::Opacity(0.4) },
-        VertexPathPropertyEvent { document_id: request.document_id, annotation_id: polyline.id.clone(), expected_revision: 5, expected_kind: PathPropertyKind::Polygon, patch: VertexPathPropertyPatch::Opacity(0.4) },
-        VertexPathPropertyEvent { document_id: request.document_id, annotation_id: polygon.id.clone(), expected_revision: 5, expected_kind: PathPropertyKind::Polyline, patch: VertexPathPropertyPatch::Opacity(0.4) },
-        VertexPathPropertyEvent { document_id: request.document_id, annotation_id: polygon.id.clone(), expected_revision: 5, expected_kind: PathPropertyKind::Polygon, patch: VertexPathPropertyPatch::Opacity(0.6) },
-        VertexPathPropertyEvent { document_id: request.document_id, annotation_id: polygon.id.clone(), expected_revision: 5, expected_kind: PathPropertyKind::Polygon, patch: VertexPathPropertyPatch::StrokeWidthPt(24.25) },
-    ] { assert!(!workspace.update(cx, |workspace, cx| workspace.apply_vertex_path_property_event(&event, cx).unwrap())); }
+        VertexPathPropertyEvent {
+            document_id: request.document_id,
+            annotation_id: polygon.id.clone(),
+            expected_revision: 4,
+            expected_kind: PathPropertyKind::Polygon,
+            patch: VertexPathPropertyPatch::Opacity(0.4),
+        },
+        VertexPathPropertyEvent {
+            document_id: request.document_id,
+            annotation_id: polyline.id.clone(),
+            expected_revision: 5,
+            expected_kind: PathPropertyKind::Polygon,
+            patch: VertexPathPropertyPatch::Opacity(0.4),
+        },
+        VertexPathPropertyEvent {
+            document_id: request.document_id,
+            annotation_id: polygon.id.clone(),
+            expected_revision: 5,
+            expected_kind: PathPropertyKind::Polyline,
+            patch: VertexPathPropertyPatch::Opacity(0.4),
+        },
+        VertexPathPropertyEvent {
+            document_id: request.document_id,
+            annotation_id: polygon.id.clone(),
+            expected_revision: 5,
+            expected_kind: PathPropertyKind::Polygon,
+            patch: VertexPathPropertyPatch::Opacity(0.6),
+        },
+        VertexPathPropertyEvent {
+            document_id: request.document_id,
+            annotation_id: polygon.id.clone(),
+            expected_revision: 5,
+            expected_kind: PathPropertyKind::Polygon,
+            patch: VertexPathPropertyPatch::StrokeWidthPt(24.25),
+        },
+    ] {
+        assert!(!workspace.update(cx, |workspace, cx| {
+            workspace
+                .apply_vertex_path_property_event(&event, cx)
+                .unwrap()
+        }));
+    }
     assert_eq!(authority(&workspace, cx), (5, 5));
 
     vertex_path_toggle_lock(cx);
     assert_eq!(authority(&workspace, cx), (6, 6));
-    assert!(!workspace.update(cx, |workspace, cx| workspace.apply_vertex_path_property_event(&VertexPathPropertyEvent { document_id: request.document_id, annotation_id: polygon.id.clone(), expected_revision: 6, expected_kind: PathPropertyKind::Polygon, patch: VertexPathPropertyPatch::Opacity(0.2) }, cx).unwrap()));
+    assert!(!workspace.update(cx, |workspace, cx| {
+        workspace
+            .apply_vertex_path_property_event(
+                &VertexPathPropertyEvent {
+                    document_id: request.document_id,
+                    annotation_id: polygon.id.clone(),
+                    expected_revision: 6,
+                    expected_kind: PathPropertyKind::Polygon,
+                    patch: VertexPathPropertyPatch::Opacity(0.2),
+                },
+                cx,
+            )
+            .unwrap()
+    }));
     assert!(workspace.read_with(cx, |workspace, _| workspace.last_file_error().is_none()));
     vertex_path_toggle_lock(cx);
     assert_eq!(authority(&workspace, cx), (7, 7));
 
     vertex_path_preview_color(cx, &workspace, true, "#aa5500");
-    assert!(workspace.update(cx, |workspace, cx| workspace.select_annotation(request.document_id, &polyline.id, cx)));
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            request.document_id,
+            &polyline.id,
+            cx
+        ))
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.debug_bounds(VERTEX_PATH_INSPECTOR_FILL_COLOR_ID).is_none(), "Polyline has no fill control");
-    let resynced = workspace.read_with(cx, |workspace, _| workspace.vertex_path_property_inspector()).unwrap().read_with(cx, |inspector, _| inspector.snapshot().cloned()).unwrap();
+    assert!(
+        cx.debug_bounds(VERTEX_PATH_INSPECTOR_FILL_COLOR_ID)
+            .is_none(),
+        "Polyline has no fill control"
+    );
+    let resynced = workspace
+        .read_with(cx, |workspace, _| {
+            workspace.vertex_path_property_inspector()
+        })
+        .unwrap()
+        .read_with(cx, |inspector, _| inspector.snapshot().cloned())
+        .unwrap();
     assert_eq!(resynced.annotation_id, polyline.id);
     assert_eq!(resynced.appearance, hidden);
-    assert!(!workspace.update(cx, |workspace, cx| workspace.apply_vertex_path_property_event(&VertexPathPropertyEvent { document_id: request.document_id, annotation_id: polyline.id.clone(), expected_revision: 7, expected_kind: PathPropertyKind::Polyline, patch: VertexPathPropertyPatch::FillColor(None) }, cx).unwrap()));
+    assert!(!workspace.update(cx, |workspace, cx| {
+        workspace
+            .apply_vertex_path_property_event(
+                &VertexPathPropertyEvent {
+                    document_id: request.document_id,
+                    annotation_id: polyline.id.clone(),
+                    expected_revision: 7,
+                    expected_kind: PathPropertyKind::Polyline,
+                    patch: VertexPathPropertyPatch::FillColor(None),
+                },
+                cx,
+            )
+            .unwrap()
+    }));
 
-    assert!(workspace.update(cx, |workspace, cx| workspace.select_annotation(request.document_id, &polygon.id, cx)));
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            request.document_id,
+            &polygon.id,
+            cx
+        ))
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
     vertex_path_click_apply(cx, true);
-    assert_eq!(authority(&workspace, cx), (7, 7), "selection resync must discard the stale fill preview");
-    let save = workspace.update(cx, |workspace, cx| workspace.begin_save(request.document_id, cx)).unwrap();
-    assert!(!workspace.update(cx, |workspace, cx| workspace.apply_vertex_path_property_event(&VertexPathPropertyEvent { document_id: request.document_id, annotation_id: polygon.id.clone(), expected_revision: 7, expected_kind: PathPropertyKind::Polygon, patch: VertexPathPropertyPatch::Opacity(0.2) }, cx).unwrap()));
-    workspace.update(cx, |workspace, cx| workspace.apply_save_result(&save, Err("end busy evidence".into()), cx));
+    assert_eq!(
+        authority(&workspace, cx),
+        (7, 7),
+        "selection resync must discard the stale fill preview"
+    );
+    let save = workspace
+        .update(cx, |workspace, cx| {
+            workspace.begin_save(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(!workspace.update(cx, |workspace, cx| {
+        workspace
+            .apply_vertex_path_property_event(
+                &VertexPathPropertyEvent {
+                    document_id: request.document_id,
+                    annotation_id: polygon.id.clone(),
+                    expected_revision: 7,
+                    expected_kind: PathPropertyKind::Polygon,
+                    patch: VertexPathPropertyPatch::Opacity(0.2),
+                },
+                cx,
+            )
+            .unwrap()
+    }));
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_save_result(&save, Err("end busy evidence".into()), cx)
+    });
 
-    let background = workspace.update(cx, |workspace, cx| workspace.begin_open(PathBuf::from("background.pdf"), cx));
-    workspace.update(cx, |workspace, cx| workspace.apply_open_result(&background, Ok(opened_document(Arc::new(AtomicBool::new(false)))), cx));
-    assert!(!workspace.update(cx, |workspace, cx| workspace.apply_vertex_path_property_event(&VertexPathPropertyEvent { document_id: request.document_id, annotation_id: polygon.id.clone(), expected_revision: 7, expected_kind: PathPropertyKind::Polygon, patch: VertexPathPropertyPatch::Opacity(0.2) }, cx).unwrap()));
-    assert!(workspace.update(cx, |workspace, cx| workspace.activate_document(request.document_id, cx)));
+    let background = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("background.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &background,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    assert!(!workspace.update(cx, |workspace, cx| {
+        workspace
+            .apply_vertex_path_property_event(
+                &VertexPathPropertyEvent {
+                    document_id: request.document_id,
+                    annotation_id: polygon.id.clone(),
+                    expected_revision: 7,
+                    expected_kind: PathPropertyKind::Polygon,
+                    patch: VertexPathPropertyPatch::Opacity(0.2),
+                },
+                cx,
+            )
+            .unwrap()
+    }));
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace.activate_document(request.document_id, cx)
+    }));
 
-    assert!(workspace.update(cx, |workspace, cx| workspace.toggle_annotation_selection(request.document_id, &polyline.id, cx)));
-    assert!(workspace.update(cx, |workspace, cx| workspace.apply_vertex_path_property_event(&VertexPathPropertyEvent { document_id: request.document_id, annotation_id: polygon.id.clone(), expected_revision: 7, expected_kind: PathPropertyKind::Polygon, patch: VertexPathPropertyPatch::Opacity(0.2) }, cx).unwrap()));
-    let primary_only = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.toggle_annotation_selection(
+            request.document_id,
+            &polyline.id,
+            cx
+        ))
+    );
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace
+            .apply_vertex_path_property_event(
+                &VertexPathPropertyEvent {
+                    document_id: request.document_id,
+                    annotation_id: polygon.id.clone(),
+                    expected_revision: 7,
+                    expected_kind: PathPropertyKind::Polygon,
+                    patch: VertexPathPropertyPatch::Opacity(0.2),
+                },
+                cx,
+            )
+            .unwrap()
+    }));
+    let primary_only = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
     assert_eq!(primary_only.vertex_paths[1].appearance.opacity(), 0.2);
     assert_eq!(primary_only.vertex_paths[0], polyline);
     assert_eq!((primary_only.revision, primary_only.undo_depth), (8, 8));
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.selected_annotation_ids(request.document_id, cx)), vec![polygon.id.clone(), polyline.id.clone()]);
-    assert!(workspace.update(cx, |workspace, cx| workspace.toggle_annotation_selection(request.document_id, &polygon.id, cx)));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .selected_annotation_ids(request.document_id, cx)),
+        vec![polygon.id.clone(), polyline.id.clone()]
+    );
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.toggle_annotation_selection(
+            request.document_id,
+            &polygon.id,
+            cx
+        ))
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds(VERTEX_PATH_PROPERTY_INSPECTOR_ID).is_some());
-    assert!(cx.debug_bounds(VERTEX_PATH_INSPECTOR_FILL_COLOR_ID).is_none());
-    assert!(!workspace.update(cx, |workspace, cx| workspace.apply_vertex_path_property_event(&VertexPathPropertyEvent { document_id: request.document_id, annotation_id: polygon.id.clone(), expected_revision: 8, expected_kind: PathPropertyKind::Polygon, patch: VertexPathPropertyPatch::Opacity(0.4) }, cx).unwrap()));
+    assert!(
+        cx.debug_bounds(VERTEX_PATH_INSPECTOR_FILL_COLOR_ID)
+            .is_none()
+    );
+    assert!(!workspace.update(cx, |workspace, cx| {
+        workspace
+            .apply_vertex_path_property_event(
+                &VertexPathPropertyEvent {
+                    document_id: request.document_id,
+                    annotation_id: polygon.id.clone(),
+                    expected_revision: 8,
+                    expected_kind: PathPropertyKind::Polygon,
+                    patch: VertexPathPropertyPatch::Opacity(0.4),
+                },
+                cx,
+            )
+            .unwrap()
+    }));
 }
 
 #[gpui::test]
@@ -7368,7 +12479,8 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
     cx.update(|window, _| window.activate_window());
-    let document_id = workspace.update(cx, |workspace, cx| workspace.open_path(fixture.clone(), cx));
+    let document_id =
+        workspace.update(cx, |workspace, cx| workspace.open_path(fixture.clone(), cx));
     cx.run_until_parked();
     let original_worker_pid = workspace
         .read_with(cx, |workspace, cx| {
@@ -7384,12 +12496,16 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
         let layer = cx.debug_bounds(layer_id).unwrap();
         let render_scale =
             (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
-        move |x: f64, y: f64| point(
-            layer.origin.x + px((f32::from(layer.size.width) - 612. * render_scale) / 2.)
-                + px(x as f32 * render_scale),
-            layer.origin.y + px((f32::from(layer.size.height) - 792. * render_scale) / 2.)
-                + px((792. - y as f32) * render_scale),
-        )
+        move |x: f64, y: f64| {
+            point(
+                layer.origin.x
+                    + px((f32::from(layer.size.width) - 612. * render_scale) / 2.)
+                    + px(x as f32 * render_scale),
+                layer.origin.y
+                    + px((f32::from(layer.size.height) - 792. * render_scale) / 2.)
+                    + px((792. - y as f32) * render_scale),
+            )
+        }
     };
 
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ARC_TOOL_ID);
@@ -7403,7 +12519,9 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     cx.simulate_click(to_view(120., 680.), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let arc_id = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx).unwrap())
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx).unwrap()
+        })
         .arcs[0]
         .id
         .clone();
@@ -7419,12 +12537,13 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     engineering_visual_apply_color(cx, &workspace, "#0066cc");
     engineering_visual_enter_number(cx, &workspace, ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID, "2.5");
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let arc_after_width = workspace
-        .read_with(cx, |workspace, cx| {
-            workspace.annotation_snapshot(document_id, cx).unwrap()
-        });
+    let arc_after_width = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_snapshot(document_id, cx).unwrap()
+    });
     let inspector = workspace
-        .read_with(cx, |workspace, _| workspace.engineering_visual_property_inspector())
+        .read_with(cx, |workspace, _| {
+            workspace.engineering_visual_property_inspector()
+        })
         .unwrap();
     let inspector_after_width =
         inspector.read_with(cx, |inspector, _| inspector.snapshot().cloned());
@@ -7452,7 +12571,9 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     cx.simulate_keystrokes("enter");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let cloud_id = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx).unwrap())
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx).unwrap()
+        })
         .clouds[0]
         .id
         .clone();
@@ -7468,7 +12589,12 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     engineering_visual_apply_color(cx, &workspace, "#cc5500");
     engineering_visual_enter_number(cx, &workspace, ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID, "3.5");
     engineering_visual_release_opacity(cx, &workspace, document_id, 0.6);
-    engineering_visual_enter_number(cx, &workspace, ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID, "2.75");
+    engineering_visual_enter_number(
+        cx,
+        &workspace,
+        ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID,
+        "2.75",
+    );
     engineering_visual_toggle_lock(cx);
 
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SNAPSHOT_TOOL_ID);
@@ -7483,23 +12609,43 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     cx.simulate_click(to_view(180., 180.), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let snapshot_id = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx).unwrap())
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx).unwrap()
+        })
         .snapshots[0]
         .id
         .clone();
     assert!(workspace.update(cx, |workspace, cx| {
-        workspace.set_annotation_tool(document_id, AnnotationTool::Select, cx).unwrap();
+        workspace
+            .set_annotation_tool(document_id, AnnotationTool::Select, cx)
+            .unwrap();
         workspace.select_annotation(document_id, &snapshot_id, cx)
     }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let to_view = projection(cx);
     let rect = workspace.read_with(cx, |workspace, cx| {
-        workspace.annotation_snapshot(document_id, cx).unwrap().snapshots[0].rect
+        workspace
+            .annotation_snapshot(document_id, cx)
+            .unwrap()
+            .snapshots[0]
+            .rect
     });
     let centre = (rect.x + rect.width / 2., rect.y + rect.height / 2.);
-    cx.simulate_mouse_down(to_view(centre.0, centre.1), MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(to_view(centre.0 + 200., centre.1), Some(MouseButton::Left), Modifiers::default());
-    cx.simulate_mouse_up(to_view(centre.0 + 200., centre.1), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_down(
+        to_view(centre.0, centre.1),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(
+        to_view(centre.0 + 200., centre.1),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_up(
+        to_view(centre.0 + 200., centre.1),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     cx.update(|window, cx| {
         workspace.update(cx, |workspace, cx| {
             workspace.set_engineering_visual_property_inspector_open(true, window, cx);
@@ -7509,10 +12655,21 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     engineering_visual_release_opacity(cx, &workspace, document_id, 0.45);
     engineering_visual_toggle_lock(cx);
 
-    let expected = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx).unwrap());
-    let expected_arc = expected.arcs.iter().find(|item| item.id == arc_id).unwrap().clone();
-    let expected_cloud = expected.clouds.iter().find(|item| item.id == cloud_id).unwrap().clone();
+    let expected = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_snapshot(document_id, cx).unwrap()
+    });
+    let expected_arc = expected
+        .arcs
+        .iter()
+        .find(|item| item.id == arc_id)
+        .unwrap()
+        .clone();
+    let expected_cloud = expected
+        .clouds
+        .iter()
+        .find(|item| item.id == cloud_id)
+        .unwrap()
+        .clone();
     let expected_snapshot = expected
         .snapshots
         .iter()
@@ -7539,20 +12696,29 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
         }
     });
     cx.run_until_parked();
-    let saved_worker_pid = workspace
-        .read_with(cx, |workspace, cx| {
-            let session = workspace.session(document_id, cx).unwrap().read(cx);
-            assert_eq!(session.path(), saved_path.as_path());
-            assert!(!workspace.annotation_snapshot(document_id, cx).unwrap().dirty);
-            session.worker_pid().unwrap()
-        });
+    let saved_worker_pid = workspace.read_with(cx, |workspace, cx| {
+        let session = workspace.session(document_id, cx).unwrap().read(cx);
+        assert_eq!(session.path(), saved_path.as_path());
+        assert!(
+            !workspace
+                .annotation_snapshot(document_id, cx)
+                .unwrap()
+                .dirty
+        );
+        session.worker_pid().unwrap()
+    });
     assert_ne!(saved_worker_pid, original_worker_pid);
     assert!(!worker_process_exists(original_worker_pid));
     for command in ["qpdf", "pdfinfo"] {
         let success = if command == "qpdf" {
-            std::process::Command::new(command).arg("--check").arg(&saved_path).status()
+            std::process::Command::new(command)
+                .arg("--check")
+                .arg(&saved_path)
+                .status()
         } else {
-            std::process::Command::new(command).arg(&saved_path).status()
+            std::process::Command::new(command)
+                .arg(&saved_path)
+                .status()
         }
         .unwrap()
         .success();
@@ -7560,8 +12726,16 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     }
 
     let independent = PdfPersistenceSession::open(&saved_path).unwrap();
-    let persisted_arc = independent.arcs().iter().find(|item| item.id == arc_id).unwrap();
-    let persisted_cloud = independent.clouds().iter().find(|item| item.id == cloud_id).unwrap();
+    let persisted_arc = independent
+        .arcs()
+        .iter()
+        .find(|item| item.id == arc_id)
+        .unwrap();
+    let persisted_cloud = independent
+        .clouds()
+        .iter()
+        .find(|item| item.id == cloud_id)
+        .unwrap();
     let persisted_snapshot = independent
         .snapshots()
         .iter()
@@ -7581,7 +12755,9 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
             path: saved_path.clone(),
         })
         .unwrap();
-    let annotated = pixel_proof.render_page_with_pdf_annotations(0, 612).unwrap();
+    let annotated = pixel_proof
+        .render_page_with_pdf_annotations(0, 612)
+        .unwrap();
     let base = pixel_proof.render_page(0, 612).unwrap();
     let cloud_rect = PdfRect::new(200., 460., 200., 170.).unwrap();
     for (kind, rect) in [
@@ -7599,21 +12775,34 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     assert!(!worker_process_exists(pixel_worker_pid));
 
     assert_eq!(
-        workspace.update(cx, |workspace, cx| workspace.request_close_document(document_id, cx)),
+        workspace.update(cx, |workspace, cx| workspace
+            .request_close_document(document_id, cx)),
         CloseRequestDisposition::Closed,
     );
     assert!(!worker_process_exists(saved_worker_pid));
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
-    let fresh_document = fresh_workspace
-        .update(cx, |workspace, cx| workspace.open_path(saved_path.clone(), cx));
+    let fresh_document = fresh_workspace.update(cx, |workspace, cx| {
+        workspace.open_path(saved_path.clone(), cx)
+    });
     cx.run_until_parked();
-    let reopened = fresh_workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(fresh_document, cx).unwrap());
-    assert_eq!((reopened.arcs.len(), reopened.clouds.len(), reopened.snapshots.len()), (1, 1, 1));
+    let reopened = fresh_workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_snapshot(fresh_document, cx).unwrap()
+    });
+    assert_eq!(
+        (
+            reopened.arcs.len(),
+            reopened.clouds.len(),
+            reopened.snapshots.len()
+        ),
+        (1, 1, 1)
+    );
     assert!(reopened.arcs[0].same_persisted_state_as(&expected_arc));
     assert!(reopened.clouds[0].same_persisted_state_as(&expected_cloud));
     assert!(reopened.snapshots[0].same_persisted_state_as(&expected_snapshot));
-    assert_eq!(reopened.annotation_order, vec![arc_id, cloud_id, snapshot_id]);
+    assert_eq!(
+        reopened.annotation_order,
+        vec![arc_id, cloud_id, snapshot_id]
+    );
     let fresh_worker_pid = fresh_workspace
         .read_with(cx, |workspace, cx| {
             workspace
@@ -7668,7 +12857,10 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
     );
     for artifact in [&library, &worker, &test_executable] {
         assert!(artifact.is_file());
-        assert_eq!(format!("{:x}", Sha256::digest(std::fs::read(artifact).unwrap())).len(), 64);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(std::fs::read(artifact).unwrap())).len(),
+            64
+        );
     }
     let surface_root = manifest_dir
         .join(".prepared/real-line-arrow-save-surfaces")
@@ -7719,7 +12911,8 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
     cx.update(|window, _| window.activate_window());
-    let document_id = workspace.update(cx, |workspace, cx| workspace.open_path(fixture.clone(), cx));
+    let document_id =
+        workspace.update(cx, |workspace, cx| workspace.open_path(fixture.clone(), cx));
     cx.run_until_parked();
     let original_worker_pid = workspace
         .read_with(cx, |workspace, cx| {
@@ -7759,17 +12952,34 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ARROW_TOOL_ID);
     let arrow_tool = cx.debug_bounds(DOCUMENT_ARROW_TOOL_ID).unwrap();
     cx.simulate_click(arrow_tool.center(), Modifiers::default());
-    let shift = Modifiers { shift: true, ..Modifiers::default() };
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
     cx.simulate_click(to_view(90., 300.), shift);
     cx.simulate_mouse_move(to_view(306., 324.), None, shift);
     cx.simulate_click(to_view(306., 324.), shift);
 
     let created = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!(created.straight_lines.len(), 2);
-    let line_id = created.straight_lines.iter().find(|line| line.kind == LineKind::Line).unwrap().id.clone();
-    let arrow_id = created.straight_lines.iter().find(|line| line.kind == LineKind::Arrow).unwrap().id.clone();
+    let line_id = created
+        .straight_lines
+        .iter()
+        .find(|line| line.kind == LineKind::Line)
+        .unwrap()
+        .id
+        .clone();
+    let arrow_id = created
+        .straight_lines
+        .iter()
+        .find(|line| line.kind == LineKind::Arrow)
+        .unwrap()
+        .id
+        .clone();
 
     cx.simulate_click(to_view(162., 192.), Modifiers::default());
     cx.simulate_mouse_down(to_view(162., 192.), MouseButton::Left, Modifiers::default());
@@ -7788,21 +12998,36 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
     );
     cx.simulate_mouse_up(to_view(330., 360.), MouseButton::Left, Modifiers::default());
 
-    assert!(workspace.update(cx, |workspace, cx| workspace.select_annotation(document_id, &line_id, cx)));
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            document_id,
+            &line_id,
+            cx
+        ))
+    );
     toggle_document_actions(cx);
     straight_line_apply_color(cx, &workspace, "#2563eb");
     straight_line_enter_width(cx, &workspace, "4");
     straight_line_release_opacity(cx, &workspace, document_id, 0.5);
 
-    assert!(workspace.update(cx, |workspace, cx| workspace.select_annotation(document_id, &arrow_id, cx)));
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            document_id,
+            &arrow_id,
+            cx
+        ))
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(
-        cx.debug_bounds(STRAIGHT_LINE_PROPERTY_INSPECTOR_ID).is_some(),
+        cx.debug_bounds(STRAIGHT_LINE_PROPERTY_INSPECTOR_ID)
+            .is_some(),
         "the open retained inspector must resync from Line to Arrow",
     );
     straight_line_toggle_lock(cx);
     let locked_before = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     cx.simulate_mouse_down(to_view(210., 330.), MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(
@@ -7812,16 +13037,36 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
     );
     cx.simulate_mouse_up(to_view(240., 350.), MouseButton::Left, Modifiers::default());
     let locked_after = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!(
-        (locked_after.revision, locked_after.undo_depth, &locked_after.straight_lines),
-        (locked_before.revision, locked_before.undo_depth, &locked_before.straight_lines),
+        (
+            locked_after.revision,
+            locked_after.undo_depth,
+            &locked_after.straight_lines
+        ),
+        (
+            locked_before.revision,
+            locked_before.undo_depth,
+            &locked_before.straight_lines
+        ),
         "locked Arrow body input must be rejected without history or geometry changes",
     );
     let expected = locked_after;
-    let expected_line = expected.straight_lines.iter().find(|line| line.id == line_id).unwrap().clone();
-    let expected_arrow = expected.straight_lines.iter().find(|line| line.id == arrow_id).unwrap().clone();
+    let expected_line = expected
+        .straight_lines
+        .iter()
+        .find(|line| line.id == line_id)
+        .unwrap()
+        .clone();
+    let expected_arrow = expected
+        .straight_lines
+        .iter()
+        .find(|line| line.id == arrow_id)
+        .unwrap()
+        .clone();
     assert!(expected_arrow.locked);
 
     workspace
@@ -7847,8 +13092,10 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
         assert!(actual.same_persisted_state_as(expected_annotation));
         assert!(first_typed.straight_line_has_canonical_native_identity(&expected_annotation.id));
     }
-    let first_line_dictionary = qpdf_canonical_straight_line_dictionary(&first_path, &line_id, LineKind::Line);
-    let first_arrow_dictionary = qpdf_canonical_straight_line_dictionary(&first_path, &arrow_id, LineKind::Arrow);
+    let first_line_dictionary =
+        qpdf_canonical_straight_line_dictionary(&first_path, &line_id, LineKind::Line);
+    let first_arrow_dictionary =
+        qpdf_canonical_straight_line_dictionary(&first_path, &arrow_id, LineKind::Arrow);
 
     workspace
         .update(cx, |workspace, cx| {
@@ -7875,12 +13122,20 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
     );
     for command in ["qpdf", "pdfinfo"] {
         let status = if command == "qpdf" {
-            std::process::Command::new(command).arg("--check").arg(&second_path).status()
+            std::process::Command::new(command)
+                .arg("--check")
+                .arg(&second_path)
+                .status()
         } else {
-            std::process::Command::new(command).arg(&second_path).status()
+            std::process::Command::new(command)
+                .arg(&second_path)
+                .status()
         }
         .unwrap();
-        assert!(status.success(), "{command} must validate the repeat-save PDF");
+        assert!(
+            status.success(),
+            "{command} must validate the repeat-save PDF"
+        );
     }
 
     let pixel_proof = backend
@@ -7890,9 +13145,14 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
             path: second_path.clone(),
         })
         .unwrap();
-    let annotated = pixel_proof.render_page_with_pdf_annotations(0, 612).unwrap();
+    let annotated = pixel_proof
+        .render_page_with_pdf_annotations(0, 612)
+        .unwrap();
     let annotation_free = pixel_proof.render_page(0, 612).unwrap();
-    assert_eq!(Sha256::digest(annotation_free.pixels_bgra()).to_vec(), source_base_digest);
+    assert_eq!(
+        Sha256::digest(annotation_free.pixels_bgra()).to_vec(),
+        source_base_digest
+    );
     let line_region = straight_line_pixel_region(&expected_line, 24.);
     let arrow_region = straight_line_pixel_region(&expected_arrow, 24.);
     assert!(raster_region_difference_count(&annotated, &annotation_free, line_region) > 0);
@@ -7910,7 +13170,10 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
             x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height
         };
         if !inside(line_region) && !inside(arrow_region) {
-            assert_eq!(actual, base, "pixels outside the padded Line/Arrow union must remain exact");
+            assert_eq!(
+                actual, base,
+                "pixels outside the padded Line/Arrow union must remain exact"
+            );
         }
     }
     let pixel_worker_pid = pixel_proof.worker_pid().unwrap();
@@ -7918,30 +13181,46 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
     assert!(!worker_process_exists(pixel_worker_pid));
 
     assert_eq!(
-        workspace.update(cx, |workspace, cx| workspace.request_close_document(document_id, cx)),
+        workspace.update(cx, |workspace, cx| workspace
+            .request_close_document(document_id, cx)),
         CloseRequestDisposition::Closed,
     );
     assert!(!worker_process_exists(second_worker_pid));
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
-    let fresh_document = fresh_workspace.update(cx, |workspace, cx| workspace.open_path(second_path.clone(), cx));
+    let fresh_document = fresh_workspace.update(cx, |workspace, cx| {
+        workspace.open_path(second_path.clone(), cx)
+    });
     cx.run_until_parked();
     let reopened = fresh_workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(fresh_document, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(fresh_document, cx)
+        })
         .unwrap();
     for expected_annotation in [&expected_line, &expected_arrow] {
-        assert!(reopened.straight_lines.iter().any(|line| line.same_persisted_state_as(expected_annotation)));
+        assert!(
+            reopened
+                .straight_lines
+                .iter()
+                .any(|line| line.same_persisted_state_as(expected_annotation))
+        );
     }
     let fresh_worker_pid = fresh_workspace
         .read_with(cx, |workspace, cx| {
-            workspace.session(fresh_document, cx).and_then(|session| session.read(cx).worker_pid())
+            workspace
+                .session(fresh_document, cx)
+                .and_then(|session| session.read(cx).worker_pid())
         })
         .unwrap();
     assert_eq!(
-        fresh_workspace.update(cx, |workspace, cx| workspace.request_close_document(fresh_document, cx)),
+        fresh_workspace.update(cx, |workspace, cx| workspace
+            .request_close_document(fresh_document, cx)),
         CloseRequestDisposition::Closed,
     );
     assert!(!worker_process_exists(fresh_worker_pid));
-    assert_eq!(format!("{:x}", Sha256::digest(std::fs::read(&fixture).unwrap())), fixture_sha);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(std::fs::read(&fixture).unwrap())),
+        fixture_sha
+    );
     assert!(
         !surface_root.exists() || std::fs::read_dir(&surface_root).unwrap().next().is_none(),
         "all real Line/Arrow workers and mapped surfaces must be released",
@@ -8252,7 +13531,14 @@ fn ink_property_inspector_targets_exact_single_ink_and_commits_identity_bound_hi
             workspace.annotation_snapshot(request.document_id, cx)
         })
         .unwrap();
-    assert!(!primary_only.pens.iter().find(|ink| ink.id == pen.id).unwrap().locked);
+    assert!(
+        !primary_only
+            .pens
+            .iter()
+            .find(|ink| ink.id == pen.id)
+            .unwrap()
+            .locked
+    );
     assert_eq!(
         primary_only
             .pens
@@ -8364,8 +13650,10 @@ fn text_box_property_inspector_uses_real_controls_and_exact_single_selection(
         })
         .unwrap();
     assert_eq!(color_applied.text_boxes[0].style().color(), "#2563eb");
-    assert!((color_applied.text_boxes[0].style().opacity() - 153. / 255.).abs() < 0.0001,
-        "the text colour picker must not discard its alpha");
+    assert!(
+        (color_applied.text_boxes[0].style().opacity() - 153. / 255.).abs() < 0.0001,
+        "the text colour picker must not discard its alpha"
+    );
     assert_eq!((color_applied.revision, color_applied.undo_depth), (1, 1));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -8623,10 +13911,21 @@ fn measurement_property_inspector_toggles_exact_selected_length_caption_and_open
     assert!(panel.top() >= rail.top() && panel.bottom() <= rail.bottom());
 
     let appearance = cx.debug_bounds(DIMENSION_PROPERTY_INSPECTOR_ID).unwrap();
-    assert!(appearance.bottom() <= panel.top(), "measurement details must follow appearance without overlap");
-    assert!(cx.debug_bounds("dimension-property-inspector-scroll").is_none());
-    assert!(cx.debug_bounds("measurement-property-inspector-scroll").is_none());
-    let scroll = cx.debug_bounds("measurement-combined-properties-scroll").unwrap();
+    assert!(
+        appearance.bottom() <= panel.top(),
+        "measurement details must follow appearance without overlap"
+    );
+    assert!(
+        cx.debug_bounds("dimension-property-inspector-scroll")
+            .is_none()
+    );
+    assert!(
+        cx.debug_bounds("measurement-property-inspector-scroll")
+            .is_none()
+    );
+    let scroll = cx
+        .debug_bounds("measurement-combined-properties-scroll")
+        .unwrap();
     cx.simulate_event(ScrollWheelEvent {
         position: scroll.center(),
         delta: ScrollDelta::Pixels(point(px(0.), px(-1_000.))),
@@ -8636,23 +13935,36 @@ fn measurement_property_inspector_toggles_exact_selected_length_caption_and_open
     let show_caption = cx
         .debug_bounds(MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID)
         .expect("the real Show caption Switch must render");
-    cx.simulate_click(point(show_caption.left() + px(12.), show_caption.center().y), Modifiers::default());
+    cx.simulate_click(
+        point(show_caption.left() + px(12.), show_caption.center().y),
+        Modifiers::default(),
+    );
     let hidden = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
         })
         .unwrap();
-    assert_eq!((hidden.revision, hidden.undo_depth), (1, 1),
+    assert_eq!(
+        (hidden.revision, hidden.undo_depth),
+        (1, 1),
         "caption={show_caption:?}, inner scroll={:?}, outer scroll={:?}, switch={:?}, state={:?}",
         cx.debug_bounds("measurement-property-inspector-scroll"),
         cx.debug_bounds("measurement-combined-properties-scroll"),
         cx.debug_bounds("switch-bar"),
-        workspace.read_with(cx, |workspace, cx| workspace.measurement_property_inspector().unwrap().read(cx).snapshot().cloned()));
+        workspace.read_with(cx, |workspace, cx| workspace
+            .measurement_property_inspector()
+            .unwrap()
+            .read(cx)
+            .snapshot()
+            .cloned())
+    );
     assert!(!hidden.lengths[0].calibration().show_caption());
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let measurement_inspector = workspace
-        .read_with(cx, |workspace, _| workspace.measurement_property_inspector())
+        .read_with(cx, |workspace, _| {
+            workspace.measurement_property_inspector()
+        })
         .unwrap();
     assert!(!measurement_inspector.read_with(cx, |inspector, _| {
         inspector.snapshot().unwrap().mutation_disabled
@@ -8739,7 +14051,10 @@ fn measurement_property_inspector_toggles_exact_selected_length_caption_and_open
         let show_caption = cx
             .debug_bounds(MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID)
             .expect("each exact selected measurement path must expose Show caption");
-        cx.simulate_click(point(show_caption.left() + px(12.), show_caption.center().y), Modifiers::default());
+        cx.simulate_click(
+            point(show_caption.left() + px(12.), show_caption.center().y),
+            Modifiers::default(),
+        );
         let snapshot = workspace
             .read_with(cx, |workspace, cx| {
                 workspace.annotation_snapshot(request.document_id, cx)
@@ -8808,7 +14123,10 @@ fn measurement_property_inspector_toggles_exact_selected_length_caption_and_open
     let show_caption = cx
         .debug_bounds(MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID)
         .unwrap();
-    cx.simulate_click(point(show_caption.left() + px(12.), show_caption.center().y), Modifiers::default());
+    cx.simulate_click(
+        point(show_caption.left() + px(12.), show_caption.center().y),
+        Modifiers::default(),
+    );
     let primary_only = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -9441,8 +14759,17 @@ fn shared_shape_property_inspector_global_lock_unlocks_a_selected_ellipse(cx: &m
     );
 }
 
-#[gpui::test]
-fn imported_rectangle_pointer_move_and_resize_commit_previewed_geometry(cx: &mut TestAppContext) {
+#[test]
+fn imported_rectangle_pointer_move_and_resize_commit_previewed_geometry() {
+    run_gpui_test_with_native_main_stack(
+        "imported_rectangle_pointer_move_and_resize_commit_previewed_geometry",
+        imported_rectangle_pointer_move_and_resize_commit_previewed_geometry_on_native_stack,
+    );
+}
+
+fn imported_rectangle_pointer_move_and_resize_commit_previewed_geometry_on_native_stack(
+    cx: &mut TestAppContext,
+) {
     cx.update(gpui_component::init);
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -9506,8 +14833,51 @@ fn imported_rectangle_pointer_move_and_resize_commit_previewed_geometry(cx: &mut
     }
     cx.simulate_mouse_up(move_end, MouseButton::Left, Modifiers::default());
 
+    cx.simulate_click(to_view(500., 500.), Modifiers::default());
+    let before_resize = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(before_resize.selected_id.is_none());
+
     let resize_start = to_view(234., 132.);
     let resize_end = to_view(264., 132.);
+    let ordinary_resize = to_view(90., 180.);
+    let hover_rotation = to_view(162., 192.);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let feedback_handles_at = |cx: &mut gpui::VisualTestContext, center: gpui::Point<Pixels>| {
+        let device_scale = cx.update(|window, _| window.scale_factor());
+        cx.update(|window, _| window.painted_quads())
+            .into_iter()
+            .filter(|quad| {
+                let quad_x = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                let quad_y = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                (quad_x - f32::from(center.x) * device_scale).abs() < 1.
+                    && (quad_y - f32::from(center.y) * device_scale).abs() < 1.
+                    && quad.border_widths.top.0 > 0.
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(feedback_handles_at(cx, resize_start).is_empty());
+    cx.simulate_mouse_move(resize_start, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let hot_resize = feedback_handles_at(cx, resize_start);
+    let ordinary_resize = feedback_handles_at(cx, ordinary_resize);
+    assert_eq!(hot_resize.len(), 1);
+    assert_eq!(ordinary_resize.len(), 1);
+    assert!(
+        hot_resize[0].bounds.size.width.0 > ordinary_resize[0].bounds.size.width.0,
+        "only the exact unselected Rectangle resize control must grow when hot",
+    );
+    assert_eq!(
+        hot_resize[0].border_widths.top.0,
+        2. * cx.update(|window, _| window.scale_factor()),
+    );
+    assert!(
+        feedback_handles_at(cx, hover_rotation).is_empty(),
+        "Electron hides Rectangle rotation controls until selection"
+    );
     cx.simulate_mouse_down(resize_start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(resize_end, Some(MouseButton::Left), Modifiers::default());
     let resize_preview = workspace.read_with(cx, |workspace, cx| {
@@ -9522,6 +14892,18 @@ fn imported_rectangle_pointer_move_and_resize_commit_previewed_geometry(cx: &mut
     ] {
         assert!((actual - expected).abs() < 0.001);
     }
+    let during_resize = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(during_resize.rectangles, before_resize.rectangles);
+    assert_eq!(
+        (during_resize.revision, during_resize.undo_depth),
+        (before_resize.revision, before_resize.undo_depth),
+        "unselected Rectangle first-press resize must remain a scene-only preview"
+    );
+    assert_eq!(during_resize.selected_id.as_ref(), Some(&imported.id));
     cx.simulate_mouse_up(resize_end, MouseButton::Left, Modifiers::default());
 
     let committed = workspace
@@ -9538,13 +14920,21 @@ fn imported_rectangle_pointer_move_and_resize_commit_previewed_geometry(cx: &mut
         assert!((actual - expected).abs() < 0.001);
     }
     assert_eq!(committed.selected_id.as_ref(), Some(&imported.id));
+    assert_eq!(committed.undo_depth, before_resize.undo_depth + 1);
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
     assert_eq!(
-        (
-            committed.revision,
-            committed.undo_depth,
-            committed.redo_depth
-        ),
-        (2, 2, 0)
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .rectangles,
+        before_resize.rectangles,
+        "Undo must restore exact geometry after unselected Rectangle first-press resize"
     );
 }
 
@@ -9734,7 +15124,11 @@ fn multi_selection_workspace_shift_click_group_move_is_ordered_lock_aware_and_on
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .selected_annotation_ids(request.document_id, cx)),
-        vec![rectangle_a.id, line_b.id, rectangle_c.id],
+        vec![
+            rectangle_a.id.clone(),
+            line_b.id.clone(),
+            rectangle_c.id.clone(),
+        ],
     );
     workspace
         .update(cx, |workspace, cx| {
@@ -9754,7 +15148,11 @@ fn multi_selection_workspace_shift_click_group_move_is_ordered_lock_aware_and_on
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
     cx.update(|window, cx| focus.focus(window, cx));
-    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-c cmd-v" } else { "ctrl-c ctrl-v" });
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-c cmd-v"
+    } else {
+        "ctrl-c ctrl-v"
+    });
     let pasted_ids = workspace.read_with(cx, |workspace, cx| {
         workspace.selected_annotation_ids(request.document_id, cx)
     });
@@ -9794,6 +15192,10 @@ fn multi_selection_workspace_shift_click_group_move_is_ordered_lock_aware_and_on
         })
         .unwrap();
     assert_eq!((deleted.revision, deleted.undo_depth), (3, 3));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
+        Some("Deleted 2 annotations".into()),
+    );
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .selected_annotation_ids(request.document_id, cx)),
@@ -9843,7 +15245,6 @@ fn multi_selection_workspace_shift_click_group_move_is_ordered_lock_aware_and_on
         4,
         "Select All must include all current-page annotations, including locked annotations",
     );
-
     let selected = workspace.read_with(cx, |workspace, cx| {
         workspace.selected_annotation_ids(request.document_id, cx)
     });
@@ -9879,6 +15280,3023 @@ fn multi_selection_workspace_shift_click_group_move_is_ordered_lock_aware_and_on
             .iter()
             .all(|annotation| annotation.id != unlocked_secondary),
         "the real Delete button must remain enabled when a locked primary has an unlocked selected peer",
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
+        Some("Deleted annotation".into()),
+    );
+}
+
+#[gpui::test]
+fn measured_caption_marquee_routes_fresh_layout_through_preview_and_both_release_paths(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("marquee-selection.pdf"), cx)
+    });
+    let scale_for = |factor| {
+        PageScale::from_factors(
+            0,
+            ScaleSource::Custom,
+            "Caption test",
+            ScaleUnit::In,
+            ScaleUnit::M,
+            factor,
+            factor,
+            ScalePrecision::decimal(0.01).unwrap(),
+        )
+        .unwrap()
+    };
+    let calibration = LengthCalibration::from_page_scale(&scale_for(0.01)).unwrap();
+    let length = LengthAnnotation::new(
+        MarkupId::new("caption:length").unwrap(),
+        0,
+        PdfPoint::new(100., 150.).unwrap(),
+        PdfPoint::new(260., 150.).unwrap(),
+        calibration.clone(),
+    )
+    .unwrap();
+    let hidden = LengthAnnotation::new(
+        MarkupId::new("caption:hidden").unwrap(),
+        0,
+        PdfPoint::new(100., 650.).unwrap(),
+        PdfPoint::new(260., 650.).unwrap(),
+        calibration.clone().with_show_caption(false),
+    )
+    .unwrap();
+    let poly = MeasurementPathAnnotation::new(
+        MarkupId::new("caption:poly").unwrap(),
+        0,
+        vec![
+            PdfPoint::new(100., 300.).unwrap(),
+            PdfPoint::new(500., 300.).unwrap(),
+            PdfPoint::new(500., 340.).unwrap(),
+        ],
+        MeasurementPathKind::Polylength,
+        calibration.clone(),
+        RectangleAppearance::default(),
+    )
+    .unwrap();
+    let area = MeasurementPathAnnotation::new(
+        MarkupId::new("caption:area").unwrap(),
+        0,
+        vec![
+            PdfPoint::new(100., 450.).unwrap(),
+            PdfPoint::new(200., 450.).unwrap(),
+            PdfPoint::new(100., 550.).unwrap(),
+        ],
+        MeasurementPathKind::Area,
+        calibration,
+        RectangleAppearance::default(),
+    )
+    .unwrap();
+    let dimension = butter_paper_gpui_migration::annotation_model::DimensionAnnotation::new(
+        MarkupId::new("caption:dimension").unwrap(),
+        0,
+        PdfPoint::new(350., 150.).unwrap(),
+        PdfPoint::new(500., 150.).unwrap(),
+        60.,
+        "Dimension caption",
+        DimensionAppearance::new(
+            StraightLineAppearance::default_for(LineKind::Line),
+            TextBoxStyle::new("Tinos", 12., "#000000", 1.).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(
+                opened_document(Arc::new(AtomicBool::new(false))).with_annotations(vec![
+                    Annotation::Length(length.clone()),
+                    Annotation::Length(hidden.clone()),
+                    Annotation::MeasurementPath(poly.clone()),
+                    Annotation::MeasurementPath(area.clone()),
+                    Annotation::Dimension(dimension.clone()),
+                ]),
+            ),
+            cx,
+        )
+    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let to_view = |x: f64, y: f64| {
+        point(
+            origin.x + px(x as f32 * scale),
+            origin.y + px((792. - y as f32) * scale),
+        )
+    };
+    let paths = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_caption_selection_paths(request.document_id, 0, cx)
+    });
+    assert_eq!(paths.len(), 4);
+    assert!(!paths.contains_key(&hidden.id));
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_caption_selection_paths(request.document_id, 1, cx))
+            .is_empty()
+    );
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| focus.focus(window, cx));
+    for id in [&length.id, &poly.id, &area.id, &dimension.id] {
+        let corners = &paths[id];
+        let right = corners
+            .iter()
+            .map(|p| p.x)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let top = corners
+            .iter()
+            .map(|p| p.y)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let start = to_view(right + 18., top - 3.);
+        let end = to_view(right - 18., top - 1.);
+        cx.simulate_click(start, Modifiers::default());
+        cx.simulate_mouse_move(end, None, Modifiers::default());
+        assert_eq!(
+            workspace.read_with(cx, |workspace, cx| workspace.selection_marquee_candidates(
+                request.document_id,
+                0,
+                cx
+            )),
+            vec![id.clone()],
+            "caption edge preview {id:?}"
+        );
+        assert_eq!(
+            workspace
+                .read_with(cx, |workspace, cx| workspace
+                    .annotation_snapshot(request.document_id, cx))
+                .unwrap()
+                .revision,
+            before.revision
+        );
+        cx.simulate_click(end, Modifiers::default());
+        assert_eq!(
+            workspace.read_with(cx, |workspace, cx| workspace
+                .selected_annotation_ids(request.document_id, cx)),
+            vec![id.clone()],
+            "click-box caption commit {id:?}"
+        );
+        cx.simulate_keystrokes("escape");
+        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(
+            to_view(right - 18., top - 3.),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        cx.simulate_mouse_up(
+            to_view(right + 18., top - 1.),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        assert_eq!(
+            workspace.read_with(cx, |workspace, cx| workspace
+                .selected_annotation_ids(request.document_id, cx)),
+            vec![id.clone()],
+            "drag caption commit {id:?}"
+        );
+        cx.simulate_keystrokes("escape");
+    }
+    for (end_y, expected) in [(154., Vec::new()), (185., vec![length.id.clone()])] {
+        cx.simulate_click(to_view(90., 140.), Modifiers::default());
+        cx.simulate_mouse_move(to_view(280., end_y), None, Modifiers::default());
+        assert_eq!(
+            workspace.read_with(cx, |workspace, cx| workspace.selection_marquee_candidates(
+                request.document_id,
+                0,
+                cx
+            )),
+            expected,
+            "Window needs body and caption"
+        );
+        cx.simulate_click(to_view(280., end_y), Modifiers::default());
+        assert_eq!(
+            workspace.read_with(cx, |workspace, cx| workspace
+                .selected_annotation_ids(request.document_id, cx)),
+            expected
+        );
+        cx.simulate_keystrokes("escape");
+    }
+    let after = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        (after.revision, after.undo_depth, after.redo_depth),
+        (before.revision, before.undo_depth, before.redo_depth)
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_page_length_calibration(
+                request.document_id,
+                0,
+                LengthCalibration::from_page_scale(&scale_for(1e10)).unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
+    // Deliberately query before another draw: the current caption, not last paint, owns geometry.
+    let changed = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_caption_selection_paths(request.document_id, 0, cx)
+    });
+    let width = |points: &[PdfPoint]| {
+        points.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max)
+            - points.iter().map(|p| p.x).fold(f64::INFINITY, f64::min)
+    };
+    assert!(width(&changed[&length.id]) > width(&paths[&length.id]));
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            request.document_id,
+            &length.id,
+            cx
+        ))
+    );
+    let revision = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap()
+        .revision;
+    let appearance = DimensionAppearance::new(
+        length.appearance.line().clone(),
+        TextBoxStyle::new("Tinos", 24., "#000000", 1.)
+            .unwrap()
+            .with_layout_metrics(13.8, 3.)
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        workspace
+            .update(cx, |workspace, cx| workspace
+                .apply_dimension_property_event(
+                    &DimensionPropertyEvent {
+                        document_id: request.document_id,
+                        annotation_id: length.id.clone(),
+                        expected_revision: revision,
+                        patch: DimensionPropertyPatch::Appearance(appearance),
+                    },
+                    cx
+                ))
+            .unwrap()
+    );
+    let restyled = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_caption_selection_paths(request.document_id, 0, cx)
+    });
+    assert!(
+        width(&restyled[&length.id]) > width(&changed[&length.id]),
+        "font property changes must be measured before redraw"
+    );
+
+    cx.simulate_keystrokes("escape");
+    let corners = &restyled[&length.id];
+    let right = corners
+        .iter()
+        .map(|p| p.x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let top = corners
+        .iter()
+        .map(|p| p.y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    cx.simulate_click(to_view(right + 18., top - 3.), Modifiers::default());
+    cx.simulate_mouse_move(to_view(right - 18., top - 1.), None, Modifiers::default());
+    let mode = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .document_view_state(request.document_id, cx)
+            .unwrap()
+            .mode()
+    });
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.set_view_configuration(
+            request.document_id,
+            mode,
+            scale * 80.,
+            cx
+        ))
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.selection_marquee_candidates(
+            request.document_id,
+            0,
+            cx
+        )),
+        vec![length.id.clone()],
+        "fresh font/zoom query before redraw"
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let zoomed_layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let zoomed_scale =
+        (f32::from(zoomed_layer.size.width) / 612.).min(f32::from(zoomed_layer.size.height) / 792.);
+    let zoomed_origin = point(
+        zoomed_layer.origin.x + px((f32::from(zoomed_layer.size.width) - 612. * zoomed_scale) / 2.),
+        zoomed_layer.origin.y
+            + px((f32::from(zoomed_layer.size.height) - 792. * zoomed_scale) / 2.),
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.selection_marquee_candidates(
+            request.document_id,
+            0,
+            cx
+        )),
+        vec![length.id.clone()],
+        "current prepaint transform retains the candidate"
+    );
+    cx.simulate_click(
+        point(
+            zoomed_origin.x + px((right - 18.) as f32 * zoomed_scale),
+            zoomed_origin.y + px((792. - (top - 1.) as f32) * zoomed_scale),
+        ),
+        Modifiers::default(),
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .selected_annotation_ids(request.document_id, cx)),
+        vec![length.id.clone()]
+    );
+
+    cx.simulate_keystrokes("escape");
+    let current_paths = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_caption_selection_paths(request.document_id, 0, cx)
+    });
+    let caption = &current_paths[&length.id];
+    let caption_center = PdfPoint::new(
+        caption.iter().map(|point| point.x).sum::<f64>() / caption.len() as f64,
+        caption.iter().map(|point| point.y).sum::<f64>() / caption.len() as f64,
+    )
+    .unwrap();
+    let to_zoomed_view = |pdf_point: PdfPoint| {
+        point(
+            zoomed_origin.x + px(pdf_point.x as f32 * zoomed_scale),
+            zoomed_origin.y + px((792. - pdf_point.y as f32) * zoomed_scale),
+        )
+    };
+    let drag_end = PdfPoint::new(caption_center.x + 20., caption_center.y + 12.).unwrap();
+    let before_caption_drag = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_snapshot(request.document_id, cx)
+            .unwrap()
+    });
+    cx.simulate_mouse_move(to_zoomed_view(caption_center), None, Modifiers::default());
+    cx.simulate_mouse_down(
+        to_zoomed_view(caption_center),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(
+        to_zoomed_view(drag_end),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    let preview = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(request.document_id, 0, cx)
+    });
+    let preview_length = preview
+        .lengths
+        .iter()
+        .find(|annotation| annotation.id == length.id)
+        .unwrap();
+    assert!(matches!(
+        preview_length.feedback,
+        SceneInteractionFeedback::Move { .. }
+    ));
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace
+                    .annotation_snapshot(request.document_id, cx)
+                    .unwrap()
+            })
+            .lengths,
+        before_caption_drag.lengths,
+        "caption movement must remain scene-only before release"
+    );
+    cx.simulate_mouse_up(
+        to_zoomed_view(drag_end),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let committed_caption_drag = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_snapshot(request.document_id, cx)
+            .unwrap()
+    });
+    assert_eq!(
+        committed_caption_drag.undo_depth,
+        before_caption_drag.undo_depth + 1,
+        "caption movement must commit exactly one history entry"
+    );
+    assert_ne!(committed_caption_drag.lengths, before_caption_drag.lengths);
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace
+                    .annotation_snapshot(request.document_id, cx)
+                    .unwrap()
+            })
+            .lengths,
+        before_caption_drag.lengths,
+        "Undo must restore the caption-owned Length movement exactly"
+    );
+}
+
+#[test]
+fn line_feedback_adapter_distinguishes_length_creation_from_committed_scene() {
+    let mut adapter = AnnotationAdapter::default();
+    adapter
+        .set_document_page_length_calibration(
+            1,
+            0,
+            LengthCalibration::from_scale(72., 1., "m", 2, false).unwrap(),
+        )
+        .unwrap();
+    adapter.set_tool(AnnotationTool::Length).unwrap();
+    let before = adapter.snapshot(1).unwrap();
+    let id = MarkupId::new("feedback:length-draft").unwrap();
+    let start = PdfPoint::new(100., 200.).unwrap();
+    let end = PdfPoint::new(200., 200.).unwrap();
+    adapter
+        .begin_length_placement(1, 0, id.clone(), start)
+        .unwrap();
+    adapter.update_length_placement(end, false).unwrap();
+    let preview = adapter.document_scene(1, 0);
+    assert_eq!(preview.lengths.len(), 1);
+    assert!(
+        preview.lengths[0].draft,
+        "creation preview must not acquire committed selection chrome"
+    );
+    assert_eq!(adapter.snapshot(1).unwrap(), before);
+    adapter.commit_length_placement(1, 0, end, false).unwrap();
+    let committed = adapter.document_scene(1, 0);
+    assert_eq!(committed.lengths.len(), 1);
+    assert_eq!(committed.lengths[0].id, id);
+    assert!(!committed.lengths[0].draft);
+    assert_eq!(
+        adapter.snapshot(1).unwrap().undo_depth,
+        before.undo_depth + 1
+    );
+}
+
+#[gpui::test]
+fn line_feedback_workspace_paints_square_endpoints_without_model_mutation(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("feedback.pdf"), cx)
+    });
+    let mut annotations = Vec::new();
+    let mut fixtures = Vec::new();
+    for (family, y) in [("line", 550.), ("arrow", 450.), ("length", 350.)] {
+        for locked in [false, true] {
+            let x = if locked { 350. } else { 100. };
+            let id = MarkupId::new(format!("feedback:{family}:{locked}")).unwrap();
+            let start = PdfPoint::new(x, y).unwrap();
+            let end = PdfPoint::new(x + 100., y).unwrap();
+            let annotation = if family == "length" {
+                let mut value = LengthAnnotation::new(
+                    id.clone(),
+                    0,
+                    start,
+                    end,
+                    LengthCalibration::from_scale(72., 1., "m", 2, false).unwrap(),
+                )
+                .unwrap();
+                value.locked = locked;
+                Annotation::Length(value)
+            } else {
+                let kind = if family == "arrow" {
+                    LineKind::Arrow
+                } else {
+                    LineKind::Line
+                };
+                let mut value = StraightLineAnnotation::new(
+                    id.clone(),
+                    0,
+                    start,
+                    end,
+                    kind,
+                    StraightLineAppearance::default_for(kind),
+                )
+                .unwrap();
+                value.locked = locked;
+                Annotation::StraightLine(value)
+            };
+            annotations.push(annotation);
+            fixtures.push((id, x as f32, y as f32, locked));
+        }
+    }
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false))).with_annotations(annotations)),
+            cx,
+        )
+    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    for zoom in [60., 80.] {
+        let mode = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .document_view_state(request.document_id, cx)
+                .unwrap()
+                .mode()
+        });
+        workspace.update(cx, |workspace, cx| {
+            workspace.set_view_configuration(request.document_id, mode, zoom, cx)
+        });
+        for (id, x, y, locked) in &fixtures {
+            assert!(
+                workspace.update(cx, |workspace, cx| workspace.select_annotation(
+                    request.document_id,
+                    id,
+                    cx
+                ))
+            );
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+            let scale =
+                (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+            let origin = point(
+                layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+                layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+            );
+            let device_scale = cx.update(|window, _| window.scale_factor());
+            let quads = cx.update(|window, _| window.painted_quads());
+            for endpoint_x in [*x, *x + 100.] {
+                let center = point(
+                    origin.x + px(endpoint_x * scale),
+                    origin.y + px((792. - y) * scale),
+                );
+                let handles = quads
+                    .iter()
+                    .filter(|quad| {
+                        let qx = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                        let qy = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                        (qx - f32::from(center.x) * device_scale).abs() < 1.
+                            && (qy - f32::from(center.y) * device_scale).abs() < 1.
+                            && quad.border_widths.top.0 > 0.
+                    })
+                    .collect::<Vec<_>>();
+                if *locked {
+                    assert!(
+                        handles.is_empty(),
+                        "locked {id:?} must hide endpoint handles"
+                    );
+                } else {
+                    assert_eq!(handles.len(), 1, "{id:?} at zoom {zoom}");
+                    let quad = handles[0];
+                    assert_eq!(
+                        quad.bounds.size.width.0,
+                        8. * device_scale,
+                        "nominal seven-pixel square plus centred border"
+                    );
+                    assert_eq!(quad.bounds.size.height.0, 8. * device_scale);
+                    assert_eq!(quad.border_widths.top.0, device_scale);
+                    assert_eq!(
+                        quad.corner_radii.top_left.0, 0.,
+                        "old rounded dot must not survive"
+                    );
+                }
+            }
+            let after = workspace
+                .read_with(cx, |workspace, cx| {
+                    workspace.annotation_snapshot(request.document_id, cx)
+                })
+                .unwrap();
+            assert_eq!(after.straight_lines, before.straight_lines);
+            assert_eq!(after.lengths, before.lengths);
+            assert_eq!(
+                (after.revision, after.undo_depth, after.redo_depth),
+                (before.revision, before.undo_depth, before.redo_depth)
+            );
+        }
+    }
+
+    let trigger = cx.debug_bounds(DOCUMENT_SNAP_SETTINGS_ID).unwrap();
+    cx.simulate_click(trigger.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let markup = cx.debug_bounds(DOCUMENT_SNAP_MARKUP_ID).unwrap();
+    cx.simulate_click(markup.center(), Modifiers::default());
+    assert!(
+        !workspace
+            .read_with(cx, |workspace, cx| workspace
+                .semantic_snap_settings(request.document_id, cx))
+            .unwrap()
+            .annotations_enabled()
+    );
+    cx.simulate_click(trigger.center(), Modifiers::default());
+
+    let line_id = MarkupId::new("feedback:line:false").unwrap();
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            request.document_id,
+            &line_id,
+            cx
+        ))
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let project =
+        |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale));
+    let start = project(100., 550.);
+    let end = project(200., 550.);
+    let moved_end = project(220., 530.);
+    cx.simulate_mouse_down(end, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(moved_end, Some(MouseButton::Left), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let device_scale = cx.update(|window, _| window.scale_factor());
+    let quads = cx.update(|window, _| window.painted_quads());
+    let handle_count = |center: Point<Pixels>| {
+        quads
+            .iter()
+            .filter(|quad| {
+                let qx = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                let qy = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                (qx - f32::from(center.x) * device_scale).abs() < 1.
+                    && (qy - f32::from(center.y) * device_scale).abs() < 1.
+                    && quad.border_widths.top.0 > 0.
+            })
+            .count()
+    };
+    assert_eq!(
+        handle_count(start),
+        0,
+        "endpoint transform must suppress the inactive handle"
+    );
+    assert_eq!(
+        handle_count(moved_end),
+        1,
+        "endpoint transform must retain only its active handle"
+    );
+    cx.simulate_keystrokes("escape");
+    let after_cancel = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(after_cancel.straight_lines, before.straight_lines);
+    assert_eq!(
+        (after_cancel.revision, after_cancel.undo_depth),
+        (before.revision, before.undo_depth)
+    );
+
+    let body = project(150., 550.);
+    let moved_body = project(170., 530.);
+    let moved_start = project(120., 530.);
+    let moved_finish = project(220., 530.);
+    cx.simulate_mouse_down(body, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(moved_body, Some(MouseButton::Left), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let quads = cx.update(|window, _| window.painted_quads());
+    let moved_handle_count = |center: Point<Pixels>| {
+        quads
+            .iter()
+            .filter(|quad| {
+                let qx = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                let qy = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                (qx - f32::from(center.x) * device_scale).abs() < 1.
+                    && (qy - f32::from(center.y) * device_scale).abs() < 1.
+                    && quad.border_widths.top.0 > 0.
+            })
+            .count()
+    };
+    assert_eq!(
+        moved_handle_count(moved_start),
+        0,
+        "body move must hide the start handle"
+    );
+    assert_eq!(
+        moved_handle_count(moved_finish),
+        0,
+        "body move must hide the end handle"
+    );
+    cx.simulate_keystrokes("escape");
+    let after_body_cancel = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(after_body_cancel.straight_lines, before.straight_lines);
+    assert_eq!(
+        (after_body_cancel.revision, after_body_cancel.undo_depth),
+        (before.revision, before.undo_depth)
+    );
+}
+
+#[test]
+fn unselected_line_arrow_and_length_hover_controls_start_endpoint_drag_on_first_press() {
+    run_gpui_test_with_native_main_stack(
+        "unselected_line_arrow_and_length_hover_controls_start_endpoint_drag_on_first_press",
+        unselected_line_arrow_and_length_hover_controls_start_endpoint_drag_on_first_press_on_native_stack,
+    );
+}
+
+fn unselected_line_arrow_and_length_hover_controls_start_endpoint_drag_on_first_press_on_native_stack(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("unselected-line-endpoints.pdf"), cx)
+    });
+    let mut annotations = Vec::new();
+    for (family, y) in [("line", 550.), ("arrow", 450.), ("length", 350.)] {
+        for locked in [false, true] {
+            let x = if locked { 350. } else { 100. };
+            let id = MarkupId::new(format!("unselected:{family}:{locked}")).unwrap();
+            let start = PdfPoint::new(x, y).unwrap();
+            let end = PdfPoint::new(x + 100., y).unwrap();
+            let annotation = if family == "length" {
+                let mut value = LengthAnnotation::new(
+                    id,
+                    0,
+                    start,
+                    end,
+                    LengthCalibration::from_scale(72., 1., "m", 2, false).unwrap(),
+                )
+                .unwrap();
+                value.locked = locked;
+                Annotation::Length(value)
+            } else {
+                let kind = if family == "arrow" {
+                    LineKind::Arrow
+                } else {
+                    LineKind::Line
+                };
+                let mut value = StraightLineAnnotation::new(
+                    id,
+                    0,
+                    start,
+                    end,
+                    kind,
+                    StraightLineAppearance::default_for(kind),
+                )
+                .unwrap();
+                value.locked = locked;
+                Annotation::StraightLine(value)
+            };
+            annotations.push(annotation);
+        }
+    }
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false))).with_annotations(annotations)),
+            cx,
+        )
+    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let before_hover = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(before_hover.selected_id.is_none());
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let project =
+        |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale));
+    let feedback_handles_at = |cx: &mut gpui::VisualTestContext, center: Point<Pixels>| {
+        let device_scale = cx.update(|window, _| window.scale_factor());
+        cx.update(|window, _| window.painted_quads())
+            .into_iter()
+            .filter(|quad| {
+                let qx = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                let qy = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                (qx - f32::from(center.x) * device_scale).abs() < 1.
+                    && (qy - f32::from(center.y) * device_scale).abs() < 1.
+                    && quad.border_widths.top.0 > 0.
+            })
+            .collect::<Vec<_>>()
+    };
+    let device_scale = cx.update(|window, _| window.scale_factor());
+    for (family, y) in [("Line", 550.), ("Arrow", 450.), ("Length", 350.)] {
+        let hovered_start = project(100., y);
+        let ordinary_end = project(200., y);
+        cx.simulate_mouse_move(hovered_start, None, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let hot_start = feedback_handles_at(cx, hovered_start);
+        let ordinary_end = feedback_handles_at(cx, ordinary_end);
+        assert_eq!(
+            hot_start.len(),
+            1,
+            "the unselected {family} start endpoint must paint"
+        );
+        assert_eq!(
+            ordinary_end.len(),
+            1,
+            "the unselected {family} end endpoint must paint"
+        );
+        assert!(hot_start[0].bounds.size.width.0 > ordinary_end[0].bounds.size.width.0);
+        assert_eq!(hot_start[0].border_widths.top.0, 2. * device_scale);
+    }
+    let after_hover = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(after_hover.straight_lines, before_hover.straight_lines);
+    assert_eq!(after_hover.lengths, before_hover.lengths);
+    assert_eq!((after_hover.revision, after_hover.undo_depth), (0, 0));
+
+    for y in [550., 450., 350.] {
+        let locked_start = project(350., y);
+        cx.simulate_mouse_move(locked_start, None, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(feedback_handles_at(cx, locked_start).is_empty());
+    }
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Line, cx)
+        })
+        .unwrap();
+    let line_start = project(100., 550.);
+    cx.simulate_mouse_move(line_start, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(feedback_handles_at(cx, line_start).is_empty());
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let arrow_id = MarkupId::new("unselected:arrow:false").unwrap();
+    let arrow_start = project(100., 450.);
+    let moved_arrow_start = project(120., 430.);
+    cx.simulate_mouse_move(arrow_start, None, Modifiers::default());
+    let before_arrow_drag = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    cx.simulate_mouse_down(arrow_start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        moved_arrow_start,
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    let arrow_preview = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(request.document_id, 0, cx)
+    });
+    let previewed_arrow = arrow_preview
+        .straight_lines
+        .iter()
+        .find(|line| line.id == arrow_id)
+        .unwrap();
+    assert!(previewed_arrow.draft);
+    assert_ne!(
+        previewed_arrow.start,
+        before_arrow_drag
+            .straight_lines
+            .iter()
+            .find(|line| line.id == arrow_id)
+            .unwrap()
+            .start
+    );
+    let during_arrow_drag = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        during_arrow_drag.straight_lines,
+        before_arrow_drag.straight_lines
+    );
+    assert_eq!(
+        (during_arrow_drag.revision, during_arrow_drag.undo_depth),
+        (0, 0)
+    );
+    assert_eq!(during_arrow_drag.selected_id.as_ref(), Some(&arrow_id));
+    cx.simulate_mouse_up(moved_arrow_start, MouseButton::Left, Modifiers::default());
+    let committed_arrow = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        (committed_arrow.revision, committed_arrow.undo_depth),
+        (1, 1)
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .straight_lines,
+        before_arrow_drag.straight_lines
+    );
+
+    cx.simulate_click(project(500., 700.), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let length_id = MarkupId::new("unselected:length:false").unwrap();
+    let length_start = project(100., 350.);
+    let moved_length_start = project(120., 330.);
+    cx.simulate_mouse_move(length_start, None, Modifiers::default());
+    let before_length_drag = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    cx.simulate_mouse_down(length_start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        moved_length_start,
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    let length_preview = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(request.document_id, 0, cx)
+    });
+    let previewed_length = length_preview
+        .lengths
+        .iter()
+        .find(|length| length.id == length_id)
+        .unwrap();
+    assert!(previewed_length.draft);
+    assert_ne!(
+        previewed_length.start,
+        before_length_drag
+            .lengths
+            .iter()
+            .find(|length| length.id == length_id)
+            .unwrap()
+            .start
+    );
+    let during_length_drag = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(during_length_drag.lengths, before_length_drag.lengths);
+    assert_eq!(
+        (during_length_drag.revision, during_length_drag.undo_depth),
+        (before_length_drag.revision, before_length_drag.undo_depth)
+    );
+    assert_eq!(during_length_drag.selected_id.as_ref(), Some(&length_id));
+    cx.simulate_mouse_up(moved_length_start, MouseButton::Left, Modifiers::default());
+    let committed_length = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(committed_length.revision > before_length_drag.revision);
+    assert_eq!(
+        committed_length.undo_depth,
+        before_length_drag.undo_depth + 1
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .lengths,
+        before_length_drag.lengths
+    );
+}
+
+#[test]
+fn unselected_cloud_hover_controls_start_vertex_drag_on_first_press() {
+    run_gpui_test_with_native_main_stack(
+        "unselected_cloud_hover_controls_start_vertex_drag_on_first_press",
+        unselected_cloud_hover_controls_start_vertex_drag_on_first_press_on_native_stack,
+    );
+}
+
+fn unselected_cloud_hover_controls_start_vertex_drag_on_first_press_on_native_stack(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("unselected-cloud-vertices.pdf"), cx)
+    });
+    let points = vec![
+        PdfPoint::new(100., 500.).unwrap(),
+        PdfPoint::new(200., 500.).unwrap(),
+        PdfPoint::new(200., 580.).unwrap(),
+        PdfPoint::new(100., 580.).unwrap(),
+    ];
+    let bottom_id = MarkupId::new("unselected:cloud:bottom").unwrap();
+    let top_id = MarkupId::new("unselected:cloud:top").unwrap();
+    let locked_id = MarkupId::new("unselected:cloud:locked").unwrap();
+    let mut annotations = Vec::new();
+    for (id, locked) in [
+        (bottom_id.clone(), false),
+        (top_id.clone(), false),
+        (locked_id, true),
+    ] {
+        let mut cloud =
+            CloudAnnotation::new(id, 0, points.clone(), 3., RectangleAppearance::default())
+                .unwrap();
+        cloud.locked = locked;
+        annotations.push(Annotation::Cloud(cloud));
+    }
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false))).with_annotations(annotations)),
+            cx,
+        )
+    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let project = |pdf: PdfPoint| {
+        point(
+            origin.x + px(pdf.x as f32 * scale),
+            origin.y + px((792. - pdf.y as f32) * scale),
+        )
+    };
+    let feedback_handles_at = |cx: &mut gpui::VisualTestContext, center: Point<Pixels>| {
+        let device_scale = cx.update(|window, _| window.scale_factor());
+        cx.update(|window, _| window.painted_quads())
+            .into_iter()
+            .filter(|quad| {
+                let qx = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                let qy = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                (qx - f32::from(center.x) * device_scale).abs() < 1.
+                    && (qy - f32::from(center.y) * device_scale).abs() < 1.
+                    && quad.border_widths.top.0 > 0.
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    let hot = project(points[0]);
+    cx.simulate_mouse_move(hot, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let hot_quads = feedback_handles_at(cx, hot);
+    let ordinary_quads = feedback_handles_at(cx, project(points[1]));
+    assert_eq!(hot_quads.len(), 1, "only the topmost unlocked Cloud paints");
+    assert_eq!(ordinary_quads.len(), 1, "all hovered Cloud vertices paint");
+    assert!(hot_quads[0].bounds.size.width.0 > ordinary_quads[0].bounds.size.width.0);
+    let after_hover = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(after_hover.clouds, before.clouds);
+    assert_eq!(
+        (after_hover.revision, after_hover.undo_depth),
+        (before.revision, before.undo_depth)
+    );
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Cloud, cx)
+        })
+        .unwrap();
+    cx.simulate_mouse_move(hot, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(feedback_handles_at(cx, hot).is_empty());
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    cx.simulate_mouse_move(hot, None, Modifiers::default());
+
+    let moved = project(PdfPoint::new(120., 480.).unwrap());
+    cx.simulate_mouse_down(hot, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+    let preview = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(request.document_id, 0, cx)
+    });
+    let previewed = preview
+        .clouds
+        .iter()
+        .find(|cloud| cloud.id == top_id)
+        .unwrap();
+    assert!(previewed.draft);
+    assert_ne!(previewed.points[0], points[0]);
+    let during = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(during.clouds, before.clouds);
+    assert_eq!(during.selected_id.as_ref(), Some(&top_id));
+    assert_eq!(
+        (during.revision, during.undo_depth),
+        (before.revision, before.undo_depth)
+    );
+    cx.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    let committed = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(committed.revision, before.revision + 1);
+    assert_eq!(committed.undo_depth, before.undo_depth + 1);
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .clouds,
+        before.clouds
+    );
+}
+
+#[test]
+fn unselected_arc_hover_controls_start_control_drag_on_first_press() {
+    run_gpui_test_with_native_main_stack(
+        "unselected_arc_hover_controls_start_control_drag_on_first_press",
+        unselected_arc_hover_controls_start_control_drag_on_first_press_on_native_stack,
+    );
+}
+
+fn unselected_arc_hover_controls_start_control_drag_on_first_press_on_native_stack(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("unselected-arc-controls.pdf"), cx)
+    });
+    let start = PdfPoint::new(100., 500.).unwrap();
+    let end = PdfPoint::new(220., 500.).unwrap();
+    let mid = PdfPoint::new(160., 570.).unwrap();
+    let bottom_id = MarkupId::new("unselected:arc:bottom").unwrap();
+    let top_id = MarkupId::new("unselected:arc:top").unwrap();
+    let locked_id = MarkupId::new("unselected:arc:locked").unwrap();
+    let mut annotations = Vec::new();
+    for (id, offset, locked) in [
+        (bottom_id, 0., false),
+        (top_id.clone(), 0., false),
+        (locked_id, 250., true),
+    ] {
+        let mut arc = ArcAnnotation::new(
+            id,
+            0,
+            PdfPoint::new(start.x + offset, start.y).unwrap(),
+            PdfPoint::new(end.x + offset, end.y).unwrap(),
+            PdfPoint::new(mid.x + offset, mid.y).unwrap(),
+            RectangleAppearance::default(),
+        )
+        .unwrap();
+        arc.locked = locked;
+        annotations.push(Annotation::Arc(arc));
+    }
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false))).with_annotations(annotations)),
+            cx,
+        )
+    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let project = |pdf: PdfPoint| {
+        point(
+            origin.x + px(pdf.x as f32 * scale),
+            origin.y + px((792. - pdf.y as f32) * scale),
+        )
+    };
+    let feedback_handles_at = |cx: &mut gpui::VisualTestContext, center: Point<Pixels>| {
+        let device_scale = cx.update(|window, _| window.scale_factor());
+        cx.update(|window, _| window.painted_quads())
+            .into_iter()
+            .filter(|quad| {
+                let qx = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                let qy = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                (qx - f32::from(center.x) * device_scale).abs() < 1.
+                    && (qy - f32::from(center.y) * device_scale).abs() < 1.
+                    && quad.border_widths.top.0 > 0.
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    let hot = project(mid);
+    cx.simulate_mouse_move(hot, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let hot_quads = feedback_handles_at(cx, hot);
+    let ordinary_start = feedback_handles_at(cx, project(start));
+    let ordinary_end = feedback_handles_at(cx, project(end));
+    assert_eq!(hot_quads.len(), 1, "only the topmost unlocked Arc paints");
+    assert_eq!(ordinary_start.len(), 1);
+    assert_eq!(ordinary_end.len(), 1);
+    assert!(hot_quads[0].bounds.size.width.0 > ordinary_start[0].bounds.size.width.0);
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap(),
+        before,
+        "Arc hover must be read-only"
+    );
+
+    let locked_mid = project(PdfPoint::new(mid.x + 250., mid.y).unwrap());
+    cx.simulate_mouse_move(locked_mid, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(feedback_handles_at(cx, locked_mid).is_empty());
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Arc, cx)
+        })
+        .unwrap();
+    cx.simulate_mouse_move(hot, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(feedback_handles_at(cx, hot).is_empty());
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    cx.simulate_mouse_move(hot, None, Modifiers::default());
+
+    let moved_mid = PdfPoint::new(175., 585.).unwrap();
+    cx.simulate_mouse_down(hot, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        project(moved_mid),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    let preview = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(request.document_id, 0, cx)
+    });
+    let previewed = preview.arcs.iter().find(|arc| arc.id == top_id).unwrap();
+    assert!(previewed.draft);
+    assert!((previewed.mid.x - moved_mid.x).abs() <= 0.000_1);
+    assert!((previewed.mid.y - moved_mid.y).abs() <= 0.000_1);
+    let during = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(during.arcs, before.arcs);
+    assert_eq!(during.selected_id.as_ref(), Some(&top_id));
+    assert_eq!(
+        (during.revision, during.undo_depth),
+        (before.revision, before.undo_depth)
+    );
+    cx.simulate_mouse_up(project(moved_mid), MouseButton::Left, Modifiers::default());
+    let committed = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(committed.revision, before.revision + 1);
+    assert_eq!(committed.undo_depth, before.undo_depth + 1);
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .arcs,
+        before.arcs
+    );
+}
+
+#[test]
+fn unselected_vertex_path_hover_controls_start_drag_on_first_press() {
+    run_gpui_test_with_native_main_stack(
+        "unselected_vertex_path_hover_controls_start_drag_on_first_press",
+        unselected_vertex_path_hover_controls_start_drag_on_first_press_on_native_stack,
+    );
+}
+
+fn unselected_vertex_path_hover_controls_start_drag_on_first_press_on_native_stack(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("unselected-vertex-path-controls.pdf"), cx)
+    });
+    let points = vec![
+        PdfPoint::new(100., 500.).unwrap(),
+        PdfPoint::new(200., 520.).unwrap(),
+        PdfPoint::new(160., 580.).unwrap(),
+    ];
+    let top_id = MarkupId::new("unselected:vertex-path:top").unwrap();
+    let mut annotations = Vec::new();
+    for (id, offset, kind, locked) in [
+        (
+            MarkupId::new("unselected:vertex-path:bottom").unwrap(),
+            0.,
+            VertexPathKind::Polyline,
+            false,
+        ),
+        (top_id.clone(), 0., VertexPathKind::Polygon, false),
+        (
+            MarkupId::new("unselected:vertex-path:locked").unwrap(),
+            250.,
+            VertexPathKind::Polyline,
+            true,
+        ),
+    ] {
+        let shifted = points
+            .iter()
+            .map(|point| PdfPoint::new(point.x + offset, point.y).unwrap())
+            .collect();
+        let mut path =
+            VertexPathAnnotation::new(id, 0, shifted, kind, RectangleAppearance::default())
+                .unwrap();
+        path.locked = locked;
+        annotations.push(Annotation::VertexPath(path));
+    }
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false))).with_annotations(annotations)),
+            cx,
+        )
+    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let project = |pdf: PdfPoint| {
+        point(
+            origin.x + px(pdf.x as f32 * scale),
+            origin.y + px((792. - pdf.y as f32) * scale),
+        )
+    };
+    let feedback_handles_at = |cx: &mut gpui::VisualTestContext, center: Point<Pixels>| {
+        let device_scale = cx.update(|window, _| window.scale_factor());
+        cx.update(|window, _| window.painted_quads())
+            .into_iter()
+            .filter(|quad| {
+                let qx = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                let qy = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                (qx - f32::from(center.x) * device_scale).abs() < 1.
+                    && (qy - f32::from(center.y) * device_scale).abs() < 1.
+                    && quad.border_widths.top.0 > 0.
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    let hot = project(points[1]);
+    cx.simulate_mouse_move(hot, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let hot_quads = feedback_handles_at(cx, hot);
+    let ordinary = feedback_handles_at(cx, project(points[0]));
+    assert_eq!(hot_quads.len(), 1, "only the topmost unlocked path paints");
+    assert_eq!(ordinary.len(), 1, "all hovered path vertices paint");
+    assert!(hot_quads[0].bounds.size.width.0 > ordinary[0].bounds.size.width.0);
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap(),
+        before
+    );
+
+    let locked = project(PdfPoint::new(points[1].x + 250., points[1].y).unwrap());
+    cx.simulate_mouse_move(locked, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(feedback_handles_at(cx, locked).is_empty());
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Polyline, cx)
+        })
+        .unwrap();
+    cx.simulate_mouse_move(hot, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(feedback_handles_at(cx, hot).is_empty());
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    cx.simulate_mouse_move(hot, None, Modifiers::default());
+
+    let moved = PdfPoint::new(220., 540.).unwrap();
+    cx.simulate_mouse_down(hot, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        project(moved),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    let preview = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(request.document_id, 0, cx)
+    });
+    let previewed = preview
+        .vertex_paths
+        .iter()
+        .find(|path| path.id == top_id)
+        .unwrap();
+    assert!(previewed.draft);
+    assert!((previewed.points[1].x - moved.x).abs() <= 0.000_1);
+    assert!((previewed.points[1].y - moved.y).abs() <= 0.000_1);
+    let during = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(during.vertex_paths, before.vertex_paths);
+    assert_eq!(during.selected_id.as_ref(), Some(&top_id));
+    assert_eq!(
+        (during.revision, during.undo_depth),
+        (before.revision, before.undo_depth)
+    );
+    cx.simulate_mouse_up(project(moved), MouseButton::Left, Modifiers::default());
+    let committed = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(committed.revision, before.revision + 1);
+    assert_eq!(committed.undo_depth, before.undo_depth + 1);
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .vertex_paths,
+        before.vertex_paths
+    );
+}
+
+#[test]
+fn unselected_measurement_path_hover_controls_start_drag_on_first_press() {
+    run_gpui_test_with_native_main_stack(
+        "unselected_measurement_path_hover_controls_start_drag_on_first_press",
+        unselected_measurement_path_hover_controls_start_drag_on_first_press_on_native_stack,
+    );
+}
+
+fn unselected_measurement_path_hover_controls_start_drag_on_first_press_on_native_stack(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(
+            PathBuf::from("unselected-measurement-path-controls.pdf"),
+            cx,
+        )
+    });
+    let points = vec![
+        PdfPoint::new(100., 500.).unwrap(),
+        PdfPoint::new(200., 520.).unwrap(),
+        PdfPoint::new(160., 580.).unwrap(),
+    ];
+    let top_id = MarkupId::new("unselected:measurement-path:top").unwrap();
+    let calibration = LengthCalibration::from_scale(72., 1., "m", 2, true).unwrap();
+    let mut annotations = Vec::new();
+    for (id, offset, kind, locked) in [
+        (
+            MarkupId::new("unselected:measurement-path:bottom").unwrap(),
+            0.,
+            MeasurementPathKind::Polylength,
+            false,
+        ),
+        (top_id.clone(), 0., MeasurementPathKind::Area, false),
+        (
+            MarkupId::new("unselected:measurement-path:locked").unwrap(),
+            250.,
+            MeasurementPathKind::Polylength,
+            true,
+        ),
+    ] {
+        let shifted = points
+            .iter()
+            .map(|point| PdfPoint::new(point.x + offset, point.y).unwrap())
+            .collect();
+        let mut path = MeasurementPathAnnotation::new(
+            id,
+            0,
+            shifted,
+            kind,
+            calibration.clone(),
+            RectangleAppearance::default(),
+        )
+        .unwrap();
+        path.locked = locked;
+        annotations.push(Annotation::MeasurementPath(path));
+    }
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false))).with_annotations(annotations)),
+            cx,
+        )
+    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let project = |pdf: PdfPoint| {
+        point(
+            origin.x + px(pdf.x as f32 * scale),
+            origin.y + px((792. - pdf.y as f32) * scale),
+        )
+    };
+    let feedback_handles_at = |cx: &mut gpui::VisualTestContext, center: Point<Pixels>| {
+        let device_scale = cx.update(|window, _| window.scale_factor());
+        cx.update(|window, _| window.painted_quads())
+            .into_iter()
+            .filter(|quad| {
+                let qx = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                let qy = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                (qx - f32::from(center.x) * device_scale).abs() < 1.
+                    && (qy - f32::from(center.y) * device_scale).abs() < 1.
+                    && quad.border_widths.top.0 > 0.
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    let hot = project(points[1]);
+    cx.simulate_mouse_move(hot, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let hot_quads = feedback_handles_at(cx, hot);
+    let ordinary = feedback_handles_at(cx, project(points[0]));
+    assert_eq!(
+        hot_quads.len(),
+        1,
+        "only the topmost unlocked measurement paints"
+    );
+    assert_eq!(ordinary.len(), 1, "all hovered measurement vertices paint");
+    assert!(hot_quads[0].bounds.size.width.0 > ordinary[0].bounds.size.width.0);
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap(),
+        before
+    );
+
+    let locked = project(PdfPoint::new(points[1].x + 250., points[1].y).unwrap());
+    cx.simulate_mouse_move(locked, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(feedback_handles_at(cx, locked).is_empty());
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Polylength, cx)
+        })
+        .unwrap();
+    cx.simulate_mouse_move(hot, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(feedback_handles_at(cx, hot).is_empty());
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    cx.simulate_mouse_move(hot, None, Modifiers::default());
+
+    scroll_annotation_target_into_view(cx, &workspace, PAGE_SCALE_TRIGGER_ID);
+    let page_scale_trigger = cx.debug_bounds(PAGE_SCALE_TRIGGER_ID).unwrap();
+    cx.simulate_click(page_scale_trigger.center(), Modifiers::default());
+    let page_scale_control = workspace
+        .read_with(cx, |workspace, _| workspace.page_scale_control())
+        .unwrap();
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        page_scale_control.update(cx, |control, cx| control.begin_pick(window, cx));
+    });
+    cx.run_until_parked();
+    cx.simulate_mouse_move(hot, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        feedback_handles_at(cx, hot).is_empty(),
+        "calibration picking must own hover instead of exposing annotation controls"
+    );
+    cx.simulate_click(hot, Modifiers::default());
+    let (picked_start, picked_end) =
+        page_scale_control.read_with(cx, |control, _| control.points());
+    assert!(picked_start.is_some() && picked_end.is_none());
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .selected_id
+            .is_none(),
+        "the calibration press must not select or transform the measurement"
+    );
+    page_scale_control.update(cx, |control, cx| {
+        assert!(control.cancel_pick(cx));
+    });
+    cx.simulate_mouse_move(hot, None, Modifiers::default());
+
+    let moved = PdfPoint::new(220., 540.).unwrap();
+    cx.simulate_mouse_down(hot, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        project(moved),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    let preview = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(request.document_id, 0, cx)
+    });
+    let previewed = preview
+        .measurement_paths
+        .iter()
+        .find(|path| path.id == top_id)
+        .unwrap();
+    assert!(previewed.draft);
+    assert!((previewed.points[1].x - moved.x).abs() <= 0.000_1);
+    assert!((previewed.points[1].y - moved.y).abs() <= 0.000_1);
+    let preview_caption = previewed.caption.clone();
+    assert_ne!(
+        preview_caption,
+        before
+            .measurement_paths
+            .iter()
+            .find(|path| path.id == top_id)
+            .unwrap()
+            .caption(),
+        "measurement preview must remeasure its visible caption from preview points"
+    );
+    let during = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(during.measurement_paths, before.measurement_paths);
+    assert_eq!(during.selected_id.as_ref(), Some(&top_id));
+    assert_eq!(
+        (during.revision, during.undo_depth),
+        (before.revision, before.undo_depth)
+    );
+    cx.simulate_mouse_up(project(moved), MouseButton::Left, Modifiers::default());
+    let committed = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(committed.revision, before.revision + 1);
+    assert_eq!(committed.undo_depth, before.undo_depth + 1);
+    let committed_path = committed
+        .measurement_paths
+        .iter()
+        .find(|path| path.id == top_id)
+        .unwrap();
+    assert_eq!(committed_path.caption(), preview_caption);
+    assert_eq!(
+        committed_path.calibration(),
+        before
+            .measurement_paths
+            .iter()
+            .find(|path| path.id == top_id)
+            .unwrap()
+            .calibration(),
+        "vertex drag must preserve the exact calibration"
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .measurement_paths,
+        before.measurement_paths
+    );
+}
+
+#[test]
+fn unselected_snapshot_hover_controls_start_resize_on_first_press() {
+    run_gpui_test_with_native_main_stack(
+        "unselected_snapshot_hover_controls_start_resize_on_first_press",
+        unselected_snapshot_hover_controls_start_resize_on_first_press_on_native_stack,
+    );
+}
+
+fn unselected_snapshot_hover_controls_start_resize_on_first_press_on_native_stack(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("unselected-snapshot-controls.pdf"), cx)
+    });
+    let asset = DecodedRgbaAsset::new(
+        2,
+        2,
+        vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ],
+    )
+    .unwrap();
+    let rect = PdfRect::new(120., 380., 160., 96.).unwrap();
+    let bottom = SnapshotAnnotation::new(
+        MarkupId::new("snapshot:hover:bottom").unwrap(),
+        0,
+        rect,
+        asset.clone(),
+        1.,
+    )
+    .unwrap()
+    .with_rotation_degrees(20.)
+    .unwrap();
+    let top_id = MarkupId::new("snapshot:hover:top").unwrap();
+    let top = SnapshotAnnotation::new(top_id.clone(), 0, rect, asset.clone(), 1.)
+        .unwrap()
+        .with_rotation_degrees(20.)
+        .unwrap();
+    let locked = SnapshotAnnotation::new(
+        MarkupId::new("snapshot:hover:locked").unwrap(),
+        0,
+        PdfRect::new(380., 380., 120., 72.).unwrap(),
+        asset,
+        1.,
+    )
+    .unwrap()
+    .with_rotation_degrees(20.)
+    .unwrap()
+    .with_locked(true);
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(
+                opened_document(Arc::new(AtomicBool::new(false))).with_annotations(vec![
+                    Annotation::Snapshot(bottom),
+                    Annotation::Snapshot(top.clone()),
+                    Annotation::Snapshot(locked.clone()),
+                ]),
+            ),
+            cx,
+        )
+    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let project = |sample: PdfPoint| {
+        point(
+            origin.x + px(sample.x as f32 * scale),
+            origin.y + px((792. - sample.y as f32) * scale),
+        )
+    };
+    let south_east_pdf = snapshot_resize_handle_point(&top, RectangleResizeHandle::SouthEast);
+    let south_east = project(south_east_pdf);
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    cx.simulate_mouse_move(south_east, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds("snapshot.rotate").is_none(),
+        "Electron withholds Snapshot rotation until selection, and the native marker must agree"
+    );
+    let hover_scene = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(request.document_id, 0, cx)
+    });
+    assert_eq!(
+        annotation_resize_cursor_style(&hover_scene, &top_id, 4),
+        Some(CursorStyle::ResizeUpLeftDownRight),
+        "the rotated Snapshot hot handle must drive the nearest native resize cursor"
+    );
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap(),
+        before
+    );
+
+    let locked_handle = project(snapshot_resize_handle_point(
+        &locked,
+        RectangleResizeHandle::SouthEast,
+    ));
+    cx.simulate_mouse_down(locked_handle, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        point(locked_handle.x + px(18.), locked_handle.y + px(12.)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_up(
+        point(locked_handle.x + px(18.), locked_handle.y + px(12.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let after_locked_press = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(after_locked_press.snapshots, before.snapshots);
+    assert_eq!(
+        (after_locked_press.revision, after_locked_press.undo_depth),
+        (before.revision, before.undo_depth),
+        "locked Snapshot controls may select the body but must remain mutation-inert"
+    );
+    assert_eq!(after_locked_press.selected_id.as_ref(), Some(&locked.id));
+    cx.simulate_keystrokes("escape");
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .selected_id
+            .is_none()
+    );
+    cx.simulate_mouse_move(south_east, None, Modifiers::default());
+
+    let moved = project(PdfPoint::new(south_east_pdf.x + 24., south_east_pdf.y - 12.).unwrap());
+    cx.simulate_mouse_down(south_east, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+    let preview = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(request.document_id, 0, cx)
+    });
+    let previewed = preview
+        .snapshots
+        .iter()
+        .find(|snapshot| snapshot.id == top_id)
+        .unwrap();
+    assert!(previewed.draft);
+    assert_ne!(previewed.rect, top.rect);
+    assert_eq!(
+        previewed.feedback,
+        SceneInteractionFeedback::Transform {
+            chrome_visible: false,
+            active_handle: 4,
+        }
+    );
+    let during = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(during.snapshots, before.snapshots);
+    assert_eq!(
+        (during.revision, during.undo_depth),
+        (before.revision, before.undo_depth)
+    );
+    assert_eq!(during.selected_id.as_ref(), Some(&top_id));
+
+    cx.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    let committed = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(committed.revision, before.revision + 1);
+    assert_eq!(committed.undo_depth, before.undo_depth + 1);
+    assert_ne!(
+        committed
+            .snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == top_id)
+            .unwrap()
+            .rect,
+        top.rect
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let committed_snapshot = committed
+        .snapshots
+        .iter()
+        .find(|snapshot| snapshot.id == top_id)
+        .unwrap();
+    assert!(cx.debug_bounds("snapshot.resize.se").is_some());
+    assert!(cx.debug_bounds("snapshot.rotate").is_some());
+    assert_eq!(committed_snapshot.rotation_degrees(), 20.);
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .snapshots,
+        before.snapshots
+    );
+}
+
+#[test]
+fn cross_family_body_targeting_moves_the_topmost_annotation_on_first_press() {
+    run_gpui_test_with_native_main_stack(
+        "cross_family_body_targeting_moves_the_topmost_annotation_on_first_press",
+        cross_family_body_targeting_moves_the_topmost_annotation_on_first_press_on_native_stack,
+    );
+}
+
+fn cross_family_body_targeting_moves_the_topmost_annotation_on_first_press_on_native_stack(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("cross-family-body-targeting.pdf"), cx)
+    });
+    let rect = PdfRect::new(120., 380., 160., 96.).unwrap();
+    let redact = RedactAnnotation::new(
+        MarkupId::new("cross-family:workspace:redact").unwrap(),
+        0,
+        rect,
+        "#000000",
+        None::<String>,
+        RectangleAppearance::new("#ff0000", 1., Some("#000000"), 0.35)
+            .unwrap()
+            .with_fill_opacity(0.35)
+            .unwrap(),
+    )
+    .unwrap();
+    let image_id = MarkupId::new("cross-family:workspace:image").unwrap();
+    let image = ImageAnnotation::new(
+        image_id.clone(),
+        0,
+        rect,
+        DecodedRgbaAsset::new(1, 1, vec![255, 255, 255, 255]).unwrap(),
+        false,
+    )
+    .unwrap();
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(
+                opened_document(Arc::new(AtomicBool::new(false))).with_annotations(vec![
+                    Annotation::Redact(redact.clone()),
+                    Annotation::Image(image.clone()),
+                ]),
+            ),
+            cx,
+        )
+    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let project = |sample: PdfPoint| {
+        point(
+            origin.x + px(sample.x as f32 * scale),
+            origin.y + px((792. - sample.y as f32) * scale),
+        )
+    };
+    let centre = PdfPoint::new(rect.x + rect.width / 2., rect.y + rect.height / 2.).unwrap();
+    let hit = project(centre);
+    let moved = project(PdfPoint::new(centre.x + 24., centre.y + 12.).unwrap());
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    cx.simulate_mouse_move(hit, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap(),
+        before,
+        "cross-family hover must remain read-only"
+    );
+    cx.simulate_mouse_down(hit, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+    let preview = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(request.document_id, 0, cx)
+    });
+    let preview_image = preview
+        .images
+        .iter()
+        .find(|annotation| annotation.id == image_id)
+        .unwrap();
+    assert_ne!(preview_image.rect, image.rect);
+    assert!(matches!(
+        preview_image.feedback,
+        SceneInteractionFeedback::Move { .. }
+    ));
+    assert_eq!(preview.redacts[0].rect, redact.rect);
+    let during = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(during.images, before.images);
+    assert_eq!(during.redacts, before.redacts);
+    assert_eq!(
+        (during.revision, during.undo_depth),
+        (before.revision, before.undo_depth)
+    );
+    assert_eq!(during.selected_id.as_ref(), Some(&image_id));
+    cx.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    let committed = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(committed.revision, before.revision + 1);
+    assert_eq!(committed.undo_depth, before.undo_depth + 1);
+    assert_ne!(committed.images[0].rect, image.rect);
+    assert_eq!(committed.redacts, before.redacts);
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    let restored = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(restored.images, before.images);
+    assert_eq!(restored.redacts, before.redacts);
+}
+
+#[test]
+fn path_feedback_adapter_marks_creation_and_vertex_edit_previews() {
+    for tool in [
+        AnnotationTool::Polyline,
+        AnnotationTool::Polygon,
+        AnnotationTool::Polylength,
+        AnnotationTool::Area,
+    ] {
+        let mut adapter = AnnotationAdapter::default();
+        adapter
+            .set_document_page_length_calibration(
+                1,
+                0,
+                LengthCalibration::from_scale(72., 1., "m", 2, false).unwrap(),
+            )
+            .unwrap();
+        adapter.set_tool(tool).unwrap();
+        let before = adapter.snapshot(1).unwrap();
+        let points = [
+            PdfPoint::new(100., 200.).unwrap(),
+            PdfPoint::new(180., 200.).unwrap(),
+            PdfPoint::new(140., 250.).unwrap(),
+        ];
+        for point in points {
+            adapter.pointer_down(1, 0, 42, point, 4.).unwrap();
+        }
+        let measured = matches!(tool, AnnotationTool::Polylength | AnnotationTool::Area);
+        let scene = adapter.document_scene(1, 0);
+        assert!(if measured {
+            scene.measurement_paths[0].draft
+        } else {
+            scene.vertex_paths[0].draft
+        });
+        assert_eq!(
+            adapter.snapshot(1).unwrap(),
+            before,
+            "creation preview is transient"
+        );
+        if measured {
+            adapter.finish_measurement_path(1).unwrap();
+        } else {
+            adapter.finish_vertex_path(1).unwrap();
+        }
+        let scene = adapter.document_scene(1, 0);
+        assert!(
+            !(if measured {
+                scene.measurement_paths[0].draft
+            } else {
+                scene.vertex_paths[0].draft
+            })
+        );
+        let committed = adapter.snapshot(1).unwrap();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter.pointer_down(1, 0, 43, points[0], 4.).unwrap();
+        adapter
+            .pointer_move(43, PdfPoint::new(110., 210.).unwrap())
+            .unwrap();
+        let scene = adapter.document_scene(1, 0);
+        assert!(if measured {
+            scene.measurement_paths[0].draft
+        } else {
+            scene.vertex_paths[0].draft
+        });
+        assert_eq!(
+            adapter.snapshot(1).unwrap(),
+            committed,
+            "vertex edit preview is transient"
+        );
+    }
+}
+
+#[gpui::test]
+fn path_feedback_workspace_paints_square_vertices_without_model_mutation(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("path-feedback.pdf"), cx)
+    });
+    let mut annotations = Vec::new();
+    let mut fixtures = Vec::new();
+    for (family, y, nodes) in [
+        ("polyline-two", 650., 2),
+        ("polyline-many", 550., 3),
+        ("polygon", 450., 3),
+        ("polylength-two", 350., 2),
+        ("polylength-many", 250., 3),
+        ("area", 150., 3),
+    ] {
+        for locked in [false, true] {
+            let x = if locked { 350. } else { 100. };
+            let id = MarkupId::new(format!("path-feedback:{family}:{locked}")).unwrap();
+            let mut points = vec![
+                PdfPoint::new(x, y).unwrap(),
+                PdfPoint::new(x + 80., y + 20.).unwrap(),
+            ];
+            if nodes == 3 {
+                points.push(PdfPoint::new(x + 40., y + 50.).unwrap());
+            }
+            let annotation = if family.starts_with("polylength") || family == "area" {
+                let kind = if family == "area" {
+                    MeasurementPathKind::Area
+                } else {
+                    MeasurementPathKind::Polylength
+                };
+                let mut value = MeasurementPathAnnotation::new(
+                    id.clone(),
+                    0,
+                    points.clone(),
+                    kind,
+                    LengthCalibration::from_scale(72., 1., "m", 2, false).unwrap(),
+                    RectangleAppearance::default(),
+                )
+                .unwrap();
+                value.locked = locked;
+                Annotation::MeasurementPath(value)
+            } else {
+                let kind = if family == "polygon" {
+                    VertexPathKind::Polygon
+                } else {
+                    VertexPathKind::Polyline
+                };
+                let mut value = VertexPathAnnotation::new(
+                    id.clone(),
+                    0,
+                    points.clone(),
+                    kind,
+                    RectangleAppearance::default(),
+                )
+                .unwrap();
+                value.locked = locked;
+                Annotation::VertexPath(value)
+            };
+            annotations.push(annotation);
+            fixtures.push((id, points, locked));
+        }
+    }
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false))).with_annotations(annotations)),
+            cx,
+        )
+    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    for zoom in [60., 80.] {
+        let mode = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .document_view_state(request.document_id, cx)
+                .unwrap()
+                .mode()
+        });
+        workspace.update(cx, |workspace, cx| {
+            workspace.set_view_configuration(request.document_id, mode, zoom, cx)
+        });
+        for (id, points, locked) in &fixtures {
+            assert!(
+                workspace.update(cx, |workspace, cx| workspace.select_annotation(
+                    request.document_id,
+                    id,
+                    cx
+                ))
+            );
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+            let scale =
+                (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+            let origin = point(
+                layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+                layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+            );
+            let device_scale = cx.update(|window, _| window.scale_factor());
+            let quads = cx.update(|window, _| window.painted_quads());
+            for vertex in points {
+                let center = point(
+                    origin.x + px(vertex.x as f32 * scale),
+                    origin.y + px((792. - vertex.y as f32) * scale),
+                );
+                let handles = quads
+                    .iter()
+                    .filter(|quad| {
+                        let qx = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                        let qy = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                        (qx - f32::from(center.x) * device_scale).abs() < 1.
+                            && (qy - f32::from(center.y) * device_scale).abs() < 1.
+                            && quad.border_widths.top.0 > 0.
+                    })
+                    .collect::<Vec<_>>();
+                if *locked {
+                    assert!(handles.is_empty(), "locked {id:?} must hide vertex handles");
+                } else {
+                    assert_eq!(handles.len(), 1, "{id:?} at zoom {zoom}");
+                    let quad = handles[0];
+                    assert_eq!(
+                        quad.bounds.size.width.0,
+                        8. * device_scale,
+                        "nominal seven-pixel square plus centred border"
+                    );
+                    assert_eq!(quad.bounds.size.height.0, 8. * device_scale);
+                    assert_eq!(quad.border_widths.top.0, device_scale);
+                    assert_eq!(
+                        quad.corner_radii.top_left.0, 0.,
+                        "old rounded dot must not survive"
+                    );
+                }
+            }
+            let after = workspace
+                .read_with(cx, |workspace, cx| {
+                    workspace.annotation_snapshot(request.document_id, cx)
+                })
+                .unwrap();
+            assert_eq!(after.vertex_paths, before.vertex_paths);
+            assert_eq!(after.measurement_paths, before.measurement_paths);
+            assert_eq!(
+                (after.revision, after.undo_depth, after.redo_depth),
+                (before.revision, before.undo_depth, before.redo_depth)
+            );
+        }
+    }
+}
+
+#[gpui::test]
+fn shape_feedback_workspace_paints_square_handles_and_locked_rotation_omission(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("shape-feedback.pdf"), cx)
+    });
+    let mut annotations = Vec::new();
+    let mut fixtures = Vec::new();
+    for (family, y) in [
+        ("rectangle", 550.),
+        ("ellipse", 400.),
+        ("arc", 250.),
+        ("cloud", 100.),
+    ] {
+        for locked in [false, true] {
+            let x = if locked { 350. } else { 100. };
+            let id = MarkupId::new(format!("shape-feedback:{family}:{locked}")).unwrap();
+            let rect = PdfRect::new(x, y, 100., 60.).unwrap();
+            let mut points = Vec::new();
+            let annotation = match family {
+                "rectangle" => {
+                    points.extend(RectangleResizeHandle::ALL.map(|handle| handle.point(rect)));
+                    Annotation::Rectangle(RectangleAnnotation {
+                        id: id.clone(),
+                        page_index: 0,
+                        rect,
+                        rotation_degrees: 0.,
+                        appearance: RectangleAppearance::default(),
+                        locked,
+                    })
+                }
+                "ellipse" => {
+                    points.extend(RectangleResizeHandle::ALL.map(|handle|
+                        butter_paper_gpui_migration::annotation_adapter::ellipse_resize_handle_point_for_rect(rect, 0., handle)));
+                    let mut value =
+                        EllipseAnnotation::new(id.clone(), 0, rect, RectangleAppearance::default())
+                            .unwrap();
+                    value.locked = locked;
+                    Annotation::Ellipse(value)
+                }
+                "arc" => {
+                    points = vec![
+                        PdfPoint::new(x, y).unwrap(),
+                        PdfPoint::new(x + 50., y + 50.).unwrap(),
+                        PdfPoint::new(x + 100., y).unwrap(),
+                    ];
+                    let mut value = ArcAnnotation::new(
+                        id.clone(),
+                        0,
+                        points[0],
+                        points[2],
+                        points[1],
+                        RectangleAppearance::default(),
+                    )
+                    .unwrap();
+                    value.locked = locked;
+                    Annotation::Arc(value)
+                }
+                _ => {
+                    points = vec![
+                        PdfPoint::new(x, y).unwrap(),
+                        PdfPoint::new(x + 100., y).unwrap(),
+                        PdfPoint::new(x + 100., y + 60.).unwrap(),
+                        PdfPoint::new(x, y + 60.).unwrap(),
+                    ];
+                    let mut value = CloudAnnotation::new(
+                        id.clone(),
+                        0,
+                        points.clone(),
+                        3.,
+                        RectangleAppearance::default(),
+                    )
+                    .unwrap();
+                    value.locked = locked;
+                    Annotation::Cloud(value)
+                }
+            };
+            annotations.push(annotation);
+            fixtures.push((
+                id,
+                points,
+                locked,
+                matches!(family, "rectangle" | "ellipse").then_some(rect),
+            ));
+        }
+    }
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false))).with_annotations(annotations)),
+            cx,
+        )
+    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    for zoom in [60., 80.] {
+        let mode = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .document_view_state(request.document_id, cx)
+                .unwrap()
+                .mode()
+        });
+        workspace.update(cx, |workspace, cx| {
+            workspace.set_view_configuration(request.document_id, mode, zoom, cx)
+        });
+        for (id, points, locked, rotation_rect) in &fixtures {
+            assert!(
+                workspace.update(cx, |workspace, cx| workspace.select_annotation(
+                    request.document_id,
+                    id,
+                    cx
+                ))
+            );
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+            let scale =
+                (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+            let origin = point(
+                layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+                layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+            );
+            let device_scale = cx.update(|window, _| window.scale_factor());
+            let quads = cx.update(|window, _| window.painted_quads());
+            for vertex in points {
+                let center = point(
+                    origin.x + px(vertex.x as f32 * scale),
+                    origin.y + px((792. - vertex.y as f32) * scale),
+                );
+                let handles = quads
+                    .iter()
+                    .filter(|quad| {
+                        let qx = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                        let qy = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                        (qx - f32::from(center.x) * device_scale).abs() < 1.
+                            && (qy - f32::from(center.y) * device_scale).abs() < 1.
+                            && quad.border_widths.top.0 > 0.
+                    })
+                    .collect::<Vec<_>>();
+                if *locked {
+                    assert!(handles.is_empty(), "locked {id:?} must hide vertex handles");
+                } else {
+                    assert_eq!(handles.len(), 1, "{id:?} at zoom {zoom}");
+                    let quad = handles[0];
+                    assert_eq!(
+                        quad.bounds.size.width.0,
+                        8. * device_scale,
+                        "nominal seven-pixel square plus centred border"
+                    );
+                    assert_eq!(quad.bounds.size.height.0, 8. * device_scale);
+                    assert_eq!(quad.border_widths.top.0, device_scale);
+                    assert_eq!(
+                        quad.corner_radii.top_left.0, 0.,
+                        "old rounded dot must not survive"
+                    );
+                }
+            }
+            if let Some(rect) = rotation_rect {
+                let center = point(
+                    origin.x + px((rect.x + rect.width / 2.) as f32 * scale),
+                    origin.y + px((792. - rect.y - rect.height) as f32 * scale) - px(12.),
+                );
+                let controls = quads
+                    .iter()
+                    .filter(|quad| {
+                        let qx = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                        let qy = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                        (qx - f32::from(center.x) * device_scale).abs() < device_scale
+                            && qy >= f32::from(center.y - px(1.)) * device_scale
+                            && qy < f32::from(center.y + px(10.)) * device_scale
+                    })
+                    .collect::<Vec<_>>();
+                if *locked {
+                    assert!(
+                        controls.is_empty(),
+                        "locked rotation circle AND stem must be absent"
+                    );
+                } else {
+                    assert_eq!(
+                        controls.len(),
+                        1,
+                        "rotation stem is a path, circle is one quad"
+                    );
+                    assert_eq!(controls[0].bounds.size.width.0, 9. * device_scale);
+                    assert_eq!(controls[0].corner_radii.top_left.0, 4.5 * device_scale);
+                }
+            }
+            let after = workspace
+                .read_with(cx, |workspace, cx| {
+                    workspace.annotation_snapshot(request.document_id, cx)
+                })
+                .unwrap();
+            assert_eq!(after.rectangles, before.rectangles);
+            assert_eq!(after.ellipses, before.ellipses);
+            assert_eq!(after.arcs, before.arcs);
+            assert_eq!(after.clouds, before.clouds);
+            assert_eq!(
+                (after.revision, after.undo_depth, after.redo_depth),
+                (before.revision, before.undo_depth, before.redo_depth)
+            );
+        }
+    }
+}
+
+#[gpui::test]
+fn marquee_candidates_paint_multiple_hits_without_mutating_selection(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("marquee-selection.pdf"), cx)
+    });
+    let rectangle = RectangleAnnotation {
+        id: MarkupId::new("marquee-workspace:rectangle").unwrap(),
+        page_index: 0,
+        rect: PdfRect::new(72., 96., 144., 96.).unwrap(),
+        rotation_degrees: 0.,
+        appearance: RectangleAppearance::default(),
+        locked: false,
+    };
+    let second = RectangleAnnotation {
+        id: MarkupId::new("candidate:locked").unwrap(),
+        page_index: 0,
+        rect: PdfRect::new(300., 96., 80., 96.).unwrap(),
+        locked: true,
+        ..rectangle.clone()
+    };
+    let other_page = RectangleAnnotation {
+        id: MarkupId::new("candidate:page-one").unwrap(),
+        page_index: 1,
+        ..rectangle.clone()
+    };
+    let dimension = butter_paper_gpui_migration::annotation_model::DimensionAnnotation::new(
+        MarkupId::new("candidate:dimension").unwrap(),
+        0,
+        PdfPoint::new(400., 100.).unwrap(),
+        PdfPoint::new(500., 100.).unwrap(),
+        20.,
+        "100",
+        DimensionAppearance::new(
+            StraightLineAppearance::default_for(LineKind::Line),
+            TextBoxStyle::new("Helvetica", 12., "#000000", 1.).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(
+                opened_document(Arc::new(AtomicBool::new(false))).with_annotations(vec![
+                    Annotation::Rectangle(rectangle.clone()),
+                    Annotation::Rectangle(second.clone()),
+                    Annotation::Rectangle(other_page),
+                    Annotation::Dimension(dimension.clone()),
+                ]),
+            ),
+            cx,
+        )
+    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            request.document_id,
+            &dimension.id,
+            cx
+        ))
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let to_view =
+        |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale));
+    let border_colours = |cx: &mut gpui::VisualTestContext, x: f32, y: f32| {
+        let center = to_view(x, y);
+        let device_scale = cx.update(|window, _| window.scale_factor());
+        cx.update(|window, _| window.painted_quads())
+            .into_iter()
+            .filter(|quad| {
+                let qx = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                let qy = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                (qx - f32::from(center.x) * device_scale).abs() < 1.
+                    && (qy - f32::from(center.y) * device_scale).abs() < 1.
+                    && quad.border_widths.top.0 > 0.
+            })
+            .map(|quad| quad.border_color)
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        !border_colours(cx, 400., 100.).is_empty(),
+        "selected Dimension must paint its square start handle",
+    );
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            request.document_id,
+            &rectangle.id,
+            cx
+        ))
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        !border_colours(cx, 72., 96.).is_empty(),
+        "selected Rectangle must paint a corner handle"
+    );
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    let modifiers = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
+    cx.simulate_click(to_view(50., 240.), modifiers);
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.selection_marquee_candidates(
+                request.document_id,
+                0,
+                cx
+            ))
+            .is_empty()
+    );
+    cx.simulate_mouse_move(to_view(530., 70.), None, modifiers);
+    let hits = vec![
+        rectangle.id.clone(),
+        second.id.clone(),
+        dimension.id.clone(),
+    ];
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.selection_marquee_candidates(
+            request.document_id,
+            0,
+            cx
+        )),
+        hits
+    );
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.selection_marquee_candidates(
+                request.document_id,
+                1,
+                cx
+            ))
+            .is_empty()
+    );
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
+            .unwrap(),
+        before
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    // Rectangle outlines are now Paths, which this harness does not expose. Its
+    // real handle quads still prove candidate feedback suppresses selection handles.
+    assert!(
+        border_colours(cx, 72., 96.).is_empty(),
+        "candidate Rectangle must suppress its selected handle"
+    );
+    assert!(
+        border_colours(cx, 300., 96.).is_empty(),
+        "locked candidate must not gain handles"
+    );
+    assert!(
+        border_colours(cx, 400., 100.).is_empty(),
+        "candidate Dimension must suppress selection handles; its shared hover outline is a Path",
+    );
+    cx.simulate_click(to_view(530., 70.), modifiers);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .selected_annotation_ids(request.document_id, cx)),
+        hits
+    );
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.selection_marquee_candidates(
+                request.document_id,
+                0,
+                cx
+            ))
+            .is_empty()
+    );
+    for operation_modifiers in [
+        Modifiers {
+            alt: true,
+            shift: true,
+            ..Modifiers::default()
+        },
+        Modifiers::default(),
+    ] {
+        cx.simulate_click(to_view(50., 240.), operation_modifiers);
+        cx.simulate_mouse_move(to_view(530., 70.), None, operation_modifiers);
+        assert_eq!(
+            workspace.read_with(cx, |workspace, cx| workspace.selection_marquee_candidates(
+                request.document_id,
+                0,
+                cx
+            )),
+            hits,
+            "candidate geometry is independent of Remove or Replace selection results"
+        );
+        cx.simulate_click(to_view(530., 70.), operation_modifiers);
+        let selected = workspace.read_with(cx, |workspace, cx| {
+            workspace.selected_annotation_ids(request.document_id, cx)
+        });
+        assert_eq!(
+            selected,
+            if operation_modifiers.alt {
+                Vec::new()
+            } else {
+                hits.clone()
+            }
+        );
+    }
+    let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| focus.focus(window, cx));
+    cx.simulate_click(to_view(50., 240.), Modifiers::default());
+    cx.simulate_click(to_view(50., 240.), Modifiers::default());
+    cx.simulate_mouse_move(to_view(530., 70.), None, Modifiers::default());
+    assert!(
+        !workspace
+            .read_with(cx, |workspace, cx| workspace.selection_marquee_candidates(
+                request.document_id,
+                0,
+                cx
+            ))
+            .is_empty()
+    );
+    cx.simulate_keystrokes("escape");
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.selection_marquee_candidates(
+                request.document_id,
+                0,
+                cx
+            ))
+            .is_empty()
+    );
+    let after = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        (after.revision, after.undo_depth),
+        (before.revision, before.undo_depth)
     );
 }
 
@@ -10106,6 +18524,474 @@ fn fresh_workspace_reopen_advances_generated_annotation_ids_past_imported_ids(
 }
 
 #[gpui::test]
+fn image_picker_delayed_decode_preserves_newer_tool_gesture_and_pan(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let checker =
+        manifest_dir.join("../performance/results/public-fixtures-v1/bp-image-checker-v1.png");
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("native-image-picker.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_IMAGE_TOOL_ID);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let button = cx.debug_bounds(DOCUMENT_IMAGE_TOOL_ID).unwrap();
+    cx.simulate_click(button.center(), Modifiers::default());
+    assert!(cx.did_prompt_for_paths());
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .set_annotation_tool(request.document_id, AnnotationTool::Rectangle, cx)
+            .unwrap()
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let start = layer.center();
+    let end = point(start.x + px(50.), start.y + px(40.));
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    let draft = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(request.document_id, 0, cx)
+    });
+    assert_eq!(draft.rectangles.len(), 1);
+    assert!(
+        before.rectangles.is_empty(),
+        "the newer rectangle must remain a disposable preview"
+    );
+    cx.simulate_path_prompt_response({
+        let checker = checker.clone();
+        move |_| Some(vec![checker])
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Rectangle)
+    );
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
+            .unwrap(),
+        before
+    );
+    let hydrated_draft = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(request.document_id, 0, cx)
+    });
+    assert_eq!(
+        hydrated_draft.rectangles, draft.rectangles,
+        "late decode must preserve the newer Rectangle gesture"
+    );
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    let placed = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!((placed.rectangles.len(), placed.undo_depth), (1, 1));
+    assert!(placed.images.is_empty());
+
+    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_IMAGE_TOOL_ID);
+    let image = cx.debug_bounds(DOCUMENT_IMAGE_TOOL_ID).unwrap().center();
+    cx.simulate_click(image, Modifiers::default());
+    assert!(cx.did_prompt_for_paths());
+    cx.dispatch_action(butter_paper_gpui_migration::document_workspace::PanTool);
+    assert!(workspace.read_with(cx, |workspace, _| workspace.is_pan_tool_active()));
+    let before_pan = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    cx.simulate_path_prompt_response({
+        let checker = checker.clone();
+        move |_| Some(vec![checker])
+    });
+    cx.run_until_parked();
+    assert!(workspace.read_with(cx, |workspace, _| workspace.is_pan_tool_active()));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Select)
+    );
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
+            .unwrap(),
+        before_pan
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.prepare_image_from_path(request.document_id, &checker, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Image),
+        "explicit synchronous preparation must still arm Image"
+    );
+    assert!(!workspace.read_with(cx, |workspace, _| workspace.is_pan_tool_active()));
+}
+
+#[gpui::test]
+fn image_picker_cancelled_repick_discards_previous_unplaced_asset(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let checker =
+        manifest_dir.join("../performance/results/public-fixtures-v1/bp-image-checker-v1.png");
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("native-image-picker.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_IMAGE_TOOL_ID);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let button = cx.debug_bounds(DOCUMENT_IMAGE_TOOL_ID).unwrap();
+    cx.simulate_click(button.center(), Modifiers::default());
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response({
+        let checker = checker.clone();
+        move |options| {
+            assert!(options.files);
+            assert!(!options.directories);
+            assert!(!options.multiple);
+            assert_eq!(
+                options.prompt.as_deref(),
+                Some("Select a PNG or JPEG image")
+            );
+            Some(vec![checker])
+        }
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Image),
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.rejected_stale_image_prepares()),
+        0,
+    );
+
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let project =
+        |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale));
+    let image_button = cx.debug_bounds(DOCUMENT_IMAGE_TOOL_ID).unwrap().center();
+    cx.simulate_click(image_button, Modifiers::default());
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|_| None);
+    cx.run_until_parked();
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Image)
+    );
+    cx.simulate_click(project(300., 400.), Modifiers::default());
+    let snapshot = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(
+        snapshot.images.is_empty(),
+        "cancelled re-pick must not leave the old image armed"
+    );
+    assert_eq!((snapshot.revision, snapshot.undo_depth), (0, 0));
+}
+
+#[gpui::test]
+fn image_picker_composed_clicks_open_one_picker_and_toggle_properties_once(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("rail-clicks.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        );
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .set_annotation_tool(request.document_id, AnnotationTool::Rectangle, cx)
+            .unwrap()
+    });
+    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_IMAGE_TOOL_ID);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds("document-workspace-properties-sidebar")
+            .is_none()
+    );
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    let image = cx.debug_bounds(DOCUMENT_IMAGE_TOOL_ID).unwrap().center();
+    cx.simulate_click(image, Modifiers::default());
+    assert!(cx.did_prompt_for_paths());
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Image),
+        "Image must arm before the picker resolves"
+    );
+    cx.simulate_path_prompt_response(|options| {
+        assert_eq!(
+            options.prompt.as_deref(),
+            Some("Select a PNG or JPEG image")
+        );
+        None
+    });
+    cx.run_until_parked();
+    assert!(!cx.did_prompt_for_paths());
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Image)
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds("document-workspace-properties-sidebar")
+            .is_none()
+    );
+    for (count, properties_open) in [(2, true), (3, true), (2, false)] {
+        let image = cx.debug_bounds(DOCUMENT_IMAGE_TOOL_ID).unwrap().center();
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: image,
+            modifiers: Modifiers::default(),
+            click_count: count,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            button: MouseButton::Left,
+            position: image,
+            modifiers: Modifiers::default(),
+            click_count: count,
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            !cx.did_prompt_for_paths(),
+            "click count {count} must not launch another picker"
+        );
+        assert_eq!(
+            cx.debug_bounds("document-workspace-properties-sidebar")
+                .is_some(),
+            properties_open
+        );
+        assert_eq!(
+            workspace
+                .read_with(cx, |workspace, cx| workspace
+                    .annotation_snapshot(request.document_id, cx))
+                .unwrap(),
+            before
+        );
+    }
+}
+
+#[gpui::test]
+fn rectangle_pointer_placement_resets_select_only_after_creation(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("rectangle-post-placement.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_RECTANGLE_TOOL_ID);
+    let rectangle_button = cx.debug_bounds(DOCUMENT_RECTANGLE_TOOL_ID).unwrap();
+    cx.simulate_click(rectangle_button.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let to_view =
+        |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale));
+
+    // A drag with no height exceeds the pointer threshold but cannot create a rectangle.
+    cx.simulate_mouse_down(to_view(72., 96.), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        to_view(120., 96.),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_up(to_view(120., 96.), MouseButton::Left, Modifiers::default());
+    let rejected = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(rejected.rectangles.is_empty());
+    assert_eq!((rejected.revision, rejected.undo_depth), (0, 0));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Rectangle),
+        "invalid geometry must leave Rectangle armed"
+    );
+
+    cx.simulate_mouse_down(to_view(72., 96.), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        to_view(216., 192.),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_up(to_view(216., 192.), MouseButton::Left, Modifiers::default());
+    let dragged = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(dragged.rectangles.len(), 1);
+    assert_eq!(
+        dragged.selected_id.as_ref(),
+        Some(&dragged.rectangles[0].id)
+    );
+    assert_eq!((dragged.revision, dragged.undo_depth), (1, 1));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Select),
+        "drag placement must return to Select without clearing the created selection"
+    );
+
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let rectangle_button = cx.debug_bounds(DOCUMENT_RECTANGLE_TOOL_ID).unwrap();
+    cx.simulate_click(rectangle_button.center(), Modifiers::default());
+    cx.simulate_click(to_view(300., 300.), Modifiers::default());
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Rectangle),
+        "the first placement click must leave Rectangle armed"
+    );
+    cx.simulate_mouse_move(to_view(420., 420.), None, Modifiers::default());
+    cx.simulate_click(to_view(420., 420.), Modifiers::default());
+    let clicked = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(clicked.rectangles.len(), 2);
+    let placed = clicked
+        .rectangles
+        .iter()
+        .find(|rectangle| rectangle.id != dragged.rectangles[0].id)
+        .unwrap();
+    assert_eq!(clicked.selected_id.as_ref(), Some(&placed.id));
+    assert_eq!((clicked.revision, clicked.undo_depth), (2, 2));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Select),
+        "click-click placement must return to Select without clearing the created selection"
+    );
+    for pan in [false, true] {
+        cx.simulate_click(to_view(72., 96.), Modifiers::default());
+        if pan {
+            cx.dispatch_action(butter_paper_gpui_migration::document_workspace::PanTool);
+        }
+        let before_escape = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap();
+        assert!(before_escape.selected_id.is_some());
+        assert_eq!(
+            workspace.read_with(cx, |workspace, _| workspace.is_pan_tool_active()),
+            pan
+        );
+        cx.dispatch_action(gpui_component::input::Escape);
+        let after_escape = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap();
+        assert!(after_escape.selected_id.is_none());
+        assert_eq!(after_escape.rectangles, before_escape.rectangles);
+        assert_eq!(
+            (after_escape.revision, after_escape.undo_depth),
+            (before_escape.revision, before_escape.undo_depth)
+        );
+        assert!(!workspace.read_with(cx, |workspace, _| workspace.is_pan_tool_active()));
+    }
+}
+
+#[gpui::test]
 fn pen_pointer_drag_creates_a_stable_selected_path_and_ignores_short_gestures(
     cx: &mut TestAppContext,
 ) {
@@ -10159,6 +19045,13 @@ fn pen_pointer_drag_creates_a_stable_selected_path_and_ignores_short_gestures(
             .is_empty()
     );
 
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Pen),
+        "a rejected short gesture must leave Pen armed"
+    );
+
     let start = to_view(72., 96.);
     let middle = to_view(120., 144.);
     let end = to_view(180., 160.);
@@ -10190,6 +19083,31 @@ fn pen_pointer_drag_creates_a_stable_selected_path_and_ignores_short_gestures(
             .len(),
         1
     );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Select),
+        "successful Pen placement must return to Select and preserve the new selection"
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
+            .unwrap()
+            .pens
+            .is_empty()
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.redo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    cx.simulate_click(middle, Modifiers::default());
     let original_points = snapshot.pens[0].points().to_vec();
     workspace
         .update(cx, |workspace, cx| {
@@ -10277,7 +19195,9 @@ fn pen_pointer_drag_creates_a_stable_selected_path_and_ignores_short_gestures(
 }
 
 #[gpui::test]
-fn universal_shape_picker_alpha_commits_atomically_to_the_primary_selection(cx: &mut TestAppContext) {
+fn universal_shape_picker_alpha_commits_atomically_to_the_primary_selection(
+    cx: &mut TestAppContext,
+) {
     cx.update(gpui_component::init);
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -10292,16 +19212,33 @@ fn universal_shape_picker_alpha_commits_atomically_to_the_primary_selection(cx: 
     let rectangle = imported_rectangle("alpha:rectangle");
     let secondary = imported_rectangle("alpha:secondary");
     let ellipse = EllipseAnnotation::new(
-        MarkupId::new("alpha:ellipse").unwrap(), 0,
-        PdfRect::new(260., 96., 100., 80.).unwrap(), rectangle.appearance.clone(),
-    ).unwrap();
-    let request = workspace.update(cx, |workspace, cx| workspace.begin_open(PathBuf::from("picker-alpha.pdf"), cx));
-    workspace.update(cx, |workspace, cx| workspace.apply_open_result(&request,
-        Ok(opened_document(Arc::new(AtomicBool::new(false))).with_annotations(vec![
-            Annotation::Rectangle(rectangle.clone()), Annotation::Rectangle(secondary.clone()),
-            Annotation::Ellipse(ellipse.clone()),
-        ])), cx));
-    workspace.update(cx, |workspace, cx| workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx).unwrap());
+        MarkupId::new("alpha:ellipse").unwrap(),
+        0,
+        PdfRect::new(260., 96., 100., 80.).unwrap(),
+        rectangle.appearance.clone(),
+    )
+    .unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("picker-alpha.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(
+                opened_document(Arc::new(AtomicBool::new(false))).with_annotations(vec![
+                    Annotation::Rectangle(rectangle.clone()),
+                    Annotation::Rectangle(secondary.clone()),
+                    Annotation::Ellipse(ellipse.clone()),
+                ]),
+            ),
+            cx,
+        )
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+            .unwrap()
+    });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let actions = cx.debug_bounds("document-workspace-rail-actions").unwrap();
     cx.simulate_click(actions.center(), Modifiers::default());
@@ -10313,58 +19250,119 @@ fn universal_shape_picker_alpha_commits_atomically_to_the_primary_selection(cx: 
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let inspector = workspace.read_with(cx, |workspace, _| {
-            if is_ellipse { workspace.ellipse_property_inspector().unwrap() }
-            else { workspace.rectangle_property_inspector().unwrap() }
+            if is_ellipse {
+                workspace.ellipse_property_inspector().unwrap()
+            } else {
+                workspace.rectangle_property_inspector().unwrap()
+            }
         });
         let stroke = inspector.read_with(cx, |inspector, _| inspector.stroke_color_picker());
         let fill = inspector.read_with(cx, |inspector, _| inspector.fill_color_picker());
-        assert!((fill.read_with(cx, |picker, _| picker.value().unwrap().a) - 0.2).abs() < 0.0001,
-            "picker alpha must start from the native fill opacity, not opaque");
-        let before = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
+        assert!(
+            (fill.read_with(cx, |picker, _| picker.value().unwrap().a) - 0.2).abs() < 0.0001,
+            "picker alpha must start from the native fill opacity, not opaque"
+        );
+        let before = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap();
 
-        cx.update(|window, cx| fill.update(cx, |picker, cx| {
-            picker.select_color(picker.value().unwrap(), window, cx);
-        }));
+        cx.update(|window, cx| {
+            fill.update(cx, |picker, cx| {
+                picker.select_color(picker.value().unwrap(), window, cx);
+            })
+        });
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let unchanged = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
-        assert_eq!(unchanged, before, "reapplying a picker value must preserve canonical decimal opacity without a precision-only undo edit");
+        let unchanged = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap();
+        assert_eq!(
+            unchanged, before,
+            "reapplying a picker value must preserve canonical decimal opacity without a precision-only undo edit"
+        );
 
         // Exercise the stock picker's semantic commit through the inspector
         // subscription, not the workspace's patch handler directly.
-        cx.update(|window, cx| stroke.update(cx, |picker, cx| {
-            assert!(picker.commit_hex("#ff000080", window, cx).is_some());
-        }));
+        cx.update(|window, cx| {
+            stroke.update(cx, |picker, cx| {
+                assert!(picker.commit_hex("#ff000080", window, cx).is_some());
+            })
+        });
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let changed = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
-        let appearance = if is_ellipse { &changed.ellipses[0].appearance } else { &changed.rectangles[0].appearance };
+        let changed = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap();
+        let appearance = if is_ellipse {
+            &changed.ellipses[0].appearance
+        } else {
+            &changed.rectangles[0].appearance
+        };
         assert_eq!(appearance.stroke_color(), "#ff0000");
         assert!((appearance.opacity() - 128. / 255.).abs() < 0.0001);
         assert_eq!(appearance.fill_opacity(), 0.2);
-        assert_eq!(changed.undo_depth, before.undo_depth + 1, "colour and alpha form one undo edit");
+        assert_eq!(
+            changed.undo_depth,
+            before.undo_depth + 1,
+            "colour and alpha form one undo edit"
+        );
         assert_eq!(changed.rectangles[1], secondary);
 
-        cx.update(|window, cx| fill.update(cx, |picker, cx| {
-            assert!(picker.commit_hex("#00ff0040", window, cx).is_some());
-        }));
+        cx.update(|window, cx| {
+            fill.update(cx, |picker, cx| {
+                assert!(picker.commit_hex("#00ff0040", window, cx).is_some());
+            })
+        });
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let filled = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
-        let appearance = if is_ellipse { &filled.ellipses[0].appearance } else { &filled.rectangles[0].appearance };
+        let filled = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap();
+        let appearance = if is_ellipse {
+            &filled.ellipses[0].appearance
+        } else {
+            &filled.rectangles[0].appearance
+        };
         assert_eq!(appearance.fill_color(), Some("#00ff00"));
         assert!((appearance.fill_opacity() - 64. / 255.).abs() < 0.0001);
         assert!((appearance.opacity() - 128. / 255.).abs() < 0.0001);
         assert_eq!(filled.undo_depth, before.undo_depth + 2);
         assert_eq!(filled.rectangles[1], secondary);
-        assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.selected_annotation_ids(request.document_id, cx)), vec![id.clone(), secondary.id.clone()]);
+        assert_eq!(
+            workspace.read_with(cx, |workspace, cx| workspace
+                .selected_annotation_ids(request.document_id, cx)),
+            vec![id.clone(), secondary.id.clone()]
+        );
 
-        workspace.update(cx, |workspace, cx| workspace.undo_annotations(request.document_id, cx).unwrap());
+        workspace.update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx).unwrap()
+        });
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let undone = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
-        let appearance = if is_ellipse { &undone.ellipses[0].appearance } else { &undone.rectangles[0].appearance };
+        let undone = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap();
+        let appearance = if is_ellipse {
+            &undone.ellipses[0].appearance
+        } else {
+            &undone.rectangles[0].appearance
+        };
         assert_eq!(appearance.fill_color(), Some("#dbeafe"));
         assert_eq!(appearance.fill_opacity(), 0.2);
-        assert!((stroke.read_with(cx, |picker, _| picker.value().unwrap().a) - 128. / 255.).abs() < 0.0001);
+        assert!(
+            (stroke.read_with(cx, |picker, _| picker.value().unwrap().a) - 128. / 255.).abs()
+                < 0.0001
+        );
         assert!((fill.read_with(cx, |picker, _| picker.value().unwrap().a) - 0.2).abs() < 0.0001);
-        workspace.update(cx, |workspace, cx| workspace.redo_annotations(request.document_id, cx).unwrap());
+        workspace.update(cx, |workspace, cx| {
+            workspace.redo_annotations(request.document_id, cx).unwrap()
+        });
     }
 }
 
@@ -10373,23 +19371,46 @@ fn universal_paired_layout_and_selected_sliders_use_real_controls(cx: &mut TestA
     use butter_paper_gpui_migration::rectangle_property_inspector::*;
     cx.update(gpui_component::init);
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let (_, cx) = cx.add_window_view({ let slot = slot.clone(); move |window, cx| {
-        let workspace = cx.new(DocumentWorkspace::new);
-        slot.replace(Some(workspace.clone()));
-        Root::new(workspace, window, cx)
-    }});
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
     let workspace = slot.borrow_mut().take().unwrap();
     let mut rectangle = imported_rectangle("columns:rectangle");
     rectangle.rect = PdfRect::new(111.500741, 519.851703, 199.515641, 123.509701).unwrap();
     let secondary = imported_rectangle("columns:secondary");
-    let ellipse = EllipseAnnotation::new(MarkupId::new("columns:ellipse").unwrap(), 0,
-        PdfRect::new(260., 96., 100., 80.).unwrap(), rectangle.appearance.clone()).unwrap();
-    let request = workspace.update(cx, |workspace, cx| workspace.begin_open(PathBuf::from("columns.pdf"), cx));
-    workspace.update(cx, |workspace, cx| workspace.apply_open_result(&request,
-        Ok(opened_document(Arc::new(AtomicBool::new(false))).with_annotations(vec![
-            Annotation::Rectangle(rectangle.clone()), Annotation::Rectangle(secondary.clone()), Annotation::Ellipse(ellipse.clone()),
-        ])), cx));
-    workspace.update(cx, |workspace, cx| workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx).unwrap());
+    let ellipse = EllipseAnnotation::new(
+        MarkupId::new("columns:ellipse").unwrap(),
+        0,
+        PdfRect::new(260., 96., 100., 80.).unwrap(),
+        rectangle.appearance.clone(),
+    )
+    .unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("columns.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(
+                opened_document(Arc::new(AtomicBool::new(false))).with_annotations(vec![
+                    Annotation::Rectangle(rectangle.clone()),
+                    Annotation::Rectangle(secondary.clone()),
+                    Annotation::Ellipse(ellipse.clone()),
+                ]),
+            ),
+            cx,
+        )
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+            .unwrap()
+    });
     cx.simulate_resize(size(px(1280.), px(1200.)));
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let actions = cx.debug_bounds("document-workspace-rail-actions").unwrap();
@@ -10400,72 +19421,158 @@ fn universal_paired_layout_and_selected_sliders_use_real_controls(cx: &mut TestA
             assert!(workspace.toggle_annotation_selection(request.document_id, &secondary.id, cx));
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let inspector = workspace.read_with(cx, |workspace, _| if is_ellipse {
-            workspace.ellipse_property_inspector().unwrap()
-        } else { workspace.rectangle_property_inspector().unwrap() });
+        let inspector = workspace.read_with(cx, |workspace, _| {
+            if is_ellipse {
+                workspace.ellipse_property_inspector().unwrap()
+            } else {
+                workspace.rectangle_property_inspector().unwrap()
+            }
+        });
         let pairs = if is_ellipse {
-            [(ELLIPSE_INSPECTOR_X_ID, ELLIPSE_INSPECTOR_Y_ID), (ELLIPSE_INSPECTOR_WIDTH_ID, ELLIPSE_INSPECTOR_HEIGHT_ID)]
+            [
+                (ELLIPSE_INSPECTOR_X_ID, ELLIPSE_INSPECTOR_Y_ID),
+                (ELLIPSE_INSPECTOR_WIDTH_ID, ELLIPSE_INSPECTOR_HEIGHT_ID),
+            ]
         } else {
-            [(RECTANGLE_INSPECTOR_X_ID, RECTANGLE_INSPECTOR_Y_ID), (RECTANGLE_INSPECTOR_WIDTH_ID, RECTANGLE_INSPECTOR_HEIGHT_ID)]
+            [
+                (RECTANGLE_INSPECTOR_X_ID, RECTANGLE_INSPECTOR_Y_ID),
+                (RECTANGLE_INSPECTOR_WIDTH_ID, RECTANGLE_INSPECTOR_HEIGHT_ID),
+            ]
         };
-        let before_blur = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
-        for input in inspector.read_with(cx, |inspector, _| [inspector.x_input(), inspector.y_input(), inspector.width_input(), inspector.height_input()]) {
+        let before_blur = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap();
+        for input in inspector.read_with(cx, |inspector, _| {
+            [
+                inspector.x_input(),
+                inspector.y_input(),
+                inspector.width_input(),
+                inspector.height_input(),
+            ]
+        }) {
             input.update(cx, |_, cx| cx.emit(gpui_component::input::InputEvent::Blur));
         }
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let after_blur = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
-        assert_eq!(before_blur, after_blur, "unchanged compact geometry display must not round stored coordinates or add undo");
+        let after_blur = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap();
+        assert_eq!(
+            before_blur, after_blur,
+            "unchanged compact geometry display must not round stored coordinates or add undo"
+        );
         for target_width in [240., 420., 300.] {
-            let panel_id = if is_ellipse { ELLIPSE_PROPERTY_INSPECTOR_ID } else { RECTANGLE_PROPERTY_INSPECTOR_ID };
+            let panel_id = if is_ellipse {
+                ELLIPSE_PROPERTY_INSPECTOR_ID
+            } else {
+                RECTANGLE_PROPERTY_INSPECTOR_ID
+            };
             let panel = cx.debug_bounds(panel_id).unwrap();
             let divider = point(panel.left(), panel.center().y);
             let end = point(panel.right() - px(target_width), divider.y);
             cx.simulate_mouse_down(divider, MouseButton::Left, Modifiers::default());
-            cx.simulate_mouse_move(point(divider.x + px(5.), divider.y), Some(MouseButton::Left), Modifiers::default());
+            cx.simulate_mouse_move(
+                point(divider.x + px(5.), divider.y),
+                Some(MouseButton::Left),
+                Modifiers::default(),
+            );
             cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
             cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
             cx.update(|window, cx| window.draw(cx).clear(cx));
             let panel = cx.debug_bounds(panel_id).unwrap();
             assert_eq!(panel.size.width, px(target_width), "actual sidebar resize");
             for (left, right) in pairs {
-            let left = cx.debug_bounds(left).unwrap();
-            let right = cx.debug_bounds(right).unwrap();
-            assert_eq!(left.top(), right.top(), "paired controls share a row");
-            assert_eq!(left.size, right.size, "equal column frames");
-            assert_eq!(right.left() - left.right(), px(12.));
-            assert!(left.left() > panel.left() && right.right() < panel.right());
+                let left = cx.debug_bounds(left).unwrap();
+                let right = cx.debug_bounds(right).unwrap();
+                assert_eq!(left.top(), right.top(), "paired controls share a row");
+                assert_eq!(left.size, right.size, "equal column frames");
+                assert_eq!(right.left() - left.right(), px(12.));
+                assert!(left.left() > panel.left() && right.right() < panel.right());
             }
         }
         for (track_id, rotation) in if is_ellipse {
-            [("ellipse-property-inspector-width-slider", false), ("ellipse-property-inspector-rotation-slider", true)]
+            [
+                ("ellipse-property-inspector-width-slider", false),
+                ("ellipse-property-inspector-rotation-slider", true),
+            ]
         } else {
-            [("rectangle-property-inspector-width-slider", false), ("rectangle-property-inspector-rotation-slider", true)]
+            [
+                ("rectangle-property-inspector-width-slider", false),
+                ("rectangle-property-inspector-rotation-slider", true),
+            ]
         } {
-            let (slider, input) = inspector.read_with(cx, |inspector, _| if rotation {
-                (inspector.rotation_slider(), inspector.rotation_input())
-            } else { (inspector.stroke_width_slider(), inspector.stroke_width_input()) });
+            let (slider, input) = inspector.read_with(cx, |inspector, _| {
+                if rotation {
+                    (inspector.rotation_slider(), inspector.rotation_input())
+                } else {
+                    (
+                        inspector.stroke_width_slider(),
+                        inspector.stroke_width_input(),
+                    )
+                }
+            });
             let track = cx.debug_bounds(track_id).unwrap();
-            let before = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
+            let before = workspace
+                .read_with(cx, |workspace, cx| {
+                    workspace.annotation_snapshot(request.document_id, cx)
+                })
+                .unwrap();
             let start = track.center();
             let end = point(track.left() + track.size.width * 0.75, start.y);
             cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
             cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
             cx.update(|window, cx| window.draw(cx).clear(cx));
             let value = slider.read_with(cx, |slider, _| slider.value().start() as f64);
-            assert_eq!(input.read_with(cx, |input, _| input.value().parse::<f64>().unwrap()), value, "live value before release");
-            assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap().undo_depth, before.undo_depth);
+            assert_eq!(
+                input.read_with(cx, |input, _| input.value().parse::<f64>().unwrap()),
+                value,
+                "live value before release"
+            );
+            assert_eq!(
+                workspace
+                    .read_with(cx, |workspace, cx| workspace
+                        .annotation_snapshot(request.document_id, cx))
+                    .unwrap()
+                    .undo_depth,
+                before.undo_depth
+            );
             cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
             cx.update(|window, cx| window.draw(cx).clear(cx));
-            let after = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
+            let after = workspace
+                .read_with(cx, |workspace, cx| {
+                    workspace.annotation_snapshot(request.document_id, cx)
+                })
+                .unwrap();
             let actual = if is_ellipse {
-                if rotation { after.ellipses[0].rotation_degrees } else { after.ellipses[0].appearance.stroke_width_pt() }
-            } else if rotation { after.rectangles[0].rotation_degrees } else { after.rectangles[0].appearance.stroke_width_pt() };
+                if rotation {
+                    after.ellipses[0].rotation_degrees
+                } else {
+                    after.ellipses[0].appearance.stroke_width_pt()
+                }
+            } else if rotation {
+                after.rectangles[0].rotation_degrees
+            } else {
+                after.rectangles[0].appearance.stroke_width_pt()
+            };
             assert_eq!(actual, value);
-            assert_eq!(after.undo_depth, before.undo_depth + 1, "one release, one undo");
+            assert_eq!(
+                after.undo_depth,
+                before.undo_depth + 1,
+                "one release, one undo"
+            );
             assert_eq!(after.rectangles[1], secondary);
-            workspace.update(cx, |workspace, cx| workspace.undo_annotations(request.document_id, cx).unwrap());
+            workspace.update(cx, |workspace, cx| {
+                workspace.undo_annotations(request.document_id, cx).unwrap()
+            });
             cx.update(|window, cx| window.draw(cx).clear(cx));
-            let restored = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
+            let restored = workspace
+                .read_with(cx, |workspace, cx| {
+                    workspace.annotation_snapshot(request.document_id, cx)
+                })
+                .unwrap();
             assert_eq!(restored.rectangles, before.rectangles);
             assert_eq!(restored.ellipses, before.ellipses);
         }
@@ -10473,54 +19580,12 @@ fn universal_paired_layout_and_selected_sliders_use_real_controls(cx: &mut TestA
 }
 
 #[gpui::test]
-fn universal_selected_properties_edit_only_primary_without_an_extra_sidebar(cx: &mut TestAppContext) {
-    use butter_paper_gpui_migration::rectangle_property_inspector::{RectanglePropertyEvent, RectanglePropertyPatch, RectangularShapePropertyKind, RECTANGLE_PROPERTY_INSPECTOR_ID};
-    cx.update(gpui_component::init);
-    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let (_, cx) = cx.add_window_view({ let slot = slot.clone(); move |window, cx| {
-        let workspace = cx.new(DocumentWorkspace::new); slot.replace(Some(workspace.clone()));
-        Root::new(workspace, window, cx)
-    }});
-    let workspace = slot.borrow_mut().take().unwrap();
-    let first = imported_rectangle("properties:primary");
-    let second = imported_rectangle("properties:secondary");
-    let request = workspace.update(cx, |workspace, cx| workspace.begin_open(PathBuf::from("primary-properties.pdf"), cx));
-    workspace.update(cx, |workspace, cx| workspace.apply_open_result(&request,
-        Ok(opened_document(Arc::new(AtomicBool::new(false))).with_annotations(vec![Annotation::Rectangle(first.clone()), Annotation::Rectangle(second.clone())])), cx));
-    workspace.update(cx, |workspace, cx| {
-        assert!(workspace.select_annotation(request.document_id, &first.id, cx));
-        assert!(workspace.toggle_annotation_selection(request.document_id, &second.id, cx));
-    });
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let actions = cx.debug_bounds("document-workspace-rail-actions").unwrap();
-    cx.simulate_click(actions.center(), Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let properties = cx.debug_bounds(RECTANGLE_PROPERTY_INSPECTOR_ID).unwrap();
-    let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
-    assert_eq!(properties.right(), rail.left());
-    assert_eq!(properties.top(), rail.top());
-    assert!(workspace.update(cx, |workspace, cx| workspace.apply_rectangle_property_event(&RectanglePropertyEvent {
-        document_id: request.document_id, annotation_id: first.id.clone(), expected_kind: RectangularShapePropertyKind::Rectangle,
-        patch: RectanglePropertyPatch::Opacity(0.25),
-    }, cx).unwrap()));
-    let changed = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
-    assert_eq!(changed.rectangles[0].appearance.opacity(), 0.25);
-    assert_eq!(changed.rectangles[1], second);
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.selected_annotation_ids(request.document_id, cx)), vec![first.id.clone(), second.id.clone()]);
-    assert_eq!(changed.undo_depth, 1);
-    assert!(workspace.update(cx, |workspace, cx| workspace.apply_rectangle_property_event(&RectanglePropertyEvent {
-        document_id: request.document_id, annotation_id: first.id.clone(), expected_kind: RectangularShapePropertyKind::Rectangle,
-        patch: RectanglePropertyPatch::Locked(true),
-    }, cx).unwrap()));
-    let locked = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
-    assert!(locked.rectangles[0].locked);
-    assert!(!locked.rectangles[1].locked);
-}
-
-#[gpui::test]
-fn universal_properties_real_controls_keep_live_values_and_one_sidebar(cx: &mut TestAppContext) {
-    use butter_paper_gpui_migration::tool_defaults_panel::{
-        TOOL_DEFAULTS_PANEL_ID, TOOL_DEFAULTS_OPACITY_SLIDER_ID, TOOL_DEFAULTS_OPACITY_INPUT_ID,
+fn universal_selected_properties_edit_only_primary_without_an_extra_sidebar(
+    cx: &mut TestAppContext,
+) {
+    use butter_paper_gpui_migration::rectangle_property_inspector::{
+        RECTANGLE_PROPERTY_INSPECTOR_ID, RectanglePropertyEvent, RectanglePropertyPatch,
+        RectangularShapePropertyKind,
     };
     cx.update(gpui_component::init);
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -10533,20 +19598,137 @@ fn universal_properties_real_controls_keep_live_values_and_one_sidebar(cx: &mut 
         }
     });
     let workspace = slot.borrow_mut().take().unwrap();
-    let request = workspace.update(cx, |workspace, cx| workspace.begin_open(PathBuf::from("properties-controls.pdf"), cx));
-    workspace.update(cx, |workspace, cx| workspace.apply_open_result(&request,
-        Ok(opened_document(Arc::new(AtomicBool::new(false)))), cx));
+    let first = imported_rectangle("properties:primary");
+    let second = imported_rectangle("properties:secondary");
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("primary-properties.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(
+                opened_document(Arc::new(AtomicBool::new(false))).with_annotations(vec![
+                    Annotation::Rectangle(first.clone()),
+                    Annotation::Rectangle(second.clone()),
+                ]),
+            ),
+            cx,
+        )
+    });
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.select_annotation(request.document_id, &first.id, cx));
+        assert!(workspace.toggle_annotation_selection(request.document_id, &second.id, cx));
+    });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let actions = cx.debug_bounds("document-workspace-rail-actions").unwrap();
     cx.simulate_click(actions.center(), Modifiers::default());
-    for tool in [AnnotationTool::Rectangle, AnnotationTool::Ellipse, AnnotationTool::Arrow,
-        AnnotationTool::Pen, AnnotationTool::Cloud, AnnotationTool::CloudPlus, AnnotationTool::Callout,
-        AnnotationTool::Dimension, AnnotationTool::TextBox, AnnotationTool::Snapshot] {
-        workspace.update(cx, |workspace, cx| workspace.set_annotation_tool(request.document_id, tool, cx).unwrap());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let properties = cx.debug_bounds(RECTANGLE_PROPERTY_INSPECTOR_ID).unwrap();
+    let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
+    assert_eq!(properties.right(), rail.left());
+    assert_eq!(properties.top(), rail.top());
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace
+            .apply_rectangle_property_event(
+                &RectanglePropertyEvent {
+                    document_id: request.document_id,
+                    annotation_id: first.id.clone(),
+                    expected_kind: RectangularShapePropertyKind::Rectangle,
+                    patch: RectanglePropertyPatch::Opacity(0.25),
+                },
+                cx,
+            )
+            .unwrap()
+    }));
+    let changed = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(changed.rectangles[0].appearance.opacity(), 0.25);
+    assert_eq!(changed.rectangles[1], second);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .selected_annotation_ids(request.document_id, cx)),
+        vec![first.id.clone(), second.id.clone()]
+    );
+    assert_eq!(changed.undo_depth, 1);
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace
+            .apply_rectangle_property_event(
+                &RectanglePropertyEvent {
+                    document_id: request.document_id,
+                    annotation_id: first.id.clone(),
+                    expected_kind: RectangularShapePropertyKind::Rectangle,
+                    patch: RectanglePropertyPatch::Locked(true),
+                },
+                cx,
+            )
+            .unwrap()
+    }));
+    let locked = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(locked.rectangles[0].locked);
+    assert!(!locked.rectangles[1].locked);
+}
+
+#[gpui::test]
+fn universal_properties_real_controls_keep_live_values_and_one_sidebar(cx: &mut TestAppContext) {
+    use butter_paper_gpui_migration::tool_defaults_panel::{
+        TOOL_DEFAULTS_OPACITY_INPUT_ID, TOOL_DEFAULTS_OPACITY_SLIDER_ID, TOOL_DEFAULTS_PANEL_ID,
+    };
+    cx.update(gpui_component::init);
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("properties-controls.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let actions = cx.debug_bounds("document-workspace-rail-actions").unwrap();
+    cx.simulate_click(actions.center(), Modifiers::default());
+    for tool in [
+        AnnotationTool::Rectangle,
+        AnnotationTool::Ellipse,
+        AnnotationTool::Arrow,
+        AnnotationTool::Pen,
+        AnnotationTool::Cloud,
+        AnnotationTool::CloudPlus,
+        AnnotationTool::Callout,
+        AnnotationTool::Dimension,
+        AnnotationTool::TextBox,
+        AnnotationTool::Snapshot,
+    ] {
+        workspace.update(cx, |workspace, cx| {
+            workspace
+                .set_annotation_tool(request.document_id, tool, cx)
+                .unwrap()
+        });
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let panel = cx.debug_bounds(TOOL_DEFAULTS_PANEL_ID).unwrap();
         let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
-        assert_eq!(panel.right(), rail.left(), "{tool:?}: sidebar must meet rail");
+        assert_eq!(
+            panel.right(),
+            rail.left(),
+            "{tool:?}: sidebar must meet rail"
+        );
         assert_eq!(panel.top(), rail.top(), "{tool:?}: shared region top");
         let track = cx.debug_bounds(TOOL_DEFAULTS_OPACITY_SLIDER_ID).unwrap();
         let input = cx.debug_bounds(TOOL_DEFAULTS_OPACITY_INPUT_ID).unwrap();
@@ -10555,12 +19737,25 @@ fn universal_properties_real_controls_keep_live_values_and_one_sidebar(cx: &mut 
         let middle = track.center();
         cx.simulate_mouse_down(middle, MouseButton::Left, Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let properties = workspace.read_with(cx, |workspace, cx| workspace.tool_properties(request.document_id, tool, cx)).unwrap();
-        assert!((properties.opacity - 0.5).abs() < 0.051, "{tool:?}: update before release");
-        let panel = workspace.read_with(cx, |workspace, _| workspace.tool_defaults_panel()).unwrap();
+        let properties = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.tool_properties(request.document_id, tool, cx)
+            })
+            .unwrap();
+        assert!(
+            (properties.opacity - 0.5).abs() < 0.051,
+            "{tool:?}: update before release"
+        );
+        let panel = workspace
+            .read_with(cx, |workspace, _| workspace.tool_defaults_panel())
+            .unwrap();
         let input_state = panel.read_with(cx, |panel, _| panel.opacity_input());
         let text = input_state.read_with(cx, |input, _| input.value().to_string());
-        assert_eq!(text.parse::<f64>().unwrap(), properties.opacity * 100., "{tool:?}: live number agrees");
+        assert_eq!(
+            text.parse::<f64>().unwrap(),
+            properties.opacity * 100.,
+            "{tool:?}: live number agrees"
+        );
         cx.simulate_mouse_up(middle, MouseButton::Left, Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
     }
@@ -10568,36 +19763,116 @@ fn universal_properties_real_controls_keep_live_values_and_one_sidebar(cx: &mut 
 
 #[gpui::test]
 fn universal_tool_defaults_are_scoped_validated_and_history_free(cx: &mut TestAppContext) {
-    use butter_paper_gpui_migration::{tool_defaults_panel::ToolDefaultsEvent, tool_properties::ToolProperties};
+    use butter_paper_gpui_migration::{
+        tool_defaults_panel::ToolDefaultsEvent, tool_properties::ToolProperties,
+    };
     cx.update(gpui_component::init);
     let (workspace, cx) = cx.add_window_view(|_, cx| DocumentWorkspace::new(cx));
-    let request = workspace.update(cx, |workspace, cx| workspace.begin_open(PathBuf::from("properties.pdf"), cx));
-    workspace.update(cx, |workspace, cx| workspace.apply_open_result(&request,
-        Ok(opened_document(Arc::new(AtomicBool::new(false)))), cx));
-    workspace.update(cx, |workspace, cx| workspace.set_annotation_tool(request.document_id, AnnotationTool::Rectangle, cx).unwrap());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("properties.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .set_annotation_tool(request.document_id, AnnotationTool::Rectangle, cx)
+            .unwrap()
+    });
     let mut properties = ToolProperties::for_tool(AnnotationTool::Rectangle);
     properties.colour = "#123456".into();
     properties.width_pt = 4.;
     properties.opacity = 0.5;
-    let event = ToolDefaultsEvent::Change { document_id: request.document_id, tool: AnnotationTool::Rectangle, properties: properties.clone() };
-    assert!(workspace.update(cx, |workspace, cx| workspace.apply_tool_defaults_event(&event, cx).unwrap()));
-    assert!(!workspace.update(cx, |workspace, cx| workspace.apply_tool_defaults_event(&event, cx).unwrap()), "canonical resync is not another edit");
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.tool_properties(request.document_id, AnnotationTool::Rectangle, cx)), Some(properties.clone()));
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.tool_properties(request.document_id, AnnotationTool::Ellipse, cx)), Some(ToolProperties::for_tool(AnnotationTool::Ellipse)));
-    let snapshot = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx));
-    assert!(snapshot.is_none_or(|snapshot| snapshot.undo_depth == 0), "defaults must not enter document history");
+    let event = ToolDefaultsEvent::Change {
+        document_id: request.document_id,
+        tool: AnnotationTool::Rectangle,
+        properties: properties.clone(),
+    };
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace.apply_tool_defaults_event(&event, cx).unwrap()
+    }));
+    assert!(
+        !workspace.update(cx, |workspace, cx| workspace
+            .apply_tool_defaults_event(&event, cx)
+            .unwrap()),
+        "canonical resync is not another edit"
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.tool_properties(
+            request.document_id,
+            AnnotationTool::Rectangle,
+            cx
+        )),
+        Some(properties.clone())
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.tool_properties(
+            request.document_id,
+            AnnotationTool::Ellipse,
+            cx
+        )),
+        Some(ToolProperties::for_tool(AnnotationTool::Ellipse))
+    );
+    let snapshot = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_snapshot(request.document_id, cx)
+    });
+    assert!(
+        snapshot.is_none_or(|snapshot| snapshot.undo_depth == 0),
+        "defaults must not enter document history"
+    );
     let mut invalid = properties.clone();
     invalid.width_pt = f64::NAN;
-    assert!(workspace.update(cx, |workspace, cx| workspace.apply_tool_defaults_event(&ToolDefaultsEvent::Change {
-        document_id: request.document_id, tool: AnnotationTool::Rectangle, properties: invalid,
-    }, cx)).is_err());
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.tool_properties(request.document_id, AnnotationTool::Rectangle, cx)), Some(properties));
-    workspace.update(cx, |workspace, cx| workspace.set_annotation_tool(request.document_id, AnnotationTool::Ellipse, cx).unwrap());
-    assert!(!workspace.update(cx, |workspace, cx| workspace.apply_tool_defaults_event(&event, cx).unwrap()), "old tool callback is inert");
-    let other = workspace.update(cx, |workspace, cx| workspace.begin_open(PathBuf::from("other.pdf"), cx));
-    workspace.update(cx, |workspace, cx| workspace.apply_open_result(&other,
-        Ok(opened_document(Arc::new(AtomicBool::new(false)))), cx));
-    assert!(!workspace.update(cx, |workspace, cx| workspace.apply_tool_defaults_event(&event, cx).unwrap()), "old document callback is inert");
+    assert!(
+        workspace
+            .update(cx, |workspace, cx| workspace.apply_tool_defaults_event(
+                &ToolDefaultsEvent::Change {
+                    document_id: request.document_id,
+                    tool: AnnotationTool::Rectangle,
+                    properties: invalid,
+                },
+                cx
+            ))
+            .is_err()
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.tool_properties(
+            request.document_id,
+            AnnotationTool::Rectangle,
+            cx
+        )),
+        Some(properties)
+    );
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .set_annotation_tool(request.document_id, AnnotationTool::Ellipse, cx)
+            .unwrap()
+    });
+    assert!(
+        !workspace.update(cx, |workspace, cx| workspace
+            .apply_tool_defaults_event(&event, cx)
+            .unwrap()),
+        "old tool callback is inert"
+    );
+    let other = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("other.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &other,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    assert!(
+        !workspace.update(cx, |workspace, cx| workspace
+            .apply_tool_defaults_event(&event, cx)
+            .unwrap()),
+        "old document callback is inert"
+    );
 }
 
 #[gpui::test]
@@ -10628,6 +19903,22 @@ fn highlight_real_control_pointer_history_and_scene_stay_application_owned(
             Ok(opened_document(Arc::new(AtomicBool::new(false)))),
             cx,
         )
+    });
+    #[cfg(target_os = "macos")]
+    let base_plan = workspace.update(cx, |workspace, cx| {
+        workspace
+            .plan_viewport(
+                request.document_id,
+                PageViewMode::SinglePage,
+                100.,
+                1.,
+                720.,
+                600.,
+                0.,
+                0.,
+                cx,
+            )
+            .unwrap()
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds(DOCUMENT_HIGHLIGHT_TOOL_ID).is_some());
@@ -10677,6 +19968,13 @@ fn highlight_real_control_pointer_history_and_scene_stay_application_owned(
             .is_empty()
     );
     cx.simulate_keystrokes("h");
+    cx.simulate_click(start, Modifiers::default());
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Highlight),
+        "an invalid tap must leave Highlight armed"
+    );
     cx.simulate_mouse_down(start, MouseButton::Right, Modifiers::default());
     cx.simulate_mouse_up(end, MouseButton::Right, Modifiers::default());
     assert!(
@@ -10699,7 +19997,7 @@ fn highlight_real_control_pointer_history_and_scene_stay_application_owned(
         .unwrap();
     assert_eq!(created.pens.len(), 1);
     let highlight = &created.pens[0];
-    assert_eq!(highlight.id.as_str(), "workspace:highlight:2");
+    assert_eq!(highlight.id.as_str(), "workspace:highlight:3");
     assert_eq!(highlight.tool(), InkTool::Highlight);
     assert_eq!(highlight.blend_mode(), BlendMode::Multiply);
     assert_eq!(highlight.appearance.color(), "#ffff00");
@@ -10731,8 +20029,65 @@ fn highlight_real_control_pointer_history_and_scene_stay_application_owned(
         })
         .unwrap();
     assert_eq!(stable_composite.annotation_revision, 1);
-    assert!(stable_composite.current_page_pixels > 0);
-    assert!(stable_composite.thumbnail_pixels > 0);
+    assert_eq!(
+        stable_composite.current_page_pixels > 0,
+        !cfg!(target_os = "macos")
+    );
+    assert_eq!(
+        stable_composite.thumbnail_pixels > 0,
+        !cfg!(target_os = "macos")
+    );
+    #[cfg(target_os = "macos")]
+    {
+        let live_plan = workspace.update(cx, |workspace, cx| {
+            workspace
+                .plan_viewport(
+                    request.document_id,
+                    PageViewMode::SinglePage,
+                    100.,
+                    1.,
+                    720.,
+                    600.,
+                    0.,
+                    0.,
+                    cx,
+                )
+                .unwrap()
+        });
+        assert!(!base_plan.tiles.is_empty());
+        assert_eq!(
+            live_plan
+                .tiles
+                .iter()
+                .map(|tile| tile.source)
+                .collect::<Vec<_>>(),
+            base_plan
+                .tiles
+                .iter()
+                .map(|tile| tile.source)
+                .collect::<Vec<_>>(),
+            "native Highlight placement must not invalidate annotation-free PDF raster sources"
+        );
+    }
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
+            .unwrap()
+            .pens
+            .is_empty()
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.redo_annotations(request.document_id, cx)
+        })
+        .unwrap();
     let original_start = highlight.points()[0];
     cx.simulate_mouse_down(middle, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(
@@ -10770,14 +20125,15 @@ fn highlight_real_control_pointer_history_and_scene_stay_application_owned(
             workspace.render_planned_tiles_for_evidence(request.document_id, &highlight_plan, cx)
         })
         .unwrap();
-    assert!(
+    assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| {
                 workspace.highlight_composite_evidence(request.document_id, cx)
             })
             .unwrap()
             .viewer_tile_pixels
-            > 0
+            > 0,
+        !cfg!(target_os = "macos")
     );
     workspace
         .update(cx, |workspace, cx| {
@@ -10856,14 +20212,15 @@ fn highlight_real_control_pointer_history_and_scene_stay_application_owned(
             .len(),
         1
     );
-    assert!(
+    assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| {
                 workspace.highlight_composite_evidence(request.document_id, cx)
             })
             .unwrap()
             .current_page_pixels
-            > 0
+            > 0,
+        !cfg!(target_os = "macos")
     );
 
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_HIGHLIGHT_TOOL_ID);
@@ -10885,13 +20242,19 @@ fn highlight_real_control_pointer_history_and_scene_stay_application_owned(
         click_count: 2,
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let panel = workspace.read_with(cx, |workspace, _| workspace.highlight_defaults_panel().unwrap());
+    let panel = workspace.read_with(cx, |workspace, _| {
+        workspace.highlight_defaults_panel().unwrap()
+    });
     cx.executor().advance_clock(Duration::from_millis(250));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let opacity_input = cx.debug_bounds("highlight-defaults-panel-opacity-input").unwrap();
+    let opacity_input = cx
+        .debug_bounds("highlight-defaults-panel-opacity-input")
+        .unwrap();
     // Stock inputs need room for three digits and a unit, without stepper lanes.
     assert_eq!(opacity_input.size.width, px(80.));
-    let opacity_track = cx.debug_bounds("highlight-defaults-panel-opacity-slider").unwrap();
+    let opacity_track = cx
+        .debug_bounds("highlight-defaults-panel-opacity-slider")
+        .unwrap();
     assert_eq!(opacity_input.left() - opacity_track.right(), px(16.));
     // Assert while the pointer is still down: a Release-only listener must fail.
     cx.simulate_event(MouseDownEvent {
@@ -10902,11 +20265,29 @@ fn highlight_real_control_pointer_history_and_scene_stay_application_owned(
         first_mouse: false,
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let live_opacity = panel.read_with(cx, |panel, cx| panel.opacity_slider().read(cx).value().start());
+    let live_opacity = panel.read_with(cx, |panel, cx| {
+        panel.opacity_slider().read(cx).value().start()
+    });
     assert!(live_opacity > 0. && live_opacity < 100.);
-    assert_eq!(panel.read_with(cx, |panel, cx| panel.opacity_input().read(cx).value().to_string()), format!("{live_opacity}"));
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.highlight_defaults(request.document_id, cx).unwrap().opacity), f64::from(live_opacity) / 100.);
-    let drag_position = point(opacity_track.left() + opacity_track.size.width * 0.75, opacity_track.center().y);
+    assert_eq!(
+        panel.read_with(cx, |panel, cx| panel
+            .opacity_input()
+            .read(cx)
+            .value()
+            .to_string()),
+        format!("{live_opacity}")
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .highlight_defaults(request.document_id, cx)
+            .unwrap()
+            .opacity),
+        f64::from(live_opacity) / 100.
+    );
+    let drag_position = point(
+        opacity_track.left() + opacity_track.size.width * 0.75,
+        opacity_track.center().y,
+    );
     cx.simulate_event(gpui::MouseMoveEvent {
         position: drag_position,
         pressed_button: Some(MouseButton::Left),
@@ -10920,9 +20301,18 @@ fn highlight_real_control_pointer_history_and_scene_stay_application_owned(
         modifiers: Modifiers::default(),
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let dragged_opacity = panel.read_with(cx, |panel, cx| panel.opacity_slider().read(cx).value().start());
+    let dragged_opacity = panel.read_with(cx, |panel, cx| {
+        panel.opacity_slider().read(cx).value().start()
+    });
     assert!(dragged_opacity > live_opacity);
-    assert_eq!(panel.read_with(cx, |panel, cx| panel.opacity_input().read(cx).value().to_string()), format!("{dragged_opacity}"));
+    assert_eq!(
+        panel.read_with(cx, |panel, cx| panel
+            .opacity_input()
+            .read(cx)
+            .value()
+            .to_string()),
+        format!("{dragged_opacity}")
+    );
     cx.simulate_event(MouseUpEvent {
         button: MouseButton::Left,
         position: drag_position,
@@ -10935,10 +20325,21 @@ fn highlight_real_control_pointer_history_and_scene_stay_application_owned(
     cx.write_to_clipboard(ClipboardItem::new_string("49".into()));
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE} enter"));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert_eq!(width_input.read_with(cx, |input, _| input.value().to_string()), "12");
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.highlight_defaults(request.document_id, cx).unwrap().width_pt), 12.);
+    assert_eq!(
+        width_input.read_with(cx, |input, _| input.value().to_string()),
+        "12"
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .highlight_defaults(request.document_id, cx)
+            .unwrap()
+            .width_pt),
+        12.
+    );
     let picker = panel.read_with(cx, |panel, _| panel.color_picker());
-    let trigger = cx.debug_bounds("highlight-defaults-panel-colour-trigger").unwrap();
+    let trigger = cx
+        .debug_bounds("highlight-defaults-panel-colour-trigger")
+        .unwrap();
     cx.simulate_click(trigger.center(), Modifiers::default());
     cx.executor().advance_clock(Duration::from_millis(200));
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -11051,7 +20452,29 @@ fn text_box_click_opens_real_multiline_editor_and_blur_commits_once(cx: &mut Tes
         .expect("primary page click must retain a pending Text Box editor");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
-    assert!(cx.debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID).is_some());
+    let initial_rect = workspace
+        .read_with(cx, |workspace, _| workspace.pending_text_box_rect())
+        .expect("fresh Text Box creation must expose one live PDF-space rectangle");
+    assert_eq!(initial_rect.width, 11.);
+    assert_eq!(initial_rect.height, 18.);
+    assert!((initial_rect.x + initial_rect.width / 2. - 72.).abs() <= 0.000_1);
+    assert!((initial_rect.y + initial_rect.height / 2. - 96.).abs() <= 0.000_1);
+    assert!(
+        cx.debug_bounds("document-workspace-properties-sidebar")
+            .is_none(),
+        "fresh Text Box creation must stay on-canvas without opening a blank properties rail"
+    );
+    let editor_bounds = cx
+        .debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID)
+        .expect("the pending Text Box editor must render over the page");
+    let initial_editor_origin = point(
+        placement.x - px(11. * scale / 2.),
+        placement.y - px(18. * scale / 2.),
+    );
+    assert!((f32::from(editor_bounds.origin.x - initial_editor_origin.x)).abs() < 1.);
+    assert!((f32::from(editor_bounds.origin.y - initial_editor_origin.y)).abs() < 1.);
+    assert!((f32::from(editor_bounds.size.width) - (11. * scale).max(24.)).abs() < 1.);
+    assert!((f32::from(editor_bounds.size.height) - (18. * scale).max(18.)).abs() < 1.);
     assert!(cx.update(|window, _| editor_focus.is_focused(window)));
     let pending = workspace
         .read_with(cx, |workspace, cx| {
@@ -11061,16 +20484,72 @@ fn text_box_click_opens_real_multiline_editor_and_blur_commits_once(cx: &mut Tes
     assert!(pending.text_boxes.is_empty());
     assert_eq!((pending.revision, pending.undo_depth), (0, 0));
 
-    cx.simulate_keystrokes("h e l l o enter w o r l d");
+    let input = workspace
+        .read_with(cx, |workspace, _| workspace.pending_text_box_input())
+        .expect("the in-canvas editor retains its TextareaState");
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            input.replace_text_in_range(Some(0..0), "i", window, cx)
+        })
+    });
+    cx.run_until_parked();
+    let narrow_rect = workspace
+        .read_with(cx, |workspace, _| workspace.pending_text_box_rect())
+        .unwrap();
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
-        Some("hello\nworld".to_owned())
+        Some("i\n".to_owned()),
+        "Enter must insert a newline without committing the pending Text Box"
     );
-    let return_focus = workspace.read_with(cx, |workspace, _| workspace.text_box_return_focus());
-    cx.update(|window, cx| return_focus.focus(window, cx));
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            input.replace_text_in_range(Some(0..2), "Wi\n世界", window, cx)
+        })
+    });
+    cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
-    assert!(cx.update(|window, _| return_focus.is_focused(window)));
+    let live_rect = workspace
+        .read_with(cx, |workspace, _| workspace.pending_text_box_rect())
+        .unwrap();
+    assert!((live_rect.x - initial_rect.x).abs() <= 0.000_1);
+    assert!(
+        (live_rect.y + live_rect.height - initial_rect.y - initial_rect.height).abs() <= 0.000_1
+    );
+    assert!(
+        live_rect.width > narrow_rect.width,
+        "shaped Wi width must exceed i: live={live_rect:?}, narrow={narrow_rect:?}"
+    );
+    assert!(
+        live_rect.height > initial_rect.height,
+        "a second line must grow downward"
+    );
+    let live_editor_bounds = cx
+        .debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID)
+        .expect("the live editor must track shaped pending geometry");
+    assert!((f32::from(live_editor_bounds.origin.x - initial_editor_origin.x)).abs() < 1.);
+    assert!((f32::from(live_editor_bounds.origin.y - initial_editor_origin.y)).abs() < 1.);
+    assert!(
+        (f32::from(live_editor_bounds.size.width) - (live_rect.width as f32 * scale).max(24.))
+            .abs()
+            < 1.
+    );
+    assert!(
+        (f32::from(live_editor_bounds.size.height) - (live_rect.height as f32 * scale).max(18.))
+            .abs()
+            < 1.
+    );
+    assert!(cx.update(|window, _| editor_focus.is_focused(window)));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        Some("Wi\n世界".to_owned())
+    );
+    let outside_editor = point(origin.x + px(300. * scale), origin.y + px(300. * scale));
+    cx.simulate_mouse_down(outside_editor, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
     assert!(!cx.update(|window, _| editor_focus.is_focused(window)));
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
@@ -11087,7 +20566,8 @@ fn text_box_click_opens_real_multiline_editor_and_blur_commits_once(cx: &mut Tes
         .unwrap();
     assert_eq!(committed.text_boxes.len(), 1);
     assert_eq!(committed.text_boxes[0].id.as_str(), "workspace:text:1");
-    assert_eq!(committed.text_boxes[0].content(), "hello\nworld");
+    assert_eq!(committed.text_boxes[0].content(), "Wi\n世界");
+    assert_eq!(committed.text_boxes[0].layout_rect, live_rect);
     assert_eq!(committed.text_boxes[0].style().font_family(), "Helvetica");
     assert_eq!(committed.text_boxes[0].style().font_size_pt(), 12.);
     assert_eq!(committed.text_boxes[0].style().color(), "#ff0000");
@@ -11181,8 +20661,11 @@ fn text_box_escape_commits_while_empty_blur_discards_without_phantom_history(
         Modifiers::default(),
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let return_focus = workspace.read_with(cx, |workspace, _| workspace.text_box_return_focus());
-    cx.update(|window, cx| return_focus.focus(window, cx));
+    cx.simulate_mouse_down(
+        point(origin.x + px(400. * scale), origin.y + px(400. * scale)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
     let after_empty_blur = workspace
@@ -11497,8 +20980,246 @@ fn text_box_edit_geometry_lock_delete_and_history_stay_document_owned(cx: &mut T
     );
 }
 
+#[test]
+fn unselected_text_box_and_image_hover_controls_start_resize_on_first_press() {
+    run_gpui_test_with_native_main_stack(
+        "unselected_text_box_and_image_hover_controls_start_resize_on_first_press",
+        unselected_text_box_and_image_hover_controls_start_resize_on_first_press_on_native_stack,
+    );
+}
+
+fn unselected_text_box_and_image_hover_controls_start_resize_on_first_press_on_native_stack(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("unselected-text-box-first-press.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    let id = MarkupId::new("workspace:text:unselected-first-press").unwrap();
+    let original_rect = PdfRect::new(100., 120., 80., 32.).unwrap();
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_text_box(
+                request.document_id,
+                TextBoxAnnotation::new(
+                    id.clone(),
+                    0,
+                    original_rect,
+                    "Text",
+                    TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+                )
+                .unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(before.selected_id.is_none());
+
+    let layer = cx
+        .debug_bounds("document-1-annotation-layer-0")
+        .expect("the real annotation canvas must render");
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let to_view = |x: f64, y: f64| {
+        point(
+            origin.x + px(x as f32 * scale),
+            origin.y + px((792. - y as f32) * scale),
+        )
+    };
+    let east = to_view(180., 136.);
+    let west = to_view(100., 136.);
+    cx.simulate_mouse_move(east, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let painted_handle_at = |cx: &mut gpui::VisualTestContext, center: Point<Pixels>| {
+        let device_scale = cx.update(|window, _| window.scale_factor());
+        cx.update(|window, _| window.painted_quads())
+            .into_iter()
+            .find(|quad| {
+                let quad_x = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                let quad_y = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                (quad_x - f32::from(center.x) * device_scale).abs() < 1.
+                    && (quad_y - f32::from(center.y) * device_scale).abs() < 1.
+                    && quad.border_widths.top.0 > 0.
+            })
+            .expect("the unselected hovered Text Box must paint its control")
+    };
+    let hot_east = painted_handle_at(cx, east);
+    let ordinary_west = painted_handle_at(cx, west);
+    assert!(hot_east.bounds.size.width.0 > ordinary_west.bounds.size.width.0);
+
+    let east_end = point(east.x + px(12.), east.y);
+    cx.simulate_mouse_down(east, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(east_end, Some(MouseButton::Left), Modifiers::default());
+    let preview = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_scene(request.document_id, 0, cx)
+            .text_boxes[0]
+            .clone()
+    });
+    assert!(preview.layout_rect.width > original_rect.width);
+    assert_eq!(
+        preview.feedback,
+        SceneInteractionFeedback::Transform {
+            chrome_visible: false,
+            active_handle: 3,
+        }
+    );
+    let during = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(during.text_boxes[0].layout_rect, original_rect);
+    assert_eq!(
+        (during.revision, during.undo_depth),
+        (before.revision, before.undo_depth)
+    );
+    assert_eq!(during.selected_id.as_ref(), Some(&id));
+
+    cx.simulate_mouse_up(east_end, MouseButton::Left, Modifiers::default());
+    let committed = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(committed.text_boxes[0].layout_rect.width > original_rect.width);
+    assert_eq!(committed.revision, before.revision + 1);
+    assert_eq!(committed.undo_depth, before.undo_depth + 1);
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .text_boxes[0]
+            .layout_rect,
+        original_rect
+    );
+
+    let checker = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../performance/results/public-fixtures-v1/bp-image-checker-v1.png");
+    let image_id = MarkupId::new("workspace:image:unselected-first-press").unwrap();
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.insert_image_at(
+                request.document_id,
+                0,
+                &checker,
+                image_id.clone(),
+                PdfPoint::new(360., 300.).unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
+    cx.simulate_keystrokes("escape");
+    let before_image = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(before_image.selected_id.is_none());
+    let image_rect = before_image.images[0].rect;
+    let image_south_west = to_view(image_rect.x, image_rect.y);
+    let image_north_east = to_view(
+        image_rect.x + image_rect.width,
+        image_rect.y + image_rect.height,
+    );
+    cx.simulate_mouse_move(image_south_west, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let hot_south_west = painted_handle_at(cx, image_south_west);
+    let ordinary_north_east = painted_handle_at(cx, image_north_east);
+    assert!(
+        hot_south_west.bounds.size.width.0 > ordinary_north_east.bounds.size.width.0,
+        "Image adapter SouthWest index must grow the painted SouthWest control"
+    );
+    let image_east = to_view(
+        image_rect.x + image_rect.width,
+        image_rect.y + image_rect.height / 2.,
+    );
+    cx.simulate_mouse_move(image_east, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    painted_handle_at(cx, image_east);
+    let image_east_end = point(image_east.x + px(12.), image_east.y);
+    cx.simulate_mouse_down(image_east, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        image_east_end,
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    let image_preview = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_scene(request.document_id, 0, cx)
+            .images[0]
+            .clone()
+    });
+    assert!(image_preview.rect.width > image_rect.width);
+    assert_eq!(
+        image_preview.feedback,
+        SceneInteractionFeedback::Transform {
+            chrome_visible: false,
+            active_handle: 3,
+        }
+    );
+    let during_image = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(during_image.images[0].rect, image_rect);
+    assert_eq!(
+        (during_image.revision, during_image.undo_depth),
+        (before_image.revision, before_image.undo_depth)
+    );
+    assert_eq!(during_image.selected_id.as_ref(), Some(&image_id));
+    cx.simulate_mouse_up(image_east_end, MouseButton::Left, Modifiers::default());
+    let committed_image = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(committed_image.images[0].rect.width > image_rect.width);
+    assert_eq!(committed_image.revision, before_image.revision + 1);
+    assert_eq!(committed_image.undo_depth, before_image.undo_depth + 1);
+}
+
 #[gpui::test]
-fn existing_text_box_pointer_move_resize_edit_cancel_commit_history_and_lock_use_real_canvas(
+fn existing_text_box_pointer_move_resize_enter_escape_commit_history_and_lock_use_real_canvas(
     cx: &mut TestAppContext,
 ) {
     cx.update(|cx| {
@@ -11563,12 +21284,19 @@ fn existing_text_box_pointer_move_resize_edit_cancel_commit_history_and_lock_use
     let move_end = to_view(152., 144.);
     cx.simulate_mouse_down(move_start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(move_end, Some(MouseButton::Left), Modifiers::default());
-    let move_preview = workspace.read_with(cx, |workspace, cx| {
-        workspace
-            .annotation_scene(request.document_id, 0, cx)
-            .text_boxes[0]
-            .layout_rect
+    let (move_preview, move_feedback) = workspace.read_with(cx, |workspace, cx| {
+        let scene = workspace.annotation_scene(request.document_id, 0, cx);
+        (
+            scene.text_boxes[0].layout_rect,
+            scene.text_boxes[0].feedback,
+        )
     });
+    assert_eq!(
+        move_feedback,
+        SceneInteractionFeedback::Move {
+            chrome_visible: false,
+        }
+    );
     for (actual, expected) in [
         (move_preview.x, 112.),
         (move_preview.y, 128.),
@@ -11583,6 +21311,18 @@ fn existing_text_box_pointer_move_resize_edit_cancel_commit_history_and_lock_use
     let east_end = to_view(216., 144.);
     cx.simulate_mouse_down(east, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(east_end, Some(MouseButton::Left), Modifiers::default());
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .annotation_scene(request.document_id, 0, cx)
+                .text_boxes[0]
+                .feedback
+        }),
+        SceneInteractionFeedback::Transform {
+            chrome_visible: false,
+            active_handle: 3,
+        }
+    );
     cx.simulate_mouse_up(east_end, MouseButton::Left, Modifiers::default());
     let edited_geometry = workspace
         .read_with(cx, |workspace, cx| {
@@ -11602,8 +21342,26 @@ fn existing_text_box_pointer_move_resize_edit_cancel_commit_history_and_lock_use
         (3, 3)
     );
 
-    let body = to_view(150., 144.);
     let double_click = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+        let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+        let rect = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .annotation_snapshot(request.document_id, cx)
+                .unwrap()
+                .text_boxes[0]
+                .layout_rect
+        });
+        let pdf_x = (rect.x + rect.width / 2.) as f32;
+        let pdf_y = (rect.y + rect.height / 2.) as f32;
+        let body = point(
+            layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2. + pdf_x * scale),
+            layer.origin.y
+                + px((f32::from(layer.size.height) - 792. * scale) / 2. + (792. - pdf_y) * scale),
+        );
+        // Real double-click delivery includes the first click that selects a deselected box.
+        cx.simulate_click(body, Modifiers::default());
         cx.simulate_event(MouseDownEvent {
             button: MouseButton::Left,
             position: body,
@@ -11630,25 +21388,53 @@ fn existing_text_box_pointer_move_resize_edit_cancel_commit_history_and_lock_use
         .expect("double-click must retain the existing Text Box editor");
     cx.update(|window, cx| {
         input.update(cx, |input, cx| {
-            input.replace_text_in_range(Some(0..13), "取消\nignored", window, cx)
+            input.replace_text_in_range(Some(0..13), "edited", window, cx)
         })
     });
+    cx.simulate_keystrokes("enter x");
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        Some("edited\nx".to_owned()),
+        "Enter must insert a newline and keep the existing Text Box editor open"
+    );
     cx.simulate_keystrokes("escape");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.update(|window, _| canvas_focus.is_focused(window)));
+    let escaped = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(escaped.text_boxes[0].content(), "edited\nx");
+    assert!(
+        escaped.selected_id.is_none(),
+        "Escape must deselect the committed Text Box"
+    );
+    assert_eq!((escaped.revision, escaped.undo_depth), (4, 4));
+    assert!(
+        workspace
+            .read_with(cx, |workspace, _| workspace.pending_text_box_input())
+            .is_none()
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| workspace
                 .annotation_snapshot(request.document_id, cx))
-            .unwrap(),
-        edited_geometry,
-        "Escape must cancel existing text editing without history",
+            .unwrap()
+            .text_boxes[0]
+            .content(),
+        "original\ntext"
     );
 
     double_click(cx);
     let input = workspace
         .read_with(cx, |workspace, _| workspace.pending_text_box_input())
-        .expect("the editor must reopen after cancellation");
+        .expect("the editor must reopen after committing and undoing");
     cx.update(|window, cx| {
         input.update(cx, |input, cx| {
             input.replace_text_in_range(Some(0..13), "世界\nlevel 2", window, cx)
@@ -11667,7 +21453,11 @@ fn existing_text_box_pointer_move_resize_edit_cancel_commit_history_and_lock_use
         committed.text_boxes[0].style(),
         edited_geometry.text_boxes[0].style()
     );
-    assert_eq!((committed.revision, committed.undo_depth), (4, 4));
+    assert_eq!(
+        (committed.revision, committed.undo_depth),
+        (escaped.revision + 1, 4)
+    );
+    assert!(committed.selected_id.is_none());
     assert!(cx.update(|window, _| canvas_focus.is_focused(window)));
     assert_eq!(committed.text_boxes.len(), 1);
     workspace.update(cx, |workspace, cx| {
@@ -11772,19 +21562,24 @@ fn existing_text_box_pointer_move_resize_edit_cancel_commit_history_and_lock_use
             .is_some_and(|error| error.contains("locked"))
     );
     cx.simulate_keystrokes("escape");
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        Some("guarded draft".to_owned()),
+        "a rejected Escape commit must retain the draft for recovery"
+    );
     workspace
         .update(cx, |workspace, cx| {
             workspace.set_selected_annotation_locked(request.document_id, false, cx)
         })
         .unwrap();
 
-    double_click(cx);
     let removed_input = workspace
         .read_with(cx, |workspace, _| workspace.pending_text_box_input())
-        .expect("the editor must reopen before target removal");
+        .expect("the guarded editor must remain retained before target removal");
+    cx.update(|window, cx| removed_input.read(cx).focus_handle(cx).focus(window, cx));
     cx.update(|window, cx| {
         removed_input.update(cx, |input, cx| {
-            input.replace_text_in_range(Some(0.."世界\nlevel 2".len()), "removed draft", window, cx)
+            input.replace_text_in_range(Some(0.."guarded draft".len()), "removed draft", window, cx)
         })
     });
     workspace
@@ -11906,6 +21701,12 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
         })
         .unwrap();
     assert_eq!((rejected.revision, rejected.undo_depth), (0, 0));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Length),
+        "a missing page scale must leave Length armed"
+    );
 
     workspace
         .update(cx, |workspace, cx| {
@@ -11959,9 +21760,15 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .annotation_tool(request.document_id, cx)),
-        Some(AnnotationTool::Length)
+        Some(AnnotationTool::Select),
+        "a completed Length must return to Select"
     );
 
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Length, cx)
+        })
+        .unwrap();
     cx.simulate_click(to_view(300., 300.), Modifiers::default());
     cx.simulate_mouse_move(
         to_view(340., 330.),
@@ -11996,6 +21803,18 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
         2
     );
 
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Select),
+        "a completed constrained Length must return to Select"
+    );
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Length, cx)
+        })
+        .unwrap();
     cx.simulate_click(to_view(400., 400.), Modifiers::default());
     cx.simulate_click(to_view(402., 400.), Modifiers::default());
     let minimum_rejected = workspace
@@ -12011,6 +21830,12 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
     assert!(!workspace.read_with(cx, |workspace, cx| {
         workspace.length_placement_pending(request.document_id, cx)
     }));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Length),
+        "a rejected short Length must leave Length armed"
+    );
     cx.simulate_click(to_view(430., 430.), Modifiers::default());
     assert!(workspace.read_with(cx, |workspace, cx| {
         workspace.length_placement_pending(request.document_id, cx)
@@ -12414,7 +22239,10 @@ fn measurement_property_page_scale_hydration_preserves_exact_scale_until_an_inpu
         assert_eq!(after.lengths, before.lengths);
         assert_eq!(after.annotation_order, before.annotation_order);
         assert_eq!(after.selected_id, before.selected_id);
-        assert_eq!((after.revision, after.undo_depth, after.dirty), (0, 0, false));
+        assert_eq!(
+            (after.revision, after.undo_depth, after.dirty),
+            (0, 0, false)
+        );
         cx.update(|window, cx| window.close_dialog(cx));
 
         if case_name == "anisotropic" {
@@ -12447,9 +22275,9 @@ fn measurement_property_page_scale_hydration_preserves_exact_scale_until_an_inpu
             cx.update(|window, cx| {
                 control.update(cx, |control, cx| {
                     control.open_for(request.document_id, 0, window, cx);
-                    control.known_length_input().update(cx, |input, cx| {
-                        input.set_value("9.25", window, cx)
-                    });
+                    control
+                        .known_length_input()
+                        .update(cx, |input, cx| input.set_value("9.25", window, cx));
                 });
             });
             assert!(control.update(cx, |control, cx| control.apply(cx)));
@@ -12460,7 +22288,10 @@ fn measurement_property_page_scale_hydration_preserves_exact_scale_until_an_inpu
                 .unwrap();
             assert_ne!(edited.page_scales, vec![scale]);
             assert_eq!(edited.page_scales[0].source, ScaleSource::Custom);
-            assert_eq!((edited.revision, edited.undo_depth, edited.dirty), (1, 1, true));
+            assert_eq!(
+                (edited.revision, edited.undo_depth, edited.dirty),
+                (1, 1, true)
+            );
             cx.update(|window, cx| window.close_dialog(cx));
         }
     }
@@ -13157,7 +22988,10 @@ fn retained_length_body_endpoint_lock_delete_and_undo_are_one_document_history(
 
 #[gpui::test]
 fn real_component_annotation_controls_dispatch_retained_commands(cx: &mut TestAppContext) {
-    cx.update(|cx| { gpui_component::init(cx); init_document_workspace_actions(cx); });
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -13185,7 +23019,9 @@ fn real_component_annotation_controls_dispatch_retained_commands(cx: &mut TestAp
     }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
     toggle_document_actions(cx);
-    let inspector = workspace.read_with(cx, |workspace, _| workspace.rectangle_property_inspector()).unwrap();
+    let inspector = workspace
+        .read_with(cx, |workspace, _| workspace.rectangle_property_inspector())
+        .unwrap();
     let width = inspector.read_with(cx, |inspector, _| inspector.stroke_width_input());
     cx.update(|window, cx| width.read(cx).focus_handle(cx).focus(window, cx));
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} 4 enter"));
@@ -13224,6 +23060,10 @@ fn real_component_annotation_controls_dispatch_retained_commands(cx: &mut TestAp
     let locked_revision = locked.revision;
     workspace_edit_shortcut(cx, &workspace, "delete");
     assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
+        Some("Annotation is locked".into()),
+    );
+    assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| {
                 workspace.annotation_snapshot(request.document_id, cx)
@@ -13246,6 +23086,253 @@ fn real_component_annotation_controls_dispatch_retained_commands(cx: &mut TestAp
             .unwrap()
             .rectangles
             .is_empty()
+    );
+}
+
+#[gpui::test]
+fn canvas_escape_preserves_tool_and_history_in_signature_input(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        butter_paper_gpui_migration::application_shell::init_application_shell_actions(cx);
+        init_document_workspace_actions(cx);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let recent_path =
+        std::env::temp_dir().join(format!("bp-recent-failed-{}.enc", std::process::id()));
+    assert!(!recent_path.exists());
+    let _recent_scratch = ScratchFiles(vec![recent_path.clone()]);
+    let keys = Arc::new(RecentWorkspaceKeys::default());
+    keys.fail_save.store(true, Ordering::SeqCst);
+    workspace.update(cx, |workspace, _| {
+        workspace.bind_recent_signature_store(Arc::new(
+            butter_paper_gpui_migration::recent_signature_store::RecentSignatureStore::new(
+                recent_path.clone(),
+                keys.clone(),
+            ),
+        ))
+    });
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("typed-signature.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(OpenedNativeDocument::new(
+                "typed-signature.pdf",
+                vec![(2000., 1000.)],
+                raster(40, 20),
+                vec![ThumbnailSurface::new(0, raster(8, 4))],
+                Arc::new(RecordingResource {
+                    released: Arc::new(AtomicBool::new(false)),
+                }),
+            )
+            .unwrap()),
+            cx,
+        );
+        workspace
+            .set_annotation_tool(request.document_id, AnnotationTool::Rectangle, cx)
+            .unwrap();
+        workspace.set_view_configuration(request.document_id, PageViewMode::SinglePage, 100., cx);
+        workspace
+            .refresh_viewport_async(request.document_id, 800., 600., 1., cx)
+            .unwrap();
+    });
+    cx.run_until_parked();
+    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SIGNATURE_TOOL_ID);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let signature_tool = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap();
+    cx.simulate_click(signature_tool.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let typed_mode = cx
+        .debug_bounds(DOCUMENT_SIGNATURE_MODE_TYPE_ID)
+        .expect("typed signature mode must render");
+    cx.simulate_click(typed_mode.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let name_input = cx
+        .debug_bounds(DOCUMENT_SIGNATURE_NAME_INPUT_ID)
+        .expect("typed signature input must render");
+    let page_layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let page_scale =
+        (f32::from(page_layer.size.width) / 2000.).min(f32::from(page_layer.size.height) / 1000.);
+    let contained_page = gpui::Bounds::new(
+        point(
+            page_layer.origin.x + px((f32::from(page_layer.size.width) - 2000. * page_scale) / 2.),
+            page_layer.origin.y + px((f32::from(page_layer.size.height) - 1000. * page_scale) / 2.),
+        ),
+        gpui::size(px(2000. * page_scale), px(1000. * page_scale)),
+    );
+    assert!(
+        contained_page.contains(&name_input.center()),
+        "input {:?} must overlap contained page {:?}",
+        name_input,
+        contained_page
+    );
+    let before_input = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    cx.simulate_click(name_input.center(), Modifiers::default());
+    cx.simulate_mouse_move(
+        name_input.center() + point(px(-30.), px(-5.)),
+        None,
+        Modifiers::default(),
+    );
+    let after_input = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(after_input.revision, before_input.revision);
+    assert_eq!(after_input.undo_depth, before_input.undo_depth);
+    assert!(
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .annotation_scene(request.document_id, 0, cx)
+                .rectangles
+                .is_empty()
+        }),
+        "clicking the signature input must not start a rectangle behind the popover"
+    );
+    assert!(cx.update(|window, cx| window.has_focused_input(cx)));
+    cx.simulate_keystrokes("escape");
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Rectangle)
+    );
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
+            .unwrap(),
+        before_input
+    );
+}
+
+#[gpui::test]
+fn canvas_escape_discards_valid_and_invalid_vertex_paths(cx: &mut TestAppContext) {
+    for tool in [AnnotationTool::Polyline, AnnotationTool::Polygon] {
+        for count in [1, 3] {
+            canvas_escape_draft_case(cx, tool, count, false);
+        }
+    }
+}
+
+#[gpui::test]
+fn canvas_escape_discards_invalid_clouds_and_resets_tool(cx: &mut TestAppContext) {
+    for tool in [AnnotationTool::Cloud, AnnotationTool::CloudPlus] {
+        canvas_escape_draft_case(cx, tool, 1, false);
+    }
+}
+
+#[gpui::test]
+fn canvas_escape_finishes_valid_clouds_and_clears_selection(cx: &mut TestAppContext) {
+    for tool in [AnnotationTool::Cloud, AnnotationTool::CloudPlus] {
+        canvas_escape_draft_case(cx, tool, 3, true);
+    }
+}
+
+fn canvas_escape_draft_case(
+    cx: &mut TestAppContext,
+    tool: AnnotationTool,
+    count: usize,
+    creates: bool,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("escape-draft.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        );
+        workspace
+            .set_annotation_tool(request.document_id, tool, cx)
+            .unwrap();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    for (x, y) in [(120., 420.), (300., 420.), (300., 600.)]
+        .into_iter()
+        .take(count)
+    {
+        cx.simulate_click(
+            point(origin.x + px(x * scale), origin.y + px((792. - y) * scale)),
+            Modifiers::default(),
+        );
+    }
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!((before.revision, before.undo_depth), (0, 0));
+    let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| focus.focus(window, cx));
+    cx.simulate_keystrokes("escape");
+    let after = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Select)
+    );
+    assert!(
+        after.selected_id.is_none(),
+        "Escape must clear selection for {tool:?}"
+    );
+    assert_eq!(
+        (after.revision, after.undo_depth),
+        if creates { (1, 1) } else { (0, 0) }
+    );
+    assert_eq!(
+        after.clouds.len() + after.cloud_pluses.len(),
+        usize::from(creates)
+    );
+    assert!(after.vertex_paths.is_empty());
+    let scene = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(request.document_id, 0, cx)
+    });
+    assert!(scene.vertex_paths.is_empty());
+    assert!(scene.clouds.iter().all(|cloud| !cloud.draft));
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx))
+            .is_some(),
+        creates && tool == AnnotationTool::CloudPlus
     );
 }
 
@@ -13284,7 +23371,10 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
         DOCUMENT_POLYLINE_TOOL_ID,
         DOCUMENT_POLYGON_TOOL_ID,
     ] {
-        assert!(cx.debug_bounds(id).is_some(), "{id} must render as a stable control");
+        assert!(
+            cx.debug_bounds(id).is_some(),
+            "{id} must render as a stable control"
+        );
     }
     let layer_id = Box::leak(document_annotation_layer_id(request.document_id, 0).into_boxed_str());
     let layer = cx.debug_bounds(layer_id).unwrap();
@@ -13312,7 +23402,9 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
     let draft_only = workspace.read_with(cx, |workspace, cx| {
         (
             workspace.annotation_scene(request.document_id, 0, cx),
-            workspace.annotation_snapshot(request.document_id, cx).unwrap(),
+            workspace
+                .annotation_snapshot(request.document_id, cx)
+                .unwrap(),
         )
     });
     assert_eq!(draft_only.0.vertex_paths[0].points.len(), 1);
@@ -13321,12 +23413,20 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SELECT_TOOL_ID);
     let select_tool = cx.debug_bounds(DOCUMENT_SELECT_TOOL_ID).unwrap().center();
     cx.simulate_click(select_tool, Modifiers::default());
-    assert!(workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_scene(request.document_id, 0, cx))
-        .vertex_paths
-        .is_empty());
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.annotation_scene(
+                request.document_id,
+                0,
+                cx
+            ))
+            .vertex_paths
+            .is_empty()
+    );
     let after_cancel = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
     assert_eq!((after_cancel.revision, after_cancel.undo_depth), (0, 0));
 
@@ -13343,7 +23443,9 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
         let (scene, snapshot) = workspace.read_with(cx, |workspace, cx| {
             (
                 workspace.annotation_scene(request.document_id, 0, cx),
-                workspace.annotation_snapshot(request.document_id, cx).unwrap(),
+                workspace
+                    .annotation_snapshot(request.document_id, cx)
+                    .unwrap(),
             )
         });
         assert_eq!(scene.vertex_paths[0].points.len(), index + 1);
@@ -13354,7 +23456,9 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
     cx.update(|window, cx| workspace_focus.focus(window, cx));
     cx.simulate_keystrokes("enter");
     let after_polyline = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
     assert_eq!((after_polyline.revision, after_polyline.undo_depth), (1, 1));
     assert_eq!(after_polyline.vertex_paths.len(), 1);
@@ -13365,7 +23469,8 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
     assert_eq!(polyline.appearance, RectangleAppearance::default());
     assert_eq!(after_polyline.selected_id.as_ref(), Some(&polyline_id));
     assert_eq!(
-        workspace.read_with(cx, |workspace, cx| workspace.annotation_tool(request.document_id, cx)),
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
         Some(AnnotationTool::Select),
     );
 
@@ -13386,11 +23491,16 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
         Modifiers::default(),
     );
     let after_closure = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
     assert_eq!((after_closure.revision, after_closure.undo_depth), (2, 2));
     assert_eq!(after_closure.vertex_paths[1].kind, VertexPathKind::Polygon);
-    assert_eq!(after_closure.vertex_paths[1].appearance, RectangleAppearance::default());
+    assert_eq!(
+        after_closure.vertex_paths[1].appearance,
+        RectangleAppearance::default()
+    );
     let closure_polygon_before_edits = after_closure.vertex_paths[1].clone();
 
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_POLYGON_TOOL_ID);
@@ -13404,23 +23514,31 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
         cx.simulate_click(project(vertex.x, vertex.y), Modifiers::default());
     }
     cx.update(|window, cx| workspace_focus.focus(window, cx));
-    cx.simulate_keystrokes("escape");
+    cx.simulate_keystrokes("enter");
     let after_escape = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
     assert_eq!((after_escape.revision, after_escape.undo_depth), (3, 3));
     assert_eq!(after_escape.vertex_paths.len(), 3);
     assert_eq!(after_escape.vertex_paths[2].kind, VertexPathKind::Polygon);
     assert_eq!(
-        workspace.read_with(cx, |workspace, cx| workspace.annotation_tool(request.document_id, cx)),
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
         Some(AnnotationTool::Select),
     );
     let escape_polygon_before_edits = after_escape.vertex_paths[2].clone();
 
     let body_start_pdf = PdfPoint::new(198., 560.).unwrap();
-    cx.simulate_click(project(body_start_pdf.x, body_start_pdf.y), Modifiers::default());
+    cx.simulate_click(
+        project(body_start_pdf.x, body_start_pdf.y),
+        Modifiers::default(),
+    );
     let selected = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
     assert_eq!(selected.selected_id.as_ref(), Some(&polyline_id));
     assert_eq!((selected.revision, selected.undo_depth), (3, 3));
@@ -13457,7 +23575,8 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
     }
     assert_eq!(
         workspace
-            .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
             .unwrap(),
         selected,
         "body drag preview must not mutate the model or history",
@@ -13468,10 +23587,16 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
         Modifiers::default(),
     );
     let after_body = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
     assert_eq!((after_body.revision, after_body.undo_depth), (4, 4));
-    for (actual, original) in after_body.vertex_paths[0].points().iter().zip(polyline.points()) {
+    for (actual, original) in after_body.vertex_paths[0]
+        .points()
+        .iter()
+        .zip(polyline.points())
+    {
         assert!(same_point(
             *actual,
             PdfPoint::new(original.x + body_delta.x, original.y + body_delta.y).unwrap(),
@@ -13506,7 +23631,8 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
     assert!(same_point(vertex_preview.points[1], moved_vertex));
     assert_eq!(
         workspace
-            .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
             .unwrap(),
         before_vertex,
         "vertex preview must not mutate the model or history",
@@ -13517,25 +23643,46 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
         Modifiers::default(),
     );
     let after_vertex = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
     assert_eq!((after_vertex.revision, after_vertex.undo_depth), (5, 5));
-    assert!(same_point(after_vertex.vertex_paths[0].points()[1], moved_vertex));
-    assert_eq!(after_vertex.vertex_paths[0].points()[0], before_vertex.vertex_paths[0].points()[0]);
-    assert_eq!(after_vertex.vertex_paths[0].points()[2], before_vertex.vertex_paths[0].points()[2]);
+    assert!(same_point(
+        after_vertex.vertex_paths[0].points()[1],
+        moved_vertex
+    ));
+    assert_eq!(
+        after_vertex.vertex_paths[0].points()[0],
+        before_vertex.vertex_paths[0].points()[0]
+    );
+    assert_eq!(
+        after_vertex.vertex_paths[0].points()[2],
+        before_vertex.vertex_paths[0].points()[2]
+    );
     assert_eq!(after_vertex.vertex_paths[1], closure_polygon_before_edits);
     assert_eq!(after_vertex.vertex_paths[2], escape_polygon_before_edits);
 
     workspace_edit_shortcut(cx, &workspace, EDIT_UNDO);
     let undone = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
-    assert_eq!(undone.vertex_paths[0].points(), before_vertex.vertex_paths[0].points());
+    assert_eq!(
+        undone.vertex_paths[0].points(),
+        before_vertex.vertex_paths[0].points()
+    );
     workspace_edit_shortcut(cx, &workspace, EDIT_REDO);
     let redone = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
-    assert_eq!(redone.vertex_paths[0].points(), after_vertex.vertex_paths[0].points());
+    assert_eq!(
+        redone.vertex_paths[0].points(),
+        after_vertex.vertex_paths[0].points()
+    );
 
     workspace
         .update(cx, |workspace, cx| {
@@ -13543,7 +23690,9 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
         })
         .unwrap();
     let locked = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
     assert!(locked.vertex_paths[0].locked);
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -13551,8 +23700,7 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
     let locked_scale =
         (f32::from(locked_layer.size.width) / 612.).min(f32::from(locked_layer.size.height) / 792.);
     let locked_page_origin = point(
-        locked_layer.origin.x
-            + px((f32::from(locked_layer.size.width) - 612. * locked_scale) / 2.),
+        locked_layer.origin.x + px((f32::from(locked_layer.size.width) - 612. * locked_scale) / 2.),
         locked_layer.origin.y
             + px((f32::from(locked_layer.size.height) - 792. * locked_scale) / 2.),
     );
@@ -13569,7 +23717,8 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
         (locked.vertex_paths[0].points()[0].y + locked.vertex_paths[0].points()[1].y) / 2.,
     )
     .unwrap();
-    let locked_body_end = PdfPoint::new(locked_body_start.x + 30., locked_body_start.y - 30.).unwrap();
+    let locked_body_end =
+        PdfPoint::new(locked_body_start.x + 30., locked_body_start.y - 30.).unwrap();
     cx.simulate_mouse_down(
         locked_project(locked_body_start),
         MouseButton::Left,
@@ -13587,7 +23736,8 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
     );
     assert_eq!(
         workspace
-            .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
             .unwrap(),
         locked,
         "locked Polyline body input must preserve selection, geometry, history, and order",
@@ -13598,24 +23748,17 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
     let locked_vertex_end = locked_project(
         PdfPoint::new(locked_vertex_pdf.x + 24., locked_vertex_pdf.y + 18.).unwrap(),
     );
-    cx.simulate_mouse_down(
-        locked_vertex_start,
-        MouseButton::Left,
-        Modifiers::default(),
-    );
+    cx.simulate_mouse_down(locked_vertex_start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(
         locked_vertex_end,
         Some(MouseButton::Left),
         Modifiers::default(),
     );
-    cx.simulate_mouse_up(
-        locked_vertex_end,
-        MouseButton::Left,
-        Modifiers::default(),
-    );
+    cx.simulate_mouse_up(locked_vertex_end, MouseButton::Left, Modifiers::default());
     assert_eq!(
         workspace
-            .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
             .unwrap(),
         locked,
         "locked Polyline vertex input must preserve selection, geometry, history, and order",
@@ -13707,7 +23850,7 @@ fn polyline_polygon_workspace_renders_real_tools_and_retains_independent_vertex_
     }
     let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
     cx.update(|window, cx| workspace_focus.focus(window, cx));
-    cx.simulate_keystrokes("escape");
+    cx.simulate_keystrokes("enter");
 
     let after_polyline = workspace
         .read_with(cx, |workspace, cx| {
@@ -13726,7 +23869,7 @@ fn polyline_polygon_workspace_renders_real_tools_and_retains_independent_vertex_
         workspace.read_with(cx, |workspace, cx| workspace
             .annotation_tool(request.document_id, cx)),
         Some(AnnotationTool::Select),
-        "Escape must commit a valid Polyline and restore the one-shot Select tool",
+        "Enter must commit a valid Polyline and restore the one-shot Select tool",
     );
 
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_POLYGON_TOOL_ID);
@@ -13802,6 +23945,187 @@ fn polyline_polygon_workspace_renders_real_tools_and_retains_independent_vertex_
         edited.annotation_order,
         vec![polyline_id, edited.vertex_paths[1].id.clone()]
     );
+}
+
+#[gpui::test]
+fn measurement_enter_commits_hover_endpoint_without_a_click(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let scale = PageScale::from_factors(
+        0,
+        ScaleSource::Custom,
+        "2 ft = 72 pt",
+        ScaleUnit::In,
+        ScaleUnit::Ft,
+        2. / 72.,
+        2. / 72.,
+        ScalePrecision::decimal(0.01).unwrap(),
+    )
+    .unwrap();
+    let calibration = LengthCalibration::from_page_scale(&scale).unwrap();
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        let scale = scale.clone();
+        let calibration = calibration.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            let request = workspace.update(cx, |workspace, cx| {
+                workspace.begin_open(PathBuf::from("measurement-paths.pdf"), cx)
+            });
+            workspace.update(cx, |workspace, cx| {
+                workspace.apply_open_result(
+                    &request,
+                    Ok(opened_document(Arc::new(AtomicBool::new(false)))
+                        .with_page_scales(vec![scale])
+                        .with_page_length_calibrations(vec![(0, calibration)])),
+                    cx,
+                )
+            });
+            Root::new(workspace, window, cx)
+        }
+    });
+    cx.simulate_resize(size(px(1920.), px(1600.)));
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let document_id =
+        workspace.read_with(cx, |workspace, _| workspace.active_document_id().unwrap());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    for id in [DOCUMENT_POLYLENGTH_TOOL_ID, DOCUMENT_AREA_TOOL_ID] {
+        assert!(
+            cx.debug_bounds(id).is_some(),
+            "{id} must be a real GPUI Component Button with a stable rendered id",
+        );
+    }
+
+    let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
+    let project = |layer: gpui::Bounds<gpui::Pixels>, x: f32, y: f32| {
+        let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+        let origin = point(
+            layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+            layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+        );
+        point(origin.x + px(x * scale), origin.y + px((792. - y) * scale))
+    };
+
+    for (tool, control, clicks, hover) in [
+        (
+            AnnotationTool::Polylength,
+            DOCUMENT_POLYLENGTH_TOOL_ID,
+            vec![(120., 620.)],
+            (192., 620.),
+        ),
+        (
+            AnnotationTool::Area,
+            DOCUMENT_AREA_TOOL_ID,
+            vec![(120., 360.), (192., 360.)],
+            (192., 432.),
+        ),
+    ] {
+        scroll_annotation_target_into_view(cx, &workspace, control);
+        let control_center = cx.debug_bounds(control).unwrap().center();
+        cx.simulate_click(control_center, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let layer = cx.debug_bounds(layer_id).unwrap();
+        for &(x, y) in &clicks {
+            cx.simulate_click(project(layer, x, y), Modifiers::default());
+        }
+        let last = clicks.last().unwrap();
+        cx.simulate_mouse_move(
+            project(layer, last.0 + 0.25, last.1),
+            None,
+            Modifiers::default(),
+        );
+        let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+        cx.update(|window, cx| focus.focus(window, cx));
+        cx.simulate_keystrokes("enter");
+        let invalid = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(document_id, cx)
+            })
+            .unwrap();
+        assert!(invalid.measurement_paths.is_empty());
+        assert_eq!((invalid.revision, invalid.undo_depth), (0, 0));
+        assert_eq!(
+            workspace.read_with(cx, |workspace, cx| workspace
+                .annotation_tool(document_id, cx)),
+            Some(tool)
+        );
+        let draft = workspace.read_with(cx, |workspace, cx| {
+            workspace.annotation_scene(document_id, 0, cx)
+        });
+        assert_eq!(draft.measurement_paths[0].points.len(), clicks.len());
+
+        cx.simulate_mouse_move(project(layer, hover.0, hover.1), None, Modifiers::default());
+        let preview = workspace.read_with(cx, |workspace, cx| {
+            workspace.annotation_scene(document_id, 0, cx)
+        });
+        let preview_points = preview.measurement_paths[0].points.clone();
+        assert_eq!(preview_points.len(), clicks.len() + 1);
+        for (actual, (x, y)) in preview_points
+            .iter()
+            .zip(clicks.iter().copied().chain([hover]))
+        {
+            assert!((actual.x - f64::from(x)).abs() < 0.001);
+            assert!((actual.y - f64::from(y)).abs() < 0.001);
+        }
+        cx.simulate_keystrokes("enter");
+        let committed = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(document_id, cx)
+            })
+            .unwrap();
+        assert_eq!(committed.measurement_paths.len(), 1);
+        assert_eq!(
+            committed.measurement_paths[0].points(),
+            preview_points.as_slice()
+        );
+        assert_eq!(
+            committed.selected_id.as_ref(),
+            Some(&committed.measurement_paths[0].id)
+        );
+        assert!(committed.revision > invalid.revision);
+        assert_eq!(committed.undo_depth, invalid.undo_depth + 1);
+        assert_eq!(
+            workspace.read_with(cx, |workspace, cx| workspace
+                .annotation_tool(document_id, cx)),
+            Some(AnnotationTool::Select)
+        );
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.undo_annotations(document_id, cx)
+            })
+            .unwrap();
+        assert!(
+            workspace
+                .read_with(cx, |workspace, cx| workspace
+                    .annotation_snapshot(document_id, cx))
+                .unwrap()
+                .measurement_paths
+                .is_empty()
+        );
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.redo_annotations(document_id, cx)
+            })
+            .unwrap();
+        assert_eq!(
+            workspace
+                .read_with(cx, |workspace, cx| workspace
+                    .annotation_snapshot(document_id, cx))
+                .unwrap()
+                .measurement_paths,
+            committed.measurement_paths
+        );
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.undo_annotations(document_id, cx)
+            })
+            .unwrap();
+    }
 }
 
 #[gpui::test]
@@ -13906,6 +24230,11 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
         .unwrap();
     assert_eq!(after_polylength.measurement_paths.len(), 1);
     assert_eq!(
+        after_polylength.measurement_paths[0].points().len(),
+        2,
+        "double-click completion must not append its endpoint twice"
+    );
+    assert_eq!(
         after_polylength.measurement_paths[0].kind,
         MeasurementPathKind::Polylength,
     );
@@ -13966,13 +24295,18 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
         toggle_document_actions(cx);
     }
     let inspector = workspace
-        .read_with(cx, |workspace, _| workspace.vertex_path_property_inspector())
+        .read_with(cx, |workspace, _| {
+            workspace.vertex_path_property_inspector()
+        })
         .unwrap();
     let polylength_inspector = inspector
         .read_with(cx, |inspector, _| inspector.snapshot().cloned())
         .unwrap();
     assert_eq!(polylength_inspector.kind, PathPropertyKind::Polylength);
-    assert!(cx.debug_bounds(VERTEX_PATH_INSPECTOR_FILL_COLOR_ID).is_none());
+    assert!(
+        cx.debug_bounds(VERTEX_PATH_INSPECTOR_FILL_COLOR_ID)
+            .is_none()
+    );
 
     vertex_path_preview_color(cx, &workspace, false, "#336699");
     vertex_path_click_apply(cx, false);
@@ -13980,21 +24314,25 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
     vertex_path_enter_opacity(cx, &workspace, "55");
     vertex_path_toggle_lock(cx);
     let locked_revision = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap()
         .revision;
-    assert!(!workspace.update(cx, |workspace, cx| workspace
-        .apply_vertex_path_property_event(
-            &VertexPathPropertyEvent {
-                document_id,
-                annotation_id: polylength_id.clone(),
-                expected_revision: locked_revision,
-                expected_kind: PathPropertyKind::Polylength,
-                patch: VertexPathPropertyPatch::Opacity(0.2),
-            },
-            cx,
-        )
-        .unwrap()));
+    assert!(!workspace.update(cx, |workspace, cx| {
+        workspace
+            .apply_vertex_path_property_event(
+                &VertexPathPropertyEvent {
+                    document_id,
+                    annotation_id: polylength_id.clone(),
+                    expected_revision: locked_revision,
+                    expected_kind: PathPropertyKind::Polylength,
+                    patch: VertexPathPropertyPatch::Opacity(0.2),
+                },
+                cx,
+            )
+            .unwrap()
+    }));
     vertex_path_toggle_lock(cx);
 
     let area_id = after_area.measurement_paths[1].id.clone();
@@ -14016,7 +24354,9 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
     vertex_path_preview_color(cx, &workspace, true, "#cc8844");
     vertex_path_click_apply(cx, true);
     let before_no_fill = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let no_fill = cx
@@ -14025,15 +24365,22 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
         .center();
     cx.simulate_click(no_fill, Modifiers::default());
     let after_no_fill = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!(after_no_fill.revision, before_no_fill.revision + 1);
-    assert_eq!(after_no_fill.measurement_paths[1].appearance.fill_color(), None);
+    assert_eq!(
+        after_no_fill.measurement_paths[1].appearance.fill_color(),
+        None
+    );
     vertex_path_toggle_lock(cx);
     vertex_path_toggle_lock(cx);
 
     let before_rejections = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     for event in [
         VertexPathPropertyEvent {
@@ -14065,41 +24412,74 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
             patch: VertexPathPropertyPatch::Opacity(1.0),
         },
     ] {
-        assert!(!workspace.update(cx, |workspace, cx| workspace
-            .apply_vertex_path_property_event(&event, cx)
-            .unwrap()));
+        assert!(!workspace.update(cx, |workspace, cx| {
+            workspace
+                .apply_vertex_path_property_event(&event, cx)
+                .unwrap()
+        }));
     }
     let save = workspace
         .update(cx, |workspace, cx| workspace.begin_save(document_id, cx))
         .unwrap();
-    assert!(!workspace.update(cx, |workspace, cx| workspace
-        .apply_vertex_path_property_event(
-            &VertexPathPropertyEvent {
-                document_id,
-                annotation_id: area_id.clone(),
-                expected_revision: before_rejections.revision,
-                expected_kind: PathPropertyKind::Area,
-                patch: VertexPathPropertyPatch::Opacity(0.2),
-            },
-            cx,
-        )
-        .unwrap()));
+    assert!(!workspace.update(cx, |workspace, cx| {
+        workspace
+            .apply_vertex_path_property_event(
+                &VertexPathPropertyEvent {
+                    document_id,
+                    annotation_id: area_id.clone(),
+                    expected_revision: before_rejections.revision,
+                    expected_kind: PathPropertyKind::Area,
+                    patch: VertexPathPropertyPatch::Opacity(0.2),
+                },
+                cx,
+            )
+            .unwrap()
+    }));
     workspace.update(cx, |workspace, cx| {
         workspace.apply_save_result(&save, Err("end measurement-path busy evidence".into()), cx)
     });
     let properties_edited = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!(properties_edited.revision, before_rejections.revision);
-    assert_eq!(properties_edited.annotation_order, before_rejections.annotation_order);
+    assert_eq!(
+        properties_edited.annotation_order,
+        before_rejections.annotation_order
+    );
     assert_eq!(properties_edited.measurement_paths[0].id, polylength_id);
     assert_eq!(properties_edited.measurement_paths[1].id, area_id);
-    assert_eq!(properties_edited.measurement_paths[0].calibration(), &calibration);
-    assert_eq!(properties_edited.measurement_paths[1].calibration(), &calibration);
-    assert_eq!(properties_edited.measurement_paths[0].appearance.stroke_color(), "#336699");
-    assert_eq!(properties_edited.measurement_paths[0].appearance.stroke_width_pt(), 3.25);
-    assert_eq!(properties_edited.measurement_paths[0].appearance.opacity(), 0.55);
-    assert_eq!(properties_edited.measurement_paths[1].appearance.fill_color(), None);
+    assert_eq!(
+        properties_edited.measurement_paths[0].calibration(),
+        &calibration
+    );
+    assert_eq!(
+        properties_edited.measurement_paths[1].calibration(),
+        &calibration
+    );
+    assert_eq!(
+        properties_edited.measurement_paths[0]
+            .appearance
+            .stroke_color(),
+        "#336699"
+    );
+    assert_eq!(
+        properties_edited.measurement_paths[0]
+            .appearance
+            .stroke_width_pt(),
+        3.25
+    );
+    assert_eq!(
+        properties_edited.measurement_paths[0].appearance.opacity(),
+        0.55
+    );
+    assert_eq!(
+        properties_edited.measurement_paths[1]
+            .appearance
+            .fill_color(),
+        None
+    );
 
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_AREA_TOOL_ID);
     let area_button = cx.debug_bounds(DOCUMENT_AREA_TOOL_ID).unwrap().center();
@@ -14122,8 +24502,15 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
     );
 }
 
-#[gpui::test]
-fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click_editor(
+#[test]
+fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click_editor() {
+    run_gpui_test_with_native_main_stack(
+        "callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click_editor",
+        callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click_editor_on_native_stack,
+    );
+}
+
+fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click_editor_on_native_stack(
     cx: &mut TestAppContext,
 ) {
     const CALLOUT_TOOL_ID: &str = "tool-callout";
@@ -14250,16 +24637,111 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
         workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
         None
     );
+
+    assert!(edited.selected_id.is_none());
     workspace
         .update(cx, |workspace, cx| {
             workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
         })
         .unwrap();
-    assert!(workspace.update(cx, |workspace, cx| workspace.select_annotation(
-        request.document_id,
-        &edited.callouts[0].id,
-        cx,
-    )));
+    let callout_id = edited.callouts[0].id.clone();
+    let knee_center = project(144., 192.);
+    let leader_start = project(72., 120.);
+    cx.simulate_mouse_move(knee_center, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let unselected_feedback_handles_at =
+        |cx: &mut gpui::VisualTestContext, center: gpui::Point<Pixels>| {
+            let device_scale = cx.update(|window, _| window.scale_factor());
+            cx.update(|window, _| window.painted_quads())
+                .into_iter()
+                .filter(|quad| {
+                    let quad_x = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                    let quad_y = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                    (quad_x - f32::from(center.x) * device_scale).abs() < 1.
+                        && (quad_y - f32::from(center.y) * device_scale).abs() < 1.
+                        && quad.border_widths.top.0 > 0.
+                })
+                .collect::<Vec<_>>()
+        };
+    let hot_unselected_knee = unselected_feedback_handles_at(cx, knee_center);
+    let ordinary_unselected_start = unselected_feedback_handles_at(cx, leader_start);
+    assert_eq!(hot_unselected_knee.len(), 1);
+    assert_eq!(ordinary_unselected_start.len(), 1);
+    assert!(
+        hot_unselected_knee[0].bounds.size.width.0
+            > ordinary_unselected_start[0].bounds.size.width.0
+    );
+    let before_first_press = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    let first_press_target = point(knee_center.x + px(14.), knee_center.y - px(8.));
+    cx.simulate_mouse_down(knee_center, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        first_press_target,
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    assert_ne!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_scene(request.document_id, 0, cx)
+            })
+            .callouts[0]
+            .leader_points[1],
+        before_first_press.callouts[0].leader_points()[1]
+    );
+    let during_first_press = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(during_first_press.callouts, before_first_press.callouts);
+    assert_eq!(
+        (during_first_press.revision, during_first_press.undo_depth),
+        (before_first_press.revision, before_first_press.undo_depth)
+    );
+    assert_eq!(during_first_press.selected_id.as_ref(), Some(&callout_id));
+    cx.simulate_mouse_up(first_press_target, MouseButton::Left, Modifiers::default());
+    let after_first_press = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(after_first_press.revision, before_first_press.revision + 1);
+    assert_eq!(
+        after_first_press.undo_depth,
+        before_first_press.undo_depth + 1
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .callouts[0]
+            .leader_points(),
+        before_first_press.callouts[0].leader_points()
+    );
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            request.document_id,
+            &edited.callouts[0].id,
+            cx,
+        ))
+    );
     let selected_before_pointer = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -14271,12 +24753,65 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
         .expect("selected Callout must expose its rendered knee handle");
     assert!(knee.size.width >= px(8.) && knee.size.height >= px(8.));
     let knee_center = project(144., 192.);
+    let feedback_handles_at = |cx: &mut gpui::VisualTestContext, center: gpui::Point<Pixels>| {
+        let device_scale = cx.update(|window, _| window.scale_factor());
+        cx.update(|window, _| window.painted_quads())
+            .into_iter()
+            .filter(|quad| {
+                let quad_x = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                let quad_y = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                (quad_x - f32::from(center.x) * device_scale).abs() < 1.
+                    && (quad_y - f32::from(center.y) * device_scale).abs() < 1.
+                    && quad.border_widths.top.0 > 0.
+            })
+            .collect::<Vec<_>>()
+    };
+    let stable_knee_handles = feedback_handles_at(cx, knee_center);
+    assert_eq!(stable_knee_handles.len(), 1);
+    assert_eq!(stable_knee_handles[0].corner_radii.top_left.0, 0.);
+    assert_eq!(
+        stable_knee_handles[0].bounds.size.width.0,
+        8. * cx.update(|window, _| window.scale_factor()),
+        "Callout must use the shared seven-pixel square plus centred border",
+    );
+    cx.simulate_mouse_move(knee_center, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let hot_knee_handles = feedback_handles_at(cx, knee_center);
+    assert_eq!(hot_knee_handles.len(), 1);
+    assert_eq!(
+        hot_knee_handles[0].bounds.size.width.0,
+        10. * cx.update(|window, _| window.scale_factor()),
+        "pointer-hot Callout controls must use the shared one-pixel growth and two-pixel border",
+    );
+    assert_eq!(
+        hot_knee_handles[0].border_widths.top.0,
+        2. * cx.update(|window, _| window.scale_factor())
+    );
+    cx.simulate_mouse_move(project(500., 500.), None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        feedback_handles_at(cx, knee_center)[0].bounds.size.width.0,
+        8. * cx.update(|window, _| window.scale_factor())
+    );
     let moved_knee = point(knee_center.x + px(16.), knee_center.y - px(10.));
     cx.simulate_mouse_down(knee_center, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(moved_knee, Some(MouseButton::Left), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        feedback_handles_at(cx, moved_knee).is_empty(),
+        "enabled annotation snapping must replace ordinary active-handle chrome with snap feedback",
+    );
+    assert!(
+        feedback_handles_at(cx, project(72., 120.)).is_empty(),
+        "inactive Callout leader handles must be hidden during a transform",
+    );
     assert_ne!(
-        workspace.read_with(cx, |workspace, cx| workspace
-            .annotation_scene(request.document_id, 0, cx))
+        workspace
+            .read_with(cx, |workspace, cx| workspace.annotation_scene(
+                request.document_id,
+                0,
+                cx
+            ))
             .callouts[0]
             .leader_points[1],
         edited.callouts[0].leader_points()[1],
@@ -14295,10 +24830,70 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
             workspace.annotation_snapshot(request.document_id, cx)
         })
         .unwrap();
-    assert_eq!(pointer_edited.revision, edited.revision + 1);
+    assert!(pointer_edited.revision > selected_before_pointer.revision);
+    assert_eq!(
+        pointer_edited.undo_depth,
+        selected_before_pointer.undo_depth + 1,
+        "Callout pointer release must add exactly one undoable edit after the intervening undo",
+    );
     assert_eq!(pointer_edited.callouts[0].id, edited.callouts[0].id);
     assert_eq!(pointer_edited.callouts[0].content(), "new\nline");
-    assert_eq!(pointer_edited.callouts[0].appearance, edited.callouts[0].appearance);
+    assert_eq!(
+        pointer_edited.callouts[0].appearance,
+        edited.callouts[0].appearance
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let _north = cx
+        .debug_bounds("callout.textBox.resize.n")
+        .expect("selected Callout must expose the north text-box resize handle");
+    let stable_north = project(
+        (pointer_edited.callouts[0].text_box.x + pointer_edited.callouts[0].text_box.width * 0.5)
+            as f32,
+        (pointer_edited.callouts[0].text_box.y + pointer_edited.callouts[0].text_box.height) as f32,
+    );
+    assert_eq!(feedback_handles_at(cx, stable_north).len(), 1);
+    let moved_north = point(stable_north.x, stable_north.y - px(18.));
+    cx.simulate_mouse_down(stable_north, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(moved_north, Some(MouseButton::Left), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let resize_preview = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(request.document_id, 0, cx)
+    });
+    assert!(
+        resize_preview.callouts[0].text_box.height > pointer_edited.callouts[0].text_box.height
+    );
+    assert!(
+        (resize_preview.callouts[0].leader_points.last().unwrap().x
+            - pointer_edited.callouts[0].leader_points().last().unwrap().x)
+            .abs()
+            <= 0.000_1
+    );
+    assert!(
+        feedback_handles_at(cx, moved_north).is_empty(),
+        "enabled annotation snapping must hide ordinary resize chrome during manipulation",
+    );
+    assert!(feedback_handles_at(cx, knee_center).is_empty());
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
+            .unwrap(),
+        pointer_edited,
+        "Callout resize pointer move must remain a scene-only preview",
+    );
+    cx.simulate_mouse_up(moved_north, MouseButton::Left, Modifiers::default());
+    let resized = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(resized.revision, pointer_edited.revision + 1);
+    assert!(resized.callouts[0].text_box.height > pointer_edited.callouts[0].text_box.height);
+    assert_eq!(resized.callouts[0].content(), "new\nline");
+    assert_eq!(
+        resized.callouts[0].appearance,
+        pointer_edited.callouts[0].appearance
+    );
     exercise_rendered_pointer_semantics(
         cx,
         &workspace,
@@ -14307,6 +24902,14 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
             "callout.leader.0",
             "callout.leader.1",
             "callout.leader.2",
+            "callout.textBox.resize.nw",
+            "callout.textBox.resize.n",
+            "callout.textBox.resize.ne",
+            "callout.textBox.resize.e",
+            "callout.textBox.resize.se",
+            "callout.textBox.resize.s",
+            "callout.textBox.resize.sw",
+            "callout.textBox.resize.w",
             "callout.text-box",
             "callout.body",
         ],
@@ -14319,8 +24922,17 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
     );
 }
 
-#[gpui::test]
-fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor(cx: &mut TestAppContext) {
+#[test]
+fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor() {
+    run_gpui_test_with_native_main_stack(
+        "cloud_plus_workspace_renders_composite_and_opens_retained_text_editor",
+        cloud_plus_workspace_renders_composite_and_opens_retained_text_editor_on_native_stack,
+    );
+}
+
+fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor_on_native_stack(
+    cx: &mut TestAppContext,
+) {
     cx.update(|cx| {
         gpui_component::init(cx);
         init_document_workspace_actions(cx);
@@ -14424,7 +25036,9 @@ fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor(cx: &mu
     assert_eq!(edited.cloud_pluses[0].text_box.height, 67.2);
     assert!(
         ((edited.cloud_pluses[0].text_box.y + edited.cloud_pluses[0].text_box.height * 0.5)
-            - (initial_text_box.y + initial_text_box.height * 0.5)).abs() < 1e-9,
+            - (initial_text_box.y + initial_text_box.height * 0.5))
+            .abs()
+            < 1e-9,
         "multiline growth must preserve the composite text-box centre"
     );
     assert_eq!(edited.cloud_pluses[0].leader_points().len(), 3);
@@ -14441,6 +25055,251 @@ fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor(cx: &mu
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
         None
+    );
+
+    assert!(edited.selected_id.is_none());
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    let hot_vertex = project(120., 420.);
+    let ordinary_vertex = project(300., 420.);
+    cx.simulate_mouse_move(hot_vertex, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let feedback_handles_at = |cx: &mut gpui::VisualTestContext, center: gpui::Point<Pixels>| {
+        let device_scale = cx.update(|window, _| window.scale_factor());
+        cx.update(|window, _| window.painted_quads())
+            .into_iter()
+            .filter(|quad| {
+                let quad_x = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                let quad_y = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                (quad_x - f32::from(center.x) * device_scale).abs() < 1.
+                    && (quad_y - f32::from(center.y) * device_scale).abs() < 1.
+                    && quad.border_widths.top.0 > 0.
+            })
+            .collect::<Vec<_>>()
+    };
+    let hot = feedback_handles_at(cx, hot_vertex);
+    let ordinary = feedback_handles_at(cx, ordinary_vertex);
+    assert_eq!(hot.len(), 1);
+    assert_eq!(ordinary.len(), 1);
+    assert!(hot[0].bounds.size.width.0 > ordinary[0].bounds.size.width.0);
+    let before_first_press = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    let moved_vertex = point(hot_vertex.x + px(14.), hot_vertex.y - px(9.));
+    cx.simulate_mouse_down(hot_vertex, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(moved_vertex, Some(MouseButton::Left), Modifiers::default());
+    assert_ne!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_scene(request.document_id, 0, cx)
+            })
+            .cloud_pluses[0]
+            .cloud_points[0],
+        before_first_press.cloud_pluses[0].cloud_points()[0]
+    );
+    let during_first_press = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        during_first_press.cloud_pluses,
+        before_first_press.cloud_pluses
+    );
+    assert_eq!(
+        (during_first_press.revision, during_first_press.undo_depth),
+        (before_first_press.revision, before_first_press.undo_depth)
+    );
+    cx.simulate_mouse_up(moved_vertex, MouseButton::Left, Modifiers::default());
+    let after_first_press = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        after_first_press.undo_depth,
+        before_first_press.undo_depth + 1
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .cloud_pluses[0]
+            .same_persisted_state_as(&before_first_press.cloud_pluses[0])
+    );
+
+    let open_existing_editor = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let layer = cx.debug_bounds(layer_id).unwrap();
+        let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+        let origin = point(
+            layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+            layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+        );
+        let text_box = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .annotation_snapshot(request.document_id, cx)
+                .unwrap()
+                .cloud_pluses[0]
+                .text_box
+        });
+        let caption = point(
+            origin.x + px((text_box.x + text_box.width * 0.5) as f32 * scale),
+            origin.y + px((792. - (text_box.y + text_box.height * 0.5) as f32) * scale),
+        );
+        cx.simulate_click(caption, Modifiers::default());
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: caption,
+            modifiers: Modifiers::default(),
+            click_count: 2,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            button: MouseButton::Left,
+            position: caption,
+            modifiers: Modifiers::default(),
+            click_count: 2,
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    };
+
+    open_existing_editor(cx);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        Some("one\ntwo\nthree\nfour".to_owned())
+    );
+    let input = workspace
+        .read_with(cx, |workspace, _| workspace.pending_text_box_input())
+        .expect("double-clicking the selected Cloud+ caption must retain an editor");
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            input.replace_text_in_range(
+                Some(0.."one\ntwo\nthree\nfour".len()),
+                "one\ntwo\nthree\nfour\nfive\nsix",
+                window,
+                cx,
+            )
+        })
+    });
+    let before_existing_commit = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    cx.simulate_keystrokes("enter");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let existing_edited = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        existing_edited.cloud_pluses[0].content(),
+        "one\ntwo\nthree\nfour\nfive\nsix"
+    );
+    assert!(
+        existing_edited.cloud_pluses[0].text_box.height > edited.cloud_pluses[0].text_box.height
+    );
+    assert!(existing_edited.revision > before_existing_commit.revision);
+    assert_eq!(
+        existing_edited.undo_depth,
+        before_existing_commit.undo_depth + 1,
+        "editing an existing Cloud+ caption must be one ordinary undo step after the intervening undo"
+    );
+    assert!(
+        workspace
+            .read_with(cx, |workspace, _| workspace.pending_text_box_input())
+            .is_none()
+    );
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
+            .unwrap()
+            .cloud_pluses[0]
+            .same_persisted_state_as(&edited.cloud_pluses[0])
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.redo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    let after_redo = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(after_redo.cloud_pluses[0].same_persisted_state_as(&existing_edited.cloud_pluses[0]));
+
+    open_existing_editor(cx);
+    let escape_input = workspace
+        .read_with(cx, |workspace, _| workspace.pending_text_box_input())
+        .expect("the existing Cloud+ editor must reopen");
+    cx.update(|window, cx| {
+        escape_input.update(cx, |input, cx| {
+            input.replace_text_in_range(
+                Some(0.."one\ntwo\nthree\nfour\nfive\nsix".len()),
+                "temporary",
+                window,
+                cx,
+            )
+        })
+    });
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let after_escape = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(after_escape.cloud_pluses[0].same_persisted_state_as(&after_redo.cloud_pluses[0]));
+    assert_eq!(
+        (
+            after_escape.revision,
+            after_escape.undo_depth,
+            after_escape.redo_depth
+        ),
+        (
+            after_redo.revision,
+            after_redo.undo_depth,
+            after_redo.redo_depth
+        ),
+        "Escape must discard an existing Cloud+ caption draft without history"
+    );
+    assert!(
+        after_escape.selected_id.is_none(),
+        "Escape must clear the composite selection"
+    );
+
+    open_existing_editor(cx);
+    cx.simulate_keystrokes("enter");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
+            .unwrap(),
+        after_redo,
+        "an unchanged existing Cloud+ caption submit must not create history"
     );
 }
 
@@ -14529,7 +25388,17 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
             workspace.annotation_snapshot(request.document_id, cx)
         })
         .unwrap();
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Select),
+        "Dimension must return to Select while its caption editor is open"
+    );
     assert_eq!(created.dimensions.len(), 1);
+    assert_eq!(
+        created.selected_id.as_ref(),
+        Some(&created.dimensions[0].id)
+    );
     assert_eq!(created.dimensions[0].id.as_str(), "workspace:dimension:1");
     assert_eq!(created.dimensions[0].content(), "Dimension");
     assert_eq!(created.dimensions[0].dimension_line_offset(), 24.);
@@ -14551,18 +25420,31 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
         "invalid non-ASCII input must remain available for correction",
     );
     let rejected = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
     assert_eq!(rejected.dimensions[0].content(), "Dimension");
     assert_eq!((rejected.revision, rejected.undo_depth), (1, 1));
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} d o o r space w i d t h enter"));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let edited = workspace
+    let mut edited = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
         })
         .unwrap();
     assert_eq!(edited.dimensions[0].content(), "door width");
+    assert!(
+        edited.selected_id.is_none(),
+        "committing the initial caption must clear selection"
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Select),
+        "caption completion must keep Select active"
+    );
+
     assert_eq!(
         edited.undo_depth, 1,
         "Dimension creation and initial caption edit must remain one undo step"
@@ -14571,17 +25453,124 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
         workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
         None
     );
+    let dimension_id = edited.dimensions[0].id.clone();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let hover_layer = cx
+        .debug_bounds(layer_id)
+        .expect("the unselected Dimension must retain its annotation layer");
+    let hover_scale =
+        (f32::from(hover_layer.size.width) / 612.).min(f32::from(hover_layer.size.height) / 792.);
+    let hover_origin = point(
+        hover_layer.origin.x + px((f32::from(hover_layer.size.width) - 612. * hover_scale) / 2.),
+        hover_layer.origin.y + px((f32::from(hover_layer.size.height) - 792. * hover_scale) / 2.),
+    );
+    let hover_project = |sample: PdfPoint| {
+        point(
+            hover_origin.x + px(sample.x as f32 * hover_scale),
+            hover_origin.y + px((792. - sample.y as f32) * hover_scale),
+        )
+    };
+    let unselected_start = hover_project(edited.dimensions[0].start);
+    cx.simulate_mouse_move(unselected_start, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let painted_handles_at = |cx: &mut gpui::VisualTestContext, center: Point<Pixels>| {
+        let device_scale = cx.update(|window, _| window.scale_factor());
+        cx.update(|window, _| window.painted_quads())
+            .into_iter()
+            .filter(|quad| {
+                let quad_x = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                let quad_y = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                (quad_x - f32::from(center.x) * device_scale).abs() < 1.
+                    && (quad_y - f32::from(center.y) * device_scale).abs() < 1.
+                    && quad.border_widths.top.0 > 0.
+            })
+            .collect::<Vec<_>>()
+    };
+    let hot_start = painted_handles_at(cx, unselected_start);
+    let ordinary_end = painted_handles_at(cx, hover_project(edited.dimensions[0].end));
+    let ordinary_offset =
+        painted_handles_at(cx, hover_project(edited.dimensions[0].caption_center()));
+    assert_eq!(hot_start.len(), 1);
+    assert_eq!(ordinary_end.len(), 1);
+    assert_eq!(ordinary_offset.len(), 1);
+    assert!(
+        hot_start[0].bounds.size.width.0 > ordinary_end[0].bounds.size.width.0,
+        "only the stable hot Dimension control must grow"
+    );
+
+    let before_first_press = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    let moved_start = point(unselected_start.x + px(12.), unselected_start.y);
+    cx.simulate_mouse_down(unselected_start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(moved_start, Some(MouseButton::Left), Modifiers::default());
+    let first_press_preview = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(request.document_id, 0, cx)
+    });
+    assert_ne!(
+        first_press_preview.dimensions[0].start, before_first_press.dimensions[0].start,
+        "the first press on an unselected visible handle must begin its transform"
+    );
+    let during_first_press = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        (
+            during_first_press.revision,
+            during_first_press.undo_depth,
+            &during_first_press.dimensions,
+        ),
+        (
+            before_first_press.revision,
+            before_first_press.undo_depth,
+            &before_first_press.dimensions,
+        ),
+        "the first-press Dimension drag must not persist geometry before release"
+    );
+    assert_eq!(during_first_press.selected_id.as_ref(), Some(&dimension_id));
+    cx.simulate_mouse_up(moved_start, MouseButton::Left, Modifiers::default());
+    let after_first_press = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(after_first_press.revision, before_first_press.revision + 1);
+    assert_eq!(
+        after_first_press.undo_depth,
+        before_first_press.undo_depth + 1
+    );
+    assert_eq!(after_first_press.selected_id.as_ref(), Some(&dimension_id));
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    edited = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        edited.dimensions[0].start,
+        before_first_press.dimensions[0].start
+    );
+
     workspace
         .update(cx, |workspace, cx| {
             workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
         })
         .unwrap();
-    assert!(workspace.update(cx, |workspace, cx| workspace.select_annotation(
-        request.document_id,
-        &edited.dimensions[0].id,
-        cx,
-    )));
-    let dimension_id = edited.dimensions[0].id.clone();
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            request.document_id,
+            &edited.dimensions[0].id,
+            cx,
+        ))
+    );
     let original_geometry = (edited.dimensions[0].start, edited.dimensions[0].end);
     let original_order = edited.annotation_order.clone();
 
@@ -14607,8 +25596,7 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
         let layer = cx
             .debug_bounds(layer_id)
             .expect("selected Dimension must retain the current annotation layer");
-        let scale =
-            (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+        let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
         let origin = point(
             layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
             layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
@@ -14621,8 +25609,19 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
             layer.contains(&caption),
             "the current selected Dimension caption must project inside the current annotation layer",
         );
-        cx.simulate_event(MouseDownEvent { button: MouseButton::Left, position: caption, modifiers: Modifiers::default(), click_count: 2, first_mouse: false });
-        cx.simulate_event(MouseUpEvent { button: MouseButton::Left, position: caption, modifiers: Modifiers::default(), click_count: 2 });
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: caption,
+            modifiers: Modifiers::default(),
+            click_count: 2,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            button: MouseButton::Left,
+            position: caption,
+            modifiers: Modifiers::default(),
+            click_count: 2,
+        });
         cx.update(|window, cx| window.draw(cx).clear(cx));
     };
     double_click_caption(cx);
@@ -14631,35 +25630,88 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
         .read_with(cx, |workspace, cx| workspace.pending_text_box_focus(cx))
         .expect("the existing Dimension Textarea must own focus");
     assert!(cx.update(|window, _| existing_editor_focus.is_focused(window)));
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)), Some("door width".to_owned()));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        Some("door width".to_owned())
+    );
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} c l e a r space w i d t h"));
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)), Some("clear width".to_owned()));
-    let before_existing_submit = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        Some("clear width".to_owned())
+    );
+    let before_existing_submit = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
     cx.simulate_keystrokes("enter");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
-    let mut edited = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
+    let mut edited = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
     assert_eq!(edited.dimensions[0].content(), "clear width");
-    assert_eq!((edited.revision, edited.undo_depth), (before_existing_submit.revision + 1, before_existing_submit.undo_depth + 1));
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)), None);
-    assert!(workspace.read_with(cx, |workspace, _| workspace.text_box_commit_error().is_none()));
+    assert!(
+        edited.revision > before_existing_submit.revision,
+        "committing the existing Dimension caption must advance the document revision"
+    );
+    assert_eq!(
+        edited.undo_depth,
+        before_existing_submit.undo_depth + 1,
+        "committing the existing Dimension caption must add exactly one undo step"
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        None
+    );
+    assert!(workspace.read_with(cx, |workspace, _| {
+        workspace.text_box_commit_error().is_none()
+    }));
 
     double_click_caption(cx);
     let escape_editor_focus = workspace
         .read_with(cx, |workspace, cx| workspace.pending_text_box_focus(cx))
         .expect("the Escape Dimension Textarea must own focus");
     assert!(cx.update(|window, _| escape_editor_focus.is_focused(window)));
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)), Some("clear width".to_owned()));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        Some("clear width".to_owned())
+    );
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} t e m p o r a r y"));
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)), Some("temporary".to_owned()));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        Some("temporary".to_owned())
+    );
     assert!(cx.update(|window, _| escape_editor_focus.is_focused(window)));
     let before_escape = edited.clone();
     cx.simulate_keystrokes("escape");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap(), before_escape);
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)), None);
+    let mut expected_after_escape = before_escape.clone();
+    expected_after_escape.selected_id = None;
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap(),
+        expected_after_escape,
+        "Escape must discard the existing Dimension caption edit and clear selection"
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        None
+    );
 
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            request.document_id,
+            &dimension_id,
+            cx,
+        ))
+    );
     double_click_caption(cx);
     let invalid_editor_focus = workspace
         .read_with(cx, |workspace, cx| workspace.pending_text_box_focus(cx))
@@ -14667,43 +25719,105 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
     assert!(cx.update(|window, _| invalid_editor_focus.is_focused(window)));
     cx.write_to_clipboard(ClipboardItem::new_string("mètre".into()));
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE}"));
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)), Some("mètre".to_owned()));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        Some("mètre".to_owned())
+    );
     cx.simulate_keystrokes("enter");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)), Some("mètre\n".to_owned()));
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap(), before_escape);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        Some("mètre\n".to_owned())
+    );
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
+            .unwrap(),
+        before_escape
+    );
     assert!(cx.debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID).is_some());
-    assert!(workspace.read_with(cx, |workspace, _| workspace.text_box_commit_error().is_some()));
+    assert!(workspace.read_with(cx, |workspace, _| {
+        workspace.text_box_commit_error().is_some()
+    }));
     assert!(cx.update(|window, _| invalid_editor_focus.is_focused(window)));
     cx.simulate_keystrokes("escape");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap(),
+        expected_after_escape,
+        "Escape after a rejected Dimension caption must clear selection without mutation"
+    );
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let before_properties_click = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
-    assert_eq!(before_properties_click.selected_id.as_ref(), Some(&dimension_id));
+    assert!(before_properties_click.selected_id.is_none());
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            request.document_id,
+            &dimension_id,
+            cx,
+        ))
+    );
     workspace.update(cx, |workspace, cx| {
-        workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx).unwrap();
+        workspace
+            .set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+            .unwrap();
     });
     if cx.debug_bounds(DIMENSION_PROPERTY_INSPECTOR_ID).is_none() {
         toggle_document_actions(cx);
     }
     let after_click_before_draw = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
-    assert_eq!(after_click_before_draw.selected_id.as_ref(), Some(&dimension_id));
-    assert_eq!((after_click_before_draw.revision, after_click_before_draw.undo_depth), (before_properties_click.revision, before_properties_click.undo_depth));
+    assert_eq!(
+        after_click_before_draw.selected_id.as_ref(),
+        Some(&dimension_id)
+    );
+    assert_eq!(
+        (
+            after_click_before_draw.revision,
+            after_click_before_draw.undo_depth
+        ),
+        (
+            before_properties_click.revision,
+            before_properties_click.undo_depth
+        )
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let after_properties_draw = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap();
-    assert_eq!(after_properties_draw.selected_id.as_ref(), Some(&dimension_id));
-    assert_eq!((after_properties_draw.revision, after_properties_draw.undo_depth), (before_properties_click.revision, before_properties_click.undo_depth));
+    assert_eq!(
+        after_properties_draw.selected_id.as_ref(),
+        Some(&dimension_id)
+    );
+    assert_eq!(
+        (
+            after_properties_draw.revision,
+            after_properties_draw.undo_depth
+        ),
+        (
+            before_properties_click.revision,
+            before_properties_click.undo_depth
+        )
+    );
     let workspace_bounds = cx.debug_bounds(DOCUMENT_WORKSPACE_ID).unwrap();
     let inspector_slot_bounds = cx
         .debug_bounds(DOCUMENT_ACTIVE_INSPECTOR_SLOT_ID)
@@ -14734,88 +25848,277 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
         inspector_width,
         "closing and reopening must preserve the permanent inspector slot width",
     );
-    for id in [DIMENSION_PROPERTY_INSPECTOR_ID, DIMENSION_INSPECTOR_OFFSET_ID, DIMENSION_INSPECTOR_STROKE_COLOR_ID, DIMENSION_INSPECTOR_TEXT_COLOR_ID, DIMENSION_INSPECTOR_WIDTH_ID, DIMENSION_INSPECTOR_OPACITY_ID, DIMENSION_INSPECTOR_FONT_SIZE_ID, DIMENSION_INSPECTOR_LOCKED_ID] {
-        assert!(cx.debug_bounds(id).is_some(), "Dimension inspector must render {id}");
+    for id in [
+        DIMENSION_PROPERTY_INSPECTOR_ID,
+        DIMENSION_INSPECTOR_OFFSET_ID,
+        DIMENSION_INSPECTOR_STROKE_COLOR_ID,
+        DIMENSION_INSPECTOR_TEXT_COLOR_ID,
+        DIMENSION_INSPECTOR_WIDTH_ID,
+        DIMENSION_INSPECTOR_OPACITY_ID,
+        DIMENSION_INSPECTOR_FONT_SIZE_ID,
+        DIMENSION_INSPECTOR_LOCKED_ID,
+    ] {
+        assert!(
+            cx.debug_bounds(id).is_some(),
+            "Dimension inspector must render {id}"
+        );
     }
 
-    for (selector, value) in [(DIMENSION_INSPECTOR_OFFSET_ID, "36"), (DIMENSION_INSPECTOR_WIDTH_ID, "2.5"), (DIMENSION_INSPECTOR_FONT_SIZE_ID, "15")] {
+    for (selector, value) in [
+        (DIMENSION_INSPECTOR_OFFSET_ID, "36"),
+        (DIMENSION_INSPECTOR_WIDTH_ID, "2.5"),
+        (DIMENSION_INSPECTOR_FONT_SIZE_ID, "15"),
+    ] {
         let bounds = cx.debug_bounds(selector).unwrap();
         cx.simulate_click(bounds.center(), Modifiers::default());
-        let before = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
+        let before = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap();
         cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {value} enter"));
-        let after = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
-        assert_eq!((after.revision, after.undo_depth), (before.revision + 1, before.undo_depth + 1));
+        let after = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap();
+        assert_eq!(
+            (after.revision, after.undo_depth),
+            (before.revision + 1, before.undo_depth + 1)
+        );
         edited = after;
         cx.update(|window, cx| window.draw(cx).clear(cx));
     }
     assert_eq!(edited.dimensions[0].dimension_line_offset(), 36.);
-    assert_eq!(edited.dimensions[0].appearance.line().stroke_width_pt(), 2.5);
+    assert_eq!(
+        edited.dimensions[0].appearance.line().stroke_width_pt(),
+        2.5
+    );
     assert_eq!(edited.dimensions[0].appearance.text().font_size_pt(), 15.);
 
-    let make_appearance = |dimension: &butter_paper_gpui_migration::annotation_model::DimensionAnnotation, stroke: &str, text: &str, opacity: f64| {
-        DimensionAppearance::new(
-            StraightLineAppearance::new(stroke, dimension.appearance.line().stroke_width_pt(), opacity, dimension.appearance.line().stroke_style()).unwrap(),
-            TextBoxStyle::new(dimension.appearance.text().font_family(), dimension.appearance.text().font_size_pt(), text, opacity)
-                .and_then(|style| style.with_weight_and_alignment(dimension.appearance.text().weight(), dimension.appearance.text().alignment())).unwrap(),
-        ).unwrap()
-    };
+    let make_appearance =
+        |dimension: &butter_paper_gpui_migration::annotation_model::DimensionAnnotation,
+         stroke: &str,
+         text: &str,
+         opacity: f64| {
+            DimensionAppearance::new(
+                StraightLineAppearance::new(
+                    stroke,
+                    dimension.appearance.line().stroke_width_pt(),
+                    opacity,
+                    dimension.appearance.line().stroke_style(),
+                )
+                .unwrap(),
+                TextBoxStyle::new(
+                    dimension.appearance.text().font_family(),
+                    dimension.appearance.text().font_size_pt(),
+                    text,
+                    opacity,
+                )
+                .and_then(|style| {
+                    style.with_weight_and_alignment(
+                        dimension.appearance.text().weight(),
+                        dimension.appearance.text().alignment(),
+                    )
+                })
+                .unwrap(),
+            )
+            .unwrap()
+        };
     for (stroke, text) in [("#2563eb", "#ff0000"), ("#2563eb", "#16a34a")] {
-        let before = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
+        let before = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap();
         let event = DimensionPropertyEvent {
             document_id: request.document_id,
             annotation_id: dimension_id.clone(),
             expected_revision: before.revision,
-            patch: DimensionPropertyPatch::Appearance(make_appearance(&before.dimensions[0], stroke, text, before.dimensions[0].appearance.line().opacity())),
+            patch: DimensionPropertyPatch::Appearance(make_appearance(
+                &before.dimensions[0],
+                stroke,
+                text,
+                before.dimensions[0].appearance.line().opacity(),
+            )),
         };
-        assert!(workspace.update(cx, |workspace, cx| workspace.apply_dimension_property_event(&event, cx)).unwrap());
-        let after = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
-        assert_eq!((after.revision, after.undo_depth), (before.revision + 1, before.undo_depth + 1));
+        assert!(
+            workspace
+                .update(cx, |workspace, cx| workspace
+                    .apply_dimension_property_event(&event, cx))
+                .unwrap()
+        );
+        let after = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap();
+        assert_eq!(
+            (after.revision, after.undo_depth),
+            (before.revision + 1, before.undo_depth + 1)
+        );
         edited = after;
     }
-    assert_eq!(edited.dimensions[0].appearance.line().stroke_color(), "#2563eb");
+    assert_eq!(
+        edited.dimensions[0].appearance.line().stroke_color(),
+        "#2563eb"
+    );
     assert_eq!(edited.dimensions[0].appearance.text().color(), "#16a34a");
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let opacity = cx.debug_bounds(DIMENSION_INSPECTOR_OPACITY_ID).unwrap();
-    let opacity_target = point(opacity.origin.x + opacity.size.width * 0.7, opacity.center().y);
+    let opacity_target = point(
+        opacity.origin.x + opacity.size.width * 0.7,
+        opacity.center().y,
+    );
     let before_opacity = edited.clone();
     cx.simulate_mouse_down(opacity_target, MouseButton::Left, Modifiers::default());
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap(), before_opacity);
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
+            .unwrap(),
+        before_opacity
+    );
     cx.simulate_mouse_up(opacity_target, MouseButton::Left, Modifiers::default());
-    edited = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
-    assert_eq!((edited.revision, edited.undo_depth), (before_opacity.revision + 1, before_opacity.undo_depth + 1));
+    edited = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        (edited.revision, edited.undo_depth),
+        (before_opacity.revision + 1, before_opacity.undo_depth + 1)
+    );
     assert!((edited.dimensions[0].appearance.line().opacity() - 0.7).abs() <= 0.01);
-    assert_eq!(edited.dimensions[0].appearance.line().opacity(), edited.dimensions[0].appearance.text().opacity());
+    assert_eq!(
+        edited.dimensions[0].appearance.line().opacity(),
+        edited.dimensions[0].appearance.text().opacity()
+    );
 
-    let no_op = DimensionPropertyEvent { document_id: request.document_id, annotation_id: dimension_id.clone(), expected_revision: edited.revision, patch: DimensionPropertyPatch::OffsetPt(36.) };
-    assert!(!workspace.update(cx, |workspace, cx| workspace.apply_dimension_property_event(&no_op, cx)).unwrap());
-    let stale = DimensionPropertyEvent { expected_revision: edited.revision - 1, patch: DimensionPropertyPatch::OffsetPt(40.), ..no_op.clone() };
-    assert!(!workspace.update(cx, |workspace, cx| workspace.apply_dimension_property_event(&stale, cx)).unwrap());
-    let wrong_id = DimensionPropertyEvent { annotation_id: MarkupId::new("wrong-dimension").unwrap(), expected_revision: edited.revision, ..stale.clone() };
-    assert!(!workspace.update(cx, |workspace, cx| workspace.apply_dimension_property_event(&wrong_id, cx)).unwrap());
-    let wrong_document = DimensionPropertyEvent { document_id: DocumentId::new(9_999), annotation_id: dimension_id.clone(), expected_revision: edited.revision, ..stale.clone() };
-    assert!(!workspace.update(cx, |workspace, cx| workspace.apply_dimension_property_event(&wrong_document, cx)).unwrap());
+    let no_op = DimensionPropertyEvent {
+        document_id: request.document_id,
+        annotation_id: dimension_id.clone(),
+        expected_revision: edited.revision,
+        patch: DimensionPropertyPatch::OffsetPt(36.),
+    };
+    assert!(
+        !workspace
+            .update(cx, |workspace, cx| workspace
+                .apply_dimension_property_event(&no_op, cx))
+            .unwrap()
+    );
+    let stale = DimensionPropertyEvent {
+        expected_revision: edited.revision - 1,
+        patch: DimensionPropertyPatch::OffsetPt(40.),
+        ..no_op.clone()
+    };
+    assert!(
+        !workspace
+            .update(cx, |workspace, cx| workspace
+                .apply_dimension_property_event(&stale, cx))
+            .unwrap()
+    );
+    let wrong_id = DimensionPropertyEvent {
+        annotation_id: MarkupId::new("wrong-dimension").unwrap(),
+        expected_revision: edited.revision,
+        ..stale.clone()
+    };
+    assert!(
+        !workspace
+            .update(cx, |workspace, cx| workspace
+                .apply_dimension_property_event(&wrong_id, cx))
+            .unwrap()
+    );
+    let wrong_document = DimensionPropertyEvent {
+        document_id: DocumentId::new(9_999),
+        annotation_id: dimension_id.clone(),
+        expected_revision: edited.revision,
+        ..stale.clone()
+    };
+    assert!(
+        !workspace
+            .update(cx, |workspace, cx| workspace
+                .apply_dimension_property_event(&wrong_document, cx))
+            .unwrap()
+    );
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let lock = cx.debug_bounds(DIMENSION_INSPECTOR_LOCKED_ID).unwrap();
-    cx.simulate_click(point(lock.left() + px(12.), lock.center().y), Modifiers::default());
-    let locked = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
+    cx.simulate_click(
+        point(lock.left() + px(12.), lock.center().y),
+        Modifiers::default(),
+    );
+    let locked = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
     assert!(locked.dimensions[0].locked);
-    assert_eq!((locked.revision, locked.undo_depth), (edited.revision + 1, edited.undo_depth + 1));
-    let locked_edit = DimensionPropertyEvent { document_id: request.document_id, annotation_id: dimension_id.clone(), expected_revision: locked.revision, patch: DimensionPropertyPatch::OffsetPt(40.) };
-    assert!(!workspace.update(cx, |workspace, cx| workspace.apply_dimension_property_event(&locked_edit, cx)).unwrap());
+    assert_eq!(
+        (locked.revision, locked.undo_depth),
+        (edited.revision + 1, edited.undo_depth + 1)
+    );
+    let locked_edit = DimensionPropertyEvent {
+        document_id: request.document_id,
+        annotation_id: dimension_id.clone(),
+        expected_revision: locked.revision,
+        patch: DimensionPropertyPatch::OffsetPt(40.),
+    };
+    assert!(
+        !workspace
+            .update(cx, |workspace, cx| workspace
+                .apply_dimension_property_event(&locked_edit, cx))
+            .unwrap()
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let lock = cx.debug_bounds(DIMENSION_INSPECTOR_LOCKED_ID).unwrap();
-    cx.simulate_click(point(lock.left() + px(12.), lock.center().y), Modifiers::default());
-    edited = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap();
+    cx.simulate_click(
+        point(lock.left() + px(12.), lock.center().y),
+        Modifiers::default(),
+    );
+    edited = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
     assert!(!edited.dimensions[0].locked);
 
-    let save_request = workspace.update(cx, |workspace, cx| workspace.begin_save_as(request.document_id, workspace_save_target("dimension-busy.pdf"), cx)).unwrap();
-    let busy = DimensionPropertyEvent { document_id: request.document_id, annotation_id: dimension_id.clone(), expected_revision: edited.revision, patch: DimensionPropertyPatch::OffsetPt(40.) };
-    assert!(!workspace.update(cx, |workspace, cx| workspace.apply_dimension_property_event(&busy, cx)).unwrap());
-    workspace.update(cx, |workspace, cx| workspace.apply_save_result(&save_request, Err("finish busy proof".into()), cx));
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx)).unwrap(), edited);
-    assert_eq!((edited.dimensions[0].start, edited.dimensions[0].end), original_geometry);
+    let save_request = workspace
+        .update(cx, |workspace, cx| {
+            workspace.begin_save_as(
+                request.document_id,
+                workspace_save_target("dimension-busy.pdf"),
+                cx,
+            )
+        })
+        .unwrap();
+    let busy = DimensionPropertyEvent {
+        document_id: request.document_id,
+        annotation_id: dimension_id.clone(),
+        expected_revision: edited.revision,
+        patch: DimensionPropertyPatch::OffsetPt(40.),
+    };
+    assert!(
+        !workspace
+            .update(cx, |workspace, cx| workspace
+                .apply_dimension_property_event(&busy, cx))
+            .unwrap()
+    );
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_save_result(&save_request, Err("finish busy proof".into()), cx)
+    });
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
+            .unwrap(),
+        edited
+    );
+    assert_eq!(
+        (edited.dimensions[0].start, edited.dimensions[0].end),
+        original_geometry
+    );
     assert_eq!(edited.dimensions[0].id, dimension_id);
     assert_eq!(edited.annotation_order, original_order);
 
@@ -15000,10 +26303,8 @@ fn arc_workspace_renders_real_component_tool_three_click_preview_and_shift_snap(
 fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     cx: &mut TestAppContext,
 ) {
-    let busy_save_target = workspace_save_target(&format!(
-        "arc-pointer-busy-{}.pdf",
-        std::process::id()
-    ));
+    let busy_save_target =
+        workspace_save_target(&format!("arc-pointer-busy-{}.pdf", std::process::id()));
     let _scratch_files = ScratchFiles(vec![busy_save_target.clone()]);
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -15046,8 +26347,7 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     };
     let assert_point = |actual: PdfPoint, expected: PdfPoint| {
         assert!(
-            (actual.x - expected.x).abs() <= 0.000_1
-                && (actual.y - expected.y).abs() <= 0.000_1,
+            (actual.x - expected.x).abs() <= 0.000_1 && (actual.y - expected.y).abs() <= 0.000_1,
             "expected {actual:?} to match {expected:?} within pointer projection tolerance"
         );
     };
@@ -15071,17 +26371,28 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
         };
     }
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_RECTANGLE_TOOL_ID);
-    let rectangle_tool = cx.debug_bounds(DOCUMENT_RECTANGLE_TOOL_ID).unwrap().center();
+    let rectangle_tool = cx
+        .debug_bounds(DOCUMENT_RECTANGLE_TOOL_ID)
+        .unwrap()
+        .center();
     cx.simulate_click(rectangle_tool, Modifiers::default());
     let rectangle_start = PdfPoint::new(390., 120.).unwrap();
     let rectangle_end = PdfPoint::new(480., 190.).unwrap();
-    cx.simulate_mouse_down(project(rectangle_start), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_down(
+        project(rectangle_start),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     cx.simulate_mouse_move(
         project(rectangle_end),
         Some(MouseButton::Left),
         Modifiers::default(),
     );
-    cx.simulate_mouse_up(project(rectangle_end), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(
+        project(rectangle_end),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     let rectangle = snapshot!().rectangles[0].clone();
 
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ARC_TOOL_ID);
@@ -15101,20 +26412,32 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     let arc_id = created.arcs[0].id.clone();
     assert_eq!(created.selected_id.as_ref(), Some(&arc_id));
     assert_eq!(
-        workspace.read_with(cx, |workspace, cx| workspace.annotation_tool(request.document_id, cx)),
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
         Some(AnnotationTool::Select),
     );
 
     let body_point = scene_arc!().sampled_path[16];
-    cx.simulate_mouse_down(project(body_point), MouseButton::Right, Modifiers::default());
-    cx.simulate_mouse_up(project(body_point), MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_down(
+        project(body_point),
+        MouseButton::Right,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_up(
+        project(body_point),
+        MouseButton::Right,
+        Modifiers::default(),
+    );
     assert_eq!(snapshot!(), created, "non-primary Arc input must be inert");
 
     assert!(workspace.update(cx, |workspace, cx| {
         workspace.select_annotation(request.document_id, &rectangle.id, cx)
     }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(!scene_arc!().selected, "the visible Arc stroke must begin unselected");
+    assert!(
+        !scene_arc!().selected,
+        "the visible Arc stroke must begin unselected"
+    );
     let body_end = PdfPoint::new(body_point.x + 24., body_point.y - 18.).unwrap();
     cx.simulate_mouse_down(project(body_point), MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(
@@ -15130,7 +26453,11 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     assert_eq!(body_preview.id, arc_id);
     assert_eq!(body_preview.appearance, created.arcs[0].appearance);
     assert!(!body_preview.locked);
-    assert_eq!(snapshot!(), created, "Arc body preview must remain history-free");
+    assert_eq!(
+        snapshot!(),
+        created,
+        "Arc body preview must remain history-free"
+    );
     cx.simulate_mouse_up(project(body_end), MouseButton::Left, Modifiers::default());
     let after_body = snapshot!();
     assert_eq!((after_body.revision, after_body.undo_depth), (3, 3));
@@ -15147,17 +26474,32 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let before_start = snapshot!();
     let start_target = PdfPoint::new(108., 290.).unwrap();
-    cx.simulate_mouse_down(project(before_start.arcs[0].start), MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(project(start_target), Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_down(
+        project(before_start.arcs[0].start),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(
+        project(start_target),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
     let start_preview = scene_arc!();
     assert_point(start_preview.start, start_target);
     assert_point(start_preview.mid, PdfPoint::new(204., 342.).unwrap());
     assert_point(start_preview.end, PdfPoint::new(284., 282.).unwrap());
     assert!(start_preview.draft && start_preview.selected);
     assert_eq!(snapshot!(), before_start);
-    cx.simulate_mouse_up(project(start_target), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(
+        project(start_target),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     let after_start = snapshot!();
-    assert_eq!((after_start.revision, after_start.undo_depth), (before_start.revision + 1, before_start.undo_depth + 1));
+    assert_eq!(
+        (after_start.revision, after_start.undo_depth),
+        (before_start.revision + 1, before_start.undo_depth + 1)
+    );
     assert_point(after_start.arcs[0].start, start_target);
     assert_point(after_start.arcs[0].mid, PdfPoint::new(204., 342.).unwrap());
     assert_point(after_start.arcs[0].end, PdfPoint::new(284., 282.).unwrap());
@@ -15165,8 +26507,16 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let before_end = snapshot!();
     let end_target = PdfPoint::new(302., 292.).unwrap();
-    cx.simulate_mouse_down(project(before_end.arcs[0].end), MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(project(end_target), Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_down(
+        project(before_end.arcs[0].end),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(
+        project(end_target),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
     let end_preview = scene_arc!();
     assert_point(end_preview.start, start_target);
     assert_point(end_preview.mid, PdfPoint::new(204., 342.).unwrap());
@@ -15175,7 +26525,10 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     assert_eq!(snapshot!(), before_end);
     cx.simulate_mouse_up(project(end_target), MouseButton::Left, Modifiers::default());
     let after_end = snapshot!();
-    assert_eq!((after_end.revision, after_end.undo_depth), (before_end.revision + 1, before_end.undo_depth + 1));
+    assert_eq!(
+        (after_end.revision, after_end.undo_depth),
+        (before_end.revision + 1, before_end.undo_depth + 1)
+    );
     assert_point(after_end.arcs[0].start, start_target);
     assert_point(after_end.arcs[0].mid, PdfPoint::new(204., 342.).unwrap());
     assert_point(after_end.arcs[0].end, end_target);
@@ -15183,17 +26536,32 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let before_free_mid = snapshot!();
     let free_mid_target = PdfPoint::new(220., 370.).unwrap();
-    cx.simulate_mouse_down(project(before_free_mid.arcs[0].mid), MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(project(free_mid_target), Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_down(
+        project(before_free_mid.arcs[0].mid),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(
+        project(free_mid_target),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
     let free_mid_preview = scene_arc!();
     assert_point(free_mid_preview.start, start_target);
     assert_point(free_mid_preview.mid, free_mid_target);
     assert_point(free_mid_preview.end, end_target);
     assert!(free_mid_preview.draft && free_mid_preview.selected);
     assert_eq!(snapshot!(), before_free_mid);
-    cx.simulate_mouse_up(project(free_mid_target), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(
+        project(free_mid_target),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     let after_free_mid = snapshot!();
-    assert_eq!((after_free_mid.revision, after_free_mid.undo_depth), (before_free_mid.revision + 1, before_free_mid.undo_depth + 1));
+    assert_eq!(
+        (after_free_mid.revision, after_free_mid.undo_depth),
+        (before_free_mid.revision + 1, before_free_mid.undo_depth + 1)
+    );
     assert_point(after_free_mid.arcs[0].start, start_target);
     assert_point(after_free_mid.arcs[0].mid, free_mid_target);
     assert_point(after_free_mid.arcs[0].end, end_target);
@@ -15201,11 +26569,22 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let before_shift_release = snapshot!();
     let shift_pointer = PdfPoint::new(240., 320.).unwrap();
-    cx.simulate_mouse_down(project(before_shift_release.arcs[0].mid), MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(project(shift_pointer), Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_down(
+        project(before_shift_release.arcs[0].mid),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(
+        project(shift_pointer),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
     let release_preview = scene_arc!();
     assert_point(release_preview.mid, shift_pointer);
-    let shift = Modifiers { shift: true, ..Modifiers::default() };
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
     cx.simulate_mouse_up(project(shift_pointer), MouseButton::Left, shift);
     let after_shift_release = snapshot!();
     assert_eq!(
@@ -15223,7 +26602,10 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     assert_point(after_shift_release.arcs[0].end, end_target);
     assert_eq!(after_shift_release.arcs[0].id, arc_id);
     assert_eq!(after_shift_release.arcs[0].page_index, 0);
-    assert_eq!(after_shift_release.arcs[0].appearance, created.arcs[0].appearance);
+    assert_eq!(
+        after_shift_release.arcs[0].appearance,
+        created.arcs[0].appearance
+    );
     assert!(!after_shift_release.arcs[0].locked);
 
     let after_controls = after_shift_release;
@@ -15248,15 +26630,25 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     );
     let invalid_preview = scene_arc!();
     assert_eq!(
-        (invalid_preview.start, invalid_preview.mid, invalid_preview.end),
+        (
+            invalid_preview.start,
+            invalid_preview.mid,
+            invalid_preview.end
+        ),
         (
             before_invalid.arcs[0].start,
             before_invalid.arcs[0].mid,
             before_invalid.arcs[0].end,
         ),
     );
-    assert_eq!(invalid_preview.sampled_path, before_invalid.arcs[0].sampled_path(64));
-    assert!(!invalid_preview.draft, "invalid Start must not render incoherent controls");
+    assert_eq!(
+        invalid_preview.sampled_path,
+        before_invalid.arcs[0].sampled_path(64)
+    );
+    assert!(
+        !invalid_preview.draft,
+        "invalid Start must not render incoherent controls"
+    );
     cx.simulate_mouse_up(
         project(before_invalid.arcs[0].end),
         MouseButton::Left,
@@ -15276,8 +26668,25 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
     cx.update(|window, cx| focus.focus(window, cx));
     cx.simulate_keystrokes("escape");
-    cx.simulate_mouse_up(project(cancelled_end), MouseButton::Left, Modifiers::default());
-    assert_eq!(snapshot!(), before_escape, "Escape must cancel the Arc preview exactly");
+    cx.simulate_mouse_up(
+        project(cancelled_end),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    let mut expected_escape = before_escape.clone();
+    expected_escape.selected_id = None;
+    assert_eq!(
+        snapshot!(),
+        expected_escape,
+        "Escape must cancel the Arc preview and clear selection"
+    );
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace.select_annotation(
+            request.document_id,
+            before_escape.selected_id.as_ref().unwrap(),
+            cx,
+        )
+    }));
 
     let before_capture_loss = snapshot!();
     let body_point = scene_arc!().sampled_path[16];
@@ -15292,8 +26701,16 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
         pressed_button: Some(MouseButton::Left),
         modifiers: Modifiers::default(),
     });
-    cx.simulate_mouse_up(project(cancelled_end), MouseButton::Left, Modifiers::default());
-    assert_eq!(snapshot!(), before_capture_loss, "capture loss must cancel the Arc preview exactly");
+    cx.simulate_mouse_up(
+        project(cancelled_end),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    assert_eq!(
+        snapshot!(),
+        before_capture_loss,
+        "capture loss must cancel the Arc preview exactly"
+    );
 
     let before_selection_change = snapshot!();
     let body_point = scene_arc!().sampled_path[16];
@@ -15326,21 +26743,32 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
         MouseButton::Left,
         Modifiers::default(),
     );
-    assert_eq!(snapshot!(), selection_changed, "selection-stale release must be rejected");
+    assert_eq!(
+        snapshot!(),
+        selection_changed,
+        "selection-stale release must be rejected"
+    );
     assert!(workspace.update(cx, |workspace, cx| {
         workspace.select_annotation(request.document_id, &arc_id, cx)
     }));
 
     let stale_start = scene_arc!().sampled_path[16];
     let stale_end = PdfPoint::new(stale_start.x + 22., stale_start.y - 14.).unwrap();
-    cx.simulate_mouse_down(project(stale_start), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_down(
+        project(stale_start),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     cx.simulate_mouse_move(
         project(stale_end),
         Some(MouseButton::Left),
         Modifiers::default(),
     );
-    let stale_mid = PdfPoint::new(after_controls.arcs[0].mid.x, after_controls.arcs[0].mid.y + 12.)
-        .unwrap();
+    let stale_mid = PdfPoint::new(
+        after_controls.arcs[0].mid.x,
+        after_controls.arcs[0].mid.y + 12.,
+    )
+    .unwrap();
     workspace
         .update(cx, |workspace, cx| {
             workspace.set_selected_arc_control_point(
@@ -15364,7 +26792,11 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     );
     assert!(stale_scene.selected && !stale_scene.draft);
     cx.simulate_mouse_up(project(stale_end), MouseButton::Left, Modifiers::default());
-    assert_eq!(snapshot!(), externally_changed, "a stale Arc release must not overwrite newer state");
+    assert_eq!(
+        snapshot!(),
+        externally_changed,
+        "a stale Arc release must not overwrite newer state"
+    );
 
     let busy_start = scene_arc!().sampled_path[16];
     let busy_end = PdfPoint::new(busy_start.x + 18., busy_start.y + 12.).unwrap();
@@ -15399,7 +26831,10 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
             before_busy.arcs[0].end,
         ),
     );
-    assert!(!busy_scene.draft, "save-busy state must suppress the Arc overlay");
+    assert!(
+        !busy_scene.draft,
+        "save-busy state must suppress the Arc overlay"
+    );
     cx.simulate_mouse_up(project(busy_end), MouseButton::Left, Modifiers::default());
     assert_eq!(snapshot!(), before_busy);
     workspace.update(cx, |workspace, cx| {
@@ -15427,26 +26862,53 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     let locked = snapshot!();
     let locked_body = scene_arc!().sampled_path[16];
     let locked_target = PdfPoint::new(locked_body.x + 24., locked_body.y + 18.).unwrap();
-    cx.simulate_mouse_down(project(locked_body), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_down(
+        project(locked_body),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     cx.simulate_mouse_move(
         project(locked_target),
         Some(MouseButton::Left),
         Modifiers::default(),
     );
-    cx.simulate_mouse_up(project(locked_target), MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_down(project(locked.arcs[0].start), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(
+        project(locked_target),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_down(
+        project(locked.arcs[0].start),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     cx.simulate_mouse_move(
         project(locked_target),
         Some(MouseButton::Left),
         Modifiers::default(),
     );
-    cx.simulate_mouse_up(project(locked_target), MouseButton::Left, Modifiers::default());
-    assert_eq!(snapshot!(), locked, "locked Arc body and controls must be inert");
+    cx.simulate_mouse_up(
+        project(locked_target),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    assert_eq!(
+        snapshot!(),
+        locked,
+        "locked Arc body and controls must be inert"
+    );
     assert_eq!(locked.rectangles, vec![rectangle]);
 }
 
-#[gpui::test]
-fn redact_workspace_renders_real_component_tool_and_truthful_pending_overlay(
+#[test]
+fn redact_workspace_renders_real_component_tool_and_truthful_pending_overlay() {
+    run_gpui_test_with_native_main_stack(
+        "redact_workspace_renders_real_component_tool_and_truthful_pending_overlay",
+        redact_workspace_renders_real_component_tool_and_truthful_pending_overlay_on_native_stack,
+    );
+}
+
+fn redact_workspace_renders_real_component_tool_and_truthful_pending_overlay_on_native_stack(
     cx: &mut TestAppContext,
 ) {
     cx.update(|cx| {
@@ -15561,6 +27023,120 @@ fn redact_workspace_renders_real_component_tool_and_truthful_pending_overlay(
             "selected Redact handle {id} must remain addressable"
         );
     }
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let select_layer = cx.debug_bounds(layer_id).unwrap();
+    let select_scale =
+        (f32::from(select_layer.size.width) / 612.).min(f32::from(select_layer.size.height) / 792.);
+    let select_origin = point(
+        select_layer.origin.x + px((f32::from(select_layer.size.width) - 612. * select_scale) / 2.),
+        select_layer.origin.y
+            + px((f32::from(select_layer.size.height) - 792. * select_scale) / 2.),
+    );
+    let project_select = |x: f32, y: f32| {
+        point(
+            select_origin.x + px(x * select_scale),
+            select_origin.y + px((792. - y) * select_scale),
+        )
+    };
+    cx.simulate_click(project_select(500., 500.), Modifiers::default());
+    let before_resize = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(before_resize.selected_id.is_none());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let deselected_layer = cx.debug_bounds(layer_id).unwrap();
+    let deselected_scale = (f32::from(deselected_layer.size.width) / 612.)
+        .min(f32::from(deselected_layer.size.height) / 792.);
+    let deselected_origin = point(
+        deselected_layer.origin.x
+            + px((f32::from(deselected_layer.size.width) - 612. * deselected_scale) / 2.),
+        deselected_layer.origin.y
+            + px((f32::from(deselected_layer.size.height) - 792. * deselected_scale) / 2.),
+    );
+    let project_deselected = |x: f32, y: f32| {
+        point(
+            deselected_origin.x + px(x * deselected_scale),
+            deselected_origin.y + px((792. - y) * deselected_scale),
+        )
+    };
+    let east = project_deselected(324., 252.);
+    let north_west = project_deselected(144., 288.);
+    cx.simulate_mouse_move(east, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let feedback_handles_at = |cx: &mut gpui::VisualTestContext, center: gpui::Point<Pixels>| {
+        let device_scale = cx.update(|window, _| window.scale_factor());
+        cx.update(|window, _| window.painted_quads())
+            .into_iter()
+            .filter(|quad| {
+                let quad_x = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                let quad_y = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                (quad_x - f32::from(center.x) * device_scale).abs() < 1.
+                    && (quad_y - f32::from(center.y) * device_scale).abs() < 1.
+                    && quad.border_widths.top.0 > 0.
+            })
+            .collect::<Vec<_>>()
+    };
+    let hot = feedback_handles_at(cx, east);
+    let ordinary = feedback_handles_at(cx, north_west);
+    assert_eq!(hot.len(), 1);
+    assert_eq!(ordinary.len(), 1);
+    assert!(hot[0].bounds.size.width.0 > ordinary[0].bounds.size.width.0);
+    let moved_east = project_deselected(350., 252.);
+    cx.simulate_mouse_down(east, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(moved_east, Some(MouseButton::Left), Modifiers::default());
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_scene(request.document_id, 0, cx)
+            })
+            .redacts[0]
+            .rect
+            .width
+            > before_resize.redacts[0].rect.width
+    );
+    let during_resize = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(during_resize.redacts, before_resize.redacts);
+    assert_eq!(
+        (during_resize.revision, during_resize.undo_depth),
+        (before_resize.revision, before_resize.undo_depth)
+    );
+    assert_eq!(
+        during_resize.selected_id.as_ref(),
+        Some(&snapshot.redacts[0].id)
+    );
+    cx.simulate_mouse_up(moved_east, MouseButton::Left, Modifiers::default());
+    let after_resize = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(after_resize.undo_depth, before_resize.undo_depth + 1);
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .redacts,
+        before_resize.redacts
+    );
 }
 
 #[gpui::test]
@@ -15637,6 +27213,10 @@ fn snapshot_workspace_renders_real_component_tool_and_two_click_base_raster_capt
     assert_eq!(preview.snapshots.len(), 1);
     assert!(preview.snapshots[0].draft);
     assert_eq!(preview.snapshots[0].body_id, "snapshot.body");
+    assert_eq!(
+        preview.snapshots[0].feedback,
+        SceneInteractionFeedback::Creation
+    );
 
     cx.simulate_click(second_corner, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -15668,6 +27248,10 @@ fn snapshot_workspace_renders_real_component_tool_and_two_click_base_raster_capt
     let thumbnail_scene = workspace.read_with(cx, |workspace, cx| {
         workspace.thumbnail_annotation_scene(request.document_id, 0, cx)
     });
+    assert_eq!(
+        page_scene.snapshots[0].feedback,
+        SceneInteractionFeedback::Normal
+    );
     assert_eq!(
         page_scene.snapshots[0].asset_id,
         thumbnail_scene.snapshots[0].asset_id
@@ -15772,8 +27356,9 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     cx.simulate_resize(size(px(1500.), px(900.)));
     let workspace = workspace_slot.borrow_mut().take().unwrap();
     cx.update(|window, _| window.activate_window());
-    let document_id =
-        workspace.update(cx, |workspace, cx| workspace.open_path(source_path.clone(), cx));
+    let document_id = workspace.update(cx, |workspace, cx| {
+        workspace.open_path(source_path.clone(), cx)
+    });
     cx.run_until_parked();
     let original_worker_pid = workspace
         .read_with(cx, |workspace, cx| {
@@ -15850,7 +27435,10 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     ] {
         assert!((actual - expected).abs() <= 0.001);
     }
-    assert_eq!((created.revision, created.undo_depth, created.redo_depth), (1, 1, 0));
+    assert_eq!(
+        (created.revision, created.undo_depth, created.redo_depth),
+        (1, 1, 0)
+    );
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .annotation_tool(document_id, cx)),
@@ -15862,7 +27450,9 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     cx.simulate_mouse_down(move_start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(move_end, Some(MouseButton::Left), Modifiers::default());
     let move_preview = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!((move_preview.revision, move_preview.undo_depth), (1, 1));
     cx.simulate_mouse_up(move_end, MouseButton::Left, Modifiers::default());
@@ -15871,7 +27461,9 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     cx.simulate_mouse_down(resize_start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(resize_end, Some(MouseButton::Left), Modifiers::default());
     let resize_preview = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!((resize_preview.revision, resize_preview.undo_depth), (2, 2));
     cx.simulate_mouse_up(resize_end, MouseButton::Left, Modifiers::default());
@@ -15893,7 +27485,10 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         .all(|(actual, expected)| (actual - expected).abs() < 0.001),
         "the real pointer move and resize must preserve the literal PDF edit",
     );
-    assert_eq!((edited.revision, edited.undo_depth, edited.redo_depth), (3, 3, 0));
+    assert_eq!(
+        (edited.revision, edited.undo_depth, edited.redo_depth),
+        (3, 3, 0)
+    );
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds("snapshot.rotate").is_some());
@@ -15924,7 +27519,9 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         rotate_preview.snapshots[0].rotation_degrees
     );
     let retained_during_preview = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!(
         (
@@ -15936,9 +27533,14 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     );
     cx.simulate_mouse_up(rotate_end, MouseButton::Left, Modifiers::default());
     let rotated = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
-    assert_eq!((rotated.revision, rotated.undo_depth, rotated.redo_depth), (4, 4, 0));
+    assert_eq!(
+        (rotated.revision, rotated.undo_depth, rotated.redo_depth),
+        (4, 4, 0)
+    );
     assert!((rotated.snapshots[0].rotation_degrees() - 30.).abs() <= 0.01);
     let committed_rotation = rotated.snapshots[0].rotation_degrees();
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -15960,35 +27562,58 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         click_count: 2,
     });
     let reset = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
-    assert_eq!((reset.revision, reset.undo_depth, reset.redo_depth), (5, 5, 0));
+    assert_eq!(
+        (reset.revision, reset.undo_depth, reset.redo_depth),
+        (5, 5, 0)
+    );
     assert_eq!(reset.snapshots[0].rotation_degrees(), 0.);
     let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
     cx.update(|window, cx| workspace_focus.focus(window, cx));
     cx.simulate_keystrokes(EDIT_UNDO);
     let restored_rotation = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
-    assert_eq!((restored_rotation.revision, restored_rotation.undo_depth, restored_rotation.redo_depth), (4, 4, 1));
-    assert!(
-        (restored_rotation.snapshots[0].rotation_degrees() - committed_rotation).abs() <= 0.01
+    assert_eq!(
+        (
+            restored_rotation.revision,
+            restored_rotation.undo_depth,
+            restored_rotation.redo_depth
+        ),
+        (4, 4, 1)
     );
+    assert!((restored_rotation.snapshots[0].rotation_degrees() - committed_rotation).abs() <= 0.01);
 
     toggle_document_actions(cx);
-    assert!(cx.debug_bounds(ENGINEERING_VISUAL_PROPERTY_INSPECTOR_ID).is_some());
+    assert!(
+        cx.debug_bounds(ENGINEERING_VISUAL_PROPERTY_INSPECTOR_ID)
+            .is_some()
+    );
     engineering_visual_release_opacity(cx, &workspace, document_id, 0.45);
     let faded = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!(
         (faded.revision, faded.undo_depth, faded.redo_depth),
-        (restored_rotation.revision + 2, restored_rotation.undo_depth + 1, 0),
+        (
+            restored_rotation.revision + 2,
+            restored_rotation.undo_depth + 1,
+            0
+        ),
     );
     assert!((faded.snapshots[0].opacity() - 0.45).abs() < 0.001);
     engineering_visual_toggle_lock(cx);
     let locked = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!(
         (locked.revision, locked.undo_depth, locked.redo_depth),
@@ -15999,12 +27624,14 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     let locked_center = to_view(center.x, center.y);
     let locked_move_end = to_view(center.x + 24., center.y + 24.);
     cx.simulate_mouse_down(locked_center, MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(locked_move_end, Some(MouseButton::Left), Modifiers::default());
-    cx.simulate_mouse_up(locked_move_end, MouseButton::Left, Modifiers::default());
-    let locked_resize_pdf = snapshot_resize_handle_point(
-        &locked_snapshot,
-        RectangleResizeHandle::SouthEast,
+    cx.simulate_mouse_move(
+        locked_move_end,
+        Some(MouseButton::Left),
+        Modifiers::default(),
     );
+    cx.simulate_mouse_up(locked_move_end, MouseButton::Left, Modifiers::default());
+    let locked_resize_pdf =
+        snapshot_resize_handle_point(&locked_snapshot, RectangleResizeHandle::SouthEast);
     let locked_resize = to_view(locked_resize_pdf.x, locked_resize_pdf.y);
     let locked_resize_end = to_view(locked_resize_pdf.x + 24., locked_resize_pdf.y - 24.);
     cx.simulate_mouse_down(locked_resize, MouseButton::Left, Modifiers::default());
@@ -16014,11 +27641,8 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         Modifiers::default(),
     );
     cx.simulate_mouse_up(locked_resize_end, MouseButton::Left, Modifiers::default());
-    let locked_rotate_pdf = snapshot_rotation_handle_point(
-        &locked_snapshot,
-        f64::from(render_scale),
-    )
-    .unwrap();
+    let locked_rotate_pdf =
+        snapshot_rotation_handle_point(&locked_snapshot, f64::from(render_scale)).unwrap();
     let locked_rotate = to_view(locked_rotate_pdf.x, locked_rotate_pdf.y);
     let locked_rotate_end = to_view(locked_rotate_pdf.x + 24., locked_rotate_pdf.y);
     cx.simulate_mouse_down(locked_rotate, MouseButton::Left, Modifiers::default());
@@ -16028,13 +27652,17 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         Modifiers::default(),
     );
     cx.simulate_mouse_up(locked_rotate_end, MouseButton::Left, Modifiers::default());
-    assert!(workspace
-        .update(cx, |workspace, cx| {
-            workspace.delete_selected_annotation(document_id, cx)
-        })
-        .is_err());
+    assert!(
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.delete_selected_annotation(document_id, cx)
+            })
+            .is_err()
+    );
     let suppressed = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!(
         (suppressed.revision, suppressed.undo_depth),
@@ -16085,10 +27713,15 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
                 .arg(&saved_path)
                 .status()
         } else {
-            std::process::Command::new(command).arg(&saved_path).status()
+            std::process::Command::new(command)
+                .arg(&saved_path)
+                .status()
         }
         .unwrap();
-        assert!(status.success(), "{command} must validate the saved Snapshot PDF");
+        assert!(
+            status.success(),
+            "{command} must validate the saved Snapshot PDF"
+        );
     }
 
     let expected_snapshot = locked_snapshot;
@@ -16096,7 +27729,8 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     let cosine = actual_radians.cos().abs();
     let sine = actual_radians.sin().abs();
     let bounds_width = expected_snapshot.rect.width * cosine + expected_snapshot.rect.height * sine;
-    let bounds_height = expected_snapshot.rect.width * sine + expected_snapshot.rect.height * cosine;
+    let bounds_height =
+        expected_snapshot.rect.width * sine + expected_snapshot.rect.height * cosine;
     let expected_bounds = PdfRect::new(
         center.x - bounds_width * 0.5,
         center.y - bounds_height * 0.5,
@@ -16104,7 +27738,8 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         bounds_height,
     )
     .unwrap();
-    let persisted_graph = qpdf_assert_snapshot_native(&saved_path, &expected_snapshot, expected_bounds);
+    let persisted_graph =
+        qpdf_assert_snapshot_native(&saved_path, &expected_snapshot, expected_bounds);
 
     let independent = PdfPersistenceSession::open(&saved_path).unwrap();
     let persisted = independent
@@ -16129,7 +27764,10 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     let annotated_page = saved_pixel_proof
         .render_page_with_pdf_annotations(0, 320)
         .unwrap();
-    assert_ne!(Sha256::digest(annotated_page.pixels_bgra()), source_page_sha256);
+    assert_ne!(
+        Sha256::digest(annotated_page.pixels_bgra()),
+        source_page_sha256
+    );
     assert!(
         raster_region_difference_count(&annotated_page, &source_page, expected_bounds) > 0,
         "independent PDFium must show the rotated 45% opacity Snapshot in its rotated bounds",
@@ -16210,9 +27848,7 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     for object_ref in persisted_graph {
         let object_key = format!("obj:{object_ref}");
         assert!(
-            deleted_graph["qpdf"][1]
-                .get(object_key.as_str())
-                .is_none(),
+            deleted_graph["qpdf"][1].get(object_key.as_str()).is_none(),
             "deleting Snapshot must remove its Form/Image/SMask object graph",
         );
     }
@@ -16228,7 +27864,10 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         "all real Snapshot sessions must release workers and mapped surfaces",
     );
     drop(_scratch_directories);
-    assert!(!owned_root.exists(), "the owned Snapshot test root must be removed");
+    assert!(
+        !owned_root.exists(),
+        "the owned Snapshot test root must be removed"
+    );
     assert_eq!(
         format!("{:x}", Sha256::digest(std::fs::read(&fixture).unwrap())),
         source_sha256,
@@ -16326,7 +27965,9 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
         })
         .expect("the real fixture must own one live worker");
     let initial = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!((initial.revision, initial.saved_revision), (0, 0));
     assert_eq!((initial.undo_depth, initial.redo_depth), (0, 0));
@@ -16368,9 +28009,14 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
     cx.simulate_mouse_down(create_start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(create_end, Some(MouseButton::Left), Modifiers::default());
     let preview_state = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
-    assert_eq!(preview_state, initial, "the Redact preview must be history-free");
+    assert_eq!(
+        preview_state, initial,
+        "the Redact preview must be history-free"
+    );
     let preview_scene = workspace.read_with(cx, |workspace, cx| {
         workspace.annotation_scene(document_id, 0, cx)
     });
@@ -16396,7 +28042,10 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
     assert_eq!(created.redacts.len(), 1);
     let redact_id = created.redacts[0].id.clone();
     assert_eq!(redact_id.as_str(), "workspace:redact:1");
-    assert_eq!((created.revision, created.undo_depth, created.redo_depth), (1, 1, 0));
+    assert_eq!(
+        (created.revision, created.undo_depth, created.redo_depth),
+        (1, 1, 0)
+    );
     let created_rect = created.redacts[0].rect;
     assert!(
         (created_rect.x - expected_created_rect.x).abs() < 0.001
@@ -16414,9 +28063,14 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
     cx.simulate_mouse_move(move_end, Some(MouseButton::Left), Modifiers::default());
     cx.simulate_mouse_up(move_end, MouseButton::Left, Modifiers::default());
     let moved = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
-    assert_eq!((moved.revision, moved.undo_depth, moved.redo_depth), (2, 2, 0));
+    assert_eq!(
+        (moved.revision, moved.undo_depth, moved.redo_depth),
+        (2, 2, 0)
+    );
     let expected_moved_rect = PdfRect::new(180., 240., 180., 72.).unwrap();
     let moved_rect = moved.redacts[0].rect;
     assert!(
@@ -16440,7 +28094,10 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
         .unwrap();
     let edited_redact = edited.redacts[0].clone();
     let expected_rect = PdfRect::new(180., 240., 216., 96.).unwrap();
-    assert_eq!((edited.revision, edited.undo_depth, edited.redo_depth), (3, 3, 0));
+    assert_eq!(
+        (edited.revision, edited.undo_depth, edited.redo_depth),
+        (3, 3, 0)
+    );
     assert!(
         (edited_redact.rect.x - expected_rect.x).abs() < 0.001
             && (edited_redact.rect.y - expected_rect.y).abs() < 0.001
@@ -16457,13 +28114,22 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
         ),
     );
 
-    assert!(workspace.update(cx, |workspace, cx| {
-        workspace.set_selected_annotation_locked(document_id, true, cx)
-    }).is_ok());
+    assert!(
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.set_selected_annotation_locked(document_id, true, cx)
+            })
+            .is_ok()
+    );
     let locked = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
-    assert_eq!((locked.revision, locked.undo_depth, locked.redo_depth), (4, 4, 0));
+    assert_eq!(
+        (locked.revision, locked.undo_depth, locked.redo_depth),
+        (4, 4, 0)
+    );
     assert!(locked.redacts[0].locked);
     let locked_move_start = to_view(288., 288.);
     let locked_move_end = to_view(308., 308.);
@@ -16483,23 +28149,37 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
         Modifiers::default(),
     );
     cx.simulate_mouse_up(locked_resize_end, MouseButton::Left, Modifiers::default());
-    assert!(workspace.update(cx, |workspace, cx| {
-        workspace.delete_selected_annotation(document_id, cx)
-    }).is_ok());
+    assert!(
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.delete_selected_annotation(document_id, cx)
+            })
+            .is_ok()
+    );
     assert_eq!(
         workspace
-            .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(document_id, cx))
             .unwrap(),
         locked,
         "locked pending Redact move, resize, and Delete must be history-free no-ops",
     );
-    assert!(workspace.update(cx, |workspace, cx| {
-        workspace.set_selected_annotation_locked(document_id, false, cx)
-    }).is_ok());
+    assert!(
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.set_selected_annotation_locked(document_id, false, cx)
+            })
+            .is_ok()
+    );
     let unlocked = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
-    assert_eq!((unlocked.revision, unlocked.undo_depth, unlocked.redo_depth), (5, 5, 0));
+    assert_eq!(
+        (unlocked.revision, unlocked.undo_depth, unlocked.redo_depth),
+        (5, 5, 0)
+    );
     assert!(!unlocked.redacts[0].locked);
     assert!(unlocked.redacts[0].same_persisted_state_as(&edited_redact));
 
@@ -16687,8 +28367,14 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
     );
     drop(scratch_files);
     drop(scratch_directories);
-    assert!(!saved_path.exists(), "the disposable pending-Redact PDF must be removed");
-    assert!(!owned_root.exists(), "the owned pending-Redact root must be removed");
+    assert!(
+        !saved_path.exists(),
+        "the disposable pending-Redact PDF must be removed"
+    );
+    assert!(
+        !owned_root.exists(),
+        "the owned pending-Redact root must be removed"
+    );
     assert_eq!(
         format!("{:x}", Sha256::digest(std::fs::read(&fixture).unwrap())),
         source_sha256,
@@ -16795,9 +28481,11 @@ fn cloud_workspace_engineering_pointer_renders_real_component_tool_and_retains_s
         .min(f32::from(current_layer.size.height) / 792.);
     let vertex_pdf = created.clouds[0].points()[1];
     let vertex_center = point(
-        current_layer.left() + px((f32::from(current_layer.size.width) - 612. * current_scale) / 2.)
+        current_layer.left()
+            + px((f32::from(current_layer.size.width) - 612. * current_scale) / 2.)
             + px(vertex_pdf.x as f32 * current_scale),
-        current_layer.top() + px((f32::from(current_layer.size.height) - 792. * current_scale) / 2.)
+        current_layer.top()
+            + px((f32::from(current_layer.size.height) - 792. * current_scale) / 2.)
             + px((792. - vertex_pdf.y as f32) * current_scale),
     );
     let moved_vertex = point(vertex_center.x + px(18.), vertex_center.y - px(12.));
@@ -16807,7 +28495,14 @@ fn cloud_workspace_engineering_pointer_renders_real_component_tool_and_retains_s
     let preview = workspace.read_with(cx, |workspace, cx| {
         workspace.annotation_scene(request.document_id, 0, cx)
     });
-    assert!(preview.clouds[0].draft, "vertex={vertex:?}, layer={:?}, viewport={:?}, selected={:?}", cx.debug_bounds(layer_id), cx.debug_bounds(DOCUMENT_VIEWPORT_ID), workspace.read_with(cx, |workspace, cx| workspace.selected_annotation_ids(request.document_id, cx)));
+    assert!(
+        preview.clouds[0].draft,
+        "vertex={vertex:?}, layer={:?}, viewport={:?}, selected={:?}",
+        cx.debug_bounds(layer_id),
+        cx.debug_bounds(DOCUMENT_VIEWPORT_ID),
+        workspace.read_with(cx, |workspace, cx| workspace
+            .selected_annotation_ids(request.document_id, cx))
+    );
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| workspace
@@ -17006,8 +28701,15 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     cx.simulate_click(to_view(510., 690.), Modifiers::default());
     cx.update(|window, cx| workspace_focus.focus(window, cx));
     cx.simulate_keystrokes("escape");
-    let after_cancel = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
-    assert_eq!(after_cancel.vertex_paths, after_polyline.vertex_paths, "Escape must discard the disposable draft");
+    let after_cancel = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        after_cancel.vertex_paths, after_polyline.vertex_paths,
+        "Escape must discard the disposable draft"
+    );
 
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_POLYGON_TOOL_ID);
     let polygon_tool = cx
@@ -17058,11 +28760,23 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     let body_end = to_view(186., 558.);
     cx.simulate_mouse_down(body_start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(body_end, Some(MouseButton::Left), Modifiers::default());
-    let before_body_commit = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
+    let before_body_commit = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
     cx.simulate_mouse_up(body_end, MouseButton::Left, Modifiers::default());
-    let body_moved = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
+    let body_moved = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
     assert_eq!(body_moved.revision, before_body_commit.revision + 1);
-    for (actual, original) in body_moved.vertex_paths[0].points().iter().zip(after_polygon.vertex_paths[0].points()) {
+    for (actual, original) in body_moved.vertex_paths[0]
+        .points()
+        .iter()
+        .zip(after_polygon.vertex_paths[0].points())
+    {
         assert!((actual.x - original.x - 12.).abs() <= 0.000_1);
         assert!((actual.y - original.y + 12.).abs() <= 0.000_1);
     }
@@ -17113,12 +28827,19 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     toggle_document_actions(cx);
-    assert!(cx.debug_bounds(VERTEX_PATH_INSPECTOR_FILL_COLOR_ID).is_none());
+    assert!(
+        cx.debug_bounds(VERTEX_PATH_INSPECTOR_FILL_COLOR_ID)
+            .is_none()
+    );
     vertex_path_preview_color(cx, &workspace, false, "#1d4ed8cc");
     vertex_path_click_apply(cx, false);
     vertex_path_enter_width(cx, &workspace, "3.25");
     vertex_path_enter_opacity(cx, &workspace, "55");
-    let polyline_styled = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
+    let polyline_styled = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
     let polyline_appearance = &polyline_styled.vertex_paths[0].appearance;
     assert_eq!(polyline_appearance.stroke_color(), "#1d4ed8");
     assert_eq!(polyline_appearance.stroke_width_pt(), 3.25);
@@ -17224,7 +28945,11 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     vertex_path_enter_opacity(cx, &workspace, "70");
     vertex_path_preview_color(cx, &workspace, true, "#22c55e80");
     vertex_path_click_apply(cx, true);
-    let polygon_styled = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
+    let polygon_styled = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
     let polygon_appearance = &polygon_styled.vertex_paths[1].appearance;
     assert_eq!(polygon_appearance.stroke_color(), "#b91c1c");
     assert_eq!(polygon_appearance.stroke_width_pt(), 5.);
@@ -17232,14 +28957,25 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     assert_eq!(polygon_appearance.fill_color(), Some("#22c55e"));
 
     vertex_path_toggle_lock(cx);
-    let locked = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
+    let locked = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
     assert!(locked.vertex_paths[1].locked);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let locked_width = cx.debug_bounds(VERTEX_PATH_INSPECTOR_WIDTH_ID).unwrap();
     cx.simulate_click(locked_width.center(), Modifiers::default());
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} 9 enter"));
-    let property_inert = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
-    assert_eq!((property_inert.revision, property_inert.undo_depth), (locked.revision, locked.undo_depth));
+    let property_inert = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        (property_inert.revision, property_inert.undo_depth),
+        (locked.revision, locked.undo_depth)
+    );
     let close = cx.debug_bounds(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID).unwrap();
     cx.simulate_click(close.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -17248,12 +28984,23 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     cx.simulate_mouse_down(locked_vertex, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(locked_target, Some(MouseButton::Left), Modifiers::default());
     cx.simulate_mouse_up(locked_target, MouseButton::Left, Modifiers::default());
-    let inert = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
-    assert_eq!((inert.revision, inert.undo_depth), (locked.revision, locked.undo_depth));
+    let inert = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        (inert.revision, inert.undo_depth),
+        (locked.revision, locked.undo_depth)
+    );
     assert!(inert.vertex_paths[1].same_persisted_state_as(&locked.vertex_paths[1]));
     toggle_document_actions(cx);
     vertex_path_toggle_lock(cx);
-    let unlocked = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
+    let unlocked = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
     assert!(!unlocked.vertex_paths[1].locked);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let close = cx.debug_bounds(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID).unwrap();
@@ -17302,7 +29049,10 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     assert_eq!(independent.vertex_paths()[0].appearance.fill_color(), None);
     assert_eq!(independent.vertex_paths()[1].id, polygon_id);
     assert_eq!(independent.vertex_paths()[1].kind, VertexPathKind::Polygon);
-    assert_eq!(independent.vertex_paths()[1].appearance.fill_color(), Some("#22c55e"));
+    assert_eq!(
+        independent.vertex_paths()[1].appearance.fill_color(),
+        Some("#22c55e")
+    );
     assert!(!independent.vertex_paths()[0].locked && !independent.vertex_paths()[1].locked);
 
     let pixel_proof = backend
@@ -17329,30 +29079,70 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         "persisted vertex paths must change real PDFium annotation pixels",
     );
     let path_region = |path: &VertexPathAnnotation, padding: f64| {
-        let min_x = path.points().iter().map(|point| point.x).fold(f64::INFINITY, f64::min);
-        let max_x = path.points().iter().map(|point| point.x).fold(f64::NEG_INFINITY, f64::max);
-        let min_y = path.points().iter().map(|point| point.y).fold(f64::INFINITY, f64::min);
-        let max_y = path.points().iter().map(|point| point.y).fold(f64::NEG_INFINITY, f64::max);
-        PdfRect::new(min_x - padding, min_y - padding, max_x - min_x + padding * 2., max_y - min_y + padding * 2.).unwrap()
+        let min_x = path
+            .points()
+            .iter()
+            .map(|point| point.x)
+            .fold(f64::INFINITY, f64::min);
+        let max_x = path
+            .points()
+            .iter()
+            .map(|point| point.x)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let min_y = path
+            .points()
+            .iter()
+            .map(|point| point.y)
+            .fold(f64::INFINITY, f64::min);
+        let max_y = path
+            .points()
+            .iter()
+            .map(|point| point.y)
+            .fold(f64::NEG_INFINITY, f64::max);
+        PdfRect::new(
+            min_x - padding,
+            min_y - padding,
+            max_x - min_x + padding * 2.,
+            max_y - min_y + padding * 2.,
+        )
+        .unwrap()
     };
     let polyline_region = path_region(&expected_vertex_paths[0], 18.);
     let polygon_region = path_region(&expected_vertex_paths[1], 18.);
-    assert!(raster_region_difference_count(&annotated_page, &annotation_free_page, polyline_region) > 0);
-    assert!(raster_region_difference_count(&annotated_page, &annotation_free_page, polygon_region) > 0);
+    assert!(
+        raster_region_difference_count(&annotated_page, &annotation_free_page, polyline_region) > 0
+    );
+    assert!(
+        raster_region_difference_count(&annotated_page, &annotation_free_page, polygon_region) > 0
+    );
     let polygon_points = expected_vertex_paths[1].points();
     let interior_center = PdfPoint::new(
         polygon_points.iter().map(|point| point.x).sum::<f64>() / polygon_points.len() as f64,
         polygon_points.iter().map(|point| point.y).sum::<f64>() / polygon_points.len() as f64,
-    ).unwrap();
+    )
+    .unwrap();
     let interior = PdfRect::new(interior_center.x - 6., interior_center.y - 6., 12., 12.).unwrap();
-    assert!(raster_region_difference_count(&annotated_page, &annotation_free_page, interior) > 0, "filled Polygon interior must differ from the annotation-free page");
+    assert!(
+        raster_region_difference_count(&annotated_page, &annotation_free_page, interior) > 0,
+        "filled Polygon interior must differ from the annotation-free page"
+    );
     let raster_width = annotated_page.width() as usize;
-    for (index, (actual, base)) in annotated_page.pixels_bgra().chunks_exact(4).zip(annotation_free_page.pixels_bgra().chunks_exact(4)).enumerate() {
+    for (index, (actual, base)) in annotated_page
+        .pixels_bgra()
+        .chunks_exact(4)
+        .zip(annotation_free_page.pixels_bgra().chunks_exact(4))
+        .enumerate()
+    {
         let x = (index % raster_width) as f64 / f64::from(annotated_page.width()) * 612.;
         let y = 792. - (index / raster_width) as f64 / f64::from(annotated_page.height()) * 792.;
-        let inside = |rect: PdfRect| x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
+        let inside = |rect: PdfRect| {
+            x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height
+        };
         if !inside(polyline_region) && !inside(polygon_region) {
-            assert_eq!(actual, base, "pixels outside the padded vertex-path union must remain exact");
+            assert_eq!(
+                actual, base,
+                "pixels outside the padded vertex-path union must remain exact"
+            );
         }
     }
     let pixel_worker_pid = pixel_proof.worker_pid().unwrap();
@@ -17360,11 +29150,20 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     assert!(!worker_process_exists(pixel_worker_pid));
     for command in ["qpdf", "pdfinfo"] {
         let status = if command == "qpdf" {
-            std::process::Command::new(command).arg("--check").arg(&saved_path).status()
+            std::process::Command::new(command)
+                .arg("--check")
+                .arg(&saved_path)
+                .status()
         } else {
-            std::process::Command::new(command).arg(&saved_path).status()
-        }.expect("the structural PDF validator must be available");
-        assert!(status.success(), "{command} must validate the saved vertex-path PDF");
+            std::process::Command::new(command)
+                .arg(&saved_path)
+                .status()
+        }
+        .expect("the structural PDF validator must be available");
+        assert!(
+            status.success(),
+            "{command} must validate the saved vertex-path PDF"
+        );
     }
 
     assert_eq!(
@@ -17427,12 +29226,20 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
                 .is_none(),
         "all real vertex-path sessions must release their workers and mapped surfaces",
     );
-    std::fs::remove_file(&saved_path).expect("the verified vertex-path output PDF must be removable");
-    assert!(!saved_path.exists(), "the verified vertex-path output PDF must be absent");
+    std::fs::remove_file(&saved_path)
+        .expect("the verified vertex-path output PDF must be removable");
+    assert!(
+        !saved_path.exists(),
+        "the verified vertex-path output PDF must be absent"
+    );
     if surface_root.exists() {
-        std::fs::remove_dir(&surface_root).expect("the empty mapped-surface directory must be removable");
+        std::fs::remove_dir(&surface_root)
+            .expect("the empty mapped-surface directory must be removable");
     }
-    assert!(!surface_root.exists(), "the mapped-surface directory must be absent");
+    assert!(
+        !surface_root.exists(),
+        "the mapped-surface directory must be absent"
+    );
 }
 
 #[gpui::test]
@@ -17497,8 +29304,12 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
         })
         .unwrap();
     let source_base_digest = Sha256::digest(
-        source_pixel_proof.render_page(0, 320).unwrap().pixels_bgra(),
-    ).to_vec();
+        source_pixel_proof
+            .render_page(0, 320)
+            .unwrap()
+            .pixels_bgra(),
+    )
+    .to_vec();
     let source_pixel_worker_pid = source_pixel_proof.worker_pid().unwrap();
     source_pixel_proof.close().unwrap();
     assert!(!worker_process_exists(source_pixel_worker_pid));
@@ -17657,13 +29468,24 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
             workspace.select_annotation(document_id, selected_id, cx)
         }));
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let before = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
+        let before = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(document_id, cx)
+            })
+            .unwrap();
         let switch = cx
             .debug_bounds(MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID)
             .expect("each real selected measurement must expose Show caption");
         cx.simulate_click(switch.center(), Modifiers::default());
-        let after = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
-        assert_eq!((after.revision, after.undo_depth), (before.revision + 1, before.undo_depth + 1));
+        let after = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(document_id, cx)
+            })
+            .unwrap();
+        assert_eq!(
+            (after.revision, after.undo_depth),
+            (before.revision + 1, before.undo_depth + 1)
+        );
     }
     let captions_hidden = workspace
         .read_with(cx, |workspace, cx| {
@@ -17706,12 +29528,22 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let original_vertex = after_area.measurement_paths[0].points()[1];
     let moved_vertex = PdfPoint::new(original_vertex.x + 24., original_vertex.y - 18.).unwrap();
-    let before_drag = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
+    let before_drag = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
     let vertex_start = to_view(original_vertex.x, original_vertex.y);
     let vertex_end = to_view(moved_vertex.x, moved_vertex.y);
     cx.simulate_mouse_down(vertex_start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(vertex_end, Some(MouseButton::Left), Modifiers::default());
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap(), before_drag);
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(document_id, cx))
+            .unwrap(),
+        before_drag
+    );
     cx.simulate_mouse_up(vertex_end, MouseButton::Left, Modifiers::default());
     let mut edited = workspace
         .read_with(cx, |workspace, cx| {
@@ -17725,60 +29557,147 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
         "the measurement vertex edit must stay within 0.0001 PDF point: actual={:?}, expected={moved_vertex:?}",
         edited.measurement_paths[0].points()[1],
     );
-    assert_eq!((edited.revision, edited.undo_depth), (before_drag.revision + 1, before_drag.undo_depth + 1));
+    assert_eq!(
+        (edited.revision, edited.undo_depth),
+        (before_drag.revision + 1, before_drag.undo_depth + 1)
+    );
     assert_eq!(edited.measurement_paths[1], area_before_edit);
     assert_eq!(edited.annotation_order, captions_hidden.annotation_order);
-    assert_eq!(edited.measurement_paths[0].calibration(), captions_hidden.measurement_paths[0].calibration());
+    assert_eq!(
+        edited.measurement_paths[0].calibration(),
+        captions_hidden.measurement_paths[0].calibration()
+    );
     assert!(edited.dirty);
 
-    assert!(cx.debug_bounds(VERTEX_PATH_INSPECTOR_FILL_COLOR_ID).is_none());
+    assert!(
+        cx.debug_bounds(VERTEX_PATH_INSPECTOR_FILL_COLOR_ID)
+            .is_none()
+    );
     let before_properties_authority = (edited.revision, edited.undo_depth);
     let area_before_polylength_properties = edited.measurement_paths[1].clone();
     let authority = |workspace: &gpui::Entity<DocumentWorkspace>, cx: &gpui::VisualTestContext| {
-        let snapshot = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
+        let snapshot = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(document_id, cx)
+            })
+            .unwrap();
         (snapshot.revision, snapshot.undo_depth)
     };
     for action in [0, 1, 2, 3, 4] {
         let before = authority(&workspace, cx);
         match action {
-            0 => { vertex_path_preview_color(cx, &workspace, false, "#1d4ed8"); vertex_path_click_apply(cx, false); }
+            0 => {
+                vertex_path_preview_color(cx, &workspace, false, "#1d4ed8");
+                vertex_path_click_apply(cx, false);
+            }
             1 => vertex_path_enter_width(cx, &workspace, "3.25"),
             2 => vertex_path_enter_opacity(cx, &workspace, "55"),
             3 | 4 => vertex_path_toggle_lock(cx),
             _ => unreachable!(),
         }
         assert_eq!(authority(&workspace, cx), (before.0 + 1, before.1 + 1));
-        let after = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
-        assert_eq!(after.measurement_paths[1], area_before_polylength_properties);
+        let after = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(document_id, cx)
+            })
+            .unwrap();
+        assert_eq!(
+            after.measurement_paths[1],
+            area_before_polylength_properties
+        );
         assert_eq!(after.annotation_order, captions_hidden.annotation_order);
-        assert_eq!(after.measurement_paths[0].calibration(), captions_hidden.measurement_paths[0].calibration());
-        assert_eq!(after.measurement_paths[1].calibration(), captions_hidden.measurement_paths[1].calibration());
+        assert_eq!(
+            after.measurement_paths[0].calibration(),
+            captions_hidden.measurement_paths[0].calibration()
+        );
+        assert_eq!(
+            after.measurement_paths[1].calibration(),
+            captions_hidden.measurement_paths[1].calibration()
+        );
     }
-    let polylength_styled = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
-    assert_eq!(polylength_styled.measurement_paths[0].appearance.stroke_color(), "#1d4ed8");
-    assert_eq!(polylength_styled.measurement_paths[0].appearance.stroke_width_pt(), 3.25);
+    let polylength_styled = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        polylength_styled.measurement_paths[0]
+            .appearance
+            .stroke_color(),
+        "#1d4ed8"
+    );
+    assert_eq!(
+        polylength_styled.measurement_paths[0]
+            .appearance
+            .stroke_width_pt(),
+        3.25
+    );
     assert!(!polylength_styled.measurement_paths[0].locked);
-    assert!(!workspace.update(cx, |workspace, cx| workspace.apply_vertex_path_property_event(&VertexPathPropertyEvent {
-        document_id,
-        annotation_id: polylength_id.clone(),
-        expected_revision: polylength_styled.revision,
-        expected_kind: PathPropertyKind::Polylength,
-        patch: VertexPathPropertyPatch::FillColor(Some("#22c55e".into())),
-    }, cx).unwrap()));
-    assert_eq!(authority(&workspace, cx), (polylength_styled.revision, polylength_styled.undo_depth));
+    assert!(!workspace.update(cx, |workspace, cx| {
+        workspace
+            .apply_vertex_path_property_event(
+                &VertexPathPropertyEvent {
+                    document_id,
+                    annotation_id: polylength_id.clone(),
+                    expected_revision: polylength_styled.revision,
+                    expected_kind: PathPropertyKind::Polylength,
+                    patch: VertexPathPropertyPatch::FillColor(Some("#22c55e".into())),
+                },
+                cx,
+            )
+            .unwrap()
+    }));
+    assert_eq!(
+        authority(&workspace, cx),
+        (polylength_styled.revision, polylength_styled.undo_depth)
+    );
     let before_final_polylength_lock = authority(&workspace, cx);
     vertex_path_toggle_lock(cx);
-    assert_eq!(authority(&workspace, cx), (before_final_polylength_lock.0 + 1, before_final_polylength_lock.1 + 1));
-    let polylength_final = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
-    assert_eq!((polylength_final.revision, polylength_final.undo_depth), (before_properties_authority.0 + 6, before_properties_authority.1 + 6));
+    assert_eq!(
+        authority(&workspace, cx),
+        (
+            before_final_polylength_lock.0 + 1,
+            before_final_polylength_lock.1 + 1
+        )
+    );
+    let polylength_final = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        (polylength_final.revision, polylength_final.undo_depth),
+        (
+            before_properties_authority.0 + 6,
+            before_properties_authority.1 + 6
+        )
+    );
     assert!(polylength_final.measurement_paths[0].locked);
-    assert_eq!(polylength_final.measurement_paths[1], area_before_polylength_properties);
-    assert_eq!(polylength_final.annotation_order, captions_hidden.annotation_order);
-    assert_eq!(polylength_final.measurement_paths[0].calibration(), captions_hidden.measurement_paths[0].calibration());
-    assert_eq!(polylength_final.measurement_paths[1].calibration(), captions_hidden.measurement_paths[1].calibration());
+    assert_eq!(
+        polylength_final.measurement_paths[1],
+        area_before_polylength_properties
+    );
+    assert_eq!(
+        polylength_final.annotation_order,
+        captions_hidden.annotation_order
+    );
+    assert_eq!(
+        polylength_final.measurement_paths[0].calibration(),
+        captions_hidden.measurement_paths[0].calibration()
+    );
+    assert_eq!(
+        polylength_final.measurement_paths[1].calibration(),
+        captions_hidden.measurement_paths[1].calibration()
+    );
 
     let area_id = after_area.measurement_paths[1].id.clone();
-    assert!(workspace.update(cx, |workspace, cx| workspace.select_annotation(document_id, &area_id, cx)));
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            document_id,
+            &area_id,
+            cx
+        ))
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds(DIMENSION_INSPECTOR_FONT_SIZE_ID).is_some());
     assert!(cx.debug_bounds(DIMENSION_INSPECTOR_OFFSET_ID).is_none());
@@ -17787,38 +29706,84 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
     for action in [0, 1, 2, 3, 4, 5, 6, 7] {
         let before = authority(&workspace, cx);
         match action {
-            0 => { vertex_path_preview_color(cx, &workspace, true, "#22c55e"); vertex_path_click_apply(cx, true); }
+            0 => {
+                vertex_path_preview_color(cx, &workspace, true, "#22c55e");
+                vertex_path_click_apply(cx, true);
+            }
             1 => vertex_path_enter_width(cx, &workspace, "4"),
             2 => vertex_path_enter_opacity(cx, &workspace, "70"),
-            3 => { cx.update(|window, cx| window.draw(cx).clear(cx)); let no_fill = cx.debug_bounds(VERTEX_PATH_INSPECTOR_NO_FILL_ID).unwrap(); cx.simulate_click(no_fill.center(), Modifiers::default()); }
+            3 => {
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                let no_fill = cx.debug_bounds(VERTEX_PATH_INSPECTOR_NO_FILL_ID).unwrap();
+                cx.simulate_click(no_fill.center(), Modifiers::default());
+            }
             4 | 5 => vertex_path_toggle_lock(cx),
-            6 => { vertex_path_preview_color(cx, &workspace, true, "#22c55e"); vertex_path_click_apply(cx, true); }
+            6 => {
+                vertex_path_preview_color(cx, &workspace, true, "#22c55e");
+                vertex_path_click_apply(cx, true);
+            }
             7 => vertex_path_toggle_lock(cx),
             _ => unreachable!(),
         }
         assert_eq!(authority(&workspace, cx), (before.0 + 1, before.1 + 1));
-        let after = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
-        assert_eq!(after.measurement_paths[0], polylength_before_area_properties);
+        let after = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(document_id, cx)
+            })
+            .unwrap();
+        assert_eq!(
+            after.measurement_paths[0],
+            polylength_before_area_properties
+        );
         assert_eq!(after.annotation_order, captions_hidden.annotation_order);
-        assert_eq!(after.measurement_paths[0].calibration(), captions_hidden.measurement_paths[0].calibration());
-        assert_eq!(after.measurement_paths[1].calibration(), captions_hidden.measurement_paths[1].calibration());
+        assert_eq!(
+            after.measurement_paths[0].calibration(),
+            captions_hidden.measurement_paths[0].calibration()
+        );
+        assert_eq!(
+            after.measurement_paths[1].calibration(),
+            captions_hidden.measurement_paths[1].calibration()
+        );
     }
-    edited = workspace.read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx)).unwrap();
-    assert_eq!((edited.revision, edited.undo_depth), (before_area_properties_authority.0 + 8, before_area_properties_authority.1 + 8));
+    edited = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        (edited.revision, edited.undo_depth),
+        (
+            before_area_properties_authority.0 + 8,
+            before_area_properties_authority.1 + 8
+        )
+    );
     assert_eq!(edited.annotation_order, captions_hidden.annotation_order);
-    assert_eq!(edited.measurement_paths[0], polylength_before_area_properties);
-    assert_eq!(edited.measurement_paths[0].calibration(), captions_hidden.measurement_paths[0].calibration());
-    assert_eq!(edited.measurement_paths[1].calibration(), captions_hidden.measurement_paths[1].calibration());
-    assert_eq!(edited.measurement_paths[1].appearance.fill_color(), Some("#22c55e"));
+    assert_eq!(
+        edited.measurement_paths[0],
+        polylength_before_area_properties
+    );
+    assert_eq!(
+        edited.measurement_paths[0].calibration(),
+        captions_hidden.measurement_paths[0].calibration()
+    );
+    assert_eq!(
+        edited.measurement_paths[1].calibration(),
+        captions_hidden.measurement_paths[1].calibration()
+    );
+    assert_eq!(
+        edited.measurement_paths[1].appearance.fill_color(),
+        Some("#22c55e")
+    );
     assert!(edited.measurement_paths[1].locked);
 
     vertex_path_toggle_lock(cx);
     let unlocked_area = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     let area = &unlocked_area.measurement_paths[1];
-    let text_style = TextBoxStyle::new("Arimo", 20., "#7c3aed", area.appearance.opacity())
-        .unwrap();
+    let text_style = TextBoxStyle::new("Arimo", 20., "#7c3aed", area.appearance.opacity()).unwrap();
     let visual_appearance = DimensionAppearance::new(
         StraightLineAppearance::new(
             area.appearance.stroke_color(),
@@ -17830,20 +29795,25 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
         text_style.clone(),
     )
     .unwrap();
-    assert!(workspace
-        .update(cx, |workspace, cx| workspace.apply_dimension_property_event(
-            &DimensionPropertyEvent {
-                document_id,
-                annotation_id: area_id.clone(),
-                expected_revision: unlocked_area.revision,
-                patch: DimensionPropertyPatch::Appearance(visual_appearance),
-            },
-            cx,
-        ))
-        .unwrap());
+    assert!(
+        workspace
+            .update(cx, |workspace, cx| workspace
+                .apply_dimension_property_event(
+                    &DimensionPropertyEvent {
+                        document_id,
+                        annotation_id: area_id.clone(),
+                        expected_revision: unlocked_area.revision,
+                        patch: DimensionPropertyPatch::Appearance(visual_appearance),
+                    },
+                    cx,
+                ))
+            .unwrap()
+    );
     vertex_path_toggle_lock(cx);
     edited = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!(edited.measurement_paths[1].text_style(), &text_style);
     assert!(edited.measurement_paths[1].locked);
@@ -17915,7 +29885,10 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
     let annotation_free_page = pixel_proof
         .render_page(0, 320)
         .expect("the application base raster must remain annotation-free");
-    assert_eq!(Sha256::digest(annotation_free_page.pixels_bgra()).to_vec(), source_base_digest);
+    assert_eq!(
+        Sha256::digest(annotation_free_page.pixels_bgra()).to_vec(),
+        source_base_digest
+    );
     assert_ne!(
         Sha256::digest(annotated_page.pixels_bgra()),
         Sha256::digest(annotation_free_page.pixels_bgra()),
@@ -17924,23 +29897,61 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
     let pixel_x = 612. / f64::from(annotated_page.width());
     let pixel_y = 792. / f64::from(annotated_page.height());
     let region = |path: &MeasurementPathAnnotation| {
-        let min_x = path.points().iter().map(|point| point.x).fold(f64::INFINITY, f64::min);
-        let max_x = path.points().iter().map(|point| point.x).fold(f64::NEG_INFINITY, f64::max);
-        let min_y = path.points().iter().map(|point| point.y).fold(f64::INFINITY, f64::min);
-        let max_y = path.points().iter().map(|point| point.y).fold(f64::NEG_INFINITY, f64::max);
-        PdfRect::new(min_x - 18. - pixel_x, min_y - 18. - pixel_y, max_x - min_x + 36. + pixel_x * 2., max_y - min_y + 36. + pixel_y * 2.).unwrap()
+        let min_x = path
+            .points()
+            .iter()
+            .map(|point| point.x)
+            .fold(f64::INFINITY, f64::min);
+        let max_x = path
+            .points()
+            .iter()
+            .map(|point| point.x)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let min_y = path
+            .points()
+            .iter()
+            .map(|point| point.y)
+            .fold(f64::INFINITY, f64::min);
+        let max_y = path
+            .points()
+            .iter()
+            .map(|point| point.y)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let padding = 8_f64.max(path.appearance.stroke_width_pt() * 0.5);
+        PdfRect::new(
+            min_x - padding - pixel_x,
+            min_y - padding - pixel_y,
+            max_x - min_x + padding * 2. + pixel_x * 2.,
+            max_y - min_y + padding * 2. + pixel_y * 2.,
+        )
+        .unwrap()
     };
     let polylength_region = region(&expected_measurement_paths[0]);
     let area_region = region(&expected_measurement_paths[1]);
-    assert!(raster_region_difference_count(&annotated_page, &annotation_free_page, polylength_region) > 0);
-    assert!(raster_region_difference_count(&annotated_page, &annotation_free_page, area_region) > 0);
+    assert!(
+        raster_region_difference_count(&annotated_page, &annotation_free_page, polylength_region)
+            > 0
+    );
+    assert!(
+        raster_region_difference_count(&annotated_page, &annotation_free_page, area_region) > 0
+    );
     let raster_width = annotated_page.width() as usize;
-    for (index, (actual, base)) in annotated_page.pixels_bgra().chunks_exact(4).zip(annotation_free_page.pixels_bgra().chunks_exact(4)).enumerate() {
+    for (index, (actual, base)) in annotated_page
+        .pixels_bgra()
+        .chunks_exact(4)
+        .zip(annotation_free_page.pixels_bgra().chunks_exact(4))
+        .enumerate()
+    {
         let x = (index % raster_width) as f64 / f64::from(annotated_page.width()) * 612.;
         let y = 792. - (index / raster_width) as f64 / f64::from(annotated_page.height()) * 792.;
-        let inside = |rect: PdfRect| x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
+        let inside = |rect: PdfRect| {
+            x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height
+        };
         if !inside(polylength_region) && !inside(area_region) {
-            assert_eq!(actual, base, "pixels outside the one-raster-pixel-expanded measurement-path union must remain exact");
+            assert_eq!(
+                actual, base,
+                "pixels outside the one-raster-pixel-expanded measurement-path union must remain exact"
+            );
         }
     }
     let pixel_worker_pid = pixel_proof.worker_pid().unwrap();
@@ -17948,11 +29959,20 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
     assert!(!worker_process_exists(pixel_worker_pid));
     for command in ["qpdf", "pdfinfo"] {
         let status = if command == "qpdf" {
-            std::process::Command::new(command).arg("--check").arg(&saved_path).status()
+            std::process::Command::new(command)
+                .arg("--check")
+                .arg(&saved_path)
+                .status()
         } else {
-            std::process::Command::new(command).arg(&saved_path).status()
-        }.expect("the independent PDF validator must be available");
-        assert!(status.success(), "{command} must accept the saved measurement-path PDF");
+            std::process::Command::new(command)
+                .arg(&saved_path)
+                .status()
+        }
+        .expect("the independent PDF validator must be available");
+        assert!(
+            status.success(),
+            "{command} must accept the saved measurement-path PDF"
+        );
     }
 
     assert_eq!(
@@ -18014,10 +30034,12 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
                 .is_none(),
         "all real measurement-path sessions must release their workers and mapped surfaces",
     );
-    std::fs::remove_file(&saved_path).expect("the verified measurement-path output must be removable");
+    std::fs::remove_file(&saved_path)
+        .expect("the verified measurement-path output must be removable");
     assert!(!saved_path.exists());
     if surface_root.exists() {
-        std::fs::remove_dir(&surface_root).expect("the empty measurement mapped-surface root must be removable");
+        std::fs::remove_dir(&surface_root)
+            .expect("the empty measurement mapped-surface root must be removable");
     }
     assert!(!surface_root.exists());
 }
@@ -18144,7 +30166,9 @@ fn real_cloud_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext
         workspace.select_annotation(document_id, &cloud_id, cx)
     }));
     let before_pointer = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     let moved_vertex = PdfPoint::new(288., 378.).unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -18157,7 +30181,8 @@ fn real_cloud_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext
     );
     assert_eq!(
         workspace
-            .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(document_id, cx))
             .unwrap(),
         before_pointer,
         "the real Cloud pointer move must not mutate persistence before release",
@@ -18409,7 +30434,9 @@ fn real_callout_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppConte
     }));
     let moved_knee = PdfPoint::new(174., 426.).unwrap();
     let before_pointer = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds("callout.leader.1").is_some());
@@ -18421,7 +30448,8 @@ fn real_callout_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppConte
     );
     assert_eq!(
         workspace
-            .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(document_id, cx))
             .unwrap(),
         before_pointer,
         "the real Callout pointer move must not mutate persistence before release",
@@ -18440,6 +30468,45 @@ fn real_callout_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppConte
     assert!((edited.callouts[0].leader_points()[1].x - moved_knee.x).abs() <= 0.000_1);
     assert!((edited.callouts[0].leader_points()[1].y - moved_knee.y).abs() <= 0.000_1);
     assert!(edited.dirty);
+
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let _north_handle = cx
+        .debug_bounds("callout.textBox.resize.n")
+        .expect("the persisted Callout journey must expose its north resize handle");
+    let north_point = to_view(
+        edited.callouts[0].text_box.x + edited.callouts[0].text_box.width * 0.5,
+        edited.callouts[0].text_box.y + edited.callouts[0].text_box.height,
+    );
+    let moved_north = point(north_point.x, north_point.y - px(18.));
+    cx.simulate_mouse_down(north_point, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(moved_north, Some(MouseButton::Left), Modifiers::default());
+    let resize_preview = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(document_id, 0, cx)
+    });
+    assert!(resize_preview.callouts[0].text_box.height > edited.callouts[0].text_box.height);
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(document_id, cx))
+            .unwrap(),
+        edited,
+        "the real Callout resize must remain a scene-only preview before release",
+    );
+    cx.simulate_mouse_up(moved_north, MouseButton::Left, Modifiers::default());
+    let edited = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert!(edited.callouts[0].text_box.height > created.callouts[0].text_box.height);
+    let resized_connection = edited.callouts[0].leader_points().last().unwrap();
+    assert!((resized_connection.x - edited.callouts[0].text_box.x).abs() <= 0.000_1);
+    assert!(
+        (resized_connection.y
+            - (edited.callouts[0].text_box.y + edited.callouts[0].text_box.height * 0.5))
+            .abs()
+            <= 0.000_1
+    );
 
     workspace
         .update(cx, |workspace, cx| {
@@ -18870,8 +30937,7 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
         .join("../performance/results/public-fixtures-v1/bp-multi-page-v1.pdf")
         .canonicalize()
         .expect("the provenance-controlled fixture path must canonicalize");
-    let fixture_sha256 =
-        "517ebc78ee84071ce15040da05f2155ca0fe4b5d5871dc95cea1a95c97b1f57b";
+    let fixture_sha256 = "517ebc78ee84071ce15040da05f2155ca0fe4b5d5871dc95cea1a95c97b1f57b";
     assert_eq!(
         format!("{:x}", Sha256::digest(std::fs::read(&fixture).unwrap())),
         fixture_sha256,
@@ -19042,9 +31108,14 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
     cx.simulate_click(length_button.center(), Modifiers::default());
     cx.simulate_click(to_view(127., 150.), Modifiers::default());
     let length_start_decision = workspace
-        .read_with(cx, |workspace, cx| workspace.semantic_snap_decision(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.semantic_snap_decision(document_id, cx)
+        })
         .expect("the Length first point must resolve against the snapped Line midpoint");
-    assert_eq!(length_start_decision.owner_id.as_ref(), Some(&snapped_line.id));
+    assert_eq!(
+        length_start_decision.owner_id.as_ref(),
+        Some(&snapped_line.id)
+    );
     assert_eq!(length_start_decision.role, SemanticSnapRole::Midpoint);
     assert_eq!(
         length_start_decision.point,
@@ -19056,7 +31127,8 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
     );
     assert_eq!(
         workspace
-            .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(document_id, cx))
             .unwrap()
             .revision,
         3,
@@ -19106,19 +31178,24 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
         TextBoxStyle::new("Arimo", 18., "#7c3aed", 0.55).unwrap(),
     )
     .unwrap();
-    assert!(workspace
-        .update(cx, |workspace, cx| workspace.apply_dimension_property_event(
-            &DimensionPropertyEvent {
-                document_id,
-                annotation_id: snapped_length.id.clone(),
-                expected_revision: edited.revision,
-                patch: DimensionPropertyPatch::Appearance(appearance.clone()),
-            },
-            cx,
-        ))
-        .unwrap());
+    assert!(
+        workspace
+            .update(cx, |workspace, cx| workspace
+                .apply_dimension_property_event(
+                    &DimensionPropertyEvent {
+                        document_id,
+                        annotation_id: snapped_length.id.clone(),
+                        expected_revision: edited.revision,
+                        patch: DimensionPropertyPatch::Appearance(appearance.clone()),
+                    },
+                    cx,
+                ))
+            .unwrap()
+    );
     snapped_length = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap()
         .lengths[0]
         .clone();
@@ -19261,7 +31338,11 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
     );
     assert_eq!(
         reopened.annotation_order,
-        vec![reference_id, snapped_line.id.clone(), snapped_length.id.clone()],
+        vec![
+            reference_id,
+            snapped_line.id.clone(),
+            snapped_length.id.clone()
+        ],
     );
     let reopened_worker_pid = fresh_workspace
         .read_with(cx, |workspace, cx| {
@@ -19477,14 +31558,35 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
             workspace.annotation_snapshot(document_id, cx)
         })
         .unwrap();
-    assert_eq!(edited_after_number.revision, before_offset_edit.revision + 1);
-    assert_eq!(edited_after_number.undo_depth, before_offset_edit.undo_depth + 1);
+    assert_eq!(
+        edited_after_number.revision,
+        before_offset_edit.revision + 1
+    );
+    assert_eq!(
+        edited_after_number.undo_depth,
+        before_offset_edit.undo_depth + 1
+    );
     assert_eq!(edited_after_number.dimensions[0].id, dimension_id);
-    assert_eq!(edited_after_number.dimensions[0].start, created.dimensions[0].start);
-    assert_eq!(edited_after_number.dimensions[0].end, created.dimensions[0].end);
-    assert_eq!(edited_after_number.dimensions[0].content(), "door clear width");
-    assert_eq!(edited_after_number.dimensions[0].appearance, created_appearance);
-    assert_eq!(edited_after_number.dimensions[0].dimension_line_offset(), 40.);
+    assert_eq!(
+        edited_after_number.dimensions[0].start,
+        created.dimensions[0].start
+    );
+    assert_eq!(
+        edited_after_number.dimensions[0].end,
+        created.dimensions[0].end
+    );
+    assert_eq!(
+        edited_after_number.dimensions[0].content(),
+        "door clear width"
+    );
+    assert_eq!(
+        edited_after_number.dimensions[0].appearance,
+        created_appearance
+    );
+    assert_eq!(
+        edited_after_number.dimensions[0].dimension_line_offset(),
+        40.
+    );
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .annotation_scene(document_id, 0, cx)
@@ -19503,14 +31605,17 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
     cx.simulate_mouse_move(body_end, Some(MouseButton::Left), Modifiers::default());
     assert_eq!(
         workspace
-            .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(document_id, cx))
             .unwrap(),
         edited_after_number,
         "the real Dimension pointer move must not mutate persistence before release",
     );
     cx.simulate_mouse_up(body_end, MouseButton::Left, Modifiers::default());
     let edited = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!(edited.revision, edited_after_number.revision + 1);
     assert_eq!(edited.dimensions[0].id, dimension_id);
@@ -19799,8 +31904,7 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     }
     let assert_point = |actual: PdfPoint, expected: PdfPoint| {
         assert!(
-            (actual.x - expected.x).abs() <= 0.000_1
-                && (actual.y - expected.y).abs() <= 0.000_1,
+            (actual.x - expected.x).abs() <= 0.000_1 && (actual.y - expected.y).abs() <= 0.000_1,
             "expected {actual:?} to match {expected:?} within live projection tolerance",
         );
     };
@@ -19837,7 +31941,11 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     assert_point(body_preview.start, PdfPoint::new(132., 294.).unwrap());
     assert_point(body_preview.mid, PdfPoint::new(222., 330.).unwrap());
     assert_point(body_preview.end, PdfPoint::new(312., 294.).unwrap());
-    assert_eq!(snapshot!(), created, "Arc body preview must remain history-free");
+    assert_eq!(
+        snapshot!(),
+        created,
+        "Arc body preview must remain history-free"
+    );
     cx.simulate_mouse_up(
         to_view(body_end.x, body_end.y),
         MouseButton::Left,
@@ -19871,7 +31979,11 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     assert_point(start_preview.start, start_target);
     assert_point(start_preview.mid, before_start.arcs[0].mid);
     assert_point(start_preview.end, before_start.arcs[0].end);
-    assert_eq!(snapshot!(), before_start, "Start preview must remain history-free");
+    assert_eq!(
+        snapshot!(),
+        before_start,
+        "Start preview must remain history-free"
+    );
     cx.simulate_mouse_up(
         to_view(start_target.x, start_target.y),
         MouseButton::Left,
@@ -19906,7 +32018,11 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     assert_point(mid_preview.start, before_mid.arcs[0].start);
     assert_point(mid_preview.mid, mid_target);
     assert_point(mid_preview.end, before_mid.arcs[0].end);
-    assert_eq!(snapshot!(), before_mid, "Mid preview must remain history-free");
+    assert_eq!(
+        snapshot!(),
+        before_mid,
+        "Mid preview must remain history-free"
+    );
     cx.simulate_mouse_up(
         to_view(mid_target.x, mid_target.y),
         MouseButton::Left,
@@ -19941,7 +32057,11 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     assert_point(end_preview.start, before_end.arcs[0].start);
     assert_point(end_preview.mid, before_end.arcs[0].mid);
     assert_point(end_preview.end, end_target);
-    assert_eq!(snapshot!(), before_end, "End preview must remain history-free");
+    assert_eq!(
+        snapshot!(),
+        before_end,
+        "End preview must remain history-free"
+    );
     cx.simulate_mouse_up(
         to_view(end_target.x, end_target.y),
         MouseButton::Left,
@@ -19961,7 +32081,10 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     assert_eq!(after_end.selected_id.as_ref(), Some(&arc_id));
 
     toggle_document_actions(cx);
-    assert!(cx.debug_bounds(ENGINEERING_VISUAL_PROPERTY_INSPECTOR_ID).is_some());
+    assert!(
+        cx.debug_bounds(ENGINEERING_VISUAL_PROPERTY_INSPECTOR_ID)
+            .is_some()
+    );
     let geometry = |arc: &ArcAnnotation| (arc.start, arc.mid, arc.end);
 
     let before_color = snapshot!();
@@ -19971,22 +32094,23 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
         (after_color.revision, after_color.undo_depth),
         (before_color.revision + 1, before_color.undo_depth + 1),
     );
-    assert_eq!(geometry(&after_color.arcs[0]), geometry(&before_color.arcs[0]));
+    assert_eq!(
+        geometry(&after_color.arcs[0]),
+        geometry(&before_color.arcs[0])
+    );
     assert_eq!(after_color.arcs[0].appearance.stroke_color(), "#0066cc");
 
     let before_width = after_color;
-    engineering_visual_enter_number(
-        cx,
-        &workspace,
-        ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID,
-        "2.5",
-    );
+    engineering_visual_enter_number(cx, &workspace, ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID, "2.5");
     let after_width = snapshot!();
     assert_eq!(
         (after_width.revision, after_width.undo_depth),
         (before_width.revision + 1, before_width.undo_depth + 1),
     );
-    assert_eq!(geometry(&after_width.arcs[0]), geometry(&before_width.arcs[0]));
+    assert_eq!(
+        geometry(&after_width.arcs[0]),
+        geometry(&before_width.arcs[0])
+    );
     assert_eq!(after_width.arcs[0].appearance.stroke_width_pt(), 2.5);
 
     let before_opacity = after_width;
@@ -20035,7 +32159,10 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
         .read_with(cx, |workspace, cx| {
             let session = workspace.session(document_id, cx).unwrap().read(cx);
             assert_eq!(session.path(), saved_path.as_path());
-            assert!(matches!(session.save_status(), NativeDocumentSaveStatus::Idle));
+            assert!(matches!(
+                session.save_status(),
+                NativeDocumentSaveStatus::Idle
+            ));
             session.worker_pid()
         })
         .expect("the validated Save As reopen must own a replacement worker");
@@ -20090,7 +32217,11 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     assert_eq!(dictionary["/IT"], "/CircleArc");
     assert_eq!(dictionary["/Subj"], "Arc");
     assert_eq!(dictionary["/NM"], native_name);
-    assert!(dictionary["/AP"]["/N"].as_str().is_some_and(|value| value.ends_with(" R")));
+    assert!(
+        dictionary["/AP"]["/N"]
+            .as_str()
+            .is_some_and(|value| value.ends_with(" R"))
+    );
     let rd = dictionary["/RD"].as_array().unwrap();
     assert_eq!(rd.len(), 4);
     assert!(rd.iter().all(|value| close(number(value), 0.5)));
@@ -20104,8 +32235,14 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     for (actual, expected) in border.iter().map(number).zip([0., 0., 2.5]) {
         assert!(close(actual, expected));
     }
-    assert!(dictionary.get("/BS").is_none(), "solid Arc must omit /BS and dash state");
-    assert!(dictionary.get("/IC").is_none(), "unfilled Arc must omit /IC");
+    assert!(
+        dictionary.get("/BS").is_none(),
+        "solid Arc must omit /BS and dash state"
+    );
+    assert!(
+        dictionary.get("/IC").is_none(),
+        "unfilled Arc must omit /IC"
+    );
     assert!(close(number(&dictionary["/CA"]), 0.7));
     assert!(close(number(&dictionary["/ca"]), 0.7));
     assert_eq!(dictionary["/F"].as_i64().unwrap(), 132);
@@ -20231,7 +32368,10 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
         .render_page_with_pdf_annotations(0, 612)
         .unwrap();
     let annotation_free_page = pixel_proof.render_page(0, 612).unwrap();
-    assert_eq!(Sha256::digest(annotation_free_page.pixels_bgra()), source_base_digest);
+    assert_eq!(
+        Sha256::digest(annotation_free_page.pixels_bgra()),
+        source_base_digest
+    );
     assert_ne!(
         Sha256::digest(annotated_page.pixels_bgra()),
         Sha256::digest(annotation_free_page.pixels_bgra()),
@@ -20259,13 +32399,9 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
         .zip(annotation_free_page.pixels_bgra().chunks_exact(4))
         .enumerate()
     {
-        let x = ((index % raster_width) as f64 + 0.5)
-            / f64::from(annotated_page.width())
-            * 612.;
+        let x = ((index % raster_width) as f64 + 0.5) / f64::from(annotated_page.width()) * 612.;
         let y = 792.
-            - ((index / raster_width) as f64 + 0.5)
-                / f64::from(annotated_page.height())
-                * 792.;
+            - ((index / raster_width) as f64 + 0.5) / f64::from(annotated_page.height()) * 792.;
         let inside_arc = x >= arc_region.x
             && x <= arc_region.x + arc_region.width
             && y >= arc_region.y
@@ -20289,7 +32425,9 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
         CloseRequestDisposition::Closed,
     );
     assert!(!worker_process_exists(saved_worker_pid));
-    assert!(workspace.read_with(cx, |workspace, cx| workspace.session(document_id, cx).is_none()));
+    assert!(workspace.read_with(cx, |workspace, cx| {
+        workspace.session(document_id, cx).is_none()
+    }));
 
     let fresh_workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
     let reopened_document = fresh_workspace.update(cx, |workspace, cx| {
@@ -20332,8 +32470,14 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     if surface_root.exists() {
         std::fs::remove_dir(&surface_root).unwrap();
     }
-    assert!(!saved_path.exists(), "the Arc cutover temporary PDF must be removed");
-    assert!(!surface_root.exists(), "the Arc cutover surface directory must be removed");
+    assert!(
+        !saved_path.exists(),
+        "the Arc cutover temporary PDF must be removed"
+    );
+    assert!(
+        !surface_root.exists(),
+        "the Arc cutover surface directory must be removed"
+    );
 }
 
 #[gpui::test]
@@ -20371,7 +32515,9 @@ fn visible_tab_close_routes_a_dirty_document_through_confirmation(cx: &mut TestA
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let close_id = Box::leak(document_session_close_id(request.document_id).into_boxed_str());
-    let close = cx.debug_bounds(close_id).expect("the document tab must expose Close");
+    let close = cx
+        .debug_bounds(close_id)
+        .expect("the document tab must expose Close");
     cx.simulate_click(close.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
@@ -20415,15 +32561,25 @@ fn workspace_template_split_is_joined_and_cad_controls_are_absent(cx: &mut TestA
     assert_eq!(primary.right(), picker.left());
     assert_eq!(primary.top(), picker.top());
     assert_eq!(primary.size.height, picker.size.height);
-    for id in ["viewer-cad-view", "viewer-cad-view-settings", "viewer-cad-view-controls"] {
-        assert!(cx.debug_bounds(id).is_none(), "removed control rendered: {id}");
+    for id in [
+        "viewer-cad-view",
+        "viewer-cad-view-settings",
+        "viewer-cad-view-controls",
+    ] {
+        assert!(
+            cx.debug_bounds(id).is_none(),
+            "removed control rendered: {id}"
+        );
     }
     assert!(cx.debug_bounds("continuous-view-primary").is_some());
     assert!(cx.debug_bounds("single-page-view-primary").is_some());
     cx.simulate_click(picker.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds("template-picker-create").is_some());
-    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.active_document_id()), Some(request.document_id));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.active_document_id()),
+        Some(request.document_id)
+    );
 }
 
 #[gpui::test]
@@ -21564,8 +33720,15 @@ fn painted_page_evidence_is_generation_scoped_and_advances_at_native_prepaint(
     );
 }
 
-#[gpui::test]
-fn painted_page_evidence_keeps_source_points_while_rotation_changes_contained_bounds(
+#[test]
+fn painted_page_evidence_keeps_source_points_while_rotation_changes_contained_bounds() {
+    run_gpui_test_with_native_main_stack(
+        "painted_page_evidence_keeps_source_points_while_rotation_changes_contained_bounds",
+        painted_page_evidence_keeps_source_points_while_rotation_changes_contained_bounds_on_native_stack,
+    );
+}
+
+fn painted_page_evidence_keeps_source_points_while_rotation_changes_contained_bounds_on_native_stack(
     cx: &mut TestAppContext,
 ) {
     cx.update(gpui_component::init);
@@ -21895,7 +34058,76 @@ fn native_view_navigation_routes_real_single_page_wheel_and_control_zoom(cx: &mu
 }
 
 #[gpui::test]
-fn viewer_controls_preserve_independent_session_modes_and_responsive_layouts(cx: &mut TestAppContext) {
+fn tab_activation_restores_ordinary_tools_and_normalises_image_to_select(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let first = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("tool-first.pdf"), cx)
+    });
+    let second = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("tool-second.pdf"), cx)
+    });
+    for request in [&first, &second] {
+        workspace.update(cx, |workspace, cx| {
+            workspace.apply_open_result(
+                request,
+                Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+                cx,
+            )
+        });
+    }
+
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.activate_document(first.document_id, cx));
+        workspace
+            .set_annotation_tool(first.document_id, AnnotationTool::Rectangle, cx)
+            .unwrap();
+        assert!(workspace.activate_document(second.document_id, cx));
+        workspace
+            .set_annotation_tool(second.document_id, AnnotationTool::Image, cx)
+            .unwrap();
+        assert!(workspace.activate_document(first.document_id, cx));
+    });
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| {
+            workspace.annotation_tool(first.document_id, cx)
+        }),
+        Some(AnnotationTool::Rectangle),
+        "ordinary tools remain session-owned",
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| {
+            workspace.annotation_tool(second.document_id, cx)
+        }),
+        Some(AnnotationTool::Image),
+        "the inactive tab keeps its snapshot until it is restored",
+    );
+
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.activate_document(second.document_id, cx));
+    });
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| {
+            workspace.annotation_tool(second.document_id, cx)
+        }),
+        Some(AnnotationTool::Select),
+        "Image is one-shot state and must restore as Select",
+    );
+}
+
+#[gpui::test]
+fn viewer_controls_preserve_independent_session_modes_and_responsive_layouts(
+    cx: &mut TestAppContext,
+) {
     cx.update(gpui_component::init);
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -21937,27 +34169,51 @@ fn viewer_controls_preserve_independent_session_modes_and_responsive_layouts(cx:
     assert!(cx.debug_bounds(CAD_VIEW_SETTINGS_ID).is_none());
     let single = cx.debug_bounds(SINGLE_PAGE_PRIMARY_ID).unwrap();
     cx.simulate_click(single.center(), Modifiers::default());
-    assert_eq!(workspace.read_with(cx, |workspace, cx| {
-        workspace.document_view_state(first.document_id, cx).unwrap().mode()
-    }), PageViewMode::SinglePage);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .document_view_state(first.document_id, cx)
+                .unwrap()
+                .mode()
+        }),
+        PageViewMode::SinglePage
+    );
     workspace.update(cx, |workspace, cx| {
         workspace.activate_document(second.document_id, cx);
     });
-    assert_eq!(workspace.read_with(cx, |workspace, cx| {
-        workspace.document_view_state(second.document_id, cx).unwrap().mode()
-    }), PageViewMode::Continuous);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .document_view_state(second.document_id, cx)
+                .unwrap()
+                .mode()
+        }),
+        PageViewMode::Continuous
+    );
     workspace.update(cx, |workspace, cx| {
         workspace.activate_document(first.document_id, cx);
     });
-    assert_eq!(workspace.read_with(cx, |workspace, cx| {
-        workspace.document_view_state(first.document_id, cx).unwrap().mode()
-    }), PageViewMode::SinglePage);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .document_view_state(first.document_id, cx)
+                .unwrap()
+                .mode()
+        }),
+        PageViewMode::SinglePage
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let continuous = cx.debug_bounds(CONTINUOUS_PRIMARY_ID).unwrap();
     cx.simulate_click(continuous.center(), Modifiers::default());
-    assert_eq!(workspace.read_with(cx, |workspace, cx| {
-        workspace.document_view_state(first.document_id, cx).unwrap().mode()
-    }), PageViewMode::Continuous);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .document_view_state(first.document_id, cx)
+                .unwrap()
+                .mode()
+        }),
+        PageViewMode::Continuous
+    );
     show_page_thumbnails(cx);
     for mode in [ThemeMode::Light, ThemeMode::Dark] {
         cx.update(|window, cx| Theme::change(mode, Some(window), cx));
@@ -21976,7 +34232,12 @@ fn viewer_controls_preserve_independent_session_modes_and_responsive_layouts(cx:
                 assert!(workspace_bounds.contains(&page.center()));
                 assert!(page.contains(&viewport.center()));
                 assert!(page.size.width > px(0.) && page.size.height > px(0.));
-                for target in [FIT_WIDTH_ID, FIT_PAGE_ID, CONTINUOUS_PRIMARY_ID, SINGLE_PAGE_PRIMARY_ID] {
+                for target in [
+                    FIT_WIDTH_ID,
+                    FIT_PAGE_ID,
+                    CONTINUOUS_PRIMARY_ID,
+                    SINGLE_PAGE_PRIMARY_ID,
+                ] {
                     let bounds = cx.debug_bounds(target).unwrap();
                     assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
                 }
@@ -22040,8 +34301,12 @@ fn virtualized_thumbnail_rail_exposes_all_pages_and_tracks_keyboard_navigation(
     );
 
     cx.run_until_parked();
-    let cached_before_navigation = workspace.read_with(cx, |workspace, cx| workspace
-        .evidence_snapshot(request.document_id, cx).unwrap().thumbnail_count);
+    let cached_before_navigation = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .evidence_snapshot(request.document_id, cx)
+            .unwrap()
+            .thumbnail_count
+    });
     let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
     cx.update(|window, cx| workspace_focus.focus(window, cx));
     cx.simulate_keystrokes("end");
@@ -22055,12 +34320,21 @@ fn virtualized_thumbnail_rail_exposes_all_pages_and_tracks_keyboard_navigation(
             .current_page()),
         99
     );
-    let cached_after_navigation = workspace.read_with(cx, |workspace, cx| workspace
-        .evidence_snapshot(request.document_id, cx).unwrap().thumbnail_count);
+    let cached_after_navigation = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .evidence_snapshot(request.document_id, cx)
+            .unwrap()
+            .thumbnail_count
+    });
     assert!(cached_after_navigation >= cached_before_navigation);
-    assert!(cached_after_navigation <= cached_before_navigation + 1,
-        "navigation must reuse the visible thumbnail cache");
-    assert!(cached_after_navigation < 100, "opening thumbnails must remain lazy");
+    assert!(
+        cached_after_navigation <= cached_before_navigation + 1,
+        "navigation must reuse the visible thumbnail cache"
+    );
+    assert!(
+        cached_after_navigation < 100,
+        "opening thumbnails must remain lazy"
+    );
     assert!(cx.debug_bounds("document-1-thumbnail-99").is_some());
 }
 
@@ -22554,7 +34828,9 @@ fn native_file_authority_dirty_close_picker_cancel_preserves_close_intent_and_li
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let close_id = Box::leak(document_session_close_id(document_id).into_boxed_str());
-    let close = cx.debug_bounds(close_id).expect("generated document tab must expose Close");
+    let close = cx
+        .debug_bounds(close_id)
+        .expect("generated document tab must expose Close");
     cx.simulate_click(close.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let save = cx
@@ -22963,6 +35239,193 @@ fn regular_png_native_picker_prepares_the_target_and_rejects_a_closed_session(
 }
 
 #[gpui::test]
+fn regular_image_placement_consumes_asset_keeps_tool_and_deselects_without_editing(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let checker =
+        manifest_dir.join("../performance/results/public-fixtures-v1/bp-image-checker-v1.png");
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("native-image-picker.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_IMAGE_TOOL_ID);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let button = cx.debug_bounds(DOCUMENT_IMAGE_TOOL_ID).unwrap();
+    cx.simulate_click(button.center(), Modifiers::default());
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response({
+        let checker = checker.clone();
+        move |options| {
+            assert!(options.files);
+            assert!(!options.directories);
+            assert!(!options.multiple);
+            assert_eq!(
+                options.prompt.as_deref(),
+                Some("Select a PNG or JPEG image")
+            );
+            Some(vec![checker])
+        }
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Image),
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.rejected_stale_image_prepares()),
+        0,
+    );
+
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let project =
+        |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale));
+    cx.simulate_mouse_move(project(300., 400.), None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let preview = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.pending_image_preview(request.document_id, cx)
+        })
+        .expect("prepared Image follows the pointer with a page-local preview");
+    assert_eq!(preview.page_index, 0);
+    assert_eq!(preview.opacity, 0.45);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| {
+            workspace.image_asset_count(request.document_id, cx)
+        }),
+        1,
+        "the pending preview retains one render asset before commit"
+    );
+    let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    let page = workspace
+        .read_with(cx, |workspace, _| {
+            workspace.page_interaction_bounds(request.document_id, 0)
+        })
+        .expect("the current page interaction bounds must be painted");
+    let gutter = [
+        point(viewport.origin.x + px(1.), viewport.center().y),
+        point(
+            viewport.origin.x + viewport.size.width - px(1.),
+            viewport.center().y,
+        ),
+        point(viewport.center().x, viewport.origin.y + px(1.)),
+        point(
+            viewport.center().x,
+            viewport.origin.y + viewport.size.height - px(1.),
+        ),
+    ]
+    .into_iter()
+    .find(|candidate| viewport.contains(candidate) && !page.contains(candidate))
+    .expect("the test viewport must expose chrome outside the page layer");
+    cx.simulate_mouse_move(gutter, None, Modifiers::default());
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.pending_image_preview(request.document_id, cx)
+            })
+            .is_none(),
+        "moving from the page into viewport chrome must clear the ghost"
+    );
+    cx.simulate_mouse_move(project(300., 400.), None, Modifiers::default());
+    cx.simulate_event(MouseExitEvent {
+        pressed_button: None,
+        position: project(300., 400.),
+        modifiers: Modifiers::default(),
+    });
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.pending_image_preview(request.document_id, cx)
+            })
+            .is_none()
+    );
+    cx.simulate_mouse_move(project(300., 400.), None, Modifiers::default());
+    cx.simulate_click(project(300., 400.), Modifiers::default());
+    let placed = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!((placed.images.len(), placed.undo_depth), (1, 1));
+    assert_eq!(placed.selected_id.as_ref(), Some(&placed.images[0].id));
+    assert_eq!(placed.images[0].rect, preview.rect);
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.pending_image_preview(request.document_id, cx)
+            })
+            .is_none()
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Image),
+        "ordinary image placement must keep Image active"
+    );
+
+    cx.simulate_click(project(60., 700.), Modifiers::default());
+    let cleared = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!((cleared.images.len(), cleared.undo_depth), (1, 1));
+    assert!(
+        cleared.selected_id.is_none(),
+        "blank click must deselect without placing another image"
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Image)
+    );
+
+    cx.simulate_mouse_down(project(300., 400.), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        project(320., 420.),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_up(project(320., 420.), MouseButton::Left, Modifiers::default());
+    let moved = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(moved.images.len(), 1);
+    assert!(moved.selected_id.is_none());
+    assert_eq!(moved.undo_depth, 1);
+    assert_eq!(
+        moved.images[0].rect, placed.images[0].rect,
+        "Image mode must not manipulate the placed image"
+    );
+}
+
+#[gpui::test]
 fn local_signature_popover_sanitizes_previews_arms_and_places_once(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -23351,7 +35814,11 @@ fn local_signature_draws_clears_and_arms_from_real_canvas(cx: &mut TestAppContex
 
 #[gpui::test]
 fn local_signature_typed_mode_uses_the_shared_placement_path(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        butter_paper_gpui_migration::application_shell::init_application_shell_actions(cx);
+        init_document_workspace_actions(cx);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -23362,23 +35829,41 @@ fn local_signature_typed_mode_uses_the_shared_placement_path(cx: &mut TestAppCon
         }
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
-    let recent_path = std::env::temp_dir().join(format!("bp-recent-failed-{}.enc", std::process::id()));
+    let recent_path =
+        std::env::temp_dir().join(format!("bp-recent-failed-{}.enc", std::process::id()));
     assert!(!recent_path.exists());
     let _recent_scratch = ScratchFiles(vec![recent_path.clone()]);
     let keys = Arc::new(RecentWorkspaceKeys::default());
     keys.fail_save.store(true, Ordering::SeqCst);
-    workspace.update(cx, |workspace, _| workspace.bind_recent_signature_store(Arc::new(
-        butter_paper_gpui_migration::recent_signature_store::RecentSignatureStore::new(recent_path.clone(), keys.clone()),
-    )));
+    workspace.update(cx, |workspace, _| {
+        workspace.bind_recent_signature_store(Arc::new(
+            butter_paper_gpui_migration::recent_signature_store::RecentSignatureStore::new(
+                recent_path.clone(),
+                keys.clone(),
+            ),
+        ))
+    });
     let request = workspace.update(cx, |workspace, cx| {
         workspace.begin_open(PathBuf::from("typed-signature.pdf"), cx)
     });
     workspace.update(cx, |workspace, cx| {
         workspace.apply_open_result(
             &request,
-            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            Ok(OpenedNativeDocument::new(
+                "typed-signature.pdf",
+                vec![(2000., 1000.)],
+                raster(40, 20),
+                vec![ThumbnailSurface::new(0, raster(8, 4))],
+                Arc::new(RecordingResource {
+                    released: Arc::new(AtomicBool::new(false)),
+                }),
+            )
+            .unwrap()),
             cx,
         );
+        workspace
+            .set_annotation_tool(request.document_id, AnnotationTool::Rectangle, cx)
+            .unwrap();
         workspace.set_view_configuration(request.document_id, PageViewMode::SinglePage, 100., cx);
         workspace
             .refresh_viewport_async(request.document_id, 800., 600., 1., cx)
@@ -23398,8 +35883,83 @@ fn local_signature_typed_mode_uses_the_shared_placement_path(cx: &mut TestAppCon
     let name_input = cx
         .debug_bounds(DOCUMENT_SIGNATURE_NAME_INPUT_ID)
         .expect("typed signature input must render");
+    let page_layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let page_scale =
+        (f32::from(page_layer.size.width) / 2000.).min(f32::from(page_layer.size.height) / 1000.);
+    let contained_page = gpui::Bounds::new(
+        point(
+            page_layer.origin.x + px((f32::from(page_layer.size.width) - 2000. * page_scale) / 2.),
+            page_layer.origin.y + px((f32::from(page_layer.size.height) - 1000. * page_scale) / 2.),
+        ),
+        gpui::size(px(2000. * page_scale), px(1000. * page_scale)),
+    );
+    assert!(
+        contained_page.contains(&name_input.center()),
+        "input {:?} must overlap contained page {:?}",
+        name_input,
+        contained_page
+    );
+    let before_input = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
     cx.simulate_click(name_input.center(), Modifiers::default());
-    cx.simulate_keystrokes("a l e x space p o t e n z a");
+    cx.simulate_mouse_move(
+        name_input.center() + point(px(-30.), px(-5.)),
+        None,
+        Modifiers::default(),
+    );
+    let after_input = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(after_input.revision, before_input.revision);
+    assert_eq!(after_input.undo_depth, before_input.undo_depth);
+    assert!(
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .annotation_scene(request.document_id, 0, cx)
+                .rectangles
+                .is_empty()
+        }),
+        "clicking the signature input must not start a rectangle behind the popover"
+    );
+    assert!(cx.update(|window, cx| window.has_focused_input(cx)));
+    cx.dispatch_action(butter_paper_gpui_migration::document_workspace::SelectImageTool);
+    cx.dispatch_action(butter_paper_gpui_migration::document_workspace::SelectArrowTool);
+    cx.dispatch_action(butter_paper_gpui_migration::document_workspace::SelectTextBoxTool);
+    cx.dispatch_action(butter_paper_gpui_migration::document_workspace::SelectRectangleTool);
+    cx.dispatch_action(butter_paper_gpui_migration::document_workspace::SelectEllipseTool);
+    cx.dispatch_action(butter_paper_gpui_migration::document_workspace::SelectPenTool);
+    cx.dispatch_action(butter_paper_gpui_migration::document_workspace::SelectCloudTool);
+    cx.dispatch_action(butter_paper_gpui_migration::document_workspace::SelectCalloutTool);
+    assert!(
+        !cx.did_prompt_for_paths(),
+        "focused text input must reject canvas tool actions"
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Rectangle)
+    );
+    cx.simulate_keystrokes("t e s t space s i g n a t u r e space v t r e p c q space l a h k i g shift-c shift-n shift-p shift-l");
+    assert!(
+        !cx.did_prompt_for_paths(),
+        "typing a signature must not open the Image picker"
+    );
+    assert_eq!(
+        cx.update(|window, cx| window.focused_input(cx).unwrap().value(cx).to_string()),
+        "test signature vtrepcq lahkigCNPL",
+        "every tool shortcut letter must be delivered to the focused signature input"
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Rectangle),
+        "typing a signature must not select a canvas tool"
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let add = cx
         .debug_bounds(DOCUMENT_SIGNATURE_ADD_ID)
@@ -23407,7 +35967,10 @@ fn local_signature_typed_mode_uses_the_shared_placement_path(cx: &mut TestAppCon
     cx.simulate_click(add.center(), Modifiers::default());
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
-        Some("Click the page to place the signature. This signature could not be saved to Recent.".into())
+        Some(
+            "Click the page to place the signature. This signature could not be saved to Recent."
+                .into()
+        )
     );
 
     cx.run_until_parked();
@@ -23423,7 +35986,10 @@ fn local_signature_typed_mode_uses_the_shared_placement_path(cx: &mut TestAppCon
     assert_eq!((placed.images.len(), placed.undo_depth), (1, 1));
     assert!(placed.images[0].aspect_locked);
     assert_eq!(keys.writes.load(Ordering::SeqCst), 1);
-    assert!(!recent_path.exists(), "failed secure remembering must not prevent page placement");
+    assert!(
+        !recent_path.exists(),
+        "failed secure remembering must not prevent page placement"
+    );
 }
 
 #[test]
@@ -23442,9 +36008,19 @@ fn local_signature_drawn_raster_is_exact_bounded_and_deterministic() {
     assert_eq!(first, second);
     assert!(first.width_px() > 500 && first.width_px() <= 2048);
     assert!(first.height_px() <= 768);
-    assert!(first.rgba().chunks_exact(4).all(|pixel| pixel[..3] == [17, 24, 39]));
-    assert!(first.rgba().chunks_exact(4).any(|pixel| pixel[3] > 0 && pixel[3] < 255),
-        "drawn ink must retain fractional edge coverage");
+    assert!(
+        first
+            .rgba()
+            .chunks_exact(4)
+            .all(|pixel| pixel[..3] == [17, 24, 39])
+    );
+    assert!(
+        first
+            .rgba()
+            .chunks_exact(4)
+            .any(|pixel| pixel[3] > 0 && pixel[3] < 255),
+        "drawn ink must retain fractional edge coverage"
+    );
     assert_eq!(signature.stroke_count(), 1);
     assert_eq!(signature.point_count(), 2);
 
@@ -23478,6 +36054,40 @@ fn local_signature_drawn_raster_is_exact_bounded_and_deterministic() {
 }
 
 #[test]
+fn regular_image_pending_asset_is_consumed_only_on_success() {
+    let mut adapter = AnnotationAdapter::default();
+    let asset = DecodedRgbaAsset::new(40, 20, vec![0x80; 40 * 20 * 4]).unwrap();
+    adapter.set_image_asset(asset.clone());
+    adapter.set_tool(AnnotationTool::Image).unwrap();
+    assert!(
+        adapter
+            .pointer_down(91, 0, 1, PdfPoint::new(200., 300.).unwrap(), 0.)
+            .is_err()
+    );
+    assert_eq!(
+        adapter.image_asset(),
+        Some(&asset),
+        "missing page geometry must preserve the pending asset"
+    );
+    adapter.set_image_placement_page(612., 792., 0.45).unwrap();
+    assert!(matches!(
+        adapter
+            .pointer_down(91, 0, 2, PdfPoint::new(200., 300.).unwrap(), 0.)
+            .unwrap(),
+        PointerPhaseOutcome::AnnotationCreated(_)
+    ));
+    assert!(adapter.image_asset().is_none());
+    assert_eq!(adapter.tool(), AnnotationTool::Image);
+    let snapshot = adapter.snapshot(91).unwrap();
+    assert_eq!(snapshot.images.len(), 1);
+    assert_eq!(
+        snapshot.images[0].asset(),
+        &asset,
+        "the document must retain the render and persistence bytes"
+    );
+}
+
+#[test]
 fn local_signature_adapter_places_once_selected_and_aspect_locked_with_one_history_entry() {
     let mut adapter = AnnotationAdapter::default();
     let asset = DecodedRgbaAsset::new(320, 80, vec![0x80; 320 * 80 * 4]).unwrap();
@@ -23505,11 +36115,14 @@ fn local_signature_adapter_places_once_selected_and_aspect_locked_with_one_histo
     assert_eq!(adapter.history_depths(91), (1, 0));
     assert!(adapter.is_dirty(91));
 
-    assert!(
+    assert!(adapter.image_asset().is_none());
+    assert_eq!(
         adapter
             .pointer_down(91, 0, 2, PdfPoint::new(50., 50.).unwrap(), 0.)
-            .is_err()
+            .unwrap(),
+        PointerPhaseOutcome::SelectionChanged(None)
     );
+    assert_eq!(adapter.snapshot(91).unwrap().images.len(), 1);
     adapter.undo(91).unwrap();
     assert!(adapter.snapshot(91).unwrap().images.is_empty());
     adapter.redo(91).unwrap();
@@ -23683,11 +36296,15 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let signature_canvas = cx.debug_bounds(DOCUMENT_SIGNATURE_CANVAS_ID).unwrap();
     let draw_start = point(
-        signature_canvas.origin.x + px(1.) + (signature_canvas.size.width - px(2.)) * (16_255. / 65_535.),
+        signature_canvas.origin.x
+            + px(1.)
+            + (signature_canvas.size.width - px(2.)) * (16_255. / 65_535.),
         signature_canvas.origin.y + signature_canvas.size.height * 0.5,
     );
     let draw_end = point(
-        signature_canvas.origin.x + px(1.) + (signature_canvas.size.width - px(2.)) * (49_280. / 65_535.),
+        signature_canvas.origin.x
+            + px(1.)
+            + (signature_canvas.size.width - px(2.)) * (49_280. / 65_535.),
         signature_canvas.origin.y + signature_canvas.size.height * 0.5,
     );
     cx.simulate_event(MouseDownEvent {
@@ -23835,20 +36452,25 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
         workspace.select_annotation(document_id, &expected_id, cx)
     }));
     let signature_opacity = 0.42;
-    assert!(workspace
-        .update(cx, |workspace, cx| workspace.apply_engineering_visual_property_event(
-            &EngineeringVisualPropertyEvent {
-                document_id,
-                annotation_id: expected_id.clone(),
-                expected_revision: redone.revision,
-                expected_kind: EngineeringVisualPropertyKind::Image,
-                patch: EngineeringVisualPropertyPatch::Opacity(signature_opacity),
-            },
-            cx,
-        ))
-        .unwrap());
+    assert!(
+        workspace
+            .update(cx, |workspace, cx| workspace
+                .apply_engineering_visual_property_event(
+                    &EngineeringVisualPropertyEvent {
+                        document_id,
+                        annotation_id: expected_id.clone(),
+                        expected_revision: redone.revision,
+                        expected_kind: EngineeringVisualPropertyKind::Image,
+                        patch: EngineeringVisualPropertyPatch::Opacity(signature_opacity),
+                    },
+                    cx,
+                ))
+            .unwrap()
+    );
     let opacity_edited = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!(opacity_edited.images[0].opacity(), signature_opacity);
     let expected_image = opacity_edited.images[0].clone();
@@ -23874,7 +36496,12 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
     cx.run_until_parked();
     let (saved_worker_pid, saved_snapshot) = workspace.read_with(cx, |workspace, cx| {
         let session = workspace.session(document_id, cx).unwrap().read(cx);
-        assert_eq!(session.path(), saved_path.as_path(), "save status: {:?}", session.save_status());
+        assert_eq!(
+            session.path(),
+            saved_path.as_path(),
+            "save status: {:?}",
+            session.save_status()
+        );
         assert_eq!(session.save_status(), &NativeDocumentSaveStatus::Idle);
         (
             session.worker_pid().unwrap(),
@@ -24059,7 +36686,10 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     };
     assert_eq!(source_mime, "image/png");
     let expected_asset = decoded.asset().clone();
-    assert_eq!((expected_asset.width_px(), expected_asset.height_px()), (512, 384));
+    assert_eq!(
+        (expected_asset.width_px(), expected_asset.height_px()),
+        (512, 384)
+    );
 
     let owned_root = manifest_dir
         .join(".prepared/real-document-image")
@@ -24092,9 +36722,7 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
         }
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
-    let document_id = workspace.update(cx, |workspace, cx| {
-        workspace.open_path(source.clone(), cx)
-    });
+    let document_id = workspace.update(cx, |workspace, cx| workspace.open_path(source.clone(), cx));
     cx.run_until_parked();
     let original_worker = workspace.read_with(cx, |workspace, cx| {
         workspace
@@ -24122,17 +36750,30 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
             assert!(options.files);
             assert!(!options.directories);
             assert!(!options.multiple);
-            assert_eq!(options.prompt.as_deref(), Some("Select a PNG or JPEG image"));
+            assert_eq!(
+                options.prompt.as_deref(),
+                Some("Select a PNG or JPEG image")
+            );
             Some(vec![checker])
         }
     });
     cx.run_until_parked();
     let prepared = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
-    assert_eq!((prepared.revision, prepared.undo_depth, prepared.images.len()), (0, 0, 0));
     assert_eq!(
-        workspace.read_with(cx, |workspace, cx| workspace.annotation_tool(document_id, cx)),
+        (
+            prepared.revision,
+            prepared.undo_depth,
+            prepared.images.len()
+        ),
+        (0, 0, 0)
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(document_id, cx)),
         Some(AnnotationTool::Image),
     );
     assert!(workspace.read_with(cx, |workspace, _| workspace.annotation_status().is_none()));
@@ -24160,9 +36801,14 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
         Modifiers::default(),
     );
     let placed = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
-    assert_eq!((placed.revision, placed.undo_depth, placed.redo_depth), (1, 1, 0));
+    assert_eq!(
+        (placed.revision, placed.undo_depth, placed.redo_depth),
+        (1, 1, 0)
+    );
     assert_eq!(placed.images.len(), 1);
     let image_id = placed.images[0].id.clone();
     let asset_id = placed.images[0].asset().id().clone();
@@ -24172,8 +36818,16 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
             ("y", actual.y, expected.y),
             ("width", actual.width, expected.width),
             ("height", actual.height, expected.height),
-            ("right", actual.x + actual.width, expected.x + expected.width),
-            ("top", actual.y + actual.height, expected.y + expected.height),
+            (
+                "right",
+                actual.x + actual.width,
+                expected.x + expected.width,
+            ),
+            (
+                "top",
+                actual.y + actual.height,
+                expected.y + expected.height,
+            ),
         ] {
             assert!(
                 (actual_value - expected_value).abs() <= 0.001,
@@ -24191,8 +36845,9 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     assert_eq!(placed.annotation_order, vec![image_id.clone()]);
     assert!(placed.dirty);
     assert_eq!(
-        workspace.read_with(cx, |workspace, cx| workspace.annotation_tool(document_id, cx)),
-        Some(AnnotationTool::Select),
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(document_id, cx)),
+        Some(AnnotationTool::Image),
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let render_asset = workspace
@@ -24204,6 +36859,16 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
         .expect("the regular Image must retain one GPUI atlas asset");
     cx.update(|window, _| assert!(window.has_image_atlas_entry(&render_asset)));
 
+    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SELECT_TOOL_ID);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let select_tool = cx.debug_bounds(DOCUMENT_SELECT_TOOL_ID).unwrap();
+    cx.simulate_click(select_tool.center(), Modifiers::default());
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(document_id, cx)),
+        Some(AnnotationTool::Select),
+    );
+
     let move_start = PdfPoint::new(
         placed_rect.x + placed_rect.width / 2.,
         placed_rect.y + placed_rect.height / 2.,
@@ -24211,10 +36876,15 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     .unwrap();
     let move_end = PdfPoint::new(move_start.x + 30., move_start.y + 10.).unwrap();
     cx.simulate_mouse_down(to_view(move_start), MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(to_view(move_end), Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_move(
+        to_view(move_end),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
     assert_eq!(
         workspace
-            .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(document_id, cx))
             .unwrap(),
         placed,
         "Image move preview must remain history-free",
@@ -24227,13 +36897,21 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     )
     .unwrap();
     let preview_moved_rect = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_scene(document_id, 0, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_scene(document_id, 0, cx)
+        })
         .images[0]
         .rect;
-    assert_pointer_rect(preview_moved_rect, requested_moved_rect, "Image move preview");
+    assert_pointer_rect(
+        preview_moved_rect,
+        requested_moved_rect,
+        "Image move preview",
+    );
     cx.simulate_mouse_up(to_view(move_end), MouseButton::Left, Modifiers::default());
     let moved = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!((moved.revision, moved.undo_depth), (2, 2));
     let moved_rect = moved.images[0].rect;
@@ -24247,10 +36925,15 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     .unwrap();
     let east_end = PdfPoint::new(east.x + 30., east.y).unwrap();
     cx.simulate_mouse_down(to_view(east), MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(to_view(east_end), Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_move(
+        to_view(east_end),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
     assert_eq!(
         workspace
-            .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(document_id, cx))
             .unwrap(),
         moved,
         "Image resize preview must remain history-free",
@@ -24263,7 +36946,9 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     )
     .unwrap();
     let preview_resized_rect = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_scene(document_id, 0, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_scene(document_id, 0, cx)
+        })
         .images[0]
         .rect;
     assert_pointer_rect(
@@ -24273,7 +36958,9 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     );
     cx.simulate_mouse_up(to_view(east_end), MouseButton::Left, Modifiers::default());
     let resized = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!((resized.revision, resized.undo_depth), (3, 3));
     let resized_rect = resized.images[0].rect;
@@ -24288,26 +36975,34 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     cx.update(|window, cx| workspace_focus.focus(window, cx));
     cx.simulate_keystrokes(EDIT_UNDO);
     let undone = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!((undone.undo_depth, undone.redo_depth), (2, 1));
     assert!(undone.images[0].rect.same_pdf_geometry_as(moved_rect));
     assert_eq!(undone.images[0].id, image_id);
     cx.simulate_keystrokes(EDIT_REDO);
     let redone = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!((redone.undo_depth, redone.redo_depth), (3, 0));
     assert!(redone.images[0].rect.same_pdf_geometry_as(resized_rect));
     assert_eq!(redone.images[0].id, image_id);
 
-    assert!(workspace
-        .update(cx, |workspace, cx| {
-            workspace.set_selected_annotation_locked(document_id, true, cx)
-        })
-        .is_ok());
+    assert!(
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.set_selected_annotation_locked(document_id, true, cx)
+            })
+            .is_ok()
+    );
     let locked = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!((locked.undo_depth, locked.redo_depth), (4, 0));
     assert!(locked.images[0].locked);
@@ -24318,13 +37013,21 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     )
     .unwrap();
     let locked_body_end = PdfPoint::new(locked_body.x + 20., locked_body.y + 20.).unwrap();
-    cx.simulate_mouse_down(to_view(locked_body), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_down(
+        to_view(locked_body),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     cx.simulate_mouse_move(
         to_view(locked_body_end),
         Some(MouseButton::Left),
         Modifiers::default(),
     );
-    cx.simulate_mouse_up(to_view(locked_body_end), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(
+        to_view(locked_body_end),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     cx.simulate_mouse_down(to_view(east_end), MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(
         to_view(PdfPoint::new(east_end.x + 20., east_end.y).unwrap()),
@@ -24336,64 +37039,85 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
         MouseButton::Left,
         Modifiers::default(),
     );
-    assert!(workspace
-        .update(cx, |workspace, cx| {
-            workspace.delete_selected_annotation(document_id, cx)
-        })
-        .is_ok());
+    assert!(
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.delete_selected_annotation(document_id, cx)
+            })
+            .is_ok()
+    );
     assert_eq!(
         workspace
-            .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(document_id, cx))
             .unwrap(),
         locked,
         "locked Image move, resize, and Delete must be history-free no-ops",
     );
-    assert!(workspace
-        .update(cx, |workspace, cx| {
-            workspace.set_selected_annotation_locked(document_id, false, cx)
-        })
-        .is_ok());
+    assert!(
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.set_selected_annotation_locked(document_id, false, cx)
+            })
+            .is_ok()
+    );
     let unlocked = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!((unlocked.undo_depth, unlocked.redo_depth), (5, 0));
     assert!(!unlocked.images[0].locked);
     assert_eq!(unlocked.revision, locked.revision + 1);
     assert_eq!(unlocked.selected_id.as_ref(), Some(&image_id));
     let opacity = 0.42;
-    assert!(workspace
-        .update(cx, |workspace, cx| workspace.apply_engineering_visual_property_event(
-            &EngineeringVisualPropertyEvent {
-                document_id,
-                annotation_id: image_id.clone(),
-                expected_revision: unlocked.revision,
-                expected_kind: EngineeringVisualPropertyKind::Image,
-                patch: EngineeringVisualPropertyPatch::Opacity(opacity),
-            },
-            cx,
-        ))
-        .unwrap());
+    assert!(
+        workspace
+            .update(cx, |workspace, cx| workspace
+                .apply_engineering_visual_property_event(
+                    &EngineeringVisualPropertyEvent {
+                        document_id,
+                        annotation_id: image_id.clone(),
+                        expected_revision: unlocked.revision,
+                        expected_kind: EngineeringVisualPropertyKind::Image,
+                        patch: EngineeringVisualPropertyPatch::Opacity(opacity),
+                    },
+                    cx,
+                ))
+            .unwrap()
+    );
     let opacity_edited = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!(opacity_edited.images[0].opacity(), opacity);
     assert_eq!(
         workspace
-            .read_with(cx, |workspace, cx| workspace.annotation_scene(document_id, 0, cx))
+            .read_with(cx, |workspace, cx| workspace.annotation_scene(
+                document_id,
+                0,
+                cx
+            ))
             .images[0]
             .opacity,
         opacity,
     );
     let opacity_asset_key = format!("{}@{opacity:.6}", asset_id.as_str());
-    assert!(workspace
-        .read_with(cx, |workspace, cx| workspace.image_render_asset_weak(
-            document_id,
-            &opacity_asset_key,
-            cx,
-        ))
-        .is_some());
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.image_render_asset_weak(
+                document_id,
+                &opacity_asset_key,
+                cx,
+            ))
+            .is_some()
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert_eq!(cx.debug_bounds(DOCUMENT_PAGE_ID).unwrap(), viewer_bounds_before);
+    assert_eq!(
+        cx.debug_bounds(DOCUMENT_PAGE_ID).unwrap(),
+        viewer_bounds_before
+    );
     assert_eq!(cx.debug_bounds(layer_id).unwrap(), layer_bounds_before);
     assert!(cx.debug_bounds(DIMENSION_PROPERTY_INSPECTOR_ID).is_none());
 
@@ -24426,14 +37150,23 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
                 .arg(&saved_path)
                 .status()
         } else {
-            std::process::Command::new(command).arg(&saved_path).status()
+            std::process::Command::new(command)
+                .arg(&saved_path)
+                .status()
         }
         .unwrap();
-        assert!(status.success(), "{command} must validate the saved Image PDF");
+        assert!(
+            status.success(),
+            "{command} must validate the saved Image PDF"
+        );
     }
     let typed = PdfPersistenceSession::open(&saved_path).unwrap();
     assert_eq!(typed.annotation_order(), vec![image_id.clone()]);
-    let persisted = typed.images().iter().find(|image| image.id == image_id).unwrap();
+    let persisted = typed
+        .images()
+        .iter()
+        .find(|image| image.id == image_id)
+        .unwrap();
     assert!(persisted.rect.same_pdf_geometry_as(resized_rect));
     assert_eq!(persisted.asset(), &expected_asset);
     assert_eq!(persisted.asset().id(), &asset_id);
@@ -24502,14 +37235,13 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
         .unwrap()
         .iter()
         .map(number)
-        .zip([
-            0.,
-            0.,
-            resized_rect.width,
-            resized_rect.height,
-        ])
+        .zip([0., 0., resized_rect.width, resized_rect.height])
     {
-        assert!(close(actual, expected));
+        assert!(
+            close(actual, expected),
+            "Image appearance /BBox component changed: actual {actual}, expected {expected}; full /BBox {}",
+            form_dict["/BBox"],
+        );
     }
     let image_ref = form_dict["/Resources"]["/XObject"]["/Im0"]
         .as_str()
@@ -24567,7 +37299,9 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
             path: source.clone(),
         })
         .unwrap();
-    let annotated = saved_proof.render_page_with_pdf_annotations(0, 612).unwrap();
+    let annotated = saved_proof
+        .render_page_with_pdf_annotations(0, 612)
+        .unwrap();
     let saved_base = saved_proof.render_page(0, 612).unwrap();
     let source_base = source_proof.render_page(0, 612).unwrap();
     assert_eq!(saved_base.pixels_bgra(), source_base.pixels_bgra());
@@ -24598,7 +37332,8 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     assert!(!worker_process_exists(source_proof_worker));
 
     assert_eq!(
-        workspace.update(cx, |workspace, cx| workspace.request_close_document(document_id, cx)),
+        workspace.update(cx, |workspace, cx| workspace
+            .request_close_document(document_id, cx)),
         CloseRequestDisposition::Closed,
     );
     assert!(!worker_process_exists(saved_worker));
@@ -24614,7 +37349,9 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     });
     cx.run_until_parked();
     let fresh = fresh_workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(fresh_document, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(fresh_document, cx)
+        })
         .unwrap();
     assert_eq!((fresh.revision, fresh.saved_revision), (0, 0));
     assert_eq!((fresh.undo_depth, fresh.redo_depth), (0, 0));
@@ -24626,7 +37363,9 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     assert!((fresh.images[0].opacity() - opacity).abs() <= 0.0001);
     assert!(fresh.images[0].rect.same_pdf_geometry_as(resized_rect));
     let navigation = fresh_workspace
-        .update(cx, |workspace, cx| workspace.begin_page_navigation(fresh_document, 1, cx))
+        .update(cx, |workspace, cx| {
+            workspace.begin_page_navigation(fresh_document, 1, cx)
+        })
         .unwrap();
     let page = fresh_workspace
         .read_with(cx, |workspace, cx| {
@@ -24859,11 +37598,14 @@ fn text_box_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state(
     let source_session = PdfPersistenceSession::open(&source).unwrap();
     let mut text_boxes = source_session.text_boxes().to_vec();
     assert_eq!(text_boxes.len(), 1);
+    let original_layout = text_boxes[0].layout_rect;
+    let overflowing_content = "Beam B-12 / revision 5\nLevel 2\nLevel 3\nLevel 4\nLevel 5\nLevel 6";
+    assert!(6. * text_boxes[0].style().font_size_pt() * 1.15 > original_layout.height);
     text_boxes[0] = TextBoxAnnotation::new(
         text_boxes[0].id.clone(),
         text_boxes[0].page_index,
         text_boxes[0].layout_rect,
-        "Beam B-12 / revision 5",
+        overflowing_content,
         text_boxes[0].style().clone(),
     )
     .unwrap();
@@ -24920,6 +37662,8 @@ fn text_box_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state(
         .expect("Text Box create and edit must survive typed Save As validation");
     let edited = PdfPersistenceSession::open(&edited_target).unwrap();
     assert_eq!(edited.text_boxes(), text_boxes.as_slice());
+    assert_eq!(edited.text_boxes()[0].layout_rect, original_layout);
+    assert_eq!(edited.text_boxes()[0].content(), overflowing_content);
 
     let deleted_id = edited.text_boxes()[0].id.clone();
     let remaining = edited
@@ -25037,7 +37781,11 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
                 callouts: source_session.callouts().to_vec(),
                 measurement_paths: source_session.measurement_paths().to_vec(),
                 text_boxes: source_session.text_boxes().to_vec(),
-                lengths: imported_lengths.iter().cloned().chain([created.clone()]).collect(),
+                lengths: imported_lengths
+                    .iter()
+                    .cloned()
+                    .chain([created.clone()])
+                    .collect(),
                 images: source_session.images().to_vec(),
                 snapshots: source_session.snapshots().to_vec(),
                 page_scales: Vec::new(),
@@ -25051,7 +37799,14 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
         })
         .expect("Length creation must survive typed Save As validation");
     let created_reopen = PdfPersistenceSession::open(&created_target).unwrap();
-    assert_eq!(created_reopen.lengths(), imported_lengths.iter().cloned().chain([created.clone()]).collect::<Vec<_>>());
+    assert_eq!(
+        created_reopen.lengths(),
+        imported_lengths
+            .iter()
+            .cloned()
+            .chain([created.clone()])
+            .collect::<Vec<_>>()
+    );
 
     let edited_length = LengthAnnotation::new(
         created.id.clone(),
@@ -25090,7 +37845,11 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
                 callouts: created_reopen.callouts().to_vec(),
                 measurement_paths: created_reopen.measurement_paths().to_vec(),
                 text_boxes: created_reopen.text_boxes().to_vec(),
-                lengths: imported_lengths.iter().cloned().chain([edited_length.clone()]).collect(),
+                lengths: imported_lengths
+                    .iter()
+                    .cloned()
+                    .chain([edited_length.clone()])
+                    .collect(),
                 images: created_reopen.images().to_vec(),
                 snapshots: created_reopen.snapshots().to_vec(),
                 page_scales: Vec::new(),
@@ -25104,7 +37863,14 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
         })
         .expect("Length edit must survive typed Save As validation");
     let edited = PdfPersistenceSession::open(&edited_target).unwrap();
-    assert_eq!(edited.lengths(), imported_lengths.iter().cloned().chain([edited_length.clone()]).collect::<Vec<_>>());
+    assert_eq!(
+        edited.lengths(),
+        imported_lengths
+            .iter()
+            .cloned()
+            .chain([edited_length.clone()])
+            .collect::<Vec<_>>()
+    );
 
     let deleted_id = edited_length.id.clone();
     saver
@@ -25580,9 +38346,19 @@ fn in_place_save_atomically_replaces_the_regular_source_preserves_mode_and_remov
         ".prepared/in-place-save-unit-original-{}.pdf",
         std::process::id()
     ));
+    let unrelated_stage_like_file = manifest_dir.join(format!(
+        ".prepared/.{}.butter-paper-unrelated-sentinel.tmp",
+        source.file_name().unwrap().to_string_lossy()
+    ));
     std::fs::copy(&reviewed, &source).unwrap();
     std::fs::hard_link(&source, &original_inode).unwrap();
-    let _scratch_files = ScratchFiles(vec![source.clone(), original_inode.clone()]);
+    let unrelated_bytes = b"another application instance owns this stage-like file";
+    std::fs::write(&unrelated_stage_like_file, unrelated_bytes).unwrap();
+    let _scratch_files = ScratchFiles(vec![
+        source.clone(),
+        original_inode.clone(),
+        unrelated_stage_like_file.clone(),
+    ]);
     #[cfg(unix)]
     std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o640)).unwrap();
     let original_bytes = std::fs::read(&source).unwrap();
@@ -25670,19 +38446,10 @@ fn in_place_save_atomically_replaces_the_regular_source_preserves_mode_and_remov
         std::fs::metadata(&source).unwrap().permissions().mode() & 0o777,
         0o640
     );
-    let staging_prefix = format!(
-        ".{}.butter-paper-",
-        source.file_name().unwrap().to_string_lossy()
-    );
-    assert!(
-        std::fs::read_dir(source.parent().unwrap())
-            .unwrap()
-            .filter_map(Result::ok)
-            .all(|entry| !entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with(&staging_prefix)),
-        "successful in-place Save must remove every same-directory staging file"
+    assert_eq!(
+        std::fs::read(&unrelated_stage_like_file).unwrap(),
+        unrelated_bytes,
+        "successful in-place Save must not sweep another instance's prefix-matching file"
     );
 }
 
@@ -25699,13 +38466,67 @@ fn in_place_save_reports_a_durable_publication_receipt_after_parent_sync() {
     let _scratch_files = ScratchFiles(vec![source.clone()]);
     let expected: [u8; 32] = Sha256::digest(std::fs::read(&source).unwrap()).into();
     let persistence = PdfPersistenceSession::open_for_update(&source, expected).unwrap();
-    let outcome = persistence
-        .prepare_save_replacing(&source)
-        .unwrap()
-        .publish_replacing()
-        .unwrap();
+    let prepared = persistence.prepare_save_replacing(&source).unwrap();
+    let exact_stage = prepared.path().to_path_buf();
+    let outcome = prepared.publish_replacing().unwrap();
 
     assert_eq!(outcome, PdfPublicationOutcome::Durable);
+    assert!(
+        !exact_stage.exists(),
+        "successful publication must remove only its exact stage name by renaming it to the target"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn in_place_save_in_a_read_only_directory_preserves_source_bytes_without_staging() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let reviewed =
+        manifest_dir.join("../performance/results/public-fixtures-v1/bp-multi-page-v1.pdf");
+    let root = manifest_dir
+        .join(".prepared")
+        .join(format!("in-place-read-only-{}", std::process::id()));
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(&root).unwrap();
+    let _scratch = ScratchDirectories(vec![root.clone()]);
+    let source = root.join("source.pdf");
+    std::fs::copy(&reviewed, &source).unwrap();
+    let original = std::fs::read(&source).unwrap();
+    let expected: [u8; 32] = Sha256::digest(&original).into();
+    let persistence = PdfPersistenceSession::open_for_update(&source, expected).unwrap();
+
+    struct RestoreDirectoryMode(PathBuf);
+    impl Drop for RestoreDirectoryMode {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let restore_mode = RestoreDirectoryMode(root.clone());
+
+    let error = match persistence.prepare_save_replacing(&source) {
+        Ok(_) => panic!("a read-only source directory must refuse staging"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.to_string(), "Permission denied (os error 13)");
+    assert_eq!(
+        std::fs::read(&source).unwrap(),
+        original,
+        "failed stage creation must leave the opened PDF byte-identical"
+    );
+    assert!(
+        std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .all(|entry| !entry
+                .file_name()
+                .to_string_lossy()
+                .contains(".butter-paper-")),
+        "permission failure must not leave a partial in-place stage"
+    );
+
+    drop(restore_mode);
 }
 
 #[cfg(unix)]
@@ -25817,6 +38638,50 @@ fn in_place_save_rejects_source_drift_after_prepare_and_removes_the_exact_stage(
     assert!(
         !stage.exists(),
         "publish refusal must remove its exact stage"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn in_place_save_never_deletes_a_substituted_competitor_stage() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let reviewed =
+        manifest_dir.join("../performance/results/public-fixtures-v1/bp-multi-page-v1.pdf");
+    let root = manifest_dir.join(".prepared").join(format!(
+        "in-place-stage-substitution-{}",
+        std::process::id()
+    ));
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(&root).unwrap();
+    let _scratch = ScratchDirectories(vec![root.clone()]);
+    let source = root.join("source.pdf");
+    std::fs::copy(&reviewed, &source).unwrap();
+    let expected: [u8; 32] = Sha256::digest(std::fs::read(&source).unwrap()).into();
+    let persistence = PdfPersistenceSession::open_for_update(&source, expected).unwrap();
+    let prepared = persistence.prepare_save_replacing(&source).unwrap();
+    let stage = prepared.path().to_path_buf();
+    let displaced_stage = root.join("displaced-owned-stage");
+    std::fs::rename(&stage, &displaced_stage).unwrap();
+    let sentinel = b"competitor bytes at the former stage name";
+    std::fs::write(&stage, sentinel).unwrap();
+    let mut changed_source = std::fs::read(&source).unwrap();
+    changed_source.extend_from_slice(b"\n% external source change\n");
+    std::fs::write(&source, &changed_source).unwrap();
+
+    let error = prepared
+        .publish_replacing()
+        .expect_err("source drift must reject in-place publication");
+
+    assert!(error.to_string().contains("source PDF changed"), "{error}");
+    assert_eq!(std::fs::read(&source).unwrap(), changed_source);
+    assert_eq!(
+        std::fs::read(&stage).unwrap(),
+        sentinel,
+        "cleanup must not unlink a different inode that claimed the old stage name"
+    );
+    assert!(
+        displaced_stage.exists(),
+        "the externally renamed owned inode is no longer addressable by its original authority"
     );
 }
 
@@ -26969,8 +39834,14 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
             workspace.highlight_composite_evidence(document_id, cx)
         })
         .unwrap();
-    assert!(stable_highlight.current_page_pixels > 0);
-    assert!(stable_highlight.thumbnail_pixels > 0);
+    assert_eq!(
+        stable_highlight.current_page_pixels > 0,
+        !cfg!(target_os = "macos")
+    );
+    assert_eq!(
+        stable_highlight.thumbnail_pixels > 0,
+        !cfg!(target_os = "macos")
+    );
     let highlight_plan = workspace
         .update(cx, |workspace, cx| {
             workspace.plan_viewport(
@@ -26990,14 +39861,15 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
         .update(cx, |workspace, cx| {
             workspace.render_planned_tiles_for_evidence(document_id, &highlight_plan, cx)
         })
-        .expect("the UserUnit Highlight must precompose into visible tiles");
-    assert!(
+        .expect("the UserUnit page must render visible tiles beneath the Highlight");
+    assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| workspace
                 .highlight_composite_evidence(document_id, cx))
             .unwrap()
             .viewer_tile_pixels
-            > 0
+            > 0,
+        !cfg!(target_os = "macos")
     );
 
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SNAPSHOT_TOOL_ID);
@@ -28357,12 +41229,20 @@ fn real_pdfium_worker_opens_navigates_and_exits_without_an_orphan(cx: &mut TestA
         .unwrap();
     let mut cpu_composited_unrotated = second_page.pixels_bgra().to_vec();
     assert!(
-        precompose_highlights_multiply_rgba(
+        precompose_highlights_multiply_bgra_mapped(
             &mut cpu_composited_unrotated,
             second_page.width(),
             second_page.height(),
-            612.,
-            792.,
+            HighlightRasterMapping::new(
+                saved_highlight.page_index,
+                612.,
+                792.,
+                f64::from(second_page.width()) / 612.,
+                f64::from(second_page.height()) / 792.,
+                0.,
+                0.,
+            )
+            .unwrap(),
             std::slice::from_ref(saved_highlight),
         )
         .unwrap()
@@ -28383,7 +41263,7 @@ fn real_pdfium_worker_opens_navigates_and_exits_without_an_orphan(cx: &mut TestA
         .pixels_bgra()
         .chunks_exact(4)
         .enumerate()
-        .filter(|(_, pixel)| pixel[0] >= 247 && pixel[1] >= 247 && pixel[2] <= 8)
+        .filter(|(_, pixel)| pixel[0] <= 8 && pixel[1] >= 247 && pixel[2] >= 247)
         .map(|(index, _)| {
             let x = index as u32 % saved_second_page.width();
             let y = index as u32 / saved_second_page.width();
@@ -28839,6 +41719,12 @@ fn real_rectangle_property_inspector_save_close_and_fresh_workspace_reopen(
             workspace.annotation_snapshot(document_id, cx)
         })
         .expect("the native pointer gesture must create a retained Rectangle");
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(document_id, cx)),
+        Some(AnnotationTool::Select),
+        "a completed Rectangle must return to Select"
+    );
     assert_eq!(created.selected_id.as_ref(), Some(&rectangle_id));
     assert_eq!(created.rectangles.len(), 1);
     assert_eq!(
@@ -29172,7 +42058,9 @@ fn real_native_shell_preserves_independent_view_state_through_fit_scroll_thumbna
     let fit_page = cx.debug_bounds(FIT_PAGE_ID).unwrap();
     cx.simulate_click(fit_page.center(), Modifiers::default());
     let fit_page_state = workspace
-        .read_with(cx, |workspace, cx| workspace.document_view_state(first_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.document_view_state(first_id, cx)
+        })
         .unwrap();
     assert_eq!(fit_page_state.mode(), PageViewMode::SinglePage);
     assert_eq!(
@@ -29245,7 +42133,9 @@ fn real_native_shell_preserves_independent_view_state_through_fit_scroll_thumbna
     let fit_width = cx.debug_bounds(FIT_WIDTH_ID).unwrap();
     cx.simulate_click(fit_width.center(), Modifiers::default());
     let fit_width_state = workspace
-        .read_with(cx, |workspace, cx| workspace.document_view_state(second_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.document_view_state(second_id, cx)
+        })
         .unwrap();
     assert_eq!(fit_width_state.mode(), PageViewMode::Continuous);
     assert_eq!(
@@ -29395,10 +42285,16 @@ fn real_native_shell_preserves_independent_view_state_through_fit_scroll_thumbna
                 .thumbnail_base_raster(49)
                 .is_some_and(|thumbnail| thumbnail.has_spatial_variation())
     }));
-    let retained_thumbnails = workspace.read_with(cx, |workspace, cx| workspace
-        .evidence_snapshot(first_id, cx).unwrap().thumbnail_count);
-    assert!((13..100).contains(&retained_thumbnails),
-        "page 50 and visible neighbours must load lazily without eagerly rendering all 100 pages");
+    let retained_thumbnails = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .evidence_snapshot(first_id, cx)
+            .unwrap()
+            .thumbnail_count
+    });
+    assert!(
+        (13..100).contains(&retained_thumbnails),
+        "page 50 and visible neighbours must load lazily without eagerly rendering all 100 pages"
+    );
 
     assert!(workspace.update(cx, |workspace, cx| workspace.close_document(first_id, cx)));
     assert!(workspace.update(cx, |workspace, cx| workspace.close_document(second_id, cx)));
@@ -29656,9 +42552,7 @@ fn real_in_place_save_replaces_the_opened_pdf_and_reopens_cleanly(cx: &mut TestA
 
 #[gpui::test]
 #[ignore = "requires the checksum-pinned development PDFium library; production redistribution remains blocked"]
-fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(
-    cx: &mut TestAppContext,
-) {
+fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(cx: &mut TestAppContext) {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let test_executable = std::env::current_exe().expect("the test executable path must exist");
     let worker = test_executable
@@ -29767,7 +42661,9 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let a_tab_id = Box::leak(document_session_tab_id(document_a).into_boxed_str());
-    let a_tab = cx.debug_bounds(a_tab_id).expect("document A must have a rendered stable-ID tab");
+    let a_tab = cx
+        .debug_bounds(a_tab_id)
+        .expect("document A must have a rendered stable-ID tab");
     cx.simulate_click(a_tab.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_RECTANGLE_TOOL_ID);
@@ -29793,17 +42689,30 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(
     };
     let rectangle_start = PdfPoint::new(72., 96.).unwrap();
     let rectangle_end = PdfPoint::new(216., 192.).unwrap();
-    cx.simulate_mouse_down(to_view(rectangle_start), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_down(
+        to_view(rectangle_start),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     cx.simulate_mouse_move(
         to_view(rectangle_end),
         Some(MouseButton::Left),
         Modifiers::default(),
     );
-    cx.simulate_mouse_up(to_view(rectangle_end), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(
+        to_view(rectangle_end),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     let a_before_failure = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_a, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_a, cx)
+        })
         .unwrap();
-    assert_eq!((a_before_failure.revision, a_before_failure.undo_depth), (1, 1));
+    assert_eq!(
+        (a_before_failure.revision, a_before_failure.undo_depth),
+        (1, 1)
+    );
     assert_eq!(a_before_failure.rectangles.len(), 1);
     assert!(a_before_failure.dirty);
     let rectangle = a_before_failure.rectangles[0].clone();
@@ -29829,7 +42738,9 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(
     cx.run_until_parked();
 
     let failure = workspace
-        .read_with(cx, |workspace, cx| workspace.document_save_failure(document_a, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.document_save_failure(document_a, cx)
+        })
         .expect("the occupied target must produce visible typed Save As recovery state");
     assert_eq!(failure.operation, DocumentSaveFailureOperation::SaveAs);
     assert_eq!(
@@ -29838,7 +42749,9 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(
     );
     assert_eq!(std::fs::read(&source_a).unwrap(), source_a_before);
     let a_after_failure = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_a, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_a, cx)
+        })
         .unwrap();
     assert_eq!(a_after_failure, a_before_failure);
     assert!(workspace.read_with(cx, |workspace, cx| {
@@ -29888,7 +42801,10 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(
     }));
     assert_eq!(std::fs::read(&source_a).unwrap(), source_a_before);
     assert_eq!(std::fs::read(&source_b).unwrap(), source_b_before);
-    assert_eq!(Sha256::digest(std::fs::read(&occupied).unwrap()), occupied_hash);
+    assert_eq!(
+        Sha256::digest(std::fs::read(&occupied).unwrap()),
+        occupied_hash
+    );
 
     for command in ["qpdf", "pdfinfo"] {
         let status = if command == "qpdf" {
@@ -29900,7 +42816,10 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(
             std::process::Command::new(command).arg(&recovered).status()
         }
         .unwrap();
-        assert!(status.success(), "{command} must validate the recovered target");
+        assert!(
+            status.success(),
+            "{command} must validate the recovered target"
+        );
     }
     let typed = PdfPersistenceSession::open(&recovered).unwrap();
     let persisted = typed
@@ -29925,7 +42844,9 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(
             path: source_a.clone(),
         })
         .unwrap();
-    let annotated = saved_proof.render_page_with_pdf_annotations(0, 612).unwrap();
+    let annotated = saved_proof
+        .render_page_with_pdf_annotations(0, 612)
+        .unwrap();
     let saved_base = saved_proof.render_page(0, 612).unwrap();
     let source_base = source_proof.render_page(0, 612).unwrap();
     assert_eq!(saved_base.pixels_bgra(), source_base.pixels_bgra());
@@ -29970,13 +42891,15 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(
             )
         })
         .unwrap();
-    assert!(workspace
-        .update(cx, |workspace, cx| {
-            workspace.render_planned_tiles_for_evidence(document_b, &b_plan, cx)
-        })
-        .unwrap()
-        .rendered_tiles
-        > 0);
+    assert!(
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.render_planned_tiles_for_evidence(document_b, &b_plan, cx)
+            })
+            .unwrap()
+            .rendered_tiles
+            > 0
+    );
 
     assert!(workspace.update(cx, |workspace, cx| workspace.close_document(document_a, cx)));
     assert!(workspace.update(cx, |workspace, cx| workspace.close_document(document_b, cx)));
@@ -29993,18 +42916,30 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(
     });
     cx.run_until_parked();
     let fresh_a_snapshot = fresh_workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(fresh_a, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(fresh_a, cx)
+        })
         .unwrap();
-    assert_eq!((fresh_a_snapshot.revision, fresh_a_snapshot.saved_revision), (0, 0));
-    assert_eq!((fresh_a_snapshot.undo_depth, fresh_a_snapshot.redo_depth), (0, 0));
+    assert_eq!(
+        (fresh_a_snapshot.revision, fresh_a_snapshot.saved_revision),
+        (0, 0)
+    );
+    assert_eq!(
+        (fresh_a_snapshot.undo_depth, fresh_a_snapshot.redo_depth),
+        (0, 0)
+    );
     assert!(!fresh_a_snapshot.dirty);
     assert!(fresh_a_snapshot.selected_id.is_none());
-    assert!(fresh_a_snapshot
-        .rectangles
-        .iter()
-        .any(|candidate| candidate.id == rectangle_id));
+    assert!(
+        fresh_a_snapshot
+            .rectangles
+            .iter()
+            .any(|candidate| candidate.id == rectangle_id)
+    );
     let fresh_navigation = fresh_workspace
-        .update(cx, |workspace, cx| workspace.begin_page_navigation(fresh_b, 2, cx))
+        .update(cx, |workspace, cx| {
+            workspace.begin_page_navigation(fresh_b, 2, cx)
+        })
         .unwrap();
     let fresh_page = fresh_workspace
         .read_with(cx, |workspace, cx| {
@@ -30021,8 +42956,18 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(
     );
     let (fresh_a_worker, fresh_b_worker) = fresh_workspace.read_with(cx, |workspace, cx| {
         (
-            workspace.session(fresh_a, cx).unwrap().read(cx).worker_pid().unwrap(),
-            workspace.session(fresh_b, cx).unwrap().read(cx).worker_pid().unwrap(),
+            workspace
+                .session(fresh_a, cx)
+                .unwrap()
+                .read(cx)
+                .worker_pid()
+                .unwrap(),
+            workspace
+                .session(fresh_b, cx)
+                .unwrap()
+                .read(cx)
+                .worker_pid()
+                .unwrap(),
         )
     });
     assert_ne!(fresh_a_worker, fresh_b_worker);
@@ -30800,21 +43745,31 @@ fn recent_signature_workspace_renders_order_reuses_and_confirms_removal(cx: &mut
             .is_some()
     );
     assert_eq!(store.list().unwrap().signatures.len(), 2);
-    let centre = cx
-        .debug_bounds(DOCUMENT_SIGNATURE_RECENT_REMOVE_CANCEL_ID)
-        .unwrap()
-        .center();
-    cx.simulate_click(centre, Modifiers::default());
+    assert!(
+        cx.debug_bounds(DOCUMENT_SIGNATURE_RECENT_REMOVE_CANCEL_ID)
+            .is_some(),
+        "the cancellation control must remain visible and reachable"
+    );
+    cx.simulate_keystrokes("escape");
     settle_recent_workspace(cx);
     cx.executor().advance_clock(Duration::from_millis(300));
     settle_recent_workspace(cx);
     assert_eq!(store.list().unwrap().signatures.len(), 2);
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "Cancel must close the recent-signature confirmation dialog"
+    );
     let centre = cx
         .debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID)
         .unwrap()
         .center();
     cx.simulate_click(centre, Modifiers::default());
     settle_recent_workspace(cx);
+    assert!(
+        cx.debug_bounds("document-workspace-signature-recent")
+            .is_some(),
+        "the real Signature trigger must reopen its recent-signature content"
+    );
 
     let centre = cx.debug_bounds(remove_first).unwrap().center();
     cx.simulate_event(gpui::MouseMoveEvent {
@@ -30846,17 +43801,24 @@ fn recent_signature_workspace_renders_order_reuses_and_confirms_removal(cx: &mut
     // Five entries must remain bounded and scroll to the local creation controls.
     for value in 3..8 {
         let asset = DecodedRgbaAsset::new(2, 1, vec![value, 0, 0, 255, 0, 0, 0, 255]).unwrap();
-        store.remember(asset, RecentSignatureSource::Image, u64::from(value)).unwrap();
+        store
+            .remember(asset, RecentSignatureSource::Image, u64::from(value))
+            .unwrap();
     }
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.simulate_resize(size(px(800.), px(480.)));
     cx.run_until_parked();
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SIGNATURE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let centre = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap().center();
+    let centre = cx
+        .debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID)
+        .unwrap()
+        .center();
     cx.simulate_click(centre, Modifiers::default());
     settle_recent_workspace(cx);
-    let content = cx.debug_bounds("document-workspace-signature-content").unwrap();
+    let content = cx
+        .debug_bounds("document-workspace-signature-content")
+        .unwrap();
     assert!(content.origin.y >= px(0.) && content.bottom() <= px(480.));
     let before = cx.debug_bounds(DOCUMENT_SIGNATURE_ADD_ID).unwrap();
     cx.simulate_event(gpui::ScrollWheelEvent {
@@ -30867,9 +43829,11 @@ fn recent_signature_workspace_renders_order_reuses_and_confirms_removal(cx: &mut
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let after = cx.debug_bounds(DOCUMENT_SIGNATURE_ADD_ID).unwrap();
-    assert!(after.origin.y < before.origin.y, "the five-item list must scroll: before={before:?}, after={after:?}, content={content:?}");
+    assert!(
+        after.origin.y < before.origin.y,
+        "the five-item list must scroll: before={before:?}, after={after:?}, content={content:?}"
+    );
     assert!(after.origin.y >= content.origin.y && after.bottom() <= content.bottom());
-
 }
 
 // Root provides modal state; like ApplicationCloseShell, the window composition
@@ -30908,7 +43872,9 @@ fn worker_process_exists(pid: u32) -> bool {
         result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
     #[cfg(not(target_os = "macos"))]
-    { PathBuf::from(format!("/proc/{pid}")).exists() }
+    {
+        PathBuf::from(format!("/proc/{pid}")).exists()
+    }
 }
 
 fn simulate_space_down(cx: &mut gpui::VisualTestContext, held: bool) {
@@ -30943,9 +43909,85 @@ fn workspace_pan_for_test(
 }
 
 #[gpui::test]
-fn hold_space_pans_temporarily_and_double_tap_toggles_pan_select(
+fn pdf_content_geometry_waits_for_visible_settled_page_retries_and_deduplicates(
     cx: &mut TestAppContext,
 ) {
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let resource = Arc::new(ContentGeometryRecordingResource {
+        released: Arc::new(AtomicBool::new(false)),
+        calls: calls.clone(),
+        failures_remaining: AtomicUsize::new(1),
+    });
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("content-geometry.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        let opened = OpenedNativeDocument::new(
+            "content-geometry.pdf",
+            vec![(612., 792.)],
+            raster(32, 40),
+            vec![ThumbnailSurface::new(0, raster(8, 10))],
+            resource,
+        )
+        .unwrap();
+        assert_eq!(
+            workspace.apply_open_result(&request, Ok(opened), cx),
+            ApplyDisposition::Applied
+        );
+    });
+    cx.run_until_parked();
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "open must not parse content before a visible settled viewport exists"
+    );
+
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_view_configuration(request.document_id, PageViewMode::SinglePage, 100., cx);
+        workspace
+            .refresh_viewport_async(request.document_id, 800., 600., 1., cx)
+            .unwrap();
+    });
+    cx.run_until_parked();
+    assert_eq!(calls.lock().unwrap().as_slice(), &[0]);
+
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .refresh_viewport_async(request.document_id, 800., 600., 1., cx)
+            .unwrap();
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        &[0, 0],
+        "a failed page request must be retryable from the next settled trigger"
+    );
+
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .refresh_viewport_async(request.document_id, 800., 600., 1., cx)
+            .unwrap();
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        &[0, 0],
+        "a ready page must remain deduplicated for its resource epoch"
+    );
+}
+
+#[gpui::test]
+fn hold_space_pans_temporarily_and_double_tap_toggles_pan_select(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
         init_document_workspace_actions(cx);

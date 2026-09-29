@@ -73,9 +73,8 @@ pub struct HighlightDefaultsPanel {
 impl HighlightDefaultsPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let defaults = default_highlight_defaults();
-        let width = cx.new(|cx| {
-            InputState::new(window, cx).default_value(format_number(defaults.width_pt))
-        });
+        let width = cx
+            .new(|cx| InputState::new(window, cx).default_value(format_number(defaults.width_pt)));
         let width_slider = cx.new(|_| {
             SliderState::new()
                 .min(1.)
@@ -322,7 +321,8 @@ impl Render for HighlightDefaultsPanel {
                 Field::new().label("Stroke width").child(
                     PropertySliderInput::new("Stroke width", &self.width_slider, &self.width)
                         .row_id(HIGHLIGHT_DEFAULTS_WIDTH_ID)
-                        .suffix("pt").disabled(controls_disabled),
+                        .suffix("pt")
+                        .disabled(controls_disabled),
                 ),
             )
             .child(
@@ -331,7 +331,8 @@ impl Render for HighlightDefaultsPanel {
                         .row_id(HIGHLIGHT_DEFAULTS_OPACITY_ID)
                         .slider_id(HIGHLIGHT_DEFAULTS_OPACITY_SLIDER_ID)
                         .input_id(HIGHLIGHT_DEFAULTS_OPACITY_INPUT_ID)
-                        .suffix("%").disabled(controls_disabled),
+                        .suffix("%")
+                        .disabled(controls_disabled),
                 ),
             );
 

@@ -14,6 +14,28 @@ import urllib.request
 
 root = Path(__file__).resolve().parent
 dist = root / 'dist'
+
+
+def extract_data_archive(archive, destination):
+    """Use Python 3.12's data filter or its fail-closed Python 3.9 equivalent."""
+    if hasattr(tarfile, 'data_filter'):
+        archive.extractall(destination, filter='data')
+        return
+    destination = destination.resolve()
+    for member in archive.getmembers():
+        target = (destination / member.name).resolve()
+        if destination != target and destination not in target.parents:
+            raise SystemExit(f'archive member escapes extraction root: {member.name}')
+        if member.isdev() or member.isfifo():
+            raise SystemExit(f'archive member has unsupported type: {member.name}')
+        if member.issym() or member.islnk():
+            link_root = target.parent if member.issym() else destination
+            link_target = (link_root / member.linkname).resolve()
+            if destination != link_target and destination not in link_target.parents:
+                raise SystemExit(f'archive link escapes extraction root: {member.name}')
+    archive.extractall(destination)
+
+
 dist.mkdir(exist_ok=True)
 policy = json.loads((root.parent / 'gpui-migration/gpui-migration/build-guard-policy.json').read_text())
 if shutil.disk_usage(root).free // 1024 < policy['preflightFreeKiB']:
@@ -28,7 +50,7 @@ for name, source in sources.items():
     if hashlib.new(algorithm, data).hexdigest() != source[algorithm]:
         raise SystemExit(f'{name} checksum mismatch')
     with tarfile.open(fileobj=io.BytesIO(data)) as tar:
-        tar.extractall(dist, filter='data')
+        extract_data_archive(tar, dist)
 upstream = dist / ('qrcp-' + sources['qrcp']['revision'])
 subprocess.run(['patch', '-p1', '--fuzz=0', '-i', str(root / 'qrcp-memory-adapter.patch')], cwd=upstream, check=True)
 cmd = upstream / 'cmd/bp-prototype'

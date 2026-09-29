@@ -28,6 +28,7 @@ import { NewBlankPdfDialog } from './components/NewBlankPdfDialog';
 import { TemplateManagerDialog } from './components/TemplateManagerDialog';
 import {
   loadTemplateLibrary,
+  readRendererMigrationSnapshot,
   saveTemplateLibrary,
   templateCreateRequest,
   useTemplate,
@@ -58,7 +59,7 @@ import {
   type SnapSettings,
 } from './state/viewerStore';
 import { subscribeToThemeMode } from './theme';
-import type { ApplicationMenuCommand, ApplicationMenuState, ApplicationMetadata, BlankPdfCreateRequest, BlankPdfCreateResult, LoadedDocumentPayload, PdfOpenProgress, PdfSaveTargetDescriptor, ScrollMode, ScrollWheelMode, ThemeMode, ToolMode, ViewerDiagnostics, ZoomPreset } from '../../shared/protocol';
+import type { ApplicationMenuCommand, ApplicationMenuState, ApplicationMetadata, BlankPdfCreateRequest, BlankPdfCreateResult, ElectronMigrationExportRequest, LoadedDocumentPayload, PdfOpenProgress, PdfSaveTargetDescriptor, ScrollMode, ScrollWheelMode, ThemeMode, ToolMode, ViewerDiagnostics, ZoomPreset } from '../../shared/protocol';
 import { getMarkupToolDefinition, PDF_TOOL_REGISTRY } from './pdf-tools/toolRegistry';
 import { buildMarkupSpatialIndex } from './pdf-tools/markupSpatialIndex';
 import { clampViewerZoom } from './utils/renderZoom';
@@ -324,6 +325,7 @@ export function App({ initialThemeMode }: AppProps) {
   const [tabs, setTabs] = useState<DocumentTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [applicationMetadata, setApplicationMetadata] = useState<ApplicationMetadata>(DEFAULT_APPLICATION_METADATA);
+  const [applicationMetadataLoaded, setApplicationMetadataLoaded] = useState(false);
   const [themeMode, setThemeMode] = useState<ThemeMode>(initialThemeMode);
   const [pageScaleDialogOpen, setPageScaleDialogOpen] = useState(false);
   const [pageScaleDialogInitialMode, setPageScaleDialogInitialMode] = useState<'preset' | 'custom' | 'calibrate'>('preset');
@@ -332,6 +334,8 @@ export function App({ initialThemeMode }: AppProps) {
   const [blankPdfSettings, setBlankPdfSettings] = useState(() => loadBlankPdfSettings(window.localStorage));
   const [newBlankPdfDialogOpen, setNewBlankPdfDialogOpen] = useState(false);
   const [templateLibrary, setTemplateLibrary] = useState(() => loadTemplateLibrary(window.localStorage));
+  const [templateLibraryHydrated, setTemplateLibraryHydrated] = useState(false);
+  const [migrationStorageRevision, setMigrationStorageRevision] = useState(0);
   const [templateManagerOpen, setTemplateManagerOpen] = useState(false);
   const [pendingCloseTabId, setPendingCloseTabId] = useState<string | null>(null);
   const [applicationCloseRequested, setApplicationCloseRequested] = useState(false);
@@ -352,12 +356,42 @@ export function App({ initialThemeMode }: AppProps) {
     if (!templatesBridge) return;
     let active = true;
     void templatesBridge.list().then((records) => {
-      if (active) setTemplateLibrary((current) => withImportedTemplates(current, records));
+      if (active) {
+        setTemplateLibrary((current) => withImportedTemplates(current, records));
+        setTemplateLibraryHydrated(true);
+      }
     }).catch((error) => {
       console.warn('Unable to load PDF templates.', error);
     });
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    const migrationBridge = window.butterPaper.migration;
+    if (!migrationBridge || !applicationMetadataLoaded || !templateLibraryHydrated || applicationMetadata.development) return;
+    const timer = window.setTimeout(() => {
+      let request: ElectronMigrationExportRequest;
+      try {
+        request = readRendererMigrationSnapshot(window.localStorage, menuBarVisible);
+      } catch (error) {
+        console.warn('Unable to prepare native migration data.', error);
+        return;
+      }
+      void migrationBridge.exportElectronData(request).catch((error) => {
+        console.warn('Unable to publish native migration data.', error);
+      });
+    }, 100);
+    return () => window.clearTimeout(timer);
+  }, [
+    applicationMetadata,
+    applicationMetadataLoaded,
+    menuBarVisible,
+    migrationStorageRevision,
+    templateLibrary,
+    templateLibraryHydrated,
+    updater.status?.frequency,
+    updater.status?.lastSuccessfulCheckAt,
+  ]);
   const setDocument = useViewerStore((state) => state.setDocument);
   const updateDocument = useViewerStore((state) => state.updateDocument);
   const replaceDocumentAfterSave = useViewerStore((state) => state.replaceDocumentAfterSave);
@@ -450,6 +484,7 @@ export function App({ initialThemeMode }: AppProps) {
       .then((metadata) => {
         if (!cancelled) {
           setApplicationMetadata(metadata);
+          setApplicationMetadataLoaded(true);
         }
       })
       .catch((error) => console.error('Unable to load application metadata.', error));
@@ -649,7 +684,11 @@ export function App({ initialThemeMode }: AppProps) {
     const removedImported = templateLibrary.importedTemplates.filter((template) => (
       !nextLibrary.importedTemplates.some((candidate) => candidate.id === template.id)
     ));
-    for (const template of removedImported) void window.butterPaper.templates.remove(template.id);
+    if (removedImported.length > 0) {
+      void Promise.all(removedImported.map((template) => window.butterPaper.templates.remove(template.id)))
+        .then(() => setMigrationStorageRevision((revision) => revision + 1))
+        .catch((error) => console.warn('Unable to remove an imported PDF template.', error));
+    }
     saveTemplateLibrary(window.localStorage, nextLibrary);
     setTemplateLibrary(nextLibrary);
   }
@@ -1758,7 +1797,18 @@ export function App({ initialThemeMode }: AppProps) {
         status={updater.status}
         onCheckAgain={() => void updater.actions.checkNow()}
         onDismissManualCheck={updater.actions.dismissManualCheck}
-        onInstall={() => void updater.actions.installDownloaded()}
+        onInstall={() => {
+          let request: ElectronMigrationExportRequest;
+          try {
+            request = readRendererMigrationSnapshot(window.localStorage, menuBarVisible);
+          } catch (error) {
+            setErrorMessage(error instanceof Error ? error.message : 'Unable to prepare native migration data.');
+            return;
+          }
+          void updater.actions.installDownloaded(request).catch((error) => {
+            setErrorMessage(error instanceof Error ? error.message : 'Unable to install the downloaded update.');
+          });
+        }}
         onOpenReleasePage={() => void updater.actions.openReleasePage()}
       />
     </div>

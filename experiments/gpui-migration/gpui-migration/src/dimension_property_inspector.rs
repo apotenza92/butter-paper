@@ -379,16 +379,16 @@ impl Render for DimensionPropertyInspector {
                 .id(DIMENSION_INSPECTOR_LOCKED_ID)
                 .debug_selector(|| DIMENSION_INSPECTOR_LOCKED_ID.into())
                 .child(
-                Switch::new("dimension-property-locked-switch")
-                    .label("Locked")
-                    .checked(snapshot.locked)
-                    .disabled(snapshot.mutation_disabled)
-                    .on_click(move |value, _, cx| {
-                        let _ = lock.update(cx, |this, cx| {
-                            this.emit_patch(DimensionPropertyPatch::Locked(*value), cx)
-                        });
-                    }),
-            ),
+                    Switch::new("dimension-property-locked-switch")
+                        .label("Locked")
+                        .checked(snapshot.locked)
+                        .disabled(snapshot.mutation_disabled)
+                        .on_click(move |value, _, cx| {
+                            let _ = lock.update(cx, |this, cx| {
+                                this.emit_patch(DimensionPropertyPatch::Locked(*value), cx)
+                            });
+                        }),
+                ),
         );
         let mut appearance = v_flex().gap_3();
         if snapshot.show_offset {
@@ -562,7 +562,13 @@ fn color_field(
     });
     Field::new()
         .label(label)
-        .child(div().id(id).debug_selector(move || id.into()).child(picker).children(apply))
+        .child(
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .child(picker)
+                .children(apply),
+        )
         .into_any_element()
 }
 
@@ -590,6 +596,7 @@ fn rebuild_appearance(
         opacity,
     )
     .and_then(|style| style.with_weight_and_alignment(text.weight(), text.alignment()))
+    .and_then(|style| style.with_layout_metrics(text.line_height_pt(), text.inset_pt()))
     .ok()?;
     DimensionAppearance::new(line, text).ok()
 }
@@ -615,6 +622,19 @@ fn rgb_hex(color: gpui::Hsla) -> String {
 mod tests {
     use super::*;
     use crate::annotation_model::StrokeStyle;
+
+    #[test]
+    fn caption_layout_font_edit_preserves_imported_line_height_and_inset() {
+        let line = StraightLineAppearance::new("#112233", 2., 1., StrokeStyle::Solid).unwrap();
+        let text = TextBoxStyle::new("Tinos", 24., "#445566", 1.)
+            .unwrap()
+            .with_layout_metrics(13.8, 3.)
+            .unwrap();
+        let next = rebuild_appearance(&line, &text, None, None, None, None, Some(30.)).unwrap();
+        assert_eq!(next.text().font_size_pt(), 30.);
+        assert_eq!(next.text().line_height_pt(), 13.8);
+        assert_eq!(next.text().inset_pt(), 3.);
+    }
 
     #[test]
     fn picker_alpha_updates_both_dimension_parts_and_preserves_other_fields() {

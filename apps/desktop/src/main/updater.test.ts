@@ -3,6 +3,7 @@ import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { UpdateStatus } from '../shared/protocol';
+import { createElectronMigrationExportPlan, publishElectronMigrationExport } from './electronDataMigration';
 import type { TufVerifiedUpdateFeed } from './tufUpdateFeed';
 import {
   DesktopUpdaterService,
@@ -53,9 +54,40 @@ class FakeScheduler implements UpdaterScheduler {
 
 const silentLogger = { error: vi.fn() };
 const fixedNow = new Date('2026-07-22T12:00:00.000Z');
+const forgedMigrationPublication = {
+  outcome: 'created' as const,
+  exportId: 'a'.repeat(64),
+  createdAt: fixedNow.toISOString(),
+};
 
 async function createUserDataDirectory(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'butter-paper-updater-'));
+}
+
+async function publishMigration(userDataPath: string) {
+  const plan = createElectronMigrationExportPlan({
+    metadata: {
+      channel: 'stable',
+      productName: 'Butter Paper',
+      version: '0.0.26',
+      commit: null,
+      branch: null,
+      dirty: false,
+      development: false,
+      checkoutId: null,
+      statusFingerprint: null,
+      windowTitle: 'Butter Paper',
+    },
+    renderer: {
+      menuBarVisible: true,
+      lastTemplateId: 'built-in-blank',
+      generatedTemplates: [],
+    },
+    imported: { records: [], sources: [] },
+    updateSettings: { frequency: 'weekly', lastSuccessfulCheckAt: null },
+    createdAt: fixedNow.toISOString(),
+  });
+  return publishElectronMigrationExport(userDataPath, plan);
 }
 
 function createService(options: {
@@ -391,12 +423,18 @@ describe('DesktopUpdaterService', () => {
 
   it('publishes download state, records successful checks, and installs only a downloaded update', async () => {
     const userDataPath = await createUserDataDirectory();
-    const { service, updater } = createService({ userDataPath });
+    const { service, updater } = createService({
+      userDataPath,
+      environment: { BP_UPDATE_TEST_MODE: '1', BP_UPDATE_INSTALL: '1' },
+    });
     const snapshots: UpdateStatus[] = [];
     service.subscribe(status => snapshots.push(status));
     await service.start();
 
-    await expect(service.installDownloaded()).resolves.toBe(false);
+    await expect(service.installDownloaded(null)).rejects.toThrow(/migration publication evidence/);
+    await expect(service.installDownloaded(forgedMigrationPublication)).rejects.toThrow(/migration publication evidence/);
+    const migrationPublication = await publishMigration(userDataPath);
+    await expect(service.installDownloaded(migrationPublication)).resolves.toBe(false);
     updater.emit('update-available', {
       version: '0.0.2',
       butterPaperChannel: 'stable',
@@ -414,11 +452,12 @@ describe('DesktopUpdaterService', () => {
       lastSuccessfulCheckAt: fixedNow.toISOString(),
     });
     expect(snapshots.some(status => status.phase === 'downloading' && status.downloadPercent === 42.5)).toBe(true);
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
     service.setRestartBlocked(true);
-    await expect(service.installDownloaded()).resolves.toBe(false);
+    await expect(service.installDownloaded(migrationPublication)).resolves.toBe(false);
     expect(updater.quitAndInstall).not.toHaveBeenCalled();
     service.setRestartBlocked(false);
-    await expect(service.installDownloaded()).resolves.toBe(true);
+    await expect(service.installDownloaded(migrationPublication)).resolves.toBe(true);
     expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
 
     await vi.waitFor(async () => {
@@ -430,8 +469,9 @@ describe('DesktopUpdaterService', () => {
   it('closes the authenticated loopback feed before handing off to a Windows installer', async () => {
     const feed = createFakeVerifiedFeed();
     const updater = new FakeUpdater();
+    const userDataPath = await createUserDataDirectory();
     const { service } = createService({
-      userDataPath: await createUserDataDirectory(),
+      userDataPath,
       platform: 'win32',
       updater,
       buildMetadata: {
@@ -449,7 +489,8 @@ describe('DesktopUpdaterService', () => {
     await vi.waitFor(() => expect(updater.downloadUpdate).toHaveBeenCalledTimes(1));
     updater.emit('update-downloaded', { version: '0.0.2' });
 
-    await expect(service.installDownloaded()).resolves.toBe(true);
+    const migrationPublication = await publishMigration(userDataPath);
+    await expect(service.installDownloaded(migrationPublication)).resolves.toBe(true);
     expect(feed.close).toHaveBeenCalledTimes(1);
     expect(vi.mocked(feed.close).mock.invocationCallOrder[0]).toBeLessThan(
       updater.quitAndInstall.mock.invocationCallOrder[0]!,

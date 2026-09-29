@@ -162,10 +162,26 @@ test("target sampler returns one integer when du prints then fails", () => {
   assert.equal(result.stdout, "2409044\n");
 });
 
-test("portable run binds a unique reflink-seeded prepared overlay", async () => {
+test("portable run copies, seeds and compares both prepared dependency roots", async () => {
   const runner = await readFile(runnerUrl, "utf8");
   assert.match(runner, /run_id=/);
+  assert.match(
+    runner,
+    /cp -a \\\n+  "\$probe_dir\/\.prepared\/gpui-component-c27f5d5c" \\\n+  "\$probe_dir\/\.prepared\/zed-8b1497d" \\\n+  "\$snapshot_tmp\/gpui-migration\/\.prepared\/"/,
+  );
+  assert.match(
+    runner,
+    /"\$snapshot_tmp\/gpui-migration\/\.prepared\/zed-8b1497d\/crates\/gpui\/Cargo\.toml"/,
+  );
   assert.match(runner, /cp --reflink=auto -a .*source_snapshot.*\.prepared/);
+  assert.match(
+    runner,
+    /"\$prepared_overlay\/zed-8b1497d\/crates\/gpui\/Cargo\.toml"/,
+  );
+  assert.match(
+    runner,
+    /"\$source_snapshot\/gpui-migration\/\.prepared\/zed-8b1497d" \\\n+      "\$prepared_overlay\/zed-8b1497d"/,
+  );
   assert.match(
     runner,
     /src=\$prepared_overlay,dst=\/source\/gpui-migration\/\.prepared"/,

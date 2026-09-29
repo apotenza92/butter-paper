@@ -10,18 +10,20 @@ use std::{
 use crate::{
     annotation_model::{
         Annotation, DecodedRgbaAsset, LengthCalibration, PageRotation, PageScale, PageTransform,
-        PdfRect, PenAnnotation, ScalePreset,
+        PdfRect, PenAnnotation, RetainedAnnotationObstacle, ScalePreset,
     },
-    highlight_compositor::{HighlightRasterMapping, precompose_highlights_multiply_rgba_mapped},
+    highlight_compositor::{HighlightRasterMapping, precompose_highlights_multiply_bgra_mapped},
     page_geometry::{
         PageCoordinateSpace, PdfRect as CoordinateRect, Rotation as CoordinateRotation,
     },
+    pdf_content_geometry::PageSnapGeometry,
     pdf_engine::PdfPersistenceSession,
     pdf_worker::{
-        ClipRect, DocumentInfo, JobId, PageGeometry, RenderRequest, RequestId, Rotation, SessionId,
-        SurfaceDescriptor, SurfaceFormat, SurfaceId, WorkerError, WorkerErrorCode,
-        WorkerProcessClient, WorkerRequest, WorkerResponse,
+        AnnotationRenderMode, ClipRect, DocumentInfo, JobId, PageGeometry, RenderRequest,
+        RequestId, Rotation, SessionId, SurfaceDescriptor, SurfaceFormat, SurfaceId, WorkerError,
+        WorkerErrorCode, WorkerProcessClient, WorkerRequest, WorkerResponse,
     },
+    semantic_snapping::PageGridDefinition,
     viewer::TileRequest,
 };
 use gpui::RenderImage;
@@ -203,7 +205,7 @@ impl RasterSurface {
             crop_x_px,
             crop_y_px,
         )?;
-        precompose_highlights_multiply_rgba_mapped(
+        precompose_highlights_multiply_bgra_mapped(
             &mut self.pixels_bgra,
             self.width,
             self.height,
@@ -242,6 +244,19 @@ pub trait NativeDocumentResource: Send + Sync {
     ) -> Result<RasterSurface, String> {
         self.render_page(page_index, width)
     }
+    fn render_page_without_pdf_annotations(
+        &self,
+        page_index: u32,
+        width: u32,
+    ) -> Result<RasterSurface, String> {
+        self.render_page(page_index, width)
+    }
+    fn page_snap_geometry(&self, page_index: u32) -> Result<PageSnapGeometry, String> {
+        Ok(PageSnapGeometry {
+            page_index,
+            primitives: Vec::new(),
+        })
+    }
     fn render_tile(&self, request: TileRequest) -> Result<RasterSurface, String>;
     fn close(&self) -> Result<(), String>;
     fn is_released(&self) -> bool;
@@ -254,11 +269,13 @@ pub struct OpenedNativeDocument {
     pub(crate) thumbnails: Vec<ThumbnailSurface>,
     pub(crate) resource: Arc<dyn NativeDocumentResource>,
     pub(crate) annotations: Vec<Annotation>,
+    pub(crate) retained_annotation_obstacles: Vec<RetainedAnnotationObstacle>,
     pub(crate) page_scales: Vec<PageScale>,
     pub(crate) scale_presets: Vec<ScalePreset>,
     pub(crate) page_length_calibrations: Vec<(u32, LengthCalibration)>,
     pub(crate) page_rotations: Vec<PageRotation>,
     pub(crate) page_coordinate_spaces: Vec<PageCoordinateSpace>,
+    pub(crate) page_grid_definition: Option<PageGridDefinition>,
     pub(crate) source_sha256: Option<[u8; 32]>,
 }
 
@@ -307,17 +324,27 @@ impl OpenedNativeDocument {
             thumbnails,
             resource,
             annotations: Vec::new(),
+            retained_annotation_obstacles: Vec::new(),
             page_scales: Vec::new(),
             scale_presets: Vec::new(),
             page_length_calibrations: Vec::new(),
             page_rotations,
             page_coordinate_spaces,
+            page_grid_definition: None,
             source_sha256: None,
         })
     }
 
     pub fn with_annotations(mut self, annotations: Vec<Annotation>) -> Self {
         self.annotations = annotations;
+        self
+    }
+
+    pub fn with_retained_annotation_obstacles(
+        mut self,
+        obstacles: Vec<RetainedAnnotationObstacle>,
+    ) -> Self {
+        self.retained_annotation_obstacles = obstacles;
         self
     }
 
@@ -356,6 +383,11 @@ impl OpenedNativeDocument {
             "every opened page must have one stable coordinate-space identity"
         );
         self.page_coordinate_spaces = spaces;
+        self
+    }
+
+    pub fn with_page_grid_definition(mut self, grid: Option<PageGridDefinition>) -> Self {
+        self.page_grid_definition = grid;
         self
     }
 
@@ -401,6 +433,19 @@ impl OpenedNativeDocument {
     ) -> Result<RasterSurface, String> {
         self.resource
             .render_page_with_pdf_annotations(page_index, width)
+    }
+
+    pub fn render_page_without_pdf_annotations(
+        &self,
+        page_index: u32,
+        width: u32,
+    ) -> Result<RasterSurface, String> {
+        self.resource
+            .render_page_without_pdf_annotations(page_index, width)
+    }
+
+    pub fn page_snap_geometry(&self, page_index: u32) -> Result<PageSnapGeometry, String> {
+        self.resource.page_snap_geometry(page_index)
     }
 
     pub fn close(&self) -> Result<(), String> {
@@ -481,6 +526,7 @@ impl NativeDocumentOpener for PdfiumWorkerBackend {
         let persistence = PdfPersistenceSession::open(&request.path)
             .map_err(|error| format!("failed to import PDF annotations: {error}"))?;
         let annotations = persistence.annotations_in_document_order();
+        let retained_annotation_obstacles = persistence.retained_annotation_obstacles().to_vec();
         let page_length_calibrations = persistence
             .page_length_calibrations()
             .iter()
@@ -492,6 +538,7 @@ impl NativeDocumentOpener for PdfiumWorkerBackend {
             .iter()
             .map(|(_, rotation)| *rotation)
             .collect();
+        let page_grid_definition = persistence.page_grid_definition();
         let resource = PdfiumWorkerResource::open(
             &self.worker_executable,
             &self.pdfium_library,
@@ -520,10 +567,12 @@ impl NativeDocumentOpener for PdfiumWorkerBackend {
             |opened| {
                 opened
                     .with_annotations(annotations)
+                    .with_retained_annotation_obstacles(retained_annotation_obstacles)
                     .with_page_scales(page_scales)
                     .with_page_length_calibrations(page_length_calibrations)
                     .with_page_rotations(page_rotations)
                     .with_page_coordinate_spaces(page_coordinate_spaces)
+                    .with_page_grid_definition(page_grid_definition)
                     .with_source_sha256(source_sha256)
             },
         )
@@ -635,7 +684,7 @@ impl PdfiumWorkerResource {
         &self,
         page_index: u32,
         desired_width: u32,
-        include_pdf_annotations: bool,
+        annotation_mode: AnnotationRenderMode,
     ) -> Result<RasterSurface, String> {
         let (page_width, page_height) = *self
             .page_sizes
@@ -679,7 +728,7 @@ impl PdfiumWorkerResource {
                     job_id,
                     session_id: self.session_id,
                     page_index,
-                    include_pdf_annotations,
+                    annotation_mode,
                     transform: [
                         pdf_scale_x,
                         0.,
@@ -731,7 +780,11 @@ impl NativeDocumentResource for PdfiumWorkerResource {
     }
 
     fn render_page(&self, page_index: u32, desired_width: u32) -> Result<RasterSurface, String> {
-        self.render_page_with_policy(page_index, desired_width, false)
+        self.render_page_with_policy(
+            page_index,
+            desired_width,
+            AnnotationRenderMode::RetainedOnly,
+        )
     }
 
     fn render_page_with_pdf_annotations(
@@ -739,7 +792,50 @@ impl NativeDocumentResource for PdfiumWorkerResource {
         page_index: u32,
         desired_width: u32,
     ) -> Result<RasterSurface, String> {
-        self.render_page_with_policy(page_index, desired_width, true)
+        self.render_page_with_policy(page_index, desired_width, AnnotationRenderMode::All)
+    }
+
+    fn render_page_without_pdf_annotations(
+        &self,
+        page_index: u32,
+        desired_width: u32,
+    ) -> Result<RasterSurface, String> {
+        self.render_page_with_policy(page_index, desired_width, AnnotationRenderMode::None)
+    }
+
+    fn page_snap_geometry(&self, page_index: u32) -> Result<PageSnapGeometry, String> {
+        if page_index as usize >= self.page_sizes.len() {
+            return Err("PDF page is outside the document".to_owned());
+        }
+        let mut guard = self
+            .client
+            .lock()
+            .map_err(|_| "PDF worker client lock was poisoned".to_owned())?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| "PDF worker resource is released".to_owned())?;
+        match client
+            .exchange(&WorkerRequest::PageSnapGeometry {
+                request_id: self.request_id(),
+                session_id: self.session_id,
+                page_index,
+            })
+            .map_err(worker_error)?
+        {
+            WorkerResponse::PageSnapGeometry {
+                session_id,
+                page_index: returned_page,
+                geometry,
+                ..
+            } if session_id == self.session_id
+                && returned_page == page_index
+                && geometry.page_index == page_index =>
+            {
+                Ok(geometry)
+            }
+            WorkerResponse::Failed { error, .. } => Err(worker_error(error)),
+            response => Err(unexpected_response("page snap geometry", response)),
+        }
     }
 
     fn render_tile(&self, request: TileRequest) -> Result<RasterSurface, String> {
@@ -754,7 +850,11 @@ impl NativeDocumentResource for PdfiumWorkerResource {
                 request.zoom_tenths as f32 / 1_000. * request.device_scale_millis as f32 / 1_000.;
             let source_width = (self.page_sizes[request.page].0 * scale).ceil().max(1.) as u32;
             let full = self
-                .render_page_with_policy(page_index, source_width, false)?
+                .render_page_with_policy(
+                    page_index,
+                    source_width,
+                    AnnotationRenderMode::RetainedOnly,
+                )?
                 .rotated(delta)?;
             return full.cropped(
                 u32::try_from(request.crop.x)
@@ -818,7 +918,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
                     job_id,
                     session_id: self.session_id,
                     page_index,
-                    include_pdf_annotations: false,
+                    annotation_mode: AnnotationRenderMode::RetainedOnly,
                     transform: [
                         pdf_scale_x,
                         0.,
@@ -862,6 +962,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             Err(poisoned) => poisoned.into_inner(),
         };
         if let Some(mut client) = client_slot.take() {
+            let lifecycle_measurement_requested = client.lifecycle_measurement_requested();
             let close_response = client.exchange(&WorkerRequest::Close {
                 request_id: self.request_id(),
                 session_id: self.session_id,
@@ -886,7 +987,25 @@ impl NativeDocumentResource for PdfiumWorkerResource {
                 *client_slot = Some(client);
                 return Err(error);
             }
-            drop(client);
+            let lifecycle_result = if lifecycle_measurement_requested {
+                client
+                    .finish_and_publish_lifecycle_measurement()
+                    .map(|_| ())
+                    .map_err(worker_error)
+            } else {
+                drop(client);
+                Ok(())
+            };
+            let release_result = self.finish_release();
+            return match lifecycle_result {
+                Ok(()) => release_result,
+                Err(error) => match release_result {
+                    Ok(()) => Err(error),
+                    Err(release_error) => Err(format!(
+                        "{error}; worker surface cleanup also failed: {release_error}"
+                    )),
+                },
+            };
         }
         self.finish_release()
     }
@@ -959,4 +1078,58 @@ fn worker_error(error: WorkerError) -> String {
 
 fn unexpected_response(operation: &str, response: WorkerResponse) -> String {
     format!("PDF worker returned an unexpected response for {operation}: {response:?}")
+}
+
+#[cfg(test)]
+mod raster_colour_tests {
+    use super::*;
+    use crate::annotation_model::{MarkupId, PdfPoint, PenAppearance};
+
+    #[test]
+    fn bgra_highlights_and_snapshot_preserve_asymmetric_colour_and_alpha() {
+        let rect = CoordinateRect::new(0., 0., 20., 20.).unwrap();
+        let space = PageCoordinateSpace::new(rect, rect, CoordinateRotation::Degrees0, 1.).unwrap();
+        for (colour, expected) in [
+            ("#ff0000", [20, 40, 100, 128]),
+            ("#0000ff", [40, 40, 50, 128]),
+            ("#ffff00", [20, 80, 100, 128]),
+        ] {
+            let mut raster = RasterSurface::new(20, 20, [40, 80, 100, 128].repeat(400)).unwrap();
+            let highlight = PenAnnotation::new_highlight(
+                MarkupId::new("colour:highlight").unwrap(),
+                0,
+                vec![
+                    PdfPoint::new(2., 10.).unwrap(),
+                    PdfPoint::new(18., 10.).unwrap(),
+                ],
+                PenAppearance::new(colour, 8., 0.5).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                raster
+                    .precompose_highlights(0, space, 0., 0., (20., 20.), &[highlight])
+                    .unwrap()
+                    > 0
+            );
+            let offset = (10 * 20 + 10) * 4;
+            assert_eq!(
+                &raster.pixels_bgra()[offset..offset + 4],
+                &expected,
+                "{colour}"
+            );
+            let asset = raster
+                .snapshot_asset(PdfRect::new(0., 0., 20., 20.).unwrap(), space)
+                .unwrap();
+            let unpremultiply = |value: u8| ((u32::from(value) * 255 + 64) / 128) as u8;
+            assert_eq!(
+                &asset.rgba()[offset..offset + 4],
+                &[
+                    unpremultiply(expected[2]),
+                    unpremultiply(expected[1]),
+                    unpremultiply(expected[0]),
+                    128
+                ]
+            );
+        }
+    }
 }

@@ -52,4 +52,8 @@ describe('application menu IPC contract', () => {
       'signature-recent:clear',
     ]);
   });
+
+  it('keeps the native migration export on one explicit request channel', () => {
+    expect(ipcChannels.migrationExportElectronData).toBe('migration:export-electron-data');
+  });
 });

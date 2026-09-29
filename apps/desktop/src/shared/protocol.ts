@@ -324,6 +324,25 @@ export interface BlankPdfCreateResult {
   readonly temporarySourcePath: string;
 }
 
+export interface ElectronMigrationGeneratedTemplate {
+  readonly id: string;
+  readonly name: string;
+  readonly title: 'Untitled';
+  readonly request: BlankPdfCreateRequest;
+}
+
+/** Renderer-owned predecessor data only; trusted application identity is added in main. */
+export interface ElectronMigrationExportRequest {
+  readonly menuBarVisible: boolean;
+  readonly lastTemplateId: string;
+  readonly generatedTemplates: readonly ElectronMigrationGeneratedTemplate[];
+}
+
+export interface ElectronMigrationExportResult {
+  readonly exportId: string;
+  readonly createdAt: string;
+}
+
 export interface ImportedPdfTemplateRecord {
   readonly id: string;
   readonly name: string;
@@ -465,7 +484,7 @@ export interface ButterPaperBridge {
     getStatus(): Promise<UpdateStatus>;
     setFrequency(frequency: UpdateFrequency): Promise<UpdateStatus>;
     checkNow(): Promise<UpdateStatus>;
-    installDownloaded(): Promise<void>;
+    installDownloaded(request: ElectronMigrationExportRequest): Promise<void>;
     setRestartBlocked(blocked: boolean): Promise<void>;
     openReleasePage(): Promise<void>;
     onStatusChanged(listener: (status: UpdateStatus) => void): () => void;
@@ -480,6 +499,9 @@ export interface ButterPaperBridge {
     importDocument(request: PdfDocumentAccessRequest & { readonly name: string }): Promise<ImportedPdfTemplateRecord>;
     remove(templateId: string): Promise<void>;
     createDocument(templateId: string): Promise<BlankPdfCreateResult>;
+  };
+  readonly migration: {
+    exportElectronData(request: ElectronMigrationExportRequest): Promise<ElectronMigrationExportResult>;
   };
   readonly signaturePhone: {
     start(mode: PhoneSignatureMode): Promise<PhoneSignatureSession>;

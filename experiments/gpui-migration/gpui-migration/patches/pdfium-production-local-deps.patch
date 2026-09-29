@@ -1,0 +1,11 @@
+diff --git a/DEPS b/DEPS
+--- a/DEPS
++++ b/DEPS
+@@ -323,6 +323,7 @@ deps = {
+       }
+     ],
+     'dep_type': 'cipd',
++    'condition': 'download_remoteexec_cfg',
+   },
+ 
+   'buildtools/win': {

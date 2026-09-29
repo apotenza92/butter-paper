@@ -8,6 +8,7 @@ import type {
   UpdateFrequency,
   UpdateStatus,
 } from '../shared/protocol';
+import { verifyElectronMigrationPublication } from './electronDataMigration';
 import {
   createDefaultUpdateSettings,
   getSchedulerWakeInterval,
@@ -306,7 +307,10 @@ export class DesktopUpdaterService {
     return this.runCheck();
   }
 
-  async installDownloaded(): Promise<boolean> {
+  async installDownloaded(migrationPublication: unknown): Promise<boolean> {
+    if (!await verifyElectronMigrationPublication(this.userDataPath, migrationPublication)) {
+      throw new Error('Updater installation requires valid migration publication evidence.');
+    }
     if (this.status.phase !== 'downloaded' || this.restartBlocked) {
       return false;
     }
@@ -431,12 +435,6 @@ export class DesktopUpdaterService {
         errorMessage: null,
       });
       this.recordTestEvent('update-downloaded', { version: info?.version ?? null });
-      if (this.environment.BP_UPDATE_TEST_MODE === '1'
-        && this.environment.BP_UPDATE_INSTALL === '1') {
-        setTimeout(() => {
-          void this.installDownloaded();
-        }, 100).unref();
-      }
     });
     this.addUpdaterListener('error', (error: unknown) => {
       this.handleUpdaterError(error);

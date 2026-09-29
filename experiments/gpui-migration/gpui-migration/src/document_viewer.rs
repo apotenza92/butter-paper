@@ -497,6 +497,10 @@ impl DocumentViewerState {
         self.rebuild_promotions(now);
     }
 
+    pub fn viewport_in_motion(&self) -> bool {
+        self.viewport_in_motion
+    }
+
     pub fn mark_thumbnail_navigation_target(&mut self, page: usize, now: Instant) {
         self.thumbnail_navigation_target = Some(page);
         self.scheduler_revision = self.scheduler_revision.saturating_add(1).max(1);

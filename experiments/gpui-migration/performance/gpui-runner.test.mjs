@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import {
+  assessGpuiMacosWorkerLifecycle,
   applyV4ComponentExecutionContract,
   buildDynamicFidelityV5Context,
   buildNativeEditingV5Context,
@@ -20,18 +21,22 @@ import {
   collectPersistenceEvidence,
   createGpuiV6ExecutionContext,
   dynamicArtifactDirectoryForOutput,
+  diagnosticCompatExecution,
   exactPersistenceReceiptSucceeded,
   fixtureIdsForLaunch,
   formatFixtureAccessError,
   gpuiComparisonMetadata,
   gpuiGpuEvidencePassed,
   gpuiNativeApplicationAckSamples,
+  macosWorkerLifecycleEnvironment,
   nativeEvidenceTimeoutMs,
   parseArguments,
   persistenceScenarioSucceeded,
   prepareFreshArtifactDirectory,
   qualifyNativeLaneMetadata,
   scenarioSucceeded,
+  readMacosWorkerLifecycleReceipts,
+  summarizeGpuiMacosWorkerLifecycle,
   validateScenarioFixture,
   validateOrderedScenarioFixtures,
 } from "./gpui-runner.mjs";
@@ -376,6 +381,343 @@ test("opts into strict Longbridge compatibility evidence with one reviewed profi
   );
 });
 
+test("semantic Longbridge open requires explicit fixed-workload diagnostic opt-in", () => {
+  const args = [
+    "--scenario",
+    "open-pdf",
+    "--pdf",
+    "/tmp/public-fixture.pdf",
+    "--compat-profile",
+    longbridgeCompatProfile,
+    "--input-lane",
+    "semantic-diagnostic",
+    "--v4-scenario",
+    "small-shell-open",
+    "--evidence-directory",
+    "/tmp/diagnostic-evidence",
+  ];
+  assert.throws(() => parseArguments(args), /requires native-x11-xtest/);
+  const optedIn = ["--diagnostic-compat-open", ...args];
+  assert.equal(parseArguments(optedIn).diagnosticCompatOpen, true);
+  for (const [option, value] of [
+    ["--scenario", "annotation-create"],
+    ["--input-lane", "native-x11-xtest"],
+    ["--v4-scenario", "engineering-sheet"],
+    ["--compat-profile", "unknown"],
+  ]) {
+    const invalid = [...optedIn];
+    invalid[invalid.indexOf(option) + 1] = value;
+    assert.throws(() => parseArguments(invalid));
+  }
+  assert.throws(() =>
+    parseArguments([...optedIn, "--v6-scenario", "small-shell-open"]),
+  );
+  assert.throws(() => parseArguments(optedIn.slice(0, -2)));
+});
+
+test("completed semantic diagnostics cannot qualify native performance", () => {
+  const result = diagnosticCompatExecution(true, { passed: true });
+  assert.equal(result.application_completed, true);
+  assert.equal(result.decision_timing_eligible, false);
+  assert.equal(result.release_performance_eligible, false);
+  assert.equal(result.native_input_to_present_ms, null);
+  assert.equal(
+    diagnosticCompatExecution(false, { passed: true }).application_completed,
+    false,
+  );
+  assert.equal(
+    diagnosticCompatExecution(true, { passed: false }).application_completed,
+    false,
+  );
+  assert.equal(
+    diagnosticCompatExecution(true, null).application_completed,
+    false,
+  );
+  // Diagnostic opt-in does not remove the native Linux cleanup requirement.
+  assert.equal(
+    compatResourceCleanupForIteration(
+      longbridgeCompatProfile,
+      [
+        {
+          event: "resource-cleanup-complete",
+          worker_exited: true,
+          mapped_surfaces_released: true,
+        },
+      ],
+      { removed: false, reason: "not-linux" },
+    ).passed,
+    false,
+  );
+});
+
+function macosLifecycleFixture() {
+  const root = {
+    pid: 100,
+    ppid: 1,
+    start_abstime: 10,
+    user_ns: 10,
+    system_ns: 5,
+    child_user_ns: 0,
+    child_system_ns: 0,
+    phys_footprint_bytes: 1_000,
+    lifetime_max_phys_footprint_bytes: 1_200,
+  };
+  const worker = {
+    pid: 101,
+    ppid: 100,
+    start_abstime: 11,
+    user_ns: 7,
+    system_ns: 3,
+    child_user_ns: 0,
+    child_system_ns: 0,
+    phys_footprint_bytes: 500,
+    lifetime_max_phys_footprint_bytes: 600,
+  };
+  return {
+    platformName: "darwin",
+    rootPid: 100,
+    helperOutcome: { code: 0, signal: null, error: null },
+    expectedWorkerPids: [101],
+    records: [
+      { type: "sample", monotonic_ns: 1_000_000_000, processes: [root] },
+      {
+        type: "sample",
+        monotonic_ns: 1_010_000_000,
+        processes: [root, worker],
+      },
+      { type: "sample", monotonic_ns: 1_020_000_000, processes: [root] },
+      { type: "root-exited", monotonic_ns: 1_030_000_000 },
+    ],
+    receipts: [
+      {
+        schema_version: 1,
+        type: "app-root-lifecycle-final",
+        token: "app-root",
+        pid: 100,
+        start_abstime: 10,
+        user_ns: 18,
+        system_ns: 5,
+        lifetime_max_phys_footprint_bytes: 1_300,
+        clean_exit: true,
+        exit_code: 0,
+      },
+      {
+        schema_version: 1,
+        type: "pdf-worker-lifecycle-final",
+        token: "pdf-worker_1",
+        pid: 101,
+        start_abstime: 11,
+        user_ns: 17,
+        system_ns: 3,
+        lifetime_max_phys_footprint_bytes: 700,
+        clean_reap: true,
+        exit_code: 0,
+      },
+    ],
+  };
+}
+
+test("requests the registered PDF-worker lifecycle lane only on macOS", () => {
+  assert.deepEqual(macosWorkerLifecycleEnvironment("/tmp/receipts", "darwin"), {
+    BP_MACOS_WORKER_LIFECYCLE: "1",
+    BP_MACOS_WORKER_LIFECYCLE_RECEIPT_DIR: "/tmp/receipts",
+    BP_MACOS_APP_LIFECYCLE_TOKEN: "app-root",
+  });
+  assert.deepEqual(
+    macosWorkerLifecycleEnvironment("/tmp/receipts", "linux"),
+    {},
+  );
+  assert.throws(
+    () => macosWorkerLifecycleEnvironment("relative", "darwin"),
+    /absolute directory/,
+  );
+});
+
+test("aggregates registered worker self CPU and lifetime memory separately from simultaneous tree memory", () => {
+  const result = assessGpuiMacosWorkerLifecycle(macosLifecycleFixture());
+  assert.equal(result.passed, true);
+  assert.equal(result.release_qualified, true);
+  assert.equal(result.maximum_observed_sample_gap_ms, 10);
+  assert.equal(
+    result.sampled_simultaneous_tree_phys_footprint_peak_bytes,
+    1_500,
+  );
+  assert.equal(result.registered_worker_self_cpu_ns, 20);
+  assert.equal(result.candidate_root_sampled_self_cpu_ns, 15);
+  assert.equal(result.candidate_root_receipt_self_cpu_ns, 23);
+  assert.equal(result.candidate_root_final_self_cpu_ns, 23);
+  assert.equal(result.candidate_root_lifetime_max_phys_footprint_bytes, 1_300);
+  assert.equal(result.candidate_root_identity, "100:10");
+  assert.equal(result.accounted_process_self_cpu_ns, 43);
+  assert.deepEqual(result.registered_worker_identities, ["101:11"]);
+  assert.deepEqual(result.registered_worker_lifetime_max_phys_footprint_bytes, {
+    "101:11": 700,
+  });
+  const summary = summarizeGpuiMacosWorkerLifecycle([
+    { macos_worker_lifecycle: result },
+    { macos_worker_lifecycle: result },
+  ]);
+  assert.equal(summary.requested_iterations, 2);
+  assert.equal(summary.qualified_iterations, 2);
+  assert.equal(summary.all_iterations_qualified, true);
+  assert.equal(summary.registered_worker_self_cpu_ns.max, 20);
+  assert.equal(summary.candidate_root_final_self_cpu_ns.max, 23);
+  assert.equal(
+    summary.candidate_root_lifetime_max_phys_footprint_bytes.max,
+    1_300,
+  );
+  assert.equal(
+    summary.sampled_simultaneous_tree_phys_footprint_peak_bytes.max,
+    1_500,
+  );
+});
+
+test("fails closed for missing, inconsistent, duplicated, or unregistered worker lifecycle evidence", () => {
+  const missing = macosLifecycleFixture();
+  missing.receipts = missing.receipts.filter(
+    ({ type }) => type !== "pdf-worker-lifecycle-final",
+  );
+  assert.equal(assessGpuiMacosWorkerLifecycle(missing).passed, false);
+
+  const missingRoot = macosLifecycleFixture();
+  missingRoot.receipts = missingRoot.receipts.filter(
+    ({ type }) => type !== "app-root-lifecycle-final",
+  );
+  assert(
+    assessGpuiMacosWorkerLifecycle(missingRoot).blockers.some((blocker) =>
+      blocker.includes("root did not publish exactly one"),
+    ),
+  );
+
+  const duplicateRoot = macosLifecycleFixture();
+  duplicateRoot.receipts.push({ ...duplicateRoot.receipts[0] });
+  assert(
+    assessGpuiMacosWorkerLifecycle(duplicateRoot).blockers.some((blocker) =>
+      blocker.includes("root did not publish exactly one"),
+    ),
+  );
+
+  const malformedRoot = macosLifecycleFixture();
+  malformedRoot.receipts[0].unexpected = true;
+  assert(
+    assessGpuiMacosWorkerLifecycle(malformedRoot).blockers.some((blocker) =>
+      blocker.includes("root lifecycle receipt was malformed"),
+    ),
+  );
+
+  const wrongRootIdentity = macosLifecycleFixture();
+  wrongRootIdentity.receipts[0].start_abstime = 99;
+  assert(
+    assessGpuiMacosWorkerLifecycle(wrongRootIdentity).blockers.some((blocker) =>
+      blocker.includes("identity did not match"),
+    ),
+  );
+
+  const conservativeRoot = macosLifecycleFixture();
+  conservativeRoot.receipts[0].user_ns = 8;
+  conservativeRoot.receipts[0].lifetime_max_phys_footprint_bytes = 400;
+  const conservativeResult = assessGpuiMacosWorkerLifecycle(conservativeRoot);
+  assert.equal(conservativeResult.passed, true);
+  assert.equal(conservativeResult.candidate_root_receipt_self_cpu_ns, 13);
+  assert.equal(conservativeResult.candidate_root_final_self_cpu_ns, 15);
+  assert.equal(
+    conservativeResult.candidate_root_lifetime_max_phys_footprint_bytes,
+    1_200,
+  );
+
+  const missingDeclared = macosLifecycleFixture();
+  missingDeclared.expectedWorkerPids.push(103);
+  assert(
+    assessGpuiMacosWorkerLifecycle(missingDeclared).blockers.some((blocker) =>
+      blocker.includes("application-declared"),
+    ),
+  );
+
+  const inconsistent = macosLifecycleFixture();
+  inconsistent.receipts[1].lifetime_max_phys_footprint_bytes = 400;
+  assert(
+    assessGpuiMacosWorkerLifecycle(inconsistent).blockers.some((blocker) =>
+      blocker.includes("lifetime maximum"),
+    ),
+  );
+
+  const duplicated = macosLifecycleFixture();
+  duplicated.receipts.push({ ...duplicated.receipts[1] });
+  assert(
+    assessGpuiMacosWorkerLifecycle(duplicated).blockers.some((blocker) =>
+      blocker.includes("duplicated"),
+    ),
+  );
+
+  const unregistered = macosLifecycleFixture();
+  unregistered.records[1].processes.push({
+    ...unregistered.records[1].processes[1],
+    pid: 102,
+    start_abstime: 12,
+  });
+  assert(
+    assessGpuiMacosWorkerLifecycle(unregistered).blockers.some((blocker) =>
+      blocker.includes("lacked a lifecycle receipt"),
+    ),
+  );
+});
+
+test("reads only stable token-bound lifecycle receipt files", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "bp-worker-receipts-"));
+  try {
+    const receipt = macosLifecycleFixture().receipts[0];
+    await writeFile(
+      resolve(directory, `${receipt.token}.json`),
+      `${JSON.stringify(receipt)}\n`,
+    );
+    let result = await readMacosWorkerLifecycleReceipts(directory);
+    assert.deepEqual(result.receipts, [receipt]);
+    assert.deepEqual(result.errors, []);
+
+    await writeFile(resolve(directory, "unfinished.tmp"), "partial");
+    result = await readMacosWorkerLifecycleReceipts(directory);
+    assert.equal(result.receipts.length, 1);
+    assert(result.errors.some((error) => error.includes("unexpected")));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("semantic diagnostic open cannot supply native V4 acceptance receipts", async () => {
+  const context = buildV4RunnerContext(
+    await loadComparisonWorkloadV4(),
+    "small-shell-open",
+    "open-pdf",
+  );
+  const receipts = buildV4ComponentReceipts(
+    1,
+    [{ event: "process-main-enter" }, { event: "scenario-complete" }],
+    context,
+    {
+      applicationSuccess: true,
+      inputLane: "semantic-diagnostic",
+      compatProfile: longbridgeCompatProfile,
+    },
+  );
+  assert.equal(receipts.passed, false);
+  assert(
+    receipts.receipts.every(
+      (receipt) => receipt.native_input_eligible === false,
+    ),
+  );
+  assert(
+    receipts.receipts.some(
+      (receipt) => receipt.longbridge_parity_eligible === false,
+    ),
+  );
+  assert.equal(
+    buildV4ComparisonReport(context, [
+      { success: false, v4_component_receipts: receipts },
+    ]).live_component_passed,
+    false,
+  );
+});
+
 test("strict event provenance is opt-in and fails the Longbridge iteration on reserved-field drift", () => {
   const events = [
     {
@@ -410,27 +752,63 @@ test("Longbridge success requires the app cleanup receipt and an empty removed c
     mapped_surfaces_released: true,
   };
   assert.deepEqual(
-    compatResourceCleanupForIteration(longbridgeCompatProfile, [cleanupEvent], {
-      removed: true,
-    }),
+    compatResourceCleanupForIteration(
+      longbridgeCompatProfile,
+      [cleanupEvent],
+      {
+        removed: true,
+      },
+      { hostPlatform: "linux" },
+    ),
     { passed: true, errors: [] },
   );
   assert.equal(
-    compatResourceCleanupForIteration(longbridgeCompatProfile, [], {
-      removed: true,
-    }).passed,
+    compatResourceCleanupForIteration(
+      longbridgeCompatProfile,
+      [],
+      {
+        removed: true,
+      },
+      { hostPlatform: "linux" },
+    ).passed,
     false,
   );
   assert.equal(
-    compatResourceCleanupForIteration(longbridgeCompatProfile, [cleanupEvent], {
-      removed: false,
-      reason: "cgroup-v2-cleanup-failed: busy",
-    }).passed,
+    compatResourceCleanupForIteration(
+      longbridgeCompatProfile,
+      [cleanupEvent],
+      {
+        removed: false,
+        reason: "cgroup-v2-cleanup-failed: busy",
+      },
+      { hostPlatform: "linux" },
+    ).passed,
     false,
   );
   assert.equal(
     compatResourceCleanupForIteration(undefined, [], { removed: false }),
     null,
+  );
+  assert.deepEqual(
+    compatResourceCleanupForIteration(
+      longbridgeCompatProfile,
+      [cleanupEvent],
+      { removed: false, reason: "cgroup-v2-accounting-is-linux-only" },
+      { hostPlatform: "darwin", macosWorkerLifecycle: { passed: true } },
+    ),
+    { passed: true, errors: [] },
+  );
+  assert.equal(
+    compatResourceCleanupForIteration(
+      longbridgeCompatProfile,
+      [cleanupEvent],
+      { removed: false, reason: "cgroup-v2-accounting-is-linux-only" },
+      {
+        hostPlatform: "darwin",
+        macosWorkerLifecycle: { passed: false, blockers: ["worker leaked"] },
+      },
+    ).passed,
+    false,
   );
 });
 

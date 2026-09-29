@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { join } from "node:path";
+import { verifyZed } from "./prepare-zed.mjs";
 import { spawnSync } from "node:child_process";
 
 import {
@@ -8,6 +10,8 @@ import {
   validateCargoMetadata,
 } from "./source-preparation.mjs";
 
+const policy = await loadPolicy();
+const zedReceipt = await verifyZed(join(probeDirectory, policy.zedPrepared.directory), policy);
 const result = spawnSync(
   "cargo",
   ["metadata", "--locked", "--offline", "--format-version", "1"],
@@ -25,7 +29,6 @@ if (result.status !== 0) {
 }
 
 const metadata = JSON.parse(result.stdout);
-const policy = await loadPolicy();
 validateCargoMetadata(metadata, policy);
 
 const packages = metadata.packages;
@@ -38,6 +41,7 @@ if (!component || component.version !== "0.5.2" || component.source !== null) {
 
 process.stdout.write(`${JSON.stringify({
   status: "verified",
+  zedReceipt,
   packageCount: packages.length,
   gpui: { version: gpui.version, source: gpui.source, license: gpui.license },
   component: { version: component.version, source: component.source, license: component.license },

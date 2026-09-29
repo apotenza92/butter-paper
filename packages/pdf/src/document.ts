@@ -6,7 +6,7 @@ import { deflateSync } from 'node:zlib';
 import type { AnnotationMetadata, AnnotationMetadataRole, CompatibleAnnotationFontId, Markup, MarkupAppearance, PageScale, PdfPoint, ResolvedMarkupAppearance, TextBoxRichTextRun } from '@butter-paper/core';
 import { compatibleAnnotationFontId, convertScaledValueUnit, createArcMarkup, createAreaMarkup, createArrowMarkup, createCalloutMarkup, createCloudMarkup, createCloudPlusMarkup, createDimensionMarkup, createEllipseMarkup, createHighlightMarkup, createImageMarkup, createImportedAnnotationMarkup, createLengthMarkup, createLineMarkup, createPenMarkup, createPolygonMarkup, createPolylengthMarkup, createPolylineMarkup, createRectangleMarkup, createRedactMarkup, createSnapshotMarkup, createTextBoxMarkup, formatScaledAreaLabel, formatScaledLengthLabel, measureScaledLength, measureScaledPolygonArea, measureScaledPolyline, pdfPoint, resolveMarkupAppearance } from '@butter-paper/core';
 import fontkit from '@pdf-lib/fontkit';
-import { decodePDFRawStream, degrees, PDFArray, PDFBool, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFString, StandardFonts, type PDFDict, type PDFFont, type PDFImage, type PDFObject, type PDFPage, type PDFRef } from 'pdf-lib';
+import { decodePDFRawStream, degrees, PDFArray, PDFBool, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFRef, PDFStream, PDFString, StandardFonts, type PDFFont, type PDFImage, type PDFObject, type PDFPage } from 'pdf-lib';
 import { PdfRenderCache } from './cache.js';
 import { normalizePdfRect, pointArrayToPdfPoints } from './geometry.js';
 import { createBrowserCanvas, createNodeCanvasFactory } from './canvas.js';
@@ -102,7 +102,10 @@ interface PdfJsPageLike {
   rotate: number;
   view: readonly number[];
   userUnit: number;
-  getViewport(params: { scale: number; rotation?: number }): { width: number; height: number };
+  getViewport(params: { scale: number; rotation?: number }): {
+    width: number;
+    height: number;
+  };
   render(params: { canvasContext: CanvasRenderingContext2D; viewport: { width: number; height: number }; annotationMode?: number }): { promise: Promise<void> };
   getAnnotations(params: { intent: 'display' }): Promise<readonly PdfJsAnnotation[]>;
 }
@@ -228,7 +231,11 @@ export class PdfDocumentHandle {
       throw new Error('Unable to create 2D rendering context');
     }
 
-    await page.render({ canvasContext: context, viewport, annotationMode: request.renderAnnotations ? 1 : 0 }).promise;
+    await page.render({
+      canvasContext: context,
+      viewport,
+      annotationMode: request.renderAnnotations ? 1 : 0,
+    }).promise;
 
     const rendered: PdfRenderedPage = {
       pageIndex: request.pageIndex,
@@ -365,16 +372,11 @@ export class PdfAnnotationWriter {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  async save(
-    _document: PdfDocumentHandle,
-    markups: readonly Markup[],
-    mode: PdfSaveMode,
-    targetPath?: string,
-    pageScales: readonly PageScale[] = [],
-    pageRotations: readonly PdfPageRotation[] = [],
-  ): Promise<PdfSaveResult> {
+  async save(_document: PdfDocumentHandle, markups: readonly Markup[], mode: PdfSaveMode, targetPath?: string, pageScales: readonly PageScale[] = [], pageRotations: readonly PdfPageRotation[] = []): Promise<PdfSaveResult> {
     const sourceBytes = await readFile(this.sourcePath);
-    const pdfDoc = await PDFDocument.load(sourceBytes, { updateMetadata: false });
+    const pdfDoc = await PDFDocument.load(sourceBytes, {
+      updateMetadata: false,
+    });
     const pagesByIndex = groupMarkupsByPage(markups);
     const rotationsByIndex = new Map(pageRotations.map((page) => [page.pageIndex, page.rotation]));
     const fonts = await createPdfExportFonts(pdfDoc, markups);
@@ -418,17 +420,61 @@ export class PdfAnnotationWriter {
       }
     }
 
+    await pdfDoc.flush();
+    pruneUnreachablePdfObjects(pdfDoc);
     const bytes = await pdfDoc.save();
     const outputPath = mode === 'saveAs' ? targetPath : this.sourcePath;
     if (!outputPath) {
       throw new Error('saveAs requires a targetPath');
     }
 
-    await writeFile(outputPath, bytes, { flag: mode === 'saveAs' ? 'wx' : 'w' });
+    await writeFile(outputPath, bytes, {
+      flag: mode === 'saveAs' ? 'wx' : 'w',
+    });
     return {
       path: outputPath,
       bytesWritten: bytes.length,
     };
+  }
+}
+
+function pruneUnreachablePdfObjects(pdfDoc: PDFDocument): void {
+  const reachableRefs = new Set<string>();
+  const visitedDirectObjects = new Set<PDFObject>();
+  const visit = (object: PDFObject | undefined): void => {
+    if (!object) return;
+    if (object instanceof PDFRef) {
+      const identity = object.toString();
+      if (reachableRefs.has(identity)) return;
+      reachableRefs.add(identity);
+      const target = pdfDoc.context.lookup(object);
+      if (!target) {
+        throw new Error(`Cannot save a PDF with a dangling reachable object reference: ${identity}`);
+      }
+      visit(target);
+      return;
+    }
+    if (visitedDirectObjects.has(object)) return;
+    visitedDirectObjects.add(object);
+    if (object instanceof PDFStream) {
+      visit(object.dict);
+      return;
+    }
+    if (object instanceof PDFDict) {
+      for (const value of object.values()) visit(value);
+      return;
+    }
+    if (object instanceof PDFArray) {
+      for (const value of object.asArray()) visit(value);
+    }
+  };
+
+  for (const root of Object.values(pdfDoc.context.trailerInfo)) visit(root);
+  if (!pdfDoc.context.trailerInfo.Root) {
+    throw new Error('Cannot save a PDF without a trailer Root');
+  }
+  for (const [ref] of pdfDoc.context.enumerateIndirectObjects()) {
+    if (!reachableRefs.has(ref.toString())) pdfDoc.context.delete(ref);
   }
 }
 
@@ -490,7 +536,9 @@ async function embedAnnotationFontFamily(pdfDoc: PDFDocument, fontId: EmbeddedAn
     const path = require.resolve(`@expo-google-fonts/${packageName}/${folder}/${fileStem}_${suffix}.ttf`);
     // Revu 21 renders pdf-lib's subset CID fonts as blank text. Embed the full
     // TrueType program so the same appearance works in Revu and PDF.js.
-    return pdfDoc.embedFont(new Uint8Array(await readFile(path)), { subset: false });
+    return pdfDoc.embedFont(new Uint8Array(await readFile(path)), {
+      subset: false,
+    });
   };
   const regular = await readVariant(400, 'normal');
   const bold = variants.has('bold') || variants.has('boldItalic') ? await readVariant(700, 'normal') : undefined;
@@ -791,7 +839,12 @@ function reconcileSourceAnnotations(
 
   const annots = page.node.Annots();
   if (!annots) {
-    return { preserved, replacementSourceIds, reusableMediaAppearances: new Map(), pendingReplyRetargets: [] };
+    return {
+      preserved,
+      replacementSourceIds,
+      reusableMediaAppearances: new Map(),
+      pendingReplyRetargets: [],
+    };
   }
 
   const refs = annots.asArray();
@@ -853,13 +906,22 @@ function reconcileSourceAnnotations(
       if (!hasReplacement) {
         return false;
       }
-      pendingReplyRetargets.push({ annotation: annot, sourceTargetId, relationship });
+      pendingReplyRetargets.push({
+        annotation: annot,
+        sourceTargetId,
+        relationship,
+      });
     }
     return true;
   });
 
   page.node.set(PDFName.of('Annots'), pdfDoc.context.obj(filtered));
-  return { preserved, replacementSourceIds, reusableMediaAppearances, pendingReplyRetargets };
+  return {
+    preserved,
+    replacementSourceIds,
+    reusableMediaAppearances,
+    pendingReplyRetargets,
+  };
 }
 
 function canReuseNativeMediaAppearance(source: Markup, current: Markup): boolean {
@@ -1002,20 +1064,25 @@ async function addMarkupAnnotationInternal(
     }
     case 'rectangle': {
       const appearance = createRectangleAppearance(pdfDoc, markup);
-      const borderStyle = stroke?.style === 'dashed' || stroke?.style === 'dotted'
-        ? {
-            S: PDFName.of('D'),
-            D: stroke.style === 'dotted'
-              ? [Math.max(0.25, stroke.widthPt), Math.max(0.5, stroke.widthPt * 2)]
-              : [Math.max(1, stroke.widthPt * 4), Math.max(0.5, stroke.widthPt * 2)],
-          }
-        : { S: PDFName.of('S') };
+      const rotation = normalizeFreeRotation(markup.rotation ?? 0);
+      const annotationRect = rotation ? boundsForRotatedRect(markup.rect, rotation) : markup.rect;
+      const borderStyle =
+        stroke?.style === 'dashed' || stroke?.style === 'dotted'
+          ? {
+              S: PDFName.of('D'),
+              D: stroke.style === 'dotted' ? [Math.max(0.25, stroke.widthPt), Math.max(0.5, stroke.widthPt * 2)] : [Math.max(1, stroke.widthPt * 4), Math.max(0.5, stroke.widthPt * 2)],
+            }
+          : { S: PDFName.of('S') };
       const annot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('Square'),
-        Rect: [markup.rect.x, markup.rect.y, markup.rect.x + markup.rect.width, markup.rect.y + markup.rect.height],
+        Rect: rectToPdfArray(annotationRect),
         Border: [0, 0, stroke?.widthPt ?? 0],
-        BS: pdfDoc.context.obj({ W: PDFNumber.of(stroke?.widthPt ?? 0), ...borderStyle, Type: PDFName.of('Border') }),
+        BS: pdfDoc.context.obj({
+          W: PDFNumber.of(stroke?.widthPt ?? 0),
+          ...borderStyle,
+          Type: PDFName.of('Border'),
+        }),
         C: pdfColorArray(stroke?.color),
         ...(fill?.color ? { IC: pdfColorArray(fill.color) } : {}),
         ...opacityFields,
@@ -1025,19 +1092,35 @@ async function addMarkupAnnotationInternal(
         F: PDFNumber.of(4),
         AP: pdfDoc.context.obj({ N: appearance.ref }),
       });
-      if (markup.rotation) {
-        annot.set(PDFName.of('Rotation'), PDFNumber.of(normalizeFreeRotation(markup.rotation)));
+      if (rotation) {
+        annot.set(PDFName.of('BPRect'), pdfDoc.context.obj(rectToPdfArray(markup.rect)));
+        annot.set(PDFName.of('BPRotation'), PDFNumber.of(rotation));
+        annot.set(PDFName.of('Rotation'), PDFNumber.of(rotation));
       }
       appendAnnotation(page, pdfDoc, annot, resolvedAppearance);
       return;
     }
     case 'ellipse': {
+      const appearance = createEllipseAppearance(pdfDoc, markup);
+      const rotation = normalizeFreeRotation(markup.rotation ?? 0);
+      const annotationRect = rotation ? boundsForRotatedRect(markup.rect, rotation) : markup.rect;
+      const borderStyle =
+        stroke?.style === 'dashed' || stroke?.style === 'dotted'
+          ? {
+              S: PDFName.of('D'),
+              D: stroke.style === 'dotted' ? [Math.max(0.25, stroke.widthPt), Math.max(0.5, stroke.widthPt * 2)] : [Math.max(1, stroke.widthPt * 4), Math.max(0.5, stroke.widthPt * 2)],
+            }
+          : { S: PDFName.of('S') };
       const annot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('Circle'),
-        Rect: [markup.rect.x, markup.rect.y, markup.rect.x + markup.rect.width, markup.rect.y + markup.rect.height],
+        Rect: rectToPdfArray(annotationRect),
         Border: [0, 0, stroke?.widthPt ?? 0],
-        BS: pdfDoc.context.obj({ W: PDFNumber.of(stroke?.widthPt ?? 0), S: PDFName.of('S'), Type: PDFName.of('Border') }),
+        BS: pdfDoc.context.obj({
+          W: PDFNumber.of(stroke?.widthPt ?? 0),
+          ...borderStyle,
+          Type: PDFName.of('Border'),
+        }),
         C: pdfColorArray(stroke?.color),
         ...(fill?.color ? { IC: pdfColorArray(fill.color) } : {}),
         ...opacityFields,
@@ -1045,9 +1128,12 @@ async function addMarkupAnnotationInternal(
         Subj: PDFString.of('Ellipse'),
         Contents: PDFString.of(''),
         F: PDFNumber.of(4),
+        AP: pdfDoc.context.obj({ N: appearance.ref }),
       });
-      if (markup.rotation) {
-        annot.set(PDFName.of('Rotation'), PDFNumber.of(normalizeFreeRotation(markup.rotation)));
+      if (rotation) {
+        annot.set(PDFName.of('BPRect'), pdfDoc.context.obj(rectToPdfArray(markup.rect)));
+        annot.set(PDFName.of('BPRotation'), PDFNumber.of(rotation));
+        annot.set(PDFName.of('Rotation'), PDFNumber.of(rotation));
       }
       appendAnnotation(page, pdfDoc, annot, resolvedAppearance);
       return;
@@ -1130,7 +1216,9 @@ async function addMarkupAnnotationInternal(
         Contents: PDFString.of(markup.text),
         DA: PDFString.of(pdfTextDefaultAppearance(textAppearance, textFont)),
         DS: PDFString.of(pdfTextDefaultStyle(textAppearance, undefined, textFont)),
-        DR: pdfDoc.context.obj({ Font: createTextBoxAppearanceFontResources(fonts, textFont) } as any),
+        DR: pdfDoc.context.obj({
+          Font: createTextBoxAppearanceFontResources(fonts, textFont),
+        } as any),
         ...opacityFields,
         NM: PDFString.of(toManagedAnnotationId(markup.id)),
         Subj: PDFString.of('Dimension'),
@@ -1171,7 +1259,9 @@ async function addMarkupAnnotationInternal(
         Label: PDFString.of(''),
         DA: PDFString.of(pdfTextDefaultAppearance(textAppearance, textFont)),
         DS: PDFString.of(pdfTextDefaultStyle(textAppearance, 'center', textFont)),
-        DR: pdfDoc.context.obj({ Font: createTextBoxAppearanceFontResources(fonts, textFont) } as any),
+        DR: pdfDoc.context.obj({
+          Font: createTextBoxAppearanceFontResources(fonts, textFont),
+        } as any),
         ...opacityFields,
         NM: PDFString.of(toManagedAnnotationId(markup.id)),
         Subj: PDFString.of('Length Measurement'),
@@ -1210,7 +1300,9 @@ async function addMarkupAnnotationInternal(
         Label: PDFString.of(''),
         DA: PDFString.of(pdfTextDefaultAppearance(textAppearance, textFont)),
         DS: PDFString.of(pdfTextDefaultStyle(textAppearance, 'center', textFont)),
-        DR: pdfDoc.context.obj({ Font: createTextBoxAppearanceFontResources(fonts, textFont) } as any),
+        DR: pdfDoc.context.obj({
+          Font: createTextBoxAppearanceFontResources(fonts, textFont),
+        } as any),
         ...opacityFields,
         NM: PDFString.of(toManagedAnnotationId(markup.id)),
         Subj: PDFString.of('Polylength Measurement'),
@@ -1250,7 +1342,9 @@ async function addMarkupAnnotationInternal(
         Label: PDFString.of(''),
         DA: PDFString.of(pdfTextDefaultAppearance(textAppearance, textFont)),
         DS: PDFString.of(pdfTextDefaultStyle(textAppearance, 'center', textFont)),
-        DR: pdfDoc.context.obj({ Font: createTextBoxAppearanceFontResources(fonts, textFont) } as any),
+        DR: pdfDoc.context.obj({
+          Font: createTextBoxAppearanceFontResources(fonts, textFont),
+        } as any),
         ...opacityFields,
         NM: PDFString.of(toManagedAnnotationId(markup.id)),
         Subj: PDFString.of('Area Measurement'),
@@ -1417,9 +1511,15 @@ async function addMarkupAnnotationInternal(
         DA: PDFString.of(pdfTextDefaultAppearance(textAppearance, textFont)),
         DS: PDFString.of(pdfTextDefaultStyle(textAppearance, undefined, textFont)),
         RC: createPdfTextString(createFreeTextRichContent(markup.text, textAppearance, textFont)),
-        DR: pdfDoc.context.obj({ Font: createTextBoxAppearanceFontResources(fonts, textFont) } as any),
+        DR: pdfDoc.context.obj({
+          Font: createTextBoxAppearanceFontResources(fonts, textFont),
+        } as any),
         Border: [0, 0, 0],
-        BS: pdfDoc.context.obj({ W: PDFNumber.of(0), S: PDFName.of('S'), Type: PDFName.of('Border') }),
+        BS: pdfDoc.context.obj({
+          W: PDFNumber.of(0),
+          S: PDFName.of('S'),
+          Type: PDFName.of('Border'),
+        }),
         NM: PDFString.of(textName),
         Subj: PDFString.of('Cloud+'),
         F: PDFNumber.of(4),
@@ -1438,9 +1538,11 @@ async function addMarkupAnnotationInternal(
     case 'highlight': {
       const isHighlight = markup.kind === 'highlight';
       const strokeWidth = stroke?.widthPt ?? 0;
-      const appearance = isHighlight
-        ? createInkAppearance(pdfDoc, markup.paths, resolvedAppearance)
-        : undefined;
+      // InkList has no standard cap/join fields. Always retain a standard
+      // normal appearance so an edited Pen does not fall back to a viewer's
+      // butt-cap/miter-join synthesis. The semantic InkList remains the
+      // editable source of truth for both families.
+      const appearance = createInkAppearance(pdfDoc, markup.paths, resolvedAppearance);
       const annot = pdfDoc.context.obj({
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('Ink'),
@@ -1458,7 +1560,7 @@ async function addMarkupAnnotationInternal(
         Subj: PDFString.of(isHighlight ? 'Highlight' : 'Pen'),
         Contents: PDFString.of(''),
         F: PDFNumber.of(4),
-        ...(appearance ? { AP: pdfDoc.context.obj({ N: appearance.ref }) } : {}),
+        AP: pdfDoc.context.obj({ N: appearance.ref }),
         ...(resolvedAppearance.blendMode === 'multiply' ? { BM: PDFName.of('Multiply') } : {}),
         ...(markup.kind === 'pen' ? {
           BPSmoothCurves: markup.smoothCurves ? PDFBool.True : PDFBool.False,
@@ -1528,9 +1630,15 @@ async function addMarkupAnnotationInternal(
         DA: PDFString.of(pdfTextDefaultAppearance(textAppearance, textFont)),
         DS: PDFString.of(pdfTextDefaultStyle(textAppearance, undefined, textFont)),
         RC: createPdfTextString(createFreeTextRichContent(markup.text, textAppearance, textFont)),
-        DR: pdfDoc.context.obj({ Font: createTextBoxAppearanceFontResources(fonts, textFont) } as any),
+        DR: pdfDoc.context.obj({
+          Font: createTextBoxAppearanceFontResources(fonts, textFont),
+        } as any),
         Border: [0, 0, 0],
-        BS: pdfDoc.context.obj({ W: PDFNumber.of(0), S: PDFName.of('S'), Type: PDFName.of('Border') }),
+        BS: pdfDoc.context.obj({
+          W: PDFNumber.of(0),
+          S: PDFName.of('S'),
+          Type: PDFName.of('Border'),
+        }),
         NM: PDFString.of(toManagedAnnotationId(markup.id)),
         Subj: PDFString.of('Callout'),
         F: PDFNumber.of(4),
@@ -1552,7 +1660,11 @@ async function addMarkupAnnotationInternal(
         Type: PDFName.of('Annot'),
         Subtype: PDFName.of('Square'),
         Rect: rectToPdfArray(imageAnnotationRect(markup)),
-        BS: pdfDoc.context.obj({ W: PDFNumber.of(0), S: PDFName.of('S'), Type: PDFName.of('Border') }),
+        BS: pdfDoc.context.obj({
+          W: PDFNumber.of(0),
+          S: PDFName.of('S'),
+          Type: PDFName.of('Border'),
+        }),
         Border: [0, 0, 0],
         RD: [0, 0, 0, 0],
         C: [],
@@ -1697,7 +1809,12 @@ function dimensionCaptionRect(markup: Extract<Markup, { kind: 'dimension' }>, fo
   const measuredWidth = getMarkupTextFont(markup, fonts, markup.text).font.widthOfTextAtSize(markup.text, text.fontSizePt);
   const width = Math.max(text.fontSizePt, measuredWidth + text.insetPt * 2);
   const height = Math.max(text.lineHeightPt, text.fontSizePt);
-  return { x: center.x - width * 0.5, y: center.y - height * 0.5, width, height };
+  return {
+    x: center.x - width * 0.5,
+    y: center.y - height * 0.5,
+    width,
+    height,
+  };
 }
 
 function dimensionBounds(markup: Extract<Markup, { kind: 'dimension' }>, fonts: PdfExportFonts): { x: number; y: number; width: number; height: number } {
@@ -1727,7 +1844,12 @@ function dimensionBounds(markup: Extract<Markup, { kind: 'dimension' }>, fonts: 
   const minY = Math.min(...ys);
   const maxX = Math.max(...xs);
   const maxY = Math.max(...ys);
-  return { x: minX, y: minY, width: Math.max(1, maxX - minX), height: Math.max(1, maxY - minY) };
+  return {
+    x: minX,
+    y: minY,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY),
+  };
 }
 
 function dimensionBasis(start: PdfPoint, end: PdfPoint): { unit: PdfPoint; normal: PdfPoint; length: number } {
@@ -1825,30 +1947,75 @@ function pdfDashCommand(stroke: NonNullable<ResolvedMarkupAppearance['stroke']>)
   return '[] 0 d';
 }
 
-function createRectangleAppearance(
-  pdfDoc: PDFDocument,
-  markup: Extract<Markup, { kind: 'rectangle' }>,
-): { ref: PDFRef } {
+function createRectangleAppearance(pdfDoc: PDFDocument, markup: Extract<Markup, { kind: 'rectangle' }>): { ref: PDFRef } {
   const appearance = resolveMarkupAppearance(markup);
   const strokeAppearance = appearance.stroke!;
   const stroke = colorToRgb(strokeAppearance.color);
   const fill = appearance.fill?.color ? colorToRgb(appearance.fill.color) : undefined;
   const inset = strokeAppearance.widthPt * 0.5;
-  const rect = insetRect(markup.rect, inset);
-  const commands = [
-    'q /GS0 gs',
-    `${formatPdfNumber(stroke.red)} ${formatPdfNumber(stroke.green)} ${formatPdfNumber(stroke.blue)} RG`,
-    ...(fill ? [`${formatPdfNumber(fill.red)} ${formatPdfNumber(fill.green)} ${formatPdfNumber(fill.blue)} rg`] : []),
-    `${formatPdfNumber(strokeAppearance.widthPt)} w ${pdfDashCommand(strokeAppearance)}`,
-    `${formatPdfNumber(rect.x)} ${formatPdfNumber(rect.y)} ${formatPdfNumber(rect.width)} ${formatPdfNumber(rect.height)} re`,
-    fill ? 'B' : 'S',
-    'Q',
-  ];
+  const rotation = normalizeFreeRotation(markup.rotation ?? 0);
+  const appearanceBounds = rotation ? boundsForRotatedRect(markup.rect, rotation) : markup.rect;
+  const pathCommands = rotation
+    ? (() => {
+        const points = rotatedRectCorners(markup.rect, rotation).map((point) => ({
+          x: point.x - appearanceBounds.x,
+          y: point.y - appearanceBounds.y,
+        }));
+        return [`${formatPdfNumber(points[0]!.x)} ${formatPdfNumber(points[0]!.y)} m`, ...points.slice(1).map((point) => `${formatPdfNumber(point.x)} ${formatPdfNumber(point.y)} l`), 'h'];
+      })()
+    : (() => {
+        const rect = insetRect(markup.rect, inset);
+        return [`${formatPdfNumber(rect.x)} ${formatPdfNumber(rect.y)} ${formatPdfNumber(rect.width)} ${formatPdfNumber(rect.height)} re`];
+      })();
+  const commands = ['q /GS0 gs', `${formatPdfNumber(stroke.red)} ${formatPdfNumber(stroke.green)} ${formatPdfNumber(stroke.blue)} RG`, ...(fill ? [`${formatPdfNumber(fill.red)} ${formatPdfNumber(fill.green)} ${formatPdfNumber(fill.blue)} rg`] : []), `${formatPdfNumber(strokeAppearance.widthPt)} w ${pdfDashCommand(strokeAppearance)}`, ...pathCommands, fill ? 'B' : 'S', 'Q'];
   const stream = pdfDoc.context.flateStream(`${commands.join(' ')} `, {
     Type: PDFName.of('XObject'),
     Subtype: PDFName.of('Form'),
     FormType: PDFNumber.of(1),
-    BBox: rectToPdfArray(markup.rect),
+    BBox: rotation ? [0, 0, appearanceBounds.width, appearanceBounds.height] : rectToPdfArray(markup.rect),
+    Resources: pdfDoc.context.obj({
+      ExtGState: {
+        GS0: pdfDoc.context.obj({
+          Type: PDFName.of('ExtGState'),
+          CA: PDFNumber.of(appearance.opacity * stroke.alpha),
+          ca: PDFNumber.of(appearance.opacity * (fill?.alpha ?? 1)),
+        }),
+      },
+    } as any),
+  });
+  return { ref: pdfDoc.context.register(stream) as PDFRef };
+}
+
+function createEllipseAppearance(pdfDoc: PDFDocument, markup: Extract<Markup, { kind: 'ellipse' }>): { ref: PDFRef } {
+  const appearance = resolveMarkupAppearance(markup);
+  const strokeAppearance = appearance.stroke!;
+  const stroke = colorToRgb(strokeAppearance.color);
+  const fill = appearance.fill?.color ? colorToRgb(appearance.fill.color) : undefined;
+  const rotation = normalizeFreeRotation(markup.rotation ?? 0);
+  const appearanceBounds = rotation ? boundsForRotatedRect(markup.rect, rotation) : markup.rect;
+  const center = {
+    x: markup.rect.x + markup.rect.width * 0.5,
+    y: markup.rect.y + markup.rect.height * 0.5,
+  };
+  const radians = (rotation * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const localPoint = (point: { readonly x: number; readonly y: number }) => ({
+    x: center.x + cos * (point.x - center.x) + sin * (point.y - center.y) - appearanceBounds.x,
+    y: center.y - sin * (point.x - center.x) + cos * (point.y - center.y) - appearanceBounds.y,
+  });
+  const segments = arcBezierSegments(insetRect(markup.rect, strokeAppearance.widthPt * 0.5), 0, 360).map((segment) => ({
+    start: localPoint(segment.start),
+    control1: localPoint(segment.control1),
+    control2: localPoint(segment.control2),
+    end: localPoint(segment.end),
+  }));
+  const commands = ['q /GS0 gs', `${formatPdfNumber(stroke.red)} ${formatPdfNumber(stroke.green)} ${formatPdfNumber(stroke.blue)} RG`, ...(fill ? [`${formatPdfNumber(fill.red)} ${formatPdfNumber(fill.green)} ${formatPdfNumber(fill.blue)} rg`] : []), `${formatPdfNumber(strokeAppearance.widthPt)} w ${pdfDashCommand(strokeAppearance)}`, `${formatPdfNumber(segments[0]!.start.x)} ${formatPdfNumber(segments[0]!.start.y)} m`, ...segments.map((segment) => `${formatPdfNumber(segment.control1.x)} ${formatPdfNumber(segment.control1.y)} ${formatPdfNumber(segment.control2.x)} ${formatPdfNumber(segment.control2.y)} ${formatPdfNumber(segment.end.x)} ${formatPdfNumber(segment.end.y)} c`), 'h', fill ? 'B' : 'S', 'Q'];
+  const stream = pdfDoc.context.flateStream(`${commands.join(' ')} `, {
+    Type: PDFName.of('XObject'),
+    Subtype: PDFName.of('Form'),
+    FormType: PDFNumber.of(1),
+    BBox: [0, 0, appearanceBounds.width, appearanceBounds.height],
     Resources: pdfDoc.context.obj({
       ExtGState: {
         GS0: pdfDoc.context.obj({
@@ -2128,7 +2295,12 @@ function pointsBounds(points: readonly PdfPoint[], padding = 0): { x: number; y:
   const minY = Math.min(...ys) - padding;
   const maxX = Math.max(...xs) + padding;
   const maxY = Math.max(...ys) + padding;
-  return { x: minX, y: minY, width: Math.max(1, maxX - minX), height: Math.max(1, maxY - minY) };
+  return {
+    x: minX,
+    y: minY,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY),
+  };
 }
 
 function unionBounds(...bounds: readonly { x: number; y: number; width: number; height: number }[]): { x: number; y: number; width: number; height: number } {
@@ -2136,7 +2308,12 @@ function unionBounds(...bounds: readonly { x: number; y: number; width: number; 
   const minY = Math.min(...bounds.map((box) => box.y));
   const maxX = Math.max(...bounds.map((box) => box.x + box.width));
   const maxY = Math.max(...bounds.map((box) => box.y + box.height));
-  return { x: minX, y: minY, width: Math.max(1, maxX - minX), height: Math.max(1, maxY - minY) };
+  return {
+    x: minX,
+    y: minY,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY),
+  };
 }
 
 function rectToPdfArray(box: { x: number; y: number; width: number; height: number }): readonly number[] {
@@ -2174,7 +2351,15 @@ function createArcAppearance(pdfDoc: PDFDocument, markup: Extract<Markup, { kind
   return { ref: pdfDoc.context.register(stream) as PDFRef };
 }
 
-function insetRect(rect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }, inset: number) {
+function insetRect(
+  rect: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  },
+  inset: number,
+) {
   return {
     x: rect.x + inset,
     y: rect.y + inset,
@@ -2183,7 +2368,16 @@ function insetRect(rect: { readonly x: number; readonly y: number; readonly widt
   };
 }
 
-function arcPdfPathCommands(rect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }, angle1: number, angle2: number): string[] {
+function arcPdfPathCommands(
+  rect: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  },
+  angle1: number,
+  angle2: number,
+): string[] {
   const segments = arcBezierSegments(rect, angle1, angle2);
   if (segments.length === 0) {
     return [];
@@ -2197,7 +2391,16 @@ function arcPdfPathCommands(rect: { readonly x: number; readonly y: number; read
   return commands;
 }
 
-function arcBezierSegments(rect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }, angle1: number, angle2: number) {
+function arcBezierSegments(
+  rect: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  },
+  angle1: number,
+  angle2: number,
+) {
   const delta = normalizeArcDelta(angle1, angle2);
   const segmentCount = Math.max(1, Math.ceil(Math.abs(delta) / 22.5));
   const segmentDelta = delta / segmentCount;
@@ -2208,7 +2411,16 @@ function arcBezierSegments(rect: { readonly x: number; readonly y: number; reado
   });
 }
 
-function arcBezierSegment(rect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }, startAngle: number, endAngle: number) {
+function arcBezierSegment(
+  rect: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  },
+  startAngle: number,
+  endAngle: number,
+) {
   const rx = rect.width * 0.5;
   const ry = rect.height * 0.5;
   const cx = rect.x + rx;
@@ -2216,12 +2428,21 @@ function arcBezierSegment(rect: { readonly x: number; readonly y: number; readon
   const start = (startAngle * Math.PI) / 180;
   const end = (endAngle * Math.PI) / 180;
   const alpha = (4 / 3) * Math.tan((end - start) / 4);
-  const startPoint = { x: cx + rx * Math.cos(start), y: cy + ry * Math.sin(start) };
+  const startPoint = {
+    x: cx + rx * Math.cos(start),
+    y: cy + ry * Math.sin(start),
+  };
   const endPoint = { x: cx + rx * Math.cos(end), y: cy + ry * Math.sin(end) };
   return {
     start: startPoint,
-    control1: { x: startPoint.x - alpha * rx * Math.sin(start), y: startPoint.y + alpha * ry * Math.cos(start) },
-    control2: { x: endPoint.x + alpha * rx * Math.sin(end), y: endPoint.y - alpha * ry * Math.cos(end) },
+    control1: {
+      x: startPoint.x - alpha * rx * Math.sin(start),
+      y: startPoint.y + alpha * ry * Math.cos(start),
+    },
+    control2: {
+      x: endPoint.x + alpha * rx * Math.sin(end),
+      y: endPoint.y - alpha * ry * Math.cos(end),
+    },
     end: endPoint,
   };
 }
@@ -2411,9 +2632,21 @@ function createTextBoxAppearanceOpacityResources(pdfDoc: PDFDocument, appearance
   const fillAlpha = appearance.fill?.color ? colorToRgb(appearance.fill.color).alpha : 1;
   const textAlpha = colorToRgb(appearance.text?.color ?? '#ff0000').alpha;
   return {
-    GSStroke: pdfDoc.context.obj({ Type: PDFName.of('ExtGState'), CA: PDFNumber.of(opacity * strokeAlpha), ca: PDFNumber.of(opacity * strokeAlpha) }),
-    GSFill: pdfDoc.context.obj({ Type: PDFName.of('ExtGState'), CA: PDFNumber.of(opacity * fillAlpha), ca: PDFNumber.of(opacity * fillAlpha) }),
-    GSText: pdfDoc.context.obj({ Type: PDFName.of('ExtGState'), CA: PDFNumber.of(opacity * textAlpha), ca: PDFNumber.of(opacity * textAlpha) }),
+    GSStroke: pdfDoc.context.obj({
+      Type: PDFName.of('ExtGState'),
+      CA: PDFNumber.of(opacity * strokeAlpha),
+      ca: PDFNumber.of(opacity * strokeAlpha),
+    }),
+    GSFill: pdfDoc.context.obj({
+      Type: PDFName.of('ExtGState'),
+      CA: PDFNumber.of(opacity * fillAlpha),
+      ca: PDFNumber.of(opacity * fillAlpha),
+    }),
+    GSText: pdfDoc.context.obj({
+      Type: PDFName.of('ExtGState'),
+      CA: PDFNumber.of(opacity * textAlpha),
+      ca: PDFNumber.of(opacity * textAlpha),
+    }),
   };
 }
 
@@ -2463,7 +2696,11 @@ function createCalloutAppearance(
   markup: Extract<Markup, { kind: 'callout' }>,
   fonts: PdfExportFonts,
   options: { readonly showArrow?: boolean } = {},
-): { ref: PDFRef; bounds: readonly number[]; textBoxInsets: readonly number[] } {
+): {
+  ref: PDFRef;
+  bounds: readonly number[];
+  textBoxInsets: readonly number[];
+} {
   const points = markup.leader.points;
   const tip = points[0] ?? pdfPoint(markup.textBox.x, markup.textBox.y);
   const afterTip = points[1] ?? tip;
@@ -2525,7 +2762,11 @@ function createCalloutAppearance(
     } as any),
   });
 
-  return { ref: pdfDoc.context.register(stream) as PDFRef, bounds, textBoxInsets };
+  return {
+    ref: pdfDoc.context.register(stream) as PDFRef,
+    bounds,
+    textBoxInsets,
+  };
 }
 
 const bluebeamFreeTextCalloutPaddingPt = 5.5;
@@ -2536,37 +2777,25 @@ function paddedPdfBounds(bounds: readonly number[], padding: number): readonly n
 
 function freeTextRectangleDifferences(
   bounds: readonly number[],
-  textBox: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
+  textBox: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  },
 ): readonly number[] {
-  return [
-    textBox.x - bounds[0],
-    textBox.y - bounds[1],
-    bounds[2] - (textBox.x + textBox.width),
-    bounds[3] - (textBox.y + textBox.height),
-  ];
+  return [textBox.x - bounds[0], textBox.y - bounds[1], bounds[2] - (textBox.x + textBox.width), bounds[3] - (textBox.y + textBox.height)];
 }
 
 function calloutAppearanceBounds(markup: Extract<Markup, { kind: 'callout' }>, arrow: readonly PdfPoint[]): readonly number[] {
-  const xs = [
-    markup.textBox.x,
-    markup.textBox.x + markup.textBox.width,
-    ...markup.leader.points.map((point) => point.x),
-    ...arrow.map((point) => point.x),
-  ];
-  const ys = [
-    markup.textBox.y,
-    markup.textBox.y + markup.textBox.height,
-    ...markup.leader.points.map((point) => point.y),
-    ...arrow.map((point) => point.y),
-  ];
+  const xs = [markup.textBox.x, markup.textBox.x + markup.textBox.width, ...markup.leader.points.map((point) => point.x), ...arrow.map((point) => point.x)];
+  const ys = [markup.textBox.y, markup.textBox.y + markup.textBox.height, ...markup.leader.points.map((point) => point.y), ...arrow.map((point) => point.y)];
   return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
 }
 
 async function embedMarkupImage(pdfDoc: PDFDocument, markup: Extract<Markup, { kind: 'image' | 'snapshot' }>): Promise<PDFImage> {
   const bytes = imageBytesFromDataUrl(markup.dataUrl);
-  return markup.mimeType === 'image/jpeg'
-    ? await pdfDoc.embedJpg(bytes)
-    : await pdfDoc.embedPng(bytes);
+  return markup.mimeType === 'image/jpeg' ? await pdfDoc.embedJpg(bytes) : await pdfDoc.embedPng(bytes);
 }
 
 function createImageAppearance(pdfDoc: PDFDocument, markup: Extract<Markup, { kind: 'image' | 'snapshot' }>, image: PDFImage): { ref: PDFRef } {
@@ -2670,6 +2899,53 @@ function readNativeAppearanceImagePayload(annot: PDFDict): MediaImagePayload | u
   return images.length === 1 ? imageXObjectToPayload(images[0]!) : undefined;
 }
 
+function readRotatedMediaNominalRect(
+  annot: PDFDict,
+  annotationRect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
+  rotation: number | undefined,
+): { x: number; y: number; width: number; height: number } {
+  if (!rotation || !Number.isFinite(rotation)) {
+    return annotationRect;
+  }
+  const appearance = getNormalAppearanceStream(annot);
+  const appearanceBounds = appearance ? readRect(appearance.dict.get(PDFName.of('BBox'))) : undefined;
+  if (!appearance || !appearanceBounds || appearanceBounds.width <= 0 || appearanceBounds.height <= 0) {
+    return annotationRect;
+  }
+
+  let content: string;
+  try {
+    content = Buffer.from(decodePDFRawStream(appearance).decode()).toString('latin1');
+  } catch {
+    return annotationRect;
+  }
+  const number = String.raw`[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?`;
+  const matrixPattern = new RegExp(`(${number})\\s+(${number})\\s+(${number})\\s+(${number})\\s+(${number})\\s+(${number})\\s+cm\\b`, 'g');
+  const scaleX = annotationRect.width / appearanceBounds.width;
+  const scaleY = annotationRect.height / appearanceBounds.height;
+  const tolerance = Math.max(0.05, annotationRect.width * 0.0001, annotationRect.height * 0.0001);
+  for (const match of content.matchAll(matrixPattern)) {
+    const [a, b, c, d, e, f] = match.slice(1).map(Number);
+    if (![a, b, c, d, e, f].every((value) => Number.isFinite(value))) continue;
+    const width = Math.hypot(a! * scaleX, b! * scaleY);
+    const height = Math.hypot(c! * scaleX, d! * scaleY);
+    const centerX = annotationRect.x + (e! + (a! + c!) * 0.5 - appearanceBounds.x) * scaleX;
+    const centerY = annotationRect.y + (f! + (b! + d!) * 0.5 - appearanceBounds.y) * scaleY;
+    if (width <= 0 || height <= 0 || ![width, height, centerX, centerY].every((value) => Number.isFinite(value))) continue;
+    const candidate = { x: centerX - width * 0.5, y: centerY - height * 0.5, width, height };
+    const rebuilt = boundsForRotatedRect(candidate, normalizeFreeRotation(rotation));
+    if (
+      Math.abs(rebuilt.x - annotationRect.x) <= tolerance
+      && Math.abs(rebuilt.y - annotationRect.y) <= tolerance
+      && Math.abs(rebuilt.width - annotationRect.width) <= tolerance
+      && Math.abs(rebuilt.height - annotationRect.height) <= tolerance
+    ) {
+      return candidate;
+    }
+  }
+  return annotationRect;
+}
+
 function collectPaintedImageXObjects(appearance: PDFRawStream): readonly PDFRawStream[] {
   const images = new Set<PDFRawStream>();
   const visitedForms = new Set<PDFRawStream>();
@@ -2726,14 +3002,20 @@ function imageXObjectToPayload(image: PDFRawStream): MediaImagePayload | undefin
   if (filters.length === 1 && filters[0] === 'DCTDecode' && !image.dict.has(PDFName.of('SMask')) && !image.dict.has(PDFName.of('Mask'))) {
     const bytes = image.contents;
     if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes.at(-2) === 0xff && bytes.at(-1) === 0xd9) {
-      return { dataUrl: dataUrlFromBytes('image/jpeg', bytes), mimeType: 'image/jpeg' };
+      return {
+        dataUrl: dataUrlFromBytes('image/jpeg', bytes),
+        mimeType: 'image/jpeg',
+      };
     }
     return undefined;
   }
 
   const raster = decodeImageXObject(image);
   return raster
-    ? { dataUrl: dataUrlFromBytes('image/png', encodeRgbaPng(raster)), mimeType: 'image/png' }
+    ? {
+        dataUrl: dataUrlFromBytes('image/png', encodeRgbaPng(raster)),
+        mimeType: 'image/png',
+      }
     : undefined;
 }
 
@@ -2852,7 +3134,13 @@ function readNativeColorSpace(value: PDFObject | undefined, context: PDFDict['co
   if (!base || base.kind === 'indexed' || highValue === undefined || !palette) {
     return undefined;
   }
-  return { kind: 'indexed', channels: 1, highValue, palette, paletteChannels: base.channels };
+  return {
+    kind: 'indexed',
+    channels: 1,
+    highValue,
+    palette,
+    paletteChannels: base.channels,
+  };
 }
 
 function decodePdfStreamBytes(stream: PDFRawStream): Uint8Array | undefined {
@@ -3196,20 +3484,7 @@ function getTextBoxAppearanceMatrix(markup: Extract<Markup, { kind: 'text-box' }
 }
 
 function boundsForRotatedRect(rect: { x: number; y: number; width: number; height: number }, rotation: number): { x: number; y: number; width: number; height: number } {
-  const radians = (rotation * Math.PI) / 180;
-  const cos = Math.cos(radians);
-  const sin = Math.sin(radians);
-  const centerX = rect.x + rect.width * 0.5;
-  const centerY = rect.y + rect.height * 0.5;
-  const points = [
-    { x: rect.x, y: rect.y },
-    { x: rect.x + rect.width, y: rect.y },
-    { x: rect.x + rect.width, y: rect.y + rect.height },
-    { x: rect.x, y: rect.y + rect.height },
-  ].map((point) => ({
-    x: centerX + cos * (point.x - centerX) + sin * (point.y - centerY),
-    y: centerY - sin * (point.x - centerX) + cos * (point.y - centerY),
-  }));
+  const points = rotatedRectCorners(rect, rotation);
   const xs = points.map((point) => point.x);
   const ys = points.map((point) => point.y);
   const minX = Math.min(...xs);
@@ -3222,6 +3497,20 @@ function boundsForRotatedRect(rect: { x: number; y: number; width: number; heigh
     width: maxX - minX,
     height: maxY - minY,
   };
+}
+
+function rotatedRectCorners(rect: { x: number; y: number; width: number; height: number }, rotation: number): readonly PdfPoint[] {
+  const radians = (rotation * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const centerX = rect.x + rect.width * 0.5;
+  const centerY = rect.y + rect.height * 0.5;
+  return [
+    { x: rect.x, y: rect.y },
+    { x: rect.x + rect.width, y: rect.y },
+    { x: rect.x + rect.width, y: rect.y + rect.height },
+    { x: rect.x, y: rect.y + rect.height },
+  ].map((point) => pdfPoint(centerX + cos * (point.x - centerX) + sin * (point.y - centerY), centerY - sin * (point.x - centerX) + cos * (point.y - centerY)));
 }
 
 function normalizeFreeRotation(rotation: number): number {
@@ -3355,7 +3644,9 @@ function layoutExplicitRichTextLines(runs: readonly TextBoxRichTextRun[]): reado
     }
   }
 
-  return lines.map((line) => ({ runs: line.length > 0 ? line : [{ text: '' }] }));
+  return lines.map((line) => ({
+    runs: line.length > 0 ? line : [{ text: '' }],
+  }));
 }
 
 function appendRichRunText(line: TextBoxAppearanceRun[], run: TextBoxAppearanceRun, text: string): void {
@@ -3600,15 +3891,15 @@ function escapeXml(text: string): string {
 }
 
 function escapePdfLiteralString(text: string): string {
-  return text
-    .replaceAll('\\', '\\\\')
-    .replaceAll('(', '\\(')
-    .replaceAll(')', '\\)')
-    .replaceAll('\r', '\\r')
-    .replaceAll('\n', '\\n');
+  return text.replaceAll('\\', '\\\\').replaceAll('(', '\\(').replaceAll(')', '\\)').replaceAll('\r', '\\r').replaceAll('\n', '\\n');
 }
 
-function colorToRgb(color: string): { red: number; green: number; blue: number; alpha: number } {
+function colorToRgb(color: string): {
+  red: number;
+  green: number;
+  blue: number;
+  alpha: number;
+} {
   const match = color.trim().match(/^#?([0-9a-f]{6})([0-9a-f]{2})?$/i);
   if (match) {
     const value = match[1];
@@ -3679,6 +3970,17 @@ function readPageAnnotationMarkups(pdfDoc: PDFDocument, pageIndex: number): Impo
     if (!isPdfDict(match)) {
       continue;
     }
+    if (annotationRequiresOpaqueImport(annot) || annotationRequiresOpaqueImport(match)) {
+      markups.push(withImportedTracking(mapAnnotationDictToImportedMarkup(pageIndex, annot, index), [
+        readSafeAnnotationMetadata(pdfDoc, pageIndex, annot, index, refs, 'primary'),
+      ]));
+      markups.push(withImportedTracking(mapAnnotationDictToImportedMarkup(pageIndex, match, matchIndex), [
+        readSafeAnnotationMetadata(pdfDoc, pageIndex, match, matchIndex, refs, 'primary'),
+      ]));
+      consumed.add(index);
+      consumed.add(matchIndex);
+      continue;
+    }
     const mapped = mapCloudPlusPairToMarkup(pageIndex, annot, match, index);
     if (mapped) {
       markups.push(withImportedTracking(mapped, [
@@ -3719,6 +4021,10 @@ function isCloudPlusPart(annot: PDFDict): boolean {
       intentEx === 'PolyText' || group.includes('Cloud+')
     ))
   );
+}
+
+function annotationRequiresOpaqueImport(annot: PDFDict): boolean {
+  return annot.has(PDFName.of('OC')) || annot.has(PDFName.of('Popup'));
 }
 
 function cloudPlusPartsBelongTogether(first: PDFDict, second: PDFDict): boolean {
@@ -4005,7 +4311,12 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
   const managedId = fromManagedAnnotationId(rawName);
   const subject = readText(annot.get(PDFName.of('Subj')));
   const intent = readName(annot.get(PDFName.of('IT')));
-  const rect = readRect(annot.get(PDFName.of('Rect'))) ?? { x: 0, y: 0, width: 0, height: 0 };
+  const rect = readRect(annot.get(PDFName.of('Rect'))) ?? {
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+  };
   const importedAppearance = readPdfAnnotationAppearance(annot);
 
   if (subtype === 'popup') {
@@ -4014,6 +4325,10 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
 
   if (subtype === 'link') {
     return undefined;
+  }
+
+  if (annotationRequiresOpaqueImport(annot)) {
+    return mapAnnotationDictToImportedMarkup(pageIndex, annot, fallbackIndex);
   }
 
   if (subtype === 'redact') {
@@ -4044,14 +4359,17 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
         source: { annotationId: id, source: 'imported' },
       });
     }
+    const rotation = readOptionalNumber(annot.get(PDFName.of('Rotation')));
     return createImageMarkup({
       id,
       pageIndex,
       appearance: importedAppearance,
-      rect,
+      rect: readRotatedMediaNominalRect(annot, rect, rotation),
       ...payload,
-      rotation: readOptionalNumber(annot.get(PDFName.of('Rotation'))),
-      aspectRatioLocked: readOptionalBoolean(annot.get(PDFName.of('BPAspectRatioLocked'))),
+      rotation,
+      aspectRatioLocked:
+        readOptionalBoolean(annot.get(PDFName.of('BPAspectRatioLocked')))
+        ?? readOptionalBoolean(annot.get(PDFName.of('BPAspectLocked'))),
       source: {
         annotationId: id,
         source: 'imported',
@@ -4074,13 +4392,14 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
         source: { annotationId: id, source: 'imported' },
       });
     }
+    const rotation = readOptionalNumber(annot.get(PDFName.of('Rotation')));
     return createSnapshotMarkup({
       id,
       pageIndex,
       appearance: importedAppearance,
-      rect,
+      rect: readRotatedMediaNominalRect(annot, rect, rotation),
       ...payload,
-      rotation: readOptionalNumber(annot.get(PDFName.of('Rotation'))),
+      rotation,
       source: {
         annotationId: id,
         source: 'imported',
@@ -4090,12 +4409,14 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
 
   if (subtype === 'square' || subtype === 'rect') {
     const id = managedId ?? rawName ?? `page-${pageIndex}-rectangle-${fallbackIndex}`;
+    const nativeRect = readRect(annot.get(PDFName.of('BPRect')));
+    const nativeRotation = readOptionalNumber(annot.get(PDFName.of('BPRotation')));
     return createRectangleMarkup({
       id,
       pageIndex,
       appearance: importedAppearance,
-      rect,
-      rotation: readOptionalNumber(annot.get(PDFName.of('Rotation'))),
+      rect: nativeRect ?? rect,
+      rotation: nativeRotation ?? readOptionalNumber(annot.get(PDFName.of('Rotation'))),
       source: {
         annotationId: id,
         source: 'imported',
@@ -4121,12 +4442,14 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
 
   if (subtype === 'circle' && intent.toLowerCase() !== 'circlearc') {
     const id = managedId ?? rawName ?? `page-${pageIndex}-ellipse-${fallbackIndex}`;
+    const nativeRect = readRect(annot.get(PDFName.of('BPRect')));
+    const nativeRotation = readOptionalNumber(annot.get(PDFName.of('BPRotation')));
     return createEllipseMarkup({
       id,
       pageIndex,
       appearance: importedAppearance,
-      rect,
-      rotation: readOptionalNumber(annot.get(PDFName.of('Rotation'))),
+      rect: nativeRect ?? rect,
+      rotation: nativeRotation ?? readOptionalNumber(annot.get(PDFName.of('Rotation'))),
       source: {
         annotationId: id,
         source: 'imported',
@@ -4261,7 +4584,11 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
       pageIndex,
       appearance: importedAppearance,
       paths: paths.length > 0 ? paths : [[pdfPoint(rect.x, rect.y), pdfPoint(rect.x + rect.width, rect.y + rect.height)]],
-      ...(isHighlight ? {} : { smoothCurves: readOptionalBoolean(annot.get(PDFName.of('BPSmoothCurves'))) }),
+      ...(isHighlight
+        ? {}
+        : {
+            smoothCurves: readOptionalBoolean(annot.get(PDFName.of('BPSmoothCurves'))),
+          }),
       strokeWidth: readBorderWidth(annot),
       color: readColorArray(annot.get(PDFName.of('C'))),
       source: {
@@ -4322,13 +4649,25 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
     });
   }
 
+  return mapAnnotationDictToImportedMarkup(pageIndex, annot, fallbackIndex);
+}
+
+function mapAnnotationDictToImportedMarkup(pageIndex: number, annot: PDFDict, fallbackIndex: number): ImportedPdfMarkup {
+  const subtype = readName(annot.get(PDFName.of('Subtype'))).toLowerCase();
+  const rawName = readText(annot.get(PDFName.of('NM')));
+  const rect = readRect(annot.get(PDFName.of('Rect'))) ?? {
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+  };
   return createImportedAnnotationMarkup({
     id: rawName ?? `page-${pageIndex}-annotation-${fallbackIndex}`,
     pageIndex,
     rect,
     subtype: subtype || 'unknown',
-    subject,
-    intent: intent || undefined,
+    subject: readText(annot.get(PDFName.of('Subj'))),
+    intent: readName(annot.get(PDFName.of('IT'))) || undefined,
     contents: readText(annot.get(PDFName.of('Contents'))),
     source: {
       annotationId: rawName,
@@ -4337,24 +4676,24 @@ function mapAnnotationDictToMarkup(pageIndex: number, annot: PDFDict, fallbackIn
   });
 }
 
-function normalizeNativeCloudPlusLeader(
-  points: readonly PdfPoint[],
-  inlineTextCenter: PdfPoint,
-): readonly [PdfPoint, PdfPoint, PdfPoint] {
+function normalizeNativeCloudPlusLeader(points: readonly PdfPoint[], inlineTextCenter: PdfPoint): readonly [PdfPoint, PdfPoint, PdfPoint] {
   if (points.length === 0) {
     return [inlineTextCenter, inlineTextCenter, inlineTextCenter];
   }
   const tip = points[0] ?? inlineTextCenter;
   const connection = points.at(-1) ?? inlineTextCenter;
-  const knee = points.length === 2
-    ? pdfPoint((tip.x + connection.x) * 0.5, (tip.y + connection.y) * 0.5)
-    : points[Math.min(points.length - 2, Math.floor((points.length - 1) * 0.5))] ?? tip;
+  const knee = points.length === 2 ? pdfPoint((tip.x + connection.x) * 0.5, (tip.y + connection.y) * 0.5) : (points[Math.min(points.length - 2, Math.floor((points.length - 1) * 0.5))] ?? tip);
   return [tip, knee, connection];
 }
 
 function normalizeNativeCalloutLeader(
   points: readonly PdfPoint[],
-  textBox: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
+  textBox: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  },
 ): readonly [PdfPoint, PdfPoint] | readonly [PdfPoint, PdfPoint, PdfPoint] {
   const connection = points.at(-1) ?? pdfPoint(textBox.x, textBox.y + textBox.height * 0.5);
   const tip = points[0] ?? connection;
@@ -4385,8 +4724,18 @@ function readRect(value: unknown): { x: number; y: number; width: number; height
   return normalizePdfRect([x1, y1, x2, y2]);
 }
 
-function readFreeTextBox(annot: PDFDict): { x: number; y: number; width: number; height: number } {
-  const outer = readRect(annot.get(PDFName.of('Rect'))) ?? { x: 0, y: 0, width: 0, height: 0 };
+function readFreeTextBox(annot: PDFDict): {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+} {
+  const outer = readRect(annot.get(PDFName.of('Rect'))) ?? {
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+  };
   const differences = annot.get(PDFName.of('RD'));
   if (!(differences instanceof PDFArray) || differences.size() < 4) {
     return outer;
@@ -4641,7 +4990,10 @@ function readPdfEscape(content: string, slashIndex: number): { text: string; nex
   if (/[0-7]/.test(next)) {
     const match = content.slice(slashIndex + 1, slashIndex + 4).match(/^[0-7]{1,3}/);
     const octal = match?.[0] ?? next;
-    return { text: String.fromCharCode(Number.parseInt(octal, 8)), nextIndex: slashIndex + 1 + octal.length };
+    return {
+      text: String.fromCharCode(Number.parseInt(octal, 8)),
+      nextIndex: slashIndex + 1 + octal.length,
+    };
   }
   return { text: next, nextIndex: slashIndex + 2 };
 }

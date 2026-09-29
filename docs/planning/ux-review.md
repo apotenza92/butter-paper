@@ -43,7 +43,12 @@ For each compound control, specify which elements should respond together. Exerc
 
 ## Test the implementation users actually run
 
+- When edited annotation text outgrows its original box, inspect every line on the canvas and after save/reopen. Retained text and a correct editor value do not prove visible glyphs. Compare canvas clipping, stored geometry and exported appearance separately; the reference may itself differ between screen and PDF.
+- For caption-only marquee evidence, keep both pointer endpoints outside direct-hit targets and exclude body paths and extension overhangs from the region. A selected final state can otherwise come from a direct click or non-text intersection. Verify imported typography before comparing caption bounds, and distinguish moving candidate feedback from the committed selection.
+- For raster pipelines, verify asymmetric red/blue pixels at each byte-format boundary, including PDF rendering, highlight composition, image upload and Snapshot export. Greyscale or green-only fixtures cannot detect red/blue swaps; two incorrect conversions can cancel on screen while exported bytes remain wrong. Keep stored asset formats distinct from GPU upload formats.
 - Trace the live app's render path before choosing regression tests. A legacy preview or standalone component suite does not prove the current workspace composition. Add a focused regression on the actual path for demonstrated state/geometry failures.
+- Keyboard-input regressions must register the same workspace/application key bindings as the live app. A text field can pass a component-only typing test while tool shortcuts consume letters in production. Include ordinary text containing shortcut letters, assert the exact resulting text, and verify no picker, tool switch or document action occurred.
+- For popovers over the canvas, arm a drawing tool before clicking an input or control. Place the control over the actual contained PDF page, not merely the annotation layer including its letterbox margins. Assert that the click reaches the intended control, preserves the underlying document and creates no canvas draft. A Select-only test can hide interception by global pointer handlers.
 - Modal interaction tests must paint the same root dialog layer as the real application. Render the first animation frame before advancing animation time and targeting controls; owning dialog state alone does not paint its hit targets.
 - For bounded scrolling overlays, exercise enough content to overflow and verify the final action becomes reachable by scrolling. A viewport rectangle inside the window is insufficient: a height limit inherited by the inner content can erase the scroll range while children still overflow.
 - For nested stock components, check callback ownership before attaching handlers: tooltips or managed behaviour may already register the same callback. Exercise the composed control, not just the handler in isolation.
@@ -51,7 +56,7 @@ For each compound control, specify which elements should respond together. Exerc
 - When a compound control changes colour and opacity together, verify one atomic domain/history edit, not two competing events. Reapply an unchanged value and check that numeric precision conversion creates no undo entry. Preserve unrelated imported fields when changing one property, including fields the current editor does not expose.
 - When old tests disagree with an approved component size or composition, separate obsolete expectations from still-valid behaviour failures. Port or repair useful contracts with evidence; neither delete a failing suite nor change expected numbers just to make it green.
 - Inspect accessible role, full name, selected/checked and disabled states separately from painted appearance and click inertness. A missing foundation capability remains a tracked gap, not an invitation to fake semantics with styling.
-- Keep dependency preparation and runtime verification separate. A passing corrected component test does not prove all source receipts match; audit drift before refreshing identities, and preserve unrelated dirty changes.
+- Keep dependency preparation and runtime verification separate. A passing corrected component test does not prove all source receipts match; audit drift before refreshing identities, and preserve unrelated dirty changes. When swapping source for a red/green probe, refresh copied source modification times or otherwise force the relevant rebuild; restoring timestamps can make Cargo reuse the wrong test binary even when current bytes match. Verify the intended test names and nonzero test counts, not just exit status.
 
 - For composed property editors, verify section bounds do not overlap and that one intended container owns scrolling. Accessibility-tree presence alone does not prove a control is visible: inspect appearance and measurement sections together, then scroll to and operate the final control.
 
@@ -65,6 +70,8 @@ For slider/input pairs, check the number during pointer-down and intermediate dr
 
 Show reference/before/after for implementation handoffs, with honest state/theme/build labels. Planning-only sessions do not invent an after. Report visible defects and unverified interactions before declaring completion; fix known in-scope defects when authorised, without redundant approval pauses.
 
+For blended annotations, compare the live reference separately from exported PDF appearances: their caps and blend results can differ. Include reversed drawing order, separate overlapping paths and self-overlap within one path. Use raw renderer readback for exact colour assertions; desktop captures can carry a monitor colour profile and lossy encoding even when saved with a `.png` filename.
+
 ## Maintaining the checklist
 
 When a demonstrated miss recurs or teaches a general review failure, update the narrowest rule here with a concrete observable check. Keep the current defect, suspected cause, resolution and evidence in its region brief. Consolidate overlapping rules; do not append transcripts, dated worklogs or universal restrictions inferred from one example. Do not modify the upstream GPUI guides to encode application-specific preferences.
@@ -72,5 +79,6 @@ When a demonstrated miss recurs or teaches a general review failure, update the 
 ### Native macOS launch and Signature evidence
 
 - Launch the isolated review `.app` through LaunchServices, with explicit disposable data/temporary directories and fixture arguments. A raw executable launch can differ in native input/repaint behaviour; compare launch paths before attributing delayed state to application code.
+- Verify the launched process command, window title and created data root before interacting. Shell-prefixed environment values are not evidence that LaunchServices delivered them; when isolation depends on environment, use a uniquely identified copied review bundle with an explicit disposable launch environment or a purpose-built harness, then confirm the owned root was populated and the ordinary development root was not selected.
 - Exercise Tab from the popover's first control through both Recent use/removal controls. Verify that focus remains inside the popover and the removal control appears while focused, even when the pointer is elsewhere.
 - Label QR, expiry, hover and keyboard screenshots with their actual state. Cancel disposable QR sessions after capturing evidence. Reopen the saved files for contradiction review; a QR picture alone cannot establish a successful physical-phone transfer.

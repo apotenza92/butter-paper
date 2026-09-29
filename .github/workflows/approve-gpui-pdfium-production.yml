@@ -1,0 +1,156 @@
+name: Approve GPUI PDFium production candidates
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Run ID that produced all six required PDFium candidates
+        required: true
+        type: string
+      source_run_attempt:
+        description: Exact run attempt that produced those artifacts
+        required: true
+        type: string
+      review_bundle_base64:
+        description: Base64 JSON object keyed by all six required target triples; each value has redistributionReview and supplierReview JSON objects
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: gpui-pdfium-approval-${{ inputs.source_run_id }}-${{ inputs.source_run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  approve:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate bounded inputs and write review evidence
+        shell: bash
+        env:
+          REVIEW_BUNDLE_BASE64: ${{ inputs.review_bundle_base64 }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]{0,19}$ ]]
+          [[ "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]{0,4}$ ]]
+          ((${#REVIEW_BUNDLE_BASE64} > 0 && ${#REVIEW_BUNDLE_BASE64} <= 60000))
+          mkdir -p "$RUNNER_TEMP/pdfium-review-input"
+          printf '%s' "$REVIEW_BUNDLE_BASE64" | base64 --decode > "$RUNNER_TEMP/pdfium-review-input/reviews.json"
+          node --input-type=module <<'NODE'
+          import { readFile, mkdir, writeFile } from 'node:fs/promises';
+          import { join } from 'node:path';
+          const requiredTargets = [
+            'aarch64-apple-darwin',
+            'x86_64-apple-darwin',
+            'aarch64-pc-windows-msvc', 'x86_64-pc-windows-msvc',
+            'aarch64-unknown-linux-gnu', 'x86_64-unknown-linux-gnu',
+          ];
+          const root = process.env.RUNNER_TEMP + '/pdfium-review-input';
+          const bundle = JSON.parse(await readFile(join(root, 'reviews.json'), 'utf8'));
+          const keys = bundle && typeof bundle === 'object' && !Array.isArray(bundle) ? Object.keys(bundle).sort() : [];
+          const requiredKeys = [...requiredTargets].sort();
+          if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle) ||
+              keys.join('\n') !== requiredKeys.join('\n')) {
+            throw new Error('review bundle must contain exactly the six required production targets');
+          }
+          const targets = requiredTargets;
+          for (const target of targets) {
+            const value = bundle[target];
+            if (!value || typeof value !== 'object' || Array.isArray(value) ||
+                Object.keys(value).sort().join(',') !== 'redistributionReview,supplierReview' ||
+                !value.redistributionReview || typeof value.redistributionReview !== 'object' || Array.isArray(value.redistributionReview) ||
+                !value.supplierReview || typeof value.supplierReview !== 'object' || Array.isArray(value.supplierReview)) {
+              throw new Error(`target ${target} must contain separate redistributionReview and supplierReview objects`);
+            }
+            const dir = join(root, target, 'reviews');
+            await mkdir(dir, { recursive: true });
+            await writeFile(join(dir, 'redistribution-review.json'), `${JSON.stringify(value.redistributionReview, null, 2)}\n`, { flag: 'wx' });
+            await writeFile(join(dir, 'supplier-review.json'), `${JSON.stringify(value.supplierReview, null, 2)}\n`, { flag: 'wx' });
+          }
+          NODE
+
+      - name: Download exact required source candidate artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          source_run="$RUNNER_TEMP/pdfium-source-run.json"
+          gh api "repos/$REPOSITORY/actions/runs/$SOURCE_RUN_ID" > "$source_run"
+          node --input-type=module - "$source_run" "$SOURCE_RUN_ATTEMPT" "$REPOSITORY" <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          const [path, expectedAttempt, repository] = process.argv.slice(2);
+          const run = JSON.parse(await readFile(path, 'utf8'));
+          if (run.path !== '.github/workflows/build-gpui-pdfium-production.yml' ||
+              run.event !== 'workflow_dispatch' || run.status !== 'completed' ||
+              run.conclusion !== 'success' || String(run.run_attempt) !== expectedAttempt ||
+              run.head_repository?.full_name !== repository) {
+            throw new Error('source run must be the exact successful same-repository PDFium build workflow attempt');
+          }
+          NODE
+          targets=(
+            aarch64-apple-darwin x86_64-apple-darwin
+            aarch64-pc-windows-msvc x86_64-pc-windows-msvc
+            aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu
+          )
+          for target in "${targets[@]}"; do
+            gh run download "$SOURCE_RUN_ID" --repo "$REPOSITORY" \
+              --name "pdfium-production-review-${target}-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}" \
+              --dir "$RUNNER_TEMP/pdfium-review-input/${target}/candidate"
+          done
+
+      - name: Approve and aggregate required candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/pdfium-review-input"
+          targets=(
+            aarch64-apple-darwin x86_64-apple-darwin
+            aarch64-pc-windows-msvc x86_64-pc-windows-msvc
+            aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu
+          )
+          inputs="$RUNNER_TEMP/pdfium-approved-inputs.json"
+          node --input-type=module - "$root" "$inputs" "${targets[@]}" <<'NODE'
+          import { writeFile } from 'node:fs/promises';
+          const [root, output, ...targets] = process.argv.slice(2);
+          const records = targets.map((target) => ({
+            target,
+            artifactRoot: `${root}/${target}/candidate`,
+            approvedManifestPath: `${root}/${target}/production-pdfium-approved.json`,
+          }));
+          await writeFile(output, `${JSON.stringify(records)}\n`, { flag: 'wx' });
+          NODE
+          for target in "${targets[@]}"; do
+            dir="$root/$target"
+            cp "$dir/reviews/redistribution-review.json" "$dir/candidate/reviews/approved-redistribution.json"
+            cp "$dir/reviews/supplier-review.json" "$dir/candidate/reviews/approved-supplier.json"
+            node experiments/gpui-migration/gpui-migration/scripts/approve-pdfium-production-candidate.mjs \
+              --artifact-root "$dir/candidate" \
+              --manifest "$dir/candidate/production-pdfium-candidate.json" \
+              --redistribution-review "$dir/candidate/reviews/approved-redistribution.json" \
+              --supplier-review "$dir/candidate/reviews/approved-supplier.json" \
+              --output "$dir/production-pdfium-approved.json"
+          done
+          node experiments/gpui-migration/gpui-migration/scripts/aggregate-pdfium-approvals.mjs \
+            --inputs "$inputs" --output-root "$RUNNER_TEMP/pdfium-approved"
+
+      - name: Upload approved production PDFium artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gpui-pdfium-production-approved
+          path: ${{ runner.temp }}/pdfium-approved
+          if-no-files-found: error
+          retention-days: 30
