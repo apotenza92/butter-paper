@@ -143,6 +143,12 @@ describe("GPUI stable candidate workflow", () => {
     ).toBeGreaterThan(source.indexOf("smoke:"));
   });
 
+  it("creates nested per-target candidate output directories before packaging", () => {
+    expect(source).toContain('mkdir -p "$input" "$output"');
+    expect(source).toContain('mkdir -p "$signing" "$output"');
+    expect(source).toContain('chmod 700 "$signing" "$output"');
+  });
+
   it("activates architecture-matched MSVC and LLVM tools before Windows builds", () => {
     const matrix = workflow.jobs.package.strategy.matrix.include;
     expect(
