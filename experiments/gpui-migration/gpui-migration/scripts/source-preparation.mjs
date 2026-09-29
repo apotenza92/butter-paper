@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { lstat, readFile, readdir, readlink } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
@@ -13,6 +13,11 @@ function sha256(value) {
 
 export async function fileSha256(path) {
   return sha256(await readFile(path));
+}
+
+export function pathIsInside(root, candidate, pathApi = { relative, isAbsolute, sep }) {
+  const within = pathApi.relative(root, candidate);
+  return within !== ".." && !within.startsWith(`..${pathApi.sep}`) && !pathApi.isAbsolute(within);
 }
 
 export function validateSharedSourceReceipts(expected, actual) {
@@ -90,7 +95,7 @@ export async function verifySharedSourceInputs(policy) {
   const actual = [];
   for (const input of expected) {
     const path = resolve(probeDirectory, input.path);
-    if (path !== migrationDirectory && !path.startsWith(`${migrationDirectory}/`)) {
+    if (!pathIsInside(migrationDirectory, path)) {
       throw new Error(`shared experiment source escapes the migration boundary: ${input.path}`);
     }
     actual.push({ path: input.path, sha256: await fileSha256(path) });

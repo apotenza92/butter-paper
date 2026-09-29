@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import test from "node:test";
 
 import {
   deterministicTreeDigest,
   fileSha256,
+  pathIsInside,
   validateAnnotationFontReceipts,
   validateCargoMetadata,
   validatePreparedManifest,
@@ -16,6 +17,12 @@ import {
 } from "../scripts/source-preparation.mjs";
 
 const revision = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc";
+
+test("shared source containment accepts Windows descendants and rejects siblings", () => {
+  const root = "D:\\a\\butter-paper\\experiments\\gpui-migration";
+  assert.equal(pathIsInside(root, `${root}\\Cargo.toml`, win32), true);
+  assert.equal(pathIsInside(root, "D:\\a\\butter-paper\\experiments\\other\\Cargo.toml", win32), false);
+});
 
 test("Unicode PDF fallback fonts stay checksum-pinned and their OFL notices ship in macOS bundles", async () => {
   const fontRoot = new URL("../.prepared/gpui-component-c27f5d5c/crates/story-web/fonts/", import.meta.url);
