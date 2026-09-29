@@ -102,6 +102,7 @@ describe("GPUI stable candidate workflow", () => {
   it("keeps Linux build prerequisites in packaging and runtime prerequisites in clean-host smoke", () => {
     expect(source).toContain("Install Linux native build prerequisites");
     for (const dependency of [
+      "libdbus-1-dev",
       "libfontconfig-dev",
       "libvulkan-dev",
       "libx11-dev",
@@ -115,6 +116,7 @@ describe("GPUI stable candidate workflow", () => {
     }
     expect(source).toContain("Install Linux runtime smoke prerequisites");
     for (const dependency of [
+      "libdbus-1-3",
       "xvfb",
       "xauth",
       "xdotool",
