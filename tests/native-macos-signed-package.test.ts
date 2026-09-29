@@ -60,6 +60,10 @@ async function signedFixture(
     join(setup.output, "Contents/_CodeSignature/CodeResources"),
     "synthetic code resources",
   );
+  await writeFile(
+    join(setup.output, "Contents/CodeResources"),
+    "synthetic notarisation ticket",
+  );
 
   const objects = expectedNativeSignedCodeObjects(channel).map((object) => ({
     ...object,
@@ -440,6 +444,7 @@ describe("signed native macOS production verifier", () => {
       ],
     };
     expect(expectedNativeSignedInventory(receipt)).toEqual([
+      "Contents/CodeResources",
       "Contents/Info.plist",
       "Contents/MacOS/Butter Paper",
       "Contents/Resources/native-assembly-receipt.json",

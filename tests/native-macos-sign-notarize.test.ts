@@ -90,7 +90,10 @@ function strictFakeRunner(setup: Awaited<ReturnType<typeof unsignedFixture>>, {
       ]);
       return JSON.stringify({ id: "submission-123", status: notaryStatus });
     }
-    if (command === "xcrun" && args[0] === "stapler") return "";
+    if (command === "xcrun" && args[0] === "stapler") {
+      writeFileSync(join(setup.output, "Contents/CodeResources"), "synthetic notarisation ticket");
+      return "";
+    }
     if (command === "codesign" && args[0] === "--verify") return "";
     if (command === "codesign" && args[0] === "-dvvv") {
       const object = objectAt(args.at(-1)!);

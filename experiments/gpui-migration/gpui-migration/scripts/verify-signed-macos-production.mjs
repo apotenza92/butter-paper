@@ -165,6 +165,7 @@ export function expectedNativeSignedInventory(receipt) {
   }
   return [
     ...files,
+    "Contents/CodeResources",
     "Contents/Resources/native-assembly-receipt.json",
     "Contents/_CodeSignature/CodeResources",
   ].sort();
