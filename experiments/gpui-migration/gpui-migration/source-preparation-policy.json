@@ -86,7 +86,7 @@
   "sharedExperimentSources": [
     {
       "path": "../gpui-migration/Cargo.toml",
-      "sha256": "6a5607dc0e4c1ebe3ae471f54f021b47deb1d9fe11590c54cd7b5980881ce4ae"
+      "sha256": "e5ca1fc95e7aa714e93d2f600f181c26702ff8bb9d81d1e778e3f30eb2f28783"
     },
     {
       "path": "../gpui-migration/src/lib.rs",
