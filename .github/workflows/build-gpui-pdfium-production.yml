@@ -77,6 +77,37 @@ jobs:
           echo "runner_os=$RUNNER_OS runner_arch=$RUNNER_ARCH image_os=${ImageOS:-unknown} image_version=${ImageVersion:-unknown}"
           df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
 
+      - name: Prepare exact reviewed patch inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_root="$GITHUB_WORKSPACE/experiments/gpui-migration/gpui-migration/patches"
+          patch_root="$RUNNER_TEMP/pdfium-patches"
+          mkdir "$patch_root"
+          for name in pdfium-production-local-deps.patch pdfium-production-shared-library.patch; do
+            if [[ "${{ matrix.os }}" == "windows" ]]; then
+              tr -d '\r' < "$source_root/$name" > "$patch_root/$name"
+            else
+              cp "$source_root/$name" "$patch_root/$name"
+            fi
+          done
+          node --input-type=module - "$patch_root" <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { readFile } from 'node:fs/promises';
+          import { join } from 'node:path';
+          const root = process.argv[2];
+          const expected = new Map([
+            ['pdfium-production-local-deps.patch', '54591df969f7a323c24f78e435340e8177081afc56dceaf1ec8102362a40601b'],
+            ['pdfium-production-shared-library.patch', '1e521b48561c51a63425baeec7c74c1edaf65956b6e6297d98aff57f2cc2ee40'],
+          ]);
+          for (const [name, digest] of expected) {
+            const actual = createHash('sha256').update(await readFile(join(root, name))).digest('hex');
+            if (actual !== digest) throw new Error(`reviewed patch digest mismatch: ${name}`);
+          }
+          NODE
+          echo "PDFIUM_DEPENDENCY_PATCH=$patch_root/pdfium-production-local-deps.patch" >> "$GITHUB_ENV"
+          echo "PDFIUM_SHARED_PATCH=$patch_root/pdfium-production-shared-library.patch" >> "$GITHUB_ENV"
+
       - name: Install Linux build prerequisites
         if: matrix.os == 'linux'
         run: |
@@ -152,7 +183,7 @@ jobs:
           git -c core.autocrlf=false clone https://pdfium.googlesource.com/pdfium.git pdfium
           git -C pdfium config core.autocrlf false
           git -C pdfium checkout --detach "$PDFIUM_REVISION"
-          dependency_patch="$GITHUB_WORKSPACE/experiments/gpui-migration/gpui-migration/patches/pdfium-production-local-deps.patch"
+          dependency_patch="$PDFIUM_DEPENDENCY_PATCH"
           git -C pdfium apply --check "$dependency_patch"
           git -C pdfium apply "$dependency_patch"
           cat > .gclient <<'EOF'
@@ -177,7 +208,7 @@ jobs:
           test "$(git -C pdfium diff --name-only)" = "DEPS"
           git -C pdfium apply --reverse --check "$dependency_patch"
           gclient revinfo --actual --output-json "$RUNNER_TEMP/pdfium-dependency-revisions.json"
-          patch="$GITHUB_WORKSPACE/experiments/gpui-migration/gpui-migration/patches/pdfium-production-shared-library.patch"
+          patch="$PDFIUM_SHARED_PATCH"
           git -C pdfium apply --check "$patch"
           git -C pdfium apply "$patch"
 
@@ -268,8 +299,8 @@ jobs:
             --target "$TARGET" \
             --library "$LIBRARY" \
             --dependency-revisions "$RUNNER_TEMP/pdfium-dependency-revisions.json" \
-            --shared-library-patch "$GITHUB_WORKSPACE/experiments/gpui-migration/gpui-migration/patches/pdfium-production-shared-library.patch" \
-            --dependency-policy-patch "$GITHUB_WORKSPACE/experiments/gpui-migration/gpui-migration/patches/pdfium-production-local-deps.patch" \
+             --shared-library-patch "$PDFIUM_SHARED_PATCH" \
+             --dependency-policy-patch "$PDFIUM_DEPENDENCY_PATCH" \
             --gn-version-file "$RUNNER_TEMP/pdfium-gn-version.txt" \
             --ninja-version-file "$RUNNER_TEMP/pdfium-ninja-version.txt" \
             --siso-version-file "$RUNNER_TEMP/pdfium-siso-version.txt" \

@@ -112,6 +112,10 @@ describe("GPUI PDFium production candidate workflow", () => {
     );
     expect(source).toContain("git -c core.autocrlf=false clone");
     expect(source).toContain("git -C pdfium config core.autocrlf false");
+    expect(source).toContain("Prepare exact reviewed patch inputs");
+    expect(source).toContain("tr -d '\\r'");
+    expect(source).toContain("PDFIUM_DEPENDENCY_PATCH");
+    expect(source).toContain("PDFIUM_SHARED_PATCH");
     expect(source).toContain('arm64) sysroot_arch="arm64"');
     expect(source).toContain('x64) sysroot_arch="amd64"');
     expect(source).toContain("git -C pdfium apply --check");
