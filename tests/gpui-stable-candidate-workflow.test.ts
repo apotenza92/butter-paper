@@ -164,6 +164,9 @@ describe("GPUI stable candidate workflow", () => {
     expect(source).toContain("-arch=$arch -host_arch=$arch");
     expect(source).toContain('"CC_$targetKey=$llvmBin\\clang.exe"');
     expect(source).toContain('"AR_$targetKey=lib.exe"');
+    expect(source).toContain(
+      '"CARGO_TARGET_${cargoTargetKey}_LINKER=$($resolvedTools[\'link.exe\'])"',
+    );
     expect(source).toContain("where.exe $tool");
     expect(
       source.indexOf("Activate matching Windows MSVC and LLVM toolchain"),
