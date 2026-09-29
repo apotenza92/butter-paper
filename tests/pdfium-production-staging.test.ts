@@ -208,21 +208,43 @@ describe("production PDFium staging", () => {
     ).rejects.toThrow("target is not approved");
   });
 
+  it("accepts the exact combined six-target approval manifest for macOS staging", async () => {
+    const setup = await fixture();
+    const nonMac = structuredClone(setup.manifest.artifacts[0]);
+    nonMac.target = "aarch64-pc-windows-msvc";
+    nonMac.library.path = "arm/pdfium.dll";
+    setup.manifest.artifacts.push(nonMac);
+    await writeFile(
+      setup.manifestPath,
+      `${JSON.stringify(setup.manifest, null, 2)}\n`,
+    );
+
+    expect(validateProductionManifest(setup.manifest)).toEqual(setup.manifest);
+    await expect(
+      stageProductionPdfium({
+        manifestPath: setup.manifestPath,
+        artifactRoot: setup.artifacts,
+        target: "aarch64-apple-darwin",
+        outputDirectory: join(setup.root, "combined-manifest"),
+      }),
+    ).resolves.toMatchObject({ target: "aarch64-apple-darwin" });
+  });
+
   it("rejects empty, duplicate and unsupported production target sets", async () => {
     const empty = await fixture();
     empty.manifest.artifacts = [];
     expect(() => validateProductionManifest(empty.manifest)).toThrow(
-      "nonempty set of unique macOS targets",
+      "nonempty set of unique approved targets",
     );
 
     const duplicate = await fixture();
     duplicate.manifest.artifacts.push(duplicate.manifest.artifacts[0]);
     expect(() => validateProductionManifest(duplicate.manifest)).toThrow(
-      "nonempty set of unique macOS targets",
+      "nonempty set of unique approved targets",
     );
 
     const unsupported = await fixture();
-    unsupported.manifest.artifacts[0].target = "aarch64-unknown-linux-gnu";
+    unsupported.manifest.artifacts[0].target = "riscv64-unknown-linux-gnu";
     expect(() => validateProductionManifest(unsupported.manifest)).toThrow(
       "unsupported production PDFium target",
     );

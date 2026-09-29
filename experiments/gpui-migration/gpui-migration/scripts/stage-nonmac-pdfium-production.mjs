@@ -23,6 +23,11 @@ const targets = new Map([
   ["aarch64-unknown-linux-gnu", { os: "linux", arch: "arm64", machine: 183, library: "libpdfium.so", receipt: "production-pdfium-linux-arm64.json" }],
   ["x86_64-unknown-linux-gnu", { os: "linux", arch: "x86_64", machine: 62, library: "libpdfium.so", receipt: "production-pdfium-linux-x86_64.json" }],
 ]);
+const approvedTargetLibraries = new Map([
+  ...[...targets].map(([target, policy]) => [target, policy.library]),
+  ["aarch64-apple-darwin", "libpdfium.dylib"],
+  ["x86_64-apple-darwin", "libpdfium.dylib"],
+]);
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -80,9 +85,9 @@ export function validateNonMacProductionManifest(manifest) {
   const names = manifest.artifacts.map((artifact) => artifact?.target);
   if (names.length === 0 || new Set(names).size !== names.length) throw new Error("production PDFium manifest must contain a nonempty set of unique targets");
   for (const artifact of manifest.artifacts) {
-    const target = targets.get(artifact.target);
-    if (!target) throw new Error(`unsupported production PDFium target ${artifact.target}`);
-    if (basename(artifact.library?.path ?? "") !== target.library) throw new Error(`${artifact.target}.library must be named ${target.library}`);
+    const library = approvedTargetLibraries.get(artifact.target);
+    if (!library) throw new Error(`unsupported production PDFium target ${artifact.target}`);
+    if (basename(artifact.library?.path ?? "") !== library) throw new Error(`${artifact.target}.library must be named ${library}`);
     for (const [name, record] of Object.entries({ library: artifact.library, sbom: artifact.sbom, provenance: artifact.provenance, gnArgs: artifact.gnArgs })) {
       requireRecord(record, `${artifact.target}.${name}`);
     }
@@ -190,6 +195,7 @@ function noticeDocument(notices) {
 export async function stageNonMacProductionPdfium({ manifestPath, artifactRoot, target: targetName, outputDirectory }) {
   const manifestBytes = await readFile(manifestPath);
   const manifest = validateNonMacProductionManifest(JSON.parse(manifestBytes));
+  if (!targets.has(targetName)) throw new Error(`unsupported non-macOS production PDFium target ${targetName}`);
   const artifact = manifest.artifacts.find((candidate) => candidate.target === targetName);
   if (!artifact) throw new Error(`production PDFium target is not approved: ${targetName}`);
   const target = targets.get(targetName);

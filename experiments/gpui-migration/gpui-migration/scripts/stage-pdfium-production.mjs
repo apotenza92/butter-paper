@@ -29,6 +29,14 @@ const macTargets = new Map([
   ["aarch64-apple-darwin", 0x0100000c],
   ["x86_64-apple-darwin", 0x01000007],
 ]);
+const approvedTargetLibraries = new Map([
+  ["aarch64-apple-darwin", "libpdfium.dylib"],
+  ["x86_64-apple-darwin", "libpdfium.dylib"],
+  ["aarch64-pc-windows-msvc", "pdfium.dll"],
+  ["x86_64-pc-windows-msvc", "pdfium.dll"],
+  ["aarch64-unknown-linux-gnu", "libpdfium.so"],
+  ["x86_64-unknown-linux-gnu", "libpdfium.so"],
+]);
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -134,18 +142,19 @@ export function validateProductionManifest(manifest) {
   const targets = manifest.artifacts.map(({ target }) => target);
   if (targets.length === 0 || new Set(targets).size !== targets.length) {
     throw new Error(
-      "production PDFium manifest must contain a nonempty set of unique macOS targets",
+      "production PDFium manifest must contain a nonempty set of unique approved targets",
     );
   }
   for (const artifact of manifest.artifacts) {
-    if (!macTargets.has(artifact.target)) {
+    const library = approvedTargetLibraries.get(artifact.target);
+    if (!library) {
       throw new Error(
         `unsupported production PDFium target ${artifact.target}`,
       );
     }
-    if (basename(artifact.library?.path ?? "") !== "libpdfium.dylib") {
+    if (basename(artifact.library?.path ?? "") !== library) {
       throw new Error(
-        `${artifact.target}.library must be named libpdfium.dylib`,
+        `${artifact.target}.library must be named ${library}`,
       );
     }
     for (const [name, record] of Object.entries({
@@ -260,6 +269,9 @@ export async function stageProductionPdfium({
 }) {
   const manifestBytes = await readFile(manifestPath);
   const manifest = validateProductionManifest(JSON.parse(manifestBytes));
+  if (!macTargets.has(target)) {
+    throw new Error(`unsupported macOS production PDFium target ${target}`);
+  }
   const artifact = manifest.artifacts.find(
     (candidate) => candidate.target === target,
   );

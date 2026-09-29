@@ -115,6 +115,22 @@ test("stages each approved Windows and Linux production target with package-read
   }
 });
 
+test("accepts the combined six-target approval manifest for non-macOS staging", async (t) => {
+  const setup = await fixture();
+  t.after(() => rm(setup.root, { recursive: true, force: true }));
+  const mac = structuredClone(setup.manifest.artifacts[0]);
+  mac.target = "aarch64-apple-darwin";
+  mac.library.path = "target-0/libpdfium.dylib";
+  setup.manifest.artifacts.push(mac);
+  await writeFile(setup.manifestPath, `${JSON.stringify(setup.manifest, null, 2)}\n`);
+  await assert.doesNotReject(stageNonMacProductionPdfium({
+    manifestPath: setup.manifestPath,
+    artifactRoot: setup.artifacts,
+    target: targets[0][0],
+    outputDirectory: join(setup.root, "combined-manifest"),
+  }));
+});
+
 test("rejects unapproved manifests, altered bytes and binary architecture mismatches", async (t) => {
   const setup = await fixture();
   t.after(() => rm(setup.root, { recursive: true, force: true }));
