@@ -1132,17 +1132,45 @@ function spawnPowershell(script) {
   };
 }
 
-function sendKeysLiteral(value) {
-  return String(value).replace(/[+^%~(){}[\]]/g, (character) => `{${character}}`);
-}
-
 // Completes the app's native Save As dialog with a new target. Returns false
-// when no dialog appears within the wait; throws for any other failure. The
-// file name is set through the first editable field that supports ValuePattern
-// (typed as keystrokes otherwise), then Enter commits the focused dialog.
+// when no dialog appears within the wait; throws for any other failure. Uses
+// the standard Win32 file-dialog automation: WM_SETTEXT on the file name Edit
+// child, then a click on the dialog's IDOK (Save) button. No focus is needed.
 function completeSaveAsDialog(pid, target, waitSeconds) {
   const outcome = powershell(
-    `${WINDOWS_UIA_PRELUDE} Add-Type -AssemblyName System.Windows.Forms; Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class BpDialog { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }'; $dialogCondition=[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,[int]${pid}),[Windows.Automation.PropertyCondition]::new($A::ClassNameProperty,'#32770')); $deadline=(Get-Date).AddSeconds(${waitSeconds}); do { Start-Sleep -Milliseconds 250; $dialog=$A::RootElement.FindFirst($T::Descendants,$dialogCondition) } until($dialog -or (Get-Date) -gt $deadline); if(-not $dialog){'absent'; return}; [void][BpDialog]::SetForegroundWindow([IntPtr]$dialog.Current.NativeWindowHandle); Start-Sleep -Milliseconds 300; $route='keystrokes'; $field=$dialog.FindFirst($T::Descendants,[Windows.Automation.PropertyCondition]::new($A::AutomationIdProperty,'1001')); $candidates=@(); if($field){ $candidates+=$field; $inner=$field.FindFirst($T::Descendants,[Windows.Automation.PropertyCondition]::new($A::ControlTypeProperty,[Windows.Automation.ControlType]::Edit)); if($inner){ $candidates+=$inner } }; foreach($candidate in $candidates){ $pattern=$null; if($candidate.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)){ try { $candidate.SetFocus() } catch {}; ([Windows.Automation.ValuePattern]$pattern).SetValue(${powershellQuote(target)}); $route="ValuePattern:$($candidate.Current.ControlType.ProgrammaticName)"; break } }; if($route -eq 'keystrokes'){ [System.Windows.Forms.SendKeys]::SendWait('%n'); [System.Windows.Forms.SendKeys]::SendWait('^a'); [System.Windows.Forms.SendKeys]::SendWait(${powershellQuote(sendKeysLiteral(target))}) }; Start-Sleep -Milliseconds 300; [void][BpDialog]::SetForegroundWindow([IntPtr]$dialog.Current.NativeWindowHandle); [System.Windows.Forms.SendKeys]::SendWait('{ENTER}'); $closeDeadline=(Get-Date).AddSeconds(10); do { Start-Sleep -Milliseconds 250; $open=$A::RootElement.FindFirst($T::Descendants,$dialogCondition) } until(-not $open -or (Get-Date) -gt $closeDeadline); if($open){ throw "Save As dialog stayed open after entering the target ($route)" }; "completed:$route"`,
+    `Add-Type -TypeDefinition @'
+using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
+public static class BpSaveAs {
+  public delegate bool EnumProc(IntPtr h, IntPtr p);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr p);
+  [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumProc cb, IntPtr p);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
+  [DllImport("user32.dll")] static extern IntPtr GetDlgItem(IntPtr h, int id);
+  [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, string l);
+  [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+  public static bool IsWindow(IntPtr h) { return IsWindowVisible(h); }
+  static string Cls(IntPtr h) { var s = new StringBuilder(256); GetClassName(h, s, 256); return s.ToString(); }
+  public static IntPtr FindDialog(uint pid) {
+    IntPtr found = IntPtr.Zero;
+    EnumWindows((h, p) => { uint owner; GetWindowThreadProcessId(h, out owner); if (owner == pid && IsWindowVisible(h) && Cls(h) == "#32770") { found = h; return false; } return true; }, IntPtr.Zero);
+    return found;
+  }
+  public static string Complete(IntPtr dialog, string path) {
+    var edits = new List<IntPtr>(); var inventory = new List<string>();
+    EnumChildWindows(dialog, (h, p) => { string c = Cls(h); int id = GetDlgCtrlID(h); inventory.Add(c + "#" + id); if (c == "Edit" && IsWindowVisible(h)) { string parent = Cls(GetParent(h)); if (parent == "ComboBox" || id == 1001 || id == 1152) edits.Insert(0, h); else edits.Add(h); } return true; }, IntPtr.Zero);
+    if (edits.Count == 0) return "no-edit:" + string.Join(",", inventory.GetRange(0, Math.Min(60, inventory.Count)));
+    SendMessage(edits[0], 0x000C, IntPtr.Zero, path);
+    IntPtr ok = GetDlgItem(dialog, 1);
+    if (ok == IntPtr.Zero) return "no-ok:" + string.Join(",", inventory.GetRange(0, Math.Min(60, inventory.Count)));
+    PostMessage(ok, 0x00F5, IntPtr.Zero, IntPtr.Zero);
+    return "posted";
+  }
+}
+'@; $deadline=(Get-Date).AddSeconds(${waitSeconds}); do { Start-Sleep -Milliseconds 250; $dialog=[BpSaveAs]::FindDialog(${pid}) } until($dialog -ne [IntPtr]::Zero -or (Get-Date) -gt $deadline); if($dialog -eq [IntPtr]::Zero){'absent'; return}; Start-Sleep -Milliseconds 500; $result=[BpSaveAs]::Complete($dialog, ${powershellQuote(target)}); if($result -ne 'posted'){ throw "Save As dialog automation failed: $result" }; $closeDeadline=(Get-Date).AddSeconds(15); do { Start-Sleep -Milliseconds 250 } until(-not [BpSaveAs]::IsWindow($dialog) -or (Get-Date) -gt $closeDeadline); if([BpSaveAs]::IsWindow($dialog)){ throw 'Save As dialog stayed open after WM_SETTEXT and IDOK' }; 'completed:win32-settext-idok'`,
     (waitSeconds + 30) * 1000,
   );
   const last = outcome.split(/\r?\n/).at(-1).trim();
