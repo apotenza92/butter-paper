@@ -581,6 +581,14 @@ export async function smokeSignedMacosPackage({
       children.push(process);
       return process;
     };
+    const screenshot = (name) => {
+      // Diagnostic-only screenshots, outside the aggregated evidence directory.
+      const directory = process.env.BP_SMOKE_SCREENSHOT_DIR;
+      if (!directory) return;
+      spawnSync("/usr/sbin/screencapture", ["-x", join(directory, `${name}.png`)], {
+        timeout: 10_000,
+      });
+    };
     child = launch(outputPath);
     const observations = [],
       deadline = Date.now() + timeoutMs;
@@ -604,6 +612,7 @@ export async function smokeSignedMacosPackage({
         });
       await sleep(100);
     }
+    if (observations.length < 2) screenshot("worker-timeout");
     if (observations.length < 2)
       fail(
         `packaged PDF worker was not observed alive twice (${processInventory(worker, logs)})`,
@@ -635,14 +644,6 @@ export async function smokeSignedMacosPackage({
       fail(
         "packaged app did not remain alive through both worker observations",
       );
-    const screenshot = (name) => {
-      // Diagnostic-only screenshots, outside the aggregated evidence directory.
-      const directory = process.env.BP_SMOKE_SCREENSHOT_DIR;
-      if (!directory) return;
-      spawnSync("/usr/sbin/screencapture", ["-x", join(directory, `${name}.png`)], {
-        timeout: 10_000,
-      });
-    };
     screenshot("before-edit");
     result.edit = driver("edit", child.pid);
     screenshot("after-edit");
