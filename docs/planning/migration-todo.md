@@ -283,11 +283,14 @@ Lean native build checkpoint (2026-09-30): the stable-candidate workflow no long
     - [x] Pan: middle-button drag pans with any tool. The Hand tool failed once scrolled more than one viewport, because recorded viewport bounds moved with the scroll; the viewport now records its visible bounds and painted scroll, which also fixes zoom anchoring. Integration tests cover both at depth.
     - [x] Right tool rail: its own edge handle snaps the width to 1–8 whole columns while dragging, with icons reflowing live; no scrollbar; top and bottom fades with an ellipsis marker and a "Scroll to see other tools" tooltip when content overflows (Electron parity).
     - [x] Set as the default PDF app: on macOS, Launch Services with verification, and the app bundle now declares PDF documents (0.0.26 did not); on Windows, per-user ProgID and registered-app capabilities, then Default Apps opens for confirmation; on Linux, `xdg-mime` with verification. Windows and Linux are unit-tested only.
-  - Windows (all platforms):
-    - [ ] Multiple windows, and File > New Window.
-    - [ ] Closing a window never quits on macOS; the Dock icon reopens a window, and files opened from Finder with no window open a new one.
-    - [ ] macOS Window menu, including Merge All Windows and moving tabs between windows.
-    - [ ] Session and recovery state kept per window.
+  - Windows (all platforms). Implemented and unit-tested; the live GUI check is still open because computer-use access to the dev build was declined:
+    - [x] File > New Window (Cmd/Ctrl+Shift+N) on all platforms. New windows start empty, cascade from the active one and share one PDF worker backend, recovery store, session store, recent-signature store, template library authority (ids now allocated under its lock) and preferences.
+    - [x] macOS keeps running with no windows; the Dock icon and files opened from Finder open a new window; other platforms quit with the last window.
+    - [x] macOS Window menu: Minimise (Cmd+M), Zoom and Close Window. Document windows share a tabbing identifier, so AppKit adds Merge All Windows, Move Tab to New Window and the tab commands. The AppKit-added items are not yet seen live.
+    - [x] Application commands and menus follow the active window.
+    - [x] Session safety (`document_windows`): the dirty-session marker is the union of every window. Only the last window to close writes the restart manifest; Quit closes each window through its own unsaved-changes dialog and publishes their combined documents. Cancel in any dialog abandons the Quit. A window opened after the last one closed resumes live marker writes.
+    - [ ] Follow-ups: restore each window separately on relaunch (today every document restores into one window), and focus the existing window when a file already open elsewhere is opened again.
+    - [ ] Live check on macOS, Windows and Linux: New Window, Merge All Windows, closing windows with unsaved changes, and Quit.
   - Electron-parity visual rework (reviewed in real Metal renders from `examples/visual_review.rs`):
     - [x] Template dropdown: a list with each template's size and page-grid summary beside a preview card; all six built-ins fit, and custom templates scroll.
     - [x] Template manager: the same preview card (the page at its true aspect ratio, with the pattern at its real spacing, the summary and a grid badge), and Electron-style rows.

@@ -53,6 +53,35 @@ impl SessionSnapshot {
         self.restart_views = restart_views;
         self
     }
+
+    pub fn documents(&self) -> &[PathBuf] {
+        &self.documents
+    }
+
+    /// Appends another window's documents after this window's, skipping paths
+    /// already present and anything past the manifest limit. This window's
+    /// active document stays active; otherwise the other's does.
+    pub fn append(&mut self, other: SessionSnapshot) {
+        let mut seen = self
+            .documents
+            .iter()
+            .map(|path| normalized_path_key(path))
+            .collect::<HashSet<_>>();
+        let mut other_active = None;
+        for (index, (path, view)) in other.documents.into_iter().zip(other.restart_views).enumerate() {
+            if self.documents.len() >= MAX_DOCUMENTS || !seen.insert(normalized_path_key(&path)) {
+                continue;
+            }
+            if other.active_document == Some(index) {
+                other_active = Some(self.documents.len());
+            }
+            self.documents.push(path);
+            self.restart_views.push(view);
+        }
+        if self.active_document.is_none() {
+            self.active_document = other_active;
+        }
+    }
 }
 
 /// One document whose committed in-memory changes had not reached a durable PDF.
@@ -116,6 +145,19 @@ impl SessionRecoverySnapshot {
 
     pub fn is_empty(&self) -> bool {
         self.documents.is_empty()
+    }
+
+    /// One marker for every window: the union of their unsaved documents,
+    /// skipping duplicate paths and anything past the manifest limit.
+    pub fn merged(snapshots: impl IntoIterator<Item = SessionRecoverySnapshot>) -> Self {
+        let mut seen = HashSet::new();
+        let mut documents = Vec::new();
+        for document in snapshots.into_iter().flat_map(|snapshot| snapshot.documents) {
+            if documents.len() < MAX_DOCUMENTS && seen.insert(normalized_path_key(&document.path)) {
+                documents.push(document);
+            }
+        }
+        Self { documents }
     }
 }
 
@@ -399,6 +441,15 @@ impl SessionManifestStore {
         // debounced write race in afterwards and replace the close result.
         publication.stopped = true;
         result
+    }
+
+    /// Accepts live marker writes again after a clean close, for a window
+    /// opened later in the same process (macOS keeps running without windows).
+    pub fn resume_live_writes(&self) {
+        self.recovery_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stopped = false;
     }
 
     fn replace_recovery_marker_locked(

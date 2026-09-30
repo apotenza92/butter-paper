@@ -1,14 +1,18 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use butter_paper_gpui_migration::application_close_workspace::{
-    ApplicationCloseCheckpointPublisher, ApplicationCloseShell, ApplicationCloseWorkspace,
-    register_application_close_action,
+    ApplicationCloseCancelled, ApplicationCloseCheckpointPublisher, ApplicationCloseShell,
+    ApplicationCloseWorkspace, RequestApplicationClose, RequestApplicationQuit,
+};
+use butter_paper_gpui_migration::document_windows::{
+    WindowCheckpointPublisher, WindowSessionCoordinator,
 };
 #[cfg(feature = "development-pdfium-override")]
 use butter_paper_gpui_migration::application_shell::application_data_directory;
 use butter_paper_gpui_migration::application_shell::{
     ApplicationShellPreferences, ApplicationShellPreferencesStore, ApplicationUiZoomAction,
-    MakeInterfaceBigger, MakeInterfaceSmaller, OpenReleasePage, ResetInterfaceSize,
+    MakeInterfaceBigger, MakeInterfaceSmaller, MinimiseWindow, NewWindow, OpenReleasePage,
+    ResetInterfaceSize, ZoomWindow,
     ReverseScrollZoom, SetAsDefaultPdfApp, ToggleApplicationFullScreen, ToggleApplicationMenuBar,
     ToggleReverseScrollZoom, apply_application_ui_zoom,
     focus_initial_command_context, init_application_shell_actions,
@@ -22,7 +26,7 @@ use butter_paper_gpui_migration::document_workspace::{
     DeferredStartupOpen, DocumentId, DocumentWorkspace, DocumentWorkspaceEvidenceSnapshot,
     DocumentWorkspaceTemplateCommand, PaintedPageEvidence, PdfDocumentSaver, PdfiumWorkerBackend,
     StartupRecoveryAvailability, StartupRecoveryItem, init_document_workspace_actions,
-    register_document_workspace_global_actions,
+    register_document_workspace_actions_for,
 };
 #[cfg(not(feature = "development-pdfium-override"))]
 use butter_paper_gpui_migration::electron_data_migration::{
@@ -35,7 +39,8 @@ use butter_paper_gpui_migration::native_application::{
     install_native_application_menus_with_shell, install_native_platform_menus,
 };
 use butter_paper_gpui_migration::native_launch::{
-    NativeLaunchAction, NativeLaunchConfig, NativeLaunchSessionSource, NativeLaunchWarning,
+    NativeLaunchAction, NativeLaunchConfig, NativeLaunchResolution, NativeLaunchSessionSource,
+    NativeLaunchWarning,
 };
 #[cfg(all(not(feature = "development-pdfium-override"), target_os = "linux"))]
 use butter_paper_gpui_migration::native_platform_storage::linux_production_storage;
@@ -67,10 +72,11 @@ use butter_paper_gpui_migration::perf_scenario::{
 use butter_paper_gpui_migration::recent_signature_store::{
     PlatformSignatureKeyStore, RECENT_SIGNATURES_FILE_NAME, RecentSignatureStore,
 };
-use butter_paper_gpui_migration::session_manifest::SessionManifestStore;
+use butter_paper_gpui_migration::session_manifest::{SessionManifestStore, SessionRecoverySnapshot};
 use butter_paper_gpui_migration::system_theme::follow_window_appearance_with_application_zoom;
 use butter_paper_gpui_migration::template_manager::{
-    TemplateManagerView, legacy_blank_request_from_json, route_workspace_template_command,
+    PersistentTemplateManager, TemplateManagerView, legacy_blank_request_from_json,
+    route_workspace_template_command,
 };
 #[cfg(not(target_os = "macos"))]
 use butter_paper_gpui_migration::window_title_bar::window_title_bar;
@@ -78,7 +84,7 @@ use butter_paper_gpui_migration::window_title_bar::{
     APPLICATION_TITLE, format_window_title_for_application, title_bar_window_options,
 };
 use gpui::{
-    App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, InteractiveElement as _,
+    AnyWindowHandle, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, InteractiveElement as _,
     IntoElement, ParentElement as _, PromptLevel, Render, StatefulInteractiveElement as _,
     Styled as _,
     Subscription, Task, Window, WindowBounds, WindowOptions, div, px, size,
@@ -232,8 +238,7 @@ struct ComponentStory {
     document_workspace: Entity<DocumentWorkspace>,
     app_menu_bar: Entity<AppMenuBar>,
     app_menu_bar_focus: FocusHandle,
-    application_preferences: ApplicationShellPreferencesStore,
-    preferences: ApplicationShellPreferences,
+    window_handle: AnyWindowHandle,
     menu_bar_visible: bool,
     menu_bar_visibility_supported: bool,
     ui_zoom_level: Rc<Cell<i8>>,
@@ -262,8 +267,6 @@ impl ComponentStory {
     fn new(
         document_workspace: Entity<DocumentWorkspace>,
         app_menu_bar: Entity<AppMenuBar>,
-        application_preferences: ApplicationShellPreferencesStore,
-        preferences: ApplicationShellPreferences,
         menu_bar_visibility_supported: bool,
         ui_zoom_level: Rc<Cell<i8>>,
         ui_zoom_base_font_size: Rc<Cell<gpui::Pixels>>,
@@ -318,13 +321,31 @@ impl ComponentStory {
                 });
                 window.refresh();
             });
-        let menu_bar_visible = !menu_bar_visibility_supported || preferences.menu_bar_visible();
+        let menu_bar_visible =
+            !menu_bar_visibility_supported || shared_application(cx).preferences.get().menu_bar_visible();
+        // The active document window owns the application menus; refresh them
+        // and any template changes made in another window when this one
+        // becomes active.
+        cx.observe_window_activation(window, |story, window, cx| {
+            if !window.is_window_active() {
+                return;
+            }
+            story.last_native_menu_state = None;
+            story.last_in_window_menu_state = None;
+            story.last_native_menu_shell_state = None;
+            if let Some(manager) = story.template_manager.clone()
+                && !window.has_active_dialog(cx)
+            {
+                manager.update(cx, |manager, cx| manager.reload_from_shared(cx));
+            }
+            story.sync_native_application_menu(cx);
+        })
+        .detach();
         let mut story = Self {
             document_workspace,
             app_menu_bar,
             app_menu_bar_focus,
-            application_preferences,
-            preferences,
+            window_handle: window.window_handle(),
             menu_bar_visible,
             menu_bar_visibility_supported,
             ui_zoom_level,
@@ -356,13 +377,30 @@ impl ComponentStory {
         let Some(store) = self.session_store.clone() else {
             return;
         };
+        // One marker covers every window, so a crash in any of them is flagged.
         let snapshot = {
-            let workspace = self.document_workspace.read(cx);
-            if workspace.active_document_open_batches() > 0 {
+            let workspaces = document_window_workspaces(cx);
+            let workspaces = if workspaces.is_empty() {
+                vec![self.document_workspace.clone()]
+            } else {
+                workspaces
+            };
+            if workspaces
+                .iter()
+                .any(|workspace| workspace.read(cx).active_document_open_batches() > 0)
+            {
                 return;
             }
-            let snapshot = workspace.session_recovery_snapshot(cx);
-            if snapshot.is_empty() && workspace.session_recovery_warning().is_some() {
+            let snapshot = SessionRecoverySnapshot::merged(
+                workspaces
+                    .iter()
+                    .map(|workspace| workspace.read(cx).session_recovery_snapshot(cx)),
+            );
+            if snapshot.is_empty()
+                && workspaces
+                    .iter()
+                    .any(|workspace| workspace.read(cx).session_recovery_warning().is_some())
+            {
                 return;
             }
             snapshot
@@ -450,8 +488,16 @@ impl ComponentStory {
         });
     }
 
-    fn save_application_preferences(&self) {
-        if let Err(error) = self.application_preferences.save(self.preferences) {
+    fn update_application_preferences(
+        &self,
+        cx: &App,
+        update: impl FnOnce(&mut ApplicationShellPreferences),
+    ) {
+        let shared = shared_application(cx);
+        let mut preferences = shared.preferences.get();
+        update(&mut preferences);
+        shared.preferences.set(preferences);
+        if let Err(error) = shared.preferences_store.save(preferences) {
             eprintln!("unable to save Butter Paper application preferences: {error}");
         }
     }
@@ -465,23 +511,31 @@ impl ComponentStory {
         if !self.menu_bar_visibility_supported {
             return;
         }
-        self.menu_bar_visible = !self.menu_bar_visible;
-        self.preferences.set_menu_bar_visible(self.menu_bar_visible);
-        self.save_application_preferences();
+        let visible = !self.menu_bar_visible;
+        self.update_application_preferences(cx, |preferences| {
+            preferences.set_menu_bar_visible(visible)
+        });
 
         // Let PopupMenu finish its own dismissal and focus restoration before
         // replacing the in-window projection, especially when hiding the bar.
-        let story = cx.entity().downgrade();
+        // The preference applies to every window.
         cx.defer(move |cx| {
-            let _ = story.update(cx, |story, cx| story.sync_native_application_menu(cx));
+            for story in document_window_stories(cx) {
+                story.update(cx, |story, cx| {
+                    story.menu_bar_visible = visible;
+                    story.sync_native_application_menu(cx);
+                    cx.notify();
+                });
+            }
         });
         cx.notify();
     }
 
     fn toggle_reverse_scroll_zoom(&mut self, cx: &mut Context<Self>) {
-        let reverse = !self.preferences.reverse_scroll_zoom();
-        self.preferences.set_reverse_scroll_zoom(reverse);
-        self.save_application_preferences();
+        let reverse = !shared_application(cx).preferences.get().reverse_scroll_zoom();
+        self.update_application_preferences(cx, |preferences| {
+            preferences.set_reverse_scroll_zoom(reverse)
+        });
         cx.set_global(ReverseScrollZoom(reverse));
         let story = cx.entity().downgrade();
         cx.defer(move |cx| {
@@ -498,11 +552,21 @@ impl ComponentStory {
     ) {
         let level = resolve_application_ui_zoom_level(self.ui_zoom_level.get(), action);
         self.ui_zoom_level.set(level);
-        self.preferences.set_ui_zoom_level(level);
-        self.save_application_preferences();
+        self.update_application_preferences(cx, |preferences| {
+            preferences.set_ui_zoom_level(level)
+        });
         apply_application_ui_zoom(level, self.ui_zoom_base_font_size.get(), window, cx);
-        self.document_workspace.update(cx, |workspace, cx| {
-            workspace.reset_right_rail_pixel_sizes(cx);
+        // The interface size is application-wide.
+        let this_window = self.window_handle;
+        cx.defer(move |cx| {
+            for entry in document_window_entries(cx) {
+                if let Some(workspace) = entry.workspace.upgrade() {
+                    workspace.update(cx, |workspace, cx| workspace.reset_right_rail_pixel_sizes(cx));
+                }
+                if entry.handle != this_window {
+                    let _ = entry.handle.update(cx, |_, window, _| window.refresh());
+                }
+            }
         });
         cx.notify();
     }
@@ -1214,8 +1278,11 @@ impl ComponentStory {
     }
 
     fn sync_native_application_menu(&mut self, cx: &mut Context<Self>) {
+        if !owns_application_menus(self.window_handle, cx) {
+            return;
+        }
         let state = self.native_application_menu_state(cx);
-        let shell = self.application_menu_shell_state();
+        let shell = self.application_menu_shell_state(cx);
         if self.last_native_menu_state == Some(state)
             && self.last_in_window_menu_state == Some(state)
             && self.last_native_menu_shell_state == Some(shell)
@@ -1229,12 +1296,15 @@ impl ComponentStory {
     }
 
     fn sync_native_platform_menu(&mut self, cx: &mut Context<Self>) {
+        if !owns_application_menus(self.window_handle, cx) {
+            return;
+        }
         let state = self.native_application_menu_state(cx);
         if self.last_native_menu_state == Some(state) {
             return;
         }
         self.last_native_menu_state = Some(state);
-        install_native_platform_menus(state, self.application_menu_shell_state(), cx);
+        install_native_platform_menus(state, self.application_menu_shell_state(cx), cx);
     }
 
     fn native_application_menu_state(&self, cx: &Context<Self>) -> NativeApplicationMenuState {
@@ -1270,11 +1340,11 @@ impl ComponentStory {
         }
     }
 
-    fn application_menu_shell_state(&self) -> ApplicationMenuShellState {
+    fn application_menu_shell_state(&self, cx: &App) -> ApplicationMenuShellState {
         ApplicationMenuShellState {
             menu_bar_visible: self.menu_bar_visible,
             menu_bar_visibility_supported: self.menu_bar_visibility_supported,
-            reverse_scroll_zoom: self.preferences.reverse_scroll_zoom(),
+            reverse_scroll_zoom: shared_application(cx).preferences.get().reverse_scroll_zoom(),
         }
     }
 
@@ -1313,32 +1383,44 @@ impl ComponentStory {
     }
 }
 
-fn register_application_shell_actions(
-    story: &Entity<ComponentStory>,
-    window: &Window,
+/// Runs `update` on the active document window's story, after the action that
+/// triggered it has finished dispatching.
+fn defer_to_active_story(
     cx: &mut App,
+    update: impl FnOnce(&mut ComponentStory, &mut Window, &mut Context<ComponentStory>) + 'static,
 ) {
-    let window_handle = window.window_handle();
+    let Some(entry) = active_document_window(cx) else {
+        return;
+    };
+    cx.defer(move |cx| {
+        let Some(story) = entry.story.upgrade() else {
+            return;
+        };
+        let _ = entry.handle.update(cx, |_, window, cx| {
+            story.update(cx, |story, cx| update(story, window, cx));
+        });
+    });
+}
 
-    let story_for_menu_bar = story.downgrade();
-    cx.on_action(move |_: &ToggleApplicationMenuBar, cx| {
-        let story_for_menu_bar = story_for_menu_bar.clone();
-        cx.defer(move |cx| {
-            let _ = window_handle.update(cx, |_, window, cx| {
-                let _ = story_for_menu_bar.update(cx, |story, cx| {
-                    story.toggle_menu_bar(&ToggleApplicationMenuBar, window, cx);
-                });
-            });
+/// Application-level shell commands, registered once and routed to the active
+/// document window.
+fn register_application_shell_actions(cx: &mut App) {
+    cx.on_action(|_: &ToggleApplicationMenuBar, cx| {
+        defer_to_active_story(cx, |story, window, cx| {
+            story.toggle_menu_bar(&ToggleApplicationMenuBar, window, cx)
         });
     });
 
-    cx.on_action(move |_: &SetAsDefaultPdfApp, cx| {
+    cx.on_action(|_: &SetAsDefaultPdfApp, cx| {
+        let Some(entry) = active_document_window(cx) else {
+            return;
+        };
         let task = cx
             .background_executor()
             .spawn(async { butter_paper_gpui_migration::default_pdf_app::set_as_default_pdf_app() });
         cx.spawn(async move |cx| {
             let result = task.await;
-            let _ = window_handle.update(cx, |_, window, cx| {
+            let _ = entry.handle.update(cx, |_, window, cx| {
                 let (level, message, detail) = match result {
                     Ok(result) => (PromptLevel::Info, result.message, None),
                     Err(error) => (
@@ -1353,73 +1435,78 @@ fn register_application_shell_actions(
         .detach();
     });
 
-    let story_for_reverse_zoom = story.downgrade();
-    cx.on_action(move |_: &ToggleReverseScrollZoom, cx| {
-        let story_for_reverse_zoom = story_for_reverse_zoom.clone();
-        cx.defer(move |cx| {
-            let _ = story_for_reverse_zoom
-                .update(cx, |story, cx| story.toggle_reverse_scroll_zoom(cx));
+    cx.on_action(|_: &ToggleReverseScrollZoom, cx| {
+        defer_to_active_story(cx, |story, _, cx| story.toggle_reverse_scroll_zoom(cx));
+    });
+    cx.on_action(|_: &MakeInterfaceBigger, cx| {
+        defer_to_active_story(cx, |story, window, cx| {
+            story.change_interface_size(ApplicationUiZoomAction::In, window, cx)
         });
     });
-
-    let story_for_zoom_in = story.downgrade();
-    cx.on_action(move |_: &MakeInterfaceBigger, cx| {
-        let story_for_zoom_in = story_for_zoom_in.clone();
-        cx.defer(move |cx| {
-            let _ = window_handle.update(cx, |_, window, cx| {
-                let _ = story_for_zoom_in.update(cx, |story, cx| {
-                    story.change_interface_size(ApplicationUiZoomAction::In, window, cx);
-                });
-            });
+    cx.on_action(|_: &MakeInterfaceSmaller, cx| {
+        defer_to_active_story(cx, |story, window, cx| {
+            story.change_interface_size(ApplicationUiZoomAction::Out, window, cx)
         });
     });
-
-    let story_for_zoom_out = story.downgrade();
-    cx.on_action(move |_: &MakeInterfaceSmaller, cx| {
-        let story_for_zoom_out = story_for_zoom_out.clone();
-        cx.defer(move |cx| {
-            let _ = window_handle.update(cx, |_, window, cx| {
-                let _ = story_for_zoom_out.update(cx, |story, cx| {
-                    story.change_interface_size(ApplicationUiZoomAction::Out, window, cx);
-                });
-            });
+    cx.on_action(|_: &ResetInterfaceSize, cx| {
+        defer_to_active_story(cx, |story, window, cx| {
+            story.change_interface_size(ApplicationUiZoomAction::Reset, window, cx)
         });
     });
-
-    let story_for_zoom_reset = story.downgrade();
-    cx.on_action(move |_: &ResetInterfaceSize, cx| {
-        let story_for_zoom_reset = story_for_zoom_reset.clone();
-        cx.defer(move |cx| {
-            let _ = window_handle.update(cx, |_, window, cx| {
-                let _ = story_for_zoom_reset.update(cx, |story, cx| {
-                    story.change_interface_size(ApplicationUiZoomAction::Reset, window, cx);
-                });
-            });
+    cx.on_action(|_: &ToggleApplicationFullScreen, cx| {
+        defer_to_active_story(cx, |story, window, cx| {
+            story.toggle_full_screen(&ToggleApplicationFullScreen, window, cx)
         });
     });
-
-    let story_for_full_screen = story.downgrade();
-    cx.on_action(move |_: &ToggleApplicationFullScreen, cx| {
-        let story_for_full_screen = story_for_full_screen.clone();
-        cx.defer(move |cx| {
-            let _ = window_handle.update(cx, |_, window, cx| {
-                let _ = story_for_full_screen.update(cx, |story, cx| {
-                    story.toggle_full_screen(&ToggleApplicationFullScreen, window, cx);
-                });
-            });
+    cx.on_action(|_: &OpenReleasePage, cx| {
+        defer_to_active_story(cx, |story, window, cx| {
+            story.open_release_page(&OpenReleasePage, window, cx)
         });
     });
+    cx.on_action(|_: &MinimiseWindow, cx| {
+        if let Some(entry) = active_document_window(cx) {
+            let _ = entry.handle.update(cx, |_, window, _| window.minimize_window());
+        }
+    });
+    cx.on_action(|_: &ZoomWindow, cx| {
+        if let Some(entry) = active_document_window(cx) {
+            let _ = entry.handle.update(cx, |_, window, _| window.zoom_window());
+        }
+    });
+    cx.on_action(|_: &NewWindow, cx| {
+        if shared_application(cx).multi_window {
+            open_document_window(cx, None);
+        }
+    });
+    // Quit closes every window through its own unsaved-changes transaction.
+    // Never route this through gpui::Quit.
+    cx.on_action(|_: &RequestApplicationQuit, cx| {
+        let windows = document_window_entries(cx);
+        if windows.is_empty() {
+            cx.quit();
+            return;
+        }
+        shared_application(cx).coordinator.begin_quit();
+        for entry in windows {
+            request_window_close(&entry, cx);
+        }
+    });
+    cx.on_action(|_: &RequestApplicationClose, cx| {
+        if let Some(entry) = active_document_window(cx) {
+            request_window_close(&entry, cx);
+        }
+    });
+}
 
-    let story_for_release_page = story.downgrade();
-    cx.on_action(move |_: &OpenReleasePage, cx| {
-        let story_for_release_page = story_for_release_page.clone();
-        cx.defer(move |cx| {
-            let _ = window_handle.update(cx, |_, window, cx| {
-                let _ = story_for_release_page.update(cx, |story, cx| {
-                    story.open_release_page(&OpenReleasePage, window, cx);
-                });
-            });
-        });
+fn request_window_close(entry: &DocumentWindowEntry, cx: &mut App) {
+    let Some(close) = entry.close.upgrade() else {
+        return;
+    };
+    let _ = entry.handle.update(cx, |_, window, cx| {
+        let _ = close.update(cx, |close, cx| close.request_close(cx));
+        if close.read(cx).dialog().is_some() && !window.has_active_dialog(cx) {
+            ApplicationCloseWorkspace::open_dialog(&close, window, cx);
+        }
     });
 }
 
@@ -1878,388 +1965,641 @@ fn main() {
             native_ingress.enqueue_file_urls(urls);
         }
     });
+    // macOS: clicking the Dock icon with no window open opens one.
+    application.on_reopen(|cx| {
+        if cx.has_global::<DocumentWindows>()
+            && shared_application(cx).multi_window
+            && document_window_entries(cx).is_empty()
+        {
+            open_document_window(cx, None);
+        }
+    });
     application.run(move |cx: &mut App| {
         gpui_component::init(cx);
         init_application_shell_actions(cx);
         init_document_workspace_actions(cx);
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
+
+        let preferences = startup_preferences;
+        cx.set_global(ReverseScrollZoom(preferences.reverse_scroll_zoom()));
+        let worker_executable = perf.as_ref().map_or_else(
+            || {
+                native_runtime_layout
+                    .as_ref()
+                    .expect("normal launch resolved the native runtime layout")
+                    .worker_executable()
+                    .to_owned()
+            },
+            |perf| perf.config.worker_executable.clone(),
+        );
+        let pdfium_library = perf.as_ref().map_or_else(
+            || {
+                native_runtime_layout
+                    .as_ref()
+                    .expect("normal launch resolved the native runtime layout")
+                    .pdfium_library()
+                    .to_owned()
+            },
+            |perf| perf.config.pdfium_library.clone(),
+        );
+        let generated_store = GeneratedDocumentStore::new(storage_layout.generated_documents_root())
+            .expect("the experiment-owned generated-document store must initialize");
+        let session_state_root = storage_layout.session_state_root();
+        let (session_store, launch_resolution, recovery_marker) = if session_source.requires_store() {
+            let opened = std::fs::create_dir_all(&session_state_root)
+                .map_err(|error| error.to_string())
+                .and_then(|()| {
+                    SessionManifestStore::open(session_state_root.clone())
+                        .map_err(|error| format!("{error:?}"))
+                });
+            match opened {
+                Ok(store) => {
+                    let store = std::sync::Arc::new(store);
+                    let loaded = if session_source.requires_manifest_load() {
+                        store.load().map(Some).map_err(|error| format!("{error:?}"))
+                    } else {
+                        Ok(None)
+                    };
+                    let recovery_marker = store
+                        .load_recovery_marker()
+                        .map_err(|error| format!("{error:?}"));
+                    (
+                        Some(store),
+                        session_source.clone().resolve(loaded),
+                        recovery_marker,
+                    )
+                }
+                Err(error) => (
+                    None,
+                    session_source.clone().resolve(Err(error.clone())),
+                    Err(error),
+                ),
+            }
+        } else {
+            (None, session_source.clone().resolve(Ok(None)), Ok(None))
+        };
+        let document_recovery_store = if perf.is_none() {
+            Some(
+                std::fs::create_dir_all(&session_state_root)
+                    .map_err(|error| error.to_string())
+                    .and_then(|()| {
+                        DocumentRecoveryStore::open(&session_state_root)
+                            .map(std::sync::Arc::new)
+                            .map_err(|error| error.to_string())
+                    }),
+            )
+        } else {
+            None
+        };
+        if let Some(NativeLaunchWarning::SessionStateUnavailable(message)) =
+            launch_resolution.warning.as_ref()
+        {
+            eprintln!("Butter Paper session state is unavailable: {message}");
+        }
+        let opener = std::sync::Arc::new(PdfiumWorkerBackend::new(
+            worker_executable,
+            pdfium_library,
+            storage_layout.surface_root().to_owned(),
+        ));
+        let saver = std::sync::Arc::new(PdfDocumentSaver::new(opener.clone()));
+        // Construction performs no credential or filesystem IO on the UI thread.
+        // Production binds this service to the authenticated stable/beta channel.
+        let recent_signature_store = perf.is_none().then(|| {
+            std::sync::Arc::new(RecentSignatureStore::new(
+                storage_layout
+                    .preferences_root()
+                    .join(RECENT_SIGNATURES_FILE_NAME),
+                std::sync::Arc::new(PlatformSignatureKeyStore::new(
+                    signature_keychain_service,
+                    "encryption-key-v1",
+                )),
+            ))
+        });
+        let multi_window = perf.is_none();
+        cx.set_global(DocumentWindows {
+            shared: Rc::new(SharedApplication {
+                application_title,
+                preferences_store: ApplicationShellPreferencesStore::new(
+                    storage_layout.preferences_root(),
+                ),
+                preferences: Cell::new(preferences),
+                ui_zoom_level: Rc::new(Cell::new(preferences.ui_zoom_level())),
+                ui_zoom_base_font_size: Rc::new(Cell::new(cx.theme().font_size)),
+                opener,
+                saver,
+                generated_store,
+                session_store,
+                checkpoint_enabled: launch_resolution.checkpoint_enabled,
+                document_recovery_store,
+                recent_signature_store,
+                template_manager_root: storage_layout.template_library_root(),
+                template_authority: std::cell::RefCell::new(None),
+                coordinator: Arc::new(WindowSessionCoordinator::default()),
+                multi_window,
+            }),
+            windows: Vec::new(),
+        });
+
+        cx.on_window_closed(|cx, window_id| {
+            let shared = shared_application(cx);
+            let windows = &mut cx.global_mut::<DocumentWindows>().windows;
+            windows.retain(|entry| entry.handle.window_id() != window_id);
+            let remaining = shared.coordinator.window_closed(window_id.as_u64());
+            // The closed window's documents were saved or discarded; refresh
+            // the shared dirty-session marker from the windows that remain.
+            for story in document_window_stories(cx) {
+                story.update(cx, |story, cx| {
+                    story.last_observed_recovery_snapshot = None;
+                    story.schedule_recovery_marker_checkpoint(cx);
+                });
+            }
+            // macOS apps keep running without windows; elsewhere, and on Quit,
+            // the last window ends the process.
+            if !remaining
+                && (shared.coordinator.is_quitting()
+                    || !cfg!(target_os = "macos")
+                    || !shared.multi_window)
+            {
                 cx.quit();
             }
         })
         .detach();
 
-        let window_options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(1200.), px(800.)), cx)),
-            ..title_bar_window_options()
-        };
+        register_document_workspace_actions_for(
+            |may_open_window, cx| {
+                if let Some(entry) = active_document_window(cx) {
+                    return entry.workspace.upgrade();
+                }
+                if may_open_window && shared_application(cx).multi_window {
+                    return open_document_window(cx, None)
+                        .and_then(|handle| window_entry(handle, cx))
+                        .and_then(|entry| entry.workspace.upgrade());
+                }
+                None
+            },
+            cx,
+        );
+        register_application_shell_actions(cx);
 
         let native_ingress = native_ingress.clone();
         cx.spawn(async move |cx| {
-            cx.open_window(window_options, |window, cx| {
-                window.set_window_title(application_title);
-                let application_preferences =
-                    ApplicationShellPreferencesStore::new(storage_layout.preferences_root());
-                let preferences = startup_preferences;
-                cx.set_global(ReverseScrollZoom(preferences.reverse_scroll_zoom()));
-                let ui_zoom_level = Rc::new(Cell::new(preferences.ui_zoom_level()));
-                let ui_zoom_base_font_size = Rc::new(Cell::new(cx.theme().font_size));
-                let system_theme_subscription = follow_window_appearance_with_application_zoom(
-                    window,
+            cx.update(|cx| {
+                open_document_window(
                     cx,
-                    ui_zoom_level.clone(),
-                    ui_zoom_base_font_size.clone(),
-                );
-                let app_menu_bar = AppMenuBar::new(cx);
-                let worker_executable = perf.as_ref().map_or_else(
-                    || {
-                        native_runtime_layout
-                            .as_ref()
-                            .expect("normal launch resolved the native runtime layout")
-                            .worker_executable()
-                            .to_owned()
-                    },
-                    |perf| perf.config.worker_executable.clone(),
-                );
-                let pdfium_library = perf.as_ref().map_or_else(
-                    || {
-                        native_runtime_layout
-                            .as_ref()
-                            .expect("normal launch resolved the native runtime layout")
-                            .pdfium_library()
-                            .to_owned()
-                    },
-                    |perf| perf.config.pdfium_library.clone(),
-                );
-                let generated_store =
-                    GeneratedDocumentStore::new(storage_layout.generated_documents_root())
-                        .expect("the experiment-owned generated-document store must initialize");
-                let template_manager_root = storage_layout.template_library_root();
-                let session_state_root = storage_layout.session_state_root();
-                let (session_store, launch_resolution, recovery_marker) =
-                    if session_source.requires_store() {
-                    let opened = std::fs::create_dir_all(&session_state_root)
-                        .map_err(|error| error.to_string())
-                        .and_then(|()| {
-                            SessionManifestStore::open(session_state_root.clone())
-                                .map_err(|error| format!("{error:?}"))
-                        });
-                    match opened {
-                        Ok(store) => {
-                            let store = std::sync::Arc::new(store);
-                            let loaded = if session_source.requires_manifest_load() {
-                                store.load().map(Some).map_err(|error| format!("{error:?}"))
-                            } else {
-                                Ok(None)
-                            };
-                            let recovery_marker = store
-                                .load_recovery_marker()
-                                .map_err(|error| format!("{error:?}"));
-                            (
-                                Some(store),
-                                session_source.clone().resolve(loaded),
-                                recovery_marker,
-                            )
-                        }
-                        Err(error) => (
-                            None,
-                            session_source.clone().resolve(Err(error.clone())),
-                            Err(error),
-                        ),
-                    }
-                } else {
-                    (
-                        None,
-                        session_source.clone().resolve(Ok(None)),
-                        Ok(None),
-                    )
-                };
-                let document_recovery_store = if perf.is_none() {
-                    Some(
-                        std::fs::create_dir_all(&session_state_root)
-                            .map_err(|error| error.to_string())
-                            .and_then(|()| {
-                                DocumentRecoveryStore::open(&session_state_root)
-                                    .map(std::sync::Arc::new)
-                                    .map_err(|error| error.to_string())
-                            }),
-                    )
-                } else {
-                    None
-                };
-                if let Some(NativeLaunchWarning::SessionStateUnavailable(message)) =
-                    launch_resolution.warning.as_ref()
-                {
-                    eprintln!("Butter Paper session state is unavailable: {message}");
-                }
-                let opener = std::sync::Arc::new(PdfiumWorkerBackend::new(
-                    worker_executable,
-                    pdfium_library,
-                    storage_layout.surface_root().to_owned(),
-                ));
-                let saver = std::sync::Arc::new(PdfDocumentSaver::new(opener.clone()));
-                let document_workspace = cx.new(|cx| {
-                    let mut workspace = DocumentWorkspace::with_opener_and_generated_store(
-                        opener,
-                        generated_store.clone(),
-                        cx,
-                    );
-                    if let Some(store) = &document_recovery_store {
-                        match store {
-                            Ok(store) => workspace.bind_document_recovery_store(store.clone()),
-                            Err(error) => {
-                                workspace.bind_document_recovery_store_error(error.clone())
-                            }
-                        }
-                    }
-                    // Construction performs no credential or filesystem IO on the UI thread.
-                    // Production binds this service to the authenticated stable/beta channel.
-                    if perf.is_none() {
-                        let directory = storage_layout.preferences_root();
-                        workspace.bind_recent_signature_store(std::sync::Arc::new(
-                            RecentSignatureStore::new(
-                                directory.join(RECENT_SIGNATURES_FILE_NAME),
-                                std::sync::Arc::new(PlatformSignatureKeyStore::new(
-                                    signature_keychain_service,
-                                    "encryption-key-v1",
-                                )),
-                            ),
-                        ));
-                    }
-                    workspace
-                });
-                document_workspace.update(cx, |workspace, cx| match &recovery_marker {
-                    Ok(Some(snapshot)) => workspace.show_session_recovery_warning(snapshot, cx),
-                    Ok(None) => {}
-                    Err(error) => workspace.show_session_recovery_warning_message(
-                        format!(
-                            "Butter Paper could not inspect the previous unsaved-change marker. Verify your documents before continuing. Details: {error}"
-                        ),
-                        cx,
-                    ),
-                });
-                let launch_action = launch_resolution.action.clone();
-                match document_recovery_store.as_ref() {
-                    Some(Ok(store)) => {
-                        document_workspace.update(cx, |workspace, cx| {
-                            workspace.defer_startup_open(deferred_startup_open(
-                                launch_action.clone(),
-                            ));
-                            workspace.begin_startup_recovery_inspection(cx);
-                        });
-                        let store = store.clone();
-                        let workspace = document_workspace.downgrade();
-                        let task = cx.background_executor().spawn(async move {
-                            let ids = store.active_document_ids().map_err(|error| error.to_string())?;
-                            let mut items = Vec::new();
-                            for id in ids {
-                                match store.load(id) {
-                                    Ok(Some(recovered))
-                                        if recovered.current_revision == recovered.saved_revision
-                                            && !recovered.requires_save_as =>
-                                    {
-                                        if let Err(error) =
-                                            store.clear_authority(&recovered.authority)
-                                        {
-                                            items.push(StartupRecoveryItem {
-                                                id,
-                                                authority: Some(recovered.authority),
-                                                source_path: Some(recovered.source_path),
-                                                current_revision: Some(recovered.current_revision),
-                                                saved_revision: Some(recovered.saved_revision),
-                                                availability: StartupRecoveryAvailability::Unavailable(
-                                                    format!(
-                                                        "the clean checkpoint could not be retired safely: {error}"
-                                                    ),
-                                                ),
-                                            });
-                                        }
-                                    }
-                                    Ok(Some(recovered)) => items.push(StartupRecoveryItem {
-                                        id,
-                                        authority: Some(recovered.authority),
-                                        source_path: Some(recovered.source_path),
-                                        current_revision: Some(recovered.current_revision),
-                                        saved_revision: Some(recovered.saved_revision),
-                                        availability: match recovered.source_kind {
-                                            RecoverySourceKind::Opened => {
-                                                StartupRecoveryAvailability::OpenedSourceNeedsVerification
-                                            }
-                                            RecoverySourceKind::Generated => {
-                                                StartupRecoveryAvailability::GeneratedCopyRequired
-                                            }
-                                        },
-                                    }),
-                                    Ok(None) => {}
-                                    Err(error) => items.push(StartupRecoveryItem {
-                                        id,
-                                        authority: None,
-                                        source_path: None,
-                                        current_revision: None,
-                                        saved_revision: None,
-                                        availability: StartupRecoveryAvailability::Unavailable(
-                                            error.to_string(),
-                                        ),
-                                    }),
-                                }
-                            }
-                            Ok::<_, String>(items)
-                        });
-                        cx.spawn(async move |cx| {
-                            match task.await {
-                                Ok(items) => {
-                                    let should_launch = items.is_empty();
-                                    let _ = workspace.update(cx, |workspace, cx| {
-                                        workspace.finish_startup_recovery_inspection(items, cx);
-                                        if should_launch {
-                                            if let Some(open) =
-                                                workspace.take_deferred_startup_open()
-                                            {
-                                                apply_deferred_startup_open(workspace, open, cx);
-                                            }
-                                        }
-                                    });
-                                }
-                                Err(error) => {
-                                    let _ = workspace.update(cx, |workspace, cx| {
-                                        workspace.show_session_recovery_warning_message(
-                                            format!(
-                                                "Butter Paper could not inspect recoverable unsaved changes. Opening documents is paused to protect them. Details: {error}"
-                                            ),
-                                            cx,
-                                        );
-                                    });
-                                }
-                            }
-                        })
-                        .detach();
-                    }
-                    _ => {
-                        document_workspace.update(cx, |workspace, cx| {
-                            apply_launch_action(workspace, launch_action, cx);
-                        });
-                    }
-                }
-                let application_close = cx.new(|_| {
-                    if launch_resolution.checkpoint_enabled {
-                        let checkpoint_publisher: std::sync::Arc<
-                            dyn ApplicationCloseCheckpointPublisher,
-                        > = session_store
-                            .clone()
-                            .expect("enabled checkpointing has an open session store");
-                        ApplicationCloseWorkspace::with_checkpoint_publisher(
-                            document_workspace.clone(),
-                            saver,
-                            checkpoint_publisher,
-                        )
-                    } else {
-                        ApplicationCloseWorkspace::new(document_workspace.clone(), saver)
-                    }
-                });
-                let template_manager = perf.is_none().then(|| {
-                    cx.new(|cx| {
-                        let legacy_request = std::env::var("BP_LEGACY_BLANK_SETTINGS_JSON")
-                            .ok()
-                            .and_then(|json| legacy_blank_request_from_json(&json).ok());
-                        let mut manager = TemplateManagerView::open_persistent_with_legacy(
-                            template_manager_root,
-                            legacy_request,
-                            window,
-                            cx,
-                        )
-                        .expect("the experiment-owned template library must initialize");
-                        manager.bind_document_workspace(
-                            document_workspace.downgrade(),
-                            generated_store.clone(),
-                        );
-                        manager
-                    })
-                });
-                if perf.is_none() {
-                    let ingress = native_ingress.clone();
-                    let workspace = document_workspace.downgrade();
-                    cx.spawn(async move |cx| {
-                        while let Some(request) = ingress.next_request().await {
-                            if workspace
-                                .update(cx, |workspace, cx| {
-                                    workspace.open_documents(request, cx);
-                                })
-                                .is_err()
-                            {
-                                break;
-                            }
-                            cx.update(|cx| cx.activate(true));
-                        }
-                    })
-                    .detach();
-                }
-                let story = cx.new(|cx| {
-                    ComponentStory::new(
-                        document_workspace.clone(),
-                        app_menu_bar,
-                        application_preferences,
-                        preferences,
-                        cfg!(target_os = "macos"),
-                        ui_zoom_level,
-                        ui_zoom_base_font_size,
-                        template_manager,
-                        session_store.clone(),
+                    Some(StartupWindow {
+                        launch_resolution,
+                        recovery_marker,
                         perf,
-                        application_title,
-                        system_theme_subscription,
-                        window,
-                        cx,
-                    )
+                    }),
+                )
+            });
+            if !multi_window {
+                return;
+            }
+            // Files opened from Finder, the shell or a second launch go to the
+            // active window, or a new one when none is open.
+            while let Some(request) = native_ingress.next_request().await {
+                cx.update(|cx| {
+                    let workspace = match active_document_window(cx) {
+                        Some(entry) => entry.workspace.upgrade(),
+                        None => open_document_window(cx, None)
+                            .and_then(|handle| window_entry(handle, cx))
+                            .and_then(|entry| entry.workspace.upgrade()),
+                    };
+                    if let Some(workspace) = workspace {
+                        workspace.update(cx, |workspace, cx| {
+                            workspace.open_documents(request, cx);
+                        });
+                    }
+                    cx.activate(true);
                 });
-                register_document_workspace_global_actions(&document_workspace, cx);
-                register_application_close_action(&application_close, cx);
-                register_application_shell_actions(&story, window, cx);
-                if story.read(cx).perf.is_some() {
-                    story.update(cx, |story, _| {
-                        if let Some(perf) = story.perf.as_mut() {
-                            perf.emit("window-created", Default::default());
-                        }
-                    });
-                    let executor = cx.background_executor().clone();
-                    let story_for_monitor = story.downgrade();
-                    cx.spawn(async move |cx| {
-                        loop {
-                            executor.timer(Duration::from_millis(25)).await;
-                            let Ok(done) = story_for_monitor
-                                .update(cx, |story, cx| story.observe_perf_document(cx))
-                            else {
-                                break;
-                            };
-                            if done {
-                                break;
-                            }
-                        }
-                    })
-                    .detach();
-                }
-                let story_view = gpui::AnyView::from(story.clone());
-                let shell = cx.new(|cx| {
-                    ApplicationCloseShell::new_for_native_window_with_content(
-                        application_close,
-                        story_view,
-                        window,
-                        cx,
-                    )
-                });
-                let root = cx.new(|cx| Root::new(shell, window, cx));
-                story.update(cx, |story, cx| {
-                    story.observe_root_focus(&root, window, cx);
-                });
-                if story.read(cx).perf.is_none() {
-                    focus_initial_command_context(
-                        &document_workspace.read(cx).focus_handle(),
-                        window,
-                    );
-                }
-                root
-            })
-            .expect("failed to open GPUI Component proof window");
+            }
         })
         .detach();
     });
+}
+
+/// State shared by every document window.
+struct SharedApplication {
+    application_title: &'static str,
+    preferences_store: ApplicationShellPreferencesStore,
+    preferences: Cell<ApplicationShellPreferences>,
+    ui_zoom_level: Rc<Cell<i8>>,
+    ui_zoom_base_font_size: Rc<Cell<gpui::Pixels>>,
+    opener: Arc<PdfiumWorkerBackend>,
+    saver: Arc<PdfDocumentSaver>,
+    generated_store: GeneratedDocumentStore,
+    session_store: Option<Arc<SessionManifestStore>>,
+    checkpoint_enabled: bool,
+    document_recovery_store: Option<Result<Arc<DocumentRecoveryStore>, String>>,
+    recent_signature_store: Option<Arc<RecentSignatureStore>>,
+    template_manager_root: std::path::PathBuf,
+    /// One template library authority for every window, created with the first.
+    template_authority: std::cell::RefCell<Option<Arc<std::sync::Mutex<PersistentTemplateManager>>>>,
+    coordinator: Arc<WindowSessionCoordinator>,
+    /// Performance runs keep the original single window.
+    multi_window: bool,
+}
+
+#[derive(Clone)]
+struct DocumentWindowEntry {
+    handle: AnyWindowHandle,
+    story: gpui::WeakEntity<ComponentStory>,
+    workspace: gpui::WeakEntity<DocumentWorkspace>,
+    close: gpui::WeakEntity<ApplicationCloseWorkspace>,
+}
+
+struct DocumentWindows {
+    shared: Rc<SharedApplication>,
+    windows: Vec<DocumentWindowEntry>,
+}
+
+impl gpui::Global for DocumentWindows {}
+
+struct StartupWindow {
+    launch_resolution: NativeLaunchResolution,
+    recovery_marker: Result<
+        Option<butter_paper_gpui_migration::session_manifest::SessionRecoverySnapshot>,
+        String,
+    >,
+    perf: Option<PerfStoryRuntime>,
+}
+
+fn shared_application(cx: &App) -> Rc<SharedApplication> {
+    cx.global::<DocumentWindows>().shared.clone()
+}
+
+fn document_window_entries(cx: &App) -> Vec<DocumentWindowEntry> {
+    cx.try_global::<DocumentWindows>()
+        .map(|windows| windows.windows.clone())
+        .unwrap_or_default()
+}
+
+fn window_entry(handle: AnyWindowHandle, cx: &App) -> Option<DocumentWindowEntry> {
+    document_window_entries(cx)
+        .into_iter()
+        .find(|entry| entry.handle == handle)
+}
+
+fn document_window_stories(cx: &App) -> Vec<Entity<ComponentStory>> {
+    document_window_entries(cx)
+        .iter()
+        .filter_map(|entry| entry.story.upgrade())
+        .collect()
+}
+
+fn document_window_workspaces(cx: &App) -> Vec<Entity<DocumentWorkspace>> {
+    document_window_entries(cx)
+        .iter()
+        .filter_map(|entry| entry.workspace.upgrade())
+        .collect()
+}
+
+/// The key document window, else the frontmost one, else the newest.
+fn active_document_window(cx: &App) -> Option<DocumentWindowEntry> {
+    let entries = document_window_entries(cx);
+    let find = |handle: AnyWindowHandle| entries.iter().find(|entry| entry.handle == handle).cloned();
+    cx.active_window()
+        .and_then(find)
+        .or_else(|| {
+            cx.window_stack()
+                .unwrap_or_default()
+                .into_iter()
+                .find_map(find)
+        })
+        .or_else(|| entries.last().cloned())
+}
+
+fn owns_application_menus(handle: AnyWindowHandle, cx: &App) -> bool {
+    active_document_window(cx).is_none_or(|entry| entry.handle == handle)
+}
+
+/// New windows cascade from the active one, as macOS document apps do.
+fn next_window_bounds(cx: &mut App) -> WindowBounds {
+    let active = active_document_window(cx).and_then(|entry| {
+        entry
+            .handle
+            .update(cx, |_, window, _| window.bounds())
+            .ok()
+    });
+    match active {
+        Some(bounds) => WindowBounds::Windowed(gpui::Bounds {
+            origin: bounds.origin + gpui::point(px(28.), px(28.)),
+            size: bounds.size,
+        }),
+        None => WindowBounds::centered(size(px(1200.), px(800.)), cx),
+    }
+}
+
+/// Opens a document window. The startup window restores the session and
+/// inspects recovery; later windows start empty and share every store.
+fn open_document_window(cx: &mut App, startup: Option<StartupWindow>) -> Option<AnyWindowHandle> {
+    let shared = shared_application(cx);
+    let is_startup = startup.is_some();
+    if !is_startup && document_window_entries(cx).is_empty() {
+        // The last window's clean close stopped live marker writes.
+        if let Some(store) = shared.session_store.as_ref() {
+            store.resume_live_writes();
+        }
+    }
+    let window_options = WindowOptions {
+        window_bounds: Some(next_window_bounds(cx)),
+        tabbing_identifier: shared
+            .multi_window
+            .then(|| "butter-paper-documents".to_owned()),
+        ..title_bar_window_options()
+    };
+    let handle = cx
+        .open_window(window_options, |window, cx| {
+            build_document_window(shared.clone(), startup, window, cx)
+        })
+        .map_err(|error| eprintln!("Butter Paper could not open a window: {error}"))
+        .ok()?;
+    Some(handle.into())
+}
+
+fn build_document_window(
+    shared: Rc<SharedApplication>,
+    startup: Option<StartupWindow>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<Root> {
+    let window_handle = window.window_handle();
+    let window_id = window_handle.window_id().as_u64();
+    window.set_window_title(shared.application_title);
+    let system_theme_subscription = follow_window_appearance_with_application_zoom(
+        window,
+        cx,
+        shared.ui_zoom_level.clone(),
+        shared.ui_zoom_base_font_size.clone(),
+    );
+    let app_menu_bar = AppMenuBar::new(cx);
+    let (launch_resolution, recovery_marker, perf) = match startup {
+        Some(startup) => (
+            Some(startup.launch_resolution),
+            Some(startup.recovery_marker),
+            startup.perf,
+        ),
+        None => (None, None, None),
+    };
+    let document_workspace = cx.new(|cx| {
+        let mut workspace = DocumentWorkspace::with_opener_and_generated_store(
+            shared.opener.clone(),
+            shared.generated_store.clone(),
+            cx,
+        );
+        if let Some(store) = &shared.document_recovery_store {
+            match store {
+                Ok(store) => workspace.bind_document_recovery_store(store.clone()),
+                Err(error) => workspace.bind_document_recovery_store_error(error.clone()),
+            }
+        }
+        if let Some(store) = &shared.recent_signature_store {
+            workspace.bind_recent_signature_store(store.clone());
+        }
+        workspace
+    });
+    if let Some(recovery_marker) = &recovery_marker {
+        document_workspace.update(cx, |workspace, cx| match recovery_marker {
+            Ok(Some(snapshot)) => workspace.show_session_recovery_warning(snapshot, cx),
+            Ok(None) => {}
+            Err(error) => workspace.show_session_recovery_warning_message(
+                format!(
+                    "Butter Paper could not inspect the previous unsaved-change marker. Verify your documents before continuing. Details: {error}"
+                ),
+                cx,
+            ),
+        });
+    }
+    if let Some(launch_resolution) = &launch_resolution {
+        begin_startup_launch(
+            &document_workspace,
+            launch_resolution,
+            &shared.document_recovery_store,
+            cx,
+        );
+    }
+    let application_close = cx.new(|_| {
+        match shared.session_store.clone() {
+            Some(store) if shared.checkpoint_enabled => {
+                let checkpoint_publisher: Arc<dyn ApplicationCloseCheckpointPublisher> =
+                    Arc::new(WindowCheckpointPublisher::new(
+                        window_id,
+                        shared.coordinator.clone(),
+                        store,
+                    ));
+                ApplicationCloseWorkspace::with_checkpoint_publisher(
+                    document_workspace.clone(),
+                    shared.saver.clone(),
+                    checkpoint_publisher,
+                )
+            }
+            _ => ApplicationCloseWorkspace::new(document_workspace.clone(), shared.saver.clone()),
+        }
+    });
+    let template_manager = shared.multi_window.then(|| {
+        cx.new(|cx| {
+            let existing = shared.template_authority.borrow().clone();
+            let mut manager = match existing {
+                Some(authority) => TemplateManagerView::open_shared(authority, window, cx),
+                None => {
+                    let legacy_request = std::env::var("BP_LEGACY_BLANK_SETTINGS_JSON")
+                        .ok()
+                        .and_then(|json| legacy_blank_request_from_json(&json).ok());
+                    TemplateManagerView::open_persistent_with_legacy(
+                        shared.template_manager_root.clone(),
+                        legacy_request,
+                        window,
+                        cx,
+                    )
+                }
+            }
+            .expect("the experiment-owned template library must initialize");
+            if shared.template_authority.borrow().is_none() {
+                *shared.template_authority.borrow_mut() = manager.shared_persistent();
+            }
+            manager.bind_document_workspace(
+                document_workspace.downgrade(),
+                shared.generated_store.clone(),
+            );
+            manager
+        })
+    });
+    let story = cx.new(|cx| {
+        ComponentStory::new(
+            document_workspace.clone(),
+            app_menu_bar,
+            cfg!(target_os = "macos"),
+            shared.ui_zoom_level.clone(),
+            shared.ui_zoom_base_font_size.clone(),
+            template_manager,
+            shared.session_store.clone(),
+            perf,
+            shared.application_title,
+            system_theme_subscription,
+            window,
+            cx,
+        )
+    });
+    shared.coordinator.window_opened(window_id);
+    cx.subscribe(&application_close, |_, _: &ApplicationCloseCancelled, cx| {
+        shared_application(cx).coordinator.cancel_quit();
+    })
+    .detach();
+    cx.global_mut::<DocumentWindows>().windows.push(DocumentWindowEntry {
+        handle: window_handle,
+        story: story.downgrade(),
+        workspace: document_workspace.downgrade(),
+        close: application_close.downgrade(),
+    });
+    if story.read(cx).perf.is_some() {
+        story.update(cx, |story, _| {
+            if let Some(perf) = story.perf.as_mut() {
+                perf.emit("window-created", Default::default());
+            }
+        });
+        let executor = cx.background_executor().clone();
+        let story_for_monitor = story.downgrade();
+        cx.spawn(async move |cx| {
+            loop {
+                executor.timer(Duration::from_millis(25)).await;
+                let Ok(done) = story_for_monitor.update(cx, |story, cx| story.observe_perf_document(cx))
+                else {
+                    break;
+                };
+                if done {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+    let story_view = gpui::AnyView::from(story.clone());
+    let shell = cx.new(|cx| {
+        ApplicationCloseShell::new_for_native_window_with_content(
+            application_close,
+            story_view,
+            window,
+            cx,
+        )
+    });
+    let root = cx.new(|cx| Root::new(shell, window, cx));
+    story.update(cx, |story, cx| {
+        story.observe_root_focus(&root, window, cx);
+    });
+    if story.read(cx).perf.is_none() {
+        focus_initial_command_context(&document_workspace.read(cx).focus_handle(), window);
+    }
+    root
+}
+
+/// The startup window's session restore, deferred behind recovery inspection
+/// when a recovery store is available.
+fn begin_startup_launch(
+    document_workspace: &Entity<DocumentWorkspace>,
+    launch_resolution: &NativeLaunchResolution,
+    document_recovery_store: &Option<Result<Arc<DocumentRecoveryStore>, String>>,
+    cx: &mut App,
+) {
+    let launch_action = launch_resolution.action.clone();
+    match document_recovery_store.as_ref() {
+        Some(Ok(store)) => {
+            document_workspace.update(cx, |workspace, cx| {
+                workspace.defer_startup_open(deferred_startup_open(
+                    launch_action.clone(),
+                ));
+                workspace.begin_startup_recovery_inspection(cx);
+            });
+            let store = store.clone();
+            let workspace = document_workspace.downgrade();
+            let task = cx.background_executor().spawn(async move {
+                let ids = store.active_document_ids().map_err(|error| error.to_string())?;
+                let mut items = Vec::new();
+                for id in ids {
+                    match store.load(id) {
+                        Ok(Some(recovered))
+                            if recovered.current_revision == recovered.saved_revision
+                                && !recovered.requires_save_as =>
+                        {
+                            if let Err(error) =
+                                store.clear_authority(&recovered.authority)
+                            {
+                                items.push(StartupRecoveryItem {
+                                    id,
+                                    authority: Some(recovered.authority),
+                                    source_path: Some(recovered.source_path),
+                                    current_revision: Some(recovered.current_revision),
+                                    saved_revision: Some(recovered.saved_revision),
+                                    availability: StartupRecoveryAvailability::Unavailable(
+                                        format!(
+                                            "the clean checkpoint could not be retired safely: {error}"
+                                        ),
+                                    ),
+                                });
+                            }
+                        }
+                        Ok(Some(recovered)) => items.push(StartupRecoveryItem {
+                            id,
+                            authority: Some(recovered.authority),
+                            source_path: Some(recovered.source_path),
+                            current_revision: Some(recovered.current_revision),
+                            saved_revision: Some(recovered.saved_revision),
+                            availability: match recovered.source_kind {
+                                RecoverySourceKind::Opened => {
+                                    StartupRecoveryAvailability::OpenedSourceNeedsVerification
+                                }
+                                RecoverySourceKind::Generated => {
+                                    StartupRecoveryAvailability::GeneratedCopyRequired
+                                }
+                            },
+                        }),
+                        Ok(None) => {}
+                        Err(error) => items.push(StartupRecoveryItem {
+                            id,
+                            authority: None,
+                            source_path: None,
+                            current_revision: None,
+                            saved_revision: None,
+                            availability: StartupRecoveryAvailability::Unavailable(
+                                error.to_string(),
+                            ),
+                        }),
+                    }
+                }
+                Ok::<_, String>(items)
+            });
+            cx.spawn(async move |cx| {
+                match task.await {
+                    Ok(items) => {
+                        let should_launch = items.is_empty();
+                        let _ = workspace.update(cx, |workspace, cx| {
+                            workspace.finish_startup_recovery_inspection(items, cx);
+                            if should_launch {
+                                if let Some(open) =
+                                    workspace.take_deferred_startup_open()
+                                {
+                                    apply_deferred_startup_open(workspace, open, cx);
+                                }
+                            }
+                        });
+                    }
+                    Err(error) => {
+                        let _ = workspace.update(cx, |workspace, cx| {
+                            workspace.show_session_recovery_warning_message(
+                                format!(
+                                    "Butter Paper could not inspect recoverable unsaved changes. Opening documents is paused to protect them. Details: {error}"
+                                ),
+                                cx,
+                            );
+                        });
+                    }
+                }
+            })
+            .detach();
+        }
+        _ => {
+            document_workspace.update(cx, |workspace, cx| {
+                apply_launch_action(workspace, launch_action, cx);
+            });
+        }
+    }
 }

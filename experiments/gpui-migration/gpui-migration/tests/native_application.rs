@@ -14,7 +14,7 @@ use butter_paper_gpui_migration::{
     },
     application_shell::{
         MakeInterfaceBigger, MakeInterfaceSmaller, ResetInterfaceSize, ToggleApplicationFullScreen,
-        ToggleApplicationMenuBar,
+        ToggleApplicationMenuBar, MinimiseWindow, NewWindow, ZoomWindow,
     },
     document_workspace::{
         ActualSize, CloseDocument, ContinuousView, DOCUMENT_OPEN_PROGRESS_ID,
@@ -280,6 +280,18 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
     assert_action(item(window, "Close Window"), |action| {
         action.as_any().is::<RequestApplicationClose>()
     });
+    #[cfg(target_os = "macos")]
+    {
+        assert_action(item(window, "Minimise"), |action| {
+            action.as_any().is::<MinimiseWindow>()
+        });
+        assert_action(item(window, "Zoom"), |action| {
+            action.as_any().is::<ZoomWindow>()
+        });
+    }
+    assert_action(item(file, "New Window"), |action| {
+        action.as_any().is::<NewWindow>()
+    });
 }
 
 #[test]
@@ -326,6 +338,7 @@ fn in_window_application_menu_is_the_four_menu_projection() {
     assert_eq!(
         menu_item_names(menu(&menus, "File")),
         [
+            "New Window",
             "New from Template…",
             "Open…",
             "<separator>",

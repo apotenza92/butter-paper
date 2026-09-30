@@ -6,7 +6,8 @@ use gpui_component::{GlobalState, menu::AppMenuBar};
 use crate::{
     application_close_workspace::{RequestApplicationClose, RequestApplicationQuit},
     application_shell::{
-        CheckForUpdates, MakeInterfaceBigger, MakeInterfaceSmaller, OpenReleasePage,
+        CheckForUpdates, MakeInterfaceBigger, MakeInterfaceSmaller, MinimiseWindow, NewWindow,
+        OpenReleasePage, ZoomWindow,
         ResetInterfaceSize, SetAsDefaultPdfApp, SetUpdateFrequencyAtStartup,
         SetUpdateFrequencyDaily, SetUpdateFrequencyEverySixHours,
         SetUpdateFrequencyEveryTwelveHours, SetUpdateFrequencyHourly, SetUpdateFrequencyMonthly,
@@ -96,7 +97,7 @@ fn build_native_application_menus_with_optional_shell(
                 .disabled(!state.document_ready || state.save_busy || state.rotation_busy),
         ]),
         build_native_view_menu(state, shell),
-        Menu::new("Window").items([MenuItem::action("Close Window", RequestApplicationClose)]),
+        build_window_menu(),
     ]
 }
 
@@ -111,6 +112,22 @@ pub fn build_in_window_application_menus(
         build_edit_menu(state, false),
         build_in_window_view_menu(shell),
     ]
+}
+
+/// On macOS the menu named "Window" is AppKit's windows menu: it lists open
+/// windows and, because document windows share a tabbing identifier, gains
+/// Merge All Windows, Move Tab to New Window and the tab commands.
+fn build_window_menu() -> Menu {
+    let mut items = Vec::new();
+    if cfg!(target_os = "macos") {
+        items.extend([
+            MenuItem::action("Minimise", MinimiseWindow),
+            MenuItem::action("Zoom", ZoomWindow),
+            MenuItem::separator(),
+        ]);
+    }
+    items.push(MenuItem::action("Close Window", RequestApplicationClose));
+    Menu::new("Window").items(items)
 }
 
 fn build_product_menu() -> Menu {
@@ -153,6 +170,7 @@ fn build_file_menu(
     state: &NativeApplicationMenuState,
 ) -> Menu {
     let mut items = vec![
+        MenuItem::action("New Window", NewWindow),
         MenuItem::action("New from Template…", NewFromTemplate),
         MenuItem::action("Open…", OpenPdf),
         MenuItem::separator(),

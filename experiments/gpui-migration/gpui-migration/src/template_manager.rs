@@ -17,7 +17,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName, IndexPath, Selectable as _, Sizable as _,
-    StyledExt as _, WindowExt as _,
+    WindowExt as _,
     alert::Alert,
     button::{Button, ButtonGroup, ButtonVariants as _},
     dialog::{
@@ -1220,6 +1220,47 @@ impl TemplateManagerView {
         Ok(view)
     }
 
+    /// Opens another window's view onto the same library authority, so every
+    /// window reads and writes one durable template library.
+    pub fn open_shared(
+        persistent: Arc<Mutex<PersistentTemplateManager>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<Self, TemplateManagerError> {
+        let model = persistent
+            .lock()
+            .map_err(|_| TemplateManagerError("template storage lock was poisoned".into()))?
+            .snapshot()?;
+        let mut view = Self::new(model, window, cx);
+        view.persistent = Some(persistent);
+        Ok(view)
+    }
+
+    pub fn shared_persistent(&self) -> Option<Arc<Mutex<PersistentTemplateManager>>> {
+        self.persistent.clone()
+    }
+
+    /// Refreshes the records from the shared library after another window
+    /// changed it. Skipped while this view has an operation in flight.
+    pub fn reload_from_shared(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.storage_busy() {
+            return false;
+        }
+        let Some(model) = self
+            .persistent
+            .as_ref()
+            .and_then(|persistent| persistent.lock().ok()?.snapshot().ok())
+        else {
+            return false;
+        };
+        if model.records() == self.model.records() && model.last_used_id() == self.model.last_used_id() {
+            return false;
+        }
+        self.model = model;
+        cx.notify();
+        true
+    }
+
     pub fn model(&self) -> &TemplateManagerModel {
         &self.model
     }
@@ -1296,6 +1337,7 @@ impl TemplateManagerView {
 
     pub fn open_dialog(owner: &Entity<Self>, window: &mut Window, cx: &mut App) {
         owner.update(cx, |manager, cx| {
+            manager.reload_from_shared(cx);
             manager.model.reset_for_open();
             manager.sync_template_list(window, cx);
         });
@@ -1368,14 +1410,18 @@ impl TemplateManagerView {
             cx.notify();
             return;
         }
-        let id = next_custom_template_id(self.model.records());
         let request = self.model.draft_request.clone();
         let result = if let Some(persistent) = self.persistent.as_ref() {
+            // Other windows share this library: allocate from its current records.
             persistent
                 .lock()
                 .map_err(|_| TemplateManagerError("template storage lock was poisoned".into()))
-                .and_then(|mut persistent| persistent.save_generated(&id, &name, request))
+                .and_then(|mut persistent| {
+                    let id = next_custom_template_id(persistent.snapshot()?.records());
+                    persistent.save_generated(&id, &name, request)
+                })
         } else {
+            let id = next_custom_template_id(self.model.records());
             self.model
                 .save_generated(&id, &name, request)
                 .map(|()| self.model.clone())
@@ -1659,7 +1705,6 @@ impl TemplateManagerView {
             cx.notify();
             return false;
         };
-        let id = next_imported_template_id(self.model.records());
         let previous_last_used_id = self.model.last_used_id().to_owned();
         let token = self.import_generation_token.clone();
         let cleanup_last_used_id = previous_last_used_id.clone();
@@ -1667,16 +1712,22 @@ impl TemplateManagerView {
             if token.load(Ordering::Acquire) != generation {
                 return (generation, Ok(None));
             }
+            // Other windows share this library: allocate from its current records.
+            let mut imported_id = None;
             let mut result = persistent
                 .lock()
                 .map_err(|_| TemplateManagerError("template storage lock was poisoned".into()))
                 .and_then(|mut persistent| {
+                    let id = next_imported_template_id(persistent.snapshot()?.records());
+                    imported_id = Some(id.clone());
                     persistent
                         .import_pdf(&id, &name, created_at, &path)
                         .map(Some)
                 });
             if token.load(Ordering::Acquire) != generation {
-                if result.is_ok() {
+                if result.is_ok()
+                    && let Some(id) = imported_id
+                {
                     result = persistent
                         .lock()
                         .map_err(|_| {

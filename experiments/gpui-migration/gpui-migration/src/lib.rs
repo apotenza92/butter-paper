@@ -21,6 +21,7 @@ pub mod document_resource;
 pub mod document_session;
 pub mod document_tab_bar;
 mod document_viewer;
+pub mod document_windows;
 pub mod document_workspace;
 pub mod electron_data_migration;
 pub mod engineering_visual_property_inspector;

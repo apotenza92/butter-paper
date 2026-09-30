@@ -35,6 +35,9 @@ gpui::actions!(
     [
         ToggleApplicationMenuBar,
         ToggleReverseScrollZoom,
+        NewWindow,
+        MinimiseWindow,
+        ZoomWindow,
         MakeInterfaceBigger,
         MakeInterfaceSmaller,
         ResetInterfaceSize,
@@ -286,6 +289,12 @@ pub fn init_application_shell_actions(cx: &mut App) {
             crate::application_close_workspace::RequestApplicationQuit,
             None,
         ),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-shift-n", NewWindow, None),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-n", NewWindow, None),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-m", MinimiseWindow, None),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-shift-=", MakeInterfaceBigger, None),
         #[cfg(not(target_os = "macos"))]

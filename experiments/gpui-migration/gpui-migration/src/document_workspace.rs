@@ -398,15 +398,28 @@ pub fn register_document_workspace_global_actions(
     workspace: &Entity<DocumentWorkspace>,
     cx: &mut App,
 ) {
-    let open_workspace = workspace.downgrade();
+    let workspace = workspace.downgrade();
+    register_document_workspace_actions_for(move |_, _| workspace.upgrade(), cx);
+}
+
+/// Application-level document commands for whichever workspace `resolve`
+/// returns: with several windows, the active one. `resolve` receives whether
+/// the command may open a window when none is available (Open and New do;
+/// Save does not).
+pub fn register_document_workspace_actions_for(
+    resolve: impl Fn(bool, &mut App) -> Option<Entity<DocumentWorkspace>> + 'static,
+    cx: &mut App,
+) {
+    let resolve = std::rc::Rc::new(resolve);
+    let open = resolve.clone();
     cx.on_action(move |_: &OpenPdf, cx| {
-        if let Some(workspace) = open_workspace.upgrade() {
+        if let Some(workspace) = open(true, cx) {
             workspace.update(cx, |workspace, cx| workspace.prompt_to_open_documents(cx));
         }
     });
-    let template_workspace = workspace.downgrade();
+    let template = resolve.clone();
     cx.on_action(move |_: &NewFromTemplate, cx| {
-        if let Some(workspace) = template_workspace.upgrade() {
+        if let Some(workspace) = template(true, cx) {
             workspace.update(cx, |workspace, cx| {
                 workspace.template_manage_requests =
                     workspace.template_manage_requests.saturating_add(1);
@@ -415,9 +428,9 @@ pub fn register_document_workspace_global_actions(
             });
         }
     });
-    let save_template_workspace = workspace.downgrade();
+    let save_template = resolve.clone();
     cx.on_action(move |_: &SaveDocumentAsTemplate, cx| {
-        if let Some(workspace) = save_template_workspace.upgrade() {
+        if let Some(workspace) = save_template(false, cx) {
             workspace.update(cx, |workspace, cx| {
                 workspace.handle_template_split_event(
                     TemplateSplitEvent::SaveDocumentAsTemplateRequested,
@@ -426,15 +439,15 @@ pub fn register_document_workspace_global_actions(
             });
         }
     });
-    let save_workspace = workspace.downgrade();
+    let save = resolve.clone();
     cx.on_action(move |_: &Save, cx| {
-        if let Some(workspace) = save_workspace.upgrade() {
+        if let Some(workspace) = save(false, cx) {
             workspace.update(cx, |workspace, cx| workspace.save_active_document(cx));
         }
     });
-    let save_as_workspace = workspace.downgrade();
+    let save_as = resolve;
     cx.on_action(move |_: &SaveAs, cx| {
-        if let Some(workspace) = save_as_workspace.upgrade() {
+        if let Some(workspace) = save_as(false, cx) {
             workspace.update(cx, |workspace, cx| {
                 if let Some(document_id) = workspace.active_document_id {
                     workspace.prompt_to_save_as(document_id, cx);

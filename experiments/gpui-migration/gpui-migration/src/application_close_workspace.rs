@@ -79,6 +79,12 @@ pub enum ApplicationCloseCheckpointPublication {
     },
 }
 
+/// The user kept the window open from the unsaved-changes dialog.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ApplicationCloseCancelled;
+
+impl gpui::EventEmitter<ApplicationCloseCancelled> for ApplicationCloseWorkspace {}
+
 pub trait ApplicationCloseCheckpointPublisher: Send + Sync {
     fn publish(
         &self,
@@ -423,6 +429,11 @@ impl ApplicationCloseWorkspace {
     ) -> ApplicationCloseTransitionStatus {
         let transition = self.coordinator.choose(action);
         let status = self.apply_transition(transition, cx);
+        if action == ApplicationCloseAction::Cancel
+            && status == ApplicationCloseTransitionStatus::Applied
+        {
+            cx.emit(ApplicationCloseCancelled);
+        }
         cx.notify();
         status
     }
