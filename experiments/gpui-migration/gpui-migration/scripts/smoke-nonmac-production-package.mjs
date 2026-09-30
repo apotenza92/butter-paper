@@ -1132,14 +1132,23 @@ function spawnPowershell(script) {
   };
 }
 
+function sendKeysLiteral(value) {
+  return String(value).replace(/[+^%~(){}[\]]/g, (character) => `{${character}}`);
+}
+
 // Completes the app's native Save As dialog with a new target. Returns false
-// when no dialog appears within the wait; throws for any other failure.
+// when no dialog appears within the wait; throws for any other failure. The
+// file name is set through the first editable field that supports ValuePattern
+// (typed as keystrokes otherwise), then Enter commits the focused dialog.
 function completeSaveAsDialog(pid, target, waitSeconds) {
   const outcome = powershell(
-    `${WINDOWS_UIA_PRELUDE} $dialogCondition=[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,[int]${pid}),[Windows.Automation.PropertyCondition]::new($A::ClassNameProperty,'#32770')); $deadline=(Get-Date).AddSeconds(${waitSeconds}); do { Start-Sleep -Milliseconds 250; $dialog=$A::RootElement.FindFirst($T::Descendants,$dialogCondition) } until($dialog -or (Get-Date) -gt $deadline); if(-not $dialog){'absent'; return}; $name=$dialog.FindFirst($T::Descendants,[Windows.Automation.PropertyCondition]::new($A::AutomationIdProperty,'1001')); if(-not $name){throw 'Save As file name field was not found'}; ([Windows.Automation.ValuePattern]$name.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)).SetValue(${powershellQuote(target)}); Start-Sleep -Milliseconds 200; $confirm=$dialog.FindFirst($T::Descendants,[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new($A::AutomationIdProperty,'1'),[Windows.Automation.PropertyCondition]::new($A::ControlTypeProperty,[Windows.Automation.ControlType]::Button))); if(-not $confirm){throw 'Save As confirmation button was not found'}; Invoke-Element $confirm; 'completed'`,
-    (waitSeconds + 20) * 1000,
+    `${WINDOWS_UIA_PRELUDE} Add-Type -AssemblyName System.Windows.Forms; Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class BpDialog { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }'; $dialogCondition=[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,[int]${pid}),[Windows.Automation.PropertyCondition]::new($A::ClassNameProperty,'#32770')); $deadline=(Get-Date).AddSeconds(${waitSeconds}); do { Start-Sleep -Milliseconds 250; $dialog=$A::RootElement.FindFirst($T::Descendants,$dialogCondition) } until($dialog -or (Get-Date) -gt $deadline); if(-not $dialog){'absent'; return}; [void][BpDialog]::SetForegroundWindow([IntPtr]$dialog.Current.NativeWindowHandle); Start-Sleep -Milliseconds 300; $route='keystrokes'; $edits=@($dialog.FindAll($T::Descendants,[Windows.Automation.PropertyCondition]::new($A::ControlTypeProperty,[Windows.Automation.ControlType]::Edit))); $preferred=@($edits | Where-Object { $_.Current.AutomationId -eq '1001' -or $_.Current.Name -like 'File name*' }) + $edits; foreach($edit in $preferred){ $pattern=$null; if($edit.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)){ $edit.SetFocus(); ([Windows.Automation.ValuePattern]$pattern).SetValue(${powershellQuote(target)}); $route="ValuePattern:$($edit.Current.AutomationId)"; break } }; if($route -eq 'keystrokes'){ [System.Windows.Forms.SendKeys]::SendWait('^a'); [System.Windows.Forms.SendKeys]::SendWait(${powershellQuote(sendKeysLiteral(target))}) }; Start-Sleep -Milliseconds 300; [void][BpDialog]::SetForegroundWindow([IntPtr]$dialog.Current.NativeWindowHandle); [System.Windows.Forms.SendKeys]::SendWait('{ENTER}'); $closeDeadline=(Get-Date).AddSeconds(10); do { Start-Sleep -Milliseconds 250; $open=$A::RootElement.FindFirst($T::Descendants,$dialogCondition) } until(-not $open -or (Get-Date) -gt $closeDeadline); if($open){ throw "Save As dialog stayed open after entering the target ($route)" }; "completed:$route"`,
+    (waitSeconds + 30) * 1000,
   );
-  return outcome.split(/\r?\n/).at(-1).trim() === "completed";
+  const last = outcome.split(/\r?\n/).at(-1).trim();
+  if (last === "absent") return false;
+  assert(last.startsWith("completed:"), `unexpected Save As dialog outcome: ${last}`);
+  return last.slice("completed:".length);
 }
 
 // Save is a global application action. Linux publishes in place with Ctrl+S.
@@ -1155,9 +1164,13 @@ async function saveEditedDocument(pid, windowsTarget, windowHandle) {
   const shortcut = spawnPowershell(
     `Add-Type -AssemblyName System.Windows.Forms; Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class BpFocus { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }'; [void][BpFocus]::SetForegroundWindow([IntPtr]${windowHandle}); Start-Sleep -Milliseconds 200; [System.Windows.Forms.SendKeys]::SendWait('^s')`,
   );
-  if (completeSaveAsDialog(pid, windowsTarget, 15)) {
+  const shortcutDialog = completeSaveAsDialog(pid, windowsTarget, 15);
+  if (shortcutDialog) {
     await shortcut.settle();
-    return { route: "ctrl+s + native Save As dialog", target: windowsTarget };
+    return {
+      route: `ctrl+s + native Save As dialog (${shortcutDialog})`,
+      target: windowsTarget,
+    };
   }
   const shortcutResult = await shortcut.settle(2000);
   powershell(
@@ -1167,7 +1180,8 @@ async function saveEditedDocument(pid, windowsTarget, windowHandle) {
   const invoke = spawnPowershell(
     `${WINDOWS_UIA_PRELUDE} $save=Find-Buttons ${pid} 'Save'; if($save.Count -ne 1){throw "expected one enabled Save button; found $($save.Count)"}; Invoke-Element $save[0]`,
   );
-  if (!completeSaveAsDialog(pid, windowsTarget, 25)) {
+  const controlDialog = completeSaveAsDialog(pid, windowsTarget, 25);
+  if (!controlDialog) {
     const invoked = await invoke.settle(2000);
     fail(
       `native Save As dialog did not appear after Ctrl+S or the Save control (Ctrl+S: ${shortcutResult.stderr || shortcutResult.code}; Save control: ${invoked.stderr || invoked.code})`,
@@ -1175,7 +1189,7 @@ async function saveEditedDocument(pid, windowsTarget, windowHandle) {
   }
   await invoke.settle();
   return {
-    route: "document-actions Save + native Save As dialog",
+    route: `document-actions Save + native Save As dialog (${controlDialog})`,
     target: windowsTarget,
     ctrlS: shortcutResult,
   };

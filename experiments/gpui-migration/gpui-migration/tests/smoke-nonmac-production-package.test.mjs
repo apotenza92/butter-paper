@@ -34,7 +34,9 @@ test("Windows Save opens the document actions Save control and completes the nat
   assert.match(source, /Find-Buttons \$\{pid\} 'Save'/);
   assert.match(source, /InvokePattern/);
   assert.match(source, /ClassNameProperty,'#32770'/);
-  assert.match(source, /AutomationIdProperty,'1001'/);
+  assert.match(source, /TryGetCurrentPattern\(\[Windows\.Automation\.ValuePattern\]::Pattern/);
+  assert.match(source, /SendWait\('\{ENTER\}'\)/);
+  assert.match(source, /Save As dialog stayed open/);
   assert.match(source, /ValuePattern/);
   assert.match(source, /join\(runDir, "saved\.pdf"\)/);
   assert.match(source, /Save As modified the original disposable PDF/);

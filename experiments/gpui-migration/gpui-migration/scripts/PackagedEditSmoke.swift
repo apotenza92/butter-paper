@@ -185,6 +185,20 @@ func performEdit(pid: pid_t) throws -> [String: Any] {
     let app = appElement(pid)
     let windows = applicationWindows(app)
     try require(!windows.isEmpty, "packaged app has no accessible window")
+    // Hosted runners have a 1024x768 display, so the default 1200x800 window
+    // opens partly off-screen. Move and fit the primary window on-screen first.
+    let display = CGDisplayBounds(CGMainDisplayID())
+    if let primary = windows.max(by: { (bounds($0)?.width ?? 0) * (bounds($0)?.height ?? 0) < (bounds($1)?.width ?? 0) * (bounds($1)?.height ?? 0) }) {
+        var origin = CGPoint(x: display.minX, y: display.minY + 30)
+        var size = CGSize(width: min(1200, display.width), height: min(800, display.height - 40))
+        if let position = AXValueCreate(.cgPoint, &origin) {
+            _ = AXUIElementSetAttributeValue(primary, kAXPositionAttribute as CFString, position)
+        }
+        if let dimensions = AXValueCreate(.cgSize, &size) {
+            _ = AXUIElementSetAttributeValue(primary, kAXSizeAttribute as CFString, dimensions)
+        }
+        wait(0.8)
+    }
     let windowFrames = windows.compactMap(bounds)
     try require(windowFrames.count == windows.count, "could not read accessible window bounds")
     let frame = windowFrames.max { $0.width * $0.height < $1.width * $1.height }!
@@ -192,10 +206,10 @@ func performEdit(pid: pid_t) throws -> [String: Any] {
     // GPUI exposes toolbar buttons to AX, but its PDF paint surface has no AX child.
     // Anchor the drag to the visible primary-window frame and the fixed 1200x800
     // launch geometry; keep it in the central document viewport, clear of rails.
-    let start = CGPoint(x: frame.minX + frame.width * 0.40, y: frame.minY + frame.height * 0.30)
-    let end = CGPoint(x: frame.minX + frame.width * 0.58, y: frame.minY + frame.height * 0.58)
+    // Same central-canvas proportions as the Windows/Linux smoke.
+    let start = CGPoint(x: frame.minX + frame.width * 0.44, y: frame.minY + frame.height * 0.42)
+    let end = CGPoint(x: frame.minX + frame.width * 0.54, y: frame.minY + frame.height * 0.52)
     try require(frame.insetBy(dx: 80, dy: 80).contains(start) && frame.insetBy(dx: 80, dy: 80).contains(end), "calculated rectangle drag is outside the supported window content area")
-    let display = CGDisplayBounds(CGMainDisplayID())
     try require(display.contains(start) && display.contains(end), "calculated rectangle drag is outside the primary display")
     // Tool shortcuts are scoped to the focused document workspace; a freshly
     // launched window has no focused document, so click the page first.
@@ -224,9 +238,7 @@ func performEdit(pid: pid_t) throws -> [String: Any] {
     try postMouse(.leftMouseUp, at: end)
     wait(0.6)
 
-    let saveActivation = try invokeSave(app)
-    wait(1.0)
-    return ["rectangleActivation": rectangleActivation, "saveActivation": saveActivation,
+    return ["rectangleActivation": rectangleActivation,
             "windowFrame": [frame.minX, frame.minY, frame.width, frame.height],
             "coordinateContract": "primary-window-relative central document viewport; GUI scale 100%; window minimum 900x600",
             "drag": [[start.x, start.y], [end.x, end.y]], "windowCount": windows.count]
@@ -268,7 +280,7 @@ func inspectPDF(path: String, expectedRectangles: Int? = 1) throws -> [String: A
 
 func main() throws {
     let args = Array(CommandLine.arguments.dropFirst())
-    guard args.count >= 1 else { throw SmokeFailure("usage: PackagedEditSmoke probe|edit PID|close PID|reopened PID PDF|inspect PDF") }
+    guard args.count >= 1 else { throw SmokeFailure("usage: PackagedEditSmoke probe|edit PID|save PID|close PID|reopened PID PDF|inspect PDF") }
     let value: [String: Any]
     switch args[0] {
     case "probe":
@@ -281,6 +293,13 @@ func main() throws {
     case "edit":
         guard args.count == 2, let pid = pid_t(args[1]) else { throw SmokeFailure("edit requires PID") }
         value = try performEdit(pid: pid)
+    case "save":
+        guard args.count == 2, let pid = pid_t(args[1]) else { throw SmokeFailure("save requires PID") }
+        try requireTrustedAX()
+        try activate(pid)
+        let saveActivation = try invokeSave(appElement(pid))
+        wait(1.0)
+        value = ["saveActivation": saveActivation]
     case "close":
         guard args.count == 2, let pid = pid_t(args[1]) else { throw SmokeFailure("close requires PID") }
         try closeNormally(pid: pid)

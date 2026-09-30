@@ -19,6 +19,7 @@ import {
   stableRecoveryStoreRoot,
   tryReadProductionOpenEvidence,
 } from "./production-open-evidence.mjs";
+import { readRectangleEditEvidence } from "./smoke-nonmac-production-package.mjs";
 
 const MAX_ARCHIVE = 256 * 1024 * 1024;
 const MAX_RECEIPT = 1024 * 1024;
@@ -634,7 +635,28 @@ export async function smokeSignedMacosPackage({
       fail(
         "packaged app did not remain alive through both worker observations",
       );
+    const screenshot = (name) => {
+      // Diagnostic-only screenshots, outside the aggregated evidence directory.
+      const directory = process.env.BP_SMOKE_SCREENSHOT_DIR;
+      if (!directory) return;
+      spawnSync("/usr/sbin/screencapture", ["-x", join(directory, `${name}.png`)], {
+        timeout: 10_000,
+      });
+    };
+    screenshot("before-edit");
     result.edit = driver("edit", child.pid);
+    screenshot("after-edit");
+    try {
+      result.recoveryAfterEdit = await readRectangleEditEvidence(
+        recoveryStoreRoot,
+        "darwin",
+        { requireNewEdit: false },
+      );
+    } catch (error) {
+      result.recoveryAfterEdit = { error: error.message };
+    }
+    result.save = driver("save", child.pid);
+    screenshot("after-save");
     const saveDeadline = Date.now() + 30_000;
     let outputBytes;
     while (Date.now() < saveDeadline) {
