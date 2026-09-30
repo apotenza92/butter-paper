@@ -1140,7 +1140,7 @@ async function driveRectangleEdit(pid) {
   };
 }
 
-const WINDOWS_UIA_PRELUDE = `Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes; $A=[Windows.Automation.AutomationElement]; $T=[Windows.Automation.TreeScope]; function Find-Buttons($procId, $name){ $c=[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,[int]$procId),[Windows.Automation.PropertyCondition]::new($A::NameProperty,$name)); @($A::RootElement.FindAll($T::Descendants,$c) | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and $_.Current.IsEnabled }) }; function Invoke-Element($el){ ([Windows.Automation.InvokePattern]$el.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)).Invoke() };`;
+const WINDOWS_UIA_PRELUDE = `Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes; $A=[Windows.Automation.AutomationElement]; $T=[Windows.Automation.TreeScope]; function Find-Buttons($procId, $name){ $c=[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,[int]$procId),[Windows.Automation.PropertyCondition]::new($A::NameProperty,$name)); @($A::RootElement.FindAll($T::Descendants,$c) | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and $_.Current.IsEnabled }) }; function Invoke-Element($el){ $p=$null; if($el.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$p)){ $p.Invoke(); return }; $r=$el.Current.BoundingRectangle; $h=[System.Diagnostics.Process]::GetProcessById($el.Current.ProcessId).MainWindowHandle; if($h -eq [IntPtr]::Zero -or $r.IsEmpty){throw "$($el.Current.Name) has no invoke pattern or clickable bounds"}; if(-not ('BpClick' -as [type])){ Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class BpClick { [StructLayout(LayoutKind.Sequential)] public struct P { public int X,Y; } [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr h, ref P p); [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l); public static void Click(IntPtr h,int x,int y){ P p=new P(); p.X=x; p.Y=y; ScreenToClient(h,ref p); IntPtr l=(IntPtr)(((p.Y & 0xFFFF) << 16) | (p.X & 0xFFFF)); PostMessage(h,0x0200,IntPtr.Zero,l); System.Threading.Thread.Sleep(60); PostMessage(h,0x0201,(IntPtr)1,l); System.Threading.Thread.Sleep(60); PostMessage(h,0x0202,IntPtr.Zero,l); } }' }; [BpClick]::Click($h,[int]($r.X+$r.Width/2),[int]($r.Y+$r.Height/2)) };`;
 
 function powershellQuote(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
@@ -1296,7 +1296,7 @@ async function saveEditedDocument(pid, windowHandle) {
   }
   await invoke.settle();
   return {
-    route: `document-actions Save + native Save As dialog (${controlDialog})`,
+    route: `document-actions Save (UIA invoke, or a posted click when the control has no invoke pattern) + native Save As dialog (${controlDialog})`,
     ctrlS: shortcutResult,
   };
 }
