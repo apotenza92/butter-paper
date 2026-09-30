@@ -280,7 +280,9 @@ Lean native build checkpoint (2026-09-30): the stable-candidate workflow no long
     - [x] Centre modals in the window with a fade, not a slide from the top, and keep the close button fully reachable (reviewed dialog-centring component patch).
     - [x] On macOS, the first click on an inactive window only focuses it (the title bar still drags); the tool rail and toolbar dim while the window is inactive.
     - [x] Zoom anchors at the page point under the cursor. View > Reverse Scroll Zoom is a saved preference for mice reversed by utilities such as LinearMouse, which apps cannot detect.
-    - [ ] Pan: middle-button drag pans with any tool; the Hand tool fault still needs reproducing in the running app.
+    - [x] Pan: middle-button drag pans with any tool. The Hand tool failed once scrolled more than one viewport, because recorded viewport bounds moved with the scroll; the viewport now records its visible bounds and painted scroll, which also fixes zoom anchoring. Integration tests cover both at depth.
+    - [x] Right tool rail: its own edge handle snaps the width to 1–8 whole columns while dragging, with icons reflowing live; no scrollbar; top and bottom fades with an ellipsis marker and a "Scroll to see other tools" tooltip when content overflows (Electron parity).
+    - [x] Set as the default PDF app: on macOS, Launch Services with verification, and the app bundle now declares PDF documents (0.0.26 did not); on Windows, per-user ProgID and registered-app capabilities, then Default Apps opens for confirmation; on Linux, `xdg-mime` with verification. Windows and Linux are unit-tested only.
   - Windows (all platforms):
     - [ ] Multiple windows, and File > New Window.
     - [ ] Closing a window never quits on macOS; the Dock icon reopens a window, and files opened from Finder with no window open a new one.

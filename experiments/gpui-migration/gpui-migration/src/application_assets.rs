@@ -66,6 +66,7 @@ impl AssetSource for ApplicationAssets {
                 Some(include_bytes!("../assets/icons/rail/cloud-plus.svg"))
             }
             "icons/rail/callout.svg" => Some(include_bytes!("../assets/icons/rail/callout.svg")),
+            "icons/rail/ellipsis.svg" => Some(include_bytes!("../assets/icons/rail/ellipsis.svg")),
             _ => None,
         };
         if let Some(bytes) = thumbnail {
@@ -171,6 +172,9 @@ impl AssetSource for ApplicationAssets {
         if "icons/rail/callout.svg".starts_with(path) {
             entries.push("icons/rail/callout.svg".into());
         }
+        if "icons/rail/ellipsis.svg".starts_with(path) {
+            entries.push("icons/rail/ellipsis.svg".into());
+        }
         Ok(entries)
     }
 }
@@ -204,7 +208,7 @@ mod tests {
     #[test]
     fn every_rail_icon_is_embedded_and_loadable() {
         let icons = ApplicationAssets.list("icons/rail/").unwrap();
-        assert_eq!(icons.len(), 26);
+        assert_eq!(icons.len(), 27);
         for path in icons {
             let bytes = ApplicationAssets
                 .load(&path)

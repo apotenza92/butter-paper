@@ -115,12 +115,7 @@ pub fn build_in_window_application_menus(
 
 fn build_product_menu() -> Menu {
     Menu::new("Butter Paper").items([
-        MenuItem::action("Set as Default PDF App…", SetAsDefaultPdfApp).disabled(true),
-        MenuItem::action(
-            "Default PDF registration is not yet available in Butter Paper",
-            SetAsDefaultPdfApp,
-        )
-        .disabled(true),
+        MenuItem::action("Set as Default PDF App…", SetAsDefaultPdfApp),
         MenuItem::separator(),
         MenuItem::action("Check for Updates…", CheckForUpdates).disabled(true),
         MenuItem::action(

@@ -9,7 +9,7 @@ use butter_paper_gpui_migration::application_shell::application_data_directory;
 use butter_paper_gpui_migration::application_shell::{
     ApplicationShellPreferences, ApplicationShellPreferencesStore, ApplicationUiZoomAction,
     MakeInterfaceBigger, MakeInterfaceSmaller, OpenReleasePage, ResetInterfaceSize,
-    ReverseScrollZoom, ToggleApplicationFullScreen, ToggleApplicationMenuBar,
+    ReverseScrollZoom, SetAsDefaultPdfApp, ToggleApplicationFullScreen, ToggleApplicationMenuBar,
     ToggleReverseScrollZoom, apply_application_ui_zoom,
     focus_initial_command_context, init_application_shell_actions,
     resolve_application_ui_zoom_level,
@@ -79,7 +79,8 @@ use butter_paper_gpui_migration::window_title_bar::{
 };
 use gpui::{
     App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _,
+    IntoElement, ParentElement as _, PromptLevel, Render, StatefulInteractiveElement as _,
+    Styled as _,
     Subscription, Task, Window, WindowBounds, WindowOptions, div, px, size,
 };
 use gpui_component::{ActiveTheme as _, Root, WindowExt as _, menu::AppMenuBar, v_flex};
@@ -1326,6 +1327,27 @@ fn register_application_shell_actions(
                 });
             });
         });
+    });
+
+    cx.on_action(move |_: &SetAsDefaultPdfApp, cx| {
+        let task = cx
+            .background_executor()
+            .spawn(async { butter_paper_gpui_migration::default_pdf_app::set_as_default_pdf_app() });
+        cx.spawn(async move |cx| {
+            let result = task.await;
+            let _ = window_handle.update(cx, |_, window, cx| {
+                let (level, message, detail) = match result {
+                    Ok(result) => (PromptLevel::Info, result.message, None),
+                    Err(error) => (
+                        PromptLevel::Warning,
+                        "Butter Paper could not be set as the default PDF app".to_owned(),
+                        Some(error),
+                    ),
+                };
+                let _ = window.prompt(level, &message, detail.as_deref(), &["OK"], cx);
+            });
+        })
+        .detach();
     });
 
     let story_for_reverse_zoom = story.downgrade();

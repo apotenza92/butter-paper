@@ -75,7 +75,8 @@ use butter_paper_gpui_migration::document_workspace::{
     DOCUMENT_SNAP_DIMENSION_INCREMENT_ID, DOCUMENT_SNAP_GUIDES_ID, DOCUMENT_SNAP_MARKUP_ID,
     DOCUMENT_SNAP_POPOVER_ID, DOCUMENT_SNAP_SETTINGS_ID, DOCUMENT_SNAPSHOT_TOOL_ID,
     DOCUMENT_TEXT_BOX_EDITOR_ID, DOCUMENT_TEXT_BOX_TOOL_ID, DOCUMENT_THUMBNAIL_STRIP_ID,
-    DOCUMENT_TOOLBAR_SCROLL_ID, DOCUMENT_VIEWER_PROGRESS_ID, DOCUMENT_VIEWER_STATUS_ID,
+    DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID, DOCUMENT_TOOLBAR_SCROLL_ID, DOCUMENT_VIEWER_PROGRESS_ID,
+    DOCUMENT_VIEWER_STATUS_ID, RAIL_OVERFLOW_TOOLTIP,
     DOCUMENT_VIEWPORT_ID, DOCUMENT_WORKSPACE_ID, DeferredStartupOpen, DirtyCloseResolution,
     DocumentId, DocumentOpenBatchDisposition, DocumentOpenBatchRequest, DocumentOpenBatchStatus,
     DocumentOpenOrigin, DocumentSaveFailureKind, DocumentSaveFailureOperation, DocumentSaveRoute,
@@ -44159,4 +44160,229 @@ fn hold_space_pans_temporarily_and_double_tap_toggles_pan_select(cx: &mut TestAp
         !workspace_pan_for_test(cx, &workspace),
         "release after toggling back must stay on Select"
     );
+}
+
+fn pan_test_workspace(
+    cx: &mut TestAppContext,
+) -> (
+    gpui::Entity<DocumentWorkspace>,
+    DocumentId,
+    &mut gpui::VisualTestContext,
+) {
+    // Scrolled further than one viewport height, where panning used to fail.
+    scrolled_test_workspace(cx, 3_000.)
+}
+
+fn scrolled_test_workspace(
+    cx: &mut TestAppContext,
+    scroll_y: f32,
+) -> (
+    gpui::Entity<DocumentWorkspace>,
+    DocumentId,
+    &mut gpui::VisualTestContext,
+) {
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("pan.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        );
+        workspace.set_view_configuration(request.document_id, PageViewMode::Continuous, 400., cx);
+        workspace
+            .refresh_viewport_async(request.document_id, 800., 600., 1., cx)
+            .unwrap();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.set_viewport_scroll(request.document_id, 200., scroll_y, cx));
+    });
+    // The viewer re-plans for a new scroll offset on the following frame.
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    (workspace, request.document_id, cx)
+}
+
+fn pan_scroll(
+    cx: &mut gpui::VisualTestContext,
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: DocumentId,
+) -> (f32, f32) {
+    workspace.read_with(cx, |workspace, cx| {
+        workspace.document_view_state(document_id, cx).unwrap().scroll()
+    })
+}
+
+#[gpui::test]
+fn hand_tool_drag_pans_the_canvas_with_the_pointer(cx: &mut TestAppContext) {
+    let (workspace, document_id, cx) = pan_test_workspace(cx);
+    let hand = cx.debug_bounds("document-workspace-pan-tool").unwrap();
+    cx.simulate_click(hand.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(workspace.read_with(cx, |workspace, _| workspace.is_pan_tool_active()));
+
+    let start = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap().center();
+    let before = pan_scroll(cx, &workspace, document_id);
+    let end = point(start.x - px(40.), start.y - px(50.));
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(pan_scroll(cx, &workspace, document_id), (before.0 + 40., before.1 + 50.));
+}
+
+#[gpui::test]
+fn middle_button_drag_pans_the_canvas_with_any_tool(cx: &mut TestAppContext) {
+    let (workspace, document_id, cx) = pan_test_workspace(cx);
+    assert!(!workspace.read_with(cx, |workspace, _| workspace.is_pan_tool_active()));
+    let start = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap().center();
+    let before = pan_scroll(cx, &workspace, document_id);
+    let end = point(start.x + px(30.), start.y + px(20.));
+    cx.simulate_mouse_down(start, MouseButton::Middle, Modifiers::default());
+    cx.simulate_mouse_move(end, Some(MouseButton::Middle), Modifiers::default());
+    cx.simulate_mouse_up(end, MouseButton::Middle, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(pan_scroll(cx, &workspace, document_id), (before.0 - 30., before.1 - 20.));
+    assert!(!workspace.read_with(cx, |workspace, _| workspace.is_pan_tool_active()));
+}
+
+#[gpui::test]
+fn tool_rail_resize_snaps_to_whole_columns_while_dragging(cx: &mut TestAppContext) {
+    let (_workspace, _document_id, cx) = pan_test_workspace(cx);
+    let rem = cx.update(|window, _| window.rem_size());
+    let column_width = |columns: f32| rem * (0.25 + 2.5 * columns);
+    let rail = |cx: &mut gpui::VisualTestContext| {
+        cx.debug_bounds("document-workspace-right-rail").unwrap()
+    };
+    assert_eq!(rail(cx).size.width, column_width(2.));
+
+    let handle = cx
+        .debug_bounds(DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID)
+        .unwrap()
+        .center();
+    let right = rail(cx).right();
+    cx.simulate_mouse_down(handle, MouseButton::Left, Modifiers::default());
+    // GPUI starts a drag once the pointer moves past its threshold.
+    cx.simulate_mouse_move(point(handle.x - px(4.), handle.y), Some(MouseButton::Left), Modifiers::default());
+    // Widths between column stops round to the nearest whole column, live.
+    for (target_width, columns) in [(column_width(3.) + px(9.), 3.), (column_width(7.) - px(9.), 7.), (px(2_000.), 8.)] {
+        let pointer = point(right - target_width, handle.y);
+        cx.simulate_mouse_move(pointer, Some(MouseButton::Left), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(rail(cx).size.width, column_width(columns));
+    }
+    let pointer = point(right - column_width(1.), handle.y);
+    cx.simulate_mouse_move(pointer, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(pointer, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(rail(cx).size.width, column_width(1.));
+}
+
+#[gpui::test]
+fn tool_rail_overflow_shows_electron_style_fades_without_a_scrollbar(cx: &mut TestAppContext) {
+    let (_workspace, _document_id, cx) = pan_test_workspace(cx);
+    cx.simulate_resize(size(px(1_200.), px(360.)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds("document-workspace-right-rail-overflow-top").is_none());
+    let bottom = cx
+        .debug_bounds("document-workspace-right-rail-overflow-bottom")
+        .expect("an overflowing rail shows the bottom scroll cue");
+    let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
+    assert!(rail.contains(&bottom.center()));
+
+    // Wheel over the cue scrolls the rail and reveals the top cue.
+    cx.simulate_event(ScrollWheelEvent {
+        position: bottom.center(),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-80.))),
+        ..Default::default()
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds("document-workspace-right-rail-overflow-top").is_some());
+    assert_eq!(RAIL_OVERFLOW_TOOLTIP, "Scroll to see other tools");
+}
+
+#[gpui::test]
+fn press_outside_an_open_popover_only_dismisses_it(cx: &mut TestAppContext) {
+    let (workspace, document_id, cx) = scrolled_test_workspace(cx, 300.);
+    let rectangle_tool = cx.debug_bounds(DOCUMENT_RECTANGLE_TOOL_ID).unwrap();
+    cx.simulate_click(rectangle_tool.center(), Modifiers::default());
+    let snap_settings = cx.debug_bounds(DOCUMENT_SNAP_SETTINGS_ID).unwrap();
+    cx.simulate_click(snap_settings.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds(DOCUMENT_SNAP_POPOVER_ID).is_some());
+
+    let rectangles = |cx: &mut gpui::VisualTestContext| {
+        workspace
+            .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+            .unwrap()
+            .rectangles
+            .len()
+    };
+    let before = rectangles(cx);
+    let start = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap().center();
+    let end = point(start.x + px(80.), start.y + px(60.));
+    let drag = |cx: &mut gpui::VisualTestContext| {
+        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    };
+
+    drag(cx);
+    assert!(cx.debug_bounds(DOCUMENT_SNAP_POPOVER_ID).is_none(), "the press dismissed the popover");
+    assert_eq!(rectangles(cx), before, "the dismissing press drew nothing");
+
+    drag(cx);
+    assert_eq!(rectangles(cx), before + 1, "the next press draws normally");
+}
+
+#[gpui::test]
+fn control_wheel_zoom_keeps_the_document_point_under_the_pointer(cx: &mut TestAppContext) {
+    let (workspace, document_id, cx) = pan_test_workspace(cx);
+    let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    let pointer = point(viewport.origin.x + px(300.), viewport.origin.y + px(200.));
+    let local = (300.0_f32, 200.0_f32);
+    let view = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            let view = workspace.document_view_state(document_id, cx).unwrap();
+            (view.zoom_percent(), view.scroll())
+        })
+    };
+    let (zoom_before, scroll_before) = view(cx);
+    cx.simulate_event(ScrollWheelEvent {
+        position: pointer,
+        delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-120.))),
+        modifiers: Modifiers {
+            control: true,
+            ..Modifiers::default()
+        },
+        ..Default::default()
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (zoom_after, scroll_after) = view(cx);
+    assert!(zoom_after > zoom_before, "control-wheel up zooms in by default");
+    let ratio = zoom_after / zoom_before;
+    // Page geometry scales with zoom; only fixed page padding does not.
+    let expected_y = (scroll_before.1 + local.1) * ratio - local.1;
+    let expected_x = (scroll_before.0 + local.0) * ratio - local.0;
+    assert!((scroll_after.1 - expected_y).abs() < 40., "{scroll_after:?} vs y {expected_y}");
+    assert!((scroll_after.0 - expected_x).abs() < 40., "{scroll_after:?} vs x {expected_x}");
 }

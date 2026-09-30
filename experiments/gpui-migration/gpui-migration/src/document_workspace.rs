@@ -146,7 +146,7 @@ use crate::{
 };
 use gpui::{
     Anchor, App, AppContext as _, BorderStyle, Bounds, ClickEvent, ContentMask, Context,
-    CursorStyle, DispatchPhase, Edges, Entity, EventEmitter, FocusHandle, Focusable as _,
+    CursorStyle, DispatchPhase, DragMoveEvent, Edges, Entity, EventEmitter, FocusHandle, Focusable as _,
     FontStyle, FontWeight, InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent,
     KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
     MouseUpEvent, ObjectFit, ParentElement as _, PathBuilder, PathPromptOptions, Pixels, Point,
@@ -469,6 +469,7 @@ pub const DOCUMENT_CALLOUT_TOOL_ID: &str = "tool-callout";
 pub const DOCUMENT_REDACT_TOOL_ID: &str = "tool-redact";
 pub const DOCUMENT_REDACT_PENDING_ALERT_ID: &str = "document-workspace-redact-pending-alert";
 pub const DOCUMENT_TOOLBAR_SCROLL_ID: &str = "document-workspace-toolbar-scroll";
+pub const DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID: &str = "document-workspace-right-rail-resize-handle";
 pub const DOCUMENT_TOOLBAR_CONTENT_ID: &str = "document-workspace-toolbar-content";
 pub const DOCUMENT_ACTIVE_INSPECTOR_SLOT_ID: &str = "document-workspace-active-inspector-slot";
 pub const DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID: &str = "document-workspace-active-inspector-close";
@@ -2441,7 +2442,10 @@ pub struct DocumentWorkspace {
     next_painted_state_sequence: u64,
     page_interactions: HashMap<(DocumentId, u32), PageInteraction>,
     last_painted_page_evidence: HashMap<(DocumentId, u32), PaintedPageEvidence>,
+    /// Visible viewport bounds in window coordinates, independent of scroll.
     viewport_bounds: HashMap<DocumentId, Bounds<Pixels>>,
+    /// Scroll offset (content pixels) at the last paint of each viewport.
+    viewport_painted_scroll: HashMap<DocumentId, (f32, f32)>,
     active_annotation_pointer: Option<ActiveAnnotationPointer>,
     properties_click_candidate: Option<PropertiesClickCandidate>,
     pending_close_document_id: Option<DocumentId>,
@@ -2476,7 +2480,6 @@ pub struct DocumentWorkspace {
     right_rail_actions_open: bool,
     right_rail_columns: usize,
     right_rail_resizable: Entity<ResizableState>,
-    right_rail_layout: Rc<Cell<Option<(Pixels, Pixels)>>>,
     right_rail_scroll: ScrollHandle,
     pan_tool_active: bool,
     pan_drag: Option<(DocumentId, Point<Pixels>, Point<Pixels>)>,
@@ -3881,6 +3884,7 @@ impl DocumentWorkspace {
             page_interactions: HashMap::new(),
             last_painted_page_evidence: HashMap::new(),
             viewport_bounds: HashMap::new(),
+            viewport_painted_scroll: HashMap::new(),
             active_annotation_pointer: None,
             properties_click_candidate: None,
             pending_close_document_id: None,
@@ -3915,7 +3919,6 @@ impl DocumentWorkspace {
             right_rail_actions_open: false,
             right_rail_columns: 2,
             right_rail_resizable: cx.new(|_| ResizableState::default()),
-            right_rail_layout: Rc::new(Cell::new(None)),
             right_rail_scroll: ScrollHandle::new(),
             pan_tool_active: false,
             pan_drag: None,
@@ -10584,13 +10587,11 @@ impl DocumentWorkspace {
             }
             WheelOutcome::Zoom(zoom_percent) => {
                 let bounds = self.viewport_bounds.get(&document_id).copied();
+                // The scroll container may already have applied this wheel
+                // delta; anchor to the content that was painted under the pointer.
+                let painted_scroll = self.viewport_painted_scroll.get(&document_id).copied();
                 session.update(cx, |session, cx| {
-                    let offset = session.viewer.scroll_handle().offset();
-                    let old_scroll = (
-                        (-f32::from(offset.x)).max(0.),
-                        (-f32::from(offset.y)).max(0.),
-                    );
-                    if let Some(bounds) = bounds {
+                    if let (Some(bounds), Some(old_scroll)) = (bounds, painted_scroll) {
                         let local_x = f32::from(event.position.x - bounds.origin.x);
                         let local_y = f32::from(event.position.y - bounds.origin.y);
                         // Resolved against the new layout in refresh_viewport_async,
@@ -17600,6 +17601,7 @@ impl DocumentWorkspace {
         self.last_painted_page_evidence
             .retain(|(owner, _), _| *owner != document_id);
         self.viewport_bounds.remove(&document_id);
+        self.viewport_painted_scroll.remove(&document_id);
         drop(session);
         defer_drop_images(images, cx);
         if self.active_document_id == Some(document_id) {
@@ -21257,6 +21259,88 @@ fn rail_tool_secondary_click(
     event.click_count() > 1
 }
 
+/// Drag marker for the tool rail's edge handle.
+#[derive(Clone, Copy)]
+struct RightRailResizeDrag;
+
+/// The drag carries no visible ghost; the rail itself resizes.
+struct RightRailResizeDragGhost;
+
+impl Render for RightRailResizeDragGhost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RailOverflowEdge {
+    Top,
+    Bottom,
+}
+
+pub const RAIL_OVERFLOW_TOOLTIP: &str = "Scroll to see other tools";
+
+/// Whether the rail can scroll up and down from its current offset.
+fn rail_overflow(scroll: &ScrollHandle) -> (bool, bool) {
+    let offset = -f32::from(scroll.offset().y);
+    let max = f32::from(scroll.max_offset().y);
+    (offset > 0.5, max - offset > 0.5)
+}
+
+/// Electron-style overflow cue: a fade into the rail background with an
+/// ellipsis marker. Wheel over the marker scrolls the rail.
+fn rail_overflow_hint(
+    edge: RailOverflowEdge,
+    scroll: ScrollHandle,
+    owner: WeakEntity<DocumentWorkspace>,
+    cx: &App,
+) -> gpui::AnyElement {
+    let background = cx.theme().background;
+    let transparent = background.opacity(0.);
+    let (angle, id) = match edge {
+        RailOverflowEdge::Top => (180., "document-workspace-right-rail-overflow-top"),
+        RailOverflowEdge::Bottom => (0., "document-workspace-right-rail-overflow-bottom"),
+    };
+    gpui::div()
+        .absolute()
+        .left_0()
+        .right_0()
+        .when(edge == RailOverflowEdge::Top, |fade| fade.top_0().items_start())
+        .when(edge == RailOverflowEdge::Bottom, |fade| fade.bottom_0().items_end())
+        .h(px(56.))
+        .flex()
+        .justify_center()
+        .bg(gpui::linear_gradient(
+            angle,
+            gpui::linear_color_stop(background, 0.72),
+            gpui::linear_color_stop(transparent, 1.),
+        ))
+        .child(
+            gpui::div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .size_8()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(cx.theme().muted_foreground)
+                .tooltip(|window, cx| gpui_component::tooltip::Tooltip::new(RAIL_OVERFLOW_TOOLTIP).build(window, cx))
+                .on_scroll_wheel(move |event: &ScrollWheelEvent, _, cx| {
+                    let delta = event.delta.pixel_delta(px(16.));
+                    let offset = scroll.offset();
+                    let max = scroll.max_offset();
+                    scroll.set_offset(gpui::point(
+                        offset.x,
+                        (offset.y + delta.y).clamp(-max.y, px(0.)),
+                    ));
+                    let _ = owner.update(cx, |_, cx| cx.notify());
+                    cx.stop_propagation();
+                })
+                .child(gpui_component::Icon::default().path("icons/rail/ellipsis.svg").size_5()),
+        )
+        .into_any_element()
+}
+
 fn right_rail_width(columns: usize, rem: Pixels) -> Pixels {
     rem * (0.25 + 2.5 * columns.clamp(1, 8) as f32)
 }
@@ -23689,11 +23773,23 @@ impl Render for DocumentWorkspace {
         }
         let has_viewer_pages = !viewer_pages.is_empty();
         let viewport_control = cx.entity().downgrade();
+        let viewport_observer_scroll = viewer_scroll.clone();
         let viewport_observer = canvas(
             |_, _, _| (),
             move |bounds, _, window, cx| {
+                // This observer is laid out inside the scrolled content, so its
+                // origin moves with the scroll offset; record the visible viewport.
+                let offset = viewport_observer_scroll.offset();
+                let visible = Bounds {
+                    origin: bounds.origin - offset,
+                    size: bounds.size,
+                };
                 let _ = viewport_control.update(cx, |workspace, cx| {
-                    workspace.viewport_bounds.insert(document_id, bounds);
+                    workspace.viewport_bounds.insert(document_id, visible);
+                    workspace.viewport_painted_scroll.insert(
+                        document_id,
+                        ((-f32::from(offset.x)).max(0.), (-f32::from(offset.y)).max(0.)),
+                    );
                     workspace.observe_viewport(
                         document_id,
                         f32::from(bounds.size.width),
@@ -26232,9 +26328,35 @@ impl Render for DocumentWorkspace {
             .h_full()
             .min_h_0()
             .child(supporting_actions);
+        let right_rail_overflow = rail_overflow(&self.right_rail_scroll);
         let right_rail = v_flex()
             .id("document-workspace-right-rail")
             .debug_selector(|| "document-workspace-right-rail".into())
+            .relative()
+            .on_drag_move(cx.listener(
+                |workspace, event: &DragMoveEvent<RightRailResizeDrag>, window, cx| {
+                    let width = event.bounds.right() - event.event.position.x;
+                    let columns = right_rail_columns(width, window.rem_size());
+                    if columns != workspace.right_rail_columns {
+                        workspace.right_rail_columns = columns;
+                        cx.notify();
+                    }
+                },
+            ))
+            .child(
+                gpui::div()
+                    .id(DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID)
+                    .debug_selector(|| DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID.into())
+                    .absolute()
+                    .left(px(-3.))
+                    .top_0()
+                    .bottom_0()
+                    .w(px(6.))
+                    .cursor(gpui::CursorStyle::ResizeLeftRight)
+                    .on_drag(RightRailResizeDrag, |_, _, _, cx| {
+                        cx.new(|_| RightRailResizeDragGhost)
+                    }),
+            )
             .w_full()
             .h_full()
             .flex_none()
@@ -26276,11 +26398,33 @@ impl Render for DocumentWorkspace {
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .overflow_y_scroll()
-                    .py_2()
-                    .track_scroll(&self.right_rail_scroll)
-                    .child(tool_group)
-                    .vertical_scrollbar(&self.right_rail_scroll),
+                    .relative()
+                    .child(
+                        gpui::div()
+                            .id("document-workspace-right-rail-scroll-viewport")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .py_2()
+                            .track_scroll(&self.right_rail_scroll)
+                            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
+                            .child(tool_group),
+                    )
+                    .when(right_rail_overflow.0, |rail| {
+                        rail.child(rail_overflow_hint(
+                            RailOverflowEdge::Top,
+                            self.right_rail_scroll.clone(),
+                            cx.entity().downgrade(),
+                            cx,
+                        ))
+                    })
+                    .when(right_rail_overflow.1, |rail| {
+                        rail.child(rail_overflow_hint(
+                            RailOverflowEdge::Bottom,
+                            self.right_rail_scroll.clone(),
+                            cx.entity().downgrade(),
+                            cx,
+                        ))
+                    }),
             );
         let properties_resizable = window.use_keyed_state(
             (
@@ -26290,38 +26434,17 @@ impl Render for DocumentWorkspace {
             cx,
             |_, _| ResizableState::default(),
         );
-        let rail_layout = self.right_rail_layout.clone();
-        let rail_state = self.right_rail_resizable.clone();
         let rail_width = right_rail_width(self.right_rail_columns, window.rem_size());
         root.child(session_tab_strip)
         .child(h_flex().flex_1().min_h_0().w_full().items_stretch()
         .child(self.render_left_rail(true, thumbnails_fit, cx))
         .child(gpui::div().flex_1().min_w_0().h_full().overflow_hidden()
-        .on_prepaint(move |bounds, window, cx| {
-            let key = (bounds.size.width, rail_width);
-            if rail_layout.replace(Some(key)) == Some(key) { return; }
-            let state = rail_state.clone();
-            let layout = rail_layout.clone();
-            // Window resizing must not proportionally squeeze a two-column
-            // rail until its stock buttons overflow their container.
-            window.defer(cx, move |window, cx| {
-                if layout.get() != Some(key) { return; }
-                state.update(cx, |state, cx| state.resize_panel(1, rail_width, window, cx));
-            });
-        })
-        .child(h_resizable("document-workspace-right-rail-panels")
-        .with_state(&self.right_rail_resizable)
-        .on_resize(cx.listener(|workspace, state: &Entity<ResizableState>, window, cx| {
-            if let Some(width) = state.read(cx).sizes().get(1).copied() {
-                let rem = window.rem_size();
-                workspace.right_rail_columns = right_rail_columns(width, rem);
-                state.update(cx, |state, cx| state.resize_panel(1, right_rail_width(workspace.right_rail_columns, rem), window, cx));
-                cx.notify();
-            }
-        }))
+        // The tool rail sits outside the resizable panels: its own edge handle
+        // snaps its width to whole tool columns while dragging, as in Electron.
+        .child(h_flex().size_full()
         // Expanded and collapsed layouts must not share measured panel sizes:
         // the hidden properties slot has no bounds, while the canvas fills it.
-        .child(resizable_panel().child(self.right_sidebar_sizing.wrap(h_resizable(("document-workspace-right-properties-panels", usize::from(properties_visible)))
+        .child(gpui::div().flex_1().min_w_0().h_full().child(self.right_sidebar_sizing.wrap(h_resizable(("document-workspace-right-properties-panels", usize::from(properties_visible)))
         .with_state(&properties_resizable)
         .on_resize(cx.listener(|workspace, state, window, cx| {
             workspace.right_sidebar_sizing.remember_drag(state, window, cx);
@@ -26994,9 +27117,7 @@ impl Render for DocumentWorkspace {
             .size_range(window.rem_size() * 15.0..window.rem_size() * 26.25)
             .flex_none().child(supporting_actions))
         , &properties_resizable, properties_visible)))
-        .child(resizable_panel().size(right_rail_width(self.right_rail_columns, window.rem_size()))
-            .size_range(right_rail_width(1, window.rem_size())..right_rail_width(8, window.rem_size()))
-            .flex_none().child(right_rail)))))
+        .child(gpui::div().flex_none().h_full().w(rail_width).child(right_rail)))))
     }
 }
 

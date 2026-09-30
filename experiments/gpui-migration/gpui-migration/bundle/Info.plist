@@ -6,6 +6,21 @@
   <string>en</string>
   <key>CFBundleDisplayName</key>
   <string>GPUI Migration</string>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>PDF Document</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>com.adobe.pdf</string>
+      </array>
+    </dict>
+  </array>
   <key>CFBundleExecutable</key>
   <string>gpui-migration</string>
   <key>CFBundleIdentifier</key>
