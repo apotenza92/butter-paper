@@ -727,7 +727,9 @@ export async function smokeSignedMacosPackage({
         break;
       } catch (error) {
         if (
-          /no accessible window|window title does not identify/.test(
+          // A just-launched process is not yet registered as a running
+          // application with the window server; keep polling while it is alive.
+          /no accessible window|window title does not identify|packaged app PID is not running/.test(
             error.message,
           )
         ) {
