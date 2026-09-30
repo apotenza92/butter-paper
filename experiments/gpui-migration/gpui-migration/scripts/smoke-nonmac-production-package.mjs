@@ -1204,7 +1204,7 @@ public static class BpSaveAs {
     return "posted";
   }
 }
-'@; $deadline=(Get-Date).AddSeconds(${waitSeconds}); do { Start-Sleep -Milliseconds 250; $dialog=[BpSaveAs]::FindDialog(${pid}) } until($dialog -ne [IntPtr]::Zero -or (Get-Date) -gt $deadline); if($dialog -eq [IntPtr]::Zero){'absent'; return}; Start-Sleep -Milliseconds 500; $result=[BpSaveAs]::Complete($dialog); if($result -ne 'posted'){ throw "Save As dialog automation failed: $result" }; $closeDeadline=(Get-Date).AddSeconds(15); do { Start-Sleep -Milliseconds 250 } until(-not [BpSaveAs]::IsWindow($dialog) -or (Get-Date) -gt $closeDeadline); if([BpSaveAs]::IsWindow($dialog)){ throw 'Save As dialog stayed open after IDOK' }; 'completed:win32-idok-suggested-name'`,
+'@; $deadline=(Get-Date).AddSeconds(${waitSeconds}); do { Start-Sleep -Milliseconds 250; $dialog=[BpSaveAs]::FindDialog(${pid}) } until($dialog -ne [IntPtr]::Zero -or (Get-Date) -gt $deadline); if($dialog -eq [IntPtr]::Zero){'absent'; return}; $readyDeadline=(Get-Date).AddSeconds(15); do { Start-Sleep -Milliseconds 500; $result=[BpSaveAs]::Complete($dialog) } until($result -eq 'posted' -or (Get-Date) -gt $readyDeadline); if($result -ne 'posted'){ throw "Save As dialog automation failed: $result" }; $closeDeadline=(Get-Date).AddSeconds(15); do { Start-Sleep -Milliseconds 250 } until(-not [BpSaveAs]::IsWindow($dialog) -or (Get-Date) -gt $closeDeadline); if([BpSaveAs]::IsWindow($dialog)){ throw 'Save As dialog stayed open after IDOK' }; 'completed:win32-idok-suggested-name'`,
     (waitSeconds + 30) * 1000,
   );
   const last = outcome.split(/\r?\n/).at(-1).trim();

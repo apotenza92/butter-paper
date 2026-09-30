@@ -497,11 +497,19 @@ jobs:
           # keeps the foreground; the smoke needs the packaged app in front.
           New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\OOBE' -Force | Out-Null
           Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\OOBE' -Name DisablePrivacyExperience -Type DWord -Value 1
-          $before = @(Get-Process WWAHost -ErrorAction SilentlyContinue)
-          $before | Stop-Process -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 2
-          $after = @(Get-Process WWAHost -ErrorAction SilentlyContinue)
-          Write-Host "WWAHost processes: $($before.Count) before, $($after.Count) after"
+          # Close the OOBE window, then the Start menu the shell opens after it;
+          # both are immersive windows that the smoke cannot take focus from.
+          $shell = 'WWAHost', 'StartMenuExperienceHost', 'SearchHost'
+          foreach ($round in 1..5) {
+            $open = @(Get-Process -Name $shell -ErrorAction SilentlyContinue)
+            Write-Host "round ${round}: stopping $(($open | ForEach-Object ProcessName) -join ', ')"
+            $open | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+          }
+          Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class BpFg { [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); }'
+          [uint32]$owner = 0
+          [void][BpFg]::GetWindowThreadProcessId([BpFg]::GetForegroundWindow(), [ref]$owner)
+          Write-Host "foreground owner: $((Get-Process -Id $owner -ErrorAction SilentlyContinue).ProcessName)"
           # Warm WMI so the smoke's first process query is not the cold one.
           $started = Get-Date
           $count = @(Get-CimInstance Win32_Process -Property ProcessId).Count
