@@ -1263,6 +1263,19 @@ async function collectSaveDiagnostics(runDir, recoveryStoreRoot, documentId) {
   return diagnostics;
 }
 
+// Debug-only (BP_SMOKE_SCREENSHOT_DIR): capture the desktop and the foreground owner.
+function debugWindowsDesktop(name) {
+  const directory = process.env.BP_SMOKE_SCREENSHOT_DIR;
+  if (!directory || process.platform !== "win32") return;
+  try {
+    powershell(
+      `Add-Type -AssemblyName System.Windows.Forms, System.Drawing; Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class BpDbg { [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); }'; $fg=[BpDbg]::GetForegroundWindow(); [uint32]$o=0; [void][BpDbg]::GetWindowThreadProcessId($fg,[ref]$o); $pn=(Get-Process -Id $o -ErrorAction SilentlyContinue).ProcessName; Set-Content -LiteralPath ${powershellQuote(join(directory, `${name}.txt`))} -Value "foreground=$fg pid=$o process=$pn"; $b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height; $g=[System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); $bmp.Save(${powershellQuote(join(directory, `${name}.png`))})`,
+    );
+  } catch (error) {
+    progress(`debug capture ${name} failed: ${error.message.split("\n")[0]}`);
+  }
+}
+
 async function saveEditedDocument(pid, windowHandle) {
   if (process.platform === "linux") {
     runXdotool(["key", "ctrl+s"]);
@@ -1280,10 +1293,16 @@ async function saveEditedDocument(pid, windowHandle) {
     };
   }
   const shortcutResult = await shortcut.settle(2000);
+  debugWindowsDesktop("before-save-control");
+  try {
   powershell(
     `${WINDOWS_UIA_PRELUDE} $actions=Find-Buttons ${pid} 'Document actions and properties'; if($actions.Count -ne 1){$available=@($A::RootElement.FindAll($T::Descendants,[Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,[int]${pid})) | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button } | ForEach-Object { "$($_.Current.Name)[enabled=$($_.Current.IsEnabled),offscreen=$($_.Current.IsOffscreen)]" } | Select-Object -First 100); throw "expected one Document actions and properties button; available buttons: $($available -join ', ')"}; Invoke-Element $actions[0]; $deadline=(Get-Date).AddSeconds(10); do { Start-Sleep -Milliseconds 200; $save=Find-Buttons ${pid} 'Save' } until($save.Count -eq 1 -or (Get-Date) -gt $deadline); if($save.Count -ne 1){throw "expected one enabled Save button after opening document actions; found $($save.Count)"}`,
     45_000,
   );
+  } catch (error) {
+    debugWindowsDesktop("save-control-failed");
+    throw error;
+  }
   const invoke = spawnPowershell(
     `${WINDOWS_UIA_PRELUDE} $save=Find-Buttons ${pid} 'Save'; if($save.Count -ne 1){throw "expected one enabled Save button; found $($save.Count)"}; Invoke-Element $save[0]`,
   );
