@@ -1037,7 +1037,7 @@ function runXdotool(args) {
 
 async function driveRectangleEdit(pid) {
   if (process.platform === "win32") {
-    const base = `Add-Type -AssemblyName System.Windows.Forms; Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class BpUi { [StructLayout(LayoutKind.Sequential)] public struct R { public int L,T,Right,Bottom; } public delegate bool E(IntPtr h, IntPtr p); [DllImport("user32.dll")] public static extern bool EnumWindows(E cb, IntPtr p); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h); [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out R r); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y); [DllImport("user32.dll")] public static extern void mouse_event(uint f,uint x,uint y,uint d,UIntPtr e); [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a,uint b,bool f); [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h); [DllImport("user32.dll")] public static extern void keybd_event(byte k,byte s,uint f,UIntPtr e); [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId(); [StructLayout(LayoutKind.Sequential)] public struct P { public int X,Y; } [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr h, ref P p); [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l); static IntPtr L(P p){ return (IntPtr)(((p.Y & 0xFFFF) << 16) | (p.X & 0xFFFF)); } public static void PostDrag(IntPtr h,int sx,int sy,int ex,int ey){ P a=new P(); a.X=sx; a.Y=sy; ScreenToClient(h,ref a); P b=new P(); b.X=ex; b.Y=ey; ScreenToClient(h,ref b); PostMessage(h,0x0100,(IntPtr)0x52,(IntPtr)0x00130001); PostMessage(h,0x0102,(IntPtr)0x72,(IntPtr)0x00130001); PostMessage(h,0x0101,(IntPtr)0x52,(IntPtr)unchecked((int)0xC0130001)); System.Threading.Thread.Sleep(400); PostMessage(h,0x0200,IntPtr.Zero,L(a)); System.Threading.Thread.Sleep(60); PostMessage(h,0x0201,(IntPtr)1,L(a)); System.Threading.Thread.Sleep(60); for(int i=1;i<=10;i++){ P m=new P(); m.X=a.X+(b.X-a.X)*i/10; m.Y=a.Y+(b.Y-a.Y)*i/10; PostMessage(h,0x0200,(IntPtr)1,L(m)); System.Threading.Thread.Sleep(30); } PostMessage(h,0x0202,IntPtr.Zero,L(b)); } public static bool Focus(IntPtr h){ for(int i=0;i<20;i++){ IntPtr fg=GetForegroundWindow(); if(fg==h) return true; uint op; uint t=GetWindowThreadProcessId(fg,out op); uint me=GetCurrentThreadId(); bool att=t!=0&&t!=me&&AttachThreadInput(me,t,true); BringWindowToTop(h); SetForegroundWindow(h); if(att) AttachThreadInput(me,t,false); System.Threading.Thread.Sleep(150); if(GetForegroundWindow()==h) return true; keybd_event(0x12,0,0,UIntPtr.Zero); keybd_event(0x12,0,2,UIntPtr.Zero); System.Threading.Thread.Sleep(100); } return GetForegroundWindow()==h; } }'; $target=${pid}; $wins=[System.Collections.Generic.List[object]]::new(); $cb=[BpUi+E]{param($h,$p); [uint32]$owner=0; [void][BpUi]::GetWindowThreadProcessId($h,[ref]$owner); if($owner -eq $target -and [BpUi]::IsWindowVisible($h)){ $r=[BpUi+R]::new(); if([BpUi]::GetWindowRect($h,[ref]$r)){$wins.Add([pscustomobject]@{Handle=$h;X=$r.L;Y=$r.T;Width=$r.Right-$r.L;Height=$r.Bottom-$r.T})} }; return $true }; [void][BpUi]::EnumWindows($cb,[IntPtr]::Zero);`;
+    const base = `Add-Type -AssemblyName System.Windows.Forms; Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class BpUi { [StructLayout(LayoutKind.Sequential)] public struct R { public int L,T,Right,Bottom; } public delegate bool E(IntPtr h, IntPtr p); [DllImport("user32.dll")] public static extern bool EnumWindows(E cb, IntPtr p); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h); [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out R r); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y); [DllImport("user32.dll")] public static extern void mouse_event(uint f,uint x,uint y,uint d,UIntPtr e); [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a,uint b,bool f); [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h); [DllImport("user32.dll")] public static extern void keybd_event(byte k,byte s,uint f,UIntPtr e); [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId(); public static bool Focus(IntPtr h){ for(int i=0;i<20;i++){ IntPtr fg=GetForegroundWindow(); if(fg==h) return true; uint op; uint t=GetWindowThreadProcessId(fg,out op); uint me=GetCurrentThreadId(); bool att=t!=0&&t!=me&&AttachThreadInput(me,t,true); BringWindowToTop(h); SetForegroundWindow(h); if(att) AttachThreadInput(me,t,false); System.Threading.Thread.Sleep(150); if(GetForegroundWindow()==h) return true; keybd_event(0x12,0,0,UIntPtr.Zero); keybd_event(0x12,0,2,UIntPtr.Zero); System.Threading.Thread.Sleep(100); } return GetForegroundWindow()==h; } }'; $target=${pid}; $wins=[System.Collections.Generic.List[object]]::new(); $cb=[BpUi+E]{param($h,$p); [uint32]$owner=0; [void][BpUi]::GetWindowThreadProcessId($h,[ref]$owner); if($owner -eq $target -and [BpUi]::IsWindowVisible($h)){ $r=[BpUi+R]::new(); if([BpUi]::GetWindowRect($h,[ref]$r)){$wins.Add([pscustomobject]@{Handle=$h;X=$r.L;Y=$r.T;Width=$r.Right-$r.L;Height=$r.Bottom-$r.T})} }; return $true }; [void][BpUi]::EnumWindows($cb,[IntPtr]::Zero);`;
     const found = JSON.parse(
       powershell(`${base} ConvertTo-Json -InputObject @($wins) -Compress`),
     );
@@ -1046,9 +1046,9 @@ async function driveRectangleEdit(pid) {
       "expected exactly one sufficiently large visible production app window",
     );
     const win = found[0];
-    const delivery = JSON.parse(powershell(
-      `${base} $h=[IntPtr]${win.Handle}; if([BpUi]::Focus($h)){ $route='foreground'; Start-Sleep -Milliseconds 300; [System.Windows.Forms.SendKeys]::SendWait('r'); Start-Sleep -Milliseconds 200; [void][BpUi]::SetCursorPos(${Math.round(win.X + win.Width * 0.44)},${Math.round(win.Y + win.Height * 0.42)}); [BpUi]::mouse_event(2,0,0,0,[UIntPtr]::Zero); [void][BpUi]::SetCursorPos(${Math.round(win.X + win.Width * 0.54)},${Math.round(win.Y + win.Height * 0.52)}); Start-Sleep -Milliseconds 150; [BpUi]::mouse_event(4,0,0,0,[UIntPtr]::Zero); } else { $route='posted-window-messages'; [BpUi]::PostDrag($h,${Math.round(win.X + win.Width * 0.44)},${Math.round(win.Y + win.Height * 0.42)},${Math.round(win.X + win.Width * 0.54)},${Math.round(win.Y + win.Height * 0.52)}); Start-Sleep -Milliseconds 300 }; [pscustomobject]@{Route=$route;Foreground=[int64][BpUi]::GetForegroundWindow();Session=[System.Diagnostics.Process]::GetCurrentProcess().SessionId} | ConvertTo-Json -Compress`,
-    ));
+    powershell(
+      `${base} $h=[IntPtr]${win.Handle}; if(-not [BpUi]::Focus($h)){throw 'packaged app did not receive keyboard focus'}; Start-Sleep -Milliseconds 300; [System.Windows.Forms.SendKeys]::SendWait('r'); Start-Sleep -Milliseconds 200; [void][BpUi]::SetCursorPos(${Math.round(win.X + win.Width * 0.44)},${Math.round(win.Y + win.Height * 0.42)}); [BpUi]::mouse_event(2,0,0,0,[UIntPtr]::Zero); [void][BpUi]::SetCursorPos(${Math.round(win.X + win.Width * 0.54)},${Math.round(win.Y + win.Height * 0.52)}); Start-Sleep -Milliseconds 150; [BpUi]::mouse_event(4,0,0,0,[UIntPtr]::Zero);`,
+    );
     return {
       windowId: String(win.Handle),
       geometry: { x: win.X, y: win.Y, width: win.Width, height: win.Height },
@@ -1063,15 +1063,7 @@ async function driveRectangleEdit(pid) {
         },
       },
       toolShortcut: "r",
-      input:
-        delivery.Route === "foreground"
-          ? "Windows SendKeys and user32"
-          : "window messages posted to the app (runner session has no usable foreground)",
-      inputDiagnostics: {
-        route: delivery.Route,
-        foregroundWindow: delivery.Foreground,
-        session: delivery.Session,
-      },
+      input: "Windows SendKeys and user32",
     };
   }
   assert(
@@ -1142,7 +1134,7 @@ async function driveRectangleEdit(pid) {
   };
 }
 
-const WINDOWS_UIA_PRELUDE = `Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes; $A=[Windows.Automation.AutomationElement]; $T=[Windows.Automation.TreeScope]; function Find-Buttons($procId, $name){ $c=[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,[int]$procId),[Windows.Automation.PropertyCondition]::new($A::NameProperty,$name)); @($A::RootElement.FindAll($T::Descendants,$c) | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and $_.Current.IsEnabled }) }; function Invoke-Element($el){ $p=$null; if($el.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$p)){ $p.Invoke(); return }; $r=$el.Current.BoundingRectangle; $h=[System.Diagnostics.Process]::GetProcessById($el.Current.ProcessId).MainWindowHandle; if($h -eq [IntPtr]::Zero -or $r.IsEmpty){throw "$($el.Current.Name) has no invoke pattern or clickable bounds"}; if(-not ('BpClick' -as [type])){ Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class BpClick { [StructLayout(LayoutKind.Sequential)] public struct P { public int X,Y; } [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr h, ref P p); [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l); public static void Click(IntPtr h,int x,int y){ P p=new P(); p.X=x; p.Y=y; ScreenToClient(h,ref p); IntPtr l=(IntPtr)(((p.Y & 0xFFFF) << 16) | (p.X & 0xFFFF)); PostMessage(h,0x0200,IntPtr.Zero,l); System.Threading.Thread.Sleep(60); PostMessage(h,0x0201,(IntPtr)1,l); System.Threading.Thread.Sleep(60); PostMessage(h,0x0202,IntPtr.Zero,l); } }' }; [BpClick]::Click($h,[int]($r.X+$r.Width/2),[int]($r.Y+$r.Height/2)) };`;
+const WINDOWS_UIA_PRELUDE = `Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes; $A=[Windows.Automation.AutomationElement]; $T=[Windows.Automation.TreeScope]; function Find-Buttons($procId, $name){ $c=[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,[int]$procId),[Windows.Automation.PropertyCondition]::new($A::NameProperty,$name)); @($A::RootElement.FindAll($T::Descendants,$c) | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and $_.Current.IsEnabled }) }; function Invoke-Element($el){ ([Windows.Automation.InvokePattern]$el.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)).Invoke() };`;
 
 function powershellQuote(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
@@ -1265,19 +1257,6 @@ async function collectSaveDiagnostics(runDir, recoveryStoreRoot, documentId) {
   return diagnostics;
 }
 
-// Debug-only (BP_SMOKE_SCREENSHOT_DIR): capture the desktop and the foreground owner.
-function debugWindowsDesktop(name) {
-  const directory = process.env.BP_SMOKE_SCREENSHOT_DIR;
-  if (!directory || process.platform !== "win32") return;
-  try {
-    powershell(
-      `Add-Type -AssemblyName System.Windows.Forms, System.Drawing; Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class BpDbg { [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); }'; $fg=[BpDbg]::GetForegroundWindow(); [uint32]$o=0; [void][BpDbg]::GetWindowThreadProcessId($fg,[ref]$o); $pn=(Get-Process -Id $o -ErrorAction SilentlyContinue).ProcessName; Set-Content -LiteralPath ${powershellQuote(join(directory, `${name}.txt`))} -Value "foreground=$fg pid=$o process=$pn"; $b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height; $g=[System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); $bmp.Save(${powershellQuote(join(directory, `${name}.png`))})`,
-    );
-  } catch (error) {
-    progress(`debug capture ${name} failed: ${error.message.split("\n")[0]}`);
-  }
-}
-
 async function saveEditedDocument(pid, windowHandle) {
   if (process.platform === "linux") {
     runXdotool(["key", "ctrl+s"]);
@@ -1295,16 +1274,10 @@ async function saveEditedDocument(pid, windowHandle) {
     };
   }
   const shortcutResult = await shortcut.settle(2000);
-  debugWindowsDesktop("before-save-control");
-  try {
   powershell(
     `${WINDOWS_UIA_PRELUDE} $actions=Find-Buttons ${pid} 'Document actions and properties'; if($actions.Count -ne 1){$available=@($A::RootElement.FindAll($T::Descendants,[Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,[int]${pid})) | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button } | ForEach-Object { "$($_.Current.Name)[enabled=$($_.Current.IsEnabled),offscreen=$($_.Current.IsOffscreen)]" } | Select-Object -First 100); throw "expected one Document actions and properties button; available buttons: $($available -join ', ')"}; Invoke-Element $actions[0]; $deadline=(Get-Date).AddSeconds(10); do { Start-Sleep -Milliseconds 200; $save=Find-Buttons ${pid} 'Save' } until($save.Count -eq 1 -or (Get-Date) -gt $deadline); if($save.Count -ne 1){throw "expected one enabled Save button after opening document actions; found $($save.Count)"}`,
     45_000,
   );
-  } catch (error) {
-    debugWindowsDesktop("save-control-failed");
-    throw error;
-  }
   const invoke = spawnPowershell(
     `${WINDOWS_UIA_PRELUDE} $save=Find-Buttons ${pid} 'Save'; if($save.Count -ne 1){throw "expected one enabled Save button; found $($save.Count)"}; Invoke-Element $save[0]`,
   );
@@ -1317,7 +1290,7 @@ async function saveEditedDocument(pid, windowHandle) {
   }
   await invoke.settle();
   return {
-    route: `document-actions Save (UIA invoke, or a posted click when the control has no invoke pattern) + native Save As dialog (${controlDialog})`,
+    route: `document-actions Save + native Save As dialog (${controlDialog})`,
     ctrlS: shortcutResult,
   };
 }
