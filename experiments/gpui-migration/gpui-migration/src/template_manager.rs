@@ -1564,6 +1564,7 @@ impl TemplateManagerView {
             directories: false,
             multiple: false,
             prompt: Some("Select a PDF template".into()),
+            allowed_extensions: Some(vec!["pdf".into()]),
         });
         let owner = cx.entity().downgrade();
         cx.spawn_in(window, async move |_, window| {

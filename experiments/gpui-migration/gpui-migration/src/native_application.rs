@@ -11,7 +11,7 @@ use crate::{
         SetUpdateFrequencyDaily, SetUpdateFrequencyEverySixHours,
         SetUpdateFrequencyEveryTwelveHours, SetUpdateFrequencyHourly, SetUpdateFrequencyMonthly,
         SetUpdateFrequencyNever, SetUpdateFrequencyWeekly, ToggleApplicationFullScreen,
-        ToggleApplicationMenuBar,
+        ToggleApplicationMenuBar, ToggleReverseScrollZoom,
     },
     document_workspace::{
         ActualSize, CloseDocument, ContinuousView, DocumentOpenBatchRequest, DocumentOpenOrigin,
@@ -55,6 +55,7 @@ pub fn build_native_application_menus(state: NativeApplicationMenuState) -> Vec<
 pub struct ApplicationMenuShellState {
     pub menu_bar_visible: bool,
     pub menu_bar_visibility_supported: bool,
+    pub reverse_scroll_zoom: bool,
 }
 
 impl Default for ApplicationMenuShellState {
@@ -62,6 +63,7 @@ impl Default for ApplicationMenuShellState {
         Self {
             menu_bar_visible: true,
             menu_bar_visibility_supported: false,
+            reverse_scroll_zoom: false,
         }
     }
 }
@@ -251,6 +253,9 @@ fn build_in_window_view_items(shell: ApplicationMenuShellState) -> Vec<MenuItem>
         MenuItem::action("Make Interface Bigger", MakeInterfaceBigger),
         MenuItem::action("Make Interface Smaller", MakeInterfaceSmaller),
         MenuItem::action("Reset Interface Size", ResetInterfaceSize),
+        MenuItem::separator(),
+        MenuItem::action("Reverse Scroll Zoom", ToggleReverseScrollZoom)
+            .checked(shell.reverse_scroll_zoom),
         MenuItem::separator(),
         MenuItem::action("Toggle Full Screen", ToggleApplicationFullScreen),
     ]);

@@ -308,6 +308,7 @@ impl NativeDocumentViewState {
         delta_x: f32,
         delta_y: f32,
         control: bool,
+        reverse_zoom: bool,
     ) -> WheelOutcome {
         let behavior = self.wheel_behavior(self.mode);
         let should_scroll = !self.cad_view_active
@@ -349,7 +350,7 @@ impl NativeDocumentViewState {
         }
 
         self.single_page_wheel_delta = 0.;
-        let delta = delta_y.clamp(-120., 120.);
+        let delta = if reverse_zoom { -delta_y } else { delta_y }.clamp(-120., 120.);
         let next = self.zoom_percent / 100. * (-delta * 0.00165).exp();
         self.set_manual_zoom(next * 100.);
         WheelOutcome::Zoom(self.zoom_percent)
@@ -441,19 +442,28 @@ mod tests {
     #[test]
     fn wheel_inversion_threshold_zoom_and_edges_match_the_frozen_contract() {
         let mut view = NativeDocumentViewState::default();
-        assert_eq!(view.wheel(4, 1, 0., 20., false), WheelOutcome::NativeScroll);
+        assert_eq!(view.wheel(4, 1, 0., 20., false, false), WheelOutcome::NativeScroll);
         assert!(
-            matches!(view.wheel(4, 1, 0., -120., true), WheelOutcome::Zoom(zoom) if (zoom - 121.9).abs() < 0.1)
+            matches!(view.wheel(4, 1, 0., -120., true, false), WheelOutcome::Zoom(zoom) if (zoom - 121.9).abs() < 0.1)
         );
         view.set_mode(PageViewMode::SinglePage);
         view.set_wheel_behavior(PageViewMode::SinglePage, WheelBehavior::Scroll);
-        assert_eq!(view.wheel(4, 1, 0., 79., false), WheelOutcome::Consumed);
-        assert_eq!(view.wheel(4, 1, 0., 1., false), WheelOutcome::Page(2));
-        assert_eq!(view.wheel(4, 3, 0., 80., false), WheelOutcome::Consumed);
+        assert_eq!(view.wheel(4, 1, 0., 79., false, false), WheelOutcome::Consumed);
+        assert_eq!(view.wheel(4, 1, 0., 1., false, false), WheelOutcome::Page(2));
+        assert_eq!(view.wheel(4, 3, 0., 80., false, false), WheelOutcome::Consumed);
         assert!(matches!(
-            view.wheel(4, 2, 0., 120., true),
+            view.wheel(4, 2, 0., 120., true, false),
             WheelOutcome::Zoom(_)
         ));
+    }
+
+    #[test]
+    fn reverse_scroll_zoom_flips_only_the_zoom_direction() {
+        let mut view = NativeDocumentViewState::default();
+        assert!(
+            matches!(view.wheel(4, 1, 0., -120., true, true), WheelOutcome::Zoom(zoom) if (zoom - 82.0).abs() < 0.1)
+        );
+        assert_eq!(view.wheel(4, 1, 0., 20., false, true), WheelOutcome::NativeScroll);
     }
 
     #[test]

@@ -1,3 +1,23 @@
+diff --git a/crates/gpui/src/app/test_context.rs b/crates/gpui/src/app/test_context.rs
+index c80c259345..bf7a33ddb0 100644
+--- a/crates/gpui/src/app/test_context.rs
++++ b/crates/gpui/src/app/test_context.rs
+@@ -1300,6 +1300,7 @@ mod tests {
+                 directories: true,
+                 multiple: true,
+                 prompt: None,
++                allowed_extensions: None,
+             })
+         });
+         assert!(cx.did_prompt_for_paths());
+@@ -1326,6 +1327,7 @@ mod tests {
+                 directories: false,
+                 multiple: false,
+                 prompt: None,
++                allowed_extensions: None,
+             })
+         });
+ 
 diff --git a/crates/gpui/src/elements/img.rs b/crates/gpui/src/elements/img.rs
 index 2c77e5f32a..9d020413db 100644
 --- a/crates/gpui/src/elements/img.rs
@@ -74,6 +94,19 @@ index 40a6e71e0a..65b7adb343 100644
  
  use crate::{Path, Pixels, Point, point, px};
  
+diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
+index ecb1fa40d3..8dced9697b 100644
+--- a/crates/gpui/src/platform.rs
++++ b/crates/gpui/src/platform.rs
+@@ -2111,6 +2111,8 @@ pub struct PathPromptOptions {
+     pub multiple: bool,
+     /// The prompt to show to a user when selecting a path
+     pub prompt: Option<SharedString>,
++    /// Restrict selectable files to these extensions (without the dot).
++    pub allowed_extensions: Option<Vec<SharedString>>,
+ }
+ 
+ /// What kind of prompt styling to show
 diff --git a/crates/gpui/src/platform/test/window.rs b/crates/gpui/src/platform/test/window.rs
 index dc96e43dfe..b39d4acba1 100644
 --- a/crates/gpui/src/platform/test/window.rs
@@ -1002,6 +1035,44 @@ index 33393f7e9e..711b013cc3 100644
  
          #[cfg(feature = "x11")]
          "X11" => Rc::new(LinuxPlatform {
+diff --git a/crates/gpui_linux/src/linux/platform.rs b/crates/gpui_linux/src/linux/platform.rs
+index 876f931663..e29b605174 100644
+--- a/crates/gpui_linux/src/linux/platform.rs
++++ b/crates/gpui_linux/src/linux/platform.rs
+@@ -414,15 +414,29 @@ impl<P: LinuxClient + 'static> Platform for LinuxPlatform<P> {
+                     "Open File"
+                 };
+ 
+-                let request = match ashpd::desktop::file_chooser::OpenFileRequest::default()
++                let mut request = ashpd::desktop::file_chooser::OpenFileRequest::default()
+                     .identifier(identifier.await)
+                     .modal(true)
+                     .title(title)
+                     .accept_label(options.prompt.as_ref().map(gpui::SharedString::as_str))
+                     .multiple(options.multiple)
+-                    .directory(options.directories)
+-                    .send()
+-                    .await
++                    .directory(options.directories);
++                if let Some(extensions) = options.allowed_extensions.as_ref() {
++                    let label = format!(
++                        "{} files",
++                        extensions
++                            .iter()
++                            .map(|extension| extension.to_uppercase())
++                            .collect::<Vec<_>>()
++                            .join(", ")
++                    );
++                    let mut filter = ashpd::desktop::file_chooser::FileFilter::new(&label);
++                    for extension in extensions {
++                        filter = filter.glob(&format!("*.{extension}"));
++                    }
++                    request = request.filter(filter);
++                }
++                let request = match request.send().await
+                 {
+                     Ok(request) => request,
+                     Err(err) => {
 diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/src/linux/wayland/client.rs
 index 3d5f9029aa..ebd62560af 100644
 --- a/crates/gpui_linux/src/linux/wayland/client.rs
@@ -1200,6 +1271,26 @@ index 3d5f9029aa..ebd62560af 100644
      #[test]
      fn builds_terminated_uri_list_for_each_dragged_path() {
          let paths = FileDragPaths::new([
+diff --git a/crates/gpui_macos/src/platform.rs b/crates/gpui_macos/src/platform.rs
+index c9bd307600..28a8175a05 100644
+--- a/crates/gpui_macos/src/platform.rs
++++ b/crates/gpui_macos/src/platform.rs
+@@ -779,6 +779,15 @@ impl Platform for MacPlatform {
+                     panel.setCanChooseDirectories_(options.directories.to_objc());
+                     panel.setCanChooseFiles_(options.files.to_objc());
+                     panel.setAllowsMultipleSelection_(options.multiple.to_objc());
++                    if let Some(extensions) = options.allowed_extensions.as_ref() {
++                        let types = extensions
++                            .iter()
++                            .map(|extension| ns_string(extension))
++                            .collect::<Vec<_>>();
++                        let types = NSArray::arrayWithObjects(nil, &types);
++                        let _: () = msg_send![panel, setAllowedFileTypes: types];
++                        let _: () = msg_send![panel, setAllowsOtherFileTypes: NO];
++                    }
+ 
+                     panel.setCanCreateDirectories(true.to_objc());
+                     panel.setResolvesAliases_(false.to_objc());
 diff --git a/crates/gpui_wgpu/src/shaders.wgsl b/crates/gpui_wgpu/src/shaders.wgsl
 index 718cb7595d..b5aacc4a29 100644
 --- a/crates/gpui_wgpu/src/shaders.wgsl
@@ -1275,6 +1366,39 @@ index b0cd40a767..625553658e 100644
 +        assert_eq!(std::mem::size_of::<PolychromeSprite>(), 30 * 4);
      }
  }
+diff --git a/crates/gpui_windows/src/platform.rs b/crates/gpui_windows/src/platform.rs
+index d3bb150407..f0a32cee30 100644
+--- a/crates/gpui_windows/src/platform.rs
++++ b/crates/gpui_windows/src/platform.rs
+@@ -1255,6 +1255,28 @@ fn file_open_dialog(
+             folder_dialog.SetOkButtonLabel(&HSTRING::from(prompt))?;
+         }
+ 
++        if let Some(extensions) = options.allowed_extensions.as_ref() {
++            let name = HSTRING::from(format!(
++                "{} files",
++                extensions
++                    .iter()
++                    .map(|extension| extension.to_uppercase())
++                    .collect::<Vec<_>>()
++                    .join(", ")
++            ));
++            let spec = HSTRING::from(
++                extensions
++                    .iter()
++                    .map(|extension| format!("*.{extension}"))
++                    .collect::<Vec<_>>()
++                    .join(";"),
++            );
++            folder_dialog.SetFileTypes(&[Common::COMDLG_FILTERSPEC {
++                pszName: windows::core::PCWSTR(name.as_ptr()),
++                pszSpec: windows::core::PCWSTR(spec.as_ptr()),
++            }])?;
++        }
++
+         if folder_dialog.Show(window).is_err() {
+             // User cancelled
+             return Ok(None);
 diff --git a/crates/gpui_windows/src/shaders.hlsl b/crates/gpui_windows/src/shaders.hlsl
 index d20cb317db..900f7deec9 100644
 --- a/crates/gpui_windows/src/shaders.hlsl

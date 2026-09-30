@@ -315,6 +315,7 @@ fn in_window_application_menu_is_the_four_menu_projection() {
         ApplicationMenuShellState {
             menu_bar_visible: false,
             menu_bar_visibility_supported: true,
+            reverse_scroll_zoom: false,
         },
     );
 
@@ -354,6 +355,8 @@ fn in_window_application_menu_is_the_four_menu_projection() {
             "Make Interface Bigger",
             "Make Interface Smaller",
             "Reset Interface Size",
+            "<separator>",
+            "Reverse Scroll Zoom",
             "<separator>",
             "Toggle Full Screen",
         ]
@@ -398,6 +401,7 @@ fn native_application_projection_retains_document_edit_commands_and_restores_the
         ApplicationMenuShellState {
             menu_bar_visible: false,
             menu_bar_visibility_supported: true,
+            reverse_scroll_zoom: false,
         },
     );
 

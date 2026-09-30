@@ -245,7 +245,7 @@ impl Render for ZoomControl {
                 .appearance(false)
                 .overlay_closable(true)
                 .anchor(Anchor::TopLeft)
-                .open(self.menu_open)
+                .open(crate::overlay_state::sync_overlay_open("zoom-menu", self.menu_open, cx))
                 .on_open_change(move |open, _, cx| {
                     let _ = control_for_open.update(cx, |control, cx| {
                         control.menu_open = *open;

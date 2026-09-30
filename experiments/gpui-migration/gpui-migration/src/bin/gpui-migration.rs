@@ -9,7 +9,8 @@ use butter_paper_gpui_migration::application_shell::application_data_directory;
 use butter_paper_gpui_migration::application_shell::{
     ApplicationShellPreferences, ApplicationShellPreferencesStore, ApplicationUiZoomAction,
     MakeInterfaceBigger, MakeInterfaceSmaller, OpenReleasePage, ResetInterfaceSize,
-    ToggleApplicationFullScreen, ToggleApplicationMenuBar, apply_application_ui_zoom,
+    ReverseScrollZoom, ToggleApplicationFullScreen, ToggleApplicationMenuBar,
+    ToggleReverseScrollZoom, apply_application_ui_zoom,
     focus_initial_command_context, init_application_shell_actions,
     resolve_application_ui_zoom_level,
 };
@@ -466,6 +467,18 @@ impl ComponentStory {
 
         // Let PopupMenu finish its own dismissal and focus restoration before
         // replacing the in-window projection, especially when hiding the bar.
+        let story = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = story.update(cx, |story, cx| story.sync_native_application_menu(cx));
+        });
+        cx.notify();
+    }
+
+    fn toggle_reverse_scroll_zoom(&mut self, cx: &mut Context<Self>) {
+        let reverse = !self.preferences.reverse_scroll_zoom();
+        self.preferences.set_reverse_scroll_zoom(reverse);
+        self.save_application_preferences();
+        cx.set_global(ReverseScrollZoom(reverse));
         let story = cx.entity().downgrade();
         cx.defer(move |cx| {
             let _ = story.update(cx, |story, cx| story.sync_native_application_menu(cx));
@@ -1257,6 +1270,7 @@ impl ComponentStory {
         ApplicationMenuShellState {
             menu_bar_visible: self.menu_bar_visible,
             menu_bar_visibility_supported: self.menu_bar_visibility_supported,
+            reverse_scroll_zoom: self.preferences.reverse_scroll_zoom(),
         }
     }
 
@@ -1311,6 +1325,15 @@ fn register_application_shell_actions(
                     story.toggle_menu_bar(&ToggleApplicationMenuBar, window, cx);
                 });
             });
+        });
+    });
+
+    let story_for_reverse_zoom = story.downgrade();
+    cx.on_action(move |_: &ToggleReverseScrollZoom, cx| {
+        let story_for_reverse_zoom = story_for_reverse_zoom.clone();
+        cx.defer(move |cx| {
+            let _ = story_for_reverse_zoom
+                .update(cx, |story, cx| story.toggle_reverse_scroll_zoom(cx));
         });
     });
 
@@ -1853,6 +1876,7 @@ fn main() {
                 let application_preferences =
                     ApplicationShellPreferencesStore::new(storage_layout.preferences_root());
                 let preferences = startup_preferences;
+                cx.set_global(ReverseScrollZoom(preferences.reverse_scroll_zoom()));
                 let ui_zoom_level = Rc::new(Cell::new(preferences.ui_zoom_level()));
                 let ui_zoom_base_font_size = Rc::new(Cell::new(cx.theme().font_size));
                 let system_theme_subscription = follow_window_appearance_with_application_zoom(

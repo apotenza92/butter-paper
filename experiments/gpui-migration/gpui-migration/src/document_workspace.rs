@@ -8779,6 +8779,7 @@ impl DocumentWorkspace {
             directories: false,
             multiple: true,
             prompt: Some("Open PDFs".into()),
+            allowed_extensions: Some(vec!["pdf".into()]),
         });
         cx.spawn(async move |entity, cx| {
             let paths = match picker.await {
@@ -10559,7 +10560,9 @@ impl DocumentWorkspace {
         let input_at = cx.background_executor().now();
         self.observe_viewer_input_at(document_id, input_at, cx);
         let delta = event.delta.pixel_delta(px(16.));
-        let old_zoom = session.read(cx).view_state.zoom_percent();
+        let reverse_zoom = cx
+            .try_global::<crate::application_shell::ReverseScrollZoom>()
+            .is_some_and(|reverse| reverse.0);
         let outcome = session.update(cx, |session, _| {
             session.view_state.wheel(
                 session.page_sizes.len(),
@@ -10567,6 +10570,7 @@ impl DocumentWorkspace {
                 f32::from(delta.x),
                 f32::from(delta.y),
                 event.modifiers.control,
+                reverse_zoom,
             )
         });
         match outcome {
@@ -10589,11 +10593,16 @@ impl DocumentWorkspace {
                     if let Some(bounds) = bounds {
                         let local_x = f32::from(event.position.x - bounds.origin.x);
                         let local_y = f32::from(event.position.y - bounds.origin.y);
-                        let ratio = zoom_percent / old_zoom.max(0.001);
-                        let scroll_x = (old_scroll.0 + local_x) * ratio - local_x;
-                        let scroll_y = (old_scroll.1 + local_y) * ratio - local_y;
-                        session.view_state.set_scroll(scroll_x, scroll_y);
-                        session.viewer.set_scroll(scroll_x, scroll_y);
+                        // Resolved against the new layout in refresh_viewport_async,
+                        // before it is drawn, so the pointed page point stays put.
+                        session.pending_zoom_anchor =
+                            session.viewer.plan_snapshot().and_then(|plan| {
+                                crate::zoom_anchor::zoom_anchor_at(
+                                    &plan.page_layouts,
+                                    old_scroll,
+                                    (local_x, local_y),
+                                )
+                            });
                     }
                     session
                         .viewer
@@ -10729,6 +10738,32 @@ impl DocumentWorkspace {
                 device_scale,
                 now,
             )?;
+            if let Some(anchor) = session.pending_zoom_anchor.take()
+                && let Some((anchored_x, anchored_y)) = crate::zoom_anchor::anchored_scroll(
+                    anchor,
+                    &plan.page_layouts,
+                    (plan.total_width, plan.total_height),
+                    (viewport_width, viewport_height),
+                )
+            {
+                scroll_x = anchored_x;
+                scroll_y = anchored_y;
+                session.view_state.set_scroll(scroll_x, scroll_y);
+                session.viewer.set_scroll(scroll_x, scroll_y);
+                session.viewer.observe_motion(scroll_x, scroll_y, now);
+                plan = session.viewer.plan_at(
+                    document_id.value(),
+                    &session.page_sizes,
+                    &rotations,
+                    session.current_page as usize,
+                    viewport_width,
+                    viewport_height,
+                    scroll_x,
+                    scroll_y,
+                    device_scale,
+                    now,
+                )?;
+            }
             // Resolve explicit navigation against this frame's page geometry
             // before the continuous viewport chooses its current page.
             if let Some(target) = session.pending_navigation_scroll
@@ -14462,6 +14497,7 @@ impl DocumentWorkspace {
             directories: false,
             multiple: false,
             prompt: Some("Select a PNG or JPEG image".into()),
+            allowed_extensions: Some(vec!["png".into(), "jpg".into(), "jpeg".into()]),
         });
         let background = cx.background_executor().clone();
         cx.spawn(async move |entity, cx| {
@@ -14846,6 +14882,7 @@ impl DocumentWorkspace {
             directories: false,
             multiple: false,
             prompt: Some("Select a PNG or JPEG image".into()),
+            allowed_extensions: Some(vec!["png".into(), "jpg".into(), "jpeg".into()]),
         });
         let background = cx.background_executor().clone();
         cx.spawn(async move |entity, cx| {
@@ -15783,6 +15820,37 @@ impl DocumentWorkspace {
             f64::from(f32::from(position.x - interaction.bounds.origin.x)),
             f64::from(f32::from(position.y - interaction.bounds.origin.y)),
         )
+    }
+
+    /// Middle-button drag pans the canvas with any tool, as in the Electron app.
+    fn begin_middle_button_pan(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(document_id) = self.active_document_id else {
+            return false;
+        };
+        if !self
+            .viewport_bounds
+            .get(&document_id)
+            .is_some_and(|bounds| bounds.contains(&position))
+        {
+            return false;
+        }
+        let Some(session) = self.session(document_id, cx) else {
+            return false;
+        };
+        self.pan_drag = Some((
+            document_id,
+            position,
+            session.read(cx).viewer.scroll_handle().offset(),
+        ));
+        true
+    }
+
+    fn end_middle_button_pan(&mut self) -> bool {
+        self.pan_drag.take().is_some()
     }
 
     fn begin_annotation_pointer(
@@ -21426,6 +21494,12 @@ fn recent_signature_section(
         .into_any_element()
 }
 
+/// macOS dims window chrome while the window is inactive, as native apps do;
+/// the first click on an inactive window only activates it.
+fn dim_inactive_window_chrome(window: &Window) -> bool {
+    cfg!(target_os = "macos") && !window.is_window_active()
+}
+
 fn annotation_tool_group(
     document_id: DocumentId,
     current_page: u32,
@@ -21443,6 +21517,7 @@ fn annotation_tool_group(
     recent_signatures_loading: bool,
     recent_signature_storage_issue: Option<String>,
     page_scale_control: WeakEntity<PageScaleControl>,
+    dim_chrome: bool,
     cx: &mut Context<DocumentWorkspace>,
 ) -> gpui::AnyElement {
     let signature_open_control = cx.entity().downgrade();
@@ -21452,7 +21527,7 @@ fn annotation_tool_group(
     let signature_muted_foreground = cx.theme().muted_foreground;
     let signature_control = Popover::new(DOCUMENT_SIGNATURE_POPOVER_ID)
         .anchor(Anchor::TopRight)
-        .open(signature_popover_open)
+        .open(crate::overlay_state::sync_overlay_open("signature", signature_popover_open, cx))
         .on_open_change(move |open, window, cx| {
             let _ = signature_open_control.update(cx, |workspace, cx| {
                 if *open {
@@ -21783,6 +21858,7 @@ fn annotation_tool_group(
         .w_full()
         .flex_none()
         .gap_2()
+        .when(dim_chrome, |rail| rail.opacity(0.5))
         .child(rail_tool_section(
             "General",
             vec![
@@ -22880,7 +22956,6 @@ impl Render for DocumentWorkspace {
             viewer_plan,
             viewer_scroll,
             viewer_pages,
-            viewer_snapshot,
         ) = {
             let document_id = session.id;
             let title = session.title.clone();
@@ -23198,7 +23273,6 @@ impl Render for DocumentWorkspace {
                 })
                 .collect::<Vec<_>>();
             let viewer_plan = session.viewer.plan_snapshot().cloned();
-            let viewer_snapshot = session.viewer.snapshot();
             let viewer_scroll = session.viewer.scroll_handle();
             let viewer_pages = viewer_plan
                 .as_ref()
@@ -23315,7 +23389,6 @@ impl Render for DocumentWorkspace {
                 viewer_plan,
                 viewer_scroll,
                 viewer_pages,
-                viewer_snapshot,
             )
         };
         let select_hover_cursor = self
@@ -23615,48 +23688,6 @@ impl Render for DocumentWorkspace {
             measurement_property_inspector.update(cx, |inspector, cx| inspector.clear(cx));
         }
         let has_viewer_pages = !viewer_pages.is_empty();
-        let viewer_busy = viewer_snapshot.queued_tiles > 0 || viewer_snapshot.active_tiles > 0;
-        let viewer_status_text = if viewer_busy {
-            format!(
-                "Rendering page {} · {} queued · {} active",
-                current_page + 1,
-                viewer_snapshot.queued_tiles,
-                viewer_snapshot.active_tiles
-            )
-        } else {
-            let quality = match viewer_snapshot.current_quality {
-                Some(ViewerRenderQuality::Preview) => "Preview",
-                Some(ViewerRenderQuality::Full) => "Full quality",
-                Some(ViewerRenderQuality::Detail) => "Detail quality",
-                None => "Waiting for page",
-            };
-            format!("Page {} · {quality}", current_page + 1)
-        };
-        let viewer_status_surface = v_flex()
-            .id(DOCUMENT_VIEWER_STATUS_ID)
-            .debug_selector(|| DOCUMENT_VIEWER_STATUS_ID.into())
-            .role(Role::Status)
-            .aria_label(viewer_status_text.clone())
-            .a11y_synthetic_children(|builder| builder.parent_node().set_live(Live::Polite))
-            .absolute()
-            .right_2()
-            .bottom_2()
-            .w(px(220.))
-            .gap_1()
-            .p_2()
-            .rounded(cx.theme().radius)
-            .bg(cx.theme().popover)
-            .text_xs()
-            .child(viewer_status_text)
-            .when(viewer_busy, |status| {
-                status.child(
-                    gpui::div()
-                        .id(DOCUMENT_VIEWER_PROGRESS_ID)
-                        .debug_selector(|| DOCUMENT_VIEWER_PROGRESS_ID.into())
-                        .w_full()
-                        .child(Progress::new("document-viewer-progress-component").loading(true)),
-                )
-            });
         let viewport_control = cx.entity().downgrade();
         let viewport_observer = canvas(
             |_, _, _| (),
@@ -23733,7 +23764,7 @@ impl Render for DocumentWorkspace {
         let highlight_opacity_control = cx.entity().downgrade();
         let highlight_settings_control = Popover::new(DOCUMENT_HIGHLIGHT_SETTINGS_ID)
             .anchor(Anchor::TopRight)
-            .open(self.annotation_highlight_settings_open)
+            .open(crate::overlay_state::sync_overlay_open("highlight-settings", self.annotation_highlight_settings_open, cx))
             .on_open_change(move |open, _, cx| {
                 let _ = highlight_open_control.update(cx, |workspace, cx| {
                     workspace.annotation_highlight_settings_open = *open;
@@ -23904,7 +23935,7 @@ impl Render for DocumentWorkspace {
         let snap_nearest_control = cx.entity().downgrade();
         let semantic_snap_control = Popover::new("document-workspace-snap-settings-owner")
             .anchor(Anchor::TopRight)
-            .open(self.semantic_snap_settings_open)
+            .open(crate::overlay_state::sync_overlay_open("snap-settings", self.semantic_snap_settings_open, cx))
             .on_open_change(move |open, _, cx| {
                 let _ = snap_open_control.update(cx, |workspace, cx| {
                     workspace.semantic_snap_settings_open = *open;
@@ -24231,6 +24262,7 @@ impl Render for DocumentWorkspace {
             self.recent_signatures_loading,
             self.recent_signature_storage_issue.clone(),
             page_scale_control.downgrade(),
+            dim_inactive_window_chrome(window),
             cx,
         );
         let history_group = h_flex()
@@ -24295,7 +24327,7 @@ impl Render for DocumentWorkspace {
         let stroke_open_control = cx.entity().downgrade();
         let stroke_control = Popover::new("document-workspace-rectangle-stroke-popover")
             .anchor(Anchor::BottomLeft)
-            .open(self.annotation_stroke_menu_open)
+            .open(crate::overlay_state::sync_overlay_open("stroke-menu", self.annotation_stroke_menu_open, cx))
             .on_open_change(move |open, _, cx| {
                 let _ = stroke_open_control.update(cx, |workspace, cx| {
                     workspace.annotation_stroke_menu_open = *open;
@@ -24792,7 +24824,7 @@ impl Render for DocumentWorkspace {
                             "{tab_document_id}-publication-warning-close-popover"
                         ))
                         .anchor(Anchor::TopRight)
-                        .open(confirmation_open)
+                        .open(crate::overlay_state::sync_overlay_open(format!("workspace-tab-confirmation-{tab_document_id}"), confirmation_open, cx))
                         .overlay_closable(true)
                         .on_open_change(move |open, _, cx| {
                             let _ = open_control.update(cx, |workspace, cx| {
@@ -24901,7 +24933,7 @@ impl Render for DocumentWorkspace {
                         let content_control = cx.entity().downgrade();
                         Popover::new(format!("{tab_document_id}-dirty-close-popover"))
                             .anchor(Anchor::TopRight)
-                            .open(confirmation_open)
+                            .open(crate::overlay_state::sync_overlay_open(format!("workspace-tab-dirty-close-{tab_document_id}"), confirmation_open, cx))
                             .overlay_closable(!saving)
                             .on_open_change(move |open, _, cx| {
                                 let _ = open_control.update(cx, |workspace, cx| {
@@ -25361,8 +25393,46 @@ impl Render for DocumentWorkspace {
         let pointer_event_bridge = canvas(
             |_, _, _| (),
             move |_, _, window, _| {
+                window.on_mouse_event({
+                    let middle_down_control = down_control.clone();
+                    move |event: &MouseDownEvent, phase, window, cx| {
+                        if phase != DispatchPhase::Capture
+                            || event.button != MouseButton::Middle
+                            || crate::overlay_state::any_overlay_open(cx)
+                        {
+                            return;
+                        }
+                        let started = middle_down_control
+                            .update(cx, |workspace, cx| {
+                                workspace.begin_middle_button_pan(event.position, cx)
+                            })
+                            .unwrap_or(false);
+                        if started {
+                            window.prevent_default();
+                        }
+                    }
+                });
+                window.on_mouse_event({
+                    let middle_up_control = up_control.clone();
+                    move |event: &MouseUpEvent, phase, window, cx| {
+                        if phase != DispatchPhase::Capture || event.button != MouseButton::Middle {
+                            return;
+                        }
+                        let ended = middle_up_control
+                            .update(cx, |workspace, _| workspace.end_middle_button_pan())
+                            .unwrap_or(false);
+                        if ended {
+                            window.prevent_default();
+                        }
+                    }
+                });
                 window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                     if phase != DispatchPhase::Capture || event.button != MouseButton::Left {
+                        return;
+                    }
+                    // A press while a popover is open only dismisses it (or acts
+                    // inside it); it never also starts a canvas selection or edit.
+                    if crate::overlay_state::any_overlay_open(cx) {
                         return;
                     }
                     let started = down_control
@@ -25384,7 +25454,11 @@ impl Render for DocumentWorkspace {
                     if phase != DispatchPhase::Capture {
                         return;
                     }
-                    if event.pressed_button != Some(MouseButton::Left) {
+                    let middle_panning = event.pressed_button == Some(MouseButton::Middle)
+                        && move_control
+                            .read_with(cx, |workspace, _| workspace.pan_drag.is_some())
+                            .unwrap_or(false);
+                    if event.pressed_button != Some(MouseButton::Left) && !middle_panning {
                         let handled = move_control
                             .update(cx, |workspace, cx| {
                                 if workspace
@@ -26264,7 +26338,12 @@ impl Render for DocumentWorkspace {
         .child(sidebar_panel)
         .child(resizable_panel()
         .child(v_flex().flex_1().min_w_0().h_full()
-        .child(self.viewer_toolbar.clone())
+        .child(
+            gpui::div()
+                .w_full()
+                .when(dim_inactive_window_chrome(window), |toolbar| toolbar.opacity(0.5))
+                .child(self.viewer_toolbar.clone()),
+        )
         .when(redact_pending, |root| {
             root.child(
                 gpui::div()
@@ -26735,11 +26814,7 @@ impl Render for DocumentWorkspace {
                                                         .h(px(layout.logical_rect.height))
                                                         .bg(gpui::rgb(0xffffff))
                                                         .border_1()
-                                                        .border_color(if page_index == current_page {
-                                                            selection_color
-                                                        } else {
-                                                            cx.theme().border
-                                                        })
+                                                        .border_color(cx.theme().border)
                                                         .when(
                                                             page_index == current_page,
                                                             |page| {
@@ -26854,7 +26929,6 @@ impl Render for DocumentWorkspace {
                                         )
                                     })
                                 })
-                                .child(viewer_status_surface)
                                 .when(document_opening_batch_count > 0, |viewport| {
                                     let status = if document_opening_batch_count == 1 {
                                         "Opening PDF".to_owned()

@@ -22,7 +22,7 @@
   },
   "prepared": {
     "directory": ".prepared/gpui-component-c27f5d5c",
-    "treeSha256": "b8a00ac53a2dedc5d0029dedb1b895623d96474d70b3a2bc8c6c192886164bf7"
+    "treeSha256": "2cae50ffe0cca795b898b0fa85d7e84694a78fe16caf21217e66ff7ad9c30dd7"
   },
   "tabStatePatch": {
     "path": "patches/gpui-component-tab-button-states.patch",
@@ -44,21 +44,35 @@
     "sha256": "56443df37718f972ebcac99e33a0256f66d86a8a7d8dbb5fd02035a897096345",
     "purpose": "Reviewed rotation-only Textarea geometry, committed glyph, caret, selection, text decoration, inverse pointer mapping and AccessKit text-range contract"
   },
-  "forbiddenFeatures": ["profiler", "runtime_shaders", "screen-capture"],
+  "dialogCentringPatch": {
+    "path": "patches/gpui-component-dialog-centring.patch",
+    "sha256": "80fe49664f022cbf8d48a134ca212747556505c8abdb782cea70a0e899d8f223",
+    "purpose": "Reviewed vertical centring of dialogs in the window from their measured height, with a fade in place of the slide from the top"
+  },
+  "forbiddenFeatures": [
+    "profiler",
+    "runtime_shaders",
+    "screen-capture"
+  ],
   "forbiddenReleaseFeatures": [
     "profiler",
     "runtime_shaders",
     "screen-capture",
     "test-support"
   ],
-  "forbiddenPackages": ["zlog", "ztracing_macro"],
+  "forbiddenPackages": [
+    "zlog",
+    "ztracing_macro"
+  ],
   "replacementPackages": {
     "ztracing": {
       "license": "Apache-2.0",
       "source": null
     }
   },
-  "rejectedLicenseExpressions": ["GPL-3.0-or-later"],
+  "rejectedLicenseExpressions": [
+    "GPL-3.0-or-later"
+  ],
   "licenseClarifications": {
     "gpui_shared_string": {
       "revision": "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc",
@@ -306,12 +320,14 @@
     "directory": ".prepared/zed-8b1497d",
     "patch": {
       "path": "patches/gpui-opaque-path-multiply.patch",
-      "sha256": "76315cbecf73e6623ba6e42398ebc73f61f2a3cdb288c882a6bfa70ca86ef292"
+      "sha256": "c41d59fb99e40cda3b1efa2a6a12c15a696ff740220dba4432319ce331f0aa74"
     },
     "changedFiles": [
       "Cargo.toml",
+      "crates/gpui/src/app/test_context.rs",
       "crates/gpui/src/elements/img.rs",
       "crates/gpui/src/path_builder.rs",
+      "crates/gpui/src/platform.rs",
       "crates/gpui/src/platform/test/window.rs",
       "crates/gpui/src/scene.rs",
       "crates/gpui/src/text_system/line.rs",
@@ -319,13 +335,16 @@
       "crates/gpui_apple/src/metal_renderer.rs",
       "crates/gpui_apple/src/shaders.metal",
       "crates/gpui_linux/src/linux.rs",
+      "crates/gpui_linux/src/linux/platform.rs",
       "crates/gpui_linux/src/linux/wayland/client.rs",
+      "crates/gpui_macos/src/platform.rs",
       "crates/gpui_wgpu/src/shaders.wgsl",
       "crates/gpui_wgpu/src/shaders_webgl.wgsl",
       "crates/gpui_wgpu/src/wgpu_renderer.rs",
+      "crates/gpui_windows/src/platform.rs",
       "crates/gpui_windows/src/shaders.hlsl"
     ],
-    "treeSha256": "5c8dc9ee47e1006c9bd1c7226920b582518e53ff0e9ab71812496a5157ca0436",
+    "treeSha256": "10d8791dcbbec4c89c107b66d9c4377c366a9db0ec733635f8c99747ea484bab",
     "packages": {
       "collections": "crates/collections",
       "derive_refineable": "crates/refineable/derive_refineable",

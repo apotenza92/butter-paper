@@ -66,6 +66,7 @@ async function verifyCheckout(root, policy) {
     "M  crates/base/src/input/editor/display_map/text_wrapper.rs",
     "M  crates/base/src/input/mod.rs",
     "M  crates/ui/src/button/button.rs",
+    "M  crates/ui/src/dialog/dialog.rs",
     "M  crates/ui/src/input/input.rs",
     "M  crates/ui/src/input/mod.rs",
     "M  crates/ui/src/input/state.rs",
@@ -94,6 +95,9 @@ async function verifyCheckout(root, policy) {
   if (await fileSha256(join(probeDirectory, policy.textareaRotationPatch.path)) !== policy.textareaRotationPatch.sha256) {
     throw new Error("textarea rotation patch checksum drifted");
   }
+  if (await fileSha256(join(probeDirectory, policy.dialogCentringPatch.path)) !== policy.dialogCentringPatch.sha256) {
+    throw new Error("dialog centring patch checksum drifted");
+  }
   return validatePreparedTree(root, policy);
 }
 
@@ -118,6 +122,7 @@ async function prepare(source) {
     run("git", ["apply", "--index", join(probeDirectory, policy.menuAccessibilityPatch.path)], { cwd: temporary });
     run("git", ["apply", "--index", join(probeDirectory, policy.textareaPaddingPatch.path)], { cwd: temporary });
     run("git", ["apply", "--index", join(probeDirectory, policy.textareaRotationPatch.path)], { cwd: temporary });
+    run("git", ["apply", "--index", join(probeDirectory, policy.dialogCentringPatch.path)], { cwd: temporary });
 
     const digest = await verifyCheckout(temporary, policy);
     await rename(temporary, output);

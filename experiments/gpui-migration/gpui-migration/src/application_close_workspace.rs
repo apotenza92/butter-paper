@@ -1413,6 +1413,16 @@ impl ApplicationCloseShell {
     }
 }
 
+/// Whether a mouse press only activates the window. `first_mouse` is set for
+/// the press that brings an inactive macOS window to the front.
+pub fn swallow_window_activation_click(
+    macos: bool,
+    first_mouse: bool,
+    position_y: gpui::Pixels,
+) -> bool {
+    macos && first_mouse && position_y > gpui_component::TITLE_BAR_HEIGHT
+}
+
 pub fn register_application_close_action(
     workspace: &Entity<ApplicationCloseWorkspace>,
     cx: &mut App,
@@ -1448,6 +1458,17 @@ impl Render for ApplicationCloseShell {
         div()
             .relative()
             .size_full()
+            // macOS: the click that activates an inactive window only focuses
+            // it. The title bar is exempt so an inactive window can be dragged.
+            .capture_any_mouse_down(|event, _, cx| {
+                if swallow_window_activation_click(
+                    cfg!(target_os = "macos"),
+                    event.first_mouse,
+                    event.position.y,
+                ) {
+                    cx.stop_propagation();
+                }
+            })
             .on_action(cx.listener(Self::request_application_close_from_action))
             .on_drop(cx.listener(Self::open_dropped_documents))
             .child(content)
@@ -1540,4 +1561,18 @@ fn selected_path_key(token: &ApplicationCloseToken) -> String {
         "application-close-path:{}:{}:{}",
         token.transaction_id, token.request_sequence, token.document_id
     )
+}
+
+#[cfg(test)]
+mod activation_click_tests {
+    use super::swallow_window_activation_click;
+    use gpui::px;
+
+    #[test]
+    fn only_the_macos_activation_press_below_the_title_bar_is_swallowed() {
+        assert!(swallow_window_activation_click(true, true, px(200.)));
+        assert!(!swallow_window_activation_click(true, true, px(10.)));
+        assert!(!swallow_window_activation_click(true, false, px(200.)));
+        assert!(!swallow_window_activation_click(false, true, px(200.)));
+    }
 }

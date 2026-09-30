@@ -271,4 +271,25 @@ Electron-to-native migration and lean release checkpoint (2026-09-30): the final
 
 Lean native build checkpoint (2026-09-30): the stable-candidate workflow no longer runs the hosted six-machine smoke matrix. It builds, signs or verifies, and aggregates package receipts only. The smoke scripts remain for manual runs on local hosts. Electron 0.0.27 crashed before migrating because the main-process build stubbed `node:child_process` and `node:util`. 0.0.28 was cancelled before publication, and 0.0.29 ships the fix: every main-process Node built-in stays external, and a test enforces it. Native 0.0.26 runs its `NativeOnly` startup policy and imports no Electron data. By owner decision, Electron users migrate with fresh native settings; their Electron profiles and migration exports stay on disk. The v1 export format also excludes recent signatures and colour presets. The owner's own Mac migrated through 0.0.29. In 0.0.30 the move runs automatically after the Electron update restarts, with no confirmation prompt; applying the Electron update still needs one restart, because shipped Electron builds never install updates on quit. The Homebrew `butter-paper` cask now installs native 0.0.26 on macOS 13 or later.
 
+- [ ] 9.3 **Implementing:** owner feedback on native 0.0.26, first macOS use (2026-09-30).
+  - Quick fixes:
+    - [x] Remove the "Page N · quality" status badge from the canvas.
+    - [x] Remove the selection-coloured border around the current page.
+    - [x] Restrict the Open panel to PDFs; the image pickers accept only PNG and JPEG (GPUI open-panel file types on macOS, Windows and Linux; the Windows and Linux builds are untested here).
+    - [x] A click outside an open popup (for example Snap settings) only dismisses it and never starts a canvas selection (`overlay_state`).
+    - [x] Centre modals in the window with a fade, not a slide from the top, and keep the close button fully reachable (reviewed dialog-centring component patch).
+    - [x] On macOS, the first click on an inactive window only focuses it (the title bar still drags); the tool rail and toolbar dim while the window is inactive.
+    - [x] Zoom anchors at the page point under the cursor. View > Reverse Scroll Zoom is a saved preference for mice reversed by utilities such as LinearMouse, which apps cannot detect.
+    - [ ] Pan: middle-button drag pans with any tool; the Hand tool fault still needs reproducing in the running app.
+  - Windows (all platforms):
+    - [ ] Multiple windows, and File > New Window.
+    - [ ] Closing a window never quits on macOS; the Dock icon reopens a window, and files opened from Finder with no window open a new one.
+    - [ ] macOS Window menu, including Merge All Windows and moving tabs between windows.
+    - [ ] Session and recovery state kept per window.
+  - Electron-parity visual rework:
+    - [ ] Template dropdown with previews.
+    - [ ] Template manager with previews.
+    - [ ] Snap settings menu.
+    - [ ] Signature popup sizing and consistent visual style.
+
 - [ ] 9.2 New product capabilities — PDF/scanned search, agentic CLI/chat and inert Electron property controls remain in [backlog.md](backlog.md). Pending Redact marks do not imply secure applied redaction. Do not make absent reference features migration blockers without a scope decision.

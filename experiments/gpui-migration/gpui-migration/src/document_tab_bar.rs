@@ -448,7 +448,7 @@ impl Render for TemplateSplitControl {
         let save_document_enabled = self.save_document_enabled;
         let picker = Popover::new("document-tab-template-picker-popover")
             .anchor(Anchor::TopLeft)
-            .open(self.picker_open)
+            .open(crate::overlay_state::sync_overlay_open("template-picker", self.picker_open, cx))
             .track_focus(&self.picker_focus)
             .on_open_change(move |open, window, cx| {
                 let picker_focus = picker_open_focus.clone();
@@ -1372,7 +1372,7 @@ impl Render for DocumentTabBarTemplateSeam {
                 };
                 Popover::new(format!("document-tab-dirty-close-popover-{}", tab.id))
                     .anchor(Anchor::TopRight)
-                    .open(confirmation_open)
+                    .open(crate::overlay_state::sync_overlay_open(format!("tab-dirty-close-{}", tab.id), confirmation_open, cx))
                     .mouse_button(trigger_mouse_button)
                     .overlay_closable(!confirmation_busy)
                     .track_focus(&confirmation_focus)

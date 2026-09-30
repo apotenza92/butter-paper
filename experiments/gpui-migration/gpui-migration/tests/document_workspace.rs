@@ -34503,14 +34503,15 @@ fn viewer_status_surfaces_real_opening_and_tile_progress_without_layout_shift(
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let page_before = cx.debug_bounds(DOCUMENT_PAGE_ID).unwrap();
-    assert!(cx.debug_bounds(DOCUMENT_VIEWER_STATUS_ID).is_some());
-    assert!(cx.debug_bounds(DOCUMENT_VIEWER_PROGRESS_ID).is_some());
+    // Render quality and tile progress are internal; no badge covers the page.
+    assert!(cx.debug_bounds(DOCUMENT_VIEWER_STATUS_ID).is_none());
+    assert!(cx.debug_bounds(DOCUMENT_VIEWER_PROGRESS_ID).is_none());
 
     cx.run_until_parked();
     cx.executor().advance_clock(Duration::from_millis(1_200));
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.debug_bounds(DOCUMENT_VIEWER_STATUS_ID).is_some());
+    assert!(cx.debug_bounds(DOCUMENT_VIEWER_STATUS_ID).is_none());
     assert!(cx.debug_bounds(DOCUMENT_VIEWER_PROGRESS_ID).is_none());
     assert_eq!(cx.debug_bounds(DOCUMENT_PAGE_ID).unwrap(), page_before);
 

@@ -34,6 +34,7 @@ gpui::actions!(
     application_shell,
     [
         ToggleApplicationMenuBar,
+        ToggleReverseScrollZoom,
         MakeInterfaceBigger,
         MakeInterfaceSmaller,
         ResetInterfaceSize,
@@ -57,13 +58,24 @@ gpui::actions!(
 pub struct ApplicationShellPreferences {
     menu_bar_visible: bool,
     ui_zoom_level: i8,
+    /// Flips wheel zoom for mice whose scroll direction is reversed by a
+    /// utility such as LinearMouse, which apps cannot detect.
+    #[serde(default)]
+    reverse_scroll_zoom: bool,
 }
+
+/// Application-wide copy of the Reverse Scroll Zoom preference.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ReverseScrollZoom(pub bool);
+
+impl gpui::Global for ReverseScrollZoom {}
 
 impl Default for ApplicationShellPreferences {
     fn default() -> Self {
         Self {
             menu_bar_visible: true,
             ui_zoom_level: APPLICATION_UI_ZOOM_DEFAULT_LEVEL,
+            reverse_scroll_zoom: false,
         }
     }
 }
@@ -75,6 +87,14 @@ impl ApplicationShellPreferences {
 
     pub fn ui_zoom_level(&self) -> i8 {
         self.ui_zoom_level
+    }
+
+    pub fn reverse_scroll_zoom(&self) -> bool {
+        self.reverse_scroll_zoom
+    }
+
+    pub fn set_reverse_scroll_zoom(&mut self, reverse: bool) {
+        self.reverse_scroll_zoom = reverse;
     }
 
     pub fn set_menu_bar_visible(&mut self, visible: bool) {
