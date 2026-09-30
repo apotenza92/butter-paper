@@ -72,7 +72,7 @@ jobs:
               --archive "$artifact/butter-paper-macos-$SMOKE_ARCH-$VERSION.zip" \
               --fixture-pdf tests/fixtures/generated/single-page.pdf \
               --evidence-root "$evidence" \
-              --timeout-ms 180000
+              --timeout-ms 60000
           else
             node "$MIGRATION_ROOT/scripts/smoke-nonmac-production-package.mjs" \
               --package "$artifact/$TARGET_LABEL.zip" \

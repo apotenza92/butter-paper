@@ -612,7 +612,15 @@ export async function smokeSignedMacosPackage({
         });
       await sleep(100);
     }
-    if (observations.length < 2) screenshot("worker-timeout");
+    if (observations.length < 2) {
+      screenshot("worker-timeout");
+      if (process.env.BP_SMOKE_SCREENSHOT_DIR && child.exitCode === null)
+        spawnSync(
+          "/usr/bin/sample",
+          [String(child.pid), "3", "-file", join(process.env.BP_SMOKE_SCREENSHOT_DIR, "worker-timeout.sample.txt")],
+          { timeout: 30_000 },
+        );
+    }
     if (observations.length < 2)
       fail(
         `packaged PDF worker was not observed alive twice (${processInventory(worker, logs)})`,
