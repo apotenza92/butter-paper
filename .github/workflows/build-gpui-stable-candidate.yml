@@ -489,7 +489,12 @@ jobs:
       - name: Install Windows runtime smoke prerequisites
         if: matrix.os == 'windows'
         shell: pwsh
-        run: choco install qpdf --yes --no-progress
+        run: |
+          choco install qpdf --yes --no-progress
+          $bin = Join-Path $env:ChocolateyInstall 'bin'
+          if (-not $env:ChocolateyInstall) { $bin = 'C:\ProgramData\chocolatey\bin' }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          & (Join-Path $bin 'qpdf.exe') --version
       - name: Download exact package from this workflow run
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
