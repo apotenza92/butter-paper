@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REQUIRED_TARGETS = [
@@ -113,9 +113,11 @@ function validateIdentity(value, expected, label) {
   }
 }
 
+// Package receipts name the package file as it was produced; the candidate
+// layout nests it under a per-target directory, so compare file names.
 function validateArtifactClaim(value, actual, label) {
   if (
-    value?.artifact?.path !== actual.path ||
+    value?.artifact?.path !== basename(actual.path) ||
     value?.artifact?.bytes !== actual.bytes ||
     value?.artifact?.sha256 !== actual.sha256
   ) {

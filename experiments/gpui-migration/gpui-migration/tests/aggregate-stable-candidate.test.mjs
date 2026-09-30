@@ -10,7 +10,7 @@ import {
   link,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, test } from "node:test";
 import { aggregateStableCandidate } from "../scripts/aggregate-stable-candidate.mjs";
 
@@ -44,7 +44,7 @@ async function fixture(targets = REQUIRED) {
     const runtimeEvidence = `runtime/${slug}.smoke.json`;
     const bytes = Buffer.from(`package bytes for ${target}\n`);
     const artifactClaim = {
-      path: artifact,
+      path: basename(artifact),
       bytes: bytes.length,
       sha256: createHash("sha256").update(bytes).digest("hex"),
     };
@@ -234,7 +234,7 @@ test("fails closed on development markers, unverified receipts, and unexpected i
       "_ZN18CPDF_FontSubsetter23GenerateObjectOverridesEN6pdfium4span",
     );
     const claim = {
-      path: record.artifact,
+      path: basename(record.artifact),
       bytes: bytes.length,
       sha256: createHash("sha256").update(bytes).digest("hex"),
     };
