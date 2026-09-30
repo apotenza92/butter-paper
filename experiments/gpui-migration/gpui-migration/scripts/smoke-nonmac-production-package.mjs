@@ -703,7 +703,9 @@ function currentProcesses(rootPid, packageRoot) {
     process.platform === "win32"
       ? (() => {
           const data = powershell(
-            `$p=Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,ExecutablePath; ConvertTo-Json -InputObject @($p) -Compress`,
+            `$p=Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath | Select-Object ProcessId,ParentProcessId,ExecutablePath; ConvertTo-Json -InputObject @($p) -Compress`,
+            // Cold hosted ARM64 runners can take well over 45 s to answer WMI.
+            90_000,
           );
           try {
             return JSON.parse(data).map((p) => ({
