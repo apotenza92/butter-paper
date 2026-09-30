@@ -21,7 +21,8 @@ use crate::{
 
 const MANIFEST_NAME: &str = "session-manifest.json";
 const RECOVERY_MARKER_NAME: &str = "session-recovery.json";
-const MANIFEST_VERSION: u64 = 2;
+/// Version 3 adds window groups. Versions 1 and 2 load as a single window.
+const MANIFEST_VERSION: u64 = 3;
 const RECOVERY_MARKER_VERSION: u64 = 1;
 const MAX_MANIFEST_BYTES: u64 = 1_048_576;
 const MAX_DOCUMENTS: usize = 64;
@@ -38,15 +39,52 @@ pub struct SessionSnapshot {
     documents: Vec<PathBuf>,
     restart_views: Vec<RestartView>,
     active_document: Option<usize>,
+    windows: Vec<SessionWindow>,
+}
+
+/// One window's run of consecutive documents in a session.
+///
+/// `active_document` is relative to the window's first document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionWindow {
+    document_count: usize,
+    active_document: Option<usize>,
+}
+
+impl SessionWindow {
+    pub const fn document_count(self) -> usize {
+        self.document_count
+    }
+
+    pub const fn active_document(self) -> Option<usize> {
+        self.active_document
+    }
+}
+
+/// A single window holding every document, as versions 1 and 2 stored.
+fn single_window(document_count: usize, active_document: Option<usize>) -> Vec<SessionWindow> {
+    if document_count == 0 {
+        Vec::new()
+    } else {
+        vec![SessionWindow {
+            document_count,
+            active_document,
+        }]
+    }
 }
 
 impl SessionSnapshot {
     pub fn new(documents: Vec<PathBuf>, active_document: Option<usize>) -> Self {
         Self {
             restart_views: vec![RestartView::default(); documents.len()],
+            windows: single_window(documents.len(), active_document),
             documents,
             active_document,
         }
+    }
+
+    pub fn windows(&self) -> &[SessionWindow] {
+        &self.windows
     }
 
     pub fn with_restart_views(mut self, restart_views: Vec<RestartView>) -> Self {
@@ -58,9 +96,10 @@ impl SessionSnapshot {
         &self.documents
     }
 
-    /// Appends another window's documents after this window's, skipping paths
-    /// already present and anything past the manifest limit. This window's
-    /// active document stays active; otherwise the other's does.
+    /// Appends another snapshot's windows after this snapshot's, skipping
+    /// paths already present, empty windows and anything past the manifest
+    /// limit. This snapshot's active document stays active; otherwise the
+    /// other's does.
     pub fn append(&mut self, other: SessionSnapshot) {
         let mut seen = self
             .documents
@@ -68,15 +107,32 @@ impl SessionSnapshot {
             .map(|path| normalized_path_key(path))
             .collect::<HashSet<_>>();
         let mut other_active = None;
-        for (index, (path, view)) in other.documents.into_iter().zip(other.restart_views).enumerate() {
-            if self.documents.len() >= MAX_DOCUMENTS || !seen.insert(normalized_path_key(&path)) {
-                continue;
+        let mut entries = other.documents.into_iter().zip(other.restart_views).enumerate();
+        for window in other.windows {
+            let mut added = SessionWindow {
+                document_count: 0,
+                active_document: None,
+            };
+            let group = entries.by_ref().take(window.document_count).enumerate();
+            for (relative, (index, (path, view))) in group {
+                if self.documents.len() >= MAX_DOCUMENTS
+                    || !seen.insert(normalized_path_key(&path))
+                {
+                    continue;
+                }
+                if other.active_document == Some(index) {
+                    other_active = Some(self.documents.len());
+                }
+                if window.active_document == Some(relative) {
+                    added.active_document = Some(added.document_count);
+                }
+                self.documents.push(path);
+                self.restart_views.push(view);
+                added.document_count += 1;
             }
-            if other.active_document == Some(index) {
-                other_active = Some(self.documents.len());
+            if added.document_count > 0 {
+                self.windows.push(added);
             }
-            self.documents.push(path);
-            self.restart_views.push(view);
         }
         if self.active_document.is_none() {
             self.active_document = other_active;
@@ -167,6 +223,7 @@ pub struct SessionRestorePlan {
     documents: Vec<PathBuf>,
     restart_views: Vec<RestartView>,
     active_document: Option<usize>,
+    windows: Vec<SessionWindow>,
 }
 
 /// One durable PDF and the reader view that belongs to that exact path.
@@ -194,6 +251,38 @@ impl SessionRestoreDocument {
 }
 
 impl SessionRestorePlan {
+    /// One plan per saved window, in order; each restores as its own window.
+    /// Every document lands in exactly one plan. The first plan is the window
+    /// that held the session's active document, so it is restored first.
+    pub fn split_windows(self) -> Vec<SessionRestorePlan> {
+        let mut plans = Vec::with_capacity(self.windows.len());
+        let mut documents = self.documents.into_iter().zip(self.restart_views);
+        let mut start = 0;
+        let mut active_window = 0;
+        for window in &self.windows {
+            let (paths, views): (Vec<_>, Vec<_>) =
+                documents.by_ref().take(window.document_count).unzip();
+            if self
+                .active_document
+                .is_some_and(|active| (start..start + window.document_count).contains(&active))
+            {
+                active_window = plans.len();
+            }
+            start += window.document_count;
+            plans.push(SessionRestorePlan {
+                windows: single_window(paths.len(), window.active_document),
+                active_document: window.active_document,
+                documents: paths,
+                restart_views: views,
+            });
+        }
+        if active_window != 0 {
+            let active = plans.remove(active_window);
+            plans.insert(0, active);
+        }
+        plans
+    }
+
     /// Compatibility shim for launch and checkpoint callers that only need paths.
     ///
     /// New restore code should use [`Self::into_documents`] so a view cannot be
@@ -252,6 +341,7 @@ pub enum SessionManifestValidationError {
     NonFiniteRestartView,
     RecoveryTitleEmpty,
     RecoveryTitleTooLong,
+    InvalidWindows,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -338,6 +428,7 @@ impl SessionManifestStore {
             &snapshot.restart_views,
             snapshot.active_document,
         )
+        .and_then(|()| validate_windows(&snapshot.windows, snapshot.documents.len()))
         .map_err(SessionManifestError::Validation)?;
         let encoded = encode_manifest(snapshot);
 
@@ -760,12 +851,27 @@ fn encode_manifest(snapshot: &SessionSnapshot) -> String {
         encoded.push('}');
     }
     encoded.push_str("],\"activeDocument\":");
-    match snapshot.active_document {
+    push_optional_index(&mut encoded, snapshot.active_document);
+    encoded.push_str(",\"windows\":[");
+    for (index, window) in snapshot.windows.iter().enumerate() {
+        if index != 0 {
+            encoded.push(',');
+        }
+        encoded.push_str("{\"documentCount\":");
+        encoded.push_str(&window.document_count.to_string());
+        encoded.push_str(",\"activeDocument\":");
+        push_optional_index(&mut encoded, window.active_document);
+        encoded.push('}');
+    }
+    encoded.push_str("]}\n");
+    encoded
+}
+
+fn push_optional_index(encoded: &mut String, index: Option<usize>) {
+    match index {
         Some(index) => encoded.push_str(&index.to_string()),
         None => encoded.push_str("null"),
     }
-    encoded.push_str("}\n");
-    encoded
 }
 
 fn encode_recovery_marker(snapshot: &SessionRecoverySnapshot) -> String {
@@ -823,31 +929,28 @@ fn decode_manifest(bytes: &[u8]) -> Result<SessionRestorePlan, SessionManifestEr
         SessionManifestError::Corruption(SessionManifestCorruptionError::MalformedJson)
     })?;
     let object = value.as_object().ok_or_else(invalid_shape)?;
-    require_exact_fields(
-        object.keys().map(String::as_str),
-        &["version", "documents", "activeDocument"],
-    )?;
     let version = object
         .get("version")
         .and_then(Value::as_u64)
         .ok_or_else(invalid_shape)?;
-    if !matches!(version, 1 | MANIFEST_VERSION) {
+    if !matches!(version, 1 | 2 | MANIFEST_VERSION) {
         return Err(SessionManifestError::Corruption(
             SessionManifestCorruptionError::UnsupportedVersion,
         ));
     }
+    require_exact_fields(
+        object.keys().map(String::as_str),
+        if version >= 3 {
+            &["version", "documents", "activeDocument", "windows"][..]
+        } else {
+            &["version", "documents", "activeDocument"][..]
+        },
+    )?;
     let encoded_documents = object
         .get("documents")
         .and_then(Value::as_array)
         .ok_or_else(invalid_shape)?;
-    let active_document = match object.get("activeDocument") {
-        Some(Value::Null) => None,
-        Some(value) => Some(
-            usize::try_from(value.as_u64().ok_or_else(invalid_shape)?)
-                .map_err(|_| invalid_shape())?,
-        ),
-        None => return Err(invalid_shape()),
-    };
+    let active_document = decode_optional_index(object.get("activeDocument"))?;
     let mut documents = Vec::with_capacity(encoded_documents.len());
     let mut restart_views = Vec::with_capacity(encoded_documents.len());
     for encoded in encoded_documents {
@@ -873,14 +976,79 @@ fn decode_manifest(bytes: &[u8]) -> Result<SessionRestorePlan, SessionManifestEr
             decode_restart_view(object.get("view").ok_or_else(invalid_shape)?)?
         });
     }
-    validate_snapshot(&documents, &restart_views, active_document).map_err(|error| {
-        SessionManifestError::Corruption(SessionManifestCorruptionError::InvalidSnapshot(error))
-    })?;
+    let windows = if version >= 3 {
+        let encoded_windows = object
+            .get("windows")
+            .and_then(Value::as_array)
+            .ok_or_else(invalid_shape)?;
+        let mut windows = Vec::with_capacity(encoded_windows.len());
+        for encoded in encoded_windows {
+            let object = encoded.as_object().ok_or_else(invalid_shape)?;
+            require_exact_fields(
+                object.keys().map(String::as_str),
+                &["documentCount", "activeDocument"],
+            )?;
+            windows.push(SessionWindow {
+                document_count: object
+                    .get("documentCount")
+                    .and_then(Value::as_u64)
+                    .and_then(|count| usize::try_from(count).ok())
+                    .ok_or_else(invalid_shape)?,
+                active_document: decode_optional_index(object.get("activeDocument"))?,
+            });
+        }
+        windows
+    } else {
+        single_window(documents.len(), active_document)
+    };
+    validate_snapshot(&documents, &restart_views, active_document)
+        .and_then(|()| validate_windows(&windows, documents.len()))
+        .map_err(|error| {
+            SessionManifestError::Corruption(SessionManifestCorruptionError::InvalidSnapshot(error))
+        })?;
     Ok(SessionRestorePlan {
         documents,
         restart_views,
         active_document,
+        windows,
     })
+}
+
+fn decode_optional_index(value: Option<&Value>) -> Result<Option<usize>, SessionManifestError> {
+    match value {
+        Some(Value::Null) => Ok(None),
+        Some(value) => Ok(Some(
+            usize::try_from(value.as_u64().ok_or_else(invalid_shape)?)
+                .map_err(|_| invalid_shape())?,
+        )),
+        None => Err(invalid_shape()),
+    }
+}
+
+/// Windows partition the documents in order: each has at least one document,
+/// its active index falls inside it, and together they cover every document.
+fn validate_windows(
+    windows: &[SessionWindow],
+    document_count: usize,
+) -> Result<(), SessionManifestValidationError> {
+    let mut covered = 0usize;
+    for window in windows {
+        if window.document_count == 0
+            || window
+                .active_document
+                .is_some_and(|active| active >= window.document_count)
+        {
+            return Err(SessionManifestValidationError::InvalidWindows);
+        }
+        covered = covered
+            .checked_add(window.document_count)
+            .ok_or(SessionManifestValidationError::InvalidWindows)?;
+    }
+    if covered == document_count {
+        Ok(())
+    } else {
+        Err(SessionManifestValidationError::InvalidWindows)
+    }
 }
 
 fn decode_recovery_marker(bytes: &[u8]) -> Result<SessionRecoverySnapshot, SessionManifestError> {

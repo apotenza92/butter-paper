@@ -49,7 +49,7 @@ use butter_paper_gpui_migration::document_tab_bar::{
     TEMPLATE_PRIMARY_ID, document_tab_drag_id, document_tab_drop_target_id,
 };
 use butter_paper_gpui_migration::document_workspace::{
-    ActualSize, ApplyDisposition, CloseDocument, CloseRequestDisposition, ContinuousView,
+    DocumentTabTransferEvent, ActualSize, ApplyDisposition, CloseDocument, CloseRequestDisposition, ContinuousView,
     DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID, DOCUMENT_ACTIVE_INSPECTOR_SLOT_ID,
     DOCUMENT_ARC_PREVIEW_MARKER_ID, DOCUMENT_ARC_TOOL_ID, DOCUMENT_AREA_TOOL_ID,
     DOCUMENT_ARROW_TOOL_ID, DOCUMENT_CALLOUT_TOOL_ID, DOCUMENT_CLOUD_PLUS_TOOL_ID,
@@ -4631,6 +4631,7 @@ fn native_open_session_manifest_v1_defaults_and_v2_restart_view_round_trip_are_a
     let mut legacy: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
     legacy["version"] = serde_json::json!(1);
+    legacy.as_object_mut().unwrap().remove("windows");
     legacy["documents"]
         .as_array_mut()
         .unwrap()
@@ -44385,4 +44386,243 @@ fn control_wheel_zoom_keeps_the_document_point_under_the_pointer(cx: &mut TestAp
     let expected_x = (scroll_before.0 + local.0) * ratio - local.0;
     assert!((scroll_after.1 - expected_y).abs() < 40., "{scroll_after:?} vs y {expected_y}");
     assert!((scroll_after.0 - expected_x).abs() < 40., "{scroll_after:?} vs x {expected_x}");
+}
+
+#[gpui::test]
+fn opening_a_document_open_in_another_window_focuses_it_instead_of_duplicating(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let first = cx.new(DocumentWorkspace::new);
+    let second = cx.new(DocumentWorkspace::new);
+    let request = first.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("/plans/shared.pdf"), cx)
+    });
+    first.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        );
+    });
+    let focused = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    second.update(cx, |workspace, _| {
+        let first = first.clone();
+        let focused = focused.clone();
+        workspace.set_other_window_document_focus(move |own, path, cx| {
+            assert_ne!(own, first.entity_id(), "a window never defers to itself");
+            let found = first.read(cx).document_id_for_path(path, cx);
+            focused.borrow_mut().push((path.to_owned(), found));
+            found.is_some()
+        });
+    });
+
+    second.update(cx, |workspace, cx| {
+        workspace.open_documents(
+            DocumentOpenBatchRequest::new(
+                DocumentOpenOrigin::Picker,
+                [PathBuf::from("/plans/shared.pdf")],
+            ),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        *focused.borrow(),
+        vec![(PathBuf::from("/plans/shared.pdf"), Some(request.document_id))]
+    );
+    assert!(
+        second.read_with(cx, |workspace, _| workspace.sessions().is_empty()),
+        "the second window must not open its own copy"
+    );
+    assert_eq!(first.read_with(cx, |workspace, _| workspace.sessions().len()), 1);
+}
+
+fn tab_window_with_documents<'a>(
+    cx: &'a mut TestAppContext,
+    names: &[&str],
+    ids: Arc<std::sync::atomic::AtomicU64>,
+) -> (
+    gpui::Entity<DocumentWorkspace>,
+    Vec<DocumentId>,
+    Vec<Arc<AtomicBool>>,
+    &'a mut gpui::VisualTestContext,
+) {
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(|cx| {
+                let mut workspace = DocumentWorkspace::new(cx);
+                workspace.share_document_ids(ids);
+                workspace
+            });
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let mut documents = Vec::new();
+    let mut releases = Vec::new();
+    for name in names {
+        let request = workspace.update(cx, |workspace, cx| {
+            workspace.begin_open(PathBuf::from(format!("/plans/{name}")), cx)
+        });
+        let release = Arc::new(AtomicBool::new(false));
+        workspace.update(cx, |workspace, cx| {
+            workspace.apply_open_result(&request, Ok(opened_document(release.clone())), cx)
+        });
+        documents.push(request.document_id);
+        releases.push(release);
+    }
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    (workspace, documents, releases, cx)
+}
+
+#[gpui::test]
+fn a_detached_document_moves_to_another_workspace_with_its_state_and_identity(
+    cx: &mut TestAppContext,
+) {
+    let ids = Arc::new(std::sync::atomic::AtomicU64::new(1));
+    let first = cx.new(|cx| {
+        let mut workspace = DocumentWorkspace::new(cx);
+        workspace.share_document_ids(ids.clone());
+        workspace
+    });
+    let second = cx.new(|cx| {
+        let mut workspace = DocumentWorkspace::new(cx);
+        workspace.share_document_ids(ids.clone());
+        workspace
+    });
+    let mut released = Vec::new();
+    let mut open = |workspace: &gpui::Entity<DocumentWorkspace>, name: &str, cx: &mut TestAppContext| {
+        let request = workspace.update(cx, |workspace, cx| {
+            workspace.begin_open(PathBuf::from(format!("/plans/{name}")), cx)
+        });
+        let release = Arc::new(AtomicBool::new(false));
+        workspace.update(cx, |workspace, cx| {
+            workspace.apply_open_result(&request, Ok(opened_document(release.clone())), cx)
+        });
+        released.push(release);
+        request.document_id
+    };
+    let moving = open(&first, "moving.pdf", cx);
+    let staying = open(&first, "staying.pdf", cx);
+    let resident = open(&second, "resident.pdf", cx);
+    assert_eq!(
+        [moving, staying, resident].into_iter().collect::<std::collections::HashSet<_>>().len(),
+        3,
+        "shared ids are unique across windows"
+    );
+    // Opening is not transferable; loaded documents are.
+    let opening = first.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("/plans/opening.pdf"), cx)
+    });
+    first.read_with(cx, |workspace, cx| {
+        assert!(!workspace.can_transfer_document(opening.document_id, cx));
+        assert!(workspace.can_transfer_document(moving, cx));
+    });
+    first.update(cx, |workspace, cx| workspace.activate_document(moving, cx));
+
+    let detached = first
+        .update(cx, |workspace, cx| workspace.detach_document(moving, cx))
+        .unwrap();
+    first.read_with(cx, |workspace, cx| {
+        assert_eq!(workspace.session_order(cx), vec![staying, opening.document_id]);
+        assert_eq!(workspace.active_document_id(), Some(staying));
+    });
+    second.update(cx, |workspace, cx| workspace.attach_document(detached, 0, cx));
+    second.read_with(cx, |workspace, cx| {
+        assert_eq!(workspace.session_order(cx), vec![moving, resident]);
+        assert_eq!(workspace.active_document_id(), Some(moving));
+    });
+    assert!(
+        !released[0].load(std::sync::atomic::Ordering::Acquire),
+        "moving a document must not release its PDF resource"
+    );
+}
+
+#[gpui::test]
+fn dragging_a_tab_off_the_strip_reports_a_transfer_and_the_strip_accepts_drops(
+    cx: &mut TestAppContext,
+) {
+    let ids = Arc::new(std::sync::atomic::AtomicU64::new(1));
+    let (workspace, documents, _released, cx) =
+        tab_window_with_documents(cx, &["one.pdf", "two.pdf", "three.pdf"], ids);
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    cx.update(|_, cx| {
+        let events = events.clone();
+        cx.subscribe(&workspace, move |_, event: &DocumentTabTransferEvent, _| {
+            events.borrow_mut().push(*event);
+        })
+        .detach();
+    });
+    let tab = |cx: &mut gpui::VisualTestContext, id: DocumentId| {
+        cx.debug_bounds(Box::leak(document_session_tab_id(id).into_boxed_str()))
+            .unwrap()
+    };
+    let first = tab(cx, documents[0]);
+    let second = tab(cx, documents[1]);
+    let third = tab(cx, documents[2]);
+
+    // Insertion follows tab centres; off the strip there is no index.
+    workspace.read_with(cx, |workspace, cx| {
+        assert_eq!(workspace.tab_insertion_index(first.origin, cx), Some(0));
+        assert_eq!(workspace.tab_insertion_index(second.center(), cx), Some(1));
+        assert_eq!(
+            workspace.tab_insertion_index(point(third.right() + px(40.), third.center().y), cx),
+            Some(3)
+        );
+        assert_eq!(
+            workspace.tab_insertion_index(point(first.center().x, first.bottom() + px(300.)), cx),
+            None
+        );
+    });
+
+    // Another window's tab hovering at the end shows the drop cue.
+    workspace.update(cx, |workspace, cx| workspace.set_incoming_tab_drop(Some(3), cx));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx
+        .debug_bounds(Box::leak(
+            document_tab_drop_target_id(&documents[2].to_string()).into_boxed_str()
+        ))
+        .is_some());
+    workspace.update(cx, |workspace, cx| workspace.set_incoming_tab_drop(None, cx));
+
+    let start = first.center();
+    let away = point(start.x + px(40.), start.y + px(300.));
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(point(start.x + px(20.), start.y), Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_move(away, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_event(MouseUpEvent {
+        button: MouseButton::Left,
+        position: away,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+    });
+    cx.run_until_parked();
+
+    let events = events.borrow();
+    assert!(events.contains(&DocumentTabTransferEvent::Dragging {
+        document_id: documents[0],
+        position: away,
+        outside_strip: true,
+    }));
+    assert_eq!(
+        events[events.len() - 2..],
+        [
+            DocumentTabTransferEvent::Ended,
+            DocumentTabTransferEvent::Dropped {
+                document_id: documents[0],
+                position: away,
+            },
+        ]
+    );
+    // The workspace itself keeps its tabs; the application decides the move.
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.session_order(cx)),
+        documents
+    );
 }

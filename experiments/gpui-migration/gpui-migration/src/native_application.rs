@@ -6,7 +6,8 @@ use gpui_component::{GlobalState, menu::AppMenuBar};
 use crate::{
     application_close_workspace::{RequestApplicationClose, RequestApplicationQuit},
     application_shell::{
-        CheckForUpdates, MakeInterfaceBigger, MakeInterfaceSmaller, MinimiseWindow, NewWindow,
+        CheckForUpdates, MakeInterfaceBigger, MakeInterfaceSmaller, MinimiseWindow,
+        MoveDocumentToNewWindow, NewWindow,
         OpenReleasePage, ZoomWindow,
         ResetInterfaceSize, SetAsDefaultPdfApp, SetUpdateFrequencyAtStartup,
         SetUpdateFrequencyDaily, SetUpdateFrequencyEverySixHours,
@@ -46,6 +47,7 @@ pub struct NativeApplicationMenuState {
     pub fit_page_checked: bool,
     pub continuous_view_checked: bool,
     pub single_page_view_checked: bool,
+    pub can_move_document_to_new_window: bool,
 }
 
 pub fn build_native_application_menus(state: NativeApplicationMenuState) -> Vec<Menu> {
@@ -95,6 +97,9 @@ fn build_native_application_menus_with_optional_shell(
                 .disabled(!state.document_ready || state.save_busy || state.rotation_busy),
             MenuItem::action("Rotate Right", RotatePageRight)
                 .disabled(!state.document_ready || state.save_busy || state.rotation_busy),
+            MenuItem::separator(),
+            MenuItem::action("Move Document to New Window", MoveDocumentToNewWindow)
+                .disabled(!state.can_move_document_to_new_window),
         ]),
         build_native_view_menu(state, shell),
         build_window_menu(),

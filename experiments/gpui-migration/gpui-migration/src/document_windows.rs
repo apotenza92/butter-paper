@@ -181,7 +181,15 @@ mod tests {
             combined.documents(),
             &[PathBuf::from("/b.pdf"), PathBuf::from("/a.pdf"), PathBuf::from("/c.pdf")]
         );
-        assert_eq!(combined, snapshot(&["/b.pdf", "/a.pdf", "/c.pdf"], Some(0)));
+        // Each window stays its own window for restore.
+        assert_eq!(
+            combined
+                .windows()
+                .iter()
+                .map(|window| (window.document_count(), window.active_document()))
+                .collect::<Vec<_>>(),
+            [(1, Some(0)), (1, None), (1, None)]
+        );
     }
 
     #[test]

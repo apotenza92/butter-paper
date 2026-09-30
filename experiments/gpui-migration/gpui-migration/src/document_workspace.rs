@@ -2573,6 +2573,12 @@ pub struct DocumentWorkspace {
     template_manage_requests: u64,
     template_save_requests: u64,
     external_template_authority: bool,
+    /// Shared by every window so a document keeps its id when moved between them.
+    document_id_source: Option<Arc<std::sync::atomic::AtomicU64>>,
+    /// Where a tab dragged from another window would land, while it is over this strip.
+    incoming_tab_drop: Option<usize>,
+    session_tab_strip_bounds: Rc<Cell<Bounds<Pixels>>>,
+    other_window_document_focus: Option<OtherWindowDocumentFocus>,
     opener: Option<Arc<dyn NativeDocumentOpener>>,
     saver: Option<Arc<dyn NativeDocumentSaver>>,
 }
@@ -2589,6 +2595,35 @@ pub struct DocumentEditCapabilities {
 }
 
 impl EventEmitter<DocumentWorkspaceTemplateCommand> for DocumentWorkspace {}
+
+/// A tab dragged beyond this window's tab strip, for the application to move
+/// between windows. Positions are in this window's coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DocumentTabTransferEvent {
+    Dragging {
+        document_id: DocumentId,
+        position: Point<Pixels>,
+        outside_strip: bool,
+    },
+    Dropped {
+        document_id: DocumentId,
+        position: Point<Pixels>,
+    },
+    Ended,
+}
+
+impl EventEmitter<DocumentTabTransferEvent> for DocumentWorkspace {}
+
+/// An open document moved out of one workspace, ready for another.
+pub struct DetachedDocument {
+    session: Entity<NativeDocumentSession>,
+}
+
+impl DetachedDocument {
+    pub fn document_id(&self, cx: &App) -> DocumentId {
+        self.session.read(cx).id
+    }
+}
 
 #[derive(Clone, Copy)]
 struct PageInteraction {
@@ -3442,8 +3477,11 @@ struct SavePromptAuthority {
 
 enum OpenSelectionDecision {
     Existing(DocumentId),
+    OtherWindow,
     Begin(OpenDocumentRequest),
 }
+
+type OtherWindowDocumentFocus = std::rc::Rc<dyn Fn(gpui::EntityId, &Path, &mut App) -> bool>;
 
 struct PendingSessionRestore {
     batch_id: u64,
@@ -4011,6 +4049,10 @@ impl DocumentWorkspace {
             template_manage_requests: 0,
             template_save_requests: 0,
             external_template_authority: false,
+            document_id_source: None,
+            incoming_tab_drop: None,
+            session_tab_strip_bounds: Rc::new(Cell::new(Bounds::default())),
+            other_window_document_focus: None,
             opener: None,
             saver: None,
         }
@@ -5131,6 +5173,11 @@ impl DocumentWorkspace {
             drag.current = position;
             drag.over_document_id = over_document_id;
         }
+        cx.emit(DocumentTabTransferEvent::Dragging {
+            document_id: snapshot.document_id,
+            position,
+            outside_strip: !self.session_tab_strip_bounds.get().contains(&position),
+        });
         cx.notify();
         true
     }
@@ -5143,6 +5190,17 @@ impl DocumentWorkspace {
             return false;
         }
         self.suppress_session_tab_click_id = Some(drag.document_id);
+        cx.emit(DocumentTabTransferEvent::Ended);
+        if !self.session_tab_strip_bounds.get().contains(&drag.current) {
+            // Beyond the tab strip: the application may move the tab to
+            // another window or a new one.
+            cx.emit(DocumentTabTransferEvent::Dropped {
+                document_id: drag.document_id,
+                position: drag.current,
+            });
+            cx.notify();
+            return true;
+        }
         if !self.session_tab_scroll.bounds().contains(&drag.current) {
             cx.notify();
             return true;
@@ -5165,6 +5223,7 @@ impl DocumentWorkspace {
         };
         if drag.activated {
             self.suppress_session_tab_click_id = Some(drag.document_id);
+            cx.emit(DocumentTabTransferEvent::Ended);
         }
         cx.notify();
         true
@@ -5318,6 +5377,188 @@ impl DocumentWorkspace {
 
     pub const fn template_save_requests(&self) -> u64 {
         self.template_save_requests
+    }
+
+    /// Allocates document ids from `source`, shared with other windows.
+    pub fn share_document_ids(&mut self, source: Arc<std::sync::atomic::AtomicU64>) {
+        self.document_id_source = Some(source);
+    }
+
+    fn peek_document_id(&self) -> DocumentId {
+        DocumentId::new(match &self.document_id_source {
+            Some(source) => source.load(std::sync::atomic::Ordering::Relaxed),
+            None => self.next_document_id,
+        })
+    }
+
+    fn allocate_document_id(&mut self) -> DocumentId {
+        match &self.document_id_source {
+            Some(source) => {
+                DocumentId::new(source.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+            }
+            None => {
+                let document_id = DocumentId::new(self.next_document_id);
+                self.next_document_id = self.next_document_id.saturating_add(1);
+                document_id
+            }
+        }
+    }
+
+    pub fn session_count(&self) -> usize {
+        self.sessions.len()
+    }
+
+    /// The tab-strip insertion index for a point in this window, or `None`
+    /// when the point is not over the tab strip.
+    pub fn tab_insertion_index(&self, position: Point<Pixels>, cx: &App) -> Option<usize> {
+        let strip = self.session_tab_strip_bounds.get();
+        if strip.size.width <= px(0.) || !strip.contains(&position) {
+            return None;
+        }
+        Some(
+            self.sessions
+                .iter()
+                .filter(|session| {
+                    self.session_tab_bounds
+                        .get(&session.read(cx).id)
+                        .is_some_and(|bounds| bounds.get().center().x < position.x)
+                })
+                .count(),
+        )
+    }
+
+    /// Shows where a tab dragged from another window would be inserted.
+    pub fn set_incoming_tab_drop(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
+        if self.incoming_tab_drop != index {
+            self.incoming_tab_drop = index;
+            cx.notify();
+        }
+    }
+
+    /// Whether `document_id` can move to another window now: it is loaded,
+    /// not saving, closing or awaiting recovery confirmation.
+    pub fn can_transfer_document(&self, document_id: DocumentId, cx: &App) -> bool {
+        self.session(document_id, cx).is_some_and(|session| {
+            let session = session.read(cx);
+            matches!(session.status, NativeDocumentStatus::Ready)
+                && session.save_status != NativeDocumentSaveStatus::Saving
+        }) && self.pending_close_document_id != Some(document_id)
+            && self.close_after_save_document_id != Some(document_id)
+            && !self.recovery_confirmation_pending.contains(&document_id)
+    }
+
+    /// Removes an open document without releasing it, keeping its edits,
+    /// history and recovery checkpoint, so another window can adopt it.
+    pub fn detach_document(
+        &mut self,
+        document_id: DocumentId,
+        cx: &mut Context<Self>,
+    ) -> Result<DetachedDocument, String> {
+        if !self.can_transfer_document(document_id, cx) {
+            return Err("This document is busy and cannot move to another window yet.".into());
+        }
+        if self.active_document_id == Some(document_id) {
+            self.commit_pending_text_editor_before_application_close(cx)?;
+        }
+        let Some(index) = self
+            .sessions
+            .iter()
+            .position(|session| session.read(cx).id == document_id)
+        else {
+            return Err("The document is no longer open.".into());
+        };
+        if self.signature_popover_open && self.active_document_id == Some(document_id) {
+            self.dismiss_signature_popover(document_id, None, cx);
+        }
+        if self
+            .active_annotation_pointer
+            .is_some_and(|active| active.document_id == document_id)
+        {
+            self.cancel_annotation_pointer(cx);
+        }
+        if let Some(control) = self.page_scale_control.clone() {
+            control.update(cx, |control, cx| control.cancel_for_document(document_id, cx));
+        }
+        self.viewer_session_subscriptions.remove(&document_id);
+        self.viewer_quality_tasks.remove(&document_id);
+        self.session_tab_focus_handles.remove(&document_id);
+        self.session_tab_bounds.remove(&document_id);
+        self.session_tab_close_bounds.remove(&document_id);
+        self.session_tab_pointer_drag = None;
+        if self.suppress_session_tab_click_id == Some(document_id) {
+            self.suppress_session_tab_click_id = None;
+        }
+        if self.session_tab_hovered == Some(document_id) {
+            self.session_tab_hovered = None;
+        }
+        let session = self.sessions.remove(index);
+        self.page_interactions.retain(|(owner, _), _| *owner != document_id);
+        self.last_painted_page_evidence
+            .retain(|(owner, _), _| *owner != document_id);
+        self.viewport_bounds.remove(&document_id);
+        self.viewport_painted_scroll.remove(&document_id);
+        self.annotation_statuses.remove(&document_id);
+        if self.active_document_id == Some(document_id) {
+            self.active_document_id = self
+                .sessions
+                .iter()
+                .skip(index)
+                .chain(self.sessions[..index].iter().rev())
+                .find_map(|session| {
+                    matches!(session.read(cx).status, NativeDocumentStatus::Ready)
+                        .then_some(session.read(cx).id)
+                });
+        }
+        self.sync_active_viewer_toolbar(cx);
+        self.session_tab_reveal = self.active_document_id;
+        cx.notify();
+        Ok(DetachedDocument { session })
+    }
+
+    /// Adopts a document detached from another window at tab `index` and
+    /// makes it active.
+    pub fn attach_document(
+        &mut self,
+        document: DetachedDocument,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> DocumentId {
+        let session = document.session;
+        let document_id = session.read(cx).id;
+        session.update(cx, |session, _| {
+            let _ = session
+                .annotations
+                .set_semantic_snap_settings(self.semantic_snap_settings);
+        });
+        self.observe_viewer_session(&session, cx);
+        self.register_session_tab(document_id, cx);
+        let index = index.min(self.sessions.len());
+        self.sessions.insert(index, session);
+        self.pending_session_restore = None;
+        self.activate_document(document_id, cx);
+        self.session_tab_reveal = Some(document_id);
+        cx.notify();
+        document_id
+    }
+
+    /// Lets opens check the application's other windows: when `focus` finds
+    /// the path already open elsewhere, it brings that document forward and
+    /// returns true, and this workspace does not open a second copy.
+    pub fn set_other_window_document_focus(
+        &mut self,
+        focus: impl Fn(gpui::EntityId, &Path, &mut App) -> bool + 'static,
+    ) {
+        self.other_window_document_focus = Some(std::rc::Rc::new(focus));
+    }
+
+    /// The open (not failed) document at `path`, if any.
+    pub fn document_id_for_path(&self, path: &Path, cx: &App) -> Option<DocumentId> {
+        self.sessions.iter().find_map(|session| {
+            let session = session.read(cx);
+            (!matches!(session.status, NativeDocumentStatus::Failed(_))
+                && normalized_document_path(&session.path) == normalized_document_path(path))
+            .then_some(session.id)
+        })
     }
 
     pub fn use_external_template_authority(&mut self, enabled: bool) {
@@ -8454,8 +8695,7 @@ impl DocumentWorkspace {
         // session and worker on the resolved source identity so a later in-place Save
         // can bind the same guarded file instead of failing only after the user edits.
         let path = path.canonicalize().unwrap_or(path);
-        let document_id = DocumentId::new(self.next_document_id);
-        self.next_document_id = self.next_document_id.saturating_add(1);
+        let document_id = self.allocate_document_id();
         let generation = self.next_generation();
         let semantic_snap_settings = self.semantic_snap_settings;
         let session = cx.new(|_| {
@@ -8548,19 +8788,19 @@ impl DocumentWorkspace {
 
             for path in candidates {
                 let decision = match entity.update(cx, |workspace, cx| {
-                    if !force_new_tabs
-                        && let Some(existing) = workspace.sessions.iter().find_map(|session| {
-                            let session = session.read(cx);
-                            (!matches!(session.status, NativeDocumentStatus::Failed(_))
-                                && normalized_document_path(&session.path)
-                                    == normalized_document_path(&path))
-                            .then_some(session.id)
-                        })
-                    {
-                        OpenSelectionDecision::Existing(existing)
-                    } else {
-                        OpenSelectionDecision::Begin(workspace.begin_open(path.clone(), cx))
+                    if force_new_tabs {
+                        return OpenSelectionDecision::Begin(workspace.begin_open(path.clone(), cx));
                     }
+                    if let Some(existing) = workspace.document_id_for_path(&path, cx) {
+                        return OpenSelectionDecision::Existing(existing);
+                    }
+                    let own = cx.entity_id();
+                    if let Some(focus) = workspace.other_window_document_focus.clone()
+                        && focus(own, &path, cx)
+                    {
+                        return OpenSelectionDecision::OtherWindow;
+                    }
+                    OpenSelectionDecision::Begin(workspace.begin_open(path.clone(), cx))
                 }) {
                     Ok(decision) => decision,
                     Err(_) => return,
@@ -8570,6 +8810,7 @@ impl DocumentWorkspace {
                         duplicate_to_focus.get_or_insert(document_id);
                         continue;
                     }
+                    OpenSelectionDecision::OtherWindow => continue,
                     OpenSelectionDecision::Begin(request) => request,
                 };
                 let result = if let Some(opener) = opener.clone() {
@@ -8725,7 +8966,7 @@ impl DocumentWorkspace {
         request: GeneratedDocumentRequest,
         cx: &mut Context<Self>,
     ) -> Result<DocumentId, String> {
-        let document_id = DocumentId::new(self.next_document_id);
+        let document_id = self.peek_document_id();
         let source = store
             .create(&format!("document-{}", document_id.value()), &request)
             .map_err(|error| error.to_string())?;
@@ -8768,8 +9009,7 @@ impl DocumentWorkspace {
         source: OwnedGeneratedDocument,
         cx: &mut Context<Self>,
     ) -> OpenDocumentRequest {
-        let document_id = DocumentId::new(self.next_document_id);
-        self.next_document_id = self.next_document_id.saturating_add(1);
+        let document_id = self.allocate_document_id();
         let generation = self.next_generation();
         let path = source.path().to_owned();
         let semantic_snap_settings = self.semantic_snap_settings;
@@ -24772,15 +25012,22 @@ impl Render for DocumentWorkspace {
                     let is_dragged = self.session_tab_pointer_drag.as_ref().is_some_and(|drag| {
                         drag.activated && drag.document_id == tab_document_id
                     });
-                    let is_drop_target = self.session_tab_pointer_drag.as_ref().is_some_and(|drag| {
-                        drag.activated && drag.document_id != tab_document_id
-                            && drag.over_document_id == tab_document_id
-                            && self.session_tab_scroll.bounds().contains(&drag.current)
-                    });
-                    let drop_after = self.session_tab_pointer_drag.as_ref().is_some_and(|drag| {
-                        session_tab_ids.iter().position(|id| *id == drag.document_id)
-                            .is_some_and(|source_ix| source_ix < tab_ix)
-                    });
+                    let incoming_before = self.incoming_tab_drop == Some(tab_ix);
+                    let incoming_after = self.incoming_tab_drop == Some(tab_ix + 1)
+                        && tab_ix + 1 == session_tab_count;
+                    let is_drop_target = incoming_before
+                        || incoming_after
+                        || self.session_tab_pointer_drag.as_ref().is_some_and(|drag| {
+                            drag.activated && drag.document_id != tab_document_id
+                                && drag.over_document_id == tab_document_id
+                                && self.session_tab_scroll.bounds().contains(&drag.current)
+                        });
+                    let drop_after = incoming_after
+                        || (!incoming_before
+                            && self.session_tab_pointer_drag.as_ref().is_some_and(|drag| {
+                                session_tab_ids.iter().position(|id| *id == drag.document_id)
+                                    .is_some_and(|source_ix| source_ix < tab_ix)
+                            }));
                     let accessibility_label = if publication_warning.is_some() {
                         format!("{tab_title}, Saved with warning")
                     } else if dirty {
@@ -25436,6 +25683,7 @@ impl Render for DocumentWorkspace {
             .chain(self.session_tab_close_bounds.values())
             .cloned()
             .collect::<Vec<_>>();
+        let strip_bounds = self.session_tab_strip_bounds.clone();
         let session_tab_strip = h_flex()
             .id(DOCUMENT_SESSION_TABS_ID)
             .debug_selector(|| DOCUMENT_SESSION_TABS_ID.into())
@@ -25446,6 +25694,11 @@ impl Render for DocumentWorkspace {
             .border_b_1()
             .border_color(cx.theme().border)
             .relative()
+            .child(
+                canvas(move |bounds, _, _| strip_bounds.set(bounds), |_, _, _, _| {})
+                    .absolute()
+                    .inset_0(),
+            )
             .on_key_down(move |event: &KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape"
                     && cancel_drag_control

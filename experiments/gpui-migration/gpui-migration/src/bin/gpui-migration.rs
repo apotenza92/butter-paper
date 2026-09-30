@@ -11,7 +11,8 @@ use butter_paper_gpui_migration::document_windows::{
 use butter_paper_gpui_migration::application_shell::application_data_directory;
 use butter_paper_gpui_migration::application_shell::{
     ApplicationShellPreferences, ApplicationShellPreferencesStore, ApplicationUiZoomAction,
-    MakeInterfaceBigger, MakeInterfaceSmaller, MinimiseWindow, NewWindow, OpenReleasePage,
+    MakeInterfaceBigger, MakeInterfaceSmaller, MinimiseWindow, MoveDocumentToNewWindow, NewWindow,
+    OpenReleasePage,
     ResetInterfaceSize, ZoomWindow,
     ReverseScrollZoom, SetAsDefaultPdfApp, ToggleApplicationFullScreen, ToggleApplicationMenuBar,
     ToggleReverseScrollZoom, apply_application_ui_zoom,
@@ -25,7 +26,8 @@ use butter_paper_gpui_migration::document_tab_bar::TemplateCatalogItem;
 use butter_paper_gpui_migration::document_workspace::{
     DeferredStartupOpen, DocumentId, DocumentWorkspace, DocumentWorkspaceEvidenceSnapshot,
     DocumentWorkspaceTemplateCommand, PaintedPageEvidence, PdfDocumentSaver, PdfiumWorkerBackend,
-    StartupRecoveryAvailability, StartupRecoveryItem, init_document_workspace_actions,
+    DocumentTabTransferEvent, StartupRecoveryAvailability, StartupRecoveryItem,
+    init_document_workspace_actions,
     register_document_workspace_actions_for,
 };
 #[cfg(not(feature = "development-pdfium-override"))]
@@ -72,7 +74,9 @@ use butter_paper_gpui_migration::perf_scenario::{
 use butter_paper_gpui_migration::recent_signature_store::{
     PlatformSignatureKeyStore, RECENT_SIGNATURES_FILE_NAME, RecentSignatureStore,
 };
-use butter_paper_gpui_migration::session_manifest::{SessionManifestStore, SessionRecoverySnapshot};
+use butter_paper_gpui_migration::session_manifest::{
+    SessionManifestStore, SessionRecoverySnapshot, SessionRestorePlan,
+};
 use butter_paper_gpui_migration::system_theme::follow_window_appearance_with_application_zoom;
 use butter_paper_gpui_migration::template_manager::{
     PersistentTemplateManager, TemplateManagerView, legacy_blank_request_from_json,
@@ -1336,6 +1340,10 @@ impl ComponentStory {
                 fit_page_checked: commands.fit_page_checked,
                 continuous_view_checked: commands.continuous_view_checked,
                 single_page_view_checked: commands.single_page_view_checked,
+                can_move_document_to_new_window: shared_application(cx).multi_window
+                    && workspace.session_count() > 1
+                    && active_document
+                        .is_some_and(|document_id| workspace.can_transfer_document(document_id, cx)),
             }
         }
     }
@@ -1473,6 +1481,29 @@ fn register_application_shell_actions(cx: &mut App) {
             let _ = entry.handle.update(cx, |_, window, _| window.zoom_window());
         }
     });
+    cx.on_action(|_: &MoveDocumentToNewWindow, cx| {
+        let Some(entry) = active_document_window(cx) else {
+            return;
+        };
+        let Some(document_id) = entry
+            .workspace
+            .upgrade()
+            .and_then(|workspace| workspace.read(cx).active_document_id())
+        else {
+            return;
+        };
+        let Some(screen) = entry
+            .handle
+            .update(cx, |_, window, _| {
+                let frame = window.bounds();
+                frame.origin + gpui::point(px(148.), px(48.))
+            })
+            .ok()
+        else {
+            return;
+        };
+        cx.defer(move |cx| move_document_between_windows(entry.handle, document_id, None, screen, cx));
+    });
     cx.on_action(|_: &NewWindow, cx| {
         if shared_application(cx).multi_window {
             open_document_window(cx, None);
@@ -1481,10 +1512,15 @@ fn register_application_shell_actions(cx: &mut App) {
     // Quit closes every window through its own unsaved-changes transaction.
     // Never route this through gpui::Quit.
     cx.on_action(|_: &RequestApplicationQuit, cx| {
-        let windows = document_window_entries(cx);
+        let mut windows = document_window_entries(cx);
         if windows.is_empty() {
             cx.quit();
             return;
+        }
+        // The front window closes first, so its active document is the
+        // session's active document and its window restores in front.
+        if let Some(active) = active_document_window(cx) {
+            windows.sort_by_key(|entry| entry.handle != active.handle);
         }
         shared_application(cx).coordinator.begin_quit();
         for entry in windows {
@@ -1749,10 +1785,45 @@ fn apply_launch_action(
         NativeLaunchAction::OpenExplicit(request) => {
             workspace.open_documents(request, cx);
         }
-        NativeLaunchAction::Restore(plan) => {
-            workspace.restore_session(plan, cx);
-        }
+        NativeLaunchAction::Restore(plan) => restore_session_windows(workspace, plan, cx),
     }
+}
+
+/// Restores the first saved window into `workspace` and each other saved
+/// window into a new window, keeping the first window in front.
+fn restore_session_windows(
+    workspace: &mut DocumentWorkspace,
+    plan: SessionRestorePlan,
+    cx: &mut Context<DocumentWorkspace>,
+) {
+    if !shared_application(cx).multi_window {
+        workspace.restore_session(plan, cx);
+        return;
+    }
+    let mut plans = plan.split_windows().into_iter();
+    workspace.restore_session(plans.next().unwrap_or_default(), cx);
+    let others = plans.collect::<Vec<_>>();
+    if others.is_empty() {
+        return;
+    }
+    let first = cx.entity().downgrade();
+    cx.defer(move |cx| {
+        for plan in others {
+            let Some(workspace) = open_document_window(cx, None)
+                .and_then(|handle| window_entry(handle, cx))
+                .and_then(|entry| entry.workspace.upgrade())
+            else {
+                continue;
+            };
+            workspace.update(cx, |workspace, cx| workspace.restore_session(plan, cx));
+        }
+        if let Some(entry) = document_window_entries(cx)
+            .into_iter()
+            .find(|entry| entry.workspace == first)
+        {
+            let _ = entry.handle.update(cx, |_, window, _| window.activate_window());
+        }
+    });
 }
 
 fn deferred_startup_open(action: NativeLaunchAction) -> DeferredStartupOpen {
@@ -1773,9 +1844,7 @@ fn apply_deferred_startup_open(
         DeferredStartupOpen::Explicit(request) => {
             workspace.open_documents(request, cx);
         }
-        DeferredStartupOpen::Restore(plan) => {
-            workspace.restore_session(plan, cx);
-        }
+        DeferredStartupOpen::Restore(plan) => restore_session_windows(workspace, plan, cx),
     }
 }
 
@@ -2094,6 +2163,7 @@ fn main() {
                 template_manager_root: storage_layout.template_library_root(),
                 template_authority: std::cell::RefCell::new(None),
                 coordinator: Arc::new(WindowSessionCoordinator::default()),
+                document_ids: Arc::new(std::sync::atomic::AtomicU64::new(1)),
                 multi_window,
             }),
             windows: Vec::new(),
@@ -2196,6 +2266,8 @@ struct SharedApplication {
     /// One template library authority for every window, created with the first.
     template_authority: std::cell::RefCell<Option<Arc<std::sync::Mutex<PersistentTemplateManager>>>>,
     coordinator: Arc<WindowSessionCoordinator>,
+    /// Document ids are unique across windows so a tab can move between them.
+    document_ids: Arc<std::sync::atomic::AtomicU64>,
     /// Performance runs keep the original single window.
     multi_window: bool,
 }
@@ -2293,6 +2365,14 @@ fn next_window_bounds(cx: &mut App) -> WindowBounds {
 /// Opens a document window. The startup window restores the session and
 /// inspects recovery; later windows start empty and share every store.
 fn open_document_window(cx: &mut App, startup: Option<StartupWindow>) -> Option<AnyWindowHandle> {
+    open_document_window_with_bounds(cx, startup, None)
+}
+
+fn open_document_window_with_bounds(
+    cx: &mut App,
+    startup: Option<StartupWindow>,
+    bounds: Option<WindowBounds>,
+) -> Option<AnyWindowHandle> {
     let shared = shared_application(cx);
     let is_startup = startup.is_some();
     if !is_startup && document_window_entries(cx).is_empty() {
@@ -2302,7 +2382,7 @@ fn open_document_window(cx: &mut App, startup: Option<StartupWindow>) -> Option<
         }
     }
     let window_options = WindowOptions {
-        window_bounds: Some(next_window_bounds(cx)),
+        window_bounds: Some(bounds.unwrap_or_else(|| next_window_bounds(cx))),
         tabbing_identifier: shared
             .multi_window
             .then(|| "butter-paper-documents".to_owned()),
@@ -2355,6 +2435,10 @@ fn build_document_window(
         }
         if let Some(store) = &shared.recent_signature_store {
             workspace.bind_recent_signature_store(store.clone());
+        }
+        if shared.multi_window {
+            workspace.set_other_window_document_focus(focus_document_in_other_window);
+            workspace.share_document_ids(shared.document_ids.clone());
         }
         workspace
     });
@@ -2441,6 +2525,12 @@ fn build_document_window(
         )
     });
     shared.coordinator.window_opened(window_id);
+    if shared.multi_window {
+        cx.subscribe(&document_workspace, move |_, event: &DocumentTabTransferEvent, cx| {
+            handle_tab_transfer(window_handle, *event, cx);
+        })
+        .detach();
+    }
     cx.subscribe(&application_close, |_, _: &ApplicationCloseCancelled, cx| {
         shared_application(cx).coordinator.cancel_quit();
     })
@@ -2490,6 +2580,190 @@ fn build_document_window(
         focus_initial_command_context(&document_workspace.read(cx).focus_handle(), window);
     }
     root
+}
+
+/// A window-local point in screen space. Every document window has the same
+/// frame chrome, so frame origin plus local point compares across windows.
+fn window_screen_point(
+    handle: AnyWindowHandle,
+    local: gpui::Point<gpui::Pixels>,
+    cx: &mut App,
+) -> Option<gpui::Point<gpui::Pixels>> {
+    handle
+        .update(cx, |_, window, _| window.bounds().origin + local)
+        .ok()
+}
+
+/// The frontmost other document window whose tab strip is under `screen`,
+/// and the tab index there.
+fn tab_drop_target(
+    source: AnyWindowHandle,
+    screen: gpui::Point<gpui::Pixels>,
+    cx: &mut App,
+) -> Option<(DocumentWindowEntry, usize)> {
+    let entries = document_window_entries(cx);
+    let order = cx.window_stack().unwrap_or_default();
+    let mut candidates = entries
+        .into_iter()
+        .filter(|entry| entry.handle != source)
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|entry| {
+        order
+            .iter()
+            .position(|handle| *handle == entry.handle)
+            .unwrap_or(usize::MAX)
+    });
+    for entry in candidates {
+        let Some(workspace) = entry.workspace.upgrade() else {
+            continue;
+        };
+        let Ok(frame) = entry.handle.update(cx, |_, window, _| window.bounds()) else {
+            continue;
+        };
+        if !frame.contains(&screen) {
+            continue;
+        }
+        let local = screen - frame.origin;
+        // The frontmost window under the pointer takes the drop, even when
+        // the pointer is not over its tab strip.
+        return workspace
+            .read(cx)
+            .tab_insertion_index(local, cx)
+            .map(|index| (entry, index));
+    }
+    None
+}
+
+fn clear_incoming_tab_drops(cx: &mut App) {
+    for workspace in document_window_workspaces(cx) {
+        workspace.update(cx, |workspace, cx| workspace.set_incoming_tab_drop(None, cx));
+    }
+}
+
+/// Browser-style tab moves: drop on another window's tab strip to move the
+/// tab there; drop elsewhere to open it in a new window (when the source has
+/// other tabs). A window left without tabs closes.
+fn handle_tab_transfer(source: AnyWindowHandle, event: DocumentTabTransferEvent, cx: &mut App) {
+    match event {
+        DocumentTabTransferEvent::Dragging {
+            position,
+            outside_strip,
+            ..
+        } => {
+            let target = if outside_strip {
+                window_screen_point(source, position, cx)
+                    .and_then(|screen| tab_drop_target(source, screen, cx))
+            } else {
+                None
+            };
+            for entry in document_window_entries(cx) {
+                let index = target
+                    .as_ref()
+                    .filter(|(target, _)| target.handle == entry.handle)
+                    .map(|(_, index)| *index);
+                if let Some(workspace) = entry.workspace.upgrade() {
+                    workspace.update(cx, |workspace, cx| workspace.set_incoming_tab_drop(index, cx));
+                }
+            }
+        }
+        DocumentTabTransferEvent::Ended => clear_incoming_tab_drops(cx),
+        DocumentTabTransferEvent::Dropped {
+            document_id,
+            position,
+        } => {
+            clear_incoming_tab_drops(cx);
+            let Some(screen) = window_screen_point(source, position, cx) else {
+                return;
+            };
+            let target = tab_drop_target(source, screen, cx);
+            cx.defer(move |cx| move_document_between_windows(source, document_id, target, screen, cx));
+        }
+    }
+}
+
+fn move_document_between_windows(
+    source: AnyWindowHandle,
+    document_id: DocumentId,
+    target: Option<(DocumentWindowEntry, usize)>,
+    screen: gpui::Point<gpui::Pixels>,
+    cx: &mut App,
+) {
+    let Some(source_entry) = window_entry(source, cx) else {
+        return;
+    };
+    let Some(source_workspace) = source_entry.workspace.upgrade() else {
+        return;
+    };
+    let source_tabs = source_workspace.read(cx).session_count();
+    if !source_workspace.read(cx).can_transfer_document(document_id, cx) {
+        return;
+    }
+    let (target_workspace, index) = match target {
+        Some((entry, index)) => {
+            let Some(workspace) = entry.workspace.upgrade() else {
+                return;
+            };
+            let _ = entry.handle.update(cx, |_, window, _| window.activate_window());
+            (workspace, index)
+        }
+        // Only a window with other tabs can give one up to a new window.
+        None if source_tabs > 1 => {
+            let Ok(frame) = source.update(cx, |_, window, _| window.bounds()) else {
+                return;
+            };
+            // Put the new window's tab strip under the pointer.
+            let origin = screen - gpui::point(px(120.), px(20.));
+            let bounds = WindowBounds::Windowed(gpui::Bounds {
+                origin,
+                size: frame.size,
+            });
+            let Some(entry) = open_document_window_with_bounds(cx, None, Some(bounds))
+                .and_then(|handle| window_entry(handle, cx))
+            else {
+                return;
+            };
+            let Some(workspace) = entry.workspace.upgrade() else {
+                return;
+            };
+            (workspace, 0)
+        }
+        None => return,
+    };
+    let detached = source_workspace.update(cx, |workspace, cx| workspace.detach_document(document_id, cx));
+    match detached {
+        Ok(document) => {
+            target_workspace.update(cx, |workspace, cx| {
+                workspace.attach_document(document, index, cx);
+            });
+        }
+        Err(error) => {
+            eprintln!("Butter Paper could not move the document: {error}");
+            return;
+        }
+    }
+    if source_workspace.read(cx).session_count() == 0 {
+        request_window_close(&source_entry, cx);
+    }
+}
+
+/// Brings forward the window and tab already showing `path`, if another
+/// window has it open, instead of opening a second copy.
+fn focus_document_in_other_window(own: gpui::EntityId, path: &std::path::Path, cx: &mut App) -> bool {
+    for entry in document_window_entries(cx) {
+        let Some(workspace) = entry.workspace.upgrade() else {
+            continue;
+        };
+        if workspace.entity_id() == own {
+            continue;
+        }
+        let Some(document_id) = workspace.read(cx).document_id_for_path(path, cx) else {
+            continue;
+        };
+        workspace.update(cx, |workspace, cx| workspace.activate_document(document_id, cx));
+        let _ = entry.handle.update(cx, |_, window, _| window.activate_window());
+        return true;
+    }
+    false
 }
 
 /// The startup window's session restore, deferred behind recovery inspection

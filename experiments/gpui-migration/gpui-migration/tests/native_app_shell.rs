@@ -229,8 +229,24 @@ fn session_manifest_missing_roundtrips_order_and_replaces_atomically() {
     #[cfg(unix)]
     assert_eq!(
         std::fs::read(root.path().join("session-manifest.json")).unwrap(),
-        b"{\"version\":2,\"documents\":[{\"encoding\":\"unix-bytes\",\"path\":\"2f706c616e732f46697273742e706466\",\"view\":{\"currentPage\":0,\"mode\":\"continuous\",\"zoom\":\"fitWidth\",\"manualPercent\":null,\"scrollX\":0,\"scrollY\":0}},{\"encoding\":\"unix-bytes\",\"path\":\"2f706c616e732f7365636f6e642e504446\",\"view\":{\"currentPage\":0,\"mode\":\"continuous\",\"zoom\":\"fitWidth\",\"manualPercent\":null,\"scrollX\":0,\"scrollY\":0}}],\"activeDocument\":1}\n"
+        b"{\"version\":3,\"documents\":[{\"encoding\":\"unix-bytes\",\"path\":\"2f706c616e732f46697273742e706466\",\"view\":{\"currentPage\":0,\"mode\":\"continuous\",\"zoom\":\"fitWidth\",\"manualPercent\":null,\"scrollX\":0,\"scrollY\":0}},{\"encoding\":\"unix-bytes\",\"path\":\"2f706c616e732f7365636f6e642e504446\",\"view\":{\"currentPage\":0,\"mode\":\"continuous\",\"zoom\":\"fitWidth\",\"manualPercent\":null,\"scrollX\":0,\"scrollY\":0}}],\"activeDocument\":1,\"windows\":[{\"documentCount\":2,\"activeDocument\":1}]}\n"
     );
+
+    #[cfg(unix)]
+    {
+        // Version 2 manifests from earlier releases load as one window.
+        std::fs::write(
+            root.path().join("session-manifest.json"),
+            b"{\"version\":2,\"documents\":[{\"encoding\":\"unix-bytes\",\"path\":\"2f706c616e732f46697273742e706466\",\"view\":{\"currentPage\":0,\"mode\":\"continuous\",\"zoom\":\"fitWidth\",\"manualPercent\":null,\"scrollX\":0,\"scrollY\":0}},{\"encoding\":\"unix-bytes\",\"path\":\"2f706c616e732f7365636f6e642e504446\",\"view\":{\"currentPage\":0,\"mode\":\"continuous\",\"zoom\":\"fitWidth\",\"manualPercent\":null,\"scrollX\":0,\"scrollY\":0}}],\"activeDocument\":1}\n",
+        )
+        .unwrap();
+        let plans = store.load().unwrap().split_windows();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].clone().into_parts(),
+            (vec![manifest_pdf("First.pdf"), manifest_pdf("second.PDF")], Some(1))
+        );
+    }
 
     #[cfg(unix)]
     {
@@ -534,8 +550,12 @@ fn session_manifest_reports_exact_corruption_without_lossy_fallbacks() {
     let cases: &[(&[u8], SessionManifestCorruptionError)] = &[
         (b"{", SessionManifestCorruptionError::MalformedJson),
         (
-            b"{\"version\":3,\"documents\":[],\"activeDocument\":null}\n",
+            b"{\"version\":4,\"documents\":[],\"activeDocument\":null}\n",
             SessionManifestCorruptionError::UnsupportedVersion,
+        ),
+        (
+            b"{\"version\":3,\"documents\":[],\"activeDocument\":null}\n",
+            SessionManifestCorruptionError::UnknownField,
         ),
         (
             b"{\"version\":2,\"documents\":[{\"encoding\":\"unix-bytes\",\"path\":\"2f706c616e732f6f6e652e706466\"}],\"activeDocument\":0}\n",
@@ -592,4 +612,63 @@ fn session_manifest_rejects_symlink_roots_and_manifest_files_without_touching_ta
         SessionManifestError::Operation(SessionManifestOperationError::ManifestIsSymlink)
     );
     assert_eq!(std::fs::read(target).unwrap(), target_bytes);
+}
+
+#[test]
+fn session_manifest_restores_each_saved_window_with_the_active_window_first() {
+    let root = ScratchRoot::new("windows");
+    let store = SessionManifestStore::open(root.path().to_path_buf()).unwrap();
+    // The front window closed first during Quit, so its active document leads.
+    let mut combined = SessionSnapshot::new(
+        vec![manifest_pdf("front-a.pdf"), manifest_pdf("front-b.pdf")],
+        Some(1),
+    );
+    combined.append(SessionSnapshot::new(
+        vec![manifest_pdf("back.pdf"), manifest_pdf("front-a.pdf")],
+        Some(0),
+    ));
+    combined.append(SessionSnapshot::new(Vec::new(), None));
+    assert_eq!(combined.windows().len(), 2, "duplicates and empty windows are dropped");
+    store.replace(&combined).unwrap();
+
+    let plans = store.load().unwrap().split_windows();
+    assert_eq!(
+        plans
+            .into_iter()
+            .map(|plan| plan.into_parts())
+            .collect::<Vec<_>>(),
+        vec![
+            (vec![manifest_pdf("front-a.pdf"), manifest_pdf("front-b.pdf")], Some(1)),
+            (vec![manifest_pdf("back.pdf")], Some(0)),
+        ]
+    );
+
+    // A back window holding the active document is restored first.
+    let mut back_active = SessionSnapshot::new(vec![manifest_pdf("one.pdf")], None);
+    back_active.append(SessionSnapshot::new(vec![manifest_pdf("two.pdf")], Some(0)));
+    store.replace(&back_active).unwrap();
+    let plans = store.load().unwrap().split_windows();
+    assert_eq!(plans[0].clone().into_parts(), (vec![manifest_pdf("two.pdf")], Some(0)));
+    assert_eq!(plans[1].clone().into_parts(), (vec![manifest_pdf("one.pdf")], None));
+}
+
+#[cfg(unix)]
+#[test]
+fn session_manifest_rejects_windows_that_do_not_partition_the_documents() {
+    let root = ScratchRoot::new("bad-windows");
+    let store = SessionManifestStore::open(root.path().to_path_buf()).unwrap();
+    let document = r#"{"encoding":"unix-bytes","path":"2f782e706466","view":{"currentPage":0,"mode":"continuous","zoom":"fitWidth","manualPercent":null,"scrollX":0,"scrollY":0}}"#;
+    for windows in [
+        r#"[]"#,
+        r#"[{"documentCount":2,"activeDocument":null}]"#,
+        r#"[{"documentCount":1,"activeDocument":1}]"#,
+        r#"[{"documentCount":0,"activeDocument":null},{"documentCount":1,"activeDocument":0}]"#,
+    ] {
+        std::fs::write(
+            root.path().join("session-manifest.json"),
+            format!(r#"{{"version":3,"documents":[{document}],"activeDocument":0,"windows":{windows}}}"#),
+        )
+        .unwrap();
+        assert!(store.load().is_err(), "{windows} must be rejected");
+    }
 }

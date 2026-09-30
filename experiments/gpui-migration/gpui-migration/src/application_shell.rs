@@ -36,6 +36,7 @@ gpui::actions!(
         ToggleApplicationMenuBar,
         ToggleReverseScrollZoom,
         NewWindow,
+        MoveDocumentToNewWindow,
         MinimiseWindow,
         ZoomWindow,
         MakeInterfaceBigger,

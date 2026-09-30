@@ -66,6 +66,7 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
         fit_page_checked: false,
         continuous_view_checked: true,
         single_page_view_checked: false,
+        can_move_document_to_new_window: true,
     });
 
     assert_eq!(
@@ -148,8 +149,11 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
             "<separator>",
             "Rotate Left",
             "Rotate Right",
+            "<separator>",
+            "Move Document to New Window",
         ]
     );
+    assert!(!item(document, "Move Document to New Window").is_disabled());
     assert_action(item(document, "Previous Page"), |action| {
         action.as_any().is::<NavigatePreviousPage>()
     });
