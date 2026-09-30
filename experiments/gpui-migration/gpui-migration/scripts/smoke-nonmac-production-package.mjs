@@ -1133,11 +1133,11 @@ function spawnPowershell(script) {
   };
 }
 
-// Completes the app's native Save As dialog with a new target. Returns false
-// when no dialog appears within the wait; throws for any other failure. Uses
-// the standard Win32 file-dialog automation: WM_SETTEXT on the file name Edit
-// child, then a click on the dialog's IDOK (Save) button. No focus is needed.
-function completeSaveAsDialog(pid, target, waitSeconds) {
+// Completes the app's native Save As dialog by accepting the app's suggested
+// new target (IDOK). Returns false when no dialog appears within the wait;
+// throws for any other failure. The saved path is read back from the app's
+// recovery head. No keyboard focus is needed.
+function completeSaveAsDialog(pid, waitSeconds) {
   const outcome = powershell(
     `Add-Type -TypeDefinition @'
 using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
@@ -1150,8 +1150,6 @@ public static class BpSaveAs {
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
   [DllImport("user32.dll")] static extern IntPtr GetDlgItem(IntPtr h, int id);
-  [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
-  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, string l);
   [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
   public static bool IsWindow(IntPtr h) { return IsWindowVisible(h); }
   static string Cls(IntPtr h) { var s = new StringBuilder(256); GetClassName(h, s, 256); return s.ToString(); }
@@ -1160,18 +1158,16 @@ public static class BpSaveAs {
     EnumWindows((h, p) => { uint owner; GetWindowThreadProcessId(h, out owner); if (owner == pid && IsWindowVisible(h) && Cls(h) == "#32770") { found = h; return false; } return true; }, IntPtr.Zero);
     return found;
   }
-  public static string Complete(IntPtr dialog, string path) {
-    var edits = new List<IntPtr>(); var inventory = new List<string>();
-    EnumChildWindows(dialog, (h, p) => { string c = Cls(h); int id = GetDlgCtrlID(h); inventory.Add(c + "#" + id); if (c == "Edit" && IsWindowVisible(h)) { string parent = Cls(GetParent(h)); if (parent == "ComboBox" || id == 1001 || id == 1152) edits.Insert(0, h); else edits.Add(h); } return true; }, IntPtr.Zero);
-    if (edits.Count == 0) return "no-edit:" + string.Join(",", inventory.GetRange(0, Math.Min(60, inventory.Count)));
-    SendMessage(edits[0], 0x000C, IntPtr.Zero, path);
+  public static string Complete(IntPtr dialog) {
+    var inventory = new List<string>();
+    EnumChildWindows(dialog, (h, p) => { inventory.Add(Cls(h) + "#" + GetDlgCtrlID(h)); return true; }, IntPtr.Zero);
     IntPtr ok = GetDlgItem(dialog, 1);
     if (ok == IntPtr.Zero) return "no-ok:" + string.Join(",", inventory.GetRange(0, Math.Min(60, inventory.Count)));
     PostMessage(ok, 0x00F5, IntPtr.Zero, IntPtr.Zero);
     return "posted";
   }
 }
-'@; $deadline=(Get-Date).AddSeconds(${waitSeconds}); do { Start-Sleep -Milliseconds 250; $dialog=[BpSaveAs]::FindDialog(${pid}) } until($dialog -ne [IntPtr]::Zero -or (Get-Date) -gt $deadline); if($dialog -eq [IntPtr]::Zero){'absent'; return}; Start-Sleep -Milliseconds 500; $result=[BpSaveAs]::Complete($dialog, ${powershellQuote(target)}); if($result -ne 'posted'){ throw "Save As dialog automation failed: $result" }; $closeDeadline=(Get-Date).AddSeconds(15); do { Start-Sleep -Milliseconds 250 } until(-not [BpSaveAs]::IsWindow($dialog) -or (Get-Date) -gt $closeDeadline); if([BpSaveAs]::IsWindow($dialog)){ throw 'Save As dialog stayed open after WM_SETTEXT and IDOK' }; 'completed:win32-settext-idok'`,
+'@; $deadline=(Get-Date).AddSeconds(${waitSeconds}); do { Start-Sleep -Milliseconds 250; $dialog=[BpSaveAs]::FindDialog(${pid}) } until($dialog -ne [IntPtr]::Zero -or (Get-Date) -gt $deadline); if($dialog -eq [IntPtr]::Zero){'absent'; return}; Start-Sleep -Milliseconds 500; $result=[BpSaveAs]::Complete($dialog); if($result -ne 'posted'){ throw "Save As dialog automation failed: $result" }; $closeDeadline=(Get-Date).AddSeconds(15); do { Start-Sleep -Milliseconds 250 } until(-not [BpSaveAs]::IsWindow($dialog) -or (Get-Date) -gt $closeDeadline); if([BpSaveAs]::IsWindow($dialog)){ throw 'Save As dialog stayed open after IDOK' }; 'completed:win32-idok-suggested-name'`,
     (waitSeconds + 30) * 1000,
   );
   const last = outcome.split(/\r?\n/).at(-1).trim();
@@ -1184,6 +1180,14 @@ public static class BpSaveAs {
 // Windows publication always requires a new target, so Save opens the native
 // Save As dialog, which is completed with a new path. Ctrl+S is the ordinary
 // route; the visible document-actions Save control is the fallback.
+function decodeRecoveryPath(head) {
+  assert(
+    head.path_encoding === "windows-utf16le" && /^(?:[0-9a-f]{4})+$/.test(head.source_path ?? ""),
+    "saved recovery head has no Windows source path",
+  );
+  return Buffer.from(head.source_path, "hex").toString("utf16le").replace(/^\\\\\?\\/, "");
+}
+
 async function collectSaveDiagnostics(runDir, recoveryStoreRoot, documentId) {
   const diagnostics = { pdfs: [], head: null };
   const walk = async (directory, depth) => {
@@ -1224,21 +1228,20 @@ async function collectSaveDiagnostics(runDir, recoveryStoreRoot, documentId) {
   return diagnostics;
 }
 
-async function saveEditedDocument(pid, windowsTarget, windowHandle) {
+async function saveEditedDocument(pid, windowHandle) {
   if (process.platform === "linux") {
     runXdotool(["key", "ctrl+s"]);
-    return { route: "ctrl+s", target: null };
+    return { route: "ctrl+s" };
   }
   // SendWait may block while the modal dialog runs, so send asynchronously.
   const shortcut = spawnPowershell(
     `Add-Type -AssemblyName System.Windows.Forms; Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class BpFocus { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }'; [void][BpFocus]::SetForegroundWindow([IntPtr]${windowHandle}); Start-Sleep -Milliseconds 200; [System.Windows.Forms.SendKeys]::SendWait('^s')`,
   );
-  const shortcutDialog = completeSaveAsDialog(pid, windowsTarget, 15);
+  const shortcutDialog = completeSaveAsDialog(pid, 15);
   if (shortcutDialog) {
     await shortcut.settle();
     return {
       route: `ctrl+s + native Save As dialog (${shortcutDialog})`,
-      target: windowsTarget,
     };
   }
   const shortcutResult = await shortcut.settle(2000);
@@ -1249,7 +1252,7 @@ async function saveEditedDocument(pid, windowsTarget, windowHandle) {
   const invoke = spawnPowershell(
     `${WINDOWS_UIA_PRELUDE} $save=Find-Buttons ${pid} 'Save'; if($save.Count -ne 1){throw "expected one enabled Save button; found $($save.Count)"}; Invoke-Element $save[0]`,
   );
-  const controlDialog = completeSaveAsDialog(pid, windowsTarget, 25);
+  const controlDialog = completeSaveAsDialog(pid, 25);
   if (!controlDialog) {
     const invoked = await invoke.settle(2000);
     fail(
@@ -1259,7 +1262,6 @@ async function saveEditedDocument(pid, windowsTarget, windowHandle) {
   await invoke.settle();
   return {
     route: `document-actions Save + native Save As dialog (${controlDialog})`,
-    target: windowsTarget,
     ctrlS: shortcutResult,
   };
 }
@@ -1566,18 +1568,31 @@ async function runSmoke({
         edited: editedState,
       };
       const originalPdfHash = sha256(fixtureBytes);
-      const savedPdfPath =
-        process.platform === "win32"
-          ? join(runDir, "saved.pdf")
-          : ownedFixturePath;
+      let savedPdfPath = ownedFixturePath;
       result.observation.save = await saveEditedDocument(
-      child.pid,
-      savedPdfPath,
-      result.observation.rectangleEdit.windowId,
-    );
+        child.pid,
+        result.observation.rectangleEdit.windowId,
+      );
       try {
         await waitUntil(
           async () => {
+            if (process.platform === "win32") {
+              // Save As publishes a new canonical target; the recovery head
+              // records it once the save has completed.
+              const head = await readJson(
+                join(recoveryStoreRoot, "heads", `${editedState.documentId}.json`),
+                "saved recovery head",
+              );
+              if (head.saved_revision !== editedState.currentRevision) return false;
+              const target = decodeRecoveryPath(head);
+              assert(
+                resolve(dirname(target)).toLowerCase() === resolve(runDir).toLowerCase() &&
+                  resolve(target).toLowerCase() !== resolve(ownedFixturePath).toLowerCase(),
+                `Save As target is outside the disposable run directory or replaced the original: ${target}`,
+              );
+              savedPdfPath = target;
+              result.observation.save.target = target;
+            }
             try {
               await lstat(savedPdfPath);
             } catch (error) {
