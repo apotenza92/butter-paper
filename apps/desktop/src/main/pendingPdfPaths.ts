@@ -15,3 +15,7 @@ export function takePendingPdfPaths(): string[] {
 export function hasPendingPdfPaths(): boolean {
   return pendingPdfPaths.length > 0;
 }
+
+export function peekPendingPdfPaths(): string[] {
+  return [...pendingPdfPaths];
+}

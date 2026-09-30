@@ -1,0 +1,134 @@
+name: Test native migration handover
+
+# Temporary: exercises the Electron-to-native handover against real v0.0.25
+# Electron installs on disposable runners before the bridge release.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-2025, arch: x64, native: x86_64 }
+          - { runner: windows-11-arm, arch: arm64, native: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.16.0
+      - name: Install Electron v0.0.25 stable and beta
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path electron | Out-Null
+          gh release download v0.0.25 --repo $env:GITHUB_REPOSITORY --dir electron --pattern "Butter-Paper-Windows-${{ matrix.arch }}-Setup.exe" --pattern "Butter-Paper-Beta-Windows-${{ matrix.arch }}-Setup.exe"
+          foreach ($installer in Get-ChildItem electron -Filter *.exe) {
+            $p = Start-Process -FilePath $installer.FullName -ArgumentList '/S','/currentuser' -Wait -PassThru
+            Write-Host "$($installer.Name) exit $($p.ExitCode)"
+          }
+          Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' | ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object DisplayName -like 'Butter Paper*' | Format-List DisplayName, UninstallString, InstallLocation
+      - name: Record Visual C++ runtime architecture
+        shell: bash
+        run: |
+          node --input-type=module -e "
+          import { readFileSync } from 'node:fs';
+          import { peMachine } from './apps/desktop/src/main/nativeMigrationPlan.ts';
+          try { console.log('vcruntime140 machine', peMachine(readFileSync(process.env.SystemRoot + '/System32/vcruntime140.dll')).toString(16)); } catch (e) { console.log('vcruntime140 missing', e.message); }
+          "
+      - name: Download and extract native v0.0.26
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:RUNNER_TEMP 'bp-native'
+          New-Item -ItemType Directory -Path $work | Out-Null
+          gh release download v0.0.26 --repo $env:GITHUB_REPOSITORY --dir $work --pattern "Butter-Paper-Windows-${{ matrix.arch }}.zip"
+          Expand-Archive -LiteralPath (Join-Path $work "Butter-Paper-Windows-${{ matrix.arch }}.zip") -DestinationPath (Join-Path $work 'package')
+      - name: Generate and run the handover script
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:RUNNER_TEMP 'bp-native'
+          $dummy = Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 3' -PassThru -WindowStyle Hidden
+          $env:BP_PID = $dummy.Id
+          $env:BP_WORK = $work
+          node --input-type=module -e "
+          import { writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { windowsHandoverScript } from './apps/desktop/src/main/nativeMigrationPlan.ts';
+          writeFileSync(join(process.env.BP_WORK, 'handover.ps1'), windowsHandoverScript({
+            electronProcessId: Number(process.env.BP_PID),
+            packageDirectory: join(process.env.BP_WORK, 'package'),
+            target: 'windows-${{ matrix.arch }}',
+            pdfPaths: [],
+            logPath: join(process.env.RUNNER_TEMP, 'bp-handover.log'),
+          }));
+          "
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $work 'handover.ps1')
+          Write-Host "handover exit $LASTEXITCODE"
+          Get-Content (Join-Path $env:RUNNER_TEMP 'bp-handover.log')
+      - name: Verify Electron removed and native installed and running
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Start-Sleep -Seconds 10
+          $left = @(Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' | ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object DisplayName -like 'Butter Paper*')
+          if ($left.Count -ne 0) { throw "Electron uninstall entries remain: $($left.DisplayName -join ', ')" }
+          $programs = Join-Path $env:LOCALAPPDATA 'Programs'
+          Get-ChildItem $programs -Recurse -Depth 3 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+          foreach ($electron in 'Butter Paper\Butter Paper.exe', 'Butter Paper Beta\Butter Paper Beta.exe') {
+            if (Test-Path (Join-Path $programs $electron)) { throw "Electron executable remains: $electron" }
+          }
+          $exe = Join-Path $programs 'Butter Paper\0.0.26\${{ matrix.native }}\gpui-migration.exe'
+          if (-not (Test-Path $exe)) { throw "native executable missing: $exe" }
+          $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Butter Paper 0.0.26 (${{ matrix.native }}).lnk'
+          if (-not (Test-Path $shortcut)) { throw 'native Start menu shortcut missing' }
+          $running = @(Get-Process gpui-migration -ErrorAction SilentlyContinue | Where-Object Path -eq $exe)
+          if ($running.Count -lt 1) { throw 'native app is not running' }
+          Write-Host "native running: $($running.Id -join ', ')"
+          if (Test-Path (Join-Path $env:RUNNER_TEMP 'bp-native')) { throw 'handover work directory was not removed' }
+          $running | Stop-Process -Force
+
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, arch: x64, target: linux-x64 }
+          - { runner: ubuntu-24.04-arm, arch: arm64, target: linux-arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.16.0
+      - name: Extract and install native v0.0.26 the way the bridge does
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/bp-native"; mkdir -p "$work"
+          gh release download v0.0.26 --repo "$GITHUB_REPOSITORY" --dir "$work" --pattern "Butter-Paper-Linux-${{ matrix.arch }}.tar.xz"
+          tar -xJf "$work/Butter-Paper-Linux-${{ matrix.arch }}.tar.xz" -C "$work"
+          dir=$(node --input-type=module -e "import { linuxPackageDirectory } from './apps/desktop/src/main/nativeMigrationPlan.ts'; console.log(linuxPackageDirectory('${{ matrix.target }}'))")
+          /bin/sh "$work/$dir/install-user.sh"
+          test -x "$HOME/.local/share/butter-paper/0.0.26/gpui-migration"
+          test -x "$HOME/.local/bin/butter-paper-gpui"
+          test -f "$HOME/.local/share/applications/butter-paper.desktop"
+          echo "native install paths match the bridge"

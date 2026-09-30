@@ -2,7 +2,7 @@ import electron from 'electron';
 import { isAbsolute } from 'node:path';
 import { ipcChannels } from '../shared/ipc';
 import { resolvePdfPathsFromCommandLine } from './openPdfPaths';
-import { enqueuePendingPdfPaths, hasPendingPdfPaths, takePendingPdfPaths } from './pendingPdfPaths';
+import { enqueuePendingPdfPaths, hasPendingPdfPaths, peekPendingPdfPaths, takePendingPdfPaths } from './pendingPdfPaths';
 import { desktopPdfAccessRegistry } from './pdfAccessRegistry';
 import { recordTestStartupMilestone } from './startupDiagnostics';
 import { bootstrapDesktop } from './window';
@@ -12,6 +12,8 @@ const isTestMode = process.env.BP_TEST_MODE === '1';
 let pendingPdfFlushScheduled = false;
 let activePdfOpenDispatches = 0;
 let pdfSessionPreparationPromise: Promise<unknown> | null = null;
+// The native-app migration may close its own windows before Electron starts.
+let nativeMigrationActive = true;
 
 const testUserDataDir = process.env.BP_TEST_USER_DATA_DIR?.trim();
 if (testUserDataDir) {
@@ -56,8 +58,18 @@ if (!singleInstance) {
   app.quit();
 } else {
   recordTestStartupMilestone('bootstrap-started');
-  void bootstrapDesktop()
-    .then(() => {
+  void app.whenReady()
+    .then(async () => (await import('./nativeMigration')).migrateToNativeApp(peekPendingPdfPaths()))
+    .catch((error) => {
+      console.error('Unable to check for the native Butter Paper app:', error);
+      return false;
+    })
+    .then(async (handedOver) => {
+      nativeMigrationActive = false;
+      if (handedOver) {
+        return;
+      }
+      await bootstrapDesktop();
       recordTestStartupMilestone('bootstrap-completed');
       void flushPendingPdfPaths();
     })
@@ -80,7 +92,7 @@ app.on('second-instance', (_event, commandLine, workingDirectory) => {
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  if (process.platform !== 'darwin' && !nativeMigrationActive) {
     app.quit();
   }
 });
