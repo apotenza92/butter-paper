@@ -1809,7 +1809,10 @@ fn restore_session_windows(
     let first = cx.entity().downgrade();
     cx.defer(move |cx| {
         for plan in others {
-            let Some(workspace) = open_document_window(cx, None)
+            // Saved windows come back as separate windows, even when macOS
+            // prefers tabs for new ones.
+            let bounds = next_window_bounds(cx);
+            let Some(workspace) = open_document_window_with_bounds(cx, None, Some(bounds))
                 .and_then(|handle| window_entry(handle, cx))
                 .and_then(|entry| entry.workspace.upgrade())
             else {
@@ -2209,6 +2212,8 @@ fn main() {
             cx,
         );
         register_application_shell_actions(cx);
+        #[cfg(feature = "review-driver")]
+        review_driver::start(cx);
 
         let native_ingress = native_ingress.clone();
         cx.spawn(async move |cx| {
@@ -2350,13 +2355,14 @@ fn next_window_bounds(cx: &mut App) -> WindowBounds {
     let active = active_document_window(cx).and_then(|entry| {
         entry
             .handle
-            .update(cx, |_, window, _| window.bounds())
+            .update(cx, |_, window, _| (window.bounds().origin, window.viewport_size()))
             .ok()
     });
     match active {
-        Some(bounds) => WindowBounds::Windowed(gpui::Bounds {
-            origin: bounds.origin + gpui::point(px(28.), px(28.)),
-            size: bounds.size,
+        // Window sizes are content sizes; the frame adds the title bar.
+        Some((origin, content)) => WindowBounds::Windowed(gpui::Bounds {
+            origin: origin + gpui::point(px(28.), px(28.)),
+            size: content,
         }),
         None => WindowBounds::centered(size(px(1200.), px(800.)), cx),
     }
@@ -2381,11 +2387,16 @@ fn open_document_window_with_bounds(
             store.resume_live_writes();
         }
     }
+    // A window placed explicitly (a torn-off tab) must stay a separate window
+    // even when macOS prefers tabs; it joins the tab group identity only
+    // after opening, so Merge All Windows still includes it.
+    let separate = bounds.is_some();
+    let tabbing_identifier = shared
+        .multi_window
+        .then(|| DOCUMENT_WINDOW_TABBING_IDENTIFIER.to_owned());
     let window_options = WindowOptions {
         window_bounds: Some(bounds.unwrap_or_else(|| next_window_bounds(cx))),
-        tabbing_identifier: shared
-            .multi_window
-            .then(|| "butter-paper-documents".to_owned()),
+        tabbing_identifier: if separate { None } else { tabbing_identifier.clone() },
         ..title_bar_window_options()
     };
     let handle = cx
@@ -2394,6 +2405,11 @@ fn open_document_window_with_bounds(
         })
         .map_err(|error| eprintln!("Butter Paper could not open a window: {error}"))
         .ok()?;
+    if separate && tabbing_identifier.is_some() {
+        let _ = handle.update(cx, |_, window, _| {
+            window.set_tabbing_identifier(tabbing_identifier)
+        });
+    }
     Some(handle.into())
 }
 
@@ -2582,6 +2598,30 @@ fn build_document_window(
     root
 }
 
+const DOCUMENT_WINDOW_TABBING_IDENTIFIER: &str = "butter-paper-documents";
+
+/// Whether `handle` is on screen: not a background member of a macOS native
+/// tab group, where every member shares one frame.
+fn shown_in_tab_group(handle: AnyWindowHandle, cx: &App) -> bool {
+    let Some(controller) = cx.try_global::<gpui::SystemWindowTabController>() else {
+        return true;
+    };
+    let Some(tabs) = controller.tabs(handle.window_id()) else {
+        return true;
+    };
+    tabs.len() <= 1
+        || tabs
+            .iter()
+            .max_by_key(|tab| tab.last_active_at)
+            .is_none_or(|tab| tab.id == handle.window_id())
+}
+
+fn in_same_tab_group(first: AnyWindowHandle, second: AnyWindowHandle, cx: &App) -> bool {
+    cx.try_global::<gpui::SystemWindowTabController>()
+        .and_then(|controller| controller.tabs(first.window_id()))
+        .is_some_and(|tabs| tabs.iter().any(|tab| tab.id == second.window_id()))
+}
+
 /// A window-local point in screen space. Every document window has the same
 /// frame chrome, so frame origin plus local point compares across windows.
 fn window_screen_point(
@@ -2605,7 +2645,11 @@ fn tab_drop_target(
     let order = cx.window_stack().unwrap_or_default();
     let mut candidates = entries
         .into_iter()
-        .filter(|entry| entry.handle != source)
+        .filter(|entry| {
+            entry.handle != source
+                && !in_same_tab_group(source, entry.handle, cx)
+                && shown_in_tab_group(entry.handle, cx)
+        })
         .collect::<Vec<_>>();
     candidates.sort_by_key(|entry| {
         order
@@ -2708,14 +2752,15 @@ fn move_document_between_windows(
         }
         // Only a window with other tabs can give one up to a new window.
         None if source_tabs > 1 => {
-            let Ok(frame) = source.update(cx, |_, window, _| window.bounds()) else {
+            // Window sizes are content sizes; the frame adds the title bar.
+            let Ok(content) = source.update(cx, |_, window, _| window.viewport_size()) else {
                 return;
             };
             // Put the new window's tab strip under the pointer.
             let origin = screen - gpui::point(px(120.), px(20.));
             let bounds = WindowBounds::Windowed(gpui::Bounds {
                 origin,
-                size: frame.size,
+                size: content,
             });
             let Some(entry) = open_document_window_with_bounds(cx, None, Some(bounds))
                 .and_then(|handle| window_entry(handle, cx))
@@ -2875,5 +2920,239 @@ fn begin_startup_launch(
                 apply_launch_action(workspace, launch_action, cx);
             });
         }
+    }
+}
+
+/// Development-only review driver. With `BP_REVIEW_SCRIPT`, the app drives
+/// its own windows with scripted input and saves frames of its own rendering
+/// to `BP_REVIEW_OUT`, for frame-by-frame review. It sends no OS-level input
+/// and captures nothing outside this process.
+///
+/// Script lines (window numbers follow opening order; points are in the
+/// source window's coordinates unless noted):
+///   wait MS
+///   shot NAME                      every window, plus a state log line
+///   new-window | quit | close W | move-to-new-window
+///   drag-tab W TAB off DX DY NAME  drag tab TAB by (DX, DY) from its centre
+///   drag-tab W TAB into W2 INDEX NAME
+///                                  drag onto window W2's strip before INDEX
+#[cfg(feature = "review-driver")]
+mod review_driver {
+    use super::*;
+    use gpui::{
+        AsyncApp, Bounds, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+        Pixels, PlatformInput, Point, point,
+    };
+    use std::io::Write as _;
+    use std::path::PathBuf;
+
+    pub fn start(cx: &mut App) {
+        let Ok(script) = std::env::var("BP_REVIEW_SCRIPT") else {
+            return;
+        };
+        let out = PathBuf::from(std::env::var("BP_REVIEW_OUT").expect("BP_REVIEW_OUT"));
+        std::fs::create_dir_all(&out).expect("review output directory");
+        let script = std::fs::read_to_string(script).expect("review script");
+        cx.spawn(async move |cx| {
+            let mut log = std::fs::File::create(out.join("review.log")).unwrap();
+            // Let the startup window restore and paint.
+            pause(cx, 2500).await;
+            for line in script.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')) {
+                writeln!(log, "> {line}").unwrap();
+                let words = line.split_whitespace().collect::<Vec<_>>();
+                let number = |index: usize| words[index].parse::<f32>().unwrap();
+                match words[0] {
+                    "wait" => pause(cx, number(1) as u64).await,
+                    "shot" => shot(cx, &out, words[1], &mut log),
+                    "new-window" => {
+                        cx.update(|cx| cx.dispatch_action(&NewWindow));
+                        pause(cx, 1200).await;
+                    }
+                    "move-to-new-window" => {
+                        cx.update(|cx| cx.dispatch_action(&MoveDocumentToNewWindow));
+                        pause(cx, 1200).await;
+                    }
+                    "close" => {
+                        let window = number(1) as usize;
+                        cx.update(|cx| {
+                            if let Some(entry) = document_window_entries(cx).get(window).cloned() {
+                                request_window_close(&entry, cx);
+                            }
+                        });
+                        pause(cx, 800).await;
+                    }
+                    "quit" => {
+                        writeln!(log, "quitting").unwrap();
+                        cx.update(|cx| cx.dispatch_action(&RequestApplicationQuit));
+                        return;
+                    }
+                    "drag-tab" => {
+                        let source = number(1) as usize;
+                        let tab = number(2) as usize;
+                        let name = words[words.len() - 1];
+                        let Some((start, end)) = cx.update(|cx| {
+                            let entries = document_window_entries(cx);
+                            let entry = entries.get(source)?;
+                            let (tab_bounds, _) = entry
+                                .workspace
+                                .upgrade()?
+                                .read(cx)
+                                .session_tab_geometry(tab, cx);
+                            let start = tab_bounds?.center();
+                            let end = match words[3] {
+                                "off" => start + point(px(number(4)), px(number(5))),
+                                _ => {
+                                    let target = entries.get(number(4) as usize)?;
+                                    let index = number(5) as usize;
+                                    let workspace = target.workspace.upgrade()?;
+                                    let (before, strip) =
+                                        workspace.read(cx).session_tab_geometry(index, cx);
+                                    let local = match before {
+                                        Some(bounds) => point(bounds.left() + px(6.), bounds.center().y),
+                                        None => point(strip.right() - px(40.), strip.center().y),
+                                    };
+                                    let target_frame = frame(target.handle, cx)?;
+                                    let source_frame = frame(entry.handle, cx)?;
+                                    target_frame.origin + local - source_frame.origin
+                                }
+                            };
+                            Some((start, end))
+                        }) else {
+                            writeln!(log, "drag-tab: window or tab not found").unwrap();
+                            continue;
+                        };
+                        drag(cx, source, start, end, &out, name, &mut log).await;
+                    }
+                    other => writeln!(log, "unknown command {other}").unwrap(),
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn frame(handle: AnyWindowHandle, cx: &mut App) -> Option<Bounds<Pixels>> {
+        handle.update(cx, |_, window, _| window.bounds()).ok()
+    }
+
+    async fn pause(cx: &mut AsyncApp, ms: u64) {
+        cx.background_executor()
+            .timer(Duration::from_millis(ms))
+            .await;
+    }
+
+    fn dispatch(cx: &mut AsyncApp, window: usize, event: PlatformInput) {
+        cx.update(|cx| {
+            if let Some(entry) = document_window_entries(cx).get(window).cloned() {
+                let _ = entry
+                    .handle
+                    .update(cx, |_, window, cx| window.dispatch_event(event, cx));
+            }
+        });
+    }
+
+    async fn drag(
+        cx: &mut AsyncApp,
+        window: usize,
+        start: Point<Pixels>,
+        end: Point<Pixels>,
+        out: &std::path::Path,
+        name: &str,
+        log: &mut std::fs::File,
+    ) {
+        writeln!(log, "drag {name}: {start:?} -> {end:?}").unwrap();
+        dispatch(
+            cx,
+            window,
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: start,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+        );
+        pause(cx, 60).await;
+        cx.update(|cx| {
+            if let Some(workspace) = document_window_entries(cx)
+                .get(window)
+                .and_then(|entry| entry.workspace.upgrade())
+            {
+                let workspace = workspace.read(cx);
+                writeln!(
+                    log,
+                    "after mouse-down: drag={:?} tabs={:?}",
+                    workspace.session_tab_drag_state(),
+                    workspace.session_tab_debug_geometry(cx)
+                )
+                .unwrap();
+            }
+        });
+        let steps = 16;
+        for step in 1..=steps {
+            let t = step as f32 / steps as f32;
+            let position = start + (end - start) * t;
+            dispatch(
+                cx,
+                window,
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::default(),
+                }),
+            );
+            pause(cx, 70).await;
+            shot(cx, out, &format!("{name}-{step:02}"), log);
+        }
+        dispatch(
+            cx,
+            window,
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position: end,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            }),
+        );
+        for step in 0..8 {
+            pause(cx, 150).await;
+            shot(cx, out, &format!("{name}-{:02}", steps + 1 + step), log);
+        }
+    }
+
+    fn shot(cx: &mut AsyncApp, out: &std::path::Path, name: &str, log: &mut std::fs::File) {
+        cx.update(|cx| {
+            let active = active_document_window(cx).map(|entry| entry.handle);
+            for (index, entry) in document_window_entries(cx).into_iter().enumerate() {
+                let titles = entry
+                    .workspace
+                    .upgrade()
+                    .map(|workspace| {
+                        let workspace = workspace.read(cx);
+                        (workspace.session_titles(cx), workspace.active_document_id())
+                    })
+                    .unwrap_or_default();
+                let result = entry.handle.update(cx, |_, window, _| {
+                    let image = window.render_to_image();
+                    (window.bounds(), image)
+                });
+                let Ok((bounds, image)) = result else {
+                    continue;
+                };
+                let path = out.join(format!("{name}-w{index}.png"));
+                let saved = image.map_err(|error| error.to_string()).and_then(|image| {
+                    image.save(&path).map_err(|error| error.to_string())
+                });
+                writeln!(
+                    log,
+                    "{name} w{index} frame={:?} active_window={} tabs={:?} active_tab={:?} saved={:?}",
+                    bounds,
+                    Some(entry.handle) == active,
+                    titles.0,
+                    titles.1,
+                    saved.map(|_| path.display().to_string())
+                )
+                .unwrap();
+            }
+        });
     }
 }

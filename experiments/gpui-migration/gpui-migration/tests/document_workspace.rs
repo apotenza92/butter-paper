@@ -44626,3 +44626,29 @@ fn dragging_a_tab_off_the_strip_reports_a_transfer_and_the_strip_accepts_drops(
         documents
     );
 }
+
+#[gpui::test]
+fn short_titled_tabs_keep_a_grab_area_clear_of_the_close_button(cx: &mut TestAppContext) {
+    let ids = Arc::new(std::sync::atomic::AtomicU64::new(1));
+    let (workspace, documents, _released, cx) =
+        tab_window_with_documents(cx, &["a.pdf", "b.pdf"], ids);
+    let geometry = workspace.read_with(cx, |workspace, cx| workspace.session_tab_debug_geometry(cx));
+    for (_, tab, close) in &geometry {
+        assert!(tab.size.width >= px(96.), "tab {tab:?} is narrower than the minimum");
+        let close = close.expect("every tab has a close button");
+        assert!(!close.contains(&tab.center()), "the middle of {tab:?} must not be the close button");
+    }
+    // Pressing the middle of a short tab starts a drag rather than a close.
+    let (_, tab, _) = geometry[1];
+    cx.simulate_mouse_down(tab.center(), MouseButton::Left, Modifiers::default());
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.session_tab_drag_state()),
+        Some((documents[1], false))
+    );
+    cx.simulate_event(MouseUpEvent {
+        button: MouseButton::Left,
+        position: tab.center(),
+        modifiers: Modifiers::default(),
+        click_count: 1,
+    });
+}

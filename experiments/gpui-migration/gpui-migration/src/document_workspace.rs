@@ -589,6 +589,8 @@ pub const DOCUMENT_RECOVERY_REBASE_RETRY_ID: &str = "document-workspace-recovery
 pub const DOCUMENT_ROTATE_LEFT_ID: &str = "document-workspace-rotate-left";
 pub const DOCUMENT_ROTATE_RIGHT_ID: &str = "document-workspace-rotate-right";
 pub const DOCUMENT_SESSION_TABS_ID: &str = "document-workspace-session-tabs";
+pub const DOCUMENT_SESSION_TAB_MIN_WIDTH: f32 = 96.;
+pub const DOCUMENT_TAB_DRAG_GHOST_ID: &str = "document-workspace-tab-drag-ghost";
 pub const DOCUMENT_DIRTY_CLOSE_ID: &str = "document-workspace-dirty-close";
 pub const DOCUMENT_DIRTY_CLOSE_CANCEL_ID: &str = "document-workspace-dirty-close-cancel";
 pub const DOCUMENT_DIRTY_CLOSE_DISCARD_ID: &str = "document-workspace-dirty-close-discard";
@@ -5402,6 +5404,50 @@ impl DocumentWorkspace {
                 document_id
             }
         }
+    }
+
+    /// Rendered bounds of the tab at `index` and of the whole tab strip, in
+    /// window coordinates (for development review tooling).
+    pub fn session_tab_geometry(
+        &self,
+        index: usize,
+        cx: &App,
+    ) -> (Option<Bounds<Pixels>>, Bounds<Pixels>) {
+        let tab = self
+            .sessions
+            .get(index)
+            .and_then(|session| self.session_tab_bounds.get(&session.read(cx).id))
+            .map(|bounds| bounds.get());
+        (tab, self.session_tab_strip_bounds.get())
+    }
+
+    /// The dragged tab and whether the drag has passed its threshold.
+    pub fn session_tab_drag_state(&self) -> Option<(DocumentId, bool)> {
+        self.session_tab_pointer_drag
+            .as_ref()
+            .map(|drag| (drag.document_id, drag.activated))
+    }
+
+    /// Every tab's and close button's bounds, for development review tooling.
+    pub fn session_tab_debug_geometry(&self, cx: &App) -> Vec<(DocumentId, Bounds<Pixels>, Option<Bounds<Pixels>>)> {
+        self.sessions
+            .iter()
+            .filter_map(|session| {
+                let id = session.read(cx).id;
+                Some((
+                    id,
+                    self.session_tab_bounds.get(&id)?.get(),
+                    self.session_tab_close_bounds.get(&id).map(|bounds| bounds.get()),
+                ))
+            })
+            .collect()
+    }
+
+    pub fn session_titles(&self, cx: &App) -> Vec<String> {
+        self.sessions
+            .iter()
+            .map(|session| session.read(cx).title.clone())
+            .collect()
     }
 
     pub fn session_count(&self) -> usize {
@@ -22781,8 +22827,11 @@ fn annotation_tool_group(
 // Measure the natural label once in layout; reveal-time truncation must not
 // change the tab width or move neighbouring controls.
 fn session_tab_overlay_label(label: String, group: String, revealed: bool) -> impl IntoElement {
+    // Fill the tab (tabs have a minimum width) so revealing the close button
+    // narrows the label rather than collapsing a short title to an ellipsis.
     gpui::div()
         .relative()
+        .flex_1()
         .min_w_0()
         .child(
             gpui::div()
@@ -22800,6 +22849,7 @@ fn session_tab_overlay_label(label: String, group: String, revealed: bool) -> im
                     gpui::div()
                         .w_full()
                         .min_w_0()
+                        .text_center()
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .debug_selector(move || format!("{group}-visible-label").into())
@@ -25083,6 +25133,9 @@ impl Render for DocumentWorkspace {
                         || tab_focus.contains_focused(window, cx);
                     let tab = Tab::new()
                         .button_states(true)
+                        // Short titles still leave a grab area clear of the
+                        // close button, as browsers keep a minimum tab width.
+                        .min_w(px(DOCUMENT_SESSION_TAB_MIN_WIDTH))
                         .when(is_dragged, |tab| tab.opacity(0.6))
                         .on_hover(cx.listener(move |workspace, hovered, _, cx| {
                             let next = if *hovered { Some(tab_document_id) } else {
@@ -25684,6 +25737,53 @@ impl Render for DocumentWorkspace {
             .cloned()
             .collect::<Vec<_>>();
         let strip_bounds = self.session_tab_strip_bounds.clone();
+        // Browser-style: while a tab is dragged, a copy follows the pointer,
+        // including beyond the strip where a drop moves it to another window.
+        let dragged_tab_ghost = self
+            .session_tab_pointer_drag
+            .as_ref()
+            .filter(|drag| drag.activated)
+            .and_then(|drag| {
+                let title = self.session(drag.document_id, cx)?.read(cx).title.clone();
+                // Only a window with other tabs can tear one off.
+                let outside = self.sessions.len() > 1
+                    && !self.session_tab_strip_bounds.get().contains(&drag.current);
+                Some((drag.current, format_document_tab_label(&title).to_owned(), outside))
+            })
+            .map(|(position, label, outside)| {
+                gpui::deferred(
+                    gpui::anchored()
+                        .position(position - point(px(24.), px(14.)))
+                        .child(
+                            gpui::div()
+                                .id(DOCUMENT_TAB_DRAG_GHOST_ID)
+                                .debug_selector(|| DOCUMENT_TAB_DRAG_GHOST_ID.into())
+                                .px_3()
+                                .h(px(28.))
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .bg(cx.theme().background)
+                                .shadow_lg()
+                                .text_sm()
+                                .text_color(cx.theme().foreground)
+                                .opacity(0.92)
+                                .child(label)
+                                .when(outside, |ghost| {
+                                    ghost.child(
+                                        gpui::div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("New window"),
+                                    )
+                                }),
+                        ),
+                )
+                .with_priority(2)
+            });
         let session_tab_strip = h_flex()
             .id(DOCUMENT_SESSION_TABS_ID)
             .debug_selector(|| DOCUMENT_SESSION_TABS_ID.into())
@@ -25699,6 +25799,7 @@ impl Render for DocumentWorkspace {
                     .absolute()
                     .inset_0(),
             )
+            .children(dragged_tab_ghost)
             .on_key_down(move |event: &KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape"
                     && cancel_drag_control

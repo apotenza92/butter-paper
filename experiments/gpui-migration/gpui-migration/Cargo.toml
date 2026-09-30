@@ -8,6 +8,8 @@ license = "MIT"
 [features]
 default = ["development-pdfium-override"]
 benchmark-evidence = ["gpui/profiler"]
+# Development only: the scripted in-app review driver captures its own windows.
+review-driver = ["gpui/test-support", "gpui_platform/test-support"]
 development-pdfium-override = []
 
 [dependencies]
