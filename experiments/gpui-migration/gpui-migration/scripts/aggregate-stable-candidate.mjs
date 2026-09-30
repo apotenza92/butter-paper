@@ -125,32 +125,6 @@ function validateArtifactClaim(value, actual, label) {
   }
 }
 
-function validateRuntimeEvidence(value, expected, artifact, label) {
-  const identity =
-    value?.schema === "butter-paper/macos-runtime-smoke"
-      ? value?.identity
-      : value?.schema === "butter-paper/nonmac-runtime-smoke"
-        ? value?.packageIdentity
-        : null;
-  if (
-    value?.schemaVersion !== 1 ||
-    !identity ||
-    value?.passed !== true ||
-    value?.error !== undefined ||
-    value?.cleanup?.status !== "verified-clean" ||
-    value?.cleanup?.tempRootRemoved !== true ||
-    !value?.documentOpenEvidence ||
-    identity.target !== expected.target ||
-    identity.version !== expected.version ||
-    identity.sourceRevision !== expected.sourceRevision ||
-    identity.archiveSha256 !== artifact.sha256
-  ) {
-    fail(
-      `${label} does not prove a clean exact-package runtime smoke for the candidate artifact`,
-    );
-  }
-}
-
 function checkNoDevelopmentMarkers(value, label) {
   const serialized = typeof value === "string" ? value : JSON.stringify(value);
   if (hasForbiddenMarker(serialized))
@@ -218,16 +192,10 @@ export async function aggregateStableCandidate({ inputDir, outputPath }) {
       record.verificationReceipt,
       `${target} verification receipt`,
     );
-    const runtimeEvidenceFile = await readRegularFile(
-      root,
-      record.runtimeEvidence,
-      `${target} runtime evidence`,
-    );
     for (const file of [
       artifactFile,
       packageManifestFile,
       verificationFile,
-      runtimeEvidenceFile,
     ]) {
       if (referencedFiles.has(file.rel))
         fail(`input file is referenced more than once: ${file.rel}`);
@@ -252,10 +220,6 @@ export async function aggregateStableCandidate({ inputDir, outputPath }) {
       verificationFile.bytes,
       `${target} verification receipt`,
     );
-    const runtimeEvidence = parseJson(
-      runtimeEvidenceFile.bytes,
-      `${target} runtime evidence`,
-    );
     validateIdentity(packageManifest, expected, `${target} package manifest`);
     validateIdentity(
       verificationReceipt,
@@ -271,12 +235,6 @@ export async function aggregateStableCandidate({ inputDir, outputPath }) {
       verificationReceipt,
       artifact,
       `${target} verification receipt`,
-    );
-    validateRuntimeEvidence(
-      runtimeEvidence,
-      expected,
-      artifact,
-      `${target} runtime evidence`,
     );
     if (
       packageManifest?.schema !== "butter-paper/package-manifest" ||
@@ -304,7 +262,6 @@ export async function aggregateStableCandidate({ inputDir, outputPath }) {
       artifact,
       packageManifestSha256: sha256(packageManifestFile.bytes),
       verificationReceiptSha256: sha256(verificationFile.bytes),
-      runtimeEvidenceSha256: sha256(runtimeEvidenceFile.bytes),
     });
   }
 

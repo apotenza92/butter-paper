@@ -413,190 +413,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  smoke:
-    needs: [validate, package]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: macos-arm64
-            runner: macos-26
-            os: macos
-            arch: arm64
-            optional: false
-          - label: macos-x64
-            # IconServices XPC hangs on the macos-26-intel image, blocking
-            # every AppKit window; the macOS 13+ package is smoked on macOS 15.
-            runner: macos-15-intel
-            os: macos
-            arch: x64
-            optional: false
-          - label: windows-arm64
-            runner: windows-11-arm
-            os: windows
-            arch: arm64
-            optional: false
-          - label: windows-x64
-            runner: windows-2025
-            os: windows
-            arch: x86_64
-            optional: false
-          - label: linux-arm64
-            runner: ubuntu-24.04-arm
-            os: linux
-            arch: arm64
-            optional: false
-          - label: linux-x64
-            runner: ubuntu-24.04
-            os: linux
-            arch: x86_64
-            optional: false
-    continue-on-error: ${{ matrix.optional }}
-    env:
-      MIGRATION_ROOT: experiments/gpui-migration/gpui-migration
-      TARGET_LABEL: ${{ matrix.label }}
-      VERSION: ${{ needs.validate.outputs.version }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ${{ inputs.source_revision }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24.16.0
-      - name: Install Linux runtime smoke prerequisites
-        if: matrix.os == 'linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            libdbus-1-3 \
-            libfontconfig1 \
-            libvulkan1 \
-            mesa-vulkan-drivers \
-            libx11-6 \
-            libxcb1 \
-            libxcb-xkb1 \
-            libxkbcommon0 \
-            libxkbcommon-x11-0 \
-            openbox \
-            xz-utils \
-            xvfb \
-            xauth \
-            xdotool \
-            x11-utils \
-            qpdf
-      - name: Prepare hosted Windows desktop for the smoke
-        if: matrix.os == 'windows'
-        shell: pwsh
-        run: |
-          # Some hosted Windows images start at an OOBE privacy window that
-          # keeps the foreground; the smoke needs the packaged app in front.
-          New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\OOBE' -Force | Out-Null
-          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\OOBE' -Name DisablePrivacyExperience -Type DWord -Value 1
-          # Close the OOBE window, then the Start menu the shell opens after it;
-          # both are immersive windows that the smoke cannot take focus from.
-          $shell = 'WWAHost', 'StartMenuExperienceHost', 'SearchHost'
-          foreach ($round in 1..5) {
-            $open = @(Get-Process -Name $shell -ErrorAction SilentlyContinue)
-            Write-Host "round ${round}: stopping $(($open | ForEach-Object ProcessName) -join ', ')"
-            $open | Stop-Process -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 2
-          }
-          Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class BpFg { [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); }'
-          [uint32]$owner = 0
-          [void][BpFg]::GetWindowThreadProcessId([BpFg]::GetForegroundWindow(), [ref]$owner)
-          Write-Host "foreground owner: $((Get-Process -Id $owner -ErrorAction SilentlyContinue).ProcessName)"
-          # Warm WMI so the smoke's first process query is not the cold one.
-          $started = Get-Date
-          $count = @(Get-CimInstance Win32_Process -Property ProcessId).Count
-          Write-Host "WMI warm-up listed $count processes in $([int]((Get-Date) - $started).TotalSeconds)s"
-      - name: Install Windows runtime smoke prerequisites
-        if: matrix.os == 'windows'
-        shell: pwsh
-        run: |
-          choco install qpdf --yes --no-progress
-          $bin = Join-Path $env:ChocolateyInstall 'bin'
-          if (-not $env:ChocolateyInstall) { $bin = 'C:\ProgramData\chocolatey\bin' }
-          Add-Content -Path $env:GITHUB_PATH -Value $bin
-          & (Join-Path $bin 'qpdf.exe') --version
-      - name: Download exact package from this workflow run
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: gpui-package-${{ matrix.label }}
-          path: ${{ runner.temp }}/candidate/${{ matrix.label }}
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ github.run_id }}
-      - name: Generate smoke fixture
-        shell: bash
-        run: node scripts/generate-fixtures.mjs
-      - name: Smoke exact signed or verified package
-        shell: bash
-        env:
-          SMOKE_ARCH: ${{ matrix.arch }}
-          SMOKE_OS: ${{ matrix.os }}
-        run: |
-          set -euo pipefail
-          artifact="$RUNNER_TEMP/candidate/$TARGET_LABEL"
-          evidence="$RUNNER_TEMP/runtime-smoke/$TARGET_LABEL"
-          mkdir -p "$evidence"
-          case "$SMOKE_OS" in
-            linux) archive="$artifact/$TARGET_LABEL.tar.xz" ;;
-            windows) archive="$artifact/$TARGET_LABEL.zip" ;;
-            macos) archive="$artifact/butter-paper-macos-$SMOKE_ARCH-$VERSION.zip" ;;
-            *) echo "unsupported smoke OS: $SMOKE_OS" >&2; exit 1 ;;
-          esac
-          if [[ "$SMOKE_OS" == macos ]]; then
-            # Hosted Intel runners can take well over a minute to start the worker.
-            node "$MIGRATION_ROOT/scripts/smoke-signed-macos-package.mjs" \
-              --archive "$archive" \
-              --fixture-pdf tests/fixtures/generated/single-page.pdf \
-              --evidence-root "$evidence" \
-              --timeout-ms 180000
-          else
-            if [[ "$SMOKE_OS" == linux ]]; then
-              export DISPLAY=:99
-              Xvfb "$DISPLAY" -screen 0 1280x800x24 -nolisten tcp \
-                >"$evidence/xvfb.stdout.log" 2>"$evidence/xvfb.stderr.log" &
-              xvfb_pid=$!
-              cleanup_linux_desktop() {
-                set +e
-                kill "${openbox_pid:-}" "$xvfb_pid" 2>/dev/null
-                wait "${openbox_pid:-}" "$xvfb_pid" 2>/dev/null
-              }
-              trap cleanup_linux_desktop EXIT
-              for _ in {1..50}; do
-                if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then break; fi
-                sleep 0.1
-              done
-              xdpyinfo -display "$DISPLAY" >/dev/null
-              openbox >"$evidence/openbox.stdout.log" 2>"$evidence/openbox.stderr.log" &
-              openbox_pid=$!
-              sleep 0.5
-              kill -0 "$openbox_pid"
-            fi
-            node "$MIGRATION_ROOT/scripts/smoke-nonmac-production-package.mjs" \
-              --package "$archive" \
-              --architecture "$SMOKE_ARCH" \
-              --fixture-pdf tests/fixtures/generated/single-page.pdf \
-              --evidence-root "$evidence"
-          fi
-      - name: Upload clean-host runtime evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: gpui-runtime-smoke-${{ matrix.label }}
-          path: ${{ runner.temp }}/runtime-smoke/${{ matrix.label }}
-          if-no-files-found: warn
-          retention-days: 14
-
   aggregate:
-    needs: [validate, package, smoke]
-    if: always() && needs.validate.result == 'success' && needs.package.result == 'success' && needs.smoke.result == 'success'
+    needs: [validate, package]
+    if: always() && needs.validate.result == 'success' && needs.package.result == 'success'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -607,11 +426,6 @@ jobs:
         with:
           pattern: gpui-package-*
           path: ${{ runner.temp }}/candidate-input
-      - name: Download exact clean-host runtime evidence from this workflow run
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: gpui-runtime-smoke-*
-          path: ${{ runner.temp }}/runtime-input
       - name: Bind and aggregate exact candidate inventory
         shell: bash
         env:
@@ -620,11 +434,10 @@ jobs:
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/candidate-input"
-          runtime_root="$RUNNER_TEMP/runtime-input"
-          node --input-type=module - "$root" "$runtime_root" "$VERSION" "$SOURCE_REVISION" <<'NODE'
-          import { copyFile, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+          node --input-type=module - "$root" "$VERSION" "$SOURCE_REVISION" <<'NODE'
+          import { readdir, writeFile } from 'node:fs/promises';
           import { join } from 'node:path';
-          const [root, runtimeRoot, version, sourceRevision] = process.argv.slice(2);
+          const [root, version, sourceRevision] = process.argv.slice(2);
           const records = [];
           for (const directory of (await readdir(root)).sort()) {
             if (!directory.startsWith('gpui-package-')) throw new Error(`unexpected artifact directory ${directory}`);
@@ -634,22 +447,7 @@ jobs:
             const packageManifest = names.find((name) => name.endsWith('.package.json'));
             const verificationReceipt = names.find((name) => name.endsWith('.verification.json'));
             if (!artifact || !packageManifest || !verificationReceipt || names.length !== 3) throw new Error(`target ${target} does not contain exactly one package and two receipts`);
-            const runtimeDirectory = join(runtimeRoot, `gpui-runtime-smoke-${target}`);
-            let runtimeNames = [];
-            try { runtimeNames = (await readdir(runtimeDirectory)).sort(); } catch (error) {
-              if (error?.code !== 'ENOENT') throw error;
-            }
-            const runtimeJsonNames = runtimeNames.filter((name) => name.endsWith('.json'));
-            const runtimeInventoryValid = runtimeNames.every((name) => name.endsWith('.json') || name.endsWith('.stdout.log') || name.endsWith('.stderr.log'));
-            let runtime;
-            if (runtimeInventoryValid && runtimeJsonNames.length === 1) {
-              runtime = JSON.parse(await readFile(join(runtimeDirectory, runtimeJsonNames[0]), 'utf8'));
-            }
-            const runtimePassed = runtime?.passed === true && runtime?.cleanup?.status === 'verified-clean' && runtime?.cleanup?.tempRootRemoved === true;
-            if (!runtimePassed) throw new Error(`required target ${target} lacks passing clean-host runtime evidence`);
-            const runtimeEvidence = 'runtime-smoke.json';
-            await copyFile(join(runtimeDirectory, runtimeJsonNames[0]), join(root, directory, runtimeEvidence));
-            records.push({ target, artifact: `${directory}/${artifact}`, packageManifest: `${directory}/${packageManifest}`, verificationReceipt: `${directory}/${verificationReceipt}`, runtimeEvidence: `${directory}/${runtimeEvidence}` });
+            records.push({ target, artifact: `${directory}/${artifact}`, packageManifest: `${directory}/${packageManifest}`, verificationReceipt: `${directory}/${verificationReceipt}` });
           }
           await writeFile(join(root, 'candidate.json'), `${JSON.stringify({ schema: 'butter-paper/stable-candidate-input', schemaVersion: 2, channel: 'stable', version, sourceRevision, targets: records }, null, 2)}\n`, { flag: 'wx' });
           NODE

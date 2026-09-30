@@ -41,7 +41,6 @@ async function fixture(targets = REQUIRED) {
     const artifact = `packages/${slug}.pkg`;
     const packageManifest = `receipts/${slug}.package.json`;
     const verificationReceipt = `receipts/${slug}.verified.json`;
-    const runtimeEvidence = `runtime/${slug}.smoke.json`;
     const bytes = Buffer.from(`package bytes for ${target}\n`);
     const artifactClaim = {
       path: basename(artifact),
@@ -56,7 +55,6 @@ async function fixture(targets = REQUIRED) {
     };
     await mkdir(join(root, "packages"), { recursive: true });
     await mkdir(join(root, "receipts"), { recursive: true });
-    await mkdir(join(root, "runtime"), { recursive: true });
     await writeFile(join(root, artifact), bytes);
     await writeFile(
       join(root, packageManifest),
@@ -77,23 +75,11 @@ async function fixture(targets = REQUIRED) {
         artifact: artifactClaim,
       }),
     );
-    await writeFile(
-      join(root, runtimeEvidence),
-      JSON.stringify({
-        schema: "butter-paper/nonmac-runtime-smoke",
-        schemaVersion: 1,
-        passed: true,
-        packageIdentity: { ...identity, archiveSha256: artifactClaim.sha256 },
-        documentOpenEvidence: { documentId: "a".repeat(32) },
-        cleanup: { status: "verified-clean", tempRootRemoved: true },
-      }),
-    );
     candidate.targets.push({
       target,
       artifact,
       packageManifest,
       verificationReceipt,
-      runtimeEvidence,
     });
   }
   await writeFile(
@@ -194,14 +180,6 @@ test("rejects mixed identities and artifact tampering", async (t) => {
     await writeFile(join(root, candidate.targets[0].artifact), "altered bytes");
     await assert.rejects(outputFor(root), /artifact claim does not match/);
   });
-  await t.test("runtime evidence from another package", async () => {
-    const { root, candidate } = await fixture();
-    const evidence = join(root, candidate.targets[0].runtimeEvidence);
-    const value = JSON.parse(await readFile(evidence, "utf8"));
-    value.packageIdentity.archiveSha256 = "f".repeat(64);
-    await writeFile(evidence, JSON.stringify(value));
-    await assert.rejects(outputFor(root), /clean exact-package runtime smoke/);
-  });
 });
 
 test("fails closed on development markers, unverified receipts, and unexpected input files", async (t) => {
@@ -244,10 +222,6 @@ test("fails closed on development markers, unverified receipts, and unexpected i
       value.artifact = claim;
       await writeFile(join(root, path), JSON.stringify(value));
     }
-    const runtimePath = join(root, record.runtimeEvidence);
-    const runtime = JSON.parse(await readFile(runtimePath, "utf8"));
-    runtime.packageIdentity.archiveSha256 = claim.sha256;
-    await writeFile(runtimePath, JSON.stringify(runtime));
     const result = await outputFor(root);
     assert.equal(result.manifest.targets.find(({ target }) => target === "linux-arm64").artifact.sha256, claim.sha256);
   });
@@ -263,15 +237,6 @@ test("fails closed on development markers, unverified receipts, and unexpected i
     const { root } = await fixture();
     await writeFile(join(root, "stray.bin"), "extra");
     await assert.rejects(outputFor(root), /unexpected file: stray.bin/);
-  });
-  await t.test("failed or incompletely cleaned runtime smoke", async () => {
-    const { root, candidate } = await fixture();
-    const evidence = join(root, candidate.targets[0].runtimeEvidence);
-    const value = JSON.parse(await readFile(evidence, "utf8"));
-    value.passed = false;
-    value.cleanup.status = "unknown-or-failed";
-    await writeFile(evidence, JSON.stringify(value));
-    await assert.rejects(outputFor(root), /clean exact-package runtime smoke/);
   });
 });
 

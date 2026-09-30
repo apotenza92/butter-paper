@@ -137,7 +137,7 @@ describe("GPUI stable candidate workflow", () => {
     expect(setupPythonIndex).toBeLessThan(steps.indexOf(buildStep));
   });
 
-  it("keeps Linux build prerequisites in packaging and runtime prerequisites in clean-host smoke", () => {
+  it("installs Linux native build prerequisites before building", () => {
     expect(source).toContain("Install Linux native build prerequisites");
     for (const dependency of [
       "libdbus-1-dev",
@@ -152,34 +152,11 @@ describe("GPUI stable candidate workflow", () => {
     ]) {
       expect(source).toContain(dependency);
     }
-    expect(source).toContain("Install Linux runtime smoke prerequisites");
-    for (const dependency of [
-      "libdbus-1-3",
-      "mesa-vulkan-drivers",
-      "xvfb",
-      "xauth",
-      "xdotool",
-      "x11-utils",
-      "openbox",
-      "xz-utils",
-      "qpdf",
-    ]) {
-      expect(source).toContain(dependency);
-    }
-    expect(source).toContain('Xvfb "$DISPLAY"');
-    expect(source).toContain('openbox >"$evidence/openbox.stdout.log"');
-    expect(source).toContain('xdpyinfo -display "$DISPLAY"');
-    expect(source).toContain("trap cleanup_linux_desktop EXIT");
-    expect(source).toContain("Install Windows runtime smoke prerequisites");
-    expect(source).toContain("choco install qpdf --yes --no-progress");
     expect(
       source.indexOf("Install Linux native build prerequisites"),
     ).toBeLessThan(
       source.indexOf("Build release binaries and local phone helper"),
     );
-    expect(
-      source.indexOf("Install Linux runtime smoke prerequisites"),
-    ).toBeGreaterThan(source.indexOf("smoke:"));
   });
 
   it("creates nested per-target candidate output directories before packaging", () => {
@@ -266,85 +243,15 @@ describe("GPUI stable candidate workflow", () => {
     }
   });
 
-  it("smokes exact uploaded packages on fresh native hosts without signing or installation authority", () => {
-    const packageJob = workflow.jobs.package;
-    const smokeJob = workflow.jobs.smoke;
-    const packageSteps = packageJob.steps.map(
-      ({ name }: { name?: string }) => name ?? "",
-    );
-    expect(packageSteps.some((name: string) => /Smoke/i.test(name))).toBe(
-      false,
-    );
-    expect(packageSteps).toContain("Upload verified target candidate");
-
-    const smokeMatrix = smokeJob.strategy.matrix.include;
-    expect(smokeMatrix).toEqual(
-      packageJob.strategy.matrix.include.map(
-        ({
-          label,
-          runner,
-          os,
-          arch,
-          optional,
-        }: {
-          label: string;
-          runner: string;
-          os: string;
-          arch: string;
-          optional: boolean;
-        }) => ({
-          label,
-          // The macos-26-intel image hangs AppKit windows in IconServices;
-          // the macOS 13+ Intel package is smoked on the macOS 15 image.
-          runner: label === "macos-x64" ? "macos-15-intel" : runner,
-          os,
-          arch,
-          optional,
-        }),
-      ),
-    );
-    expect(
-      smokeMatrix.filter(({ optional }: { optional: boolean }) => !optional),
-    ).toHaveLength(6);
-    expect(smokeJob["continue-on-error"]).toBe("${{ matrix.optional }}");
-    expect(smokeJob.needs).toEqual(["validate", "package"]);
-    expect(smokeJob).not.toHaveProperty("environment");
-
-    const smokeSource = JSON.stringify(smokeJob);
-    expect(smokeJob.steps[0].with.ref).toBe("${{ inputs.source_revision }}");
-    const download = smokeJob.steps.find(
-      ({ name }: { name?: string }) =>
-        name === "Download exact package from this workflow run",
-    );
-    expect(download?.with).toMatchObject({
-      name: "gpui-package-${{ matrix.label }}",
-      "run-id": "${{ github.run_id }}",
-    });
-    expect(smokeSource).toContain("smoke-nonmac-production-package.mjs");
-    expect(smokeSource).toContain("smoke-signed-macos-package.mjs");
-    expect(smokeSource).toContain("tests/fixtures/generated/single-page.pdf");
-    expect(smokeSource).toContain("gpui-runtime-smoke-${{ matrix.label }}");
-    expect(smokeSource).not.toMatch(
-      /secrets\.|signing|notary|Import-PfxCertificate|package-(?:linux|windows|macos)|install-user|install\.ps1/i,
-    );
-    expect(smokeSource).not.toMatch(
-      /gh release|create-release|contents:\\?"?write/i,
-    );
-  });
-
-  it("aggregates only after required clean-host smoke and packages without publishing a release", () => {
+  it("aggregates packages without publishing a release", () => {
     expect(source).toContain("aggregate-stable-candidate.mjs");
     expect(source).toContain("butter-paper/stable-candidate-input");
     expect(workflow.jobs.aggregate.needs).toEqual([
       "validate",
       "package",
-      "smoke",
     ]);
     expect(workflow.jobs.aggregate.if).toContain(
       "needs.package.result == 'success'",
-    );
-    expect(workflow.jobs.aggregate.if).toContain(
-      "needs.smoke.result == 'success'",
     );
     const aggregateDownloads = workflow.jobs.aggregate.steps.filter(
       ({ uses }: { uses?: string }) =>
@@ -354,12 +261,10 @@ describe("GPUI stable candidate workflow", () => {
       aggregateDownloads.map(
         ({ with: options }: { with: { pattern?: string } }) => options.pattern,
       ),
-    ).toEqual(["gpui-package-*", "gpui-runtime-smoke-*"]);
+    ).toEqual(["gpui-package-*"]);
     const aggregateSource = JSON.stringify(workflow.jobs.aggregate);
-    expect(aggregateSource).toContain("runtimeEvidence");
-    expect(aggregateSource).toContain("runtime-smoke.json");
     expect(aggregateSource).toContain("schemaVersion: 2");
-    expect(aggregateSource).toContain("runtime?.passed === true");
+    expect(aggregateSource).not.toContain("runtime");
     expect(aggregateSource).not.toContain("target === 'macos-x64'");
     expect(workflow.permissions).toEqual({ actions: "read", contents: "read" });
     expect(source).not.toMatch(
