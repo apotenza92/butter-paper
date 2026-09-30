@@ -416,6 +416,7 @@ jobs:
   smoke:
     needs: [validate, package]
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -426,7 +427,9 @@ jobs:
             arch: arm64
             optional: false
           - label: macos-x64
-            runner: macos-26-intel
+            # IconServices XPC hangs on the macos-26-intel image, blocking
+            # every AppKit window; the macOS 13+ package is smoked on macOS 15.
+            runner: macos-15-intel
             os: macos
             arch: x64
             optional: false

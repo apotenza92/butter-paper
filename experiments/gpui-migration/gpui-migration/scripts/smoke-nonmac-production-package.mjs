@@ -719,11 +719,20 @@ function currentProcesses(rootPid, packageRoot) {
   return tracked;
 }
 
+const progressStartedAt = Date.now();
+function progress(message) {
+  process.stderr.write(`[smoke +${((Date.now() - progressStartedAt) / 1000).toFixed(1)}s] ${message}\n`);
+}
+
 async function waitUntil(predicate, timeoutMs, label) {
+  progress(`waiting for ${label}`);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const value = await predicate();
-    if (value) return value;
+    if (value) {
+      progress(`observed ${label}`);
+      return value;
+    }
     await sleep(POLL_MS);
   }
   fail(`timed out waiting for ${label}`);
@@ -1546,6 +1555,7 @@ async function runSmoke({
           rectangleBaseline.rectangleCount === 0,
         "initial exact-open recovery state is not a clean rectangle-free revision zero",
       );
+      progress("driving Rectangle edit");
       result.observation.rectangleEdit = await driveRectangleEdit(child.pid);
       const editedState = await waitUntil(
         async () =>
@@ -1569,6 +1579,7 @@ async function runSmoke({
       };
       const originalPdfHash = sha256(fixtureBytes);
       let savedPdfPath = ownedFixturePath;
+      progress("saving edited document");
       result.observation.save = await saveEditedDocument(
         child.pid,
         result.observation.rectangleEdit.windowId,
@@ -1667,6 +1678,7 @@ async function runSmoke({
         );
         throw error;
       }
+      progress("requesting graceful close");
       result.observation.closeRequest = await askGracefulClose(child.pid);
       await waitUntil(
         async () => child.exitCode !== null || child.signalCode !== null,
@@ -1679,6 +1691,7 @@ async function runSmoke({
       );
       await rm(recoveryStoreRoot, { recursive: true, force: true });
       result.observation.recoveryResetBeforeFreshReopen = true;
+      progress("relaunching saved PDF");
       child = launch(savedPdfPath);
       attachLogs(child);
       const reopenedPid = child.pid;
@@ -1722,6 +1735,7 @@ async function runSmoke({
     if (child && child.pid) {
       result.observation ??= {};
       try {
+        progress("cleaning up owned processes");
         const cleanup = await cleanupOwnedProcess({
           rootPid: child.pid,
           listProcesses: async (pid) =>

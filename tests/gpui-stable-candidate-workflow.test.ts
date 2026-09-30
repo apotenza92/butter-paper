@@ -292,7 +292,15 @@ describe("GPUI stable candidate workflow", () => {
           os: string;
           arch: string;
           optional: boolean;
-        }) => ({ label, runner, os, arch, optional }),
+        }) => ({
+          label,
+          // The macos-26-intel image hangs AppKit windows in IconServices;
+          // the macOS 13+ Intel package is smoked on the macOS 15 image.
+          runner: label === "macos-x64" ? "macos-15-intel" : runner,
+          os,
+          arch,
+          optional,
+        }),
       ),
     );
     expect(
