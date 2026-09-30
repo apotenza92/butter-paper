@@ -2,7 +2,7 @@
 
 All notable Butter Paper changes are recorded here.
 
-## [0.0.28]
+## [0.0.29]
 
 ### Move to the native app
 
