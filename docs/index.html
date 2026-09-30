@@ -521,14 +521,8 @@
       </section>
 
       <details id="download-options" class="download-options">
-        <summary>Choose another platform or test upcoming updates in beta</summary>
+        <summary>Choose another platform</summary>
         <div class="selection-flow">
-          <div class="release-controls">
-            <div class="channel-toggle" aria-label="Release channel">
-              <button id="channel-stable" class="selector-button channel-button active" data-channel="stable" type="button">Stable</button>
-              <button id="channel-beta" class="selector-button channel-button" data-channel="beta" type="button">Beta</button>
-            </div>
-          </div>
           <div class="platform-toggle" aria-label="Platform">
             <button id="platform-mac" class="selector-button platform-button" type="button">
               <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -550,14 +544,6 @@
           <div class="arch-toggle" aria-label="Architecture">
             <button id="arch-arm64" class="selector-button arch-button" type="button">ARM64</button>
             <button id="arch-x64" class="selector-button arch-button" type="button">x64</button>
-          </div>
-
-          <div id="format-toggle" class="format-toggle" aria-label="Package format">
-            <button id="format-dmg" class="selector-button format-button" data-platform="mac" type="button">DMG</button>
-            <button id="format-zip" class="selector-button format-button" data-platform="mac" type="button">ZIP</button>
-            <button id="format-appimage" class="selector-button format-button" data-platform="linux" type="button">AppImage</button>
-            <button id="format-deb" class="selector-button format-button" data-platform="linux" type="button">Ubuntu / Debian (.deb)</button>
-            <button id="format-rpm" class="selector-button format-button" data-platform="linux" type="button">Fedora / RHEL (.rpm)</button>
           </div>
 
           <section class="download-section" aria-label="Selected download">
@@ -611,8 +597,6 @@
           ? "arm64"
           : detectedSystem.arch || "x64",
         channel: "stable",
-        linuxFormat: "AppImage",
-        macFormat: "dmg",
         platform: detectedSystem.platform || "windows"
       };
       let manualSelection = false;
@@ -664,12 +648,12 @@
       function assetName(selection) {
         const prefix = assetPrefix(selection.channel);
         if (selection.platform === "mac") {
-          return `${prefix}-macOS-${selection.arch}.${selection.macFormat}`;
+          return `${prefix}-macOS-${selection.arch}.zip`;
         }
         if (selection.platform === "windows") {
-          return `${prefix}-Windows-${selection.arch}-Setup.exe`;
+          return `${prefix}-Windows-${selection.arch}.zip`;
         }
-        return `${prefix}-Linux-${selection.arch}.${selection.linuxFormat}`;
+        return `${prefix}-Linux-${selection.arch}.tar.xz`;
       }
 
       function assetUrl(selection) {
@@ -685,17 +669,12 @@
         const architecture = selection.arch === "arm64" ? "ARM64" : "x64";
         if (selection.platform === "mac") {
           const mac = selection.arch === "arm64" ? "Apple Silicon Mac" : "Intel Mac";
-          return `Download ${name} ${selection.macFormat.toUpperCase()} for ${mac}`;
+          return `Download ${name} for ${mac}`;
         }
         if (selection.platform === "windows") {
           return `Download ${name} for Windows ${architecture}`;
         }
-        const format = selection.linuxFormat === "deb"
-          ? ".deb for Ubuntu / Debian"
-          : selection.linuxFormat === "rpm"
-            ? ".rpm for Fedora / RHEL"
-            : "AppImage for Linux";
-        return `Download ${name} ${format} ${architecture}`;
+        return `Download ${name} for Linux ${architecture}`;
       }
 
       function resolveDownload(selection) {
@@ -747,12 +726,6 @@
 
       function updateDownload() {
         const resolved = resolveDownload(state);
-        const formatForPlatform = state.platform === "mac"
-          ? `format-${state.macFormat}`
-          : state.platform === "linux"
-            ? `format-${state.linuxFormat.toLowerCase()}`
-            : "";
-
         document.body.classList.toggle("beta-mode", state.channel === "beta");
         const iconSource = iconSources[state.channel];
         document.getElementById("app-icon").src = iconSource;
@@ -762,15 +735,8 @@
         document.getElementById("version-display").textContent = releaseVersions[state.channel];
         document.getElementById("version-display").classList.toggle("visible", Boolean(releaseVersions[state.channel]));
 
-        setActive(".channel-button", `channel-${state.channel}`);
         setActive(".platform-button", `platform-${state.platform}`);
         setActive(".arch-button", `arch-${state.arch}`);
-        setActive(".format-button", formatForPlatform);
-
-        document.querySelectorAll(".format-button").forEach((button) => {
-          button.hidden = button.dataset.platform !== state.platform;
-        });
-        document.getElementById("format-toggle").hidden = state.platform === "windows";
         setDownloadLink(
           document.getElementById("hero-download-button"),
           document.getElementById("hero-download-label"),
@@ -810,10 +776,6 @@
         });
       }
 
-      function hasAsset(release, name) {
-        return Array.isArray(release?.assets) && release.assets.some((asset) => asset.name === name);
-      }
-
       async function loadReleaseInfo() {
         try {
           const stableResponse = await fetch(`https://api.github.com/repos/${repo}/releases/latest`);
@@ -822,20 +784,6 @@
             releaseVersions.stable = stable.tag_name || "";
             releaseTags.stable = stable.tag_name || "latest";
             updateAssetSizes(stable);
-            if (hasAsset(stable, "Butter-Paper-Beta-macOS-arm64.dmg")) {
-              releaseVersions.beta = stable.tag_name || "";
-              releaseTags.beta = stable.tag_name || "latest";
-            }
-          }
-          const releasesResponse = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=20`);
-          if (releasesResponse.ok) {
-            const releases = await releasesResponse.json();
-            const beta = releases.find((release) => release.prerelease);
-            if (beta) {
-              releaseVersions.beta = beta.tag_name || "";
-              releaseTags.beta = beta.tag_name || "latest";
-              updateAssetSizes(beta);
-            }
           }
         } catch {
           // Static downloads remain usable during GitHub API downtime or rate limiting.
@@ -877,13 +825,6 @@
         }
       }
 
-      document.querySelectorAll(".channel-button").forEach((button) => {
-        button.addEventListener("click", () => {
-          markManualSelection();
-          state.channel = button.dataset.channel;
-          updateDownload();
-        });
-      });
       document.querySelectorAll(".platform-button").forEach((button) => {
         button.addEventListener("click", () => {
           markManualSelection();
@@ -896,15 +837,6 @@
         button.addEventListener("click", () => {
           markManualSelection();
           state.arch = button.id.replace("arch-", "");
-          updateDownload();
-        });
-      });
-      document.querySelectorAll(".format-button").forEach((button) => {
-        button.addEventListener("click", () => {
-          markManualSelection();
-          const format = button.id.replace("format-", "");
-          if (button.dataset.platform === "mac") state.macFormat = format;
-          if (button.dataset.platform === "linux") state.linuxFormat = format === "appimage" ? "AppImage" : format;
           updateDownload();
         });
       });

@@ -88,12 +88,12 @@ describe('Butter Paper download page', () => {
   });
 
   it.each([
-    ['Windows', 'x86', 'Download Butter Paper for Windows x64', 'Butter-Paper-Windows-x64-Setup.exe'],
-    ['Windows', 'arm64', 'Download Butter Paper for Windows ARM64', 'Butter-Paper-Windows-arm64-Setup.exe'],
-    ['Linux', 'x86', 'Download Butter Paper AppImage for Linux x64', 'Butter-Paper-Linux-x64.AppImage'],
-    ['Linux', 'arm64', 'Download Butter Paper AppImage for Linux ARM64', 'Butter-Paper-Linux-arm64.AppImage'],
-    ['macOS', 'arm64', 'Download Butter Paper DMG for Apple Silicon Mac', 'Butter-Paper-macOS-arm64.dmg'],
-    ['macOS', 'x64', 'Download Butter Paper DMG for Intel Mac', 'Butter-Paper-macOS-x64.dmg'],
+    ['Windows', 'x86', 'Download Butter Paper for Windows x64', 'Butter-Paper-Windows-x64.zip'],
+    ['Windows', 'arm64', 'Download Butter Paper for Windows ARM64', 'Butter-Paper-Windows-arm64.zip'],
+    ['Linux', 'x86', 'Download Butter Paper for Linux x64', 'Butter-Paper-Linux-x64.tar.xz'],
+    ['Linux', 'arm64', 'Download Butter Paper for Linux ARM64', 'Butter-Paper-Linux-arm64.tar.xz'],
+    ['macOS', 'arm64', 'Download Butter Paper for Apple Silicon Mac', 'Butter-Paper-macOS-arm64.zip'],
+    ['macOS', 'x64', 'Download Butter Paper for Intel Mac', 'Butter-Paper-macOS-x64.zip'],
   ])('recommends the matching %s %s package', async (platform, architecture, label, asset) => {
     const dom = await loadPage({ architecture, platform });
     expect(hero(dom).label).toBe(label);
@@ -106,41 +106,17 @@ describe('Butter Paper download page', () => {
     expect(hero(dom).link.getAttribute('aria-disabled')).toBe('true');
   });
 
-  it('switches stable and beta identity, icon, labels, and asset names together', async () => {
+  it('offers only the native stable packages with no channel or format pickers', async () => {
     const dom = await loadPage({ architecture: 'arm64', platform: 'macOS' });
     const document = dom.window.document;
-    document.getElementById('channel-beta')!.click();
-
-    expect(document.title).toBe('Download Butter Paper Beta');
-    expect(document.getElementById('page-title')!.textContent).toBe('Butter Paper Beta');
-    expect(document.getElementById('channel-beta')!.getAttribute('aria-pressed')).toBe('true');
-    expect(document.getElementById('app-icon')!.getAttribute('src')).toBe('./assets/brand/icon-beta.svg');
-    expect(document.getElementById('favicon')!.getAttribute('href')).toBe('./assets/brand/icon-beta.svg');
-    expect(dom.window.getComputedStyle(document.body).getPropertyValue('--accent').trim()).toBe('#6756b3');
-    expect(readFileSync('assets/butter-paper-icon-beta.png').subarray(0, 8).toString('hex'))
-      .toBe('89504e470d0a1a0a');
-    expect(html).toContain('#08756c');
-    expect(html).toContain('#6756b3');
-    expect(hero(dom).label).toBe('Download Butter Paper Beta DMG for Apple Silicon Mac');
-    expect(hero(dom).href).toContain('Butter-Paper-Beta-macOS-arm64.dmg');
-    expect(document.getElementById('homebrew-code')!.textContent).toContain('butter-paper@beta');
-
-    document.getElementById('channel-stable')!.click();
-    expect(document.title).toBe('Download Butter Paper');
-    expect(document.getElementById('channel-stable')!.getAttribute('aria-pressed')).toBe('true');
-  });
-
-  it('switches package formats without losing the selected platform or architecture', async () => {
-    const dom = await loadPage({ architecture: 'arm64', platform: 'macOS' });
-    const document = dom.window.document;
-    document.getElementById('format-zip')!.click();
-    expect(hero(dom).href).toContain('Butter-Paper-macOS-arm64.zip');
+    expect(document.getElementById('channel-beta')).toBeNull();
+    expect(document.getElementById('format-toggle')).toBeNull();
 
     document.getElementById('platform-linux')!.click();
     document.getElementById('arch-x64')!.click();
-    document.getElementById('format-rpm')!.click();
-    expect(hero(dom).label).toBe('Download Butter Paper .rpm for Fedora / RHEL x64');
-    expect(hero(dom).href).toContain('Butter-Paper-Linux-x64.rpm');
+    expect(hero(dom).label).toBe('Download Butter Paper for Linux x64');
+    expect(hero(dom).href).toContain('Butter-Paper-Linux-x64.tar.xz');
+    expect(document.getElementById('homebrew-code')!.textContent).toBe('brew tap apotenza92/tap && brew install --cask butter-paper');
   });
 
   it('keeps the public copy focused on the product and downloads', async () => {
@@ -149,33 +125,21 @@ describe('Butter Paper download page', () => {
     expect(publicCopy).not.toMatch(/early-stage|rough edges|unsigned|TUF|provenance|authenticated/i);
   });
 
-  it('uses release metadata for stable and beta version and size details', async () => {
+  it('uses release metadata for the version and size details', async () => {
     const dom = await loadPage({
       architecture: 'arm64',
       platform: 'macOS',
       releases: {
         stable: {
-          assets: [
-            { name: 'Butter-Paper-macOS-arm64.dmg', size: 120_000_000 },
-            { name: 'Butter-Paper-Beta-macOS-arm64.dmg', size: 121_000_000 },
-          ],
+          assets: [{ name: 'Butter-Paper-macOS-arm64.zip', size: 120_000_000 }],
           tag_name: 'v1.2.3',
-        },
-        beta: {
-          assets: [{ name: 'Butter-Paper-Beta-macOS-arm64.dmg', size: 122_000_000 }],
-          prerelease: true,
-          tag_name: 'v1.3.0-beta.1',
         },
       },
     });
     const document = dom.window.document;
-    expect(hero(dom).label).toBe('Download Butter Paper DMG for Apple Silicon Mac · 120 MB');
+    expect(hero(dom).label).toBe('Download Butter Paper for Apple Silicon Mac · 120 MB');
+    expect(hero(dom).href).toContain('/releases/download/v1.2.3/Butter-Paper-macOS-arm64.zip');
     expect(document.getElementById('download-detail')!.textContent).toBe('v1.2.3 · 120 MB');
-
-    document.getElementById('channel-beta')!.click();
-    expect(hero(dom).label).toBe('Download Butter Paper Beta DMG for Apple Silicon Mac · 122 MB');
-    expect(hero(dom).href).toContain('/releases/download/v1.3.0-beta.1/');
-    expect(document.getElementById('download-detail')!.textContent).toBe('v1.3.0-beta.1 · 122 MB');
   });
 
   it('copies the channel-aware Homebrew command with the local-file fallback', async () => {
