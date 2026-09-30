@@ -1,36 +1,26 @@
-version: 0.0.25
+version: 0.0.27
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-Beta-Windows-arm64-Setup.exe
-    sha512: FsKgU1w9lqhI5WgJksA5bBRCGuhjCV0U2U130Hbv4N0Id7tZV3PZsTpkii5yuCez/Xgkl26VPR41PqTKUD2jaA==
-    size: 124704658
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-Beta-Windows-arm64-Setup.exe
-sha512: FsKgU1w9lqhI5WgJksA5bBRCGuhjCV0U2U130Hbv4N0Id7tZV3PZsTpkii5yuCez/Xgkl26VPR41PqTKUD2jaA==
-releaseNotes: "### Startup performance\r
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.27/Butter-Paper-Beta-Windows-arm64-Setup.exe
+    sha512: 5KkDj6lSZkTvr6U4Ldn4NOq+zWhUitxZtOGKH1sBxwd6G3Tl7w9X0Fq582ga38bT6zc7JfZtum+ANjdwlcS4IA==
+    size: 124759527
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.27/Butter-Paper-Beta-Windows-arm64-Setup.exe
+sha512: 5KkDj6lSZkTvr6U4Ldn4NOq+zWhUitxZtOGKH1sBxwd6G3Tl7w9X0Fq582ga38bT6zc7JfZtum+ANjdwlcS4IA==
+releaseNotes: "### Move to the native app\r
 
   \r
 
-  - Made blank and PDF launches faster by delaying non-essential updater,\r
+  - Moves existing Butter Paper and Butter Paper Beta installs to the native\r
 
-  \  registration, template, signature, and PDF services until they are needed.\r
+  \  Butter Paper 0.0.26 app. On first launch, Butter Paper asks to update, then\r
 
-  - Reused inspected PDF bytes during document opening to avoid reading the same\r
+  \  downloads the verified native package for your computer, installs it,\r
 
-  \  file twice, while keeping PDF preparation available for direct file launches.\r
+  \  removes the old Butter Paper apps and opens the new one. Your PDFs are not\r
 
-  \r
+  \  changed.\r
 
-  ### Templates and verification\r
+  - macOS 12 stays on this version, because the native app requires macOS 13 or\r
 
-  \r
-
-  - Improved long template-name layout and kept the last-template preview within\r
-
-  \  constrained windows.\r
-
-  - Added detailed startup timing diagnostics and expanded deterministic and\r
-
-  \  packaged checks for blank documents, direct PDF launches, and lazy runtime\r
-
-  \  boundaries."
-releaseDate: 2026-08-16T13:31:57.622Z
+  \  later."
+releaseDate: 2026-09-30T09:17:46.984Z
 butterPaperChannel: beta

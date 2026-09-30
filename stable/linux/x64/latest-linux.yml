@@ -1,31 +1,26 @@
-version: 0.0.25
+version: 0.0.27
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-Linux-x64.AppImage
-    sha512: DpCI3svGOiu6hlaBNnLzuSwJD8JLGrVg009AIG1Kcae2kSwg22qB+QA2ctwh4D9sy7yigRz3TrxzWucimDGh2w==
-    size: 124989668
-    blockMapSize: 131320
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-Linux-x64.deb
-    sha512: 3Ti84NWJd76YTOAy9tQrSZqj3WJ2BZJ92EdHpSvWEazWqK9aMfWEn3y9IxMlbSjGeIlXKXHBarRXTNjcvD6Lqw==
-    size: 122061392
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-Linux-x64.rpm
-    sha512: Rv/vVMF99ZCCfnQyxCuyreh6jhSWHNykI/qAGZhKPOeu81SNMYtTadZ9reAik+upN5/nPOCRtMOPQtFz9WnIqg==
-    size: 108078713
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-Linux-x64.AppImage
-sha512: DpCI3svGOiu6hlaBNnLzuSwJD8JLGrVg009AIG1Kcae2kSwg22qB+QA2ctwh4D9sy7yigRz3TrxzWucimDGh2w==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.27/Butter-Paper-Linux-x64.AppImage
+    sha512: aMPuRdMt0wMrRScIi0Vq1v0mypThMDTqhgsJDBJd6kB198Vprh/e1ALfNit9N1+rWZ5JqnN/ggSFwmsaWYTLcA==
+    size: 124980870
+    blockMapSize: 130714
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.27/Butter-Paper-Linux-x64.deb
+    sha512: hu/3vboVb0ZcImhXQ7cn9/vfnpb7FlGo4qG69VI59wobDlBiCWY8KM+14/FYGqssChDgSJxCid4M8ebNqdnd5w==
+    size: 122230428
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.27/Butter-Paper-Linux-x64.rpm
+    sha512: zDuqiecVt2rEbsHPMjTPGXEYX5qJwpzLnBbNwNbfbipI+y8wPy27jPllWmH6uvsnitfO3yTh6LUbKMtWpGU6+A==
+    size: 108088785
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.27/Butter-Paper-Linux-x64.AppImage
+sha512: aMPuRdMt0wMrRScIi0Vq1v0mypThMDTqhgsJDBJd6kB198Vprh/e1ALfNit9N1+rWZ5JqnN/ggSFwmsaWYTLcA==
 releaseNotes: |-
-  ### Startup performance
+  ### Move to the native app
 
-  - Made blank and PDF launches faster by delaying non-essential updater,
-    registration, template, signature, and PDF services until they are needed.
-  - Reused inspected PDF bytes during document opening to avoid reading the same
-    file twice, while keeping PDF preparation available for direct file launches.
-
-  ### Templates and verification
-
-  - Improved long template-name layout and kept the last-template preview within
-    constrained windows.
-  - Added detailed startup timing diagnostics and expanded deterministic and
-    packaged checks for blank documents, direct PDF launches, and lazy runtime
-    boundaries.
-releaseDate: 2026-08-16T13:31:49.748Z
+  - Moves existing Butter Paper and Butter Paper Beta installs to the native
+    Butter Paper 0.0.26 app. On first launch, Butter Paper asks to update, then
+    downloads the verified native package for your computer, installs it,
+    removes the old Butter Paper apps and opens the new one. Your PDFs are not
+    changed.
+  - macOS 12 stays on this version, because the native app requires macOS 13 or
+    later.
+releaseDate: 2026-09-30T09:17:46.373Z
 butterPaperChannel: stable

@@ -1,36 +1,26 @@
-version: 0.0.25
+version: 0.0.27
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-Windows-arm64-Setup.exe
-    sha512: 2FBtVCkzXu9UESz0TDV6FvmaFBw6FtaylNaw8VeLYpCABrQZ1H7ssopwkxL/cB5+u/ItPNyIfewWzNdCLbcxtw==
-    size: 124700447
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-Windows-arm64-Setup.exe
-sha512: 2FBtVCkzXu9UESz0TDV6FvmaFBw6FtaylNaw8VeLYpCABrQZ1H7ssopwkxL/cB5+u/ItPNyIfewWzNdCLbcxtw==
-releaseNotes: "### Startup performance\r
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.27/Butter-Paper-Windows-arm64-Setup.exe
+    sha512: PNwEZu1XcB6jXN1SG231wmdHbvTk4fpNFTiMqxXHVLDRETvTUWsruMbI4s4nGABgoOlZ1sQdWSvoC8F1rspluQ==
+    size: 124756317
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.27/Butter-Paper-Windows-arm64-Setup.exe
+sha512: PNwEZu1XcB6jXN1SG231wmdHbvTk4fpNFTiMqxXHVLDRETvTUWsruMbI4s4nGABgoOlZ1sQdWSvoC8F1rspluQ==
+releaseNotes: "### Move to the native app\r
 
   \r
 
-  - Made blank and PDF launches faster by delaying non-essential updater,\r
+  - Moves existing Butter Paper and Butter Paper Beta installs to the native\r
 
-  \  registration, template, signature, and PDF services until they are needed.\r
+  \  Butter Paper 0.0.26 app. On first launch, Butter Paper asks to update, then\r
 
-  - Reused inspected PDF bytes during document opening to avoid reading the same\r
+  \  downloads the verified native package for your computer, installs it,\r
 
-  \  file twice, while keeping PDF preparation available for direct file launches.\r
+  \  removes the old Butter Paper apps and opens the new one. Your PDFs are not\r
 
-  \r
+  \  changed.\r
 
-  ### Templates and verification\r
+  - macOS 12 stays on this version, because the native app requires macOS 13 or\r
 
-  \r
-
-  - Improved long template-name layout and kept the last-template preview within\r
-
-  \  constrained windows.\r
-
-  - Added detailed startup timing diagnostics and expanded deterministic and\r
-
-  \  packaged checks for blank documents, direct PDF launches, and lazy runtime\r
-
-  \  boundaries."
-releaseDate: 2026-08-16T13:31:36.832Z
+  \  later."
+releaseDate: 2026-09-30T09:17:44.203Z
 butterPaperChannel: stable

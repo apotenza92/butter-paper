@@ -1,27 +1,22 @@
-version: 0.0.25
+version: 0.0.27
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-macOS-x64.zip
-    sha512: ouWvyJvfdXLcWWWpsQKwCgoTllwPNtacTjm//AjUQctS4kJwD6Bl755lAdWWSkymnPEPzjMOiVC3o6ZKFxvmzg==
-    size: 151520972
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-macOS-x64.dmg
-    sha512: kRUK16qDLVaYXSxlg868owVQiBPHQRN7llsije99LTskGtm/1TfnoOzsaHgZE3O+pLfwRLy5LuvlzUndFgYz7A==
-    size: 156560761
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.25/Butter-Paper-macOS-x64.zip
-sha512: ouWvyJvfdXLcWWWpsQKwCgoTllwPNtacTjm//AjUQctS4kJwD6Bl755lAdWWSkymnPEPzjMOiVC3o6ZKFxvmzg==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.27/Butter-Paper-macOS-x64.zip
+    sha512: jfQPsmT2IOiwtOqS4VbPgdyQz9l9t8NXBA8oD4V3sMywqL0+nDX3Xnydqp8Ix31ZucmiRRcolL7P2w6LZw/fZg==
+    size: 151555099
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.27/Butter-Paper-macOS-x64.dmg
+    sha512: BGcJOPBW10fgtAgD0X+dkY+c2MkQTs+UI0yCem5jZ55uzfswsYv1YNm47XG44prHbMRZlGxLEAPrdF4Ww1ktMA==
+    size: 156613015
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.27/Butter-Paper-macOS-x64.zip
+sha512: jfQPsmT2IOiwtOqS4VbPgdyQz9l9t8NXBA8oD4V3sMywqL0+nDX3Xnydqp8Ix31ZucmiRRcolL7P2w6LZw/fZg==
 releaseNotes: |-
-  ### Startup performance
+  ### Move to the native app
 
-  - Made blank and PDF launches faster by delaying non-essential updater,
-    registration, template, signature, and PDF services until they are needed.
-  - Reused inspected PDF bytes during document opening to avoid reading the same
-    file twice, while keeping PDF preparation available for direct file launches.
-
-  ### Templates and verification
-
-  - Improved long template-name layout and kept the last-template preview within
-    constrained windows.
-  - Added detailed startup timing diagnostics and expanded deterministic and
-    packaged checks for blank documents, direct PDF launches, and lazy runtime
-    boundaries.
-releaseDate: 2026-08-16T13:32:08.139Z
+  - Moves existing Butter Paper and Butter Paper Beta installs to the native
+    Butter Paper 0.0.26 app. On first launch, Butter Paper asks to update, then
+    downloads the verified native package for your computer, installs it,
+    removes the old Butter Paper apps and opens the new one. Your PDFs are not
+    changed.
+  - macOS 12 stays on this version, because the native app requires macOS 13 or
+    later.
+releaseDate: 2026-09-30T09:19:14.126Z
 butterPaperChannel: stable
