@@ -65,6 +65,7 @@ pub mod straight_line_property_inspector;
 pub mod system_theme;
 pub mod template_library;
 pub mod template_manager;
+pub mod template_preview;
 pub mod text_box_property_inspector;
 pub mod tool_defaults_panel;
 pub mod vertex_path_property_inspector;

@@ -67,6 +67,11 @@ impl AssetSource for ApplicationAssets {
             }
             "icons/rail/callout.svg" => Some(include_bytes!("../assets/icons/rail/callout.svg")),
             "icons/rail/ellipsis.svg" => Some(include_bytes!("../assets/icons/rail/ellipsis.svg")),
+            "icons/snap/square.svg" => Some(include_bytes!("../assets/icons/snap/square.svg")),
+            "icons/snap/triangle.svg" => Some(include_bytes!("../assets/icons/snap/triangle.svg")),
+            "icons/snap/circle.svg" => Some(include_bytes!("../assets/icons/snap/circle.svg")),
+            "icons/snap/x.svg" => Some(include_bytes!("../assets/icons/snap/x.svg")),
+            "icons/snap/diamond.svg" => Some(include_bytes!("../assets/icons/snap/diamond.svg")),
             _ => None,
         };
         if let Some(bytes) = thumbnail {
@@ -174,6 +179,21 @@ impl AssetSource for ApplicationAssets {
         }
         if "icons/rail/ellipsis.svg".starts_with(path) {
             entries.push("icons/rail/ellipsis.svg".into());
+        }
+        if "icons/snap/square.svg".starts_with(path) {
+            entries.push("icons/snap/square.svg".into());
+        }
+        if "icons/snap/triangle.svg".starts_with(path) {
+            entries.push("icons/snap/triangle.svg".into());
+        }
+        if "icons/snap/circle.svg".starts_with(path) {
+            entries.push("icons/snap/circle.svg".into());
+        }
+        if "icons/snap/x.svg".starts_with(path) {
+            entries.push("icons/snap/x.svg".into());
+        }
+        if "icons/snap/diamond.svg".starts_with(path) {
+            entries.push("icons/snap/diamond.svg".into());
         }
         Ok(entries)
     }

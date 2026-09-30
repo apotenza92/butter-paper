@@ -288,10 +288,12 @@ Lean native build checkpoint (2026-09-30): the stable-candidate workflow no long
     - [ ] Closing a window never quits on macOS; the Dock icon reopens a window, and files opened from Finder with no window open a new one.
     - [ ] macOS Window menu, including Merge All Windows and moving tabs between windows.
     - [ ] Session and recovery state kept per window.
-  - Electron-parity visual rework:
-    - [ ] Template dropdown with previews.
-    - [ ] Template manager with previews.
-    - [ ] Snap settings menu.
-    - [ ] Signature popup sizing and consistent visual style.
+  - Electron-parity visual rework (reviewed in real Metal renders from `examples/visual_review.rs`):
+    - [x] Template dropdown: a list with each template's size and page-grid summary beside a preview card; all six built-ins fit, and custom templates scroll.
+    - [x] Template manager: the same preview card (the page at its true aspect ratio, with the pattern at its real spacing, the summary and a grid badge), and Electron-style rows.
+    - [x] Snap settings menu: toggle tiles for Snap to and Snap points (the point glyphs in Electron's colour), switches, steppers and section dividers.
+    - [x] Signature popup: 384 px wide, a full-width Draw/Type/Image control, an 8:3 drawing pad, full-width Clear and Add, sources in one row, the storage warning in the error colour, and the typed name previewed in the Allura face the rasteriser uses.
+  - Known unrelated failure: `legacy_length_hardening_preserves_unnamed_and_ambiguous_inputs_and_cleans_owned_graphs` fails identically on the 0.0.26 release commit.
+  - Debug-build tests render on 8 MiB stacks like the platform main thread (`.cargo/config.toml`); the default 2 MiB test thread overflowed in the deeper workspace render path.
 
 - [ ] 9.2 New product capabilities — PDF/scanned search, agentic CLI/chat and inert Electron property controls remain in [backlog.md](backlog.md). Pending Redact marks do not imply secure applied redaction. Do not make absent reference features migration blockers without a scope decision.

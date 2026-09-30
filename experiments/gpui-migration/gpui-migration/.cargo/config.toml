@@ -1,0 +1,5 @@
+# GPUI test threads default to 2 MiB; the application renders on the
+# platform main thread, which has 8 MiB. Match it so debug-build render
+# depth in tests reflects the running app.
+[env]
+RUST_MIN_STACK = "8388608"

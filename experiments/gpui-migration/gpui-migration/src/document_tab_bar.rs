@@ -18,6 +18,7 @@ use gpui_component::{
 };
 
 use crate::accessible_button::accessible_icon_button;
+use crate::template_preview::{TemplatePreview, template_preview_card};
 
 pub const DOCUMENT_TAB_BAR_ID: &str = "document-tab-bar";
 pub const DOCUMENT_TAB_SURFACE_ID: &str = "document-tab-surface";
@@ -32,6 +33,11 @@ pub const TEMPLATE_PICKER_POPOVER_ID: &str = "template-picker";
 pub const TEMPLATE_MANAGE_ID: &str = "template-picker-manage";
 pub const TEMPLATE_CREATE_ID: &str = "template-picker-create";
 pub const TEMPLATE_SAVE_DOCUMENT_ID: &str = "template-picker-save-document";
+pub const TEMPLATE_PICKER_LIST_ID: &str = "template-picker-list";
+pub const TEMPLATE_PICKER_PREVIEW_ID: &str = "template-picker-preview";
+/// Electron's picker is 560 px wide; the native footer's extra Save Document
+/// as Template action needs a little more room.
+pub const TEMPLATE_PICKER_WIDTH: f32 = 600.;
 pub const DOCUMENT_TAB_LIST_ACCESSIBLE_NAME: &str = "Open documents";
 pub const DOCUMENT_TAB_REORDER_STATUS_ID: &str = "document-tab-reorder-status";
 pub const DOCUMENT_TAB_REORDER_KEYSHORTCUTS: &str = "Alt+Shift+ArrowLeft Alt+Shift+ArrowRight";
@@ -115,18 +121,26 @@ pub struct TemplateDefinition {
     pub name: &'static str,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TemplateCatalogItem {
     pub id: String,
     pub name: String,
+    pub preview: TemplatePreview,
 }
 
 impl TemplateCatalogItem {
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        let id = id.into();
         Self {
-            id: id.into(),
+            preview: TemplatePreview::for_built_in(&id),
+            id,
             name: name.into(),
         }
+    }
+
+    pub fn with_preview(mut self, preview: TemplatePreview) -> Self {
+        self.preview = preview;
+        self
     }
 }
 
@@ -466,36 +480,87 @@ impl Render for TemplateSplitControl {
                 });
             })
             .trigger(picker)
-            .content(move |_, _, _| {
+            .content(move |_, _, cx| {
+                let selected = templates
+                    .iter()
+                    .find(|template| template.id == selected_template_id)
+                    .unwrap_or(&templates[0])
+                    .clone();
                 let template_rows = templates.clone().into_iter().map(|template| {
                     let stable_id = template_picker_item_id(&template.id);
                     let control = picker_content_control.clone();
-                    Button::new(stable_id.clone())
-                        .debug_selector({
-                            let stable_id = stable_id.clone();
-                            move || stable_id.clone().into()
-                        })
-                        .accessibility_id(stable_id)
-                        .label(template.name.clone())
-                        .selected(selected_template_id == template.id)
-                        .toggled(selected_template_id == template.id)
-                        .on_click(move |event: &ClickEvent, _, cx| {
-                            let _ = control.update(cx, |control, cx| {
-                                control.selected_template_id = template.id.clone();
-                                if event.click_count() == 2 {
-                                    control.request_create(
-                                        &template.id,
-                                        TemplateCreationOrigin::RowDoubleClick,
-                                        cx,
-                                    );
-                                } else {
-                                    cx.emit(TemplateSplitEvent::SelectionChanged(
-                                        template.id.clone(),
-                                    ));
-                                    cx.notify();
-                                }
-                            });
-                        })
+                    let is_selected = selected_template_id == template.id;
+                    let description = format!(
+                        "{} · {}",
+                        template.preview.summary(),
+                        template.preview.grid_summary()
+                    );
+                    accessible_icon_button(
+                        Button::new(stable_id.clone())
+                            .debug_selector({
+                                let stable_id = stable_id.clone();
+                                move || stable_id.clone().into()
+                            })
+                            .accessibility_id(stable_id)
+                            .ghost()
+                            .selected(is_selected)
+                            .toggled(is_selected)
+                            .w_full()
+                            .h_auto()
+                            .py_1p5()
+                            .when(is_selected, |row| {
+                                row.bg(cx.theme().muted).text_color(cx.theme().foreground)
+                            })
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .min_w_0()
+                                    .gap_2()
+                                    .child(
+                                        v_flex()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .items_start()
+                                            .gap_0p5()
+                                            .child(
+                                                gpui::div()
+                                                    .text_sm()
+                                                    .font_medium()
+                                                    .child(template.name.clone()),
+                                            )
+                                            .child(
+                                                gpui::div()
+                                                    .text_xs()
+                                                    .whitespace_normal()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(description),
+                                            ),
+                                    )
+                                    .when(is_selected, |row| {
+                                        row.child(
+                                            gpui_component::Icon::new(IconName::Check).small(),
+                                        )
+                                    }),
+                            )
+                            .on_click(move |event: &ClickEvent, _, cx| {
+                                let _ = control.update(cx, |control, cx| {
+                                    control.selected_template_id = template.id.clone();
+                                    if event.click_count() == 2 {
+                                        control.request_create(
+                                            &template.id,
+                                            TemplateCreationOrigin::RowDoubleClick,
+                                            cx,
+                                        );
+                                    } else {
+                                        cx.emit(TemplateSplitEvent::SelectionChanged(
+                                            template.id.clone(),
+                                        ));
+                                        cx.notify();
+                                    }
+                                });
+                            }),
+                        template.name.clone(),
+                    )
                 });
 
                 let manage_control = picker_content_control.clone();
@@ -504,6 +569,7 @@ impl Render for TemplateSplitControl {
                 let create = Button::new(TEMPLATE_CREATE_ID)
                     .debug_selector(|| TEMPLATE_CREATE_ID.into())
                     .accessibility_id(TEMPLATE_CREATE_ID)
+                    .primary()
                     .label(if creating { "Creating…" } else { "Create" })
                     .disabled(creating)
                     .on_click(move |_: &ClickEvent, _, cx| {
@@ -524,42 +590,74 @@ impl Render for TemplateSplitControl {
                     .debug_selector(|| TEMPLATE_PICKER_POPOVER_ID.into())
                     .track_focus(&picker_content_focus)
                     .tab_group()
-                    .w_80()
-                    .gap_2()
+                    .w(px(TEMPLATE_PICKER_WIDTH))
+                    .gap_3()
                     .child(gpui::div().font_semibold().child("New from template"))
-                    .children(template_rows)
                     .child(
-                        Button::new(TEMPLATE_SAVE_DOCUMENT_ID)
-                            .debug_selector(|| TEMPLATE_SAVE_DOCUMENT_ID.into())
-                            .accessibility_id(TEMPLATE_SAVE_DOCUMENT_ID)
-                            .label("Save Document as Template…")
-                            .disabled(creating || !save_document_enabled)
-                            .on_click(move |_: &ClickEvent, _, cx| {
-                                let _ = save_document_control.update(cx, |control, cx| {
-                                    control.picker_open = false;
-                                    cx.emit(TemplateSplitEvent::OpenChanged(false));
-                                    cx.emit(TemplateSplitEvent::SaveDocumentAsTemplateRequested);
-                                    cx.notify();
-                                });
-                            }),
+                        h_flex()
+                            .items_start()
+                            .gap_3()
+                            .child(
+                                v_flex()
+                                    .id(TEMPLATE_PICKER_LIST_ID)
+                                    .flex_1()
+                                    .min_w_0()
+                                    // Six built-in rows fit; custom templates scroll.
+                                    .max_h(px(356.))
+                                    .overflow_y_scroll()
+                                    .gap_1()
+                                    .children(template_rows),
+                            )
+                            .child(template_preview_card(
+                                &selected.preview,
+                                selected.name.clone(),
+                                TEMPLATE_PICKER_PREVIEW_ID,
+                                true,
+                                240.,
+                                cx,
+                            )),
                     )
                     .child(
                         h_flex()
                             .justify_between()
                             .gap_2()
                             .child(
-                                Button::new(TEMPLATE_MANAGE_ID)
-                                    .debug_selector(|| TEMPLATE_MANAGE_ID.into())
-                                    .accessibility_id(TEMPLATE_MANAGE_ID)
-                                    .label("Manage templates…")
-                                    .on_click(move |_: &ClickEvent, _, cx| {
-                                        let _ = manage_control.update(cx, |control, cx| {
-                                            control.picker_open = false;
-                                            cx.emit(TemplateSplitEvent::OpenChanged(false));
-                                            cx.emit(TemplateSplitEvent::ManageRequested);
-                                            cx.notify();
-                                        });
-                                    }),
+                                h_flex()
+                                    .gap_2()
+                                    .child(
+                                        Button::new(TEMPLATE_MANAGE_ID)
+                                            .debug_selector(|| TEMPLATE_MANAGE_ID.into())
+                                            .accessibility_id(TEMPLATE_MANAGE_ID)
+                                            .outline()
+                                            .icon(IconName::Settings2)
+                                            .label("Manage templates…")
+                                            .on_click(move |_: &ClickEvent, _, cx| {
+                                                let _ = manage_control.update(cx, |control, cx| {
+                                                    control.picker_open = false;
+                                                    cx.emit(TemplateSplitEvent::OpenChanged(false));
+                                                    cx.emit(TemplateSplitEvent::ManageRequested);
+                                                    cx.notify();
+                                                });
+                                            }),
+                                    )
+                                    .child(
+                                        Button::new(TEMPLATE_SAVE_DOCUMENT_ID)
+                                            .debug_selector(|| TEMPLATE_SAVE_DOCUMENT_ID.into())
+                                            .accessibility_id(TEMPLATE_SAVE_DOCUMENT_ID)
+                                            .ghost()
+                                            .label("Save Document as Template…")
+                                            .disabled(creating || !save_document_enabled)
+                                            .on_click(move |_: &ClickEvent, _, cx| {
+                                                let _ = save_document_control.update(cx, |control, cx| {
+                                                    control.picker_open = false;
+                                                    cx.emit(TemplateSplitEvent::OpenChanged(false));
+                                                    cx.emit(
+                                                        TemplateSplitEvent::SaveDocumentAsTemplateRequested,
+                                                    );
+                                                    cx.notify();
+                                                });
+                                            }),
+                                    ),
                             )
                             .child(create),
                     )

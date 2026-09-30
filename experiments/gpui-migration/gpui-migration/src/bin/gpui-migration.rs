@@ -425,7 +425,10 @@ impl ComponentStory {
                 model
                     .records()
                     .iter()
-                    .map(|record| TemplateCatalogItem::new(record.id(), record.name()))
+                    .map(|record| {
+                        TemplateCatalogItem::new(record.id(), record.name())
+                            .with_preview(record.preview())
+                    })
                     .collect(),
                 model.last_used_id().to_owned(),
                 manager.is_storage_busy(),

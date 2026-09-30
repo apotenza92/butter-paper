@@ -161,7 +161,6 @@ use gpui_component::{
     WindowExt as _,
     alert::Alert,
     button::{Button, ButtonGroup, ButtonVariants as _},
-    checkbox::Checkbox,
     dialog::{DialogAction, DialogFooter},
     h_flex,
     input::{
@@ -237,6 +236,10 @@ const DOCUMENT_WORKSPACE_CONTEXT: &str = "DocumentWorkspace";
 const DOCUMENT_TOOL_SHORTCUT_CONTEXT: &str = "DocumentWorkspace && !Input";
 
 pub fn init_document_workspace_actions(cx: &mut App) {
+    // The typed-signature preview uses the same face the rasteriser embeds.
+    let _ = cx.text_system().add_fonts(vec![std::borrow::Cow::Borrowed(
+        include_bytes!("../assets/fonts/Allura-Regular.ttf").as_slice(),
+    )]);
     cx.bind_keys([
         KeyBinding::new("cmd-o", OpenPdf, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new("ctrl-o", OpenPdf, Some(DOCUMENT_WORKSPACE_CONTEXT)),
@@ -511,6 +514,8 @@ pub const DOCUMENT_SNAPSHOT_TOOL_ID: &str = "tool-snapshot";
 pub const DOCUMENT_SNAP_SETTINGS_ID: &str = "viewer-snap-target-menu";
 pub const DOCUMENT_SNAP_POPOVER_ID: &str = "viewer-snap-popover";
 pub const DOCUMENT_SNAP_MARKUP_ID: &str = "viewer-snap-markup";
+pub const DOCUMENT_SNAP_CONTENT_ID: &str = "viewer-snap-content";
+pub const DOCUMENT_SNAP_PAGE_GRID_ID: &str = "viewer-snap-page-grid";
 pub const DOCUMENT_SNAP_CONSTRUCTION_GRID_ID: &str = "viewer-snap-construction-grid";
 pub const DOCUMENT_SNAP_CONSTRUCTION_GRID_VISIBLE_ID: &str =
     "viewer-snap-construction-grid-visible";
@@ -21127,9 +21132,10 @@ fn drawn_signature_canvas(
         .aria_label("Draw signature")
         .flex_none()
         .relative()
-        .h_24()
+        .h(px(SIGNATURE_DRAW_CANVAS_HEIGHT))
         .w_full()
         .overflow_hidden()
+        .rounded_md()
         .border_1()
         .border_color(border_color)
         .bg(background)
@@ -21257,6 +21263,141 @@ fn rail_tool_secondary_click(
         cx.notify();
     }
     event.click_count() > 1
+}
+
+/// Snap settings section with an Electron-style legend.
+fn snap_section(label: &'static str, body: gpui::AnyElement, cx: &App) -> gpui::AnyElement {
+    v_flex()
+        .gap_2()
+        .child(
+            gpui::div()
+                .text_sm()
+                .font_medium()
+                .text_color(cx.theme().foreground)
+                .child(label),
+        )
+        .child(body)
+        .into_any_element()
+}
+
+fn snap_separator(cx: &App) -> gpui::AnyElement {
+    gpui::div().h_px().w_full().bg(cx.theme().border).into_any_element()
+}
+
+fn snap_tile_grid(tiles: Vec<gpui::AnyElement>) -> gpui::AnyElement {
+    gpui::div()
+        .grid()
+        .grid_cols(2)
+        .gap_2()
+        .w_full()
+        .children(tiles)
+        .into_any_element()
+}
+
+/// Outline toggle tile: label (with an optional snap marker glyph) and a
+/// trailing check when selected, matching the Electron snap menu.
+fn snap_tile(
+    id: &'static str,
+    label: &'static str,
+    glyph: Option<&'static str>,
+    selected: bool,
+    disabled: bool,
+    on_toggle: impl Fn(bool, &mut App) + 'static,
+    cx: &App,
+) -> gpui::AnyElement {
+    let theme = cx.theme();
+    let hover = theme.accent.opacity(0.6);
+    h_flex()
+        .id(id)
+        .debug_selector(move || id.into())
+        .role(Role::CheckBox)
+        .aria_label(label)
+        .h_9()
+        .w_full()
+        .min_w_0()
+        .px_2()
+        .gap_1p5()
+        .justify_between()
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.border)
+        .text_sm()
+        .when(selected, |tile| {
+            tile.bg(theme.accent).text_color(theme.accent_foreground)
+        })
+        .when(disabled, |tile| tile.opacity(0.5))
+        .when(!disabled, |tile| {
+            tile.cursor_pointer()
+                .hover(move |style| style.bg(hover))
+                .on_click(move |_, _, cx| on_toggle(!selected, cx))
+        })
+        .child(
+            h_flex()
+                .min_w_0()
+                .gap_1p5()
+                .when_some(glyph, |row, glyph| {
+                    row.child(
+                        gpui_component::Icon::default()
+                            .path(format!("icons/snap/{glyph}.svg"))
+                            .size_3p5()
+                            .text_color(gpui::rgb(0x16a34a)),
+                    )
+                })
+                .child(gpui::div().truncate().child(label)),
+        )
+        .child(
+            gpui::div()
+                .flex_none()
+                .when(!selected, |check| check.opacity(0.))
+                .child(gpui_component::Icon::new(IconName::Check).size_4()),
+        )
+        .into_any_element()
+}
+
+fn snap_switch_row(
+    id: &'static str,
+    label: &'static str,
+    checked: bool,
+    disabled: bool,
+    on_toggle: impl Fn(bool, &mut App) + 'static,
+) -> gpui::AnyElement {
+    h_flex()
+        .justify_between()
+        .gap_3()
+        .text_sm()
+        .child(gpui::div().when(disabled, |label| label.opacity(0.5)).child(label))
+        .child(
+            gpui::div()
+                .debug_selector(move || id.into())
+                .flex_none()
+                .child(
+                    gpui_component::switch::Switch::new(id)
+                        .checked(checked)
+                        .disabled(disabled)
+                        .on_click(move |checked, _, cx| on_toggle(*checked, cx)),
+                ),
+        )
+        .into_any_element()
+}
+
+fn snap_number_row(
+    label: &'static str,
+    id: &'static str,
+    input: impl IntoElement,
+) -> gpui::AnyElement {
+    h_flex()
+        .justify_between()
+        .gap_3()
+        .text_sm()
+        .child(label)
+        .child(
+            gpui::div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .w_24()
+                .child(input),
+        )
+        .into_any_element()
 }
 
 /// Drag marker for the tool rail's edge handle.
@@ -21395,6 +21536,7 @@ fn signature_input_surface(
     border: gpui::Hsla,
     background: gpui::Hsla,
     muted_foreground: gpui::Hsla,
+    cx: &App,
 ) -> gpui::AnyElement {
     match mode {
         SignatureInputMode::Draw => {
@@ -21412,6 +21554,29 @@ fn signature_input_surface(
                             .accessibility_id(DOCUMENT_SIGNATURE_NAME_INPUT_ID)
                             .aria_label("Signature name"),
                     ),
+            )
+            .child(
+                // Electron's typed preview: the name in signature ink on paper.
+                gpui::div()
+                    .id(DOCUMENT_SIGNATURE_TYPED_PREVIEW_ID)
+                    .debug_selector(|| DOCUMENT_SIGNATURE_TYPED_PREVIEW_ID.into())
+                    .h(px(112.))
+                    .w_full()
+                    .px_4()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .overflow_hidden()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(border)
+                    .bg(gpui::rgb(0xffffff))
+                    .font_family("Allura")
+                    .text_size(px(48.))
+                    .line_height(px(64.))
+                    .whitespace_nowrap()
+                    .text_color(gpui::rgb(0x111827))
+                    .child(signature_name_input.read(cx).value()),
             )
             .into_any_element(),
         SignatureInputMode::Image => gpui::div()
@@ -21435,6 +21600,7 @@ fn recent_signature_section(
     storage_issue: Option<String>,
     control: WeakEntity<DocumentWorkspace>,
     muted_foreground: gpui::Hsla,
+    danger: gpui::Hsla,
 ) -> gpui::AnyElement {
     let mut section = v_flex()
         .id(DOCUMENT_SIGNATURE_RECENT_ID)
@@ -21571,12 +21737,17 @@ fn recent_signature_section(
                     .debug_selector(|| DOCUMENT_SIGNATURE_RECENT_STATUS_ID.into())
                     .role(Role::Status)
                     .text_sm()
-                    .text_color(muted_foreground)
+                    .text_color(danger)
                     .child(issue),
             )
         })
         .into_any_element()
 }
+
+/// Electron's 8:3 drawing pad across the 384 px popover's content width.
+const SIGNATURE_DRAW_CANVAS_HEIGHT: f32 = 132.;
+pub const DOCUMENT_SIGNATURE_TYPED_PREVIEW_ID: &str = "document-workspace-signature-typed-preview";
+const SIGNATURE_POPOVER_WIDTH: f32 = 384.;
 
 /// macOS dims window chrome while the window is inactive, as native apps do;
 /// the first click on an inactive window only activates it.
@@ -21609,6 +21780,7 @@ fn annotation_tool_group(
     let signature_canvas_border = cx.theme().border;
     let signature_canvas_background = cx.theme().background;
     let signature_muted_foreground = cx.theme().muted_foreground;
+    let signature_danger = cx.theme().danger;
     let signature_control = Popover::new(DOCUMENT_SIGNATURE_POPOVER_ID)
         .anchor(Anchor::TopRight)
         .open(crate::overlay_state::sync_overlay_open("signature", signature_popover_open, cx))
@@ -21656,7 +21828,7 @@ fn annotation_tool_group(
             let mut content = v_flex()
                 .id("document-workspace-signature-scroll-content")
                 .w_full()
-                .gap_2()
+                .gap_3()
                 .child(
                     h_flex()
                         .justify_between()
@@ -21685,12 +21857,16 @@ fn annotation_tool_group(
                     recent_signature_storage_issue.clone(),
                     signature_content_control.clone(),
                     signature_muted_foreground,
+                    signature_danger,
                 ))
                 .child(
                     ButtonGroup::new("document-workspace-signature-mode")
+                        .w_full()
+                        .outline()
                         .child(
                             Button::new(DOCUMENT_SIGNATURE_MODE_DRAW_ID)
                                 .debug_selector(|| DOCUMENT_SIGNATURE_MODE_DRAW_ID.into())
+                                .flex_1()
                                 .label("Draw")
                                 .selected(signature_input_mode == SignatureInputMode::Draw)
                                 .on_click(move |_, _, cx| {
@@ -21706,6 +21882,7 @@ fn annotation_tool_group(
                         .child(
                             Button::new(DOCUMENT_SIGNATURE_MODE_TYPE_ID)
                                 .debug_selector(|| DOCUMENT_SIGNATURE_MODE_TYPE_ID.into())
+                                .flex_1()
                                 .label("Type")
                                 .selected(signature_input_mode == SignatureInputMode::Type)
                                 .on_click(move |_, _, cx| {
@@ -21722,6 +21899,7 @@ fn annotation_tool_group(
                         .child(
                             Button::new(DOCUMENT_SIGNATURE_MODE_IMAGE_ID)
                                 .debug_selector(|| DOCUMENT_SIGNATURE_MODE_IMAGE_ID.into())
+                                .flex_1()
                                 .label("Image")
                                 .selected(signature_input_mode == SignatureInputMode::Image)
                                 .on_click(move |_, _, cx| {
@@ -21753,6 +21931,7 @@ fn annotation_tool_group(
                     signature_canvas_border,
                     signature_canvas_background,
                     signature_muted_foreground,
+                    cx,
                 )),
                 SignaturePrepareState::Loading => content.child(
                     h_flex()
@@ -21773,6 +21952,7 @@ fn annotation_tool_group(
                         signature_canvas_border,
                         signature_canvas_background,
                         signature_muted_foreground,
+                        cx,
                     ))
                     .child(
                         gpui::div()
@@ -21814,14 +21994,25 @@ fn annotation_tool_group(
             };
             let phone_pairing =
                 matches!(signature_prepare_state, SignaturePrepareState::PhoneQr(_));
-            let content = content
+            let show_camera = !phone_pairing
+                && signature_input_mode == SignatureInputMode::Image
+                && camera_available;
+            let show_phone = !phone_pairing
+                && signature_input_mode != SignatureInputMode::Type
+                && crate::local_phone_signature::helper_path().is_some();
+            let show_choose = !phone_pairing && signature_input_mode == SignatureInputMode::Image;
+            let sources = h_flex()
+                .w_full()
+                .gap_2()
                 .when(
                     !phone_pairing
                         && signature_input_mode == SignatureInputMode::Image
                         && camera_available,
-                    |content| {
-                        content.child(
+                    |sources| {
+                        sources.child(
                             Button::new("signature-camera")
+                                .outline()
+                                .flex_1()
                                 .label("Use camera")
                                 .disabled(loading)
                                 .on_click(move |_, _, cx| {
@@ -21836,9 +22027,11 @@ fn annotation_tool_group(
                     !phone_pairing
                         && signature_input_mode != SignatureInputMode::Type
                         && crate::local_phone_signature::helper_path().is_some(),
-                    |content| {
-                        content.child(
+                    |sources| {
+                        sources.child(
                             Button::new("signature-phone")
+                                .outline()
+                                .flex_1()
                                 .label("Use phone")
                                 .disabled(loading)
                                 .on_click(move |_, _, cx| {
@@ -21860,9 +22053,11 @@ fn annotation_tool_group(
                 )
                 .when(
                     !phone_pairing && signature_input_mode == SignatureInputMode::Image,
-                    |content| {
-                        content.child(
+                    |sources| {
+                        sources.child(
                             Button::new(DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID)
+                                .outline()
+                                .flex_1()
                                 .debug_selector(|| DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID.into())
                                 .label("Choose file")
                                 .disabled(loading)
@@ -21873,14 +22068,19 @@ fn annotation_tool_group(
                                 }),
                         )
                     },
-                )
+                );
+            let content = content
+                .when(show_camera || show_phone || show_choose, |content| content.child(sources))
                 .when(!phone_pairing, |content| {
                     content.child(
                         h_flex()
+                            .w_full()
                             .gap_2()
                             .child(
                                 Button::new(DOCUMENT_SIGNATURE_CLEAR_ID)
                                     .debug_selector(|| DOCUMENT_SIGNATURE_CLEAR_ID.into())
+                                    .outline()
+                                    .flex_1()
                                     .label("Clear")
                                     .disabled(loading || !has_signature)
                                     .on_click(move |_, window, cx| {
@@ -21897,6 +22097,7 @@ fn annotation_tool_group(
                                     .debug_selector(|| DOCUMENT_SIGNATURE_ADD_ID.into())
                                     .label("Add signature")
                                     .primary()
+                                    .flex_1()
                                     .disabled(loading || !has_signature)
                                     .on_click(move |_, window, cx| {
                                         let _ = add_control.update(cx, |workspace, cx| {
@@ -21928,7 +22129,7 @@ fn annotation_tool_group(
             v_flex()
                 .id("document-workspace-signature-content")
                 .debug_selector(|| "document-workspace-signature-content".into())
-                .w_72()
+                .w(px(SIGNATURE_POPOVER_WIDTH).min(window.viewport_size().width - px(16.)))
                 .max_h(window.viewport_size().height - window.rem_size() * 4.)
                 .child(
                     v_flex()
@@ -24017,18 +24218,6 @@ impl Render for DocumentWorkspace {
         let semantic_settings = self.semantic_snap_settings;
         let snap_open_control = cx.entity().downgrade();
         let snap_markup_control = cx.entity().downgrade();
-        let snap_grid_control = cx.entity().downgrade();
-        let snap_grid_visible_control = cx.entity().downgrade();
-        let snap_dimension_control = cx.entity().downgrade();
-        let snap_guides_control = cx.entity().downgrade();
-        let snap_alignment_guide_control = cx.entity().downgrade();
-        let snap_equal_size_guide_control = cx.entity().downgrade();
-        let snap_equal_spacing_guide_control = cx.entity().downgrade();
-        let snap_endpoint_control = cx.entity().downgrade();
-        let snap_midpoint_control = cx.entity().downgrade();
-        let snap_center_control = cx.entity().downgrade();
-        let snap_intersection_control = cx.entity().downgrade();
-        let snap_nearest_control = cx.entity().downgrade();
         let semantic_snap_control = Popover::new("document-workspace-snap-settings-owner")
             .anchor(Anchor::TopRight)
             .open(crate::overlay_state::sync_overlay_open("snap-settings", self.semantic_snap_settings_open, cx))
@@ -24044,302 +24233,143 @@ impl Render for DocumentWorkspace {
                     .tooltip("Snap settings")
                     .disabled(save_busy),
             )
-            .content(move |_, window, _| {
-                let snap_markup_control = snap_markup_control.clone();
-                let snap_grid_control = snap_grid_control.clone();
-                let snap_grid_visible_control = snap_grid_visible_control.clone();
-                let snap_dimension_control = snap_dimension_control.clone();
-                let snap_guides_control = snap_guides_control.clone();
-                let snap_alignment_guide_control = snap_alignment_guide_control.clone();
-                let snap_equal_size_guide_control = snap_equal_size_guide_control.clone();
-                let snap_equal_spacing_guide_control = snap_equal_spacing_guide_control.clone();
-                let snap_endpoint_control = snap_endpoint_control.clone();
-                let snap_midpoint_control = snap_midpoint_control.clone();
-                let snap_center_control = snap_center_control.clone();
-                let snap_intersection_control = snap_intersection_control.clone();
-                let snap_nearest_control = snap_nearest_control.clone();
+            .content(move |_, window, cx| {
+                let control = snap_markup_control.clone();
+                let settings = semantic_settings;
+                let grid_enabled = settings.is_source_enabled(SemanticSnapSource::ConstructionGrid);
+                let content_enabled = settings.is_source_enabled(SemanticSnapSource::Content);
+                let page_grid_enabled = settings.is_source_enabled(SemanticSnapSource::PageGrid);
+                let targets_enabled =
+                    settings.annotations_enabled() || content_enabled || page_grid_enabled;
+                let source = |source: SemanticSnapSource| {
+                    let control = control.clone();
+                    move |on: bool, cx: &mut App| {
+                        let _ = control.update(cx, |workspace, cx| {
+                            workspace.set_semantic_snap_source(source, on, cx);
+                        });
+                    }
+                };
+                let target = |target: SemanticSnapTarget| {
+                    let control = control.clone();
+                    move |on: bool, cx: &mut App| {
+                        let _ = control.update(cx, |workspace, cx| {
+                            workspace.set_semantic_snap_target(target, on, cx);
+                        });
+                    }
+                };
+                let guide = |guide: SemanticSnapGuideType| {
+                    let control = control.clone();
+                    move |on: bool, cx: &mut App| {
+                        let _ = control.update(cx, |workspace, cx| {
+                            workspace.set_semantic_snap_guide(guide, on, cx);
+                        });
+                    }
+                };
+                let markup = {
+                    let control = control.clone();
+                    move |on: bool, cx: &mut App| {
+                        let _ = control.update(cx, |workspace, cx| {
+                            workspace.set_semantic_snap_annotations_enabled(on, cx);
+                        });
+                    }
+                };
+                let grid_visible = {
+                    let control = control.clone();
+                    move |on: bool, cx: &mut App| {
+                        let _ = control.update(cx, |workspace, cx| {
+                            workspace.set_semantic_snap_grid_visible(on, cx);
+                        });
+                    }
+                };
+                let dimension = {
+                    let control = control.clone();
+                    move |on: bool, cx: &mut App| {
+                        let _ = control.update(cx, |workspace, cx| {
+                            workspace.set_semantic_snap_dimension_increment_enabled(on, cx);
+                        });
+                    }
+                };
+                let guides = {
+                    let control = control.clone();
+                    move |on: bool, cx: &mut App| {
+                        let _ = control.update(cx, |workspace, cx| {
+                            workspace.set_semantic_snap_guides_enabled(on, cx);
+                        });
+                    }
+                };
                 v_flex()
                     .id(DOCUMENT_SNAP_POPOVER_ID)
                     .debug_selector(|| DOCUMENT_SNAP_POPOVER_ID.into())
-                    .w_72()
+                    .w_80()
                     .max_h(window.viewport_size().height - px(32.))
                     .overflow_y_scroll()
-                    .gap_2()
-                    .child(gpui::div().text_sm().font_semibold().child("Snap to"))
-                    .child(
-                        Checkbox::new(DOCUMENT_SNAP_MARKUP_ID)
-                            .debug_selector(|| DOCUMENT_SNAP_MARKUP_ID.into())
-                            .label("Markup")
-                            .checked(semantic_settings.annotations_enabled())
-                            .on_click(move |checked, _, cx| {
-                                let _ = snap_markup_control.update(cx, |workspace, cx| {
-                                    workspace.set_semantic_snap_annotations_enabled(*checked, cx);
-                                });
-                            }),
-                    )
-                    .child(
-                        gpui::div()
-                            .text_sm()
-                            .font_semibold()
-                            .child("Construction grid"),
-                    )
-                    .child(
-                        Checkbox::new(DOCUMENT_SNAP_CONSTRUCTION_GRID_ID)
-                            .debug_selector(|| DOCUMENT_SNAP_CONSTRUCTION_GRID_ID.into())
-                            .label("Snap to grid")
-                            .checked(
-                                semantic_settings
-                                    .is_source_enabled(SemanticSnapSource::ConstructionGrid),
-                            )
-                            .on_click(move |checked, _, cx| {
-                                let _ = snap_grid_control.update(cx, |workspace, cx| {
-                                    workspace.set_semantic_snap_source(
-                                        SemanticSnapSource::ConstructionGrid,
-                                        *checked,
-                                        cx,
-                                    );
-                                });
-                            }),
-                    )
-                    .child(
-                        Checkbox::new(DOCUMENT_SNAP_CONSTRUCTION_GRID_VISIBLE_ID)
-                            .debug_selector(|| DOCUMENT_SNAP_CONSTRUCTION_GRID_VISIBLE_ID.into())
-                            .label("Show grid")
-                            .checked(semantic_settings.construction_grid_visible())
-                            .disabled(
-                                !semantic_settings
-                                    .is_source_enabled(SemanticSnapSource::ConstructionGrid),
-                            )
-                            .on_click(move |checked, _, cx| {
-                                let _ = snap_grid_visible_control.update(cx, |workspace, cx| {
-                                    workspace.set_semantic_snap_grid_visible(*checked, cx);
-                                });
-                            }),
-                    )
-                    .child(
-                        h_flex()
-                            .justify_between()
-                            .gap_3()
-                            .child(gpui::div().text_sm().child("Spacing (mm)"))
-                            .child(
-                                gpui::div()
-                                    .id(DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID)
-                                    .debug_selector(|| {
-                                        DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID.into()
-                                    })
-                                    .w_24()
-                                    .child(
-                                        NumberInput::new(&snap_grid_spacing_input)
-                                            .small()
-                                            .disabled(!semantic_settings.is_source_enabled(
-                                                SemanticSnapSource::ConstructionGrid,
-                                            )),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        gpui::div()
-                            .text_sm()
-                            .font_semibold()
-                            .child("Dimension increments"),
-                    )
-                    .child(
-                        Checkbox::new(DOCUMENT_SNAP_DIMENSION_INCREMENT_ID)
-                            .debug_selector(|| DOCUMENT_SNAP_DIMENSION_INCREMENT_ID.into())
-                            .label("Snap dimensions")
-                            .checked(semantic_settings.dimension_increment_enabled())
-                            .on_click(move |checked, _, cx| {
-                                let _ = snap_dimension_control.update(cx, |workspace, cx| {
-                                    workspace.set_semantic_snap_dimension_increment_enabled(
-                                        *checked, cx,
-                                    );
-                                });
-                            }),
-                    )
-                    .child(
-                        h_flex()
-                            .justify_between()
-                            .gap_3()
-                            .child(gpui::div().text_sm().child("Increment (mm)"))
-                            .child(
-                                gpui::div()
-                                    .id(DOCUMENT_SNAP_DIMENSION_INCREMENT_VALUE_ID)
-                                    .debug_selector(|| {
-                                        DOCUMENT_SNAP_DIMENSION_INCREMENT_VALUE_ID.into()
-                                    })
-                                    .w_24()
-                                    .child(
-                                        NumberInput::new(&snap_dimension_increment_input)
-                                            .small()
-                                            .disabled(
-                                                !semantic_settings.dimension_increment_enabled(),
-                                            ),
-                                    ),
-                            ),
-                    )
-                    .child(gpui::div().text_sm().font_semibold().child("Snap points"))
-                    .child(
-                        Checkbox::new(DOCUMENT_SNAP_ENDPOINT_ID)
-                            .debug_selector(|| DOCUMENT_SNAP_ENDPOINT_ID.into())
-                            .label("Ends")
-                            .checked(
-                                semantic_settings.is_target_selected(SemanticSnapTarget::Endpoint),
-                            )
-                            .disabled(!semantic_settings.annotations_enabled())
-                            .on_click(move |checked, _, cx| {
-                                let _ = snap_endpoint_control.update(cx, |workspace, cx| {
-                                    workspace.set_semantic_snap_target(
-                                        SemanticSnapTarget::Endpoint,
-                                        *checked,
-                                        cx,
-                                    );
-                                });
-                            }),
-                    )
-                    .child(
-                        Checkbox::new(DOCUMENT_SNAP_MIDPOINT_ID)
-                            .debug_selector(|| DOCUMENT_SNAP_MIDPOINT_ID.into())
-                            .label("Midpoints")
-                            .checked(
-                                semantic_settings.is_target_selected(SemanticSnapTarget::Midpoint),
-                            )
-                            .disabled(!semantic_settings.annotations_enabled())
-                            .on_click(move |checked, _, cx| {
-                                let _ = snap_midpoint_control.update(cx, |workspace, cx| {
-                                    workspace.set_semantic_snap_target(
-                                        SemanticSnapTarget::Midpoint,
-                                        *checked,
-                                        cx,
-                                    );
-                                });
-                            }),
-                    )
-                    .child(
-                        Checkbox::new(DOCUMENT_SNAP_CENTER_ID)
-                            .debug_selector(|| DOCUMENT_SNAP_CENTER_ID.into())
-                            .label("Centers")
-                            .checked(
-                                semantic_settings.is_target_selected(SemanticSnapTarget::Center),
-                            )
-                            .disabled(!semantic_settings.annotations_enabled())
-                            .on_click(move |checked, _, cx| {
-                                let _ = snap_center_control.update(cx, |workspace, cx| {
-                                    workspace.set_semantic_snap_target(
-                                        SemanticSnapTarget::Center,
-                                        *checked,
-                                        cx,
-                                    );
-                                });
-                            }),
-                    )
-                    .child(
-                        Checkbox::new(DOCUMENT_SNAP_INTERSECTION_ID)
-                            .debug_selector(|| DOCUMENT_SNAP_INTERSECTION_ID.into())
-                            .label("Intersections")
-                            .checked(
-                                semantic_settings
-                                    .is_target_selected(SemanticSnapTarget::Intersection),
-                            )
-                            .disabled(!semantic_settings.annotations_enabled())
-                            .on_click(move |checked, _, cx| {
-                                let _ = snap_intersection_control.update(cx, |workspace, cx| {
-                                    workspace.set_semantic_snap_target(
-                                        SemanticSnapTarget::Intersection,
-                                        *checked,
-                                        cx,
-                                    );
-                                });
-                            }),
-                    )
-                    .child(
-                        Checkbox::new(DOCUMENT_SNAP_NEAREST_ID)
-                            .debug_selector(|| DOCUMENT_SNAP_NEAREST_ID.into())
-                            .label("Nearest")
-                            .checked(
-                                semantic_settings.is_target_selected(SemanticSnapTarget::Nearest),
-                            )
-                            .disabled(!semantic_settings.annotations_enabled())
-                            .on_click(move |checked, _, cx| {
-                                let _ = snap_nearest_control.update(cx, |workspace, cx| {
-                                    workspace.set_semantic_snap_target(
-                                        SemanticSnapTarget::Nearest,
-                                        *checked,
-                                        cx,
-                                    );
-                                });
-                            }),
-                    )
-                    .child(gpui::div().text_sm().font_semibold().child("Snap guides"))
-                    .child(
-                        Checkbox::new(DOCUMENT_SNAP_GUIDES_ID)
-                            .debug_selector(|| DOCUMENT_SNAP_GUIDES_ID.into())
-                            .label("Show snap guides")
-                            .checked(semantic_settings.guides_enabled())
-                            .on_click(move |checked, _, cx| {
-                                let _ = snap_guides_control.update(cx, |workspace, cx| {
-                                    workspace.set_semantic_snap_guides_enabled(*checked, cx);
-                                });
-                            }),
-                    )
-                    .child(
-                        Checkbox::new(DOCUMENT_SNAP_GUIDE_ALIGNMENT_ID)
-                            .debug_selector(|| DOCUMENT_SNAP_GUIDE_ALIGNMENT_ID.into())
-                            .label("Alignment")
-                            .checked(
-                                semantic_settings
-                                    .is_guide_enabled(SemanticSnapGuideType::Alignment),
-                            )
-                            .disabled(!semantic_settings.guides_enabled())
-                            .on_click(move |checked, _, cx| {
-                                let _ = snap_alignment_guide_control.update(cx, |workspace, cx| {
-                                    workspace.set_semantic_snap_guide(
-                                        SemanticSnapGuideType::Alignment,
-                                        *checked,
-                                        cx,
-                                    );
-                                });
-                            }),
-                    )
-                    .child(
-                        Checkbox::new(DOCUMENT_SNAP_GUIDE_EQUAL_SIZE_ID)
-                            .debug_selector(|| DOCUMENT_SNAP_GUIDE_EQUAL_SIZE_ID.into())
-                            .label("Equal size")
-                            .checked(
-                                semantic_settings
-                                    .is_guide_enabled(SemanticSnapGuideType::EqualSize),
-                            )
-                            .disabled(!semantic_settings.guides_enabled())
-                            .on_click(move |checked, _, cx| {
-                                let _ =
-                                    snap_equal_size_guide_control.update(cx, |workspace, cx| {
-                                        workspace.set_semantic_snap_guide(
-                                            SemanticSnapGuideType::EqualSize,
-                                            *checked,
-                                            cx,
-                                        );
-                                    });
-                            }),
-                    )
-                    .child(
-                        Checkbox::new(DOCUMENT_SNAP_GUIDE_EQUAL_SPACING_ID)
-                            .debug_selector(|| DOCUMENT_SNAP_GUIDE_EQUAL_SPACING_ID.into())
-                            .label("Equal spacing")
-                            .checked(
-                                semantic_settings
-                                    .is_guide_enabled(SemanticSnapGuideType::EqualSpacing),
-                            )
-                            .disabled(!semantic_settings.guides_enabled())
-                            .on_click(move |checked, _, cx| {
-                                let _ =
-                                    snap_equal_spacing_guide_control.update(cx, |workspace, cx| {
-                                        workspace.set_semantic_snap_guide(
-                                            SemanticSnapGuideType::EqualSpacing,
-                                            *checked,
-                                            cx,
-                                        );
-                                    });
-                            }),
-                    )
+                    .gap_3()
+                    .child(snap_section(
+                        "Snap to",
+                        snap_tile_grid(vec![
+                            snap_tile(DOCUMENT_SNAP_CONTENT_ID, "Content", None, content_enabled, false, source(SemanticSnapSource::Content), cx),
+                            snap_tile(DOCUMENT_SNAP_MARKUP_ID, "Markup", None, settings.annotations_enabled(), false, markup, cx),
+                            snap_tile(DOCUMENT_SNAP_PAGE_GRID_ID, "Page grid", None, page_grid_enabled, false, source(SemanticSnapSource::PageGrid), cx),
+                        ]),
+                        cx,
+                    ))
+                    .child(snap_separator(cx))
+                    .child(snap_section(
+                        "Construction grid",
+                        v_flex()
+                            .gap_2()
+                            .child(snap_switch_row(DOCUMENT_SNAP_CONSTRUCTION_GRID_ID, "Snap to grid", grid_enabled, false, source(SemanticSnapSource::ConstructionGrid)))
+                            .child(snap_switch_row(DOCUMENT_SNAP_CONSTRUCTION_GRID_VISIBLE_ID, "Show grid", settings.construction_grid_visible(), !grid_enabled, grid_visible))
+                            .child(snap_number_row(
+                                "Spacing (mm)",
+                                DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID,
+                                NumberInput::new(&snap_grid_spacing_input).small().disabled(!grid_enabled),
+                            ))
+                            .into_any_element(),
+                        cx,
+                    ))
+                    .child(snap_separator(cx))
+                    .child(snap_section(
+                        "Dimension increments",
+                        v_flex()
+                            .gap_2()
+                            .child(snap_switch_row(DOCUMENT_SNAP_DIMENSION_INCREMENT_ID, "Snap dimensions", settings.dimension_increment_enabled(), false, dimension))
+                            .child(snap_number_row(
+                                "Increment (mm)",
+                                DOCUMENT_SNAP_DIMENSION_INCREMENT_VALUE_ID,
+                                NumberInput::new(&snap_dimension_increment_input)
+                                    .small()
+                                    .disabled(!settings.dimension_increment_enabled()),
+                            ))
+                            .into_any_element(),
+                        cx,
+                    ))
+                    .child(snap_separator(cx))
+                    .child(snap_section(
+                        "Snap points",
+                        snap_tile_grid(vec![
+                            snap_tile(DOCUMENT_SNAP_ENDPOINT_ID, "Ends", Some("square"), settings.is_target_selected(SemanticSnapTarget::Endpoint), !targets_enabled, target(SemanticSnapTarget::Endpoint), cx),
+                            snap_tile(DOCUMENT_SNAP_MIDPOINT_ID, "Midpoints", Some("triangle"), settings.is_target_selected(SemanticSnapTarget::Midpoint), !targets_enabled, target(SemanticSnapTarget::Midpoint), cx),
+                            snap_tile(DOCUMENT_SNAP_CENTER_ID, "Centres", Some("circle"), settings.is_target_selected(SemanticSnapTarget::Center), !targets_enabled, target(SemanticSnapTarget::Center), cx),
+                            snap_tile(DOCUMENT_SNAP_INTERSECTION_ID, "Intersections", Some("x"), settings.is_target_selected(SemanticSnapTarget::Intersection), !targets_enabled, target(SemanticSnapTarget::Intersection), cx),
+                            snap_tile(DOCUMENT_SNAP_NEAREST_ID, "Nearest", Some("diamond"), settings.is_target_selected(SemanticSnapTarget::Nearest), !targets_enabled, target(SemanticSnapTarget::Nearest), cx),
+                        ]),
+                        cx,
+                    ))
+                    .child(snap_separator(cx))
+                    .child(snap_section(
+                        "Snap guides",
+                        v_flex()
+                            .gap_2()
+                            .child(snap_switch_row(DOCUMENT_SNAP_GUIDES_ID, "Show snap guides", settings.guides_enabled(), false, guides))
+                            .child(snap_tile_grid(vec![
+                                snap_tile(DOCUMENT_SNAP_GUIDE_ALIGNMENT_ID, "Alignment", None, settings.is_guide_enabled(SemanticSnapGuideType::Alignment), !settings.guides_enabled(), guide(SemanticSnapGuideType::Alignment), cx),
+                                snap_tile(DOCUMENT_SNAP_GUIDE_EQUAL_SIZE_ID, "Equal size", None, settings.is_guide_enabled(SemanticSnapGuideType::EqualSize), !settings.guides_enabled(), guide(SemanticSnapGuideType::EqualSize), cx),
+                                snap_tile(DOCUMENT_SNAP_GUIDE_EQUAL_SPACING_ID, "Equal spacing", None, settings.is_guide_enabled(SemanticSnapGuideType::EqualSpacing), !settings.guides_enabled(), guide(SemanticSnapGuideType::EqualSpacing), cx),
+                            ]))
+                            .into_any_element(),
+                        cx,
+                    ))
             });
         let tool_group = annotation_tool_group(
             document_id,

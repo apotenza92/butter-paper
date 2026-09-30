@@ -10,7 +10,7 @@ use crate::generated_document::{
 };
 use crate::template_library::{TemplateLibrary, TemplateRecord, built_in_request};
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, PathPromptOptions, Render, ScrollHandle, StatefulInteractiveElement as _,
     Styled as _, Subscription, Task, WeakEntity, Window, div, prelude::FluentBuilder as _, px, rgb,
     svg,
@@ -168,15 +168,28 @@ impl ListDelegate for TemplateListDelegate {
                 .debug_selector(move || stable_id.clone().into())
                 .selected(selected)
                 .group(group_id.clone())
+                .rounded_md()
+                .when(selected, |row| {
+                    row.bg(cx.theme().muted).border_color(gpui::transparent_black())
+                })
                 .child(
                     v_flex()
                         .min_w_0()
-                        .child(div().font_semibold().child(record.name().to_owned()))
+                        .gap_0p5()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .child(record.name().to_owned()),
+                        )
                         .child(
                             div()
                                 .text_sm()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(record.summary()),
+                                .child({
+                                    let preview = record.preview();
+                                    format!("{} · {}", preview.summary(), preview.grid_summary())
+                                }),
                         ),
                 )
                 .when(removable, |row| {
@@ -303,6 +316,17 @@ impl TemplateManagerRecord {
             Self::BuiltIn { name, .. }
             | Self::Generated { name, .. }
             | Self::ImportedPdf { name, .. } => name,
+        }
+    }
+
+    pub fn preview(&self) -> crate::template_preview::TemplatePreview {
+        use crate::template_preview::TemplatePreview;
+        match self {
+            Self::BuiltIn { id, .. } => TemplatePreview::for_built_in(id),
+            Self::Generated { request, .. } => TemplatePreview::Generated(request.clone()),
+            Self::ImportedPdf { page_count, .. } => TemplatePreview::ImportedPdf {
+                page_count: *page_count,
+            },
         }
     }
 
@@ -895,40 +919,7 @@ fn pattern_with_style(
 }
 
 pub fn draft_preview_svg(request: &GeneratedDocumentRequest) -> String {
-    use crate::generated_document::GeneratedPattern;
-    let Some(pattern) = request.pattern.as_ref() else {
-        return "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\" data-pattern=\"blank\"/>".into();
-    };
-    let (kind, spacing_mm, color) = match pattern {
-        GeneratedPattern::Dots { spacing_mm, color } => ("dots", *spacing_mm, color),
-        GeneratedPattern::SquareGrid { spacing_mm, color } => ("grid", *spacing_mm, color),
-        GeneratedPattern::Ruled { spacing_mm, color } => ("lined", *spacing_mm, color),
-        GeneratedPattern::Isometric { spacing_mm, color } => ("isometric", *spacing_mm, color),
-        GeneratedPattern::Triangle { spacing_mm, color } => ("triangle", *spacing_mm, color),
-    };
-    let step = (spacing_mm / request.width_mm.min(request.height_mm) * 100.).clamp(4., 40.);
-    let mut marks = String::new();
-    let mut position = step;
-    while position < 100. {
-        match kind {
-            "dots" => {
-                let mut x = step;
-                while x < 100. {
-                    marks.push_str(&format!("<circle cx=\"{x:.2}\" cy=\"{position:.2}\" r=\"0.7\"/>"));
-                    x += step;
-                }
-            }
-            "lined" => marks.push_str(&format!("<path d=\"M0 {position:.2}H100\"/>")),
-            "grid" => marks.push_str(&format!("<path d=\"M0 {position:.2}H100 M{position:.2} 0V100\"/>")),
-            "isometric" => marks.push_str(&format!("<path d=\"M0 {position:.2}L100 {:.2} M0 {position:.2}L100 {:.2}\"/>", position + 57.74, position - 57.74)),
-            "triangle" => marks.push_str(&format!("<path d=\"M0 {position:.2}H100 M0 {position:.2}L100 {:.2} M0 {position:.2}L100 {:.2}\"/>", position + 57.74, position - 57.74)),
-            _ => {}
-        }
-        position += step;
-    }
-    format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\" preserveAspectRatio=\"none\" data-pattern=\"{kind}\" data-spacing-mm=\"{spacing_mm}\"><g fill=\"{color}\" stroke=\"{color}\" stroke-width=\"0.55\">{marks}</g></svg>"
-    )
+    crate::template_preview::template_preview_svg(request)
 }
 
 /// Sole durable template-library authority for the native manager seam.
@@ -1896,52 +1887,19 @@ impl Render for TemplateManagerView {
                     ),
                 );
 
-        let browse_preview: AnyElement = match &selected {
-            TemplateManagerRecord::BuiltIn { id, .. } => {
-                let request = built_in_request(id)
-                    .unwrap_or_else(GeneratedDocumentRequest::a3_landscape_blank);
-                let data = draft_preview_svg(&request);
-                div()
-                    .id(TEMPLATE_MANAGER_BROWSE_PAGE_ID)
-                    .debug_selector(|| TEMPLATE_MANAGER_BROWSE_PAGE_ID.into())
-                    .w(px(160.))
-                    .h(px((160. * request.height_mm / request.width_mm) as f32))
-                    .overflow_hidden()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(rgb(0xffffff))
-                    .child(svg().data(data.as_bytes()).size_full())
-                    .into_any_element()
-            }
-            TemplateManagerRecord::Generated { request, .. } => {
-                let data = draft_preview_svg(request);
-                div()
-                    .id(TEMPLATE_MANAGER_BROWSE_PAGE_ID)
-                    .debug_selector(|| TEMPLATE_MANAGER_BROWSE_PAGE_ID.into())
-                    .w(px(160.))
-                    .h(px((160. * request.height_mm / request.width_mm) as f32))
-                    .overflow_hidden()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(rgb(0xffffff))
-                    .child(svg().data(data.as_bytes()).size_full())
-                    .into_any_element()
-            }
-            TemplateManagerRecord::ImportedPdf { .. } => div()
-                .id(TEMPLATE_MANAGER_IMPORTED_PREVIEW_ID)
-                .debug_selector(|| TEMPLATE_MANAGER_IMPORTED_PREVIEW_ID.into())
-                .w(px(120.))
-                .h(px(160.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .border_1()
-                .border_color(cx.theme().border)
-                .bg(rgb(0xffffff))
-                .font_semibold()
-                .child("PDF")
-                .into_any_element(),
+        let browse_page_id = if matches!(selected, TemplateManagerRecord::ImportedPdf { .. }) {
+            TEMPLATE_MANAGER_IMPORTED_PREVIEW_ID
+        } else {
+            TEMPLATE_MANAGER_BROWSE_PAGE_ID
         };
+        let browse_preview = crate::template_preview::template_preview_card(
+            &selected.preview(),
+            selected.name().to_owned(),
+            browse_page_id,
+            false,
+            280.,
+            cx,
+        );
 
         let body = match self.model.mode {
             TemplateManagerMode::Browse => {
@@ -1955,20 +1913,8 @@ impl Render for TemplateManagerView {
                 let preview = v_flex()
                     .id(TEMPLATE_MANAGER_PREVIEW_ID)
                     .debug_selector(|| TEMPLATE_MANAGER_PREVIEW_ID.into())
-                    .when(!constrained, |preview| preview.w(px(280.)).flex_none())
-                    .when(constrained, |preview| preview.w_full())
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .p_4()
-                    .child(div().font_semibold().child(selected.name().to_owned()))
-                    .child(browse_preview)
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(selected.summary()),
-                    );
+                    .flex_none()
+                    .child(browse_preview);
                 let library_content = if constrained {
                     v_flex()
                         .min_h_0()
