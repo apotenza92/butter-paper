@@ -1,22 +1,21 @@
-version: 0.0.27
+version: 0.0.29
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.27/Butter-Paper-macOS-x64.zip
-    sha512: jfQPsmT2IOiwtOqS4VbPgdyQz9l9t8NXBA8oD4V3sMywqL0+nDX3Xnydqp8Ix31ZucmiRRcolL7P2w6LZw/fZg==
-    size: 151555099
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.27/Butter-Paper-macOS-x64.dmg
-    sha512: BGcJOPBW10fgtAgD0X+dkY+c2MkQTs+UI0yCem5jZ55uzfswsYv1YNm47XG44prHbMRZlGxLEAPrdF4Ww1ktMA==
-    size: 156613015
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.27/Butter-Paper-macOS-x64.zip
-sha512: jfQPsmT2IOiwtOqS4VbPgdyQz9l9t8NXBA8oD4V3sMywqL0+nDX3Xnydqp8Ix31ZucmiRRcolL7P2w6LZw/fZg==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.29/Butter-Paper-macOS-x64.zip
+    sha512: 5znbWQO7USkQnEhLFBeU1OEs5eX1/Cd2xS43l6Zwamr54tDroUIlvdKfnMDctAgcv/l9J7mvzEpGn4ij+x6t4g==
+    size: 151555351
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.29/Butter-Paper-macOS-x64.dmg
+    sha512: bBjYaMFWze2lfceG2frnXofxXA0sYpJRObmsgztsXH4VdSLBQI4greaO/D2nq/EGw6bx55wh2OwJe47SqYNZsA==
+    size: 156617008
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.29/Butter-Paper-macOS-x64.zip
+sha512: 5znbWQO7USkQnEhLFBeU1OEs5eX1/Cd2xS43l6Zwamr54tDroUIlvdKfnMDctAgcv/l9J7mvzEpGn4ij+x6t4g==
 releaseNotes: |-
   ### Move to the native app
 
-  - Moves existing Butter Paper and Butter Paper Beta installs to the native
-    Butter Paper 0.0.26 app. On first launch, Butter Paper asks to update, then
-    downloads the verified native package for your computer, installs it,
-    removes the old Butter Paper apps and opens the new one. Your PDFs are not
-    changed.
+  - Fixes the move to the native Butter Paper 0.0.26 app, which did not start in
+    0.0.27. On first launch, Butter Paper asks to update, then downloads the
+    verified native package for your computer, installs it, removes the old
+    Butter Paper apps and opens the new one. Your PDFs are not changed.
   - macOS 12 stays on this version, because the native app requires macOS 13 or
     later.
-releaseDate: 2026-09-30T09:19:14.126Z
+releaseDate: 2026-09-30T10:02:26.035Z
 butterPaperChannel: stable
