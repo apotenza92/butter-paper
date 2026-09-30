@@ -11,6 +11,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
   rm,
   writeFile,
@@ -1183,6 +1184,46 @@ public static class BpSaveAs {
 // Windows publication always requires a new target, so Save opens the native
 // Save As dialog, which is completed with a new path. Ctrl+S is the ordinary
 // route; the visible document-actions Save control is the fallback.
+async function collectSaveDiagnostics(runDir, recoveryStoreRoot, documentId) {
+  const diagnostics = { pdfs: [], head: null };
+  const walk = async (directory, depth) => {
+    if (depth > 8 || diagnostics.pdfs.length > 50) return;
+    let entries = [];
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) await walk(path, depth + 1);
+      else if (/\.pdf$/i.test(entry.name)) {
+        const info = await lstat(path).catch(() => null);
+        diagnostics.pdfs.push({ path, bytes: info?.size ?? null });
+      }
+    }
+  };
+  await walk(runDir, 0);
+  try {
+    diagnostics.head = JSON.parse(
+      await readFile(join(recoveryStoreRoot, "heads", `${documentId}.json`), "utf8"),
+    );
+  } catch (error) {
+    diagnostics.head = { error: error.message };
+  }
+  const directory = process.env.BP_SMOKE_SCREENSHOT_DIR;
+  if (directory && process.platform === "win32") {
+    try {
+      powershell(
+        `Add-Type -AssemblyName System.Windows.Forms, System.Drawing; $b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height; $g=[System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); $bmp.Save(${powershellQuote(join(directory, "save-timeout.png"))})`,
+      );
+    } catch (error) {
+      diagnostics.screenshotError = error.message;
+    }
+  }
+  return diagnostics;
+}
+
 async function saveEditedDocument(pid, windowsTarget, windowHandle) {
   if (process.platform === "linux") {
     runXdotool(["key", "ctrl+s"]);
@@ -1534,73 +1575,83 @@ async function runSmoke({
       savedPdfPath,
       result.observation.rectangleEdit.windowId,
     );
-      await waitUntil(
-        async () => {
-          try {
-            await lstat(savedPdfPath);
-          } catch (error) {
-            if (error?.code === "ENOENT") return false;
-            throw error;
-          }
-          await regularFile(savedPdfPath, "saved disposable PDF");
-          const savedStat = await lstat(savedPdfPath);
-          assert(
-            savedStat.size <= 128 * 1024 * 1024,
-            "saved PDF exceeds the 128 MiB smoke limit",
-          );
-          const current = await readFile(savedPdfPath);
-          if (sha256(current) === originalPdfHash) return false;
-          if (process.platform === "win32") {
-            // Save As publishes a new target; the opened original must be untouched.
+      try {
+        await waitUntil(
+          async () => {
+            try {
+              await lstat(savedPdfPath);
+            } catch (error) {
+              if (error?.code === "ENOENT") return false;
+              throw error;
+            }
+            await regularFile(savedPdfPath, "saved disposable PDF");
+            const savedStat = await lstat(savedPdfPath);
             assert(
-              sha256(await readFile(ownedFixturePath)) === originalPdfHash,
-              "Save As modified the original disposable PDF",
+              savedStat.size <= 128 * 1024 * 1024,
+              "saved PDF exceeds the 128 MiB smoke limit",
             );
-          } else {
-            const savedHead = await readJson(
-              join(recoveryStoreRoot, "heads", `${editedState.documentId}.json`),
-              "saved recovery head",
+            const current = await readFile(savedPdfPath);
+            if (sha256(current) === originalPdfHash) return false;
+            if (process.platform === "win32") {
+              // Save As publishes a new target; the opened original must be untouched.
+              assert(
+                sha256(await readFile(ownedFixturePath)) === originalPdfHash,
+                "Save As modified the original disposable PDF",
+              );
+            } else {
+              const savedHead = await readJson(
+                join(recoveryStoreRoot, "heads", `${editedState.documentId}.json`),
+                "saved recovery head",
+              );
+              if (
+                savedHead.current_revision !== editedState.currentRevision ||
+                savedHead.saved_revision !== editedState.currentRevision
+              )
+                return false;
+            }
+            assert(
+              current.subarray(0, 5).toString("ascii") === "%PDF-" &&
+                current.includes(Buffer.from("%%EOF")),
+              "normal Save produced an invalid PDF header or EOF",
             );
-            if (
-              savedHead.current_revision !== editedState.currentRevision ||
-              savedHead.saved_revision !== editedState.currentRevision
-            )
-              return false;
-          }
-          assert(
-            current.subarray(0, 5).toString("ascii") === "%PDF-" &&
-              current.includes(Buffer.from("%%EOF")),
-            "normal Save produced an invalid PDF header or EOF",
-          );
-          const check = spawnSync("qpdf", ["--check", savedPdfPath], {
-            encoding: "utf8",
-            timeout: 15_000,
-            maxBuffer: 2 * 1024 * 1024,
-          });
-          assert(
-            !check.error && check.status === 0,
-            `independent qpdf validation failed: ${check.stderr || check.error?.message || check.status}`,
-          );
-          const semantic = spawnSync("qpdf", ["--json", savedPdfPath], {
-            encoding: "utf8",
-            timeout: 15_000,
-            maxBuffer: 16 * 1024 * 1024,
-          });
-          assert(
-            !semantic.error && semantic.status === 0,
-            `independent qpdf semantic inspection failed: ${semantic.stderr || semantic.error?.message || semantic.status}`,
-          );
-          result.observation.savedPdf = {
-            bytes: current.length,
-            sha256: sha256(current),
-            qpdf: "--check passed",
-            semantic: parseQpdfRectangleEvidence(semantic.stdout),
-          };
-          return true;
-        },
-        Math.max(1000, LIMIT_MS - (Date.now() - startedAt)),
-        "normal Save to publish and independently validate the Rectangle-edited PDF",
-      );
+            const check = spawnSync("qpdf", ["--check", savedPdfPath], {
+              encoding: "utf8",
+              timeout: 15_000,
+              maxBuffer: 2 * 1024 * 1024,
+            });
+            assert(
+              !check.error && check.status === 0,
+              `independent qpdf validation failed: ${check.stderr || check.error?.message || check.status}`,
+            );
+            const semantic = spawnSync("qpdf", ["--json", savedPdfPath], {
+              encoding: "utf8",
+              timeout: 15_000,
+              maxBuffer: 16 * 1024 * 1024,
+            });
+            assert(
+              !semantic.error && semantic.status === 0,
+              `independent qpdf semantic inspection failed: ${semantic.stderr || semantic.error?.message || semantic.status}`,
+            );
+            result.observation.savedPdf = {
+              bytes: current.length,
+              sha256: sha256(current),
+              qpdf: "--check passed",
+              semantic: parseQpdfRectangleEvidence(semantic.stdout),
+            };
+            return true;
+          },
+          // Save As validates, publishes and independently reopens the target.
+          Math.max(45_000, LIMIT_MS - (Date.now() - startedAt)),
+          "normal Save to publish and independently validate the Rectangle-edited PDF",
+        );
+      } catch (error) {
+        result.observation.saveDiagnostics = await collectSaveDiagnostics(
+          runDir,
+          recoveryStoreRoot,
+          editedState.documentId,
+        );
+        throw error;
+      }
       result.observation.closeRequest = await askGracefulClose(child.pid);
       await waitUntil(
         async () => child.exitCode !== null || child.signalCode !== null,
