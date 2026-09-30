@@ -16,7 +16,8 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { readFileSync, readdirSync, readlinkSync } from "node:fs";
+import { readFileSync, readdirSync, readlinkSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -25,7 +26,7 @@ import {
 } from "./production-open-evidence.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
-const LIMIT_MS = 90_000;
+const LIMIT_MS = 180_000;
 const MIN_ALIVE_MS = 3_000;
 const POLL_MS = 400;
 const MAX_LOG_BYTES = 512 * 1024;
@@ -662,22 +663,39 @@ function descendants(rootPid, processes) {
   return [...found].map((pid) => processes.get(pid)).filter(Boolean);
 }
 
-function powershell(script, timeout = 12_000) {
+// PowerShell output is captured through files rather than pipes: Add-Type
+// starts csc.exe, which inherits and holds pipes after a timeout kill, and
+// spawnSync then blocks forever waiting for them to close.
+let powershellSequence = 0;
+function powershell(script, timeout = 45_000) {
+  const stem = join(tmpdir(), `bp-smoke-ps-${process.pid}-${(powershellSequence += 1)}`);
+  const outPath = `${stem}.out.txt`,
+    errPath = `${stem}.err.txt`;
+  const quote = (value) => `'${value.replaceAll("'", "''")}'`;
+  const wrapped = `$ErrorActionPreference='Stop'; try { $bpOut = & {\n${script}\n} | Out-String; [IO.File]::WriteAllText(${quote(outPath)}, [string]$bpOut) } catch { [IO.File]::WriteAllText(${quote(errPath)}, ($_ | Out-String)); exit 1 }`;
   const result = spawnSync(
     "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", script],
-    {
-      encoding: "utf8",
-      windowsHide: true,
-      timeout,
-      maxBuffer: 2 * 1024 * 1024,
-    },
+    ["-NoProfile", "-NonInteractive", "-Command", wrapped],
+    { windowsHide: true, timeout, stdio: "ignore" },
   );
+  const read = (path) => {
+    try {
+      return readFileSync(path, "utf8");
+    } catch {
+      return "";
+    } finally {
+      try {
+        rmSync(path, { force: true });
+      } catch {}
+    }
+  };
+  const output = read(outPath),
+    errors = read(errPath);
   if (result.error || result.status !== 0)
     fail(
-      `PowerShell process inspection failed: ${result.stderr || result.error?.message || result.status}`,
+      `PowerShell process inspection failed: ${errors.trim() || result.error?.message || result.status}`,
     );
-  return result.stdout.trim();
+  return output.trim();
 }
 
 function currentProcesses(rootPid, packageRoot) {
@@ -1256,7 +1274,7 @@ async function saveEditedDocument(pid, windowHandle) {
   const shortcutResult = await shortcut.settle(2000);
   powershell(
     `${WINDOWS_UIA_PRELUDE} $actions=Find-Buttons ${pid} 'Document actions and properties'; if($actions.Count -ne 1){$available=@($A::RootElement.FindAll($T::Descendants,[Windows.Automation.PropertyCondition]::new($A::ProcessIdProperty,[int]${pid})) | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button } | ForEach-Object { "$($_.Current.Name)[enabled=$($_.Current.IsEnabled),offscreen=$($_.Current.IsOffscreen)]" } | Select-Object -First 100); throw "expected one Document actions and properties button; available buttons: $($available -join ', ')"}; Invoke-Element $actions[0]; $deadline=(Get-Date).AddSeconds(10); do { Start-Sleep -Milliseconds 200; $save=Find-Buttons ${pid} 'Save' } until($save.Count -eq 1 -or (Get-Date) -gt $deadline); if($save.Count -ne 1){throw "expected one enabled Save button after opening document actions; found $($save.Count)"}`,
-    20_000,
+    45_000,
   );
   const invoke = spawnPowershell(
     `${WINDOWS_UIA_PRELUDE} $save=Find-Buttons ${pid} 'Save'; if($save.Count -ne 1){throw "expected one enabled Save button; found $($save.Count)"}; Invoke-Element $save[0]`,
@@ -1400,7 +1418,7 @@ async function runSmoke({
           "-Command",
           "(Get-Command qpdf -ErrorAction Stop).Source",
         ],
-        { encoding: "utf8", windowsHide: true, timeout: 5000 },
+        { encoding: "utf8", windowsHide: true, timeout: 45_000 },
       );
       assert(
         !qpdf.error && qpdf.status === 0 && qpdf.stdout.trim(),
