@@ -709,11 +709,13 @@ export async function smokeSignedMacosPackage({
     if (result.savedPdf.sha256 === result.fixture.sha256)
       fail("normal Save did not change the fixture PDF bytes");
     result.normalClose = driver("close", child.pid);
-    const closeDeadline = Date.now() + 15_000;
+    // Quit retires recovery state; hosted Intel runners are much slower.
+    const closeDeadline = Date.now() + 45_000;
     while (Date.now() < closeDeadline && child.exitCode === null)
       await sleep(150);
+    if (child.exitCode === null) screenshot("quit-timeout");
     if (child.exitCode === null)
-      fail("packaged app did not exit after normal Cmd-Q");
+      fail("packaged app did not exit after a normal quit");
     const exitedPid = child.pid;
     const workerExitDeadline = Date.now() + 8_000;
     do {

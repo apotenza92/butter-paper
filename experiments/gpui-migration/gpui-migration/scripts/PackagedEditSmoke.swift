@@ -244,10 +244,15 @@ func performEdit(pid: pid_t) throws -> [String: Any] {
             "drag": [[start.x, start.y], [end.x, end.y]], "windowCount": windows.count]
 }
 
-func closeNormally(pid: pid_t) throws {
+func closeNormally(pid: pid_t) throws -> String {
     try requireTrustedAX()
     try activate(pid)
+    if let quit = enabledMenuItem(appElement(pid), menu: "Butter Paper", item: "Quit Butter Paper") {
+        try press(quit)
+        return "native-menu: Butter Paper > Quit Butter Paper"
+    }
     try postKey(0x0C, flags: .maskCommand) // Q
+    return "keyboard: Cmd-Q"
 }
 
 func verifyReopened(pid: pid_t, path: String) throws -> [String: Any] {
@@ -302,8 +307,7 @@ func main() throws {
         value = ["saveActivation": saveActivation]
     case "close":
         guard args.count == 2, let pid = pid_t(args[1]) else { throw SmokeFailure("close requires PID") }
-        try closeNormally(pid: pid)
-        value = ["normalQuitPosted": true]
+        value = ["normalQuitPosted": true, "route": try closeNormally(pid: pid)]
     case "reopened":
         guard args.count == 3, let pid = pid_t(args[1]) else { throw SmokeFailure("reopened requires PID and PDF path") }
         value = try verifyReopened(pid: pid, path: args[2])
