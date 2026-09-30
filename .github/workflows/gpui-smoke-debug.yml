@@ -61,6 +61,19 @@ jobs:
             xdotool \
             x11-utils \
             qpdf
+      - name: Dismiss hosted Windows first-run privacy prompt
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          # Some hosted Windows images start at an OOBE privacy window that
+          # keeps the foreground; the smoke needs the packaged app in front.
+          New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\OOBE' -Force | Out-Null
+          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\OOBE' -Name DisablePrivacyExperience -Type DWord -Value 1
+          $before = @(Get-Process WWAHost -ErrorAction SilentlyContinue)
+          $before | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          $after = @(Get-Process WWAHost -ErrorAction SilentlyContinue)
+          Write-Host "WWAHost processes: $($before.Count) before, $($after.Count) after"
       - name: Install Windows runtime smoke prerequisites
         if: matrix.os == 'windows'
         shell: pwsh
