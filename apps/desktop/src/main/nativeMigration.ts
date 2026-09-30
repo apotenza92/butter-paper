@@ -53,18 +53,7 @@ export async function migrateToNativeApp(pdfPaths: readonly string[]): Promise<b
     return false;
   }
 
-  const choice = await dialog.showMessageBox({
-    type: 'info',
-    message: 'Butter Paper is now a native app',
-    detail: `This update replaces this version with Butter Paper ${NATIVE_RELEASE.version}, rebuilt as a faster native app. It downloads about ${Math.round(eligibility.nativePackage.bytes / 1_000_000)} MB, installs the new app, removes the old Butter Paper apps and opens the new one. Your PDFs are not changed.`,
-    buttons: ['Update Now', 'Later'],
-    defaultId: 0,
-    cancelId: 1,
-  });
-  if (choice.response !== 0) {
-    return false;
-  }
-
+  // The move runs automatically; the progress window explains what is happening.
   const progress = createProgressWindow();
   const workDirectory = await mkdtemp(join(app.getPath('temp'), 'butter-paper-native-'));
   try {
@@ -115,7 +104,7 @@ function createProgressWindow() {
     webPreferences: { sandbox: true, contextIsolation: true, javascript: true },
   });
   window.setMenu(null);
-  const page = '<!doctype html><meta charset="utf-8"><body style="margin:0;font:14px system-ui;display:grid;place-items:center;height:100vh;color:#222;background:#fafafa"><p id="s">Preparing…</p></body>';
+  const page = '<!doctype html><meta charset="utf-8"><body style="margin:0;font:14px system-ui;display:grid;place-content:center;gap:4px;height:100vh;color:#222;background:#fafafa;text-align:center"><strong>Moving to the new native Butter Paper</strong><p id="s" style="margin:0">Preparing…</p></body>';
   void window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(page)}`);
   return {
     update(text: string) {
