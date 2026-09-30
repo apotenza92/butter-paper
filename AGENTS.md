@@ -61,11 +61,8 @@ This monorepo uses a multi-context domain-document layout. See
 4. Run the narrowest relevant checks while iterating, then `pnpm check` before handoff.
 5. Review the final diff for generated files, stale references, secrets, and unrelated changes.
 
-Playwright Electron E2E and the packaged desktop GUI smoke test can run on a
-local macOS desktop when they use isolated, disposable user data and do not
-modify an installed application. Keep the macOS updater harness restricted to
-disposable GitHub Actions runners because it replaces application bundles and
-tests system registration and update state.
+Playwright Electron E2E can run on a local macOS desktop when it uses isolated,
+disposable user data and does not modify an installed application.
 
 ## Commands
 
@@ -75,10 +72,8 @@ tests system registration and update state.
 - Build: `pnpm build`
 - Deterministic tests: `pnpm test`
 - Required deterministic gate: `pnpm check`
-- Targeted Electron E2E: manual GitHub Actions workflow only
-- Full Electron E2E: manual GitHub Actions workflow only
+- Electron E2E: `pnpm test:e2e` (local)
 - Desktop development: `pnpm dev:desktop`
-- Desktop package smoke: release or manual GitHub Actions workflow only
 
 Do not update Playwright snapshots unless the task intentionally changes reviewed UI output.
 
@@ -87,14 +82,14 @@ Do not update Playwright snapshots unless the task intentionally changes reviewe
 - Treat lost PDF content, corrupt saves, annotation round-trip failures, renderer crashes, preload/IPC privilege expansion, and platform-specific packaging failures as high priority.
 - Keep Electron context isolation intact. Do not expose filesystem or process access directly to the renderer.
 - Preserve import/export compatibility when changing markup models or appearance data.
-- Verify platform assumptions against macOS, Windows, and Linux behavior represented in CI.
-- Stable and beta are explicitly maintained as separate products with distinct application IDs, package names, user-data directories, updater caches, and feeds.
-- macOS updates require Developer ID signing plus native N-1 verification. Windows NSIS and Linux AppImage updates additionally require the embedded reviewed TUF root, successful deterministic rejection tests, and native N-1 replacement on matching ARM64/x64 hosts. DEB and RPM upgrades remain package-manager controlled.
-- The TUF root private key stays offline. `update-signing` holds only distinct targets, snapshot, and timestamp private keys and must permit the `v*` release tag policy plus `main` for scheduled metadata refresh. Never log, copy into artifacts, or commit any private key.
-- Windows and Linux 0.0.11 packages have no updater bootstrap. Release notes for the first TUF-enabled release must state that a one-time manual install is required; do not pretend synthetic N-1 coverage changes that public compatibility fact.
-- Production updater repositories use HTTPS. Loopback HTTP is allowed only with `BP_UPDATE_TEST_MODE=1`; direct non-macOS feed overrides must never bypass TUF.
-- Update-feed publication occurs only inside the approved stable/beta release environment after the exact public release assets have been independently downloaded and verified. Preserve `.nojekyll`, never replace published assets, and publish a corrected higher version or restore the prior feed commit for rollback.
-- Release tags must resolve to commits reachable from the repository's `main` default branch.
-- `.github/workflows/ci.yml` is manually dispatchable and reusable by the tag-only release workflow; routine pushes and pull requests do not start GitHub-hosted CI.
-- `MACOS_UPDATER_BOOTSTRAP_TAG` is a one-time exact tag in the channel's updater-verification environment. Use it only when that channel has no prior public package; remove it after the bootstrap release and never advance it to bypass N-1 tests.
+- Verify platform assumptions against macOS, Windows, and Linux behavior.
+
+## Releases
+
+Keep the release process lean. `pnpm check` run locally is the release gate; do not add GitHub-hosted smoke, audit, or rehearsal jobs.
+
+- Native releases are manual downloads published to GitHub Releases with a `SHA256SUMS.txt`. macOS packages are Developer ID signed and notarised; Windows and Linux packages are unsigned.
+- Release tags must resolve to commits reachable from `main`. Any `v*` tag starts `.github/workflows/release.yml`, the retiring Electron pipeline, which is kept only for the one-off Electron-to-native migration update. Keep it disabled otherwise.
+- `.github/workflows/tuf-metadata-refresh.yml` keeps the old Electron Windows/Linux update feeds valid so late Electron users still receive the migration update. Remove it and `release.yml` once that transition ends.
+- The TUF root private key stays offline. Never log, copy into artifacts, or commit any signing key or certificate.
 - Do not stage, commit, push, open pull requests, alter remote settings, or create issues unless the user explicitly requests it.

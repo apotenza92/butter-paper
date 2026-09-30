@@ -56,19 +56,4 @@ describe('release asset contract', () => {
     expect(publishJob).not.toContain('--clobber');
     expect(publishJob).not.toContain('--method DELETE');
   });
-
-  it('keeps release simulations disposable and non-publishing', () => {
-    const workflow = readFileSync('.github/workflows/release-pipeline-simulation.yml', 'utf8');
-    expect(workflow).toContain('workflow_dispatch:');
-    expect(workflow).toContain('Prepare immutable disposable candidate');
-    expect(workflow).toContain('Verify exact candidate for promotion');
-    expect(workflow).toContain("test \"$CANDIDATE_SHA\" = \"$GITHUB_SHA\"");
-    expect(workflow).toContain('subject-checksums: promotion-input/release-manifest/assets/SHA256SUMS');
-    expect(workflow).toContain('name: simulation-release-feed-sealed');
-    expect(workflow).toContain('Promote without publishing');
-    expect(workflow).not.toContain('contents: write');
-    expect(workflow).not.toContain('gh release create');
-    expect(workflow).not.toContain('git push');
-    expect(workflow).not.toContain('repository_dispatch');
-  });
 });

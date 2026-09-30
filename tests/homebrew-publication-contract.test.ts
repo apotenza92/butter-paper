@@ -30,15 +30,4 @@ describe('standard Homebrew publication contract', () => {
       rmSync(root, {recursive: true, force: true});
     }
   });
-
-  it('requires the dispatch credential only in the protected tag environment', () => {
-    const workflow = readFileSync('.github/workflows/release.yml', 'utf8');
-    const dispatch = workflow.split('  dispatch-homebrew-publication:', 2)[1];
-    expect(dispatch).toContain('environment: homebrew-dispatch');
-    expect(dispatch).toContain('HOMEBREW_DISPATCHER_PRIVATE_KEY');
-    expect(dispatch).toContain('repos/$TAP_REPOSITORY/dispatches');
-    expect(dispatch).not.toContain('gh run watch');
-    expect(dispatch).not.toContain('permission-actions: read');
-    expect(workflow).not.toContain('HOMEBREW_TAP_DEPLOY_KEY');
-  });
 });

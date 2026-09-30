@@ -72,7 +72,7 @@ describe('native app migration plan', () => {
 
   it('migrates Linux AppImage installs only', () => {
     expect(resolveMigrationEligibility({ ...macHost, platform: 'linux', arch: 'x64' })).toEqual({ eligible: false, reason: 'unsupported-install' });
-    expect(resolveMigrationEligibility({ ...macHost, platform: 'linux', arch: 'x64', appImagePath: '/home/a/Butter-Paper-Linux-x64.AppImage' }))
+    expect(resolveMigrationEligibility({ ...macHost, platform: 'linux', arch: 'x64', appImagePath: '/home-dir/Butter-Paper-Linux-x64.AppImage' }))
       .toMatchObject({ nativePackage: { target: 'linux-x64' } });
     expect(linuxPackageDirectory('linux-x64')).toBe('butter-paper-linux-x86_64-0.0.26');
     expect(linuxPackageDirectory('linux-arm64')).toBe('butter-paper-linux-arm64-0.0.26');
@@ -81,14 +81,14 @@ describe('native app migration plan', () => {
   it('installs the Mac app beside the running app only inside an Applications folder', () => {
     expect(macBundlePath(macHost.executablePath)).toBe('/Applications/Butter Paper Beta.app');
     expect(macBundlePath('/usr/local/bin/electron')).toBeNull();
-    expect(macDestinationDirectory('/Applications/Butter Paper Beta.app', '/Users/a')).toBe('/Applications');
-    expect(macDestinationDirectory('/Users/a/Applications/Butter Paper.app', '/Users/a')).toBe('/Users/a/Applications');
-    expect(macDestinationDirectory('/Users/a/Downloads/Butter Paper.app', '/Users/a')).toBe('/Applications');
-    expect(macElectronBundleCandidates('/Users/a')).toEqual([
+    expect(macDestinationDirectory('/Applications/Butter Paper Beta.app', '/home-dir')).toBe('/Applications');
+    expect(macDestinationDirectory('/home-dir/Applications/Butter Paper.app', '/home-dir')).toBe('/home-dir/Applications');
+    expect(macDestinationDirectory('/home-dir/Downloads/Butter Paper.app', '/home-dir')).toBe('/Applications');
+    expect(macElectronBundleCandidates('/home-dir')).toEqual([
       '/Applications/Butter Paper.app',
       '/Applications/Butter Paper Beta.app',
-      '/Users/a/Applications/Butter Paper.app',
-      '/Users/a/Applications/Butter Paper Beta.app',
+      '/home-dir/Applications/Butter Paper.app',
+      '/home-dir/Applications/Butter Paper Beta.app',
     ]);
     expect(MAC_DESIGNATED_REQUIREMENT).toBe('=identifier "com.butterpaper.desktop" and anchor apple generic and certificate leaf[subject.OU] = "27JL2VERNC"');
   });

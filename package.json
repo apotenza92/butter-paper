@@ -1,6 +1,6 @@
 {
   "name": "butter-paper",
-  "version": "0.0.26",
+  "version": "0.0.27",
   "private": true,
   "license": "MIT",
   "engines": {
@@ -30,9 +30,7 @@
     "test": "vitest run --config vitest.config.mts && pnpm --filter @butter-paper/signature-relay test",
     "test:e2e": "playwright test",
     "test:e2e:startup": "node tests/e2e/startup-probe.mjs",
-    "test:package:desktop": "node scripts/smoke-packaged-desktop.mjs",
     "test:macos-verifier": "vitest run --config vitest.config.mts tests/macos-package-verifier.test.ts",
-    "test:macos-updater": "node scripts/test-macos-update.mjs",
     "check": "pnpm check:repo && pnpm check:ui && pnpm check:icons && pnpm typecheck && pnpm build && pnpm test",
     "postinstall": "node scripts/ensure-native-deps.mjs",
     "predev:desktop": "node scripts/prepare-desktop-dev.mjs && pnpm --filter @butter-paper/core build && pnpm --filter @butter-paper/pdf build",

@@ -109,7 +109,7 @@ source-preparation tests.
 
 ## GPUI Migration application
 
-- Package: `butter-paper-gpui-migration` 0.0.26
+- Package: `butter-paper-gpui-migration` 0.0.27
 - License: MIT
 - Feature policy: default features are disabled; the app uses the prepared
   Longbridge GPUI Component source and the pinned Zed GPUI graph directly.

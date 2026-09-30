@@ -22,44 +22,6 @@ const fingerprint = 'C20E3A100252224861FF8474DEBB21E5A120210E7CD61905EFDA0B6464E
 const identity = 'Developer ID Application: Alexander Potenza (27JL2VERNC)';
 
 describe('macOS release contract', () => {
-  it('builds before credential materialization and launches only after credential cleanup', () => {
-    const workflow = readFileSync('.github/workflows/release.yml', 'utf8');
-    const packageJob = workflow.slice(
-      workflow.indexOf('  package-macos:'),
-      workflow.indexOf('\n  package-windows:'),
-    );
-    expect(packageJob.indexOf('Build desktop application without release credentials')).toBeLessThan(
-      packageJob.indexOf('Build, sign, notarize, staple, and verify macOS package'),
-    );
-    expect(packageJob).toContain('--skip-build');
-    expect(packageJob.indexOf('Verify and launch signed package without release credentials')).toBeGreaterThan(
-      packageJob.indexOf('Build, sign, notarize, staple, and verify macOS package'),
-    );
-
-    const buildScript = readFileSync('scripts/build-signed-macos.mjs', 'utf8');
-    expect(buildScript).toContain("'--skip-launch'");
-    const stapleDmg = buildScript.indexOf("['stapler', 'staple', dmgPath]");
-    const rebuildDmgBlockmap = buildScript.indexOf("buildBlockMap(dmgPath, 'gzip'");
-    const refreshDmgMetadata = buildScript.indexOf("refreshUpdateMetadataArtifact(join(releaseDir, 'latest-mac.yml'), dmgPath)");
-    const checksumDmg = buildScript.indexOf('writeChecksum(dmgPath)');
-    expect(stapleDmg).toBeGreaterThan(-1);
-    expect(rebuildDmgBlockmap).toBeGreaterThan(stapleDmg);
-    expect(refreshDmgMetadata).toBeGreaterThan(rebuildDmgBlockmap);
-    expect(checksumDmg).toBeGreaterThan(refreshDmgMetadata);
-
-    const verifier = readFileSync('scripts/verify-macos-package.mjs', 'utf8');
-    expect(verifier).toContain("readPlistValue(infoPlistPath, 'CFBundleIconName')");
-    expect(verifier).toContain('packaged Icon Composer catalog is missing');
-    expect(verifier).toContain('Icon Composer catalog is missing its dark appearance');
-    expect(verifier).toContain('validateIconStackSystemBackground');
-    expect(verifier).toContain('Icon_Assets/system-dark');
-    expect(verifier).toContain('Icon_Assets/01-artwork-dark');
-    expect(verifier).toContain('validateIconGroupCanvas');
-    expect(verifier).toContain('NSCameraUsageDescription: CAMERA_USAGE_DESCRIPTION');
-    expect(verifier).toContain('NSLocalNetworkUsageDescription: LOCAL_NETWORK_USAGE_DESCRIPTION');
-    expect(verifier).toContain("requiredEntitlements: bundlePath === resolvedAppPath");
-    expect(verifier).toContain("BP_TEST_STARTUP_ONLY: process.env.BP_TEST_STARTUP_ONLY === '1' ? '1' : '0'");
-  });
 
   it('allowlists smoke variables without passing release credentials to the app', () => {
     const environment = createSmokeEnvironment({

@@ -2,6 +2,18 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.27]
+
+### Move to the native app
+
+- Moves existing Butter Paper and Butter Paper Beta installs to the native
+  Butter Paper 0.0.26 app. On first launch, Butter Paper asks to update, then
+  downloads the verified native package for your computer, installs it,
+  removes the old Butter Paper apps and opens the new one. Your PDFs are not
+  changed.
+- macOS 12 stays on this version, because the native app requires macOS 13 or
+  later.
+
 ## [0.0.26]
 
 ### Native desktop application
