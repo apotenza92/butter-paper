@@ -127,7 +127,15 @@ export function validateNativeAssemblyManifest(manifest, packageVersion) {
   }
   exactKeys(
     manifest.artifacts,
-    ["application", "worker", "cameraHelper", "phoneHelper", "icon", "thirdPartyNotices"],
+    [
+      "application",
+      "worker",
+      "cameraHelper",
+      "phoneHelper",
+      "icon",
+      "iconAssetCatalog",
+      "thirdPartyNotices",
+    ],
     "native assembly artifacts",
   );
   for (const [name, record] of Object.entries(manifest.artifacts)) {
@@ -314,6 +322,7 @@ function infoPlist(manifest, contract) {
     CFBundleDisplayName: contract.productName,
     CFBundleExecutable: contract.productName,
     CFBundleIconFile: "icon.icns",
+    CFBundleIconName: "Icon",
     CFBundleIdentifier: contract.bundleIdentifier,
     CFBundleName: contract.productName,
     CFBundleShortVersionString: manifest.version,
@@ -402,6 +411,7 @@ async function verifyUnsignedApp(appPath, manifestBytes, manifest) {
     "Contents/MacOS/butter-paper-pdf-worker",
     "Contents/MacOS/butter-paper-signature-camera",
     "Contents/MacOS/butter-paper-signature-phone",
+    "Contents/Resources/Assets.car",
     "Contents/Resources/icon.icns",
     "Contents/Resources/THIRD_PARTY_NOTICES.md",
     ...licenseDestinations.map(
@@ -432,6 +442,7 @@ async function verifyUnsignedApp(appPath, manifestBytes, manifest) {
       manifest.artifacts.phoneHelper,
     ],
     ["Contents/Resources/icon.icns", manifest.artifacts.icon],
+    ["Contents/Resources/Assets.car", manifest.artifacts.iconAssetCatalog],
     [
       "Contents/Resources/THIRD_PARTY_NOTICES.md",
       manifest.artifacts.thirdPartyNotices,
@@ -545,7 +556,7 @@ export async function assembleMacosProductionApp({ manifestPath, inputRoot, pdfi
     });
   }
   const resources = {};
-  for (const name of ["icon", "thirdPartyNotices"]) {
+  for (const name of ["icon", "iconAssetCatalog", "thirdPartyNotices"]) {
     resources[name] = await verifiedFile(root, manifest.artifacts[name], `artifacts.${name}`);
   }
   const licenses = [];
@@ -580,6 +591,7 @@ export async function assembleMacosProductionApp({ manifestPath, inputRoot, pdfi
     for (const file of pdfium.files) await stage(file.source, `Contents/${file.file}`, file.file.startsWith("Frameworks/") ? 0o755 : 0o644);
     await stage(pdfium.receiptPath, "Contents/Resources/PDFium/receipt.json");
     await stage(resources.icon.path, "Contents/Resources/icon.icns");
+    await stage(resources.iconAssetCatalog.path, "Contents/Resources/Assets.car");
     await stage(resources.thirdPartyNotices.path, "Contents/Resources/THIRD_PARTY_NOTICES.md");
     for (const license of licenses) await stage(license.path, `Contents/Resources/Licenses/${license.destination}`);
     const plistPath = join(destination, "Contents/Info.plist");

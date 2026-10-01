@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmod,
   copyFile,
+  cp,
   lstat,
   mkdir,
+  mkdtemp,
   readFile,
   realpath,
   readdir,
@@ -22,12 +25,19 @@ import {
   resolve,
   sep,
 } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { validateNativeMachO } from "./assemble-macos-production.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const migrationRoot = resolve(dirname(scriptPath), "..");
 const repoRoot = resolve(migrationRoot, "../../..");
+const macosIconComposerSource = join(
+  repoRoot,
+  "apps/desktop/assets/macos/Butter Paper.icon",
+);
+const macosIconName = "Icon";
 const supportedTargets = new Set([
   "aarch64-apple-darwin",
   "x86_64-apple-darwin",
@@ -44,11 +54,54 @@ const requiredSupportingEntries = [
   ["tinos-font.txt", "licenses/tinos-font.txt"],
   ["thirdPartyNotices", "resources/THIRD_PARTY_NOTICES.md"],
   ["icon", "resources/icon.icns"],
+  ["iconAssetCatalog", "resources/Assets.car"],
 ].sort((left, right) => left[1].localeCompare(right[1]));
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-function defaultSupportingFiles() {
+// macOS 26 only draws the system icon background and full-size artwork from a
+// compiled Icon Composer catalog; a bare icon.icns is shrunk onto a grey tile.
+export async function compileMacosIconAssetCatalog({
+  iconPath = macosIconComposerSource,
+  outputDirectory,
+  execute = promisify(execFile),
+}) {
+  const output = resolve(outputDirectory);
+  await mkdir(output, { recursive: true, mode: 0o700 });
+  const source = join(output, `${macosIconName}.icon`);
+  await cp(iconPath, source, { recursive: true });
+  const partialInfoPlist = join(output, "assetcatalog_generated_info.plist");
+  await execute("xcrun", [
+    "actool",
+    source,
+    "--compile",
+    output,
+    "--output-format",
+    "human-readable-text",
+    "--output-partial-info-plist",
+    partialInfoPlist,
+    "--app-icon",
+    macosIconName,
+    "--include-all-app-icons",
+    "--target-device",
+    "mac",
+    "--minimum-deployment-target",
+    "26.0",
+    "--platform",
+    "macosx",
+  ]);
+  const generatedInfo = await readFile(partialInfoPlist, "utf8");
+  if (
+    !new RegExp(
+      `<key>CFBundleIconName</key>\\s*<string>${macosIconName}</string>`,
+    ).test(generatedInfo)
+  ) {
+    throw new Error("actool did not compile the macOS application icon");
+  }
+  return join(output, "Assets.car");
+}
+
+function defaultSupportingFiles(iconAssetCatalogPath) {
   const phoneRoot = join(repoRoot, "experiments/phone-signature-prototype");
   return [
     [
@@ -56,6 +109,7 @@ function defaultSupportingFiles() {
       "resources/icon.icns",
       join(repoRoot, "apps/desktop/assets/icon.icns"),
     ],
+    ["iconAssetCatalog", "resources/Assets.car", iconAssetCatalogPath],
     [
       "thirdPartyNotices",
       "resources/THIRD_PARTY_NOTICES.md",
@@ -162,7 +216,7 @@ export async function prepareMacosProductionInputs({
   buildVersion,
   outputRoot,
   receiptPath,
-  supportingFiles = defaultSupportingFiles(),
+  supportingFiles,
 }) {
   if (!supportedTargets.has(target))
     throw new Error("unsupported macOS production target");
@@ -267,6 +321,7 @@ export async function prepareMacosProductionInputs({
         cameraHelper: records.get("cameraHelper"),
         phoneHelper: records.get("phoneHelper"),
         icon: records.get("icon"),
+        iconAssetCatalog: records.get("iconAssetCatalog"),
         thirdPartyNotices: records.get("thirdPartyNotices"),
       },
       licenses: supportingFiles
@@ -339,16 +394,26 @@ function argumentsMap(argv) {
 
 if (process.argv[1] === scriptPath) {
   const values = argumentsMap(process.argv.slice(2));
-  const receipt = await prepareMacosProductionInputs({
-    applicationPath: values.get("--application"),
-    workerPath: values.get("--worker"),
-    cameraHelperPath: values.get("--camera-helper"),
-    phoneHelperPath: values.get("--phone-helper"),
-    target: values.get("--target"),
-    minimumSystemVersion: values.get("--minimum-system-version"),
-    buildVersion: values.get("--build-version"),
-    outputRoot: values.get("--output-root"),
-    receiptPath: values.get("--receipt"),
-  });
+  const iconCatalogRoot = await mkdtemp(join(tmpdir(), "bp-icon-catalog-"));
+  let receipt;
+  try {
+    const iconAssetCatalogPath = await compileMacosIconAssetCatalog({
+      outputDirectory: iconCatalogRoot,
+    });
+    receipt = await prepareMacosProductionInputs({
+      applicationPath: values.get("--application"),
+      workerPath: values.get("--worker"),
+      cameraHelperPath: values.get("--camera-helper"),
+      phoneHelperPath: values.get("--phone-helper"),
+      target: values.get("--target"),
+      minimumSystemVersion: values.get("--minimum-system-version"),
+      buildVersion: values.get("--build-version"),
+      outputRoot: values.get("--output-root"),
+      receiptPath: values.get("--receipt"),
+      supportingFiles: defaultSupportingFiles(iconAssetCatalogPath),
+    });
+  } finally {
+    await rm(iconCatalogRoot, { recursive: true, force: true });
+  }
   process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`);
 }

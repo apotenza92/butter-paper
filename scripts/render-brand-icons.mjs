@@ -7,8 +7,8 @@ const require = createRequire(join(repositoryRoot, 'packages/pdf/package.json'))
 const { createCanvas, loadImage } = require('@napi-rs/canvas');
 
 const canvasSize = 1024;
-const visibleWidthRatio = 0.80;
-const opticalVerticalOffsetRatio = 0.02;
+const visibleWidthRatio = 0.88;
+const opticalVerticalOffsetRatio = 0.025;
 const sourceViewBox = { width: 256, height: 200 };
 const visibleBounds = { left: 10, right: 246, top: 10, bottom: 189 };
 const visibleWidth = visibleBounds.right - visibleBounds.left;
@@ -44,5 +44,5 @@ for (const variant of variants) {
 }
 
 console.log(
-  `Rendered brand icons with ${Math.round(visibleWidthRatio * 100)}% visible-width sizing and ${Math.round(opticalVerticalOffsetRatio * 100)}% downward optical offset.`,
+  `Rendered brand icons with ${Math.round(visibleWidthRatio * 100)}% visible-width sizing and ${Math.round(opticalVerticalOffsetRatio * 1000) / 10}% downward optical offset.`,
 );

@@ -47,7 +47,8 @@ describe('Butter Paper icon artwork', () => {
   });
 
   it('optically sizes the canonical SVG artwork for native icon canvases', () => {
-    expect(brandIconRenderer).toContain('const visibleWidthRatio = 0.80;');
+    expect(brandIconRenderer).toContain('const visibleWidthRatio = 0.88;');
+    expect(brandIconRenderer).toContain('const opticalVerticalOffsetRatio = 0.025;');
     expect(brandIconRenderer).toContain("source: 'butter-paper-origami.svg'");
     expect(brandIconRenderer).toContain("source: 'butter-paper-origami-beta.svg'");
     expect(brandIconRenderer).toContain('context.drawImage(image, renderedLeft, renderedTop, renderedWidth, renderedHeight);');

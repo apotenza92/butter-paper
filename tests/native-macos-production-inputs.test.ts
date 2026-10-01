@@ -12,7 +12,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { prepareMacosProductionInputs } from "../experiments/gpui-migration/gpui-migration/scripts/prepare-macos-production-inputs.mjs";
+import {
+  compileMacosIconAssetCatalog,
+  prepareMacosProductionInputs,
+} from "../experiments/gpui-migration/gpui-migration/scripts/prepare-macos-production-inputs.mjs";
 import { bindMacosProductionManifest } from "../experiments/gpui-migration/gpui-migration/scripts/bind-macos-production-manifest.mjs";
 import { macho } from "./helpers/native-macos-production-fixture";
 
@@ -33,6 +36,11 @@ async function fixture() {
   }
   const supportingFiles: [string, string, string][] = [
     ["icon", "resources/icon.icns", join(sources, "icon")],
+    [
+      "iconAssetCatalog",
+      "resources/Assets.car",
+      join(sources, "asset-catalog"),
+    ],
     [
       "thirdPartyNotices",
       "resources/THIRD_PARTY_NOTICES.md",
@@ -74,6 +82,63 @@ afterEach(async () => {
 });
 
 describe("native macOS production input preparation", () => {
+  it("compiles the Icon Composer source into a macOS asset catalog", async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), "bp-native-icon-")),
+    );
+    roots.push(root);
+    const iconPath = join(root, "Butter Paper.icon");
+    await mkdir(iconPath);
+    await writeFile(join(iconPath, "icon.json"), "{}");
+    const calls: [string, string[]][] = [];
+    const outputDirectory = join(root, "catalog");
+    const catalog = await compileMacosIconAssetCatalog({
+      iconPath,
+      outputDirectory,
+      execute: async (command: string, args: string[]) => {
+        calls.push([command, args]);
+        await writeFile(
+          args[args.indexOf("--output-partial-info-plist") + 1],
+          "<dict>\n\t<key>CFBundleIconName</key>\n\t<string>Icon</string>\n</dict>",
+        );
+      },
+    });
+    expect(catalog).toBe(join(outputDirectory, "Assets.car"));
+    expect(calls).toHaveLength(1);
+    const [command, args] = calls[0];
+    expect(command).toBe("xcrun");
+    expect(args.slice(0, 4)).toEqual([
+      "actool",
+      join(outputDirectory, "Icon.icon"),
+      "--compile",
+      outputDirectory,
+    ]);
+    expect(args[args.indexOf("--app-icon") + 1]).toBe("Icon");
+    expect(args[args.indexOf("--platform") + 1]).toBe("macosx");
+    await access(join(outputDirectory, "Icon.icon/icon.json"));
+  });
+
+  it("rejects an asset catalog that does not declare the application icon", async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), "bp-native-icon-")),
+    );
+    roots.push(root);
+    const iconPath = join(root, "Butter Paper.icon");
+    await mkdir(iconPath);
+    await expect(
+      compileMacosIconAssetCatalog({
+        iconPath,
+        outputDirectory: join(root, "catalog"),
+        execute: async (_command: string, args: string[]) => {
+          await writeFile(
+            args[args.indexOf("--output-partial-info-plist") + 1],
+            "<dict></dict>",
+          );
+        },
+      }),
+    ).rejects.toThrow("actool did not compile the macOS application icon");
+  });
+
   it("copies and receipts the exact arm64 non-PDFium production inventory", async () => {
     const setup = await fixture();
     const receipt = await prepareMacosProductionInputs({
@@ -100,6 +165,7 @@ describe("native macOS production input preparation", () => {
       "cameraHelper",
       "phoneHelper",
       "icon",
+      "iconAssetCatalog",
       "thirdPartyNotices",
     ]);
     expect(receipt.licenses).toHaveLength(9);

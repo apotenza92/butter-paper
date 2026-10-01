@@ -54,6 +54,7 @@ export async function createNativeMacosProductionFixture(
     files.set(`bin/${name}`, macho(target, minimumSystemVersion));
   }
   files.set("resources/icon.icns", Buffer.from("icon"));
+  files.set("resources/Assets.car", Buffer.from("asset catalog"));
   files.set("resources/THIRD_PARTY_NOTICES.md", Buffer.from("notices"));
   const licenseNames = [
     "allura-font.txt",
@@ -129,6 +130,7 @@ export async function createNativeMacosProductionFixture(
       cameraHelper: record("bin/camera"),
       phoneHelper: record("bin/phone"),
       icon: record("resources/icon.icns"),
+      iconAssetCatalog: record("resources/Assets.car"),
       thirdPartyNotices: record("resources/THIRD_PARTY_NOTICES.md"),
     },
     licenses: licenseNames.map((destination) => ({

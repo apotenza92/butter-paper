@@ -76,6 +76,12 @@ describe("unsigned native macOS production assembly", () => {
           "<key>CFBundleIconFile</key>\n  <string>icon.icns</string>",
         );
         expect(plist).toContain(
+          "<key>CFBundleIconName</key>\n  <string>Icon</string>",
+        );
+        expect(receipt.files.map(({ file }) => file)).toContain(
+          "Contents/Resources/Assets.car",
+        );
+        expect(plist).toContain(
           "<key>NSLocalNetworkUsageDescription</key>\n  <string>Butter Paper uses your local network only when you choose to transfer a signature from your phone.</string>",
         );
         const saved = JSON.parse(
