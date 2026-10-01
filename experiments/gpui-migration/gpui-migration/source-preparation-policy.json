@@ -100,11 +100,11 @@
   "sharedExperimentSources": [
     {
       "path": "../gpui-migration/Cargo.toml",
-      "sha256": "05136c7e422f09fa3bf91fb7ce0a71ceac8419ce1885a0f4ca43c1868ea69f9e"
+      "sha256": "721e85baeff2f8ac914d9006efa6c354e30a66595c6c2238583e79ba037adab7"
     },
     {
       "path": "../gpui-migration/src/lib.rs",
-      "sha256": "0253ec3f57029e2e14952dcace81f0d9accd4d66342033de75d6f9e269c894c2"
+      "sha256": "12ef43ad97e6197a22792be76bf68d18237929b569ceca57e2c5238355248b68"
     },
     {
       "path": "../gpui-migration/src/macos_process_lifecycle.rs",

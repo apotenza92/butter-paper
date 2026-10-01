@@ -2,6 +2,38 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.31]
+
+### Updates
+
+- Butter Paper now updates itself. It checks GitHub weekly by default (change
+  this under Butter Paper > Check Automatically, or use Check for Updates…),
+  downloads the new version in the background, verifies it against the
+  published checksums (and, on macOS, its Developer ID signature), and installs
+  it when you quit or choose Restart. Beta copies also receive newer stable
+  releases.
+
+### Windows and tabs
+
+- File > New Window opens another window. Drag a tab to reorder it, onto
+  another window's tab bar to move it there, or away from the window to open
+  it in a new one. Document > Move Document to New Window does the same.
+- Each window reopens where you left it, with its own documents.
+- Window titles list the open documents, active one first.
+
+### Fixes
+
+- Single-key tool shortcuts keep working after using a menu, a dialog or the
+  inspector; clicking the page returns them.
+- Clicking to close a menu, popup or dialog no longer starts a selection box or
+  draws on the page.
+- Drawing and moving markups is much faster on large drawings with many
+  markups: snapping no longer rescans every line on each mouse move, and the
+  app no longer rebuilds unrelated state while you drag.
+- The app icon is larger and uses the macOS 26 icon style.
+- Windows and Linux no longer use Ctrl+Q to quit; closing the last window
+  quits, as on those platforms.
+
 ## [0.0.30]
 
 ### Move to the native app
