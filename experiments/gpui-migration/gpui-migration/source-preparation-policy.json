@@ -104,7 +104,7 @@
     },
     {
       "path": "../gpui-migration/src/lib.rs",
-      "sha256": "61ea2402e9d805bc038552a254931d88ccfb2d3c0aa873a7d525b9d454336076"
+      "sha256": "0253ec3f57029e2e14952dcace81f0d9accd4d66342033de75d6f9e269c894c2"
     },
     {
       "path": "../gpui-migration/src/macos_process_lifecycle.rs",
@@ -128,7 +128,7 @@
     },
     {
       "path": "../gpui-migration/src/pdf_worker.rs",
-      "sha256": "d94dd90594588a49c2cbc65acf00f5b02da7aa8df014bd0f59eab1b4d506a9de"
+      "sha256": "be412f9166ed73b5a15782b85eaffdfcf52220d6d6059680b70ef1c2bec28101"
     },
     {
       "path": "../gpui-migration/src/annotation_model.rs",
