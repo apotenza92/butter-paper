@@ -187,7 +187,7 @@ async function readBodyWithLimit(request: Request, limit: number): Promise<BodyR
 }
 
 function parseJson(bytes: Uint8Array): unknown {
-  return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  return JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes));
 }
 
 async function hashBytes(bytes: Uint8Array): Promise<Uint8Array> {

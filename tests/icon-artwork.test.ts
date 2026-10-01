@@ -15,14 +15,14 @@ const variants = {
   stable: {
     light: 'assets/butter-paper-icon.png',
     dark: 'assets/butter-paper-icon-dark.png',
-    nativeLight: 'apps/desktop/assets/macos/Butter Paper.icon/Assets/01-artwork.png',
-    nativeDark: 'apps/desktop/assets/macos/Butter Paper.icon/Assets/01-artwork-dark.png',
+    nativeLight: 'assets/app/macos/Butter Paper.icon/Assets/01-artwork.png',
+    nativeDark: 'assets/app/macos/Butter Paper.icon/Assets/01-artwork-dark.png',
   },
   beta: {
     light: 'assets/butter-paper-icon-beta.png',
     dark: 'assets/butter-paper-icon-beta-dark.png',
-    nativeLight: 'apps/desktop/assets/beta/macos/Butter Paper Beta.icon/Assets/01-artwork.png',
-    nativeDark: 'apps/desktop/assets/beta/macos/Butter Paper Beta.icon/Assets/01-artwork-dark.png',
+    nativeLight: 'assets/app/beta/macos/Butter Paper Beta.icon/Assets/01-artwork.png',
+    nativeDark: 'assets/app/beta/macos/Butter Paper Beta.icon/Assets/01-artwork-dark.png',
   },
 } as const;
 

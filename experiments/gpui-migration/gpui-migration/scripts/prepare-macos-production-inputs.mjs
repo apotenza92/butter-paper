@@ -35,7 +35,7 @@ const migrationRoot = resolve(dirname(scriptPath), "..");
 const repoRoot = resolve(migrationRoot, "../../..");
 const macosIconComposerSource = join(
   repoRoot,
-  "apps/desktop/assets/macos/Butter Paper.icon",
+  "assets/app/macos/Butter Paper.icon",
 );
 const macosIconName = "Icon";
 const supportedTargets = new Set([
@@ -107,7 +107,7 @@ function defaultSupportingFiles(iconAssetCatalogPath) {
     [
       "icon",
       "resources/icon.icns",
-      join(repoRoot, "apps/desktop/assets/icon.icns"),
+      join(repoRoot, "assets/app/icon.icns"),
     ],
     ["iconAssetCatalog", "resources/Assets.car", iconAssetCatalogPath],
     [

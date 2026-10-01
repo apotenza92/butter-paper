@@ -23,9 +23,6 @@ describe('native GPUI release version', () => {
     const rootVersion = JSON.parse(
       readFileSync(join(repositoryRoot, 'package.json'), 'utf8'),
     ).version;
-    const desktopVersion = JSON.parse(
-      readFileSync(join(repositoryRoot, 'apps', 'desktop', 'package.json'), 'utf8'),
-    ).version;
     const cargoVersion = packageVersionFromCargoToml(
       readFileSync(join(nativeCrateRoot, 'Cargo.toml'), 'utf8'),
     );
@@ -40,7 +37,6 @@ describe('native GPUI release version', () => {
     );
 
     expect(cargoVersion).toBe(rootVersion);
-    expect(desktopVersion).toBe(rootVersion);
     expect(cargoLock).toContain(
       `name = "butter-paper-gpui-migration"\nversion = "${rootVersion}"`,
     );

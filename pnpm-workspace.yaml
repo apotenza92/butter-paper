@@ -15,6 +15,4 @@ supportedArchitectures:
     - current
     - glibc
 onlyBuiltDependencies:
-  - electron
-  - electron-winstaller
   - esbuild

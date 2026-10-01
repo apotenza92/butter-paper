@@ -43,14 +43,14 @@ const variants = [
     source: join(repositoryRoot, 'assets/butter-paper-icon.png'),
     darkSource: join(repositoryRoot, 'assets/butter-paper-icon-dark.png'),
     adaptiveArtwork: 'macos/Butter Paper.icon/Assets',
-    output: join(repositoryRoot, 'apps/desktop/assets'),
+    output: join(repositoryRoot, 'assets/app'),
   },
   {
     name: 'beta',
     source: join(repositoryRoot, 'assets/butter-paper-icon-beta.png'),
     darkSource: join(repositoryRoot, 'assets/butter-paper-icon-beta-dark.png'),
     adaptiveArtwork: 'macos/Butter Paper Beta.icon/Assets',
-    output: join(repositoryRoot, 'apps/desktop/assets/beta'),
+    output: join(repositoryRoot, 'assets/app/beta'),
   },
 ];
 

@@ -357,7 +357,7 @@ jobs:
           Copy-Item "$env:PHONE_ROOT/dist/QRCP_LICENSE" "$input/QRCP_LICENSE"
           Copy-Item "$env:PHONE_ROOT/dist/package/LICENSE" "$input/SIGNATURE_PAD_LICENSE"
           'This manual-download build is intentionally unsigned. Windows may display a SmartScreen warning. Runtime dependencies: Microsoft Visual C++ runtime.' | Set-Content -LiteralPath "$input/README.md" -Encoding utf8NoBOM
-          node "$env:MIGRATION_ROOT/scripts/package-windows-x86_64-production.mjs" --input $input --icon apps/desktop/assets/icon.ico --output $package --version $env:VERSION --revision $env:SOURCE_REVISION --architecture '${{ matrix.arch }}'
+          node "$env:MIGRATION_ROOT/scripts/package-windows-x86_64-production.mjs" --input $input --icon assets/app/icon.ico --output $package --version $env:VERSION --revision $env:SOURCE_REVISION --architecture '${{ matrix.arch }}'
           $unsigned = "$package/butter-paper-windows-${{ matrix.arch }}-$env:VERSION.zip"
           node "$env:MIGRATION_ROOT/scripts/verify-windows-unsigned-production.mjs" --input $unsigned --output "$output/$env:TARGET_LABEL.zip" --package-manifest "$output/$env:TARGET_LABEL.package.json" --verification-receipt "$output/$env:TARGET_LABEL.verification.json" --architecture '${{ matrix.arch }}' --version $env:VERSION --revision $env:SOURCE_REVISION --artifact-path "$env:TARGET_LABEL.zip"
       - name: Assemble, sign and notarise macOS candidate
