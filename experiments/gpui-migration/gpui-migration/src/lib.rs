@@ -45,6 +45,7 @@ pub mod native_release_identity;
 pub mod native_runtime_layout;
 pub mod native_storage_layout;
 pub mod native_update_policy;
+pub mod native_updater;
 pub mod overlay_state;
 pub mod default_pdf_app;
 pub mod page_geometry;

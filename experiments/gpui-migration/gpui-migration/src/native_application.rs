@@ -6,7 +6,7 @@ use gpui_component::{GlobalState, menu::AppMenuBar};
 use crate::{
     application_close_workspace::{RequestApplicationClose, RequestApplicationQuit},
     application_shell::{
-        CheckForUpdates, MakeInterfaceBigger, MakeInterfaceSmaller, MinimiseWindow,
+        CheckForUpdates, RestartToUpdate, MakeInterfaceBigger, MakeInterfaceSmaller, MinimiseWindow,
         MoveDocumentToNewWindow, NewWindow,
         OpenReleasePage, ZoomWindow,
         ResetInterfaceSize, SetAsDefaultPdfApp, SetUpdateFrequencyAtStartup,
@@ -59,6 +59,25 @@ pub struct ApplicationMenuShellState {
     pub menu_bar_visible: bool,
     pub menu_bar_visibility_supported: bool,
     pub reverse_scroll_zoom: bool,
+    pub updates: UpdateMenuState,
+}
+
+/// What the update items in the application menu show.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum UpdateMenuStatus {
+    /// Development builds and copies run outside an install update manually.
+    #[default]
+    Unavailable,
+    Idle,
+    Checking,
+    Downloading,
+    Ready(crate::native_updater::ReleaseVersion),
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UpdateMenuState {
+    pub status: UpdateMenuStatus,
+    pub frequency: Option<crate::native_update_policy::UpdateFrequency>,
 }
 
 impl Default for ApplicationMenuShellState {
@@ -67,6 +86,7 @@ impl Default for ApplicationMenuShellState {
             menu_bar_visible: true,
             menu_bar_visibility_supported: false,
             reverse_scroll_zoom: false,
+            updates: UpdateMenuState::default(),
         }
     }
 }
@@ -83,8 +103,9 @@ fn build_native_application_menus_with_optional_shell(
     shell: Option<ApplicationMenuShellState>,
 ) -> Vec<Menu> {
     let save_disabled = !state.has_active_document || !state.document_ready || state.save_busy;
+    let updates = shell.map(|shell| shell.updates).unwrap_or_default();
     vec![
-        build_product_menu(),
+        build_product_menu(updates),
         build_file_menu(save_disabled, true, &state),
         build_edit_menu(state, true),
         Menu::new("Document").items([
@@ -112,7 +133,7 @@ pub fn build_in_window_application_menus(
 ) -> Vec<Menu> {
     let save_disabled = !state.has_active_document || !state.document_ready || state.save_busy;
     vec![
-        build_product_menu(),
+        build_product_menu(shell.updates),
         build_file_menu(save_disabled, false, &state),
         build_edit_menu(state, false),
         build_in_window_view_menu(shell),
@@ -135,20 +156,31 @@ fn build_window_menu() -> Menu {
     Menu::new("Window").items(items)
 }
 
-fn build_product_menu() -> Menu {
+fn build_product_menu(updates: UpdateMenuState) -> Menu {
+    let check = match updates.status {
+        UpdateMenuStatus::Unavailable => {
+            MenuItem::action("Updates: download new versions from Releases", CheckForUpdates)
+                .disabled(true)
+        }
+        UpdateMenuStatus::Idle => MenuItem::action("Check for Updates…", CheckForUpdates),
+        UpdateMenuStatus::Checking => {
+            MenuItem::action("Checking for Updates…", CheckForUpdates).disabled(true)
+        }
+        UpdateMenuStatus::Downloading => {
+            MenuItem::action("Downloading Update…", CheckForUpdates).disabled(true)
+        }
+        UpdateMenuStatus::Ready(version) => {
+            MenuItem::action(format!("Restart to Update to {version}"), RestartToUpdate)
+        }
+    };
     Menu::new("Butter Paper").items([
         MenuItem::action("Set as Default PDF App…", SetAsDefaultPdfApp),
         MenuItem::separator(),
-        MenuItem::action("Check for Updates…", CheckForUpdates).disabled(true),
-        MenuItem::action(
-            "Updates are not yet available in Butter Paper",
-            CheckForUpdates,
-        )
-        .disabled(true),
+        check,
         MenuItem::submenu(
             Menu::new("Check Automatically")
-                .disabled(true)
-                .items(update_frequency_items()),
+                .disabled(updates.frequency.is_none())
+                .items(update_frequency_items(updates.frequency)),
         ),
         MenuItem::action("View Releases…", OpenReleasePage),
         MenuItem::separator(),
@@ -156,16 +188,22 @@ fn build_product_menu() -> Menu {
     ])
 }
 
-fn update_frequency_items() -> [MenuItem; 8] {
+fn update_frequency_items(
+    current: Option<crate::native_update_policy::UpdateFrequency>,
+) -> [MenuItem; 8] {
+    use crate::native_update_policy::UpdateFrequency as Frequency;
+    let item = |item: MenuItem, frequency: Frequency| {
+        item.checked(current == Some(frequency)).disabled(current.is_none())
+    };
     [
-        MenuItem::action("Never", SetUpdateFrequencyNever).disabled(true),
-        MenuItem::action("At startup", SetUpdateFrequencyAtStartup).disabled(true),
-        MenuItem::action("Hourly", SetUpdateFrequencyHourly).disabled(true),
-        MenuItem::action("Every 6 hours", SetUpdateFrequencyEverySixHours).disabled(true),
-        MenuItem::action("Every 12 hours", SetUpdateFrequencyEveryTwelveHours).disabled(true),
-        MenuItem::action("Daily", SetUpdateFrequencyDaily).disabled(true),
-        MenuItem::action("Weekly", SetUpdateFrequencyWeekly).disabled(true),
-        MenuItem::action("Monthly", SetUpdateFrequencyMonthly).disabled(true),
+        item(MenuItem::action("Never", SetUpdateFrequencyNever), Frequency::Never),
+        item(MenuItem::action("At startup", SetUpdateFrequencyAtStartup), Frequency::Startup),
+        item(MenuItem::action("Hourly", SetUpdateFrequencyHourly), Frequency::Hourly),
+        item(MenuItem::action("Every 6 hours", SetUpdateFrequencyEverySixHours), Frequency::SixHours),
+        item(MenuItem::action("Every 12 hours", SetUpdateFrequencyEveryTwelveHours), Frequency::TwelveHours),
+        item(MenuItem::action("Daily", SetUpdateFrequencyDaily), Frequency::Daily),
+        item(MenuItem::action("Weekly", SetUpdateFrequencyWeekly), Frequency::Weekly),
+        item(MenuItem::action("Monthly", SetUpdateFrequencyMonthly), Frequency::Monthly),
     ]
 }
 

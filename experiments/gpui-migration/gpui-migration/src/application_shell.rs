@@ -45,6 +45,7 @@ gpui::actions!(
         ToggleApplicationFullScreen,
         SetAsDefaultPdfApp,
         CheckForUpdates,
+        RestartToUpdate,
         OpenReleasePage,
         SetUpdateFrequencyNever,
         SetUpdateFrequencyAtStartup,

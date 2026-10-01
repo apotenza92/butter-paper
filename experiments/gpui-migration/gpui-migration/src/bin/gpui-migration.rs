@@ -57,10 +57,6 @@ use butter_paper_gpui_migration::native_runtime_layout::{
 };
 #[cfg(all(not(feature = "development-pdfium-override"), target_os = "macos"))]
 use butter_paper_gpui_migration::native_storage_layout::NativeProductionStorage;
-#[cfg(all(
-    not(feature = "development-pdfium-override"),
-    any(target_os = "windows", target_os = "linux")
-))]
 use butter_paper_gpui_migration::native_storage_layout::NativeReleaseChannel;
 use butter_paper_gpui_migration::native_storage_layout::NativeStorageLayout;
 use butter_paper_gpui_migration::perf_capture_signal::{CaptureSignalError, CaptureSignalGuard};
@@ -138,6 +134,8 @@ const DEVELOPMENT_SIGNATURE_KEYCHAIN_SERVICE: &str =
 struct ResolvedStorageContext {
     layout: NativeStorageLayout,
     preferences: ApplicationShellPreferences,
+    /// Stable for development storage; the attested channel in production.
+    release_channel: NativeReleaseChannel,
     signature_keychain_service: &'static str,
     application_title: &'static str,
 }
@@ -1375,6 +1373,7 @@ impl ComponentStory {
             menu_bar_visible: self.menu_bar_visible,
             menu_bar_visibility_supported: self.menu_bar_visibility_supported,
             reverse_scroll_zoom: shared_application(cx).preferences.get().reverse_scroll_zoom(),
+            updates: updates::menu_state(cx),
         }
     }
 
@@ -1915,6 +1914,7 @@ fn resolve_storage_context(
                 Ok(ResolvedStorageContext {
                     layout,
                     preferences,
+                    release_channel: NativeReleaseChannel::Stable,
                     signature_keychain_service: DEVELOPMENT_SIGNATURE_KEYCHAIN_SERVICE,
                     application_title: APPLICATION_TITLE,
                 })
@@ -1942,6 +1942,7 @@ fn resolve_storage_context(
             Ok(ResolvedStorageContext {
                 layout,
                 preferences,
+                release_channel: NativeReleaseChannel::Stable,
                 signature_keychain_service: DEVELOPMENT_SIGNATURE_KEYCHAIN_SERVICE,
                 application_title: APPLICATION_TITLE,
             })
@@ -2009,6 +2010,7 @@ fn resolve_storage_context(
         Ok(ResolvedStorageContext {
             layout: storage.layout().clone(),
             preferences,
+            release_channel: channel,
             signature_keychain_service: channel.signature_keychain_service(),
             application_title: channel.product_name(),
         })
@@ -2079,6 +2081,8 @@ fn main() {
     let startup_preferences = storage_context.preferences;
     let signature_keychain_service = storage_context.signature_keychain_service;
     let application_title = storage_context.application_title;
+    let update_settings_root = storage_layout.preferences_root().to_path_buf();
+    let release_channel = storage_context.release_channel;
     let session_source = NativeLaunchSessionSource::new(perf.is_some(), &native_launch);
     let native_ingress = NativeDocumentIngress::default();
     let application = gpui_platform::application()
@@ -2265,6 +2269,7 @@ fn main() {
             cx,
         );
         register_application_shell_actions(cx);
+        updates::init(cx, update_settings_root.clone(), release_channel);
         #[cfg(feature = "review-driver")]
         review_driver::start(cx);
 
@@ -3287,6 +3292,315 @@ fn begin_startup_launch(
 ///   drag-tab W TAB off DX DY NAME  drag tab TAB by (DX, DY) from its centre
 ///   drag-tab W TAB into W2 INDEX NAME
 ///                                  drag onto window W2's strip before INDEX
+/// Self-update: scheduled and manual checks, background download and
+/// preparation, and the handover that installs the update when the app quits.
+mod updates {
+    use std::{path::PathBuf, time::Duration};
+
+    use butter_paper_gpui_migration::{
+        application_close_workspace::RequestApplicationQuit,
+        application_shell::{
+            CheckForUpdates, RestartToUpdate, SetUpdateFrequencyAtStartup,
+            SetUpdateFrequencyDaily, SetUpdateFrequencyEverySixHours,
+            SetUpdateFrequencyEveryTwelveHours, SetUpdateFrequencyHourly,
+            SetUpdateFrequencyMonthly, SetUpdateFrequencyNever, SetUpdateFrequencyWeekly,
+        },
+        native_application::{UpdateMenuState, UpdateMenuStatus},
+        native_storage_layout::NativeReleaseChannel,
+        native_update_policy::{
+            UpdateFrequency, UpdateSettings, UpdateSettingsStore, format_canonical_utc_timestamp,
+        },
+        native_updater::{
+            AvailableUpdate, Installation, PreparedUpdate, RELEASE_FEED_URL, ReleaseVersion,
+            UpdateChannel, UpdateError, UpdateTarget, current_installation, download_update,
+            fetch_releases, prepare_update, select_update,
+        },
+    };
+    use gpui::{App, Global};
+    use gpui_component::{WindowExt as _, button::Button, notification::Notification};
+
+    enum Status {
+        Idle,
+        Checking,
+        Downloading,
+        Ready(PreparedUpdate),
+    }
+
+    struct UpdateService {
+        channel: UpdateChannel,
+        current: ReleaseVersion,
+        /// `None` for development builds and copies run outside an install.
+        installation: Option<Installation>,
+        feed_url: String,
+        store: UpdateSettingsStore,
+        settings: UpdateSettings,
+        status: Status,
+        relaunch_after_quit: bool,
+    }
+
+    impl Global for UpdateService {}
+
+    pub(super) fn init(cx: &mut App, settings_root: PathBuf, channel: NativeReleaseChannel) {
+        let current = ReleaseVersion::parse(env!("CARGO_PKG_VERSION"))
+            .expect("the package version is major.minor.patch");
+        let store = UpdateSettingsStore::new(settings_root, channel);
+        let settings = store.load().unwrap_or_else(|_| UpdateSettings::defaults(channel));
+        // Production builds only: development builds never replace themselves.
+        let installation = (!cfg!(feature = "development-pdfium-override"))
+            .then(|| std::env::current_exe().ok())
+            .flatten()
+            .and_then(|executable| std::fs::canonicalize(executable).ok())
+            .and_then(|executable| current_installation(&executable, current));
+        cx.set_global(UpdateService {
+            channel: match channel {
+                NativeReleaseChannel::Stable => UpdateChannel::Stable,
+                NativeReleaseChannel::Beta => UpdateChannel::Beta,
+            },
+            current,
+            installation,
+            feed_url: RELEASE_FEED_URL.to_owned(),
+            store,
+            settings,
+            status: Status::Idle,
+            relaunch_after_quit: false,
+        });
+
+        cx.on_action(|_: &CheckForUpdates, cx| check(cx, true));
+        cx.on_action(|_: &RestartToUpdate, cx| {
+            cx.global_mut::<UpdateService>().relaunch_after_quit = true;
+            cx.dispatch_action(&RequestApplicationQuit);
+        });
+        set_frequency_on::<SetUpdateFrequencyNever>(cx, UpdateFrequency::Never);
+        set_frequency_on::<SetUpdateFrequencyAtStartup>(cx, UpdateFrequency::Startup);
+        set_frequency_on::<SetUpdateFrequencyHourly>(cx, UpdateFrequency::Hourly);
+        set_frequency_on::<SetUpdateFrequencyEverySixHours>(cx, UpdateFrequency::SixHours);
+        set_frequency_on::<SetUpdateFrequencyEveryTwelveHours>(cx, UpdateFrequency::TwelveHours);
+        set_frequency_on::<SetUpdateFrequencyDaily>(cx, UpdateFrequency::Daily);
+        set_frequency_on::<SetUpdateFrequencyWeekly>(cx, UpdateFrequency::Weekly);
+        set_frequency_on::<SetUpdateFrequencyMonthly>(cx, UpdateFrequency::Monthly);
+
+        // A prepared update installs whenever the app quits.
+        cx.on_app_quit(|cx| {
+            if let Some(service) = cx.try_global::<UpdateService>()
+                && let Status::Ready(prepared) = &service.status
+                && let Err(error) = prepared.spawn_handover(service.relaunch_after_quit)
+            {
+                eprintln!("Butter Paper could not start its update: {error}");
+            }
+            async {}
+        })
+        .detach();
+
+        if cx.global::<UpdateService>().installation.is_none() {
+            return;
+        }
+        // Scheduled checks: shortly after launch, then hourly re-evaluation.
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(Duration::from_secs(10)).await;
+            let mut startup = true;
+            loop {
+                let due = cx
+                    .update(|cx| {
+                        let settings = &cx.global::<UpdateService>().settings;
+                        let now = format_canonical_utc_timestamp(std::time::SystemTime::now());
+                        match settings.frequency() {
+                            UpdateFrequency::Startup => startup,
+                            _ => settings.is_check_due(&now).unwrap_or(true),
+                        }
+                    });
+                if due {
+                    let _ = cx.update(|cx| check(cx, false));
+                }
+                startup = false;
+                cx.background_executor().timer(Duration::from_secs(60 * 60)).await;
+            }
+        })
+        .detach();
+    }
+
+    fn set_frequency_on<A: gpui::Action>(cx: &mut App, frequency: UpdateFrequency) {
+        cx.on_action(move |_: &A, cx| {
+            let service = cx.global_mut::<UpdateService>();
+            service.settings.set_frequency(frequency);
+            if let Err(error) = service.store.save(&service.settings) {
+                eprintln!("Butter Paper could not save its update settings: {error}");
+            }
+            refresh_menus(cx);
+        });
+    }
+
+    pub(super) fn menu_state(cx: &App) -> UpdateMenuState {
+        let Some(service) = cx.try_global::<UpdateService>() else {
+            return UpdateMenuState::default();
+        };
+        if service.installation.is_none() {
+            return UpdateMenuState::default();
+        }
+        UpdateMenuState {
+            status: match &service.status {
+                Status::Idle => UpdateMenuStatus::Idle,
+                Status::Checking => UpdateMenuStatus::Checking,
+                Status::Downloading => UpdateMenuStatus::Downloading,
+                Status::Ready(prepared) => UpdateMenuStatus::Ready(prepared.version),
+            },
+            frequency: Some(service.settings.frequency()),
+        }
+    }
+
+    fn refresh_menus(cx: &mut App) {
+        for story in super::document_window_stories(cx) {
+            story.update(cx, |story, cx| story.sync_native_application_menu(cx));
+        }
+    }
+
+    fn notify(cx: &mut App, notification: Notification) {
+        if let Some(entry) = super::active_document_window(cx) {
+            let _ = entry
+                .handle
+                .update(cx, |_, window, cx| window.push_notification(notification, cx));
+        }
+    }
+
+    fn check(cx: &mut App, manual: bool) {
+        let service = cx.global::<UpdateService>();
+        if service.installation.is_none() {
+            if manual {
+                cx.dispatch_action(&butter_paper_gpui_migration::application_shell::OpenReleasePage);
+            }
+            return;
+        }
+        match &service.status {
+            Status::Idle => {}
+            Status::Ready(prepared) => {
+                if manual {
+                    notify_ready(cx, prepared.version);
+                }
+                return;
+            }
+            Status::Checking | Status::Downloading => return,
+        }
+        let (feed, current, channel) = (service.feed_url.clone(), service.current, service.channel);
+        cx.global_mut::<UpdateService>().status = Status::Checking;
+        refresh_menus(cx);
+        let task = cx.background_executor().spawn(async move {
+            let target = UpdateTarget::current()
+                .ok_or_else(|| UpdateError::new_public("This platform has no update packages."))?;
+            let releases = fetch_releases(&feed)?;
+            Ok::<_, UpdateError>(select_update(current, channel, &releases, target))
+        });
+        cx.spawn(async move |cx| {
+            let result = task.await;
+            let _ = cx.update(|cx| finish_check(cx, manual, result));
+        })
+        .detach();
+    }
+
+    fn finish_check(
+        cx: &mut App,
+        manual: bool,
+        result: Result<Option<AvailableUpdate>, UpdateError>,
+    ) {
+        let service = cx.global_mut::<UpdateService>();
+        if result.is_ok() {
+            let now = format_canonical_utc_timestamp(std::time::SystemTime::now());
+            if service.settings.record_successful_check(&now).is_ok() {
+                let _ = service.store.save(&service.settings);
+            }
+        }
+        match result {
+            Ok(Some(update)) => {
+                service.status = Status::Downloading;
+                download(cx, update, manual);
+            }
+            Ok(None) => {
+                service.status = Status::Idle;
+                if manual {
+                    let current = cx.global::<UpdateService>().current;
+                    notify(
+                        cx,
+                        Notification::info(format!("Butter Paper {current} is the latest version."))
+                            .title("You’re up to date"),
+                    );
+                }
+            }
+            Err(error) => {
+                service.status = Status::Idle;
+                if manual {
+                    notify(
+                        cx,
+                        Notification::error(error.to_string()).title("Couldn’t check for updates"),
+                    );
+                }
+            }
+        }
+        refresh_menus(cx);
+    }
+
+    fn download(cx: &mut App, update: AvailableUpdate, manual: bool) {
+        let installation = cx
+            .global::<UpdateService>()
+            .installation
+            .clone()
+            .expect("checks run only for installed copies");
+        let work = std::env::temp_dir().join(format!(
+            "butter-paper-update-{}-{}",
+            update.version,
+            std::process::id()
+        ));
+        let task = cx.background_executor().spawn(async move {
+            let _ = std::fs::remove_dir_all(&work);
+            std::fs::create_dir_all(&work)
+                .map_err(|_| UpdateError::new_public("The update could not be saved."))?;
+            let result = download_update(&update, &work)
+                .and_then(|package| prepare_update(&update, &package, &work, &installation));
+            if result.is_err() {
+                let _ = std::fs::remove_dir_all(&work);
+            }
+            result
+        });
+        cx.spawn(async move |cx| {
+            let result = task.await;
+            let _ = cx.update(|cx| {
+                let service = cx.global_mut::<UpdateService>();
+                match result {
+                    Ok(prepared) => {
+                        let version = prepared.version;
+                        service.status = Status::Ready(prepared);
+                        notify_ready(cx, version);
+                    }
+                    Err(error) => {
+                        service.status = Status::Idle;
+                        if manual {
+                            notify(
+                                cx,
+                                Notification::error(error.to_string())
+                                    .title("Couldn’t download the update"),
+                            );
+                        }
+                    }
+                }
+                refresh_menus(cx);
+            });
+        })
+        .detach();
+    }
+
+    fn notify_ready(cx: &mut App, version: ReleaseVersion) {
+        notify(
+            cx,
+            Notification::success(
+                "Restart now to finish updating, or it installs when you quit.",
+            )
+            .title(format!("Butter Paper {version} is ready"))
+            .action(|_, _, _| {
+                Button::new("restart-to-update")
+                    .label("Restart")
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(RestartToUpdate), cx))
+            }),
+        );
+    }
+}
+
 #[cfg(feature = "review-driver")]
 mod review_driver {
     use super::*;

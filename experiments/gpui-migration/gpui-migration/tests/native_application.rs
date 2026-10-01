@@ -28,6 +28,7 @@ use butter_paper_gpui_migration::{
     },
     native_application::{
         ApplicationMenuShellState, NativeApplicationMenuState, NativeDocumentIngress,
+        UpdateMenuState, UpdateMenuStatus,
         build_in_window_application_menus, build_native_application_menus,
         build_native_application_menus_with_shell,
     },
@@ -332,6 +333,7 @@ fn in_window_application_menu_is_the_four_menu_projection() {
             menu_bar_visible: false,
             menu_bar_visibility_supported: true,
             reverse_scroll_zoom: false,
+            updates: Default::default(),
         },
     );
 
@@ -419,6 +421,7 @@ fn native_application_projection_retains_document_edit_commands_and_restores_the
             menu_bar_visible: false,
             menu_bar_visibility_supported: true,
             reverse_scroll_zoom: false,
+            updates: Default::default(),
         },
     );
 
@@ -436,6 +439,73 @@ fn native_application_projection_retains_document_edit_commands_and_restores_the
         item(menu(&menus, "View"), "Show Menu Bar in App Windows"),
         |action| action.as_any().is::<ToggleApplicationMenuBar>(),
     );
+}
+
+#[test]
+fn update_menu_items_follow_the_updater_state() {
+    use butter_paper_gpui_migration::{
+        application_shell::{CheckForUpdates, RestartToUpdate, SetUpdateFrequencyWeekly},
+        native_update_policy::UpdateFrequency,
+        native_updater::ReleaseVersion,
+    };
+    let product = |updates: UpdateMenuState| {
+        build_native_application_menus_with_shell(
+            NativeApplicationMenuState::default(),
+            ApplicationMenuShellState { updates, ..Default::default() },
+        )
+        .into_iter()
+        .find(|menu| menu.name == "Butter Paper")
+        .unwrap()
+    };
+    fn submenu(menu: &Menu) -> &Menu {
+        menu.items
+            .iter()
+            .find_map(|item| match item {
+                MenuItem::Submenu(submenu) if submenu.name == "Check Automatically" => Some(submenu),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    // Development builds and copies outside an install cannot update.
+    let unavailable = product(UpdateMenuState::default());
+    assert!(matches!(
+        item(&unavailable, "Updates: download new versions from Releases"),
+        MenuItem::Action { disabled: true, .. }
+    ));
+    assert!(submenu(&unavailable).disabled);
+
+    let idle = product(UpdateMenuState {
+        status: UpdateMenuStatus::Idle,
+        frequency: Some(UpdateFrequency::Weekly),
+    });
+    let check = item(&idle, "Check for Updates…");
+    assert!(matches!(check, MenuItem::Action { disabled: false, .. }));
+    assert_action(check, |action| action.as_any().is::<CheckForUpdates>());
+    let schedule = submenu(&idle);
+    assert!(!schedule.disabled);
+    let weekly = item(schedule, "Weekly");
+    assert!(matches!(weekly, MenuItem::Action { checked: true, disabled: false, .. }));
+    assert_action(weekly, |action| action.as_any().is::<SetUpdateFrequencyWeekly>());
+    assert!(matches!(item(schedule, "Daily"), MenuItem::Action { checked: false, .. }));
+
+    let checking = product(UpdateMenuState { status: UpdateMenuStatus::Checking, ..idle_state() });
+    assert!(matches!(item(&checking, "Checking for Updates…"), MenuItem::Action { disabled: true, .. }));
+
+    let ready = product(UpdateMenuState {
+        status: UpdateMenuStatus::Ready(ReleaseVersion(0, 0, 32)),
+        ..idle_state()
+    });
+    assert_action(item(&ready, "Restart to Update to 0.0.32"), |action| {
+        action.as_any().is::<RestartToUpdate>()
+    });
+
+    fn idle_state() -> UpdateMenuState {
+        UpdateMenuState {
+            status: UpdateMenuStatus::Idle,
+            frequency: Some(UpdateFrequency::Weekly),
+        }
+    }
 }
 
 #[test]
