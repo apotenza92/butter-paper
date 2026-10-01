@@ -302,10 +302,14 @@ impl PdfRect {
                 (rect.y + rect.height) as f32,
             ]
         };
+        // PDF numbers are f32 and some geometry is stored offset by a border
+        // padding, so allow the rounding of one or two f32 operations.
         persisted_edges(self)
             .into_iter()
             .zip(persisted_edges(other))
-            .all(|(expected, actual)| expected == actual)
+            .all(|(expected, actual)| {
+                (expected - actual).abs() <= 1e-5_f32.max(expected.abs() * 2. * f32::EPSILON)
+            })
     }
 
     pub fn new(x: f64, y: f64, width: f64, height: f64) -> Result<Self, AnnotationError> {
@@ -424,7 +428,47 @@ impl PdfRect {
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct MarkupId(String);
 
+/// Groups the integer digits of a formatted measurement with commas, as Revu
+/// captions do (`2,697.37`). Fractional parts such as `1/2` are untouched.
+pub fn group_measurement_thousands(value: &str) -> String {
+    let (sign, unsigned) = value
+        .strip_prefix('-')
+        .map_or(("", value), |rest| ("-", rest));
+    let digits_end = unsigned
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(unsigned.len());
+    let (integer, rest) = unsigned.split_at(digits_end);
+    if integer.len() <= 3 || rest.starts_with('/') {
+        return value.to_owned();
+    }
+    let mut grouped = String::with_capacity(value.len() + integer.len() / 3);
+    for (index, digit) in integer.chars().enumerate() {
+        if index > 0 && (integer.len() - index) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    format!("{sign}{grouped}{rest}")
+}
+
+/// Sixteen random uppercase ASCII letters, as Revu writes for `/NM`.
+pub fn generate_markup_name() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("the operating system random source is available");
+    bytes
+        .iter()
+        // 256 is not a multiple of 26; the slight bias is irrelevant for names.
+        .map(|byte| char::from(b'A' + byte % 26))
+        .collect()
+}
+
 impl MarkupId {
+    /// A fresh markup name in Bluebeam Revu's form: sixteen random uppercase
+    /// letters, used as the PDF `/NM`.
+    pub fn generate() -> Self {
+        Self(generate_markup_name())
+    }
+
     pub fn new(value: impl Into<String>) -> Result<Self, AnnotationError> {
         let value = value.into();
         if value.is_empty() || value.trim() != value || value.chars().any(char::is_control) {
@@ -527,6 +571,12 @@ impl RectangleAppearance {
 
     pub fn stroke_style(&self) -> StrokeStyle {
         self.stroke_style
+    }
+
+    /// The same stroke without a fill, for open paths that cannot be filled.
+    pub fn without_fill(mut self) -> Self {
+        self.fill_color = None;
+        self
     }
 
     pub fn with_stroke_style(mut self, stroke_style: StrokeStyle) -> Self {
@@ -1385,16 +1435,18 @@ impl MeasurementPathAnnotation {
     }
 
     pub fn caption(&self) -> String {
-        let value = self
-            .calibration
-            .scale_precision
-            .format(self.measured_value());
+        let value = group_measurement_thousands(
+            &self
+                .calibration
+                .scale_precision
+                .format(self.measured_value()),
+        );
         match self.kind {
             MeasurementPathKind::Polylength => {
                 format!("{value} {}", self.calibration.unit)
             }
             MeasurementPathKind::Area => {
-                format!("{value} {}^2", self.calibration.unit)
+                format!("{value} sq {}", self.calibration.unit)
             }
         }
     }
@@ -1875,6 +1927,19 @@ pub struct TextBoxRichTextRun {
 }
 
 impl TextBoxRichTextRun {
+    /// The run's text and resolved style: an unset family, size or colour
+    /// inherits the box's, so an explicit repeat is the same run.
+    fn effective_style<'a>(&'a self, base: &'a TextBoxStyle) -> (&'a str, &'a str, u64, &'a str, bool, bool) {
+        (
+            self.text.as_str(),
+            self.font_family.as_deref().unwrap_or(base.font_family()),
+            self.font_size_pt.unwrap_or(base.font_size_pt()).to_bits(),
+            self.color.as_deref().unwrap_or(base.color()),
+            self.bold,
+            self.italic,
+        )
+    }
+
     pub fn new(text: impl Into<String>) -> Result<Self, AnnotationError> {
         let text = text.into();
         validate_text(&text, "rich text run", MAX_TEXT_BOX_BYTES)?;
@@ -2583,7 +2648,14 @@ impl TextBoxAnnotation {
             && self.layout_rect.same_pdf_geometry_as(other.layout_rect)
             && self.content == other.content
             && self.style == other.style
-            && self.rich_text_runs == other.rich_text_runs
+            && self.rich_text_runs.len() == other.rich_text_runs.len()
+            && self
+                .rich_text_runs
+                .iter()
+                .zip(&other.rich_text_runs)
+                .all(|(left, right)| {
+                    left.effective_style(&self.style) == right.effective_style(&other.style)
+                })
             && (self.rotation_degrees - other.rotation_degrees).abs() <= 0.000_1
             && self.locked == other.locked
     }
@@ -2673,7 +2745,7 @@ impl ScaleUnit {
         }
     }
 
-    fn points(self) -> f64 {
+    pub fn points(self) -> f64 {
         match self {
             Self::In => 72.,
             Self::Ft => 864.,
@@ -2891,6 +2963,22 @@ impl PageScale {
             scale_y,
             precision,
         })
+    }
+
+    /// Whether a reopened page scale is this one as a PDF viewport stores
+    /// it: units, f32 factors and precision. The scale's name and source are
+    /// editing metadata Revu does not record.
+    pub fn same_persisted_scale_as(&self, other: &Self) -> bool {
+        let same_factor = |left: f64, right: f64| {
+            (left - right).abs() <= 1e-6 * left.abs().max(right.abs()).max(f64::MIN_POSITIVE)
+        };
+        self.page_index == other.page_index
+            && self.pdf_units == other.pdf_units
+            && self.real_units == other.real_units
+            && same_factor(self.scale_x, other.scale_x)
+            && same_factor(self.scale_y, other.scale_y)
+            && self.precision.mode == other.precision.mode
+            && (self.precision.value - other.precision.value).abs() <= 1e-9
     }
 
     pub fn with_page_index(&self, page_index: u32) -> Self {
@@ -3117,6 +3205,10 @@ impl LengthCalibration {
             scale.precision.decimal_digits(),
             true,
         )?;
+        // Per-point factors are small; rounding them like coordinates would
+        // skew every measurement (0.0352778 m/pt would read 0.035278).
+        calibration.units_per_point = scale.scale_x;
+        calibration.real_world_value = scale.scale_x;
         calibration.scale_x = scale.scale_x;
         calibration.scale_y = scale.scale_y;
         calibration.scale_precision = scale.precision;
@@ -3186,10 +3278,26 @@ impl LengthCalibration {
             self.show_caption,
         )?
         .with_label(self.label.clone())?;
+        replacement.units_per_point = scale.units_per_point;
+        replacement.paper_points = scale.paper_points;
+        replacement.real_world_value = scale.real_world_value;
         replacement.scale_x = scale.scale_x;
         replacement.scale_y = scale.scale_y;
         replacement.scale_precision = scale.scale_precision;
         Ok(replacement)
+    }
+
+    /// Whether two calibrations agree as a PDF `/Measure` stores them: the
+    /// f32 scale ratio, unit and precision.
+    pub fn same_persisted_scale_as(&self, other: &LengthCalibration) -> bool {
+        let same_factor = |left: f64, right: f64| {
+            (left - right).abs() <= 1e-6 * left.abs().max(right.abs()).max(f64::MIN_POSITIVE)
+        };
+        same_factor(self.units_per_point, other.units_per_point)
+            && same_factor(self.scale_y, other.scale_y)
+            && self.unit == other.unit
+            && self.scale_precision.mode == other.scale_precision.mode
+            && (self.scale_precision.value - other.scale_precision.value).abs() <= 1e-9
     }
 
     pub fn same_scale_as(&self, other: &LengthCalibration) -> bool {
@@ -3200,20 +3308,22 @@ impl LengthCalibration {
             && self.scale_precision == other.scale_precision
     }
 
+    /// A PDF `/Measure` stores the scale as a ratio in f32, so the separate
+    /// paper and real-world values and the caption toggle are not persisted.
     fn same_persisted_state_as(&self, other: &LengthCalibration) -> bool {
         const PDF_NUMBER_TOLERANCE: f64 = 0.000_001;
-        (self.units_per_point - other.units_per_point).abs() <= PDF_NUMBER_TOLERANCE
-            && (self.scale_x - other.scale_x).abs() <= PDF_NUMBER_TOLERANCE
-            && (self.scale_y - other.scale_y).abs() <= PDF_NUMBER_TOLERANCE
-            && (self.paper_points - other.paper_points).abs() <= PDF_NUMBER_TOLERANCE
-            && (self.real_world_value - other.real_world_value).abs() <= PDF_NUMBER_TOLERANCE
+        let same_ratio = |left: f64, right: f64| {
+            (left - right).abs() <= PDF_NUMBER_TOLERANCE * left.abs().max(right.abs()).max(1.)
+        };
+        same_ratio(self.units_per_point, other.units_per_point)
+            && same_ratio(self.scale_x, other.scale_x)
+            && same_ratio(self.scale_y, other.scale_y)
             && self.unit == other.unit
             && self.label == other.label
             && self.precision == other.precision
             && self.scale_precision.mode == other.scale_precision.mode
             && (self.scale_precision.value - other.scale_precision.value).abs()
                 <= PDF_NUMBER_TOLERANCE
-            && self.show_caption == other.show_caption
     }
 }
 
@@ -3434,10 +3544,12 @@ impl LengthAnnotation {
     }
 
     pub fn caption(&self) -> String {
-        let value = self
-            .calibration
-            .scale_precision
-            .format(self.measured_value());
+        let value = group_measurement_thousands(
+            &self
+                .calibration
+                .scale_precision
+                .format(self.measured_value()),
+        );
         if self.calibration.label.is_empty() {
             format!("{value} {}", self.calibration.unit)
         } else {
@@ -3693,7 +3805,7 @@ impl ImageAnnotation {
             && self.asset == other.asset
             && (self.opacity - other.opacity).abs() <= 0.000_1
             && (self.rotation_degrees - other.rotation_degrees).abs() <= 0.000_1
-            && self.aspect_locked == other.aspect_locked
+            // Aspect lock is an editing preference with no PDF field.
             && self.locked == other.locked
     }
 
@@ -3705,6 +3817,31 @@ impl ImageAnnotation {
 }
 
 impl PenAnnotation {
+    /// Whether a reopened Ink is this one as a PDF stores it: f32 `/InkList`
+    /// points, stroke, tool and lock. Smoothing is a display preference with
+    /// no PDF field.
+    pub fn same_persisted_state_as(&self, other: &Self) -> bool {
+        let same_number = |left: f64, right: f64| {
+            (left as f32 - right as f32).abs()
+                <= 1e-5_f32.max(left.abs() as f32 * 2. * f32::EPSILON)
+        };
+        self.id == other.id
+            && self.page_index == other.page_index
+            && self.tool == other.tool
+            && self.blend_mode == other.blend_mode
+            && self.locked == other.locked
+            && self.appearance.color == other.appearance.color
+            && same_number(self.appearance.width_pt, other.appearance.width_pt)
+            && same_number(self.appearance.opacity, other.appearance.opacity)
+            && self.paths().count() == other.paths().count()
+            && self.paths().zip(other.paths()).all(|(left, right)| {
+                left.len() == right.len()
+                    && left.iter().zip(right).all(|(left, right)| {
+                        same_number(left.x, right.x) && same_number(left.y, right.y)
+                    })
+            })
+    }
+
     pub fn new(
         id: MarkupId,
         page_index: u32,
@@ -14929,7 +15066,7 @@ mod tests {
         assert_eq!(polylength.measured_value(), 4.0);
         assert_eq!(area.measured_value(), 2.0);
         assert_eq!(polylength.caption(), "4.00 ft");
-        assert_eq!(area.caption(), "2.00 ft^2");
+        assert_eq!(area.caption(), "2.00 sq ft");
         assert_eq!(polylength.points().len(), 3);
         assert_eq!(area.points().len(), 3);
 

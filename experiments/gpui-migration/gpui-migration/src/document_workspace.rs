@@ -1751,15 +1751,25 @@ impl PdfDocumentSaver {
                 && request.annotations.page_length_calibrations.iter().all(
                     |(page_index, expected)| {
                         reopened_page_scales.iter().any(|(candidate_page, actual)| {
-                            candidate_page == page_index && actual.same_scale_as(expected)
+                            candidate_page == page_index
+                                && actual.same_persisted_scale_as(expected)
                         })
                     },
                 )
         } else {
-            reopened.page_scales() == request.annotations.page_scales
+            reopened.page_scales().len() == request.annotations.page_scales.len()
+                && reopened
+                    .page_scales()
+                    .iter()
+                    .zip(&request.annotations.page_scales)
+                    .all(|(actual, expected)| actual.same_persisted_scale_as(expected))
         };
         if !page_scales_match {
-            return Err("saved PDF page scales failed independent reopen validation".into());
+            return Err(format!(
+                "saved PDF page scales failed independent reopen validation: expected {:?}, reopened {:?}",
+                request.annotations.page_scales,
+                reopened.page_scales(),
+            ));
         }
         let reopened_page_rotations = reopened
             .page_rotations()
@@ -2163,7 +2173,7 @@ impl PdfDocumentSaver {
                     expected.id
                 ));
             }
-            if actual != expected {
+            if !actual.same_persisted_state_as(expected) {
                 return Err(format!(
                     "saved PDF pen {} failed typed reopen validation",
                     expected.id
@@ -18210,7 +18220,7 @@ fn paint_ellipse_annotations(
                 window.paint_path(
                     path,
                     color.opacity(
-                        (annotation.appearance.opacity() * annotation.appearance.fill_opacity())
+                        annotation.appearance.fill_opacity()
                             as f32,
                     ),
                 );
@@ -20039,8 +20049,7 @@ fn annotation_layer(
                                         window.paint_path(
                                             path,
                                             color.opacity(
-                                                (annotation.appearance.opacity()
-                                                    * annotation.appearance.fill_opacity())
+                                                annotation.appearance.fill_opacity()
                                                     as f32,
                                             ),
                                         );
@@ -20089,8 +20098,7 @@ fn annotation_layer(
                                 window.paint_quad(fill(
                                     annotation_bounds,
                                     color.opacity(
-                                        (annotation.appearance.opacity()
-                                            * annotation.appearance.fill_opacity())
+                                        annotation.appearance.fill_opacity()
                                             as f32,
                                     ),
                                 ));
@@ -20297,8 +20305,7 @@ fn annotation_layer(
                                     let color = try_parse_color(fill_color)
                                         .unwrap_or(selection_color)
                                         .opacity(
-                                            (annotation.appearance.opacity()
-                                                * annotation.appearance.fill_opacity())
+                                            annotation.appearance.fill_opacity()
                                                 as f32,
                                         );
                                     window.paint_path(path, color);
@@ -20699,8 +20706,7 @@ fn annotation_layer(
                                     let color = try_parse_color(fill_color)
                                         .unwrap_or(selection_color)
                                         .opacity(
-                                            (annotation.appearance.opacity()
-                                                * annotation.appearance.fill_opacity())
+                                            annotation.appearance.fill_opacity()
                                                 as f32,
                                         );
                                     window.paint_path(path, color);

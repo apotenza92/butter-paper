@@ -2317,433 +2317,7 @@ fn real_page_content_and_form_xobjects_honour_optional_content_before_and_after_
     );
 }
 
-#[test]
-fn legacy_length_preserves_external_identity_until_edit_and_rejects_ambiguity() {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("../performance/results/public-fixtures-v1/bp-annotation-all-v1.pdf");
-    let source_bytes = std::fs::read(&source).expect("the tracked fixture must be readable");
-    let source_length = native_annotation_graph_oracle(&source, "length-1");
-    let source_unknown = native_annotation_graph_oracle(&source, "unknown-1");
-    let root = manifest_dir.join(format!(
-        ".prepared/legacy-length-preserve-until-edit-{}",
-        std::process::id()
-    ));
-    std::fs::remove_dir_all(&root).ok();
-    std::fs::create_dir_all(&root).unwrap();
-    let _scratch = ScratchDirectories(vec![root.clone()]);
-    let preserved_target = root.join("preserved.pdf");
-    let edited_target = root.join("edited.pdf");
-    let ambiguous_source = root.join("ambiguous.pdf");
 
-    let source_session = PdfPersistenceSession::open(&source).unwrap();
-    assert_eq!(
-        source_session
-            .lengths()
-            .iter()
-            .map(|length| length.id.as_str())
-            .collect::<Vec<_>>(),
-        ["length-1"],
-        "a structurally valid external /Line + /Measure must import as Length",
-    );
-    assert!(source_session.straight_lines().is_empty());
-    assert!(
-        !source_session.length_has_canonical_native_identity(&MarkupId::new("length-1").unwrap())
-    );
-    let source_order = source_session.annotation_order().to_vec();
-    assert!(
-        source_session
-            .untouched_annotations()
-            .iter()
-            .any(|annotation| { annotation.name == "unknown-1" && annotation.subtype == "Text" })
-    );
-
-    let mut unrelated_snapshot = persistence_annotation_snapshot(&source_session);
-    let unrelated = unrelated_snapshot
-        .rectangles
-        .iter_mut()
-        .find(|rectangle| rectangle.id.as_str() == "rectangle-1")
-        .expect("the unrelated Rectangle must import from the tracked fixture");
-    unrelated.rect = PdfRect::new(
-        unrelated.rect.x + 6.,
-        unrelated.rect.y,
-        unrelated.rect.width,
-        unrelated.rect.height,
-    )
-    .unwrap();
-    PdfDocumentSaver::new(Arc::new(AnnotationAllSuccessfulOpener))
-        .save(&SaveDocumentRequest {
-            document_id: DocumentId::new(170),
-            generation: 1,
-            source_path: source.clone(),
-            destination: save_as_destination(&source, &preserved_target),
-            current_page: 0,
-            annotation_revision: 1,
-            annotations: unrelated_snapshot,
-            expected_source_sha256: None,
-        })
-        .expect("an unrelated Save As must preserve a valid external Length");
-
-    let preserved = PdfPersistenceSession::open(&preserved_target).unwrap();
-    assert_eq!(preserved.lengths().len(), 1);
-    assert!(preserved.straight_lines().is_empty());
-    assert_eq!(preserved.annotation_order(), source_order);
-    assert_eq!(
-        native_annotation_graph_oracle(&preserved_target, "length-1"),
-        source_length,
-        "unrelated Save As must preserve the full external Length dictionary and resolved /AP graph",
-    );
-    assert_eq!(
-        native_annotation_graph_oracle(&preserved_target, "unknown-1"),
-        source_unknown,
-    );
-    assert!(!preserved.has_canonical_raw_annotation_name(&MarkupId::new("length-1").unwrap()));
-
-    let mut edited_snapshot = persistence_annotation_snapshot(&preserved);
-    let prior = edited_snapshot.lengths[0].clone();
-    edited_snapshot.lengths[0] = LengthAnnotation::new(
-        prior.id.clone(),
-        prior.page_index,
-        prior.start,
-        PdfPoint::new(prior.end.x + 36., prior.end.y).unwrap(),
-        prior.calibration().clone(),
-    )
-    .unwrap();
-    let expected_edited = edited_snapshot.lengths[0].clone();
-    let preserved_bytes = std::fs::read(&preserved_target).unwrap();
-    PdfDocumentSaver::new(Arc::new(AnnotationAllSuccessfulOpener))
-        .save(&SaveDocumentRequest {
-            document_id: DocumentId::new(170),
-            generation: 2,
-            source_path: preserved_target.clone(),
-            destination: save_as_destination(&preserved_target, &edited_target),
-            current_page: 0,
-            annotation_revision: 2,
-            annotations: edited_snapshot,
-            expected_source_sha256: None,
-        })
-        .expect("editing the external Length must promote it to canonical ownership");
-    assert_eq!(std::fs::read(&preserved_target).unwrap(), preserved_bytes);
-
-    let edited = PdfPersistenceSession::open(&edited_target).unwrap();
-    assert_eq!(edited.lengths(), &[expected_edited]);
-    let length_id = MarkupId::new("length-1").unwrap();
-    assert!(edited.length_has_canonical_native_identity(&length_id));
-    assert!(!edited.has_raw_annotation_name(&length_id));
-    let canonical = native_annotation_graph_oracle(&edited_target, "bp:length-1");
-    assert_eq!(
-        canonical.object_id, source_length.object_id,
-        "editing must promote the existing native annotation object instead of replacing its identity",
-    );
-    assert!(canonical.dictionary.contains("LineDimension"));
-    assert!(canonical.dictionary.contains("Length Measurement"));
-
-    append_normalized_duplicate_length(&source, &ambiguous_source);
-    let ambiguous_bytes = std::fs::read(&ambiguous_source).unwrap();
-    let ambiguity = match PdfPersistenceSession::open(&ambiguous_source) {
-        Ok(_) => panic!("raw and canonical legacy Length names must not share one stable id"),
-        Err(error) => error,
-    };
-    assert!(
-        ambiguity
-            .to_string()
-            .contains("ambiguous length identity length-1"),
-        "{ambiguity}",
-    );
-    assert_eq!(std::fs::read(&ambiguous_source).unwrap(), ambiguous_bytes);
-    assert_eq!(std::fs::read(&source).unwrap(), source_bytes);
-    assert_eq!(
-        std::fs::read_dir(&root)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect::<std::collections::BTreeSet<_>>(),
-        ["ambiguous.pdf", "edited.pdf", "preserved.pdf"]
-            .into_iter()
-            .map(OsString::from)
-            .collect(),
-        "failed validation and successful publication must leave no staging file",
-    );
-}
-
-#[test]
-fn legacy_length_hardening_preserves_unnamed_and_ambiguous_inputs_and_cleans_owned_graphs() {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let fixture =
-        manifest_dir.join("../performance/results/public-fixtures-v1/bp-annotation-all-v1.pdf");
-    let fixture_bytes = std::fs::read(&fixture).unwrap();
-    let root = manifest_dir.join(format!(
-        ".prepared/legacy-length-hardening-{}",
-        std::process::id()
-    ));
-    std::fs::remove_dir_all(&root).ok();
-    std::fs::create_dir_all(&root).unwrap();
-    let _scratch = ScratchDirectories(vec![root.clone()]);
-
-    let unnamed_source = root.join("unnamed-source.pdf");
-    let unnamed_preserved = root.join("unnamed-preserved.pdf");
-    let unnamed_edited = root.join("unnamed-edited.pdf");
-    let unnamed_deleted = root.join("unnamed-deleted.pdf");
-    rewrite_length_fixture(&fixture, &unnamed_source, |document, length_id| {
-        document
-            .get_object_mut(length_id)
-            .unwrap()
-            .as_dict_mut()
-            .unwrap()
-            .remove(b"NM");
-    });
-    let unnamed_bytes = std::fs::read(&unnamed_source).unwrap();
-    let unnamed_oracle = first_length_oracle(&unnamed_source);
-    assert!(!unnamed_oracle.dictionary.contains("\"NM\""));
-    let unnamed = PdfPersistenceSession::open(&unnamed_source).unwrap();
-    assert_eq!(unnamed.lengths().len(), 1);
-    assert!(unnamed.straight_lines().is_empty());
-    let synthetic_id = unnamed.lengths()[0].id.clone();
-    assert!(synthetic_id.as_str().starts_with("page-0-annotation-"));
-    save_with_unrelated_rectangle_edit(&unnamed_source, &unnamed_preserved, 10);
-    assert_eq!(first_length_oracle(&unnamed_preserved), unnamed_oracle);
-    assert_eq!(std::fs::read(&unnamed_source).unwrap(), unnamed_bytes);
-
-    let preserved = PdfPersistenceSession::open(&unnamed_preserved).unwrap();
-    let mut edited_snapshot = persistence_annotation_snapshot(&preserved);
-    let old_graph_ids = first_length_oracle(&unnamed_preserved)
-        .resolved_appearance_graph
-        .iter()
-        .map(|(object_id, _)| *object_id)
-        .collect::<Vec<_>>();
-    let prior = edited_snapshot.lengths[0].clone();
-    edited_snapshot.lengths[0] = LengthAnnotation::new(
-        prior.id.clone(),
-        prior.page_index,
-        prior.start,
-        PdfPoint::new(prior.end.x + 18., prior.end.y).unwrap(),
-        prior.calibration().clone(),
-    )
-    .unwrap();
-    PdfDocumentSaver::new(Arc::new(AnnotationAllSuccessfulOpener))
-        .save(&SaveDocumentRequest {
-            document_id: DocumentId::new(172),
-            generation: 11,
-            source_path: unnamed_preserved.clone(),
-            destination: save_as_destination(&unnamed_preserved, &unnamed_edited),
-            current_page: 0,
-            annotation_revision: 11,
-            annotations: edited_snapshot,
-            expected_source_sha256: None,
-        })
-        .expect("the first edit must promote an unnamed external Length");
-    let edited = PdfPersistenceSession::open(&unnamed_edited).unwrap();
-    assert!(edited.length_has_canonical_native_identity(&synthetic_id));
-    let text_before = native_annotation_graph_oracle(&unnamed_source, "text-1");
-    let shared_ids = text_before
-        .resolved_appearance_graph
-        .iter()
-        .map(|(id, _)| *id)
-        .collect::<std::collections::BTreeSet<_>>();
-    let private_ids = old_graph_ids
-        .iter()
-        .copied()
-        .filter(|id| !shared_ids.contains(id))
-        .collect::<Vec<_>>();
-    assert!(!private_ids.is_empty());
-    assert!(
-        old_graph_ids.iter().any(|id| shared_ids.contains(id)),
-        "the fixture exercises a font shared by Length and FreeText"
-    );
-    assert!(
-        object_ids_exist(&unnamed_edited, &private_ids)
-            .into_iter()
-            .all(|exists| !exists),
-        "editing must remove the obsolete private appearance objects",
-    );
-    let edited_objects = LopdfDocument::load(&unnamed_edited).unwrap();
-    for (id, expected) in &text_before.resolved_appearance_graph {
-        assert_eq!(
-            format!("{:?}", edited_objects.get_object(*id).unwrap()),
-            *expected,
-            "cleanup must preserve the retained external appearance and its shared font"
-        );
-    }
-    let edited_graph_ids = first_length_oracle(&unnamed_edited)
-        .resolved_appearance_graph
-        .iter()
-        .map(|(object_id, _)| *object_id)
-        .collect::<Vec<_>>();
-    let mut deleted_snapshot = persistence_annotation_snapshot(&edited);
-    deleted_snapshot
-        .annotation_order
-        .retain(|id| id != &synthetic_id);
-    deleted_snapshot.lengths.clear();
-    PdfDocumentSaver::new(Arc::new(AnnotationAllSuccessfulOpener))
-        .save(&SaveDocumentRequest {
-            document_id: DocumentId::new(172),
-            generation: 12,
-            source_path: unnamed_edited.clone(),
-            destination: save_as_destination(&unnamed_edited, &unnamed_deleted),
-            current_page: 0,
-            annotation_revision: 12,
-            annotations: deleted_snapshot,
-            expected_source_sha256: None,
-        })
-        .expect("deleting a managed Length must remove its owned appearance graph");
-    assert!(
-        object_ids_exist(&unnamed_deleted, &edited_graph_ids)
-            .into_iter()
-            .all(|exists| !exists),
-    );
-
-    let collision_source = root.join("cross-family-collision.pdf");
-    rewrite_length_fixture(&fixture, &collision_source, |document, length_id| {
-        document
-            .get_object_mut(length_id)
-            .unwrap()
-            .as_dict_mut()
-            .unwrap()
-            .set("NM", lopdf::text_string("bp:foo"));
-        let rectangle_id = native_annotation_object_id(document, "rectangle-1");
-        document
-            .get_object_mut(rectangle_id)
-            .unwrap()
-            .as_dict_mut()
-            .unwrap()
-            .set("NM", lopdf::text_string("foo"));
-    });
-    let collision_bytes = std::fs::read(&collision_source).unwrap();
-    let collision = match PdfPersistenceSession::open(&collision_source) {
-        Ok(_) => panic!("managed families must not expose the same normalized stable ID"),
-        Err(error) => error,
-    };
-    assert!(
-        collision
-            .to_string()
-            .contains("ambiguous managed annotation identity foo")
-    );
-    assert_eq!(std::fs::read(&collision_source).unwrap(), collision_bytes);
-
-    let malformed_source = root.join("malformed-source.pdf");
-    let malformed_preserved = root.join("malformed-preserved.pdf");
-    rewrite_length_fixture(&fixture, &malformed_source, |document, length_id| {
-        document
-            .get_object_mut(length_id)
-            .unwrap()
-            .as_dict_mut()
-            .unwrap()
-            .get_mut(b"Measure")
-            .unwrap()
-            .as_dict_mut()
-            .unwrap()
-            .remove(b"X");
-    });
-    let malformed_oracle = native_annotation_graph_oracle(&malformed_source, "length-1");
-    let malformed = PdfPersistenceSession::open(&malformed_source).unwrap();
-    assert!(malformed.lengths().is_empty());
-    assert!(malformed.straight_lines().is_empty());
-    save_with_unrelated_rectangle_edit(&malformed_source, &malformed_preserved, 13);
-    assert_eq!(
-        native_annotation_graph_oracle(&malformed_preserved, "length-1"),
-        malformed_oracle,
-    );
-
-    let direct_source = root.join("direct-source.pdf");
-    let direct_preserved = root.join("direct-preserved.pdf");
-    rewrite_length_fixture(&fixture, &direct_source, |document, length_id| {
-        let direct = document.get_object(length_id).unwrap().clone();
-        let page_id = *document.get_pages().get(&1).unwrap();
-        let annots = document
-            .get_object(page_id)
-            .unwrap()
-            .as_dict()
-            .unwrap()
-            .get(b"Annots")
-            .unwrap()
-            .clone();
-        let annots = match annots {
-            LopdfObject::Reference(annots_id) => document
-                .get_object_mut(annots_id)
-                .unwrap()
-                .as_array_mut()
-                .unwrap(),
-            LopdfObject::Array(_) => document
-                .get_object_mut(page_id)
-                .unwrap()
-                .as_dict_mut()
-                .unwrap()
-                .get_mut(b"Annots")
-                .unwrap()
-                .as_array_mut()
-                .unwrap(),
-            _ => panic!("page-one /Annots must be an array"),
-        };
-        let slot = annots
-            .iter_mut()
-            .find(|object| object.as_reference().ok() == Some(length_id))
-            .unwrap();
-        *slot = direct;
-        document.objects.remove(&length_id);
-    });
-    let direct_oracle = first_length_oracle(&direct_source);
-    let direct = PdfPersistenceSession::open(&direct_source).unwrap();
-    assert!(direct.lengths().is_empty());
-    assert!(direct.straight_lines().is_empty());
-    save_with_unrelated_rectangle_edit(&direct_source, &direct_preserved, 14);
-    assert_eq!(first_length_oracle(&direct_preserved), direct_oracle);
-
-    let shared_source = root.join("shared-source.pdf");
-    let shared_edited = root.join("shared-edited.pdf");
-    rewrite_length_fixture(&fixture, &shared_source, |document, length_id| {
-        let length = document.get_object(length_id).unwrap().as_dict().unwrap();
-        let shared_ap = length.get(b"AP").unwrap().clone();
-        let mut shared = lopdf::Dictionary::new();
-        shared.set("Type", LopdfObject::Name(b"Annot".to_vec()));
-        shared.set("Subtype", LopdfObject::Name(b"Text".to_vec()));
-        shared.set("NM", lopdf::text_string("shared-length-appearance"));
-        shared.set("Rect", vec![0.into(), 0.into(), 12.into(), 12.into()]);
-        shared.set("AP", shared_ap);
-        append_page_one_annotation(document, LopdfObject::Dictionary(shared));
-    });
-    let shared_old_ids = first_length_oracle(&shared_source)
-        .resolved_appearance_graph
-        .iter()
-        .map(|(object_id, _)| *object_id)
-        .collect::<Vec<_>>();
-    let shared = PdfPersistenceSession::open(&shared_source).unwrap();
-    let mut shared_snapshot = persistence_annotation_snapshot(&shared);
-    let prior = shared_snapshot.lengths[0].clone();
-    shared_snapshot.lengths[0] = LengthAnnotation::new(
-        prior.id.clone(),
-        prior.page_index,
-        prior.start,
-        PdfPoint::new(prior.end.x + 9., prior.end.y).unwrap(),
-        prior.calibration().clone(),
-    )
-    .unwrap();
-    PdfDocumentSaver::new(Arc::new(AnnotationAllSuccessfulOpener))
-        .save(&SaveDocumentRequest {
-            document_id: DocumentId::new(173),
-            generation: 15,
-            source_path: shared_source.clone(),
-            destination: save_as_destination(&shared_source, &shared_edited),
-            current_page: 0,
-            annotation_revision: 15,
-            annotations: shared_snapshot,
-            expected_source_sha256: None,
-        })
-        .unwrap();
-    assert!(
-        object_ids_exist(&shared_edited, &shared_old_ids)
-            .into_iter()
-            .all(|exists| exists),
-        "shared appearance and resource objects must remain reachable",
-    );
-
-    assert_eq!(std::fs::read(&fixture).unwrap(), fixture_bytes);
-    assert!(std::fs::read_dir(&root).unwrap().all(|entry| {
-        !entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .contains(".tmp")
-    }),);
-}
 
 fn scroll_annotation_target_into_view(
     cx: &mut gpui::VisualTestContext,
@@ -3177,7 +2751,7 @@ fn qpdf_canonical_straight_line_dictionary(
         .expect("qpdf must be available for canonical Line dictionary evidence");
     assert!(output.status.success(), "qpdf JSON inspection failed");
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let native_name = format!("bp:{}", id.as_str());
+    let native_name = id.as_str().to_owned();
     let dictionary = json["objects"]
         .as_object()
         .unwrap()
@@ -3185,13 +2759,18 @@ fn qpdf_canonical_straight_line_dictionary(
         .find(|value| value.get("/NM").and_then(serde_json::Value::as_str) == Some(&native_name))
         .unwrap_or_else(|| panic!("qpdf must expose the canonical dictionary for {native_name}"));
     assert_eq!(dictionary["/Subtype"], "/Line");
+    // Revu's Line keys; opacity is present only when translucent.
     for key in [
-        "/L", "/Rect", "/Border", "/BS", "/C", "/CA", "/ca", "/F", "/NM", "/Subj",
+        "/L", "/Rect", "/BS", "/C", "/F", "/NM", "/Subj", "/T", "/M", "/CreationDate", "/P",
+        "/PitchRun", "/SlopeType",
     ] {
         assert!(
             !dictionary[key].is_null(),
             "{native_name} must contain {key}"
         );
+    }
+    for key in ["/Border", "/ca"] {
+        assert!(dictionary.get(key).is_none(), "{native_name} must not contain {key}");
     }
     assert_eq!(dictionary["/BS"]["/S"], "/S");
     assert!(dictionary["/BS"].get("/D").is_none());
@@ -3241,7 +2820,7 @@ fn qpdf_assert_pending_redact_native(path: &Path, expected: &RedactAnnotation) -
         .expect("qpdf JSON v1 must be available for pending Redact string evidence");
     assert!(output.status.success(), "qpdf JSON inspection failed");
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let native_name = format!("bp:{}", expected.id.as_str());
+    let native_name = expected.id.as_str().to_owned();
     let (object_ref, dictionary) = json["objects"]
         .as_object()
         .unwrap()
@@ -3254,7 +2833,7 @@ fn qpdf_assert_pending_redact_native(path: &Path, expected: &RedactAnnotation) -
     assert_eq!(dictionary["/Subtype"], "/Redact");
     assert_eq!(dictionary["/NM"], native_name);
     assert_eq!(dictionary["/Subj"], "Redaction");
-    assert_eq!(dictionary["/Contents"], "Marked for redaction");
+    assert!(dictionary.get("/Contents").is_none());
     assert_eq!(
         dictionary["/F"], 4,
         "Print must remain set and the lock bit cleared"
@@ -3268,8 +2847,10 @@ fn qpdf_assert_pending_redact_native(path: &Path, expected: &RedactAnnotation) -
         "the default pending mark must omit /OverlayText",
     );
     assert_eq!(dictionary["/IC"], serde_json::json!([0, 0, 0]));
-    assert!((number(&dictionary["/CA"]) - 0.35).abs() < 0.001);
-    assert!((number(&dictionary["/ca"]) - 0.1225).abs() < 0.001);
+    // The pending-mark look is the viewer's; the file holds only ISO keys.
+    for key in ["/CA", "/ca", "/BPAppearance"] {
+        assert!(dictionary.get(key).is_none(), "pending Redact must not contain {key}");
+    }
     let expected_rect = [
         expected.rect.x,
         expected.rect.y,
@@ -3310,22 +2891,6 @@ fn qpdf_assert_pending_redact_native(path: &Path, expected: &RedactAnnotation) -
             "pending Redact /QuadPoints order or value changed",
         );
     }
-    let stored_appearance: serde_json::Value = serde_json::from_str(
-        dictionary["/BPAppearance"]
-            .as_str()
-            .expect("/BPAppearance must be a qpdf JSON v1 string"),
-    )
-    .expect("/BPAppearance must contain exact JSON");
-    assert_eq!(
-        stored_appearance,
-        serde_json::json!({
-            "stroke": { "color": "#ff0000", "widthPt": 1.0 },
-            "opacity": 0.35,
-            "fillOpacity": 0.35,
-            "blendMode": "normal",
-            "fill": { "color": "#000000" },
-        }),
-    );
     object_ref.clone()
 }
 
@@ -3347,7 +2912,7 @@ fn qpdf_assert_snapshot_native(
         .expect("qpdf JSON v1 must be available for Snapshot string evidence");
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let native_name = format!("bp:{}", expected.id.as_str());
+    let native_name = expected.id.as_str().to_owned();
     let dictionary = json["objects"]
         .as_object()
         .unwrap()
@@ -3358,12 +2923,12 @@ fn qpdf_assert_snapshot_native(
     assert_eq!(dictionary["/Subtype"], "/Stamp");
     assert_eq!(dictionary["/IT"], "/StampSnapshot");
     assert_eq!(dictionary["/Subj"], "Snapshot");
-    assert_eq!(dictionary["/Contents"], "");
-    assert_eq!(dictionary["/BPAssetId"], expected.asset().id().as_str());
+    for key in ["/Contents", "/BPAssetId", "/ca"] {
+        assert!(dictionary.get(key).is_none(), "Snapshot must not contain {key}");
+    }
     assert_eq!(dictionary["/F"], 132);
     assert!((number(&dictionary["/Rotation"]) - expected.rotation_degrees()).abs() < 0.001);
     assert!((number(&dictionary["/CA"]) - expected.opacity()).abs() < 0.001);
-    assert!((number(&dictionary["/ca"]) - expected.opacity()).abs() < 0.001);
     for (actual, expected) in dictionary["/Rect"]
         .as_array()
         .unwrap()
@@ -3395,25 +2960,31 @@ fn qpdf_assert_snapshot_native(
     assert_eq!(form["/Type"], "/XObject");
     assert_eq!(form["/Subtype"], "/Form");
     assert_eq!(form["/FormType"], 1);
-    assert!(
-        form.get("/Matrix").is_none(),
-        "the page-space Form uses the identity matrix"
-    );
+    // Revu's layout: the unrotated box in page space, rotated by /Matrix.
     for (actual, expected) in form["/BBox"].as_array().unwrap().iter().map(number).zip([
-        0.,
-        0.,
-        expected_bounds.width,
-        expected_bounds.height,
+        expected.rect.x,
+        expected.rect.y,
+        expected.rect.x + expected.rect.width,
+        expected.rect.y + expected.rect.height,
     ]) {
         assert!(
             (actual - expected).abs() < 0.001,
-            "local Snapshot Form /BBox changed"
+            "Snapshot Form /BBox changed"
         );
+    }
+    let matrix = form["/Matrix"].as_array().unwrap();
+    let radians = expected.rotation_degrees().to_radians();
+    for (actual, expected) in matrix.iter().take(4).map(number).zip([
+        radians.cos(),
+        -radians.sin(),
+        radians.sin(),
+        radians.cos(),
+    ]) {
+        assert!((actual - expected).abs() < 0.001, "Snapshot /Matrix changed");
     }
     let gs = &form["/Resources"]["/ExtGState"]["/GS0"];
     assert!((number(&gs["/CA"]) - expected.opacity()).abs() < 0.001);
-    assert!((number(&gs["/ca"]) - expected.opacity()).abs() < 0.001);
-    let image_ref = form["/Resources"]["/XObject"]["/Im0"]
+    let image_ref = form["/Resources"]["/XObject"]["/Image"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -3423,11 +2994,6 @@ fn qpdf_assert_snapshot_native(
     assert_eq!(image["/ColorSpace"], "/DeviceRGB");
     assert_eq!(image["/Width"], expected.asset().width_px());
     assert_eq!(image["/Height"], expected.asset().height_px());
-    let smask_ref = image["/SMask"].as_str().unwrap().to_owned();
-    let smask_key = format!("obj:{smask_ref}");
-    let smask = &json["qpdf"][1][smask_key.as_str()]["stream"]["dict"];
-    assert_eq!(smask["/Subtype"], "/Image");
-    assert_eq!(smask["/ColorSpace"], "/DeviceGray");
     let filtered = |object_ref: &str| {
         let object_number = object_ref.split_whitespace().next().unwrap();
         let output = std::process::Command::new("qpdf")
@@ -3446,7 +3012,17 @@ fn qpdf_assert_snapshot_native(
         expected_alpha.push(pixel[3]);
     }
     assert_eq!(filtered(&image_ref), expected_rgb);
-    assert_eq!(filtered(&smask_ref), expected_alpha);
+    let mut owned = vec![appearance_ref.clone(), image_ref.clone()];
+    if let Some(smask_ref) = image["/SMask"].as_str() {
+        let smask_key = format!("obj:{smask_ref}");
+        let smask = &json["qpdf"][1][smask_key.as_str()]["stream"]["dict"];
+        assert_eq!(smask["/Subtype"], "/Image");
+        assert_eq!(smask["/ColorSpace"], "/DeviceGray");
+        assert_eq!(filtered(smask_ref), expected_alpha);
+        owned.push(smask_ref.to_owned());
+    } else {
+        assert!(expected_alpha.iter().all(|alpha| *alpha == u8::MAX));
+    }
     let appearance_object = appearance_ref.split_whitespace().next().unwrap();
     let content = std::process::Command::new("qpdf")
         .arg(format!("--show-object={appearance_object}"))
@@ -3456,21 +3032,11 @@ fn qpdf_assert_snapshot_native(
         .unwrap();
     assert!(content.status.success());
     let content = String::from_utf8(content.stdout).unwrap();
-    let radians = expected.rotation_degrees().to_radians();
-    let a = expected.rect.width * radians.cos();
-    let b = expected.rect.width * radians.sin();
-    let c = -expected.rect.height * radians.sin();
-    let d = expected.rect.height * radians.cos();
-    let center = PdfPoint {
-        x: expected.rect.x + expected.rect.width * 0.5,
-        y: expected.rect.y + expected.rect.height * 0.5,
-    };
-    let e = center.x - a * 0.5 - c * 0.5 - expected_bounds.x;
-    let f = center.y - b * 0.5 - d * 0.5 - expected_bounds.y;
     assert!(content.contains(&format!(
-        "{a:.6} {b:.6} {c:.6} {d:.6} {e:.6} {f:.6} cm\n/Im0 Do",
+        "{:.6} 0 0 {:.6} {:.6} {:.6} cm\n/Image Do",
+        expected.rect.width, expected.rect.height, expected.rect.x, expected.rect.y,
     )));
-    vec![appearance_ref, image_ref, smask_ref]
+    owned
 }
 
 fn qpdf_assert_vertex_path_native(path: &Path, expected: &VertexPathAnnotation) {
@@ -3481,7 +3047,7 @@ fn qpdf_assert_vertex_path_native(path: &Path, expected: &VertexPathAnnotation) 
         .expect("qpdf must expose raw vertex-path dictionaries");
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let native_name = format!("bp:{}", expected.id.as_str());
+    let native_name = expected.id.as_str().to_owned();
     let dictionary = json["objects"]
         .as_object()
         .unwrap()
@@ -3511,7 +3077,8 @@ fn qpdf_assert_vertex_path_native(path: &Path, expected: &VertexPathAnnotation) 
             "raw /Vertices order or value changed"
         );
     }
-    let padding = expected.appearance.stroke_width_pt() / 2. + 1.;
+    // Revu pads PolyLine and Polygon by 5 pt plus half the stroke.
+    let padding = expected.appearance.stroke_width_pt() / 2. + 5.;
     let min_x = expected
         .points()
         .iter()
@@ -3561,6 +3128,8 @@ fn qpdf_assert_vertex_path_native(path: &Path, expected: &VertexPathAnnotation) 
         assert!(close(actual, expected), "raw /C changed");
     }
     match (expected.kind, expected.appearance.fill_color()) {
+        // Revu records a PolyLine's line-ending fill as its stroke colour.
+        (VertexPathKind::Polyline, _) => assert_eq!(dictionary["/IC"], dictionary["/C"]),
         (VertexPathKind::Polygon, Some(fill)) => {
             for (actual, expected) in dictionary["/IC"]
                 .as_array()
@@ -3590,10 +3159,7 @@ fn qpdf_assert_vertex_path_native(path: &Path, expected: &VertexPathAnnotation) 
         number(&dictionary["/CA"]),
         expected.appearance.opacity()
     ));
-    assert!(close(
-        number(&dictionary["/ca"]),
-        expected.appearance.opacity() * expected.appearance.fill_opacity()
-    ));
+    assert!(dictionary.get("/ca").is_none());
     assert_eq!(dictionary["/F"], 4);
     let appearance_ref = dictionary["/AP"]["/N"].as_str().expect("/AP /N reference");
 
@@ -3623,10 +3189,7 @@ fn qpdf_assert_vertex_path_native(path: &Path, expected: &VertexPathAnnotation) 
     let gs = &stream["/Resources"]["/ExtGState"]["/GS0"];
     assert_eq!(gs["/Type"], "/ExtGState");
     assert!(close(number(&gs["/CA"]), expected.appearance.opacity()));
-    assert!(close(
-        number(&gs["/ca"]),
-        expected.appearance.opacity() * expected.appearance.fill_opacity()
-    ));
+    assert!(close(number(&gs["/ca"]), expected.appearance.fill_opacity()));
     let object_number = appearance_ref.split_whitespace().next().unwrap();
     let content = std::process::Command::new("qpdf")
         .arg(format!("--show-object={object_number}"))
@@ -3678,7 +3241,7 @@ fn qpdf_assert_measurement_path_native(path: &Path, expected: &MeasurementPathAn
         .expect("qpdf must expose raw measurement-path dictionaries");
     assert!(output.status.success());
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let native_name = format!("bp:{}", expected.id.as_str());
+    let native_name = expected.id.as_str().to_owned();
     let dictionary = json["objects"]
         .as_object()
         .unwrap()
@@ -3720,7 +3283,7 @@ fn qpdf_assert_measurement_path_native(path: &Path, expected: &MeasurementPathAn
             4.,
             0.7,
             Some("#22c55e"),
-            "2.00 ft^2",
+            "2.00 sq ft",
             "h B\nQ\n",
         ),
     };
@@ -3735,8 +3298,8 @@ fn qpdf_assert_measurement_path_native(path: &Path, expected: &MeasurementPathAn
     assert_eq!(dictionary["/Subj"], subject);
     assert_eq!(dictionary["/NM"], native_name);
     assert_eq!(dictionary["/MeasurementTypes"], measurement_types);
-    assert_eq!(dictionary["/Cap"], expected.calibration().show_caption());
-    assert!(!expected.calibration().show_caption());
+    // Revu always shows a measurement caption; the toggle is not stored.
+    assert_eq!(dictionary["/Cap"], true);
     assert_eq!(dictionary["/Contents"], expected.caption());
     assert_eq!(dictionary["/F"], 132);
     let vertices = dictionary["/Vertices"].as_array().unwrap();
@@ -3781,11 +3344,7 @@ fn qpdf_assert_measurement_path_native(path: &Path, expected: &MeasurementPathAn
     for (actual, expected) in rect.iter().map(number).zip(bounds) {
         assert!(close(actual, expected), "raw measurement /Rect changed");
     }
-    let border = dictionary["/Border"].as_array().unwrap();
-    assert_eq!(border.len(), 3);
-    for (actual, expected) in border.iter().map(number).zip([0., 0., stroke_width]) {
-        assert!(close(actual, expected), "raw measurement /Border changed");
-    }
+    assert!(dictionary.get("/Border").is_none());
     assert_eq!(dictionary["/BS"]["/Type"], "/Border");
     assert_eq!(dictionary["/BS"]["/S"], "/S");
     assert!(close(number(&dictionary["/BS"]["/W"]), stroke_width));
@@ -3807,21 +3366,23 @@ fn qpdf_assert_measurement_path_native(path: &Path, expected: &MeasurementPathAn
                 assert!(close(actual, expected), "raw measurement /IC changed");
             }
         }
-        None => assert!(dictionary.get("/IC").is_none()),
+        // Revu records a Polylength's line-ending fill as its stroke colour.
+        None => assert_eq!(dictionary["/IC"], dictionary["/C"]),
     }
     assert!(close(number(&dictionary["/CA"]), opacity));
-    assert!(close(number(&dictionary["/ca"]), opacity));
+    assert!(dictionary.get("/ca").is_none());
     let measure = &dictionary["/Measure"];
     assert_eq!(measure["/Type"], "/Measure");
     assert_eq!(measure["/Subtype"], "/RL");
-    assert_eq!(measure["/R"], "0.027778 ft = 1 pt");
-    assert!(close(number(&measure["/TargetUnitConversion"]), 1. / 36.));
+    // Revu's scale string and paper-metre target conversion.
+    assert_eq!(measure["/R"], "1 in = 2 ft");
+    assert!(close(number(&measure["/TargetUnitConversion"]), 0.0254 / 72.));
     for (key, unit, conversion, force_decimal) in [
         ("/X", "ft", 1. / 36., false),
         ("/D", "ft", 1., false),
-        ("/A", "ft^2", 1., true),
+        ("/A", "sq ft", 1., true),
         ("/T", "°", 1., true),
-        ("/V", "ft^3", 1., true),
+        ("/V", "cu ft", 1., true),
     ] {
         let formats = measure[key]
             .as_array()
@@ -3868,7 +3429,8 @@ fn qpdf_assert_measurement_path_native(path: &Path, expected: &MeasurementPathAn
     let path_state = &stream["/Resources"]["/ExtGState"]["/GSPath"];
     assert_eq!(path_state["/Type"], "/ExtGState");
     assert!(close(number(&path_state["/CA"]), opacity));
-    assert!(close(number(&path_state["/ca"]), opacity));
+    // Fill alpha is independent of the stroke opacity, as in Revu.
+    assert!(close(number(&path_state["/ca"]), expected.appearance.fill_opacity()));
     let text_state = &stream["/Resources"]["/ExtGState"]["/GSText"];
     assert_eq!(text_state["/Type"], "/ExtGState");
     assert!(close(number(&text_state["/CA"]), opacity));
@@ -22624,7 +22186,7 @@ fn page_scale_dialog_save_as_round_trips_scale_without_a_length_annotation() {
         .unwrap();
     let reopened = PdfPersistenceSession::open(&target).unwrap();
     let reopened_scale = reopened.page_length_calibrations().get(&0).unwrap();
-    assert!(reopened_scale.same_scale_as(&scale));
+    assert!(reopened_scale.same_persisted_scale_as(&scale));
     assert!(reopened.lengths().is_empty());
     std::fs::remove_file(target).unwrap();
 }
@@ -24276,7 +23838,7 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
         after_area.measurement_paths[1].kind,
         MeasurementPathKind::Area
     );
-    assert_eq!(after_area.measurement_paths[1].caption(), "2.00 ft^2");
+    assert_eq!(after_area.measurement_paths[1].caption(), "2.00 sq ft");
     assert!(after_area.vertex_paths.is_empty());
 
     assert!(workspace.update(cx, |workspace, cx| {
@@ -29464,7 +29026,7 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
         after_area.measurement_paths[1].kind,
         MeasurementPathKind::Area,
     );
-    assert_eq!(after_area.measurement_paths[1].caption(), "2.00 ft^2");
+    assert_eq!(after_area.measurement_paths[1].caption(), "2.00 sq ft");
     assert!(after_area.vertex_paths.is_empty());
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
@@ -29867,7 +29429,7 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
 
     let independent = PdfPersistenceSession::open(&saved_path)
         .expect("the saved PDF must reopen through an independent typed parser");
-    assert_eq!(independent.page_scales(), &[scale]);
+    assert_same_persisted_page_scales(independent.page_scales(), &[scale]);
     assert!(independent.vertex_paths().is_empty());
     for expected in &edited.measurement_paths {
         let actual = independent
@@ -29880,7 +29442,7 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
         qpdf_assert_measurement_path_native(&saved_path, expected);
     }
     assert_eq!(independent.measurement_paths()[0].caption(), "4.35 ft");
-    assert_eq!(independent.measurement_paths()[1].caption(), "2.00 ft^2");
+    assert_eq!(independent.measurement_paths()[1].caption(), "2.00 sq ft");
 
     let pixel_proof = backend
         .open(&OpenDocumentRequest {
@@ -31340,7 +30902,7 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
             && (reopened_length.end.y - snapped_length.end.y).abs() <= 0.000_1
             && reopened_length
                 .calibration()
-                .same_scale_as(snapped_length.calibration())
+                .same_persisted_scale_as(snapped_length.calibration())
             && reopened_length.caption() == snapped_length.caption()
             && reopened_length.locked == snapped_length.locked,
         "fresh workspace changed snapped Length: expected {snapped_length:?}, reopened {:?}",
@@ -32214,7 +31776,7 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
         .expect("qpdf must expose the raw Arc dictionary");
     assert!(qpdf.status.success());
     let json: serde_json::Value = serde_json::from_slice(&qpdf.stdout).unwrap();
-    let native_name = format!("bp:{}", arc_id.as_str());
+    let native_name = arc_id.as_str().to_owned();
     let dictionary = json["objects"]
         .as_object()
         .unwrap()
@@ -32234,34 +31796,34 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     );
     let rd = dictionary["/RD"].as_array().unwrap();
     assert_eq!(rd.len(), 4);
-    assert!(rd.iter().all(|value| close(number(value), 0.5)));
+    // Revu pads a Circle by half the stroke.
+    assert!(rd.iter().all(|value| close(number(value), 1.25)));
     let color = dictionary["/C"].as_array().unwrap();
     assert_eq!(color.len(), 3);
     for (actual, expected) in color.iter().map(number).zip([0., 0.4, 0.8]) {
         assert!(close(actual, expected));
     }
-    let border = dictionary["/Border"].as_array().unwrap();
-    assert_eq!(border.len(), 3);
-    for (actual, expected) in border.iter().map(number).zip([0., 0., 2.5]) {
-        assert!(close(actual, expected));
-    }
+    assert!(dictionary.get("/Border").is_none());
+    assert!(close(number(&dictionary["/BS"]["/W"]), 2.5));
+    assert_eq!(dictionary["/BS"]["/S"], "/S");
     assert!(
-        dictionary.get("/BS").is_none(),
-        "solid Arc must omit /BS and dash state"
+        dictionary["/BS"].get("/D").is_none(),
+        "solid Arc must omit dash state"
     );
     assert!(
         dictionary.get("/IC").is_none(),
         "unfilled Arc must omit /IC"
     );
     assert!(close(number(&dictionary["/CA"]), 0.7));
-    assert!(close(number(&dictionary["/ca"]), 0.7));
+    assert!(dictionary.get("/ca").is_none());
     assert_eq!(dictionary["/F"].as_i64().unwrap(), 132);
     let raw_rect = dictionary["/Rect"].as_array().unwrap();
     assert_eq!(raw_rect.len(), 4);
     for (actual, expected) in raw_rect
         .iter()
         .map(number)
-        .zip([103.125, 122.25, 346.875, 366.])
+        // The stroke centreline grown by the stroke inside plus `/RD`.
+        .zip([100.625, 119.75, 349.375, 368.5])
     {
         assert!(close(actual, expected), "raw Arc /Rect changed");
     }
@@ -32270,7 +31832,7 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     let raw_radius = (number(&raw_rect[2]) - number(&raw_rect[0])) * 0.5;
     assert!(close(raw_center_x, 225.));
     assert!(close(raw_center_y, 244.125));
-    assert!(close(raw_radius, 121.875));
+    assert!(close(raw_radius, 124.375));
     assert!((number(&dictionary["/Angle1"]) - 149.489_762_6).abs() <= 0.000_1);
     assert!((number(&dictionary["/Angle2"]) - 30.510_237_4).abs() <= 0.000_1);
     let typed_rect = persisted.rect();
@@ -32306,14 +31868,15 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
         .unwrap()
         .iter()
         .map(number)
-        .zip([103.125, 122.25, 346.875, 366.])
+        .zip([100.625, 119.75, 349.375, 368.5])
     {
         assert!(close(actual, expected), "Arc appearance /BBox changed");
     }
     let graphics_state = &appearance_dictionary["/Resources"]["/ExtGState"]["/GS0"];
     assert_eq!(graphics_state["/Type"], "/ExtGState");
     assert!(close(number(&graphics_state["/CA"]), 0.7));
-    assert!(close(number(&graphics_state["/ca"]), 0.7));
+    // An unfilled Arc has no fill alpha to apply.
+    assert!(close(number(&graphics_state["/ca"]), 1.));
     let appearance_object = appearance_ref.split_whitespace().next().unwrap();
     let appearance_content = std::process::Command::new("qpdf")
         .arg(format!("--show-object={appearance_object}"))
@@ -32353,8 +31916,9 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
         .take(2)
         .map(|value| value.parse::<f64>().unwrap())
         .collect::<Vec<_>>();
-    assert!(close(move_point[0], 121.076_923));
-    assert!(close(move_point[1], 305.365_385));
+    // The appearance follows the stroke centreline through the drawn points.
+    assert!(close(move_point[0], 120.), "{move_point:?}");
+    assert!(close(move_point[1], 306.), "{move_point:?}");
     let last_curve = appearance_content
         .lines()
         .filter(|line| line.ends_with(" c"))
@@ -32364,8 +31928,8 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
         .take(6)
         .map(|value| value.parse::<f64>().unwrap())
         .collect::<Vec<_>>();
-    assert!(close(last_curve[4], 328.923_077));
-    assert!(close(last_curve[5], 305.365_385));
+    assert!(close(last_curve[4], 330.), "{last_curve:?}");
+    assert!(close(last_curve[5], 306.), "{last_curve:?}");
 
     let pixel_proof = backend
         .open(&OpenDocumentRequest {
@@ -32393,8 +31957,10 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
         "the persisted Arc must change PDFium pixels inside its own region",
     );
     let arc_rect = edited_arc.rect();
-    let pixel_width_pdf = 612. / f64::from(annotated_page.width());
-    let pixel_height_pdf = 792. / f64::from(annotated_page.height());
+    // The stroke is centred on the arc's ellipse, so half of it lies outside.
+    let half_stroke = edited_arc.appearance.stroke_width_pt() / 2.;
+    let pixel_width_pdf = 612. / f64::from(annotated_page.width()) + half_stroke;
+    let pixel_height_pdf = 792. / f64::from(annotated_page.height()) + half_stroke;
     let arc_region = PdfRect::new(
         arc_rect.x - pixel_width_pdf,
         arc_rect.y - pixel_height_pdf,
@@ -37193,7 +36759,7 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
         .unwrap();
     assert!(qpdf.status.success());
     let raw: serde_json::Value = serde_json::from_slice(&qpdf.stdout).unwrap();
-    let native_name = format!("bp:{}", image_id.as_str());
+    let native_name = image_id.as_str().to_owned();
     let objects = raw["objects"].as_object().unwrap();
     let annotation = objects
         .values()
@@ -37206,8 +36772,14 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     assert_eq!(annotation["/IT"], "/SquareImage");
     assert_eq!(annotation["/Subj"], "Image");
     assert_eq!(annotation["/NM"], native_name);
-    assert_eq!(annotation["/BPAssetId"], asset_id.as_str());
-    assert_eq!(annotation["/BPAspectLocked"], false);
+    let _ = &asset_id;
+    for key in ["/BPAssetId", "/BPAspectLocked"] {
+        assert!(annotation.get(key).is_none(), "Image must not contain {key}");
+    }
+    assert_eq!(annotation["/RD"], serde_json::json!([0, 0, 0, 0]));
+    assert_eq!(annotation["/BS"]["/W"], 0);
+    // Revu's SquareImage references its raster directly.
+    assert!(annotation["/Image"].as_str().is_some_and(|value| value.ends_with(" R")));
     assert!(close(number(&annotation["/CA"]), opacity));
     for (actual, expected) in annotation["/Rect"]
         .as_array()
@@ -37246,7 +36818,12 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
         .unwrap()
         .iter()
         .map(number)
-        .zip([0., 0., resized_rect.width, resized_rect.height])
+        .zip([
+            resized_rect.x,
+            resized_rect.y,
+            resized_rect.x + resized_rect.width,
+            resized_rect.y + resized_rect.height,
+        ])
     {
         assert!(
             close(actual, expected),
@@ -37254,9 +36831,10 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
             form_dict["/BBox"],
         );
     }
-    let image_ref = form_dict["/Resources"]["/XObject"]["/Im0"]
+    let image_ref = form_dict["/Resources"]["/XObject"]["/Image"]
         .as_str()
         .unwrap();
+    assert_eq!(annotation["/Image"].as_str(), Some(image_ref));
     let image_key = format!("obj:{image_ref}");
     let image_dict = &stream_objects[image_key.as_str()]["stream"]["dict"];
     assert_eq!(image_dict["/Type"], "/XObject");
@@ -37264,14 +36842,21 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     assert_eq!(image_dict["/ColorSpace"], "/DeviceRGB");
     assert_eq!(image_dict["/Width"], 512);
     assert_eq!(image_dict["/Height"], 384);
-    let alpha_ref = image_dict["/SMask"].as_str().unwrap();
-    let alpha_key = format!("obj:{alpha_ref}");
-    let alpha_dict = &stream_objects[alpha_key.as_str()]["stream"]["dict"];
-    assert_eq!(alpha_dict["/Type"], "/XObject");
-    assert_eq!(alpha_dict["/Subtype"], "/Image");
-    assert_eq!(alpha_dict["/ColorSpace"], "/DeviceGray");
-    assert_eq!(alpha_dict["/Width"], 512);
-    assert_eq!(alpha_dict["/Height"], 384);
+    // An opaque raster is written without a soft mask.
+    let alpha_ref = image_dict["/SMask"].as_str();
+    assert_eq!(
+        alpha_ref.is_some(),
+        expected_asset.rgba().chunks_exact(4).any(|pixel| pixel[3] != u8::MAX)
+    );
+    if let Some(alpha_ref) = alpha_ref {
+        let alpha_key = format!("obj:{alpha_ref}");
+        let alpha_dict = &stream_objects[alpha_key.as_str()]["stream"]["dict"];
+        assert_eq!(alpha_dict["/Type"], "/XObject");
+        assert_eq!(alpha_dict["/Subtype"], "/Image");
+        assert_eq!(alpha_dict["/ColorSpace"], "/DeviceGray");
+        assert_eq!(alpha_dict["/Width"], 512);
+        assert_eq!(alpha_dict["/Height"], 384);
+    }
     let filtered_stream = |reference: &str| {
         let object_number = reference.split_whitespace().next().unwrap();
         let output = std::process::Command::new("qpdf")
@@ -37294,7 +36879,9 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
         .map(|pixel| pixel[3])
         .collect::<Vec<_>>();
     assert_eq!(filtered_stream(image_ref), expected_rgb);
-    assert_eq!(filtered_stream(alpha_ref), expected_alpha);
+    if let Some(alpha_ref) = alpha_ref {
+        assert_eq!(filtered_stream(alpha_ref), expected_alpha);
+    }
 
     let saved_proof = backend
         .open(&OpenDocumentRequest {
@@ -37810,9 +37397,9 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
         })
         .expect("Length creation must survive typed Save As validation");
     let created_reopen = PdfPersistenceSession::open(&created_target).unwrap();
-    assert_eq!(
+    assert_same_persisted_lengths(
         created_reopen.lengths(),
-        imported_lengths
+        &        imported_lengths
             .iter()
             .cloned()
             .chain([created.clone()])
@@ -37874,9 +37461,9 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
         })
         .expect("Length edit must survive typed Save As validation");
     let edited = PdfPersistenceSession::open(&edited_target).unwrap();
-    assert_eq!(
+    assert_same_persisted_lengths(
         edited.lengths(),
-        imported_lengths
+        &        imported_lengths
             .iter()
             .cloned()
             .chain([edited_length.clone()])
@@ -37926,7 +37513,7 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
         })
         .expect("Length deletion must survive typed Save As validation");
     let deleted = PdfPersistenceSession::open(&deleted_target).unwrap();
-    assert_eq!(deleted.lengths(), imported_lengths);
+    assert_same_persisted_lengths(deleted.lengths(), &imported_lengths);
     assert!(!deleted.has_raw_annotation_name(&deleted_id));
     std::fs::remove_file(created_target).unwrap();
     std::fs::remove_file(edited_target).unwrap();
@@ -38095,7 +37682,7 @@ fn highlight_save_as_uses_canonical_identity_and_reconciles_create_edit_delete()
     let source_session = PdfPersistenceSession::open(&source).unwrap();
     let highlight_id = MarkupId::new("workspace:highlight:persistence-1").unwrap();
     let canonical_native_id =
-        MarkupId::new(format!("bp:{highlight_id}")).expect("canonical PDF identity is valid");
+        MarkupId::new(highlight_id.to_string()).expect("the PDF /NM is the markup id");
     let created = PenAnnotation::new_highlight(
         highlight_id.clone(),
         0,
@@ -38163,7 +37750,6 @@ fn highlight_save_as_uses_canonical_identity_and_reconciles_create_edit_delete()
     assert_eq!(reopened_highlight.blend_mode(), BlendMode::Multiply);
     assert!(!reopened_highlight.smooth_curves);
     assert!(created_reopen.has_raw_annotation_name(&canonical_native_id));
-    assert!(!created_reopen.has_raw_annotation_name(&highlight_id));
 
     let mut edited_pens = created_reopen.pens().to_vec();
     let edited_highlight = edited_pens
@@ -40212,7 +39798,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
         saved_snapshot
             .pens
             .iter()
-            .any(|pen| pen == &expected_highlight)
+            .any(|pen| pen.same_persisted_state_as(&expected_highlight))
     );
     assert_eq!(saved_snapshot.snapshots.len(), 1);
     assert!(saved_snapshot.rectangles[0].same_persisted_state_as(&expected_rectangle));
@@ -40236,7 +39822,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     assert_eq!(typed.page_rotation(0), Some(PageRotation::Degrees90));
     assert_eq!(typed.untouched_annotations(), source_untouched.as_slice());
     assert_eq!(typed.annotation_order(), expected_order);
-    assert_eq!(typed.page_scales(), &[applied_scale.clone()]);
+    assert_same_persisted_page_scales(typed.page_scales(), &[applied_scale.clone()]);
     let typed_length = typed
         .lengths()
         .iter()
@@ -40325,7 +39911,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
         reopened_snapshot
             .pens
             .iter()
-            .any(|pen| pen == &expected_highlight)
+            .any(|pen| pen.same_persisted_state_as(&expected_highlight))
     );
     assert_eq!(reopened_snapshot.snapshots[0].id, expected_snapshot.id);
     assert!(
@@ -40336,13 +39922,11 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     assert_eq!(reopened_snapshot.lengths.len(), 1);
     assert!(reopened_snapshot.lengths[0].same_persisted_state_as(&expected_length));
     assert_eq!(reopened_snapshot.lengths[0].caption(), "3.000 m");
-    assert_eq!(
-        fresh_workspace.read_with(cx, |workspace, cx| workspace.page_scale(
-            reopened_document,
-            0,
-            cx,
-        )),
-        Some(applied_scale)
+    assert_same_persisted_page_scales(
+        &[fresh_workspace
+            .read_with(cx, |workspace, cx| workspace.page_scale(reopened_document, 0, cx))
+            .expect("the reopened page keeps its scale")],
+        &[applied_scale],
     );
     let reopened_evidence = fresh_workspace
         .read_with(cx, |workspace, cx| {
@@ -40766,12 +40350,11 @@ fn real_pdfium_worker_opens_navigates_and_exits_without_an_orphan(cx: &mut TestA
             .find(|(page_index, _)| *page_index == 1)
             .map(|(_, rotation)| *rotation)
     );
-    assert_eq!(
+    assert_same_persisted_page_scales(
         PdfPersistenceSession::open(&rotation_target)
             .unwrap()
             .page_scales(),
         &[real_page_scale],
-        "the checksum-pinned real PDF journey must preserve the exact custom X/Y fraction scale"
     );
     saved_rotation.opened().close().unwrap();
     std::fs::remove_file(&rotation_target).unwrap();
@@ -41150,15 +40733,19 @@ fn real_pdfium_worker_opens_navigates_and_exits_without_an_orphan(cx: &mut TestA
             .iter()
             .find(|text_box| text_box.id == saved_text_box_id)
     );
-    assert_eq!(
-        reopened_session
+    assert_same_persisted_lengths(
+        &reopened_session
             .lengths()
             .iter()
-            .find(|length| length.id == saved_length_id),
-        saved_snapshot
+            .filter(|length| length.id == saved_length_id)
+            .cloned()
+            .collect::<Vec<_>>(),
+        &saved_snapshot
             .lengths
             .iter()
-            .find(|length| length.id == saved_length_id)
+            .filter(|length| length.id == saved_length_id)
+            .cloned()
+            .collect::<Vec<_>>(),
     );
     assert_eq!(
         reopened_session
@@ -44837,4 +44424,28 @@ fn tabs_scrolled_out_of_view_cannot_be_grabbed(cx: &mut TestAppContext) {
         Some((documents[1], false)),
         "visible tabs in an overflowing strip must stay draggable"
     );
+}
+
+/// Lengths as a PDF stores them: the scale ratio, not its paper and
+/// real-world parts or the caption toggle.
+fn assert_same_persisted_lengths(actual: &[LengthAnnotation], expected: &[LengthAnnotation]) {
+    assert_eq!(actual.len(), expected.len(), "{actual:?} != {expected:?}");
+    for (actual, expected) in actual.iter().zip(expected) {
+        assert!(
+            actual.same_persisted_state_as(expected),
+            "{actual:?} != {expected:?}"
+        );
+    }
+}
+
+/// Page scales as a PDF viewport stores them: units, f32 factors and
+/// precision, without Butter Paper's scale name or source.
+fn assert_same_persisted_page_scales(actual: &[PageScale], expected: &[PageScale]) {
+    assert_eq!(actual.len(), expected.len(), "{actual:?} != {expected:?}");
+    for (actual, expected) in actual.iter().zip(expected) {
+        assert!(
+            actual.same_persisted_scale_as(expected),
+            "{actual:?} != {expected:?}"
+        );
+    }
 }

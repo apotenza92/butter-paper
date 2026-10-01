@@ -28,7 +28,7 @@ gpui-component-assets = { path = ".prepared/gpui-component-c27f5d5c/crates/asset
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 keyring = { version = "=3.6.3", features = ["apple-native", "crypto-rust", "sync-secret-service", "windows-native"] }
 libc = "0.2"
-lopdf = { version = "=0.44.0", default-features = false }
+lopdf = { version = "=0.45.0", default-features = false }
 memmap2 = "0.9.8"
 pdfium-render = { git = "https://github.com/ajrcarey/pdfium-render", rev = "6cee8b9a3951832ac0ff62ce4c32800278001cb8", version = "=0.9.4", default-features = false, features = ["pdfium_7881"] }
 serde = { version = "1.0", features = ["derive"] }

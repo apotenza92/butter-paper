@@ -6650,8 +6650,8 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
             .all(|item| item.id != pasted_id)
     );
     assert_all_eight_ink_state(typed.pens(), &source_pens, &pen_id, &highlight_id);
-    assert!(typed.pens().iter().any(|item| item == &expected_pen));
-    assert!(typed.pens().iter().any(|item| item == &expected_highlight));
+    assert!(typed.pens().iter().any(|item| item.same_persisted_state_as(&expected_pen)));
+    assert!(typed.pens().iter().any(|item| item.same_persisted_state_as(&expected_highlight)));
     assert!(
         typed
             .text_boxes()
@@ -6778,8 +6778,8 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
             .all(|item| item.id != pasted_id)
     );
     assert_all_eight_ink_state(&reopened.pens, &source_pens, &pen_id, &highlight_id);
-    assert!(reopened.pens.iter().any(|item| item == &expected_pen));
-    assert!(reopened.pens.iter().any(|item| item == &expected_highlight));
+    assert!(reopened.pens.iter().any(|item| item.same_persisted_state_as(&expected_pen)));
+    assert!(reopened.pens.iter().any(|item| item.same_persisted_state_as(&expected_highlight)));
     assert!(
         reopened
             .text_boxes

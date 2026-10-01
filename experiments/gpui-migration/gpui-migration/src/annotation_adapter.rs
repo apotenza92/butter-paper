@@ -15,7 +15,7 @@ pub use tool_properties::{
 };
 
 use crate::annotation_model::{
-    Annotation, AnnotationCommand, AnnotationDocument, AnnotationEdit, AnnotationError,
+    Annotation, AnnotationCommand, TextAlignment, AnnotationDocument, AnnotationEdit, AnnotationError,
     AnnotationKind, AnnotationScene, AnnotationSelectionSupplement, AnnotationSnapshot,
     ArcAnnotation, ArcControlPoint, CalloutAnnotation, CalloutAppearance, CloudAnnotation,
     CloudPlusAnnotation, CloudPlusAppearance, CommandOutcome, DecodedRgbaAsset,
@@ -4378,7 +4378,7 @@ impl AnnotationAdapter {
                     draft.kind,
                     draft.calibration,
                     rectangle_tool_appearance(&properties, false)?,
-                    text_box_tool_style(&properties)?,
+                    caption_tool_style(&properties)?,
                 )?),
             ))?;
         Ok(PointerPhaseOutcome::AnnotationCreated(id))
@@ -12284,7 +12284,7 @@ impl AnnotationAdapter {
             };
             let appearance = rectangle_tool_appearance(&self.tool_properties(tool), false)
                 .expect("stored measurement-path tool properties are validated");
-            let text_style = text_box_tool_style(&self.tool_properties(tool))
+            let text_style = caption_tool_style(&self.tool_properties(tool))
                 .expect("stored measurement-path tool properties are validated");
             let mut points = draft.points.clone();
             let last = *points
@@ -13434,13 +13434,29 @@ fn pen_tool_appearance(properties: &ToolProperties) -> Result<PenAppearance, Ann
     )
 }
 
+/// Text in boxes, callouts and Cloud+ uses Revu's 3 pt margin.
+const REVU_TEXT_MARGIN_PT: f64 = 3.;
+
 fn text_box_tool_style(properties: &ToolProperties) -> Result<TextBoxStyle, AnnotationError> {
+    let style = TextBoxStyle::new(
+        properties.font_family.clone(),
+        properties.font_size_pt,
+        properties.colour.clone(),
+        properties.opacity,
+    )?;
+    let line_height = style.line_height_pt();
+    style.with_layout_metrics(line_height, REVU_TEXT_MARGIN_PT)
+}
+
+/// Measurement and dimension captions are centred without a margin, as in Revu.
+fn caption_tool_style(properties: &ToolProperties) -> Result<TextBoxStyle, AnnotationError> {
     TextBoxStyle::new(
         properties.font_family.clone(),
         properties.font_size_pt,
         properties.colour.clone(),
         properties.opacity,
-    )
+    )?
+    .with_weight_and_alignment(400, TextAlignment::Center)
 }
 
 fn callout_tool_appearance(
@@ -13476,7 +13492,7 @@ fn dimension_tool_appearance(
 ) -> Result<DimensionAppearance, AnnotationError> {
     DimensionAppearance::new(
         straight_line_tool_appearance(properties)?,
-        text_box_tool_style(properties)?,
+        caption_tool_style(properties)?,
     )
 }
 

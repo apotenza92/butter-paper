@@ -2,6 +2,22 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [Unreleased]
+
+### Markup files
+
+- Markups are saved exactly as Bluebeam Revu saves the same tool: standard PDF
+  and Revu's own keys only, no Butter Paper private data. Revu reads every
+  Butter Paper markup with the same properties as its own, and Revu's markups
+  open in Butter Paper as the matching tool.
+- Markups from other apps that you have not edited are saved unchanged, byte
+  for byte. Page scales are stored as Revu does, so Revu shows them too.
+- Files saved by older Butter Paper versions are no longer read specially:
+  their markups open as ordinary PDF markups.
+- Measurements show Revu's figures: thousands separators, "sq" area units, and
+  page-scale lengths no longer drift by a few parts per million.
+- Files Revu has edited and saved incrementally now open correctly.
+
 ## [0.0.31]
 
 ### Updates
