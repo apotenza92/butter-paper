@@ -95,10 +95,10 @@ index 40a6e71e0a..65b7adb343 100644
  use crate::{Path, Pixels, Point, point, px};
  
 diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
-index ecb1fa40d3..1d654c870c 100644
+index ecb1fa40d3..3a559640d5 100644
 --- a/crates/gpui/src/platform.rs
 +++ b/crates/gpui/src/platform.rs
-@@ -803,6 +803,10 @@ pub enum TextInputStateChange {
+@@ -803,6 +803,14 @@ pub enum TextInputStateChange {
  #[expect(missing_docs)]
  pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
      fn bounds(&self) -> Bounds<Pixels>;
@@ -106,10 +106,14 @@ index ecb1fa40d3..1d654c870c 100644
 +    /// [`Self::bounds`] reports. Platforms that cannot position windows
 +    /// (Wayland) leave it in place.
 +    fn set_origin(&self, _origin: Point<Pixels>) {}
++    /// Whether [`Self::set_origin`] can move this window.
++    fn can_set_origin(&self) -> bool {
++        false
++    }
      fn is_maximized(&self) -> bool;
      fn window_bounds(&self) -> WindowBounds;
      fn content_size(&self) -> Size<Pixels>;
-@@ -2111,6 +2115,8 @@ pub struct PathPromptOptions {
+@@ -2111,6 +2119,8 @@ pub struct PathPromptOptions {
      pub multiple: bool,
      /// The prompt to show to a user when selecting a path
      pub prompt: Option<SharedString>,
@@ -377,10 +381,10 @@ index cb66359206..e6ff80b73b 100644
                      }
                  }
 diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
-index 657e9bd7c1..58b933f7bf 100644
+index 657e9bd7c1..a20d1e003b 100644
 --- a/crates/gpui/src/window.rs
 +++ b/crates/gpui/src/window.rs
-@@ -2441,6 +2441,12 @@ impl Window {
+@@ -2441,6 +2441,17 @@ impl Window {
          self.rendered_frame.scene.quads.clone()
      }
  
@@ -390,10 +394,15 @@ index 657e9bd7c1..58b933f7bf 100644
 +        self.platform_window.set_origin(origin);
 +    }
 +
++    /// Whether [`Self::set_origin`] can move this window (not on Wayland).
++    pub fn can_set_origin(&self) -> bool {
++        self.platform_window.can_set_origin()
++    }
++
      /// Set the content size of the window.
      pub fn resize(&mut self, size: Size<Pixels>) {
          self.platform_window.resize(size);
-@@ -4186,6 +4192,30 @@ impl Window {
+@@ -4186,6 +4197,30 @@ impl Window {
          glyph_id: GlyphId,
          font_size: Pixels,
          color: Hsla,
@@ -424,7 +433,7 @@ index 657e9bd7c1..58b933f7bf 100644
      ) -> Result<()> {
          self.invalidator.debug_assert_paint();
  
-@@ -4240,7 +4270,7 @@ impl Window {
+@@ -4240,7 +4275,7 @@ impl Window {
                      content_mask,
                      color: color.opacity(element_opacity),
                      tile,
@@ -433,7 +442,7 @@ index 657e9bd7c1..58b933f7bf 100644
                  });
              } else {
                  self.next_frame.scene.insert_primitive(MonochromeSprite {
-@@ -4250,7 +4280,7 @@ impl Window {
+@@ -4250,7 +4285,7 @@ impl Window {
                      content_mask,
                      color: color.opacity(element_opacity),
                      tile,
@@ -442,7 +451,7 @@ index 657e9bd7c1..58b933f7bf 100644
                  });
              }
          }
-@@ -4290,6 +4320,27 @@ impl Window {
+@@ -4290,6 +4325,27 @@ impl Window {
          font_id: FontId,
          glyph_id: GlyphId,
          font_size: Pixels,
@@ -470,7 +479,7 @@ index 657e9bd7c1..58b933f7bf 100644
      ) -> Result<()> {
          self.invalidator.debug_assert_paint();
  
-@@ -4333,6 +4384,7 @@ impl Window {
+@@ -4333,6 +4389,7 @@ impl Window {
                  content_mask,
                  tile,
                  opacity,
@@ -478,7 +487,7 @@ index 657e9bd7c1..58b933f7bf 100644
              });
          }
          Ok(())
-@@ -4419,6 +4471,31 @@ impl Window {
+@@ -4419,6 +4476,31 @@ impl Window {
          data: Arc<RenderImage>,
          frame_index: usize,
          grayscale: bool,
@@ -510,7 +519,7 @@ index 657e9bd7c1..58b933f7bf 100644
      ) -> Result<()> {
          self.invalidator.debug_assert_paint();
  
-@@ -4505,6 +4582,7 @@ impl Window {
+@@ -4505,6 +4587,7 @@ impl Window {
              corner_radii,
              tile: sub_tile,
              opacity,
@@ -1295,6 +1304,36 @@ index 3d5f9029aa..ebd62560af 100644
      #[test]
      fn builds_terminated_uri_list_for_each_dragged_path() {
          let paths = FileDragPaths::new([
+diff --git a/crates/gpui_linux/src/linux/x11/window.rs b/crates/gpui_linux/src/linux/x11/window.rs
+index 4fde66f06c..44c0a122a3 100644
+--- a/crates/gpui_linux/src/linux/x11/window.rs
++++ b/crates/gpui_linux/src/linux/x11/window.rs
+@@ -1373,6 +1373,25 @@ impl PlatformWindow for X11Window {
+         self.0.state.borrow().content_size()
+     }
+ 
++    fn can_set_origin(&self) -> bool {
++        true
++    }
++
++    fn set_origin(&self, origin: Point<Pixels>) {
++        let scale_factor = self.0.state.borrow().scale_factor;
++        let x = (origin.x.as_f32() * scale_factor).round() as i32;
++        let y = (origin.y.as_f32() * scale_factor).round() as i32;
++        check_reply(
++            || format!("X11 ConfigureWindow failed. x: {}, y: {}", x, y),
++            self.0.xcb.configure_window(
++                self.0.x_window,
++                &xproto::ConfigureWindowAux::new().x(x).y(y),
++            ),
++        )
++        .log_err();
++        xcb_flush(&self.0.xcb);
++    }
++
+     fn resize(&mut self, size: Size<Pixels>) {
+         let state = self.0.state.borrow();
+         let size = size.to_device_pixels(state.scale_factor);
 diff --git a/crates/gpui_macos/src/platform.rs b/crates/gpui_macos/src/platform.rs
 index c9bd307600..28a8175a05 100644
 --- a/crates/gpui_macos/src/platform.rs
@@ -1316,13 +1355,17 @@ index c9bd307600..28a8175a05 100644
                      panel.setCanCreateDirectories(true.to_objc());
                      panel.setResolvesAliases_(false.to_objc());
 diff --git a/crates/gpui_macos/src/window.rs b/crates/gpui_macos/src/window.rs
-index 99c9544736..ebe6816692 100644
+index 99c9544736..57744258a2 100644
 --- a/crates/gpui_macos/src/window.rs
 +++ b/crates/gpui_macos/src/window.rs
-@@ -1231,6 +1231,26 @@ impl PlatformWindow for MacWindow {
+@@ -1231,6 +1231,30 @@ impl PlatformWindow for MacWindow {
          self.0.as_ref().lock().content_size()
      }
  
++    fn can_set_origin(&self) -> bool {
++        true
++    }
++
 +    fn set_origin(&self, origin: Point<Pixels>) {
 +        // Release the state lock first: moving fires `windowDidMove`, which
 +        // locks it again.
@@ -1511,13 +1554,17 @@ index d20cb317db..900f7deec9 100644
      float4 color = sample;
      if (sprite.grayscale != 0u) {
 diff --git a/crates/gpui_windows/src/window.rs b/crates/gpui_windows/src/window.rs
-index af240716c9..118a46c572 100644
+index af240716c9..eb376edae9 100644
 --- a/crates/gpui_windows/src/window.rs
 +++ b/crates/gpui_windows/src/window.rs
-@@ -630,6 +630,30 @@ impl PlatformWindow for WindowsWindow {
+@@ -630,6 +630,34 @@ impl PlatformWindow for WindowsWindow {
          self.state.content_size()
      }
  
++    fn can_set_origin(&self) -> bool {
++        true
++    }
++
 +    fn set_origin(&self, origin: Point<Pixels>) {
 +        let hwnd = self.0.hwnd;
 +        let origin = origin.scale(self.scale_factor());

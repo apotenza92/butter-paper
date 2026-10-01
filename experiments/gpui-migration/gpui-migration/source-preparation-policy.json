@@ -320,7 +320,7 @@
     "directory": ".prepared/zed-8b1497d",
     "patch": {
       "path": "patches/gpui-opaque-path-multiply.patch",
-      "sha256": "c16611cb1708dfbab7b054e11b2d4616abe76cc3cb390899573bba28a4f9a197"
+      "sha256": "15273d9966748cc5d3d8afa452b3da6ece171d5de9ae076c250417db734d4409"
     },
     "changedFiles": [
       "Cargo.toml",
@@ -337,6 +337,7 @@
       "crates/gpui_linux/src/linux.rs",
       "crates/gpui_linux/src/linux/platform.rs",
       "crates/gpui_linux/src/linux/wayland/client.rs",
+      "crates/gpui_linux/src/linux/x11/window.rs",
       "crates/gpui_macos/src/platform.rs",
       "crates/gpui_macos/src/window.rs",
       "crates/gpui_wgpu/src/shaders.wgsl",
@@ -346,7 +347,7 @@
       "crates/gpui_windows/src/shaders.hlsl",
       "crates/gpui_windows/src/window.rs"
     ],
-    "treeSha256": "53b7320d1d932e9f0ac41bcf4b67dc3beec6b0714ff5601601a451e58c738e41",
+    "treeSha256": "93dccc6530ae0ca2f20f97803703cf41060bec6331e5716050794c42dde47632",
     "packages": {
       "collections": "crates/collections",
       "derive_refineable": "crates/refineable/derive_refineable",

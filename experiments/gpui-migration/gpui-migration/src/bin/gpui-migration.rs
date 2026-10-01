@@ -1411,6 +1411,14 @@ fn defer_to_active_story(
     });
 }
 
+/// Registers an application-level command that acts on windows. A menu item
+/// or shortcut is dispatched while GPUI is updating the active window, where
+/// updating that window again fails, so the command runs once the dispatch
+/// has finished.
+fn on_window_action<A: gpui::Action>(cx: &mut App, handler: fn(&mut App)) {
+    cx.on_action(move |_: &A, cx| cx.defer(handler));
+}
+
 /// Application-level shell commands, registered once and routed to the active
 /// document window.
 fn register_application_shell_actions(cx: &mut App) {
@@ -1472,17 +1480,19 @@ fn register_application_shell_actions(cx: &mut App) {
             story.open_release_page(&OpenReleasePage, window, cx)
         });
     });
-    cx.on_action(|_: &MinimiseWindow, cx| {
+    on_window_action::<MinimiseWindow>(cx, |cx| {
         if let Some(entry) = active_document_window(cx) {
             let _ = entry.handle.update(cx, |_, window, _| window.minimize_window());
         }
     });
-    cx.on_action(|_: &ZoomWindow, cx| {
+    on_window_action::<ZoomWindow>(cx, |cx| {
         if let Some(entry) = active_document_window(cx) {
             let _ = entry.handle.update(cx, |_, window, _| window.zoom_window());
         }
     });
-    cx.on_action(|_: &MoveDocumentToNewWindow, cx| {
+    on_window_action::<MoveDocumentToNewWindow>(cx, |cx| {
+        #[cfg(feature = "review-driver")]
+        review_driver::trace("MoveDocumentToNewWindow handler");
         let Some(entry) = active_document_window(cx) else {
             return;
         };
@@ -1505,14 +1515,16 @@ fn register_application_shell_actions(cx: &mut App) {
         };
         cx.defer(move |cx| move_document_between_windows(entry.handle, document_id, None, screen, cx));
     });
-    cx.on_action(|_: &NewWindow, cx| {
+    on_window_action::<NewWindow>(cx, |cx| {
         if shared_application(cx).multi_window {
             open_document_window(cx, None);
         }
     });
     // Quit closes every window through its own unsaved-changes transaction.
     // Never route this through gpui::Quit.
-    cx.on_action(|_: &RequestApplicationQuit, cx| {
+    on_window_action::<RequestApplicationQuit>(cx, |cx| {
+        #[cfg(feature = "review-driver")]
+        review_driver::trace("RequestApplicationQuit handler");
         let mut windows = document_window_entries(cx);
         if windows.is_empty() {
             cx.quit();
@@ -1528,7 +1540,7 @@ fn register_application_shell_actions(cx: &mut App) {
             request_window_close(&entry, cx);
         }
     });
-    cx.on_action(|_: &RequestApplicationClose, cx| {
+    on_window_action::<RequestApplicationClose>(cx, |cx| {
         if let Some(entry) = active_document_window(cx) {
             request_window_close(&entry, cx);
         }
@@ -2695,6 +2707,13 @@ fn show_tab_drag_chip(
     screen: gpui::Point<gpui::Pixels>,
     cx: &mut App,
 ) {
+    // Where windows cannot be positioned (Wayland), keep the in-window copy.
+    let movable = source
+        .update(cx, |_, window, _| window.can_set_origin())
+        .unwrap_or(false);
+    if !movable {
+        return;
+    }
     let origin = screen - gpui::point(px(24.), px(16.));
     let chip_size = tab_drag_chip_size(&text);
     if let Some(preview) = cx.try_global::<TabDragPreview>() {
@@ -3103,6 +3122,14 @@ mod review_driver {
     use std::io::Write as _;
     use std::path::PathBuf;
 
+    static TRACE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    pub fn trace(message: &str) {
+        if let Ok(mut trace) = TRACE.lock() {
+            trace.push(message.to_owned());
+        }
+    }
+
     pub fn start(cx: &mut App) {
         let Ok(script) = std::env::var("BP_REVIEW_SCRIPT") else {
             return;
@@ -3116,6 +3143,25 @@ mod review_driver {
             pause(cx, 2500).await;
             for line in script.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')) {
                 writeln!(log, "> {line}").unwrap();
+                if let Ok(mut trace) = TRACE.lock() {
+                    for message in trace.drain(..) {
+                        writeln!(log, "trace: {message}").unwrap();
+                    }
+                }
+                cx.update(|cx| {
+                    if let Some(entry) = active_document_window(cx) {
+                        let _ = entry.handle.update(cx, |_, window, cx| {
+                            writeln!(
+                                log,
+                                "focus={:?} quit_available={} move_available={}",
+                                window.focused(cx).is_some(),
+                                window.is_action_available(&RequestApplicationQuit, cx),
+                                window.is_action_available(&MoveDocumentToNewWindow, cx),
+                            )
+                            .unwrap();
+                        });
+                    }
+                });
                 let words = line.split_whitespace().collect::<Vec<_>>();
                 let number = |index: usize| words[index].parse::<f32>().unwrap();
                 match words[0] {
@@ -3124,6 +3170,53 @@ mod review_driver {
                     "new-window" => {
                         cx.update(|cx| cx.dispatch_action(&NewWindow));
                         pause(cx, 1200).await;
+                    }
+                    "key" => {
+                        // key W KEYSTROKE: a key press in window W, through the
+                        // same dispatch path as a real shortcut (e.g. ctrl-q).
+                        let window = number(1) as usize;
+                        match gpui::Keystroke::parse(words[2]) {
+                            Ok(keystroke) => dispatch(
+                                cx,
+                                window,
+                                PlatformInput::KeyDown(gpui::KeyDownEvent {
+                                    keystroke,
+                                    is_held: false,
+                                    prefer_character_input: false,
+                                }),
+                            ),
+                            Err(error) => writeln!(log, "bad keystroke: {error}").unwrap(),
+                        }
+                        if words[2].ends_with("-q") {
+                            // A quit shortcut: trace until the process exits.
+                            for tick in 0..40 {
+                                pause(cx, 250).await;
+                                cx.update(|cx| {
+                                    writeln!(
+                                        log,
+                                        "after quit key {tick}: document windows={}",
+                                        document_window_entries(cx).len()
+                                    )
+                                    .unwrap();
+                                });
+                            }
+                        }
+                        pause(cx, 800).await;
+                    }
+                    "place" => {
+                        // place W X Y WIDTH HEIGHT: frame origin and content size.
+                        let window = number(1) as usize;
+                        let origin = point(px(number(2)), px(number(3)));
+                        let size = gpui::size(px(number(4)), px(number(5)));
+                        cx.update(|cx| {
+                            if let Some(entry) = document_window_entries(cx).get(window).cloned() {
+                                let _ = entry.handle.update(cx, |_, window, _| {
+                                    window.resize(size);
+                                    window.set_origin(origin);
+                                });
+                            }
+                        });
+                        pause(cx, 800).await;
                     }
                     "move-to-new-window" => {
                         cx.update(|cx| cx.dispatch_action(&MoveDocumentToNewWindow));
@@ -3141,6 +3234,33 @@ mod review_driver {
                     "quit" => {
                         writeln!(log, "quitting").unwrap();
                         cx.update(|cx| cx.dispatch_action(&RequestApplicationQuit));
+                        // Trace the close transactions until the process exits.
+                        for tick in 0..40 {
+                            pause(cx, 250).await;
+                            cx.update(|cx| {
+                                let entries = document_window_entries(cx);
+                                let states = entries
+                                    .iter()
+                                    .filter_map(|entry| entry.close.upgrade())
+                                    .map(|close| {
+                                        let close = close.read(cx);
+                                        format!(
+                                            "dialog={:?} quit_intent={} effects={:?}",
+                                            close.dialog().is_some(),
+                                            close.has_quit_intent(),
+                                            close.effects()
+                                        )
+                                    })
+                                    .collect::<Vec<_>>();
+                                writeln!(
+                                    log,
+                                    "after quit {tick}: platform windows={} document windows={} {states:?}",
+                                    cx.windows().len(),
+                                    entries.len()
+                                )
+                                .unwrap();
+                            });
+                        }
                         return;
                     }
                     "drag-tab" => {
@@ -3258,6 +3378,13 @@ mod review_driver {
                 }),
             );
             pause(cx, 70).await;
+            cx.update(|cx| {
+                let state = document_window_entries(cx)
+                    .get(window)
+                    .and_then(|entry| entry.workspace.upgrade())
+                    .map(|workspace| workspace.read(cx).session_tab_drag_state());
+                writeln!(log, "{name} step {step} at {position:?}: drag={state:?}").unwrap();
+            });
             shot(cx, out, &format!("{name}-{step:02}"), log);
         }
         dispatch(
@@ -3277,6 +3404,26 @@ mod review_driver {
     }
 
     fn shot(cx: &mut AsyncApp, out: &std::path::Path, name: &str, log: &mut std::fs::File) {
+        // Platforms without in-process frame capture (Windows, Linux) can name
+        // a command that captures this machine's display, with `{path}` for
+        // the output file. Review VMs only.
+        if let Ok(command) = std::env::var("BP_REVIEW_CAPTURE_CMD") {
+            let path = out.join(format!("{name}-screen.png"));
+            let command = command.replace("{path}", &path.display().to_string());
+            let status = if cfg!(windows) {
+                let mut process = std::process::Command::new("powershell.exe");
+                process.args(["-NoProfile", "-Command", &command]);
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt as _;
+                    process.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+                }
+                process.status()
+            } else {
+                std::process::Command::new("sh").args(["-c", &command]).status()
+            };
+            writeln!(log, "{name} screen capture: {status:?}").unwrap();
+        }
         cx.update(|cx| {
             if let Some(handle) = cx.try_global::<TabDragPreview>().map(|preview| preview.handle) {
                 let path = out.join(format!("{name}-chip.png"));
@@ -3294,7 +3441,7 @@ mod review_driver {
                     .upgrade()
                     .map(|workspace| {
                         let workspace = workspace.read(cx);
-                        (workspace.session_titles(cx), workspace.active_document_id())
+                        (workspace.session_debug_states(cx), workspace.active_document_id())
                     })
                     .unwrap_or_default();
                 let result = entry.handle.update(cx, |_, window, _| {

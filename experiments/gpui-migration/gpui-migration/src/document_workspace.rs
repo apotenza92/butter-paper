@@ -5446,6 +5446,17 @@ impl DocumentWorkspace {
             .collect()
     }
 
+    /// Each document's load and save state, for development review tooling.
+    pub fn session_debug_states(&self, cx: &App) -> Vec<String> {
+        self.sessions
+            .iter()
+            .map(|session| {
+                let session = session.read(cx);
+                format!("{}: {:?} / {:?}", session.title, session.status, session.save_status)
+            })
+            .collect()
+    }
+
     pub fn session_titles(&self, cx: &App) -> Vec<String> {
         self.sessions
             .iter()

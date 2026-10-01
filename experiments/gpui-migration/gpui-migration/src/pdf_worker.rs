@@ -1834,6 +1834,14 @@ fn configure_worker_command(command: &mut Command, surface_root: &Path, pdfium_l
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
+    // The worker is a console program; started from the windowed application
+    // it would otherwise open a console window for every document.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
 }
 
 impl Drop for WorkerProcessClient {
