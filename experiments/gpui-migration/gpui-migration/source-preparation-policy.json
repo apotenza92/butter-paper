@@ -22,7 +22,7 @@
   },
   "prepared": {
     "directory": ".prepared/gpui-component-c27f5d5c",
-    "treeSha256": "2cae50ffe0cca795b898b0fa85d7e84694a78fe16caf21217e66ff7ad9c30dd7"
+    "treeSha256": "83225bda86b7fababc2b2c895829ab839d967deb7c5d4b5adfca1790c8336510"
   },
   "tabStatePatch": {
     "path": "patches/gpui-component-tab-button-states.patch",
@@ -31,8 +31,8 @@
   },
   "menuAccessibilityPatch": {
     "path": "patches/gpui-component-menu-accessibility.patch",
-    "sha256": "edb528d89356bf30a6c7cb831d1166a68d4e6f1d663c0b42445685be132f89af",
-    "purpose": "Reviewed menu-row AccessKit disabled and checked state exposure; not an upstream backport"
+    "sha256": "04d3370779c9b4a32fad149be022d94d90b6082ac5801016de9084272b3cbbe9",
+    "purpose": "Reviewed menu-row AccessKit disabled and checked state exposure, and open context menus registered as deferred popups so canvas presses that dismiss them start nothing; not an upstream backport"
   },
   "textareaPaddingPatch": {
     "path": "patches/gpui-component-textarea-padding.patch",
@@ -100,7 +100,7 @@
   "sharedExperimentSources": [
     {
       "path": "../gpui-migration/Cargo.toml",
-      "sha256": "e5ca1fc95e7aa714e93d2f600f181c26702ff8bb9d81d1e778e3f30eb2f28783"
+      "sha256": "05136c7e422f09fa3bf91fb7ce0a71ceac8419ce1885a0f4ca43c1868ea69f9e"
     },
     {
       "path": "../gpui-migration/src/lib.rs",
@@ -132,7 +132,7 @@
     },
     {
       "path": "../gpui-migration/src/annotation_model.rs",
-      "sha256": "6fc2f18c5ae6cdb65b14bddd3e32762bd637060bded73725fd49c5f7ce32aae9"
+      "sha256": "24bc23df4a8d76d1954dff3171a31dab656f2de4ae83371d4a4cdcd241a400d1"
     },
     {
       "path": "../gpui-migration/src/highlight_compositor.rs",
@@ -144,7 +144,7 @@
     },
     {
       "path": "../gpui-migration/src/annotation_adapter.rs",
-      "sha256": "7f52284e3eea7b0f84eaf60822c9c785d34ac2fc6028003a1c24fd3f3f8ef028"
+      "sha256": "ecaf2eb9ea9551c89dbed37c6a82f4f4537730680acd3312b19d0e5caedde6a8"
     },
     {
       "path": "../gpui-migration/src/interaction_chrome.rs",
@@ -152,7 +152,7 @@
     },
     {
       "path": "../gpui-migration/src/semantic_snapping.rs",
-      "sha256": "f64ff8aeea4f1cf7b6e45c2def5874c361092ffc550babc0b1173dd37b3aa3a6"
+      "sha256": "0fe025ffe76f65062471e09830f5ec0662cca4c001127e309fe2c699bb55d230"
     },
     {
       "path": "../gpui-migration/src/cloud_plus_routing.rs",
@@ -320,7 +320,7 @@
     "directory": ".prepared/zed-8b1497d",
     "patch": {
       "path": "patches/gpui-opaque-path-multiply.patch",
-      "sha256": "c16611cb1708dfbab7b054e11b2d4616abe76cc3cb390899573bba28a4f9a197"
+      "sha256": "0f591822804bc735825f85b4b0e65d9b09bdeccd73b1730d59d04309c66f9c55"
     },
     "changedFiles": [
       "Cargo.toml",
@@ -337,6 +337,7 @@
       "crates/gpui_linux/src/linux.rs",
       "crates/gpui_linux/src/linux/platform.rs",
       "crates/gpui_linux/src/linux/wayland/client.rs",
+      "crates/gpui_linux/src/linux/x11/window.rs",
       "crates/gpui_macos/src/platform.rs",
       "crates/gpui_macos/src/window.rs",
       "crates/gpui_wgpu/src/shaders.wgsl",
@@ -346,7 +347,7 @@
       "crates/gpui_windows/src/shaders.hlsl",
       "crates/gpui_windows/src/window.rs"
     ],
-    "treeSha256": "53b7320d1d932e9f0ac41bcf4b67dc3beec6b0714ff5601601a451e58c738e41",
+    "treeSha256": "9ddec56e8b9e1233ba4514f4936f83ad4b7d2fffeeaf8061ab64e4b92f128b03",
     "packages": {
       "collections": "crates/collections",
       "derive_refineable": "crates/refineable/derive_refineable",

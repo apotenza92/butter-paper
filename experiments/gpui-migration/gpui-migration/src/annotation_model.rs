@@ -6640,6 +6640,17 @@ impl AnnotationDocument {
             .and_then(ActiveGesture::rectangle_preview)
     }
 
+    /// Revision of the committed annotation state; changes with every edit.
+    pub fn revision(&self) -> u64 {
+        self.state.revision
+    }
+
+    /// Whether the document has unsaved changes; equal to `snapshot().dirty`
+    /// without cloning every annotation.
+    pub fn is_dirty(&self) -> bool {
+        self.state.revision != self.saved_revision
+    }
+
     pub fn snapshot(&self) -> AnnotationSnapshot {
         AnnotationSnapshot {
             revision: self.state.revision,

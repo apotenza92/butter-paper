@@ -45,19 +45,52 @@ pub struct SessionSnapshot {
 /// One window's run of consecutive documents in a session.
 ///
 /// `active_document` is relative to the window's first document.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionWindow {
     document_count: usize,
     active_document: Option<usize>,
+    bounds: Option<SessionWindowBounds>,
 }
 
 impl SessionWindow {
-    pub const fn document_count(self) -> usize {
+    pub const fn document_count(&self) -> usize {
         self.document_count
     }
 
-    pub const fn active_document(self) -> Option<usize> {
+    pub const fn active_document(&self) -> Option<usize> {
         self.active_document
+    }
+
+    pub fn bounds(&self) -> Option<&SessionWindowBounds> {
+        self.bounds.as_ref()
+    }
+}
+
+/// Where a window was: its frame origin and content size in the platform's
+/// window coordinates, and the display it was on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionWindowBounds {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub display: Option<String>,
+}
+
+// Bounds come from finite, validated values only.
+impl Eq for SessionWindowBounds {}
+
+const MIN_WINDOW_SIDE: f32 = 100.;
+const MAX_WINDOW_COORDINATE: f32 = 100_000.;
+
+impl SessionWindowBounds {
+    fn is_valid(&self) -> bool {
+        [self.x, self.y, self.width, self.height]
+            .iter()
+            .all(|value| value.is_finite() && value.abs() <= MAX_WINDOW_COORDINATE)
+            && self.width >= MIN_WINDOW_SIDE
+            && self.height >= MIN_WINDOW_SIDE
+            && self.display.as_ref().is_none_or(|display| display.len() <= 256)
     }
 }
 
@@ -69,6 +102,7 @@ fn single_window(document_count: usize, active_document: Option<usize>) -> Vec<S
         vec![SessionWindow {
             document_count,
             active_document,
+            bounds: None,
         }]
     }
 }
@@ -85,6 +119,14 @@ impl SessionSnapshot {
 
     pub fn windows(&self) -> &[SessionWindow] {
         &self.windows
+    }
+
+    /// Records where this single-window snapshot's window was.
+    pub fn with_window_bounds(mut self, bounds: Option<SessionWindowBounds>) -> Self {
+        if let [window] = self.windows.as_mut_slice() {
+            window.bounds = bounds.filter(SessionWindowBounds::is_valid);
+        }
+        self
     }
 
     pub fn with_restart_views(mut self, restart_views: Vec<RestartView>) -> Self {
@@ -112,6 +154,7 @@ impl SessionSnapshot {
             let mut added = SessionWindow {
                 document_count: 0,
                 active_document: None,
+                bounds: window.bounds.clone(),
             };
             let group = entries.by_ref().take(window.document_count).enumerate();
             for (relative, (index, (path, view))) in group {
@@ -251,6 +294,20 @@ impl SessionRestoreDocument {
 }
 
 impl SessionRestorePlan {
+    /// Where the window restored first (see [`Self::split_windows`]) was.
+    pub fn first_window_bounds(&self) -> Option<SessionWindowBounds> {
+        self.clone()
+            .split_windows()
+            .into_iter()
+            .next()
+            .and_then(|plan| plan.windows.first().and_then(|window| window.bounds.clone()))
+    }
+
+    /// Where this single-window plan's window was.
+    pub fn window_bounds(&self) -> Option<&SessionWindowBounds> {
+        self.windows.first().and_then(SessionWindow::bounds)
+    }
+
     /// One plan per saved window, in order; each restores as its own window.
     /// Every document lands in exactly one plan. The first plan is the window
     /// that held the session's active document, so it is restored first.
@@ -269,8 +326,12 @@ impl SessionRestorePlan {
                 active_window = plans.len();
             }
             start += window.document_count;
+            let mut windows = single_window(paths.len(), window.active_document);
+            if let Some(restored) = windows.first_mut() {
+                restored.bounds = window.bounds.clone();
+            }
             plans.push(SessionRestorePlan {
-                windows: single_window(paths.len(), window.active_document),
+                windows,
                 active_document: window.active_document,
                 documents: paths,
                 restart_views: views,
@@ -861,6 +922,20 @@ fn encode_manifest(snapshot: &SessionSnapshot) -> String {
         encoded.push_str(&window.document_count.to_string());
         encoded.push_str(",\"activeDocument\":");
         push_optional_index(&mut encoded, window.active_document);
+        encoded.push_str(",\"bounds\":");
+        match &window.bounds {
+            Some(bounds) => encoded.push_str(
+                &serde_json::json!({
+                    "x": bounds.x,
+                    "y": bounds.y,
+                    "width": bounds.width,
+                    "height": bounds.height,
+                    "display": bounds.display,
+                })
+                .to_string(),
+            ),
+            None => encoded.push_str("null"),
+        }
         encoded.push('}');
     }
     encoded.push_str("]}\n");
@@ -986,9 +1061,42 @@ fn decode_manifest(bytes: &[u8]) -> Result<SessionRestorePlan, SessionManifestEr
             let object = encoded.as_object().ok_or_else(invalid_shape)?;
             require_exact_fields(
                 object.keys().map(String::as_str),
-                &["documentCount", "activeDocument"],
+                &["documentCount", "activeDocument", "bounds"],
             )?;
+            let bounds = match object.get("bounds") {
+                Some(Value::Null) => None,
+                Some(Value::Object(bounds)) => {
+                    require_exact_fields(
+                        bounds.keys().map(String::as_str),
+                        &["x", "y", "width", "height", "display"],
+                    )?;
+                    let number = |key: &str| {
+                        bounds
+                            .get(key)
+                            .and_then(Value::as_f64)
+                            .map(|value| value as f32)
+                            .ok_or_else(invalid_shape)
+                    };
+                    let bounds = SessionWindowBounds {
+                        x: number("x")?,
+                        y: number("y")?,
+                        width: number("width")?,
+                        height: number("height")?,
+                        display: match bounds.get("display") {
+                            Some(Value::Null) => None,
+                            Some(Value::String(display)) => Some(display.clone()),
+                            _ => return Err(invalid_shape()),
+                        },
+                    };
+                    if !bounds.is_valid() {
+                        return Err(invalid_shape());
+                    }
+                    Some(bounds)
+                }
+                _ => return Err(invalid_shape()),
+            };
             windows.push(SessionWindow {
+                bounds,
                 document_count: object
                     .get("documentCount")
                     .and_then(Value::as_u64)

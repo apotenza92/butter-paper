@@ -24,8 +24,6 @@ test("Quit shortcuts remain platform-correct", async () => {
     bindings,
     /#\[cfg\(target_os = "macos"\)\][\s\S]*?KeyBinding::new\(\s*"cmd-q",\s*crate::application_close_workspace::RequestApplicationQuit/,
   );
-  assert.match(
-    bindings,
-    /#\[cfg\(not\(target_os = "macos"\)\)\][\s\S]*?KeyBinding::new\(\s*"ctrl-q",\s*crate::application_close_workspace::RequestApplicationQuit/,
-  );
+  // Windows and Linux close the app with its last window, not a shortcut.
+  assert.doesNotMatch(bindings, /"ctrl-q"/);
 });

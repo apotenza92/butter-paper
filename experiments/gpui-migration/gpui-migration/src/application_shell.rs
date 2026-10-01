@@ -284,12 +284,8 @@ pub fn init_application_shell_actions(cx: &mut App) {
             crate::application_close_workspace::RequestApplicationQuit,
             None,
         ),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new(
-            "ctrl-q",
-            crate::application_close_workspace::RequestApplicationQuit,
-            None,
-        ),
+        // Windows and Linux have no quit shortcut: closing the last window
+        // (Alt+F4 or the close button) ends the app, as platform apps do.
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-shift-n", NewWindow, None),
         #[cfg(not(target_os = "macos"))]
@@ -364,21 +360,16 @@ mod tests {
         });
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_os = "macos"))]
     #[gpui::test]
-    fn linux_quit_shortcut_uses_ctrl_q(cx: &mut gpui::TestAppContext) {
+    fn windows_and_linux_have_no_quit_shortcut(cx: &mut gpui::TestAppContext) {
         use crate::application_close_workspace::RequestApplicationQuit;
 
         cx.update(|cx| {
             init_application_shell_actions(cx);
-            let expected = KeyBinding::new("ctrl-q", RequestApplicationQuit, None);
             let bindings = cx.key_bindings();
             let bindings = bindings.borrow();
-            let quit_bindings = bindings
-                .bindings_for_action(&RequestApplicationQuit)
-                .collect::<Vec<_>>();
-            assert_eq!(quit_bindings.len(), 1);
-            assert_eq!(quit_bindings[0].keystrokes(), expected.keystrokes());
+            assert_eq!(bindings.bindings_for_action(&RequestApplicationQuit).count(), 0);
         });
     }
 

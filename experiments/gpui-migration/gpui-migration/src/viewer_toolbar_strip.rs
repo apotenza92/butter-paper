@@ -337,12 +337,12 @@ impl ViewerToolbarStrip {
         pages_per_lane: usize,
         cx: &mut Context<Self>,
     ) {
+        // The control notifies on change, which re-renders this toolbar too.
         if let Some(control) = &self.cad_view_control {
             control.update(cx, |control, cx| {
                 control.sync_retained_state(active, organisation, pages_per_lane, cx);
             });
         }
-        cx.notify();
     }
 
     fn select_fit_preset(&mut self, preset: FitPreset, cx: &mut Context<Self>) {

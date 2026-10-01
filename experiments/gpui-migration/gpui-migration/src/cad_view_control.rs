@@ -251,9 +251,17 @@ impl CadViewControl {
         pages_per_lane: usize,
         cx: &mut Context<Self>,
     ) {
-        self.active = active && !self.disabled;
+        let active = active && !self.disabled;
+        let pages_per_column = pages_per_lane.clamp(MIN_PAGES_PER_COLUMN, MAX_PAGES_PER_COLUMN);
+        // Synced on every document change, so only a real change re-renders.
+        if (self.active, self.organisation, self.pages_per_column)
+            == (active, organisation, pages_per_column)
+        {
+            return;
+        }
+        self.active = active;
         self.organisation = organisation;
-        self.pages_per_column = pages_per_lane.clamp(MIN_PAGES_PER_COLUMN, MAX_PAGES_PER_COLUMN);
+        self.pages_per_column = pages_per_column;
         cx.notify();
     }
 

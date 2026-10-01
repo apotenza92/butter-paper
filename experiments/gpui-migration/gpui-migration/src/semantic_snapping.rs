@@ -1010,6 +1010,145 @@ struct Candidate {
 pub struct SemanticSnapIndex {
     candidates: Vec<Candidate>,
     shared_indexes: Vec<Arc<SemanticSnapIndex>>,
+    /// Built on first query and dropped whenever candidates change.
+    grid: std::sync::OnceLock<Option<CandidateGrid>>,
+}
+
+/// Indexes with fewer candidates are scanned directly.
+const CANDIDATE_GRID_MINIMUM: usize = 512;
+
+/// Uniform buckets over an index's candidates, so a snap query inspects the
+/// candidates near the pointer rather than every line on a dense drawing.
+/// Queries yield candidate indices in ascending order, so the first-best
+/// tie-breaking of a full scan is preserved exactly.
+#[derive(Clone, Debug)]
+struct CandidateGrid {
+    origin_x: f64,
+    origin_y: f64,
+    cell: f64,
+    columns: usize,
+    rows: usize,
+    cells: Vec<Vec<u32>>,
+    /// Candidates too large or irregular to bucket; always inspected.
+    overflow: Vec<u32>,
+}
+
+impl CandidateGrid {
+    const MAX_AXIS_CELLS: usize = 1024;
+    const MAX_CELLS_PER_CANDIDATE: usize = 256;
+
+    fn bounds(candidate: &Candidate) -> (f64, f64, f64, f64) {
+        match candidate.geometry {
+            CandidateGeometry::Point(point) => (point.x, point.y, point.x, point.y),
+            CandidateGeometry::Segment { start, end } => (
+                start.x.min(end.x),
+                start.y.min(end.y),
+                start.x.max(end.x),
+                start.y.max(end.y),
+            ),
+        }
+    }
+
+    fn build(candidates: &[Candidate]) -> Option<Self> {
+        let (mut min_x, mut min_y, mut max_x, mut max_y) =
+            (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for candidate in candidates {
+            let (left, bottom, right, top) = Self::bounds(candidate);
+            if left.is_finite() && bottom.is_finite() && right.is_finite() && top.is_finite() {
+                min_x = min_x.min(left);
+                min_y = min_y.min(bottom);
+                max_x = max_x.max(right);
+                max_y = max_y.max(top);
+            }
+        }
+        if !(min_x.is_finite() && min_y.is_finite() && max_x.is_finite() && max_y.is_finite()) {
+            return None;
+        }
+        let width = (max_x - min_x).max(1.);
+        let height = (max_y - min_y).max(1.);
+        // About four candidates per cell, within the per-axis cap.
+        let target_cells = (candidates.len() / 4).max(1) as f64;
+        let cell = (width * height / target_cells)
+            .sqrt()
+            .max(width / Self::MAX_AXIS_CELLS as f64)
+            .max(height / Self::MAX_AXIS_CELLS as f64)
+            .max(f64::EPSILON);
+        let columns = ((width / cell).floor() as usize + 1).min(Self::MAX_AXIS_CELLS);
+        let rows = ((height / cell).floor() as usize + 1).min(Self::MAX_AXIS_CELLS);
+        let mut grid = Self {
+            origin_x: min_x,
+            origin_y: min_y,
+            cell,
+            columns,
+            rows,
+            cells: vec![Vec::new(); columns * rows],
+            overflow: Vec::new(),
+        };
+        for (index, candidate) in candidates.iter().enumerate() {
+            let index = index as u32;
+            let (left, bottom, right, top) = Self::bounds(candidate);
+            match grid.cell_range(left, bottom, right, top) {
+                Some((x0, y0, x1, y1))
+                    if (x1 - x0 + 1) * (y1 - y0 + 1) <= Self::MAX_CELLS_PER_CANDIDATE =>
+                {
+                    for row in y0..=y1 {
+                        for column in x0..=x1 {
+                            grid.cells[row * columns + column].push(index);
+                        }
+                    }
+                }
+                _ => grid.overflow.push(index),
+            }
+        }
+        Some(grid)
+    }
+
+    fn cell_range(
+        &self,
+        left: f64,
+        bottom: f64,
+        right: f64,
+        top: f64,
+    ) -> Option<(usize, usize, usize, usize)> {
+        if !(left.is_finite() && bottom.is_finite() && right.is_finite() && top.is_finite()) {
+            return None;
+        }
+        let column = |x: f64| {
+            (((x - self.origin_x) / self.cell).floor().max(0.) as usize).min(self.columns - 1)
+        };
+        let row =
+            |y: f64| (((y - self.origin_y) / self.cell).floor().max(0.) as usize).min(self.rows - 1);
+        Some((column(left), row(bottom), column(right), row(top)))
+    }
+
+    /// Ascending indices of every candidate whose bounds may lie within
+    /// `radius` of `point`, or `None` when a full scan is no more expensive.
+    fn query(&self, point: PdfPoint, radius: f64) -> Option<Vec<u32>> {
+        if !radius.is_finite() || radius < 0. {
+            return None;
+        }
+        let (left, bottom, right, top) =
+            (point.x - radius, point.y - radius, point.x + radius, point.y + radius);
+        let mut indices = self.overflow.clone();
+        if right >= self.origin_x
+            && top >= self.origin_y
+            && left <= self.origin_x + self.cell * self.columns as f64
+            && bottom <= self.origin_y + self.cell * self.rows as f64
+        {
+            let (x0, y0, x1, y1) = self.cell_range(left, bottom, right, top)?;
+            if (x1 - x0 + 1) * (y1 - y0 + 1) * 2 > self.cells.len() {
+                return None;
+            }
+            for row in y0..=y1 {
+                for column in x0..=x1 {
+                    indices.extend_from_slice(&self.cells[row * self.columns + column]);
+                }
+            }
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        Some(indices)
+    }
 }
 
 impl SemanticSnapIndex {
@@ -1075,6 +1214,7 @@ impl SemanticSnapIndex {
             return Err(SemanticSnapError::ContentCandidateLimitExceeded);
         }
         self.candidates.extend(content);
+        self.grid = std::sync::OnceLock::new();
         Ok(self)
     }
 
@@ -1085,6 +1225,7 @@ impl SemanticSnapIndex {
 
     pub fn with_page_grid(mut self, grid: &PageGridDefinition) -> Result<Self, SemanticSnapError> {
         grid.candidate_count()?;
+        self.grid = std::sync::OnceLock::new();
         match grid.kind {
             PageGridKind::Ruled => {
                 let rows = inclusive_grid_count(grid.origin.y, grid.height, grid.spacing)?;
@@ -1304,6 +1445,7 @@ impl SemanticSnapIndex {
         Self {
             candidates,
             shared_indexes: Vec::new(),
+            grid: std::sync::OnceLock::new(),
         }
     }
 
@@ -1323,6 +1465,7 @@ impl SemanticSnapIndex {
                     source: SemanticSnapSource::ConstructionGrid,
                 }),
         );
+        self.grid = std::sync::OnceLock::new();
         Ok(self)
     }
 
@@ -1358,16 +1501,12 @@ impl SemanticSnapIndex {
         let tolerance_pdf_squared = tolerance_pdf * tolerance_pdf;
         let mut best: Option<(f64, SemanticSnapDecision)> = None;
 
-        for candidate in self.candidates.iter().chain(
-            self.shared_indexes
-                .iter()
-                .flat_map(|index| index.candidates.iter()),
-        ) {
+        let mut consider = |candidate: &Candidate| {
             if !settings.is_source_enabled(candidate.source) {
-                continue;
+                return;
             }
             if !settings.is_target_enabled(candidate.role) {
-                continue;
+                return;
             }
             let resolved = match candidate.geometry {
                 CandidateGeometry::Point(point) => point,
@@ -1379,11 +1518,11 @@ impl SemanticSnapIndex {
                 .as_ref()
                 .is_some_and(|constraint| !constraint.contains(resolved))
             {
-                continue;
+                return;
             }
             let distance_pdf_squared = squared_distance(point, resolved);
             if distance_pdf_squared > tolerance_pdf_squared {
-                continue;
+                return;
             }
             let score = distance_pdf_squared
                 + role_priority(candidate.role) * tolerance_pdf_squared * 0.015;
@@ -1401,9 +1540,39 @@ impl SemanticSnapIndex {
             {
                 best = Some((score, decision));
             }
+        };
+        // Same visiting order as scanning `candidates` then each shared
+        // index's own candidates, restricted to those within tolerance.
+        self.for_each_candidate_near(point, tolerance_pdf, &mut consider);
+        for index in &self.shared_indexes {
+            index.for_each_candidate_near(point, tolerance_pdf, &mut consider);
         }
 
         best.map(|(_, decision)| decision)
+    }
+
+    fn for_each_candidate_near(
+        &self,
+        point: PdfPoint,
+        radius: f64,
+        visit: &mut impl FnMut(&Candidate),
+    ) {
+        let near = (self.candidates.len() >= CANDIDATE_GRID_MINIMUM)
+            .then(|| {
+                self.grid
+                    .get_or_init(|| CandidateGrid::build(&self.candidates))
+                    .as_ref()
+                    .and_then(|grid| grid.query(point, radius))
+            })
+            .flatten();
+        match near {
+            Some(indices) => {
+                for index in indices {
+                    visit(&self.candidates[index as usize]);
+                }
+            }
+            None => self.candidates.iter().for_each(visit),
+        }
     }
 }
 
@@ -2026,6 +2195,59 @@ fn role_priority(role: SemanticSnapRole) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn candidate_grid_returns_every_nearby_candidate_in_scan_order() {
+        // Deterministic pseudo-random points and segments, including long
+        // segments that overflow the per-candidate cell limit.
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % 10_000) as f64 / 10.
+        };
+        let candidates = (0..2_000)
+            .map(|index| Candidate {
+                geometry: if index % 3 == 0 {
+                    CandidateGeometry::Point(PdfPoint { x: next(), y: next() })
+                } else if index % 97 == 0 {
+                    CandidateGeometry::Segment {
+                        start: PdfPoint { x: 0., y: next() },
+                        end: PdfPoint { x: 1_000., y: next() },
+                    }
+                } else {
+                    let start = PdfPoint { x: next(), y: next() };
+                    CandidateGeometry::Segment {
+                        start,
+                        end: PdfPoint { x: start.x + next() / 20., y: start.y - next() / 20. },
+                    }
+                },
+                owner_id: None,
+                role: SemanticSnapRole::Endpoint,
+                source: SemanticSnapSource::Content,
+            })
+            .collect::<Vec<_>>();
+        let grid = CandidateGrid::build(&candidates).expect("finite candidates build a grid");
+        for _ in 0..500 {
+            let point = PdfPoint { x: next() * 1.2 - 100., y: next() * 1.2 - 100. };
+            let radius = next() / 50.;
+            let Some(found) = grid.query(point, radius) else {
+                continue;
+            };
+            assert!(found.windows(2).all(|pair| pair[0] < pair[1]), "ascending and unique");
+            for (index, candidate) in candidates.iter().enumerate() {
+                let (left, bottom, right, top) = CandidateGrid::bounds(candidate);
+                let near = right >= point.x - radius
+                    && left <= point.x + radius
+                    && top >= point.y - radius
+                    && bottom <= point.y + radius;
+                if near {
+                    assert!(found.contains(&(index as u32)), "candidate {index} near {point:?} missed");
+                }
+            }
+        }
+    }
 
     fn pdf_points_for_mm(millimetres: f64) -> f64 {
         millimetres * POINTS_PER_INCH / MILLIMETRES_PER_INCH

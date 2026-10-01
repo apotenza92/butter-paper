@@ -230,3 +230,55 @@ index 6a30f224..8cd494d9 100644
              .on_hover(cx.listener(move |this, hovered, _, cx| {
                  if *hovered {
                      this.selected_index = Some(ix);
+diff --git a/crates/ui/src/menu/context_menu.rs b/crates/ui/src/menu/context_menu.rs
+index 5b00f98a..bcdb06b3 100644
+--- a/crates/ui/src/menu/context_menu.rs
++++ b/crates/ui/src/menu/context_menu.rs
+@@ -7,6 +7,8 @@ use gpui::{
+     Subscription, Window, anchored, deferred, div, prelude::FluentBuilder, px,
+ };
+ 
++use gpui_base::{DeferredPopover, GlobalState};
++
+ use crate::menu::PopupMenu;
+ 
+ /// A extension trait for adding a context menu to an element.
+@@ -119,6 +121,9 @@ struct ContextMenuSharedState {
+     open: bool,
+     position: Point<Pixels>,
+     _subscription: Option<Subscription>,
++    /// Registers the open menu as a deferred popup, so pointer handlers that
++    /// step aside for open popups also step aside for this menu.
++    deferred_context: Option<DeferredPopover>,
+ }
+ 
+ pub struct ContextMenuState {
+@@ -135,6 +140,7 @@ impl Default for ContextMenuState {
+                 open: false,
+                 position: Default::default(),
+                 _subscription: None,
++                deferred_context: None,
+             })),
+         }
+     }
+@@ -299,6 +305,8 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
+                             shared_state._subscription = None;
+                             shared_state.position = event.position;
+                             shared_state.open = true;
++                            shared_state.deferred_context =
++                                Some(GlobalState::register_deferred_popover(cx));
+                         }
+ 
+                         // Use defer to build the menu in the next frame, avoiding race conditions
+@@ -320,7 +328,10 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
+                                 let _subscription = window.subscribe(&menu, cx, {
+                                     let shared_state = shared_state.clone();
+                                     move |_, _: &DismissEvent, window, _cx| {
+-                                        shared_state.borrow_mut().open = false;
++                                        let mut state = shared_state.borrow_mut();
++                                        state.open = false;
++                                        state.deferred_context = None;
++                                        drop(state);
+                                         window.refresh();
+                                     }
+                                 });

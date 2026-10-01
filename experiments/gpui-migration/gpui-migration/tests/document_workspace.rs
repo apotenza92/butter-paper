@@ -19987,6 +19987,10 @@ fn highlight_real_control_pointer_history_and_scene_stay_application_owned(
             .pens
             .is_empty()
     );
+    // The right click opened the page context menu; close it so the next
+    // press draws rather than dismissing the menu.
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_keystrokes("escape");
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(middle, Some(MouseButton::Left), Modifiers::default());
     cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
@@ -26431,6 +26435,10 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
         Modifiers::default(),
     );
     assert_eq!(snapshot!(), created, "non-primary Arc input must be inert");
+    // The right click opened the page context menu; a press now would only
+    // dismiss it, so close it before the primary drag.
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_keystrokes("escape");
 
     assert!(workspace.update(cx, |workspace, cx| {
         workspace.select_annotation(request.document_id, &rectangle.id, cx)
@@ -44353,6 +44361,143 @@ fn press_outside_an_open_popover_only_dismisses_it(cx: &mut TestAppContext) {
     assert_eq!(rectangles(cx), before + 1, "the next press draws normally");
 }
 
+fn rectangle_count(
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: DocumentId,
+    cx: &mut gpui::VisualTestContext,
+) -> usize {
+    workspace
+        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .unwrap()
+        .rectangles
+        .len()
+}
+
+fn drag_across_viewport(cx: &mut gpui::VisualTestContext) {
+    let start = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap().center();
+    let end = point(start.x + px(80.), start.y + px(60.));
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+}
+
+#[gpui::test]
+fn press_that_dismisses_the_canvas_context_menu_draws_nothing(cx: &mut TestAppContext) {
+    let (workspace, document_id, cx) = scrolled_test_workspace(cx, 300.);
+    let rectangle_tool = cx.debug_bounds(DOCUMENT_RECTANGLE_TOOL_ID).unwrap();
+    cx.simulate_click(rectangle_tool.center(), Modifiers::default());
+    let before = rectangle_count(&workspace, document_id, cx);
+
+    let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    let menu_at = point(viewport.origin.x + px(40.), viewport.origin.y + px(40.));
+    cx.simulate_mouse_down(menu_at, MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(menu_at, MouseButton::Right, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.update(|_, cx| gpui_component::GlobalState::is_in_deferred_context(cx)),
+        "the open context menu registers as a popup"
+    );
+
+    drag_across_viewport(cx);
+    assert!(
+        !cx.update(|_, cx| gpui_component::GlobalState::is_in_deferred_context(cx)),
+        "the press dismissed the context menu"
+    );
+    assert_eq!(rectangle_count(&workspace, document_id, cx), before, "the dismissing press drew nothing");
+
+    drag_across_viewport(cx);
+    assert_eq!(rectangle_count(&workspace, document_id, cx), before + 1, "the next press draws normally");
+}
+
+#[gpui::test]
+fn press_while_a_dialog_is_open_never_reaches_the_canvas(cx: &mut TestAppContext) {
+    let (workspace, document_id, cx) = scrolled_test_workspace(cx, 300.);
+    let rectangle_tool = cx.debug_bounds(DOCUMENT_RECTANGLE_TOOL_ID).unwrap();
+    cx.simulate_click(rectangle_tool.center(), Modifiers::default());
+    let before = rectangle_count(&workspace, document_id, cx);
+
+    cx.update(|window, cx| {
+        window.open_dialog(cx, |dialog, _, _| dialog.title("Test dialog"));
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+
+    drag_across_viewport(cx);
+    assert_eq!(rectangle_count(&workspace, document_id, cx), before, "the press drew nothing");
+
+    cx.update(|window, cx| window.close_all_dialogs(cx));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    drag_across_viewport(cx);
+    assert_eq!(rectangle_count(&workspace, document_id, cx), before + 1, "presses draw again once it closes");
+}
+
+#[gpui::test]
+fn page_press_reclaims_focus_left_outside_the_workspace_for_tool_shortcuts(
+    cx: &mut TestAppContext,
+) {
+    cx.update(init_document_workspace_actions);
+    let (workspace, document_id, cx) = scrolled_test_workspace(cx, 300.);
+    // Focus parked on an element outside the document, as the in-window menu
+    // bar or a closed dialog's trigger leaves it.
+    let outside = cx.update(|_, cx| cx.focus_handle());
+    cx.update(|window, cx| outside.focus(window, cx));
+    cx.simulate_keystrokes("e");
+    assert_ne!(
+        workspace.read_with(cx, |workspace, cx| workspace.annotation_tool(document_id, cx)),
+        Some(AnnotationTool::Ellipse),
+        "shortcuts are scoped to the document"
+    );
+
+    let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    cx.simulate_click(viewport.center(), Modifiers::default());
+    cx.simulate_keystrokes("e");
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.annotation_tool(document_id, cx)),
+        Some(AnnotationTool::Ellipse),
+        "a page press returns focus to the document"
+    );
+}
+
+/// Frame cost of a rectangle drag: one pointer move and one full redraw per
+/// frame. Run with `--release --ignored` and read the printed timings.
+#[gpui::test]
+#[ignore]
+fn bench_rectangle_drag_frame_cost(cx: &mut TestAppContext) {
+    let (_workspace, _document_id, cx) = scrolled_test_workspace(cx, 300.);
+    cx.simulate_resize(size(px(1_600.), px(1_000.)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let rectangle_tool = cx.debug_bounds(DOCUMENT_RECTANGLE_TOOL_ID).unwrap();
+    cx.simulate_click(rectangle_tool.center(), Modifiers::default());
+    let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    let start = point(viewport.origin.x + px(60.), viewport.origin.y + px(60.));
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    let mut frames = Vec::new();
+    let count: usize = std::env::var("BENCH_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(240);
+    for step in 0..count {
+        let step = step % 240;
+        let at = point(start.x + px(step as f32), start.y + px(step as f32 * 0.6));
+        let began = std::time::Instant::now();
+        cx.simulate_event(gpui::MouseMoveEvent {
+            position: at,
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Modifiers::default(),
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        frames.push(began.elapsed().as_secs_f64() * 1000.);
+    }
+    let end = point(start.x + px(240.), start.y + px(144.));
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    frames.sort_by(f64::total_cmp);
+    let mean = frames.iter().sum::<f64>() / frames.len() as f64;
+    eprintln!(
+        "BENCH rectangle drag frame ms: mean {mean:.2} p50 {:.2} p95 {:.2} max {:.2}",
+        frames[frames.len() / 2],
+        frames[frames.len() * 95 / 100],
+        frames[frames.len() - 1]
+    );
+}
+
 #[gpui::test]
 fn control_wheel_zoom_keeps_the_document_point_under_the_pointer(cx: &mut TestAppContext) {
     let (workspace, document_id, cx) = pan_test_workspace(cx);
@@ -44651,4 +44796,45 @@ fn short_titled_tabs_keep_a_grab_area_clear_of_the_close_button(cx: &mut TestApp
         modifiers: Modifiers::default(),
         click_count: 1,
     });
+}
+
+#[gpui::test]
+fn tabs_scrolled_out_of_view_cannot_be_grabbed(cx: &mut TestAppContext) {
+    let ids = Arc::new(std::sync::atomic::AtomicU64::new(1));
+    let names = (0..16).map(|index| format!("plan-{index}.pdf")).collect::<Vec<_>>();
+    let names = names.iter().map(String::as_str).collect::<Vec<_>>();
+    let (workspace, documents, _released, cx) = tab_window_with_documents(cx, &names, ids);
+    // Reveal the first tab: later tabs now extend under the strip's actions.
+    workspace.update(cx, |workspace, cx| workspace.activate_document(documents[0], cx));
+    for _ in 0..3 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+    let open = cx.debug_bounds("document-tab-open").unwrap();
+    let press = open.center();
+    let covered = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .session_tab_debug_geometry(cx)
+            .into_iter()
+            .find(|(_, tab, _)| tab.contains(&press))
+            .map(|(id, _, _)| id)
+    });
+    assert!(covered.is_some(), "a scrolled-away tab lies under the Open button");
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.session_tab_drag_state()),
+        None,
+        "pressing the Open button must not start dragging the tab hidden beneath it"
+    );
+    cx.simulate_mouse_up(press, MouseButton::Left, Modifiers::default());
+
+    // A visible tab in the overflowing strip can still be grabbed.
+    let (visible, _) = workspace.read_with(cx, |workspace, cx| workspace.session_tab_geometry(1, cx));
+    let visible = visible.unwrap();
+    cx.simulate_mouse_down(visible.center(), MouseButton::Left, Modifiers::default());
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.session_tab_drag_state()),
+        Some((documents[1], false)),
+        "visible tabs in an overflowing strip must stay draggable"
+    );
 }

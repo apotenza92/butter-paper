@@ -69,8 +69,26 @@ pub fn title_bar_window_options() -> WindowOptions {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        TitleBar::window_options()
+        WindowOptions {
+            // Linux: ask for client-side decorations so the app's title bar is
+            // the only one; the window manager may still decorate (see
+            // `uses_window_title_bar`).
+            #[cfg(target_os = "linux")]
+            window_decorations: Some(gpui::WindowDecorations::Client),
+            ..TitleBar::window_options()
+        }
     }
+}
+
+/// Whether the app draws its own title bar: not on macOS (AppKit draws it),
+/// nor on Linux when the window manager decorates the window, which would
+/// otherwise show the title twice.
+pub fn uses_window_title_bar(window: &gpui::Window) -> bool {
+    if cfg!(target_os = "macos") {
+        return false;
+    }
+    !cfg!(target_os = "linux")
+        || matches!(window.window_decorations(), gpui::Decorations::Client { .. })
 }
 
 pub fn window_title_bar(
