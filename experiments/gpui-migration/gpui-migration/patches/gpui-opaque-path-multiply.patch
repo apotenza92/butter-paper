@@ -1554,10 +1554,10 @@ index d20cb317db..900f7deec9 100644
      float4 color = sample;
      if (sprite.grayscale != 0u) {
 diff --git a/crates/gpui_windows/src/window.rs b/crates/gpui_windows/src/window.rs
-index af240716c9..eb376edae9 100644
+index af240716c9..2f0d8d0a34 100644
 --- a/crates/gpui_windows/src/window.rs
 +++ b/crates/gpui_windows/src/window.rs
-@@ -630,6 +630,34 @@ impl PlatformWindow for WindowsWindow {
+@@ -630,6 +630,45 @@ impl PlatformWindow for WindowsWindow {
          self.state.content_size()
      }
  
@@ -1567,7 +1567,18 @@ index af240716c9..eb376edae9 100644
 +
 +    fn set_origin(&self, origin: Point<Pixels>) {
 +        let hwnd = self.0.hwnd;
-+        let origin = origin.scale(self.scale_factor());
++        let scale_factor = self.scale_factor();
++        // `bounds` reports the client origin; SetWindowPos places the outer
++        // window, whose invisible resize borders sit outside the client area.
++        // Move by the requested change so the reported origin lands on `origin`.
++        let current = self.bounds().origin.scale(scale_factor);
++        let origin = origin.scale(scale_factor);
++        let mut rect = RECT::default();
++        if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
++            return;
++        }
++        let x = rect.left + (origin.x.0 - current.x.0).round() as i32;
++        let y = rect.top + (origin.y.0 - current.y.0).round() as i32;
 +        // Deferred like `resize`: SetWindowPos re-enters the window procedure.
 +        self.0
 +            .executor
@@ -1576,8 +1587,8 @@ index af240716c9..eb376edae9 100644
 +                    SetWindowPos(
 +                        hwnd,
 +                        None,
-+                        origin.x.0 as i32,
-+                        origin.y.0 as i32,
++                        x,
++                        y,
 +                        0,
 +                        0,
 +                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,

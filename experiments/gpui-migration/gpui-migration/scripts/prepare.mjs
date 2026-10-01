@@ -71,6 +71,7 @@ async function verifyCheckout(root, policy) {
     "M  crates/ui/src/input/mod.rs",
     "M  crates/ui/src/input/state.rs",
     "M  crates/ui/src/input/textarea.rs",
+    "M  crates/ui/src/menu/context_menu.rs",
     "M  crates/ui/src/menu/menu_item.rs",
     "M  crates/ui/src/menu/popup_menu.rs",
     "M  crates/ui/src/tab/tab.rs",

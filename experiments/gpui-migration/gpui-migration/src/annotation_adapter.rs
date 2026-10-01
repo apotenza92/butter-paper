@@ -47,7 +47,8 @@ use crate::selection_geometry::{
 use crate::semantic_snapping::{
     AcquiredTrackingPoint, ObjectSnapTrackingResult, OrthogonalAxis, PageGridDefinition,
     RelationshipSnapGuide, SemanticSnapDecision, SemanticSnapError, SemanticSnapIndex,
-    SemanticSnapSettings, SemanticSnapSource, annotation_guide_rects, combined_guide_bounds,
+    SemanticSnapSettings, SemanticSnapSource, SnapGuideRect, annotation_guide_rects,
+    combined_guide_bounds,
     find_equal_size_snap, find_equal_spacing_snap, find_object_snap_tracking_point,
     moving_annotation_snap_anchor_points,
     moving_annotation_snap_anchor_points_with_selection_supplement,
@@ -1177,9 +1178,61 @@ pub struct AnnotationAdapter {
     semantic_snap_page_content: HashMap<(u64, u32), Arc<SemanticSnapIndex>>,
     retained_annotation_obstacles: HashMap<u64, Vec<RetainedAnnotationObstacle>>,
     observed_pixels_per_point: ObservedPixelsPerPoint,
+    /// Equal-size snap references for one committed page, keyed by document,
+    /// page and revision, so a drag computes them once rather than per move.
+    committed_guide_rects: Option<((u64, u32, u64), Arc<Vec<SnapGuideRect>>)>,
+    /// Annotation snap data for the page under an active gesture; see
+    /// `annotation_snap_cache`.
+    annotation_snap: Option<AnnotationSnapCache>,
+}
+
+type AnnotationSnapKey = (u64, u32, u64, Vec<MarkupId>, AnnotationSelectionSupplement);
+
+/// Annotation snap targets for one page and exclusion set. Built from the
+/// page's document scene, whose in-flight previews and drafts are either
+/// flagged (and so never snap targets) or excluded by id, so the data only
+/// changes with the committed revision. A drag therefore builds it once
+/// instead of on every pointer move.
+struct AnnotationSnapCache {
+    key: AnnotationSnapKey,
+    index: Arc<SemanticSnapIndex>,
+    references: Option<Vec<SnapGuideRect>>,
+    initial_bounds: Option<Option<PdfRect>>,
 }
 
 impl AnnotationAdapter {
+    /// Guide rectangles of a page's committed annotations, excluding
+    /// `excluded`. Matches `annotation_guide_rects` over the page's
+    /// thumbnail scene with no selection supplement.
+    fn committed_guide_rects(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        excluded: &[MarkupId],
+    ) -> Vec<SnapGuideRect> {
+        let Some(document) = self.documents.get(&document_id) else {
+            return Vec::new();
+        };
+        let key = (document_id, page_index, document.revision());
+        let rects = match &self.committed_guide_rects {
+            Some((cached, rects)) if *cached == key => rects.clone(),
+            _ => {
+                let rects = Arc::new(annotation_guide_rects(
+                    &document.thumbnail_scene(page_index),
+                    &[],
+                    &AnnotationSelectionSupplement::new(),
+                ));
+                self.committed_guide_rects = Some((key, rects.clone()));
+                rects
+            }
+        };
+        rects
+            .iter()
+            .filter(|guide| !excluded.contains(&guide.owner_id))
+            .cloned()
+            .collect()
+    }
+
     /// Encodes one document's committed annotation model and exact undo/redo
     /// timeline. Adapter-owned pointer and placement state is intentionally
     /// excluded from the recovery payload.
@@ -2020,37 +2073,165 @@ impl AnnotationAdapter {
         self.semantic_snap_decision = None;
     }
 
-    fn semantic_snap_index(
-        &self,
+    fn annotation_snap_cache(
+        &mut self,
         document_id: u64,
         page_index: u32,
-        scene: &AnnotationScene,
+        excluded_owner_ids: &[MarkupId],
+        supplement: &AnnotationSelectionSupplement,
+    ) -> &mut AnnotationSnapCache {
+        let revision = self
+            .documents
+            .get(&document_id)
+            .map_or(0, AnnotationDocument::revision);
+        let fresh = self.annotation_snap.as_ref().is_some_and(|cache| {
+            let (cached_document, cached_page, cached_revision, cached_excluded, cached_supplement) =
+                &cache.key;
+            (*cached_document, *cached_page, *cached_revision) == (document_id, page_index, revision)
+                && cached_excluded.as_slice() == excluded_owner_ids
+                && cached_supplement == supplement
+        });
+        if !fresh {
+            let scene = self.document_scene(document_id, page_index);
+            let index = SemanticSnapIndex::from_annotation_scene_with_selection_supplement(
+                &scene,
+                excluded_owner_ids,
+                supplement,
+            );
+            self.annotation_snap = Some(AnnotationSnapCache {
+                key: (
+                    document_id,
+                    page_index,
+                    revision,
+                    excluded_owner_ids.to_vec(),
+                    supplement.clone(),
+                ),
+                index: Arc::new(index),
+                references: None,
+                initial_bounds: None,
+            });
+        }
+        self.annotation_snap
+            .as_mut()
+            .expect("the annotation snap cache was just filled")
+    }
+
+    /// Annotation targets, then the page grid, then PDF content: the same
+    /// candidate order as one index holding them in that sequence.
+    fn semantic_snap_index(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
         excluded_owner_ids: &[MarkupId],
         supplement: &AnnotationSelectionSupplement,
     ) -> SemanticSnapIndex {
-        let index = SemanticSnapIndex::from_annotation_scene_with_selection_supplement(
-            scene,
-            excluded_owner_ids,
-            supplement,
-        );
-        let index = if let Some(content) = self
-            .semantic_snap_page_content
-            .get(&(document_id, page_index))
-        {
-            index.with_shared_index(content.clone())
-        } else {
-            index
-        };
+        let annotations = self
+            .annotation_snap_cache(document_id, page_index, excluded_owner_ids, supplement)
+            .index
+            .clone();
+        let mut index = SemanticSnapIndex::default().with_shared_index(annotations);
         if let Some(grid) = self
             .semantic_snap_page_grids
             .get(&(document_id, page_index))
         {
-            index
-                .with_page_grid(grid)
-                .expect("stored page-grid geometry was validated before installation")
-        } else {
-            index
+            index = index.with_shared_index(Arc::new(
+                SemanticSnapIndex::default()
+                    .with_page_grid(grid)
+                    .expect("stored page-grid geometry was validated before installation"),
+            ));
         }
+        if let Some(content) = self
+            .semantic_snap_page_content
+            .get(&(document_id, page_index))
+        {
+            index = index.with_shared_index(content.clone());
+        }
+        index
+    }
+
+    /// Committed bounds of the moving annotations, from guide rectangles or,
+    /// failing those, the anchors.
+    fn moving_initial_bounds(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        anchors: &[PdfPoint],
+        excluded_ids: &[MarkupId],
+        caption_supplement: &AnnotationSelectionSupplement,
+    ) -> Option<PdfRect> {
+        self.documents
+            .get(&document_id)
+            .and_then(|document| {
+                let committed_scene = document.thumbnail_scene(page_index);
+                let points = annotation_guide_rects(&committed_scene, &[], caption_supplement)
+                    .into_iter()
+                    .filter(|guide| excluded_ids.contains(&guide.owner_id))
+                    .flat_map(|guide| {
+                        let rect = guide.rect;
+                        [
+                            PdfPoint {
+                                x: rect.x,
+                                y: rect.y,
+                            },
+                            PdfPoint {
+                                x: rect.x + rect.width,
+                                y: rect.y + rect.height,
+                            },
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                combined_guide_bounds(&points)
+            })
+            .or_else(|| combined_guide_bounds(anchors))
+    }
+
+    fn cached_moving_initial_bounds(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        anchors: &[PdfPoint],
+        excluded_ids: &[MarkupId],
+        caption_supplement: &AnnotationSelectionSupplement,
+    ) -> Option<PdfRect> {
+        if let Some(bounds) = self
+            .annotation_snap_cache(document_id, page_index, excluded_ids, caption_supplement)
+            .initial_bounds
+        {
+            return bounds;
+        }
+        let bounds = self.moving_initial_bounds(
+            document_id,
+            page_index,
+            anchors,
+            excluded_ids,
+            caption_supplement,
+        );
+        self.annotation_snap_cache(document_id, page_index, excluded_ids, caption_supplement)
+            .initial_bounds = Some(bounds);
+        bounds
+    }
+
+    fn cached_moving_guide_references(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        excluded_ids: &[MarkupId],
+        caption_supplement: &AnnotationSelectionSupplement,
+    ) -> Vec<SnapGuideRect> {
+        if let Some(references) = &self
+            .annotation_snap_cache(document_id, page_index, excluded_ids, caption_supplement)
+            .references
+        {
+            return references.clone();
+        }
+        let references = annotation_guide_rects(
+            &self.document_scene(document_id, page_index),
+            excluded_ids,
+            caption_supplement,
+        );
+        self.annotation_snap_cache(document_id, page_index, excluded_ids, caption_supplement)
+            .references = Some(references.clone());
+        references
     }
 
     pub fn set_retained_annotation_obstacles(
@@ -2500,11 +2681,9 @@ impl AnnotationAdapter {
             _ => None,
         };
         if let Some((start, anchors, excluded_ids, caption_supplement)) = moving {
-            let scene = self.document_scene(document_id, page_index);
             let index = self.semantic_snap_index(
                 document_id,
                 page_index,
-                &scene,
                 &excluded_ids,
                 &caption_supplement,
             );
@@ -2595,38 +2774,25 @@ impl AnnotationAdapter {
                 }
             }
 
-            let initial_bounds = self
-                .documents
-                .get(&document_id)
-                .and_then(|document| {
-                    let committed_scene = document.thumbnail_scene(page_index);
-                    let points = annotation_guide_rects(&committed_scene, &[], &caption_supplement)
-                        .into_iter()
-                        .filter(|guide| excluded_ids.contains(&guide.owner_id))
-                        .flat_map(|guide| {
-                            let rect = guide.rect;
-                            [
-                                PdfPoint {
-                                    x: rect.x,
-                                    y: rect.y,
-                                },
-                                PdfPoint {
-                                    x: rect.x + rect.width,
-                                    y: rect.y + rect.height,
-                                },
-                            ]
-                        })
-                        .collect::<Vec<_>>();
-                    combined_guide_bounds(&points)
-                })
-                .or_else(|| combined_guide_bounds(&anchors));
+            let initial_bounds = self.cached_moving_initial_bounds(
+                document_id,
+                page_index,
+                &anchors,
+                &excluded_ids,
+                &caption_supplement,
+            );
             if let Some(initial_bounds) = initial_bounds {
                 let mut moving_bounds = PdfRect {
                     x: initial_bounds.x + resolved.x - start.x,
                     y: initial_bounds.y + resolved.y - start.y,
                     ..initial_bounds
                 };
-                let references = annotation_guide_rects(&scene, &excluded_ids, &caption_supplement);
+                let references = self.cached_moving_guide_references(
+                    document_id,
+                    page_index,
+                    &excluded_ids,
+                    &caption_supplement,
+                );
                 if let Some(spacing) = find_equal_spacing_snap(
                     moving_bounds,
                     &references,
@@ -2751,12 +2917,10 @@ impl AnnotationAdapter {
             _ => None,
         };
         if let Some(manipulated_id) = manipulated_id {
-            let scene = self.document_scene(document_id, page_index);
             let annotation_decision = self
                 .semantic_snap_index(
                     document_id,
                     page_index,
-                    &scene,
                     std::slice::from_ref(&manipulated_id),
                     &AnnotationSelectionSupplement::new(),
                 )
@@ -2889,12 +3053,10 @@ impl AnnotationAdapter {
                 })
                 .unwrap_or((Vec::new(), None)),
         };
-        let scene = self.document_scene(document_id, page_index);
         let annotation_decision = self
             .semantic_snap_index(
                 document_id,
                 page_index,
-                &scene,
                 &excluded_ids,
                 &AnnotationSelectionSupplement::new(),
             )
@@ -3166,17 +3328,11 @@ impl AnnotationAdapter {
         let Some(moving_bounds) = target.rect_at(point) else {
             return point;
         };
-        let references = self
-            .documents
-            .get(&target.document_id)
-            .map(|document| {
-                annotation_guide_rects(
-                    &document.thumbnail_scene(target.page_index),
-                    std::slice::from_ref(&target.id),
-                    &AnnotationSelectionSupplement::new(),
-                )
-            })
-            .unwrap_or_default();
+        let references = self.committed_guide_rects(
+            target.document_id,
+            target.page_index,
+            std::slice::from_ref(&target.id),
+        );
         let Some(size) = find_equal_size_snap(
             moving_bounds,
             &references,
@@ -3289,17 +3445,7 @@ impl AnnotationAdapter {
             point
         };
         let moving_bounds = PdfRect::from_corners(start, candidate);
-        let references = self
-            .documents
-            .get(&document_id)
-            .map(|document| {
-                annotation_guide_rects(
-                    &document.thumbnail_scene(page_index),
-                    &[],
-                    &AnnotationSelectionSupplement::new(),
-                )
-            })
-            .unwrap_or_default();
+        let references = self.committed_guide_rects(document_id, page_index, &[]);
         let Some(size) = find_equal_size_snap(
             moving_bounds,
             &references,
@@ -12987,7 +13133,7 @@ impl AnnotationAdapter {
     pub fn is_dirty(&self, document_id: u64) -> bool {
         self.documents
             .get(&document_id)
-            .is_some_and(|document| document.snapshot().dirty)
+            .is_some_and(AnnotationDocument::is_dirty)
     }
 
     pub fn spatial_query_work(

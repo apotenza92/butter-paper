@@ -229,7 +229,7 @@ fn session_manifest_missing_roundtrips_order_and_replaces_atomically() {
     #[cfg(unix)]
     assert_eq!(
         std::fs::read(root.path().join("session-manifest.json")).unwrap(),
-        b"{\"version\":3,\"documents\":[{\"encoding\":\"unix-bytes\",\"path\":\"2f706c616e732f46697273742e706466\",\"view\":{\"currentPage\":0,\"mode\":\"continuous\",\"zoom\":\"fitWidth\",\"manualPercent\":null,\"scrollX\":0,\"scrollY\":0}},{\"encoding\":\"unix-bytes\",\"path\":\"2f706c616e732f7365636f6e642e504446\",\"view\":{\"currentPage\":0,\"mode\":\"continuous\",\"zoom\":\"fitWidth\",\"manualPercent\":null,\"scrollX\":0,\"scrollY\":0}}],\"activeDocument\":1,\"windows\":[{\"documentCount\":2,\"activeDocument\":1}]}\n"
+        b"{\"version\":3,\"documents\":[{\"encoding\":\"unix-bytes\",\"path\":\"2f706c616e732f46697273742e706466\",\"view\":{\"currentPage\":0,\"mode\":\"continuous\",\"zoom\":\"fitWidth\",\"manualPercent\":null,\"scrollX\":0,\"scrollY\":0}},{\"encoding\":\"unix-bytes\",\"path\":\"2f706c616e732f7365636f6e642e504446\",\"view\":{\"currentPage\":0,\"mode\":\"continuous\",\"zoom\":\"fitWidth\",\"manualPercent\":null,\"scrollX\":0,\"scrollY\":0}}],\"activeDocument\":1,\"windows\":[{\"documentCount\":2,\"activeDocument\":1,\"bounds\":null}]}\n"
     );
 
     #[cfg(unix)]
@@ -660,9 +660,11 @@ fn session_manifest_rejects_windows_that_do_not_partition_the_documents() {
     let document = r#"{"encoding":"unix-bytes","path":"2f782e706466","view":{"currentPage":0,"mode":"continuous","zoom":"fitWidth","manualPercent":null,"scrollX":0,"scrollY":0}}"#;
     for windows in [
         r#"[]"#,
-        r#"[{"documentCount":2,"activeDocument":null}]"#,
-        r#"[{"documentCount":1,"activeDocument":1}]"#,
-        r#"[{"documentCount":0,"activeDocument":null},{"documentCount":1,"activeDocument":0}]"#,
+        r#"[{"documentCount":1,"activeDocument":0,"bounds":{"x":0,"y":0,"width":20,"height":600,"display":null}}]"#,
+        r#"[{"documentCount":1,"activeDocument":0}]"#,
+        r#"[{"documentCount":2,"activeDocument":null,"bounds":null}]"#,
+        r#"[{"documentCount":1,"activeDocument":1,"bounds":null}]"#,
+        r#"[{"documentCount":0,"activeDocument":null,"bounds":null},{"documentCount":1,"activeDocument":0,"bounds":null}]"#,
     ] {
         std::fs::write(
             root.path().join("session-manifest.json"),
@@ -671,4 +673,34 @@ fn session_manifest_rejects_windows_that_do_not_partition_the_documents() {
         .unwrap();
         assert!(store.load().is_err(), "{windows} must be rejected");
     }
+}
+
+#[test]
+fn session_manifest_keeps_each_window_position_and_display() {
+    use butter_paper_gpui_migration::session_manifest::SessionWindowBounds;
+    let root = ScratchRoot::new("window-bounds");
+    let store = SessionManifestStore::open(root.path().to_path_buf()).unwrap();
+    let bounds = SessionWindowBounds {
+        x: 120.5,
+        y: 48.,
+        width: 1024.,
+        height: 700.,
+        display: Some("37D8832A-2D66-02CA-B9F7-8F30A301B230".into()),
+    };
+    let mut combined = SessionSnapshot::new(vec![manifest_pdf("a.pdf")], Some(0))
+        .with_window_bounds(Some(bounds.clone()));
+    combined.append(SessionSnapshot::new(vec![manifest_pdf("b.pdf")], Some(0)));
+    store.replace(&combined).unwrap();
+
+    let plan = store.load().unwrap();
+    assert_eq!(plan.first_window_bounds(), Some(bounds.clone()));
+    let plans = plan.split_windows();
+    assert_eq!(plans[0].window_bounds(), Some(&bounds));
+    assert_eq!(plans[1].window_bounds(), None);
+
+    // Implausible bounds are not recorded.
+    let tiny = SessionSnapshot::new(vec![manifest_pdf("a.pdf")], Some(0)).with_window_bounds(Some(
+        SessionWindowBounds { width: 10., ..bounds },
+    ));
+    assert_eq!(tiny.windows()[0].bounds(), None);
 }

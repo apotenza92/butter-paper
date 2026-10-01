@@ -259,6 +259,7 @@ struct ComponentStory {
     _document_workspace_subscription: Subscription,
     _template_command_subscription: Option<Subscription>,
     _app_menu_bar_focus_out_subscription: Subscription,
+    _focus_lost_subscription: Subscription,
     _system_theme_subscription: Subscription,
     last_native_menu_state: Option<NativeApplicationMenuState>,
     last_in_window_menu_state: Option<NativeApplicationMenuState>,
@@ -285,7 +286,12 @@ impl ComponentStory {
         cx: &mut Context<Self>,
     ) -> Self {
         let document_workspace_subscription =
-            cx.observe_in(&document_workspace, window, |story, _, window, cx| {
+            cx.observe_in(&document_workspace, window, |story, workspace, window, cx| {
+                // A drag notifies on every pointer move; menus, title and the
+                // recovery marker settle on the notify that ends it.
+                if workspace.read(cx).pointer_gesture_active() {
+                    return;
+                }
                 story.sync_native_application_menu(cx);
                 story.sync_template_operation_state(cx);
                 story.sync_window_title(window, cx);
@@ -327,14 +333,26 @@ impl ComponentStory {
                 });
                 window.refresh();
             });
+        // When the focused element goes away (a closed popover, panel or tab)
+        // GPUI leaves nothing focused, and the document's single-key shortcuts
+        // would stay dead until the next page press. Return focus to it.
+        let focus_lost_subscription = cx.on_focus_lost(window, |story, window, cx| {
+            story.document_workspace.read(cx).focus_handle().focus(window, cx);
+        });
         let menu_bar_visible =
             !menu_bar_visibility_supported || shared_application(cx).preferences.get().menu_bar_visible();
         // The active document window owns the application menus; refresh them
         // and any template changes made in another window when this one
         // becomes active.
+        record_window_bounds(window, cx);
+        cx.observe_window_bounds(window, |_, window, cx| record_window_bounds(window, cx))
+            .detach();
         cx.observe_window_activation(window, |story, window, cx| {
             if !window.is_window_active() {
                 return;
+            }
+            if cx.has_global::<DocumentWindows>() {
+                cx.global_mut::<DocumentWindows>().last_active = Some(window.window_handle());
             }
             story.last_native_menu_state = None;
             story.last_in_window_menu_state = None;
@@ -364,6 +382,7 @@ impl ComponentStory {
             _document_workspace_subscription: document_workspace_subscription,
             _template_command_subscription: template_command_subscription,
             _app_menu_bar_focus_out_subscription: app_menu_bar_focus_out_subscription,
+            _focus_lost_subscription: focus_lost_subscription,
             _system_theme_subscription: system_theme_subscription,
             last_native_menu_state: None,
             last_in_window_menu_state: None,
@@ -1630,6 +1649,10 @@ impl Render for ComponentStory {
                     .pl_1()
                     .flex_shrink_0()
                     .track_focus(&self.app_menu_bar_focus)
+                    // A press on the bar opens a menu but never takes focus itself:
+                    // the menu then returns focus to the document, which keeps its
+                    // single-key shortcuts and receives menu commands.
+                    .on_mouse_down(gpui::MouseButton::Left, |_, window, _| window.prevent_default())
                     .bg(cx.theme().background)
                     .border_b_1()
                     .border_color(cx.theme().border)
@@ -1647,6 +1670,7 @@ impl Render for ComponentStory {
                 .pl_1()
                 .flex_shrink_0()
                 .track_focus(&self.app_menu_bar_focus)
+                .on_mouse_down(gpui::MouseButton::Left, |_, window, _| window.prevent_default())
                 .bg(cx.theme().background)
                 .border_b_1()
                 .border_color(cx.theme().border)
@@ -1826,10 +1850,21 @@ fn restore_session_windows(
     let first = cx.entity().downgrade();
     cx.defer(move |cx| {
         for plan in others {
-            // Saved windows come back as separate windows, even when macOS
-            // prefers tabs for new ones.
-            let bounds = next_window_bounds(cx);
-            let Some(workspace) = open_document_window_with_bounds(cx, None, Some(bounds))
+            // Saved windows come back as separate windows where they were
+            // (or cascaded when that display is gone), even when macOS prefers
+            // tabs for new ones.
+            let (bounds, display_id) = plan
+                .window_bounds()
+                .and_then(|bounds| restored_window_placement(bounds, cx))
+                .unwrap_or_else(|| (next_window_bounds(cx), None));
+            let saved_origin = plan
+                .window_bounds()
+                .map(|bounds| gpui::point(px(bounds.x), px(bounds.y)));
+            let handle = open_document_window_placed(cx, None, Some(bounds), display_id);
+            if let (Some(handle), Some(origin)) = (handle, saved_origin) {
+                settle_restored_origin(handle, origin, cx);
+            }
+            let Some(workspace) = handle
                 .and_then(|handle| window_entry(handle, cx))
                 .and_then(|entry| entry.workspace.upgrade())
             else {
@@ -2187,6 +2222,7 @@ fn main() {
                 multi_window,
             }),
             windows: Vec::new(),
+            last_active: None,
         });
 
         cx.on_window_closed(|cx, window_id| {
@@ -2238,6 +2274,10 @@ fn main() {
                 open_document_window(
                     cx,
                     Some(StartupWindow {
+                        bounds: match &launch_resolution.action {
+                            NativeLaunchAction::Restore(plan) => plan.first_window_bounds(),
+                            _ => None,
+                        },
                         launch_resolution,
                         recovery_marker,
                         perf,
@@ -2305,6 +2345,10 @@ struct DocumentWindowEntry {
 struct DocumentWindows {
     shared: Rc<SharedApplication>,
     windows: Vec<DocumentWindowEntry>,
+    /// The document window most recently made active. Asking the platform
+    /// for its window order is a synchronous WindowServer round trip on
+    /// macOS, too slow for paths that run on every document change.
+    last_active: Option<AnyWindowHandle>,
 }
 
 impl gpui::Global for DocumentWindows {}
@@ -2316,6 +2360,8 @@ struct StartupWindow {
         String,
     >,
     perf: Option<PerfStoryRuntime>,
+    /// Where the restored session's first window was.
+    bounds: Option<butter_paper_gpui_migration::session_manifest::SessionWindowBounds>,
 }
 
 fn shared_application(cx: &App) -> Rc<SharedApplication> {
@@ -2355,6 +2401,11 @@ fn active_document_window(cx: &App) -> Option<DocumentWindowEntry> {
     cx.active_window()
         .and_then(find)
         .or_else(|| {
+            cx.try_global::<DocumentWindows>()
+                .and_then(|windows| windows.last_active)
+                .and_then(find)
+        })
+        .or_else(|| {
             cx.window_stack()
                 .unwrap_or_default()
                 .into_iter()
@@ -2365,6 +2416,94 @@ fn active_document_window(cx: &App) -> Option<DocumentWindowEntry> {
 
 fn owns_application_menus(handle: AnyWindowHandle, cx: &App) -> bool {
     active_document_window(cx).is_none_or(|entry| entry.handle == handle)
+}
+
+/// Keeps the session coordinator's record of where `window` is, so the
+/// restart manifest reopens it in the same place.
+fn record_window_bounds(window: &Window, cx: &App) {
+    let bounds = (!window.is_fullscreen()).then(|| {
+        let frame = window.bounds();
+        let content = window.viewport_size();
+        butter_paper_gpui_migration::session_manifest::SessionWindowBounds {
+            x: f32::from(frame.origin.x),
+            y: f32::from(frame.origin.y),
+            width: f32::from(content.width),
+            height: f32::from(content.height),
+            display: window
+                .display(cx)
+                .and_then(|display| display.uuid().ok())
+                .map(|uuid| uuid.to_string()),
+        }
+    });
+    shared_application(cx)
+        .coordinator
+        .set_window_bounds(window.window_handle().window_id().as_u64(), bounds);
+}
+
+/// Platforms place a new window's frame by slightly different conventions
+/// than they report it (Windows reports the client area; X11 window managers
+/// place new windows themselves). Once the window is shown, nudge it so the
+/// reported origin and content size match the saved ones, and positions do
+/// not drift across relaunches.
+fn settle_restored_origin(handle: AnyWindowHandle, origin: gpui::Point<gpui::Pixels>, cx: &mut App) {
+    let content = handle.update(cx, |_, window, _| window.viewport_size()).ok();
+    cx.spawn(async move |cx| {
+        // What was last asked for; any constant offset between that and the
+        // reported origin (decoration insets) is compensated next time.
+        let mut requested = origin;
+        for _ in 0..4 {
+            cx.background_executor().timer(Duration::from_millis(250)).await;
+            let settled = cx
+                .update(|cx| {
+                    handle.update(cx, |_, window, _| {
+                        if !window.can_set_origin() {
+                            return true;
+                        }
+                        let mut settled = true;
+                        if let Some(content) = content
+                            && window.viewport_size() != content
+                        {
+                            window.resize(content);
+                            settled = false;
+                        }
+                        let actual = window.bounds().origin;
+                        if actual != origin {
+                            requested = origin - (actual - requested);
+                            window.set_origin(requested);
+                            settled = false;
+                        }
+                        settled
+                    })
+                })
+                .unwrap_or(true);
+            if settled {
+                break;
+            }
+        }
+    })
+    .detach();
+}
+
+/// Window placement for a restored window, if its display is still present.
+fn restored_window_placement(
+    bounds: &butter_paper_gpui_migration::session_manifest::SessionWindowBounds,
+    cx: &App,
+) -> Option<(WindowBounds, Option<gpui::DisplayId>)> {
+    let display = match &bounds.display {
+        Some(saved) => Some(
+            cx.displays()
+                .into_iter()
+                .find(|display| display.uuid().is_ok_and(|uuid| uuid.to_string() == *saved))?,
+        ),
+        None => None,
+    };
+    Some((
+        WindowBounds::Windowed(gpui::Bounds {
+            origin: gpui::point(px(bounds.x), px(bounds.y)),
+            size: size(px(bounds.width), px(bounds.height)),
+        }),
+        display.map(|display| display.id()),
+    ))
 }
 
 /// New windows cascade from the active one, as macOS document apps do.
@@ -2388,13 +2527,36 @@ fn next_window_bounds(cx: &mut App) -> WindowBounds {
 /// Opens a document window. The startup window restores the session and
 /// inspects recovery; later windows start empty and share every store.
 fn open_document_window(cx: &mut App, startup: Option<StartupWindow>) -> Option<AnyWindowHandle> {
-    open_document_window_with_bounds(cx, startup, None)
+    let placement = startup
+        .as_ref()
+        .and_then(|startup| startup.bounds.as_ref())
+        .and_then(|bounds| restored_window_placement(bounds, cx));
+    match placement {
+        Some((bounds, display_id)) => {
+            let origin = bounds.get_bounds().origin;
+            let handle = open_document_window_placed(cx, startup, Some(bounds), display_id);
+            if let Some(handle) = handle {
+                settle_restored_origin(handle, origin, cx);
+            }
+            handle
+        }
+        None => open_document_window_placed(cx, startup, None, None),
+    }
 }
 
 fn open_document_window_with_bounds(
     cx: &mut App,
     startup: Option<StartupWindow>,
     bounds: Option<WindowBounds>,
+) -> Option<AnyWindowHandle> {
+    open_document_window_placed(cx, startup, bounds, None)
+}
+
+fn open_document_window_placed(
+    cx: &mut App,
+    startup: Option<StartupWindow>,
+    bounds: Option<WindowBounds>,
+    display_id: Option<gpui::DisplayId>,
 ) -> Option<AnyWindowHandle> {
     let shared = shared_application(cx);
     let is_startup = startup.is_some();
@@ -2414,6 +2576,7 @@ fn open_document_window_with_bounds(
     let window_options = WindowOptions {
         window_bounds: Some(bounds.unwrap_or_else(|| next_window_bounds(cx))),
         tabbing_identifier: if separate { None } else { tabbing_identifier.clone() },
+        display_id,
         ..title_bar_window_options()
     };
     let handle = cx
@@ -2793,6 +2956,14 @@ fn tab_drop_target(
     screen: gpui::Point<gpui::Pixels>,
     cx: &mut App,
 ) -> Option<(DocumentWindowEntry, usize)> {
+    // Without global window positions (Wayland) another window's strip cannot
+    // be located, so a drop beyond the strip only tears the tab off.
+    if !source
+        .update(cx, |_, window, _| window.can_set_origin())
+        .unwrap_or(false)
+    {
+        return None;
+    }
     let entries = document_window_entries(cx);
     let order = cx.window_stack().unwrap_or_default();
     let mut candidates = entries
@@ -3175,6 +3346,243 @@ mod review_driver {
                         cx.update(|cx| cx.dispatch_action(&NewWindow));
                         pause(cx, 1200).await;
                     }
+                    "os-drag" => {
+                        // os-drag W TAB DX DY NAME, or os-drag W TAB into W2 INDEX NAME:
+                        // real operating-system pointer input through
+                        // BP_REVIEW_OS_DRAG_CMD ({x1} {y1} {x2} {y2} {mid}, device
+                        // pixels; {mid} is a screenshot taken mid-drag).
+                        let Ok(command) = std::env::var("BP_REVIEW_OS_DRAG_CMD") else {
+                            writeln!(log, "os-drag: BP_REVIEW_OS_DRAG_CMD is not set").unwrap();
+                            continue;
+                        };
+                        let source = number(1) as usize;
+                        let tab = number(2) as usize;
+                        let name = words[words.len() - 1];
+                        let points = cx.update(|cx| {
+                            let entries = document_window_entries(cx);
+                            let entry = entries.get(source)?;
+                            let (tab_bounds, _) =
+                                entry.workspace.upgrade()?.read(cx).session_tab_geometry(tab, cx);
+                            let start = window_screen_point(entry.handle, tab_bounds?.center(), cx)?;
+                            let end = if words[3] == "into" {
+                                let target = entries.get(number(4) as usize)?;
+                                let workspace = target.workspace.upgrade()?;
+                                let (before, strip) =
+                                    workspace.read(cx).session_tab_geometry(number(5) as usize, cx);
+                                let local = match before {
+                                    Some(bounds) => point(bounds.left() + px(6.), bounds.center().y),
+                                    None => point(strip.right() - px(40.), strip.center().y),
+                                };
+                                window_screen_point(target.handle, local, cx)?
+                            } else {
+                                start + point(px(number(3)), px(number(4)))
+                            };
+                            let scale = entry
+                                .handle
+                                .update(cx, |_, window, _| window.scale_factor())
+                                .ok()?;
+                            Some((start.scale(scale), end.scale(scale)))
+                        });
+                        let Some((start, end)) = points else {
+                            writeln!(log, "os-drag: window or tab not found").unwrap();
+                            continue;
+                        };
+                        let mid = out.join(format!("{name}-mid-screen.png"));
+                        let command = command
+                            .replace("{x1}", &format!("{:.0}", start.x.0))
+                            .replace("{y1}", &format!("{:.0}", start.y.0))
+                            .replace("{x2}", &format!("{:.0}", end.x.0))
+                            .replace("{y2}", &format!("{:.0}", end.y.0))
+                            .replace("{mid}", &mid.display().to_string());
+                        writeln!(log, "os-drag {name}: {start:?} -> {end:?}").unwrap();
+                        cx.update(|cx| {
+                            if let Some(entry) = document_window_entries(cx).get(source) {
+                                let frame = entry.handle.update(cx, |_, window, _| {
+                                    (window.bounds(), window.viewport_size())
+                                });
+                                if let Some(workspace) = entry.workspace.upgrade() {
+                                    let workspace = workspace.read(cx);
+                                    writeln!(
+                                        log,
+                                        "  frame={frame:?} viewport={:?} tab={:?}",
+                                        workspace.session_tab_viewport(),
+                                        workspace.session_tab_geometry(tab, cx).0
+                                    )
+                                    .unwrap();
+                                }
+                            }
+                        });
+                        let mut process = if cfg!(windows) {
+                            let mut process = std::process::Command::new("powershell.exe");
+                            process.args(["-NoProfile", "-Command", &command]);
+                            #[cfg(windows)]
+                            {
+                                use std::os::windows::process::CommandExt as _;
+                                process.creation_flags(0x0800_0000);
+                            }
+                            process
+                        } else {
+                            let mut process = std::process::Command::new("sh");
+                            process.args(["-c", &command]);
+                            process
+                        };
+                        // Run it alongside: the app must keep handling the real events.
+                        match process.spawn() {
+                            Ok(mut child) => {
+                                for _ in 0..200 {
+                                    pause(cx, 100).await;
+                                    if child.try_wait().ok().flatten().is_some() {
+                                        break;
+                                    }
+                                }
+                                writeln!(log, "os-drag {name} finished: {:?}", child.try_wait()).unwrap();
+                            }
+                            Err(error) => writeln!(log, "os-drag {name}: {error}").unwrap(),
+                        }
+                        pause(cx, 1200).await;
+                    }
+                    "float" => {
+                        // float: raise every window above others without
+                        // activating the app, so frames draw while the user
+                        // keeps working (review benchmarks on macOS only).
+                        #[cfg(target_os = "macos")]
+                        cx.update(|_| unsafe { float_all_windows() });
+                        pause(cx, 300).await;
+                    }
+                    "drag-bench" => {
+                        // drag-bench W X1 Y1 X2 Y2 MOVES: a left drag at display
+                        // cadence, logging event-handling time and frame intervals.
+                        let window = number(1) as usize;
+                        let start = point(px(number(2)), px(number(3)));
+                        let end = point(px(number(4)), px(number(5)));
+                        let moves = number(6) as usize;
+                        // Optional event spacing in ms (default 8, ~a 125 Hz mouse).
+                        let spacing = words.get(7).and_then(|word| word.parse::<u64>().ok()).unwrap_or(8);
+                        let frames = std::rc::Rc::new(std::cell::RefCell::new(Vec::<std::time::Instant>::new()));
+                        let running = std::rc::Rc::new(std::cell::Cell::new(true));
+                        fn record(
+                            window: &mut gpui::Window,
+                            frames: std::rc::Rc<std::cell::RefCell<Vec<std::time::Instant>>>,
+                            running: std::rc::Rc<std::cell::Cell<bool>>,
+                        ) {
+                            window.on_next_frame(move |window, _| {
+                                frames.borrow_mut().push(std::time::Instant::now());
+                                if running.get() {
+                                    record(window, frames, running);
+                                }
+                            });
+                        }
+                        dispatch(
+                            cx,
+                            window,
+                            PlatformInput::MouseDown(MouseDownEvent {
+                                button: MouseButton::Left,
+                                position: start,
+                                modifiers: Modifiers::default(),
+                                click_count: 1,
+                                first_mouse: false,
+                            }),
+                        );
+                        pause(cx, 100).await;
+                        cx.update(|cx| {
+                            if let Some(entry) = document_window_entries(cx).get(window).cloned() {
+                                let frames = frames.clone();
+                                let running = running.clone();
+                                if std::env::var_os("BP_BENCH_FRAME_CALLBACKS").is_some() {
+                                    let _ = entry.handle.update(cx, |_, window, _| record(window, frames, running));
+                                }
+                            }
+                        });
+                        let mut handling = Vec::new();
+                        for step in 1..=moves {
+                            let t = (step % 240) as f32 / 240.;
+                            let position = start + (end - start) * t;
+                            let began = std::time::Instant::now();
+                            dispatch(
+                                cx,
+                                window,
+                                PlatformInput::MouseMove(MouseMoveEvent {
+                                    position,
+                                    pressed_button: Some(MouseButton::Left),
+                                    modifiers: Modifiers::default(),
+                                }),
+                            );
+                            handling.push(began.elapsed().as_secs_f64() * 1000.);
+                            pause(cx, spacing).await;
+                        }
+                        running.set(false);
+                        dispatch(
+                            cx,
+                            window,
+                            PlatformInput::MouseUp(MouseUpEvent {
+                                button: MouseButton::Left,
+                                position: end,
+                                modifiers: Modifiers::default(),
+                                click_count: 1,
+                            }),
+                        );
+                        let stamps = frames.borrow().clone();
+                        let mut intervals = stamps
+                            .windows(2)
+                            .map(|pair| (pair[1] - pair[0]).as_secs_f64() * 1000.)
+                            .collect::<Vec<_>>();
+                        let summary = |values: &mut Vec<f64>| {
+                            if values.is_empty() {
+                                return "none".to_owned();
+                            }
+                            values.sort_by(f64::total_cmp);
+                            let mean = values.iter().sum::<f64>() / values.len() as f64;
+                            format!(
+                                "n {} mean {mean:.2} p50 {:.2} p95 {:.2} max {:.2}",
+                                values.len(),
+                                values[values.len() / 2],
+                                values[values.len() * 95 / 100],
+                                values[values.len() - 1]
+                            )
+                        };
+                        let span = stamps
+                            .last()
+                            .zip(stamps.first())
+                            .map(|(last, first)| (*last - *first).as_secs_f64())
+                            .unwrap_or(0.);
+                        writeln!(
+                            log,
+                            "drag-bench fps {:.1}; frame interval ms {}; move handling ms {}",
+                            stamps.len().saturating_sub(1) as f64 / span.max(0.001),
+                            summary(&mut intervals),
+                            summary(&mut handling)
+                        )
+                        .unwrap();
+                        pause(cx, 400).await;
+                    }
+                    "click" => {
+                        // click W X Y: a left click at window coordinates.
+                        let window = number(1) as usize;
+                        let position = point(px(number(2)), px(number(3)));
+                        dispatch(
+                            cx,
+                            window,
+                            PlatformInput::MouseDown(MouseDownEvent {
+                                button: MouseButton::Left,
+                                position,
+                                modifiers: Modifiers::default(),
+                                click_count: 1,
+                                first_mouse: false,
+                            }),
+                        );
+                        pause(cx, 50).await;
+                        dispatch(
+                            cx,
+                            window,
+                            PlatformInput::MouseUp(MouseUpEvent {
+                                button: MouseButton::Left,
+                                position,
+                                modifiers: Modifiers::default(),
+                                click_count: 1,
+                            }),
+                        );
+                        pause(cx, 400).await;
+                    }
                     "key" => {
                         // key W KEYSTROKE: a key press in window W, through the
                         // same dispatch path as a real shortcut (e.g. ctrl-shift-n).
@@ -3309,6 +3717,37 @@ mod review_driver {
             }
         })
         .detach();
+    }
+
+    #[cfg(target_os = "macos")]
+    unsafe fn float_all_windows() {
+        use std::ffi::{c_void, CString};
+        #[link(name = "objc")]
+        unsafe extern "C" {
+            fn objc_getClass(name: *const std::ffi::c_char) -> *mut c_void;
+            fn sel_registerName(name: *const std::ffi::c_char) -> *mut c_void;
+            fn objc_msgSend();
+        }
+        let sel = |name: &str| unsafe { sel_registerName(CString::new(name).unwrap().as_ptr()) };
+        let send0: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+            unsafe { std::mem::transmute(objc_msgSend as unsafe extern "C" fn()) };
+        let send_count: unsafe extern "C" fn(*mut c_void, *mut c_void) -> usize =
+            unsafe { std::mem::transmute(objc_msgSend as unsafe extern "C" fn()) };
+        let send_index: unsafe extern "C" fn(*mut c_void, *mut c_void, usize) -> *mut c_void =
+            unsafe { std::mem::transmute(objc_msgSend as unsafe extern "C" fn()) };
+        let send_level: unsafe extern "C" fn(*mut c_void, *mut c_void, isize) =
+            unsafe { std::mem::transmute(objc_msgSend as unsafe extern "C" fn()) };
+        unsafe {
+            let app = send0(objc_getClass(CString::new("NSApplication").unwrap().as_ptr()), sel("sharedApplication"));
+            let windows = send0(app, sel("windows"));
+            for index in 0..send_count(windows, sel("count")) {
+                let window = send_index(windows, sel("objectAtIndex:"), index);
+                // canJoinAllSpaces | fullScreenAuxiliary: visible over a full-screen Space.
+                send_level(window, sel("setCollectionBehavior:"), 1 | 256);
+                send_level(window, sel("setLevel:"), 3);
+                send0(window, sel("orderFrontRegardless"));
+            }
+        }
     }
 
     fn frame(handle: AnyWindowHandle, cx: &mut App) -> Option<Bounds<Pixels>> {
@@ -3448,7 +3887,29 @@ mod review_driver {
                         (workspace.session_debug_states(cx), workspace.active_document_id())
                     })
                     .unwrap_or_default();
-                let result = entry.handle.update(cx, |_, window, _| {
+                let (tool, workspace_focus) = entry
+                    .workspace
+                    .upgrade()
+                    .map(|workspace| {
+                        let workspace = workspace.read(cx);
+                        (
+                            workspace
+                                .active_document_id()
+                                .and_then(|id| workspace.annotation_tool(id, cx)),
+                            Some(workspace.focus_handle()),
+                        )
+                    })
+                    .unwrap_or_default();
+                let mut focus = String::new();
+                let result = entry.handle.update(cx, |_, window, cx| {
+                    focus = format!(
+                        "focused={} in_workspace={} context={:?}",
+                        window.focused(cx).is_some(),
+                        workspace_focus
+                            .as_ref()
+                            .is_some_and(|handle| handle.contains_focused(window, cx)),
+                        window.context_stack().iter().map(|context| format!("{context:?}")).collect::<Vec<_>>()
+                    );
                     let image = window.render_to_image();
                     (window.bounds(), image)
                 });
@@ -3461,11 +3922,13 @@ mod review_driver {
                 });
                 writeln!(
                     log,
-                    "{name} w{index} frame={:?} active_window={} tabs={:?} active_tab={:?} saved={:?}",
+                    "{name} w{index} frame={:?} active_window={} tabs={:?} active_tab={:?} tool={:?} focus={:?} saved={:?}",
                     bounds,
                     Some(entry.handle) == active,
                     titles.0,
                     titles.1,
+                    tool,
+                    focus,
                     saved.map(|_| path.display().to_string())
                 )
                 .unwrap();

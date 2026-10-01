@@ -11,13 +11,13 @@
 //! - During Quit every window closes; each adds its documents and the final
 //!   one publishes the combined manifest.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use crate::application_close_workspace::{
     ApplicationCloseCheckpointPublication, ApplicationCloseCheckpointPublisher,
 };
-use crate::session_manifest::SessionSnapshot;
+use crate::session_manifest::{SessionSnapshot, SessionWindowBounds};
 
 #[derive(Default)]
 struct CoordinatorState {
@@ -25,6 +25,7 @@ struct CoordinatorState {
     quitting: bool,
     closed_in_quit: BTreeSet<u64>,
     pending: Option<SessionSnapshot>,
+    bounds: BTreeMap<u64, SessionWindowBounds>,
 }
 
 #[derive(Default)]
@@ -43,10 +44,20 @@ impl WindowSessionCoordinator {
         self.state().open.insert(window_id);
     }
 
+    /// Records where a window is, for the restart manifest.
+    pub fn set_window_bounds(&self, window_id: u64, bounds: Option<SessionWindowBounds>) {
+        let mut state = self.state();
+        match bounds {
+            Some(bounds) => state.bounds.insert(window_id, bounds),
+            None => state.bounds.remove(&window_id),
+        };
+    }
+
     /// Records that a window has gone; returns whether any remain.
     pub fn window_closed(&self, window_id: u64) -> bool {
         let mut state = self.state();
         state.open.remove(&window_id);
+        state.bounds.remove(&window_id);
         !state.open.is_empty()
     }
 
@@ -84,6 +95,7 @@ impl WindowSessionCoordinator {
         snapshot: SessionSnapshot,
     ) -> Option<SessionSnapshot> {
         let mut state = self.state();
+        let snapshot = snapshot.with_window_bounds(state.bounds.get(&window_id).cloned());
         if state.quitting {
             state.closed_in_quit.insert(window_id);
             let mut combined = state.pending.take().unwrap_or_else(|| SessionSnapshot::new(Vec::new(), None));
@@ -205,6 +217,35 @@ mod tests {
         assert_eq!(
             coordinator.checkpoint_for_close(2, snapshot(&["/b.pdf"], None)),
             Some(snapshot(&["/b.pdf"], None))
+        );
+    }
+
+    #[test]
+    fn closing_windows_carry_their_last_known_bounds() {
+        let coordinator = WindowSessionCoordinator::default();
+        coordinator.window_opened(1);
+        coordinator.window_opened(2);
+        let bounds = |x: f32| SessionWindowBounds {
+            x,
+            y: 40.,
+            width: 900.,
+            height: 700.,
+            display: Some("display-a".into()),
+        };
+        coordinator.set_window_bounds(1, Some(bounds(10.)));
+        coordinator.set_window_bounds(2, Some(bounds(500.)));
+        coordinator.begin_quit();
+        assert_eq!(coordinator.checkpoint_for_close(1, snapshot(&["/a.pdf"], Some(0))), None);
+        let combined = coordinator
+            .checkpoint_for_close(2, snapshot(&["/b.pdf"], Some(0)))
+            .unwrap();
+        assert_eq!(
+            combined
+                .windows()
+                .iter()
+                .map(|window| window.bounds().map(|bounds| bounds.x))
+                .collect::<Vec<_>>(),
+            [Some(10.), Some(500.)]
         );
     }
 

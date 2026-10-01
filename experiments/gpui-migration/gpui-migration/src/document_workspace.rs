@@ -5353,6 +5353,13 @@ impl DocumentWorkspace {
         self.active_document_open_batches
     }
 
+    /// Whether a canvas drag (drawing, moving, resizing or panning) is in
+    /// progress. Window chrome derived from the document cannot change
+    /// until it ends, so observers may defer their work to its final notify.
+    pub fn pointer_gesture_active(&self) -> bool {
+        self.active_annotation_pointer.is_some() || self.pan_drag.is_some()
+    }
+
     pub fn last_document_open_failure(&self) -> Option<&DocumentOpenFailure> {
         self.document_open_failures.first()
     }
@@ -5455,6 +5462,11 @@ impl DocumentWorkspace {
                 format!("{}: {:?} / {:?}", session.title, session.status, session.save_status)
             })
             .collect()
+    }
+
+    /// The visible tab strip area, for development review tooling.
+    pub fn session_tab_viewport(&self) -> Bounds<Pixels> {
+        self.session_tab_scroll.bounds()
     }
 
     pub fn session_titles(&self, cx: &App) -> Vec<String> {
@@ -14632,9 +14644,12 @@ impl DocumentWorkspace {
     /// Mounted in-workspace chrome (rail buttons, tabs, docked inputs)
     /// mirrors DOM mousedown blur, except while a popover-class overlay owns
     /// the interaction. Skipping the claim never disturbs the gesture itself.
-    fn canvas_focus_claim_allowed(&self, window: &mut Window, cx: &App) -> bool {
+    fn canvas_focus_claim_allowed(&self, window: &mut Window, cx: &mut App) -> bool {
         if !self.workspace_focus.contains_focused(window, cx) {
-            return window.focused(cx).is_none();
+            // Focus left outside the document (the in-window menu bar, a
+            // closed dialog's trigger) must not strand the single-key tool
+            // shortcuts: a page press reclaims it unless a popup owns it.
+            return !crate::overlay_state::press_owned_by_overlay(window, cx);
         }
         !self.signature_popover_open
             && !self.annotation_stroke_menu_open
@@ -23587,15 +23602,15 @@ impl Render for DocumentWorkspace {
             let annotation_dirty = session.is_dirty();
             let (annotation_undo_depth, annotation_redo_depth) =
                 session.annotations.history_depths(document_id.value());
-            let annotation_snapshot = session.annotations.snapshot(document_id.value());
-            let selected_annotation_id = annotation_snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.selected_id.clone());
-            let selected_annotation_locked = annotation_snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.selected_id.as_ref())
-                .map(|_| session.annotations.selected_is_locked(document_id.value()))
-                .unwrap_or(false);
+            // The first selected id, as in a snapshot, without cloning every
+            // annotation on every frame.
+            let selected_annotation_id = session
+                .annotations
+                .selected_ids(document_id.value())
+                .first()
+                .cloned();
+            let selected_annotation_locked = selected_annotation_id.is_some()
+                && session.annotations.selected_is_locked(document_id.value());
             let selected_has_unlocked_annotation = session
                 .annotations
                 .selected_has_unlocked(document_id.value());
@@ -23856,9 +23871,6 @@ impl Render for DocumentWorkspace {
                 .enumerate()
                 .map(|(page_index, page_size)| {
                     let page_index = page_index as u32;
-                    let scene = session
-                        .annotations
-                        .thumbnail_scene(document_id.value(), page_index);
                     (
                         page_index,
                         page_size,
@@ -23873,8 +23885,6 @@ impl Render for DocumentWorkspace {
                             .iter()
                             .find(|thumbnail| thumbnail.page_index == page_index)
                             .map(|thumbnail| thumbnail.image.clone()),
-                        session.highlight_composite.annotation_revision == scene.revision,
-                        scene,
                         session
                             .annotations
                             .document_page_scale(document_id.value(), page_index)
@@ -25692,11 +25702,19 @@ impl Render for DocumentWorkspace {
                     }
                 });
                 window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Capture || event.button != MouseButton::Left {
+                    if phase != DispatchPhase::Capture
+                        || event.button != MouseButton::Left
+                        || crate::overlay_state::press_owned_by_overlay(window, cx)
+                    {
                         return;
                     }
                     let focus = down_control
                         .update(cx, |workspace, cx| {
+                            // Only a visible tab can be grabbed: tabs scrolled
+                            // under the overflow control keep their bounds.
+                            if !workspace.session_tab_scroll.bounds().contains(&event.position) {
+                                return None;
+                            }
                             let document_id = workspace.sessions.iter().find_map(|session| {
                                 let document_id = session.read(cx).id;
                                 let bounds = workspace.session_tab_bounds.get(&document_id)?.get();
@@ -25918,7 +25936,7 @@ impl Render for DocumentWorkspace {
                     move |event: &MouseDownEvent, phase, window, cx| {
                         if phase != DispatchPhase::Capture
                             || event.button != MouseButton::Middle
-                            || crate::overlay_state::any_overlay_open(cx)
+                            || crate::overlay_state::press_owned_by_overlay(window, cx)
                         {
                             return;
                         }
@@ -25950,9 +25968,10 @@ impl Render for DocumentWorkspace {
                     if phase != DispatchPhase::Capture || event.button != MouseButton::Left {
                         return;
                     }
-                    // A press while a popover is open only dismisses it (or acts
-                    // inside it); it never also starts a canvas selection or edit.
-                    if crate::overlay_state::any_overlay_open(cx) {
+                    // A press while a popover, menu or dialog is open only
+                    // dismisses it (or acts inside it); it never also starts a
+                    // canvas selection or edit.
+                    if crate::overlay_state::press_owned_by_overlay(window, cx) {
                         return;
                     }
                     let started = down_control
@@ -26254,11 +26273,22 @@ impl Render for DocumentWorkspace {
                                                         (pdf_page_size, rotation),
                                                         coordinate_space,
                                                         image,
-                                                        highlights_precomposed,
-                                                        scene,
                                                         scale_label,
                                                         preview_error,
                                                     ) = thumbnail_rows[row_index].clone();
+                                                    // Built only for rows the list lays out,
+                                                    // not for every page on every frame.
+                                                    let workspace = thumbnail_control.upgrade();
+                                                    let scene = workspace.as_ref().map_or_else(
+                                                        || AnnotationAdapter::default().thumbnail_scene(document_id.value(), page_index),
+                                                        |workspace| workspace.read(cx).thumbnail_annotation_scene(document_id, page_index, cx),
+                                                    );
+                                                    let highlights_precomposed = workspace
+                                                        .as_ref()
+                                                        .and_then(|workspace| workspace.read(cx).session(document_id, cx).cloned())
+                                                        .is_some_and(|session| {
+                                                            session.read(cx).highlight_composite.annotation_revision == scene.revision
+                                                        });
                                                     let stable_id = document_thumbnail_id(
                                                         document_id,
                                                         page_index,
