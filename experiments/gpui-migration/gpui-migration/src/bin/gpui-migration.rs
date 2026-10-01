@@ -83,7 +83,9 @@ use butter_paper_gpui_migration::template_manager::{
     route_workspace_template_command,
 };
 #[cfg(not(target_os = "macos"))]
-use butter_paper_gpui_migration::window_title_bar::window_title_bar;
+use butter_paper_gpui_migration::window_title_bar::{uses_window_title_bar, window_title_bar};
+#[cfg(not(target_os = "macos"))]
+use gpui::prelude::FluentBuilder as _;
 use butter_paper_gpui_migration::window_title_bar::{
     APPLICATION_TITLE, format_window_title_for_application, title_bar_window_options,
 };
@@ -1611,11 +1613,13 @@ impl Render for ComponentStory {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground);
         #[cfg(not(target_os = "macos"))]
-        let root = root.child(window_title_bar(
-            self.window_title.clone(),
-            window.viewport_size().width,
-            cx.theme().background,
-        ));
+        let root = root.when(uses_window_title_bar(window), |root| {
+            root.child(window_title_bar(
+                self.window_title.clone(),
+                window.viewport_size().width,
+                cx.theme().background,
+            ))
+        });
         #[cfg(target_os = "macos")]
         let root = if self.menu_bar_visible {
             root.child(
@@ -3173,7 +3177,7 @@ mod review_driver {
                     }
                     "key" => {
                         // key W KEYSTROKE: a key press in window W, through the
-                        // same dispatch path as a real shortcut (e.g. ctrl-q).
+                        // same dispatch path as a real shortcut (e.g. ctrl-shift-n).
                         let window = number(1) as usize;
                         match gpui::Keystroke::parse(words[2]) {
                             Ok(keystroke) => dispatch(
