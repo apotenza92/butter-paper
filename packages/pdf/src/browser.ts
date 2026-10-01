@@ -11,7 +11,6 @@ interface PdfJsDocumentLike {
   numPages: number;
   getMetadata(): Promise<{ info?: Record<string, unknown> }>;
   getPage(pageNumber: number): Promise<PdfJsPageLike>;
-  destroy(): Promise<void>;
 }
 
 interface PdfJsRenderTaskLike {
@@ -114,7 +113,7 @@ export class BrowserPdfDocumentHandle {
   }
 
   async close(): Promise<void> {
-    await this.document.destroy();
+    // pdf.js 6 destroys the document with its loading task.
     await this.loadingTask.destroy();
   }
 
