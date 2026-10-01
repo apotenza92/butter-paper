@@ -16,9 +16,11 @@
       "brace-expansion@2": "2.1.2",
       "brace-expansion@5": "5.0.9",
       "fast-uri": "3.1.4",
-      "postcss": "8.5.18",
+      "postcss": "8.5.23",
       "tar": "7.5.22",
-      "tmp": "0.2.7"
+      "tmp": "0.2.7",
+      "@napi-rs/canvas": "1.0.9",
+      "undici": "7.29.1"
     }
   },
   "scripts": {
@@ -39,7 +41,7 @@
     "@types/node": "25.6.0",
     "jsdom": "29.1.1",
     "typescript": "6.0.2",
-    "vitest": "4.1.4",
+    "vitest": "4.1.11",
     "yaml": "2.9.0"
   }
 }
