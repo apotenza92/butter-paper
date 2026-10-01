@@ -432,22 +432,23 @@ impl ComponentStory {
     }
 
     fn sync_window_title(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (active_document_name, document_count) = {
+        let (names, active_index) = {
             let workspace = self.document_workspace.read(cx);
             let active_document_id = workspace.active_document_id();
-            let active_document_name = active_document_id.and_then(|active_document_id| {
-                workspace.sessions().iter().find_map(|session| {
-                    let session = session.read(cx);
-                    (session.id() == active_document_id).then(|| session.title().to_owned())
-                })
-            });
-            (active_document_name, workspace.sessions().len())
+            let sessions = workspace.sessions();
+            (
+                sessions
+                    .iter()
+                    .map(|session| session.read(cx).title().to_owned())
+                    .collect::<Vec<_>>(),
+                sessions
+                    .iter()
+                    .position(|session| Some(session.read(cx).id()) == active_document_id),
+            )
         };
-        let title = format_window_title_for_application(
-            active_document_name.as_deref(),
-            document_count,
-            self.application_title,
-        );
+        let names = names.iter().map(String::as_str).collect::<Vec<_>>();
+        let title =
+            format_window_title_for_application(&names, active_index, self.application_title);
         if self.window_title == title {
             return;
         }
@@ -2630,8 +2631,136 @@ fn window_screen_point(
     cx: &mut App,
 ) -> Option<gpui::Point<gpui::Pixels>> {
     handle
-        .update(cx, |_, window, _| window.bounds().origin + local)
+        .update(cx, |_, window, _| {
+            // Window coordinates start below the title bar.
+            let frame = window.bounds();
+            let title_bar = frame.size.height - window.viewport_size().height;
+            frame.origin + gpui::point(px(0.), title_bar) + local
+        })
         .ok()
+}
+
+/// The floating copy of a dragged tab: a small borderless window that follows
+/// the pointer beyond the source window, as browsers show a dragged tab.
+struct TabDragChip {
+    text: gpui::SharedString,
+}
+
+/// The chip's text: the tab's name, or what a drop there will do.
+fn tab_drag_chip_text(label: &str, opens_new_window: bool) -> String {
+    if opens_new_window {
+        format!("Open {label} in New window")
+    } else {
+        label.to_owned()
+    }
+}
+
+/// Wide enough for the text at the interface font size, within limits.
+fn tab_drag_chip_size(text: &str) -> gpui::Size<gpui::Pixels> {
+    let width = (text.chars().count() as f32 * 7.5 + 32.).clamp(96., 420.);
+    gpui::size(px(width), px(32.))
+}
+
+impl Render for TabDragChip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .text_sm()
+            .text_color(cx.theme().foreground)
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(self.text.clone())
+    }
+}
+
+struct TabDragPreview {
+    handle: gpui::WindowHandle<TabDragChip>,
+    chip: Entity<TabDragChip>,
+}
+
+impl gpui::Global for TabDragPreview {}
+
+/// Shows or moves the floating tab under the pointer at `screen`.
+fn show_tab_drag_chip(
+    source: AnyWindowHandle,
+    text: String,
+    screen: gpui::Point<gpui::Pixels>,
+    cx: &mut App,
+) {
+    let origin = screen - gpui::point(px(24.), px(16.));
+    let chip_size = tab_drag_chip_size(&text);
+    if let Some(preview) = cx.try_global::<TabDragPreview>() {
+        let (handle, chip) = (preview.handle, preview.chip.clone());
+        let changed = chip.read(cx).text.as_ref() != text;
+        chip.update(cx, |chip, cx| {
+            chip.text = text.into();
+            cx.notify();
+        });
+        let _ = handle.update(cx, |_, window, _| {
+            if changed {
+                window.resize(chip_size);
+            }
+            window.set_origin(origin);
+        });
+        return;
+    }
+    let slot = Rc::new(std::cell::RefCell::new(None));
+    let opened = cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(gpui::Bounds {
+                origin,
+                size: chip_size,
+            })),
+            titlebar: None,
+            focus: false,
+            show: true,
+            kind: gpui::WindowKind::PopUp,
+            is_movable: false,
+            is_resizable: false,
+            is_minimizable: false,
+            window_background: gpui::WindowBackgroundAppearance::Transparent,
+            ..Default::default()
+        },
+        {
+            let slot = slot.clone();
+            move |_, cx| {
+                let chip = cx.new(|_| TabDragChip { text: text.into() });
+                slot.replace(Some(chip.clone()));
+                chip
+            }
+        },
+    );
+    // A window without a tabbing identifier turns off automatic tabbing for
+    // the whole app; restore it so Merge All Windows keeps working.
+    let _ = source.update(cx, |_, window, _| {
+        window.set_tabbing_identifier(Some(DOCUMENT_WINDOW_TABBING_IDENTIFIER.to_owned()))
+    });
+    if let (Ok(handle), Some(chip)) = (opened, slot.borrow_mut().take()) {
+        cx.set_global(TabDragPreview { handle, chip });
+        set_external_tab_drag_preview(true, cx);
+    }
+}
+
+fn hide_tab_drag_chip(cx: &mut App) {
+    set_external_tab_drag_preview(false, cx);
+    if cx.has_global::<TabDragPreview>() {
+        let preview = cx.remove_global::<TabDragPreview>();
+        let _ = preview.handle.update(cx, |_, window, _| window.remove_window());
+    }
+}
+
+fn set_external_tab_drag_preview(active: bool, cx: &mut App) {
+    for workspace in document_window_workspaces(cx) {
+        workspace.update(cx, |workspace, cx| workspace.set_external_tab_drag_preview(active, cx));
+    }
 }
 
 /// The frontmost other document window whose tab strip is under `screen`,
@@ -2661,13 +2790,18 @@ fn tab_drop_target(
         let Some(workspace) = entry.workspace.upgrade() else {
             continue;
         };
-        let Ok(frame) = entry.handle.update(cx, |_, window, _| window.bounds()) else {
+        let Ok((frame, content_origin)) = entry.handle.update(cx, |_, window, _| {
+            let frame = window.bounds();
+            let title_bar = frame.size.height - window.viewport_size().height;
+            (frame, frame.origin + gpui::point(px(0.), title_bar))
+        }) else {
             continue;
         };
         if !frame.contains(&screen) {
             continue;
         }
-        let local = screen - frame.origin;
+        // Window coordinates start below the title bar, as in `window_screen_point`.
+        let local = screen - content_origin;
         // The frontmost window under the pointer takes the drop, even when
         // the pointer is not over its tab strip.
         return workspace
@@ -2690,16 +2824,35 @@ fn clear_incoming_tab_drops(cx: &mut App) {
 fn handle_tab_transfer(source: AnyWindowHandle, event: DocumentTabTransferEvent, cx: &mut App) {
     match event {
         DocumentTabTransferEvent::Dragging {
+            document_id,
             position,
             outside_strip,
-            ..
         } => {
+            let screen = window_screen_point(source, position, cx);
             let target = if outside_strip {
-                window_screen_point(source, position, cx)
-                    .and_then(|screen| tab_drop_target(source, screen, cx))
+                screen.and_then(|screen| tab_drop_target(source, screen, cx))
             } else {
                 None
             };
+            let source_workspace = window_entry(source, cx).and_then(|entry| entry.workspace.upgrade());
+            match (outside_strip, screen, source_workspace) {
+                (true, Some(screen), Some(workspace)) => {
+                    let (label, tabs) = {
+                        let workspace = workspace.read(cx);
+                        let label = workspace
+                            .document_title(document_id, cx)
+                            .map(|title| {
+                                butter_paper_gpui_migration::document_tab_bar::format_document_tab_label(&title)
+                                    .to_owned()
+                            })
+                            .unwrap_or_default();
+                        (label, workspace.session_count())
+                    };
+                    let text = tab_drag_chip_text(&label, target.is_none() && tabs > 1);
+                    show_tab_drag_chip(source, text, screen, cx);
+                }
+                _ => hide_tab_drag_chip(cx),
+            }
             for entry in document_window_entries(cx) {
                 let index = target
                     .as_ref()
@@ -2710,11 +2863,15 @@ fn handle_tab_transfer(source: AnyWindowHandle, event: DocumentTabTransferEvent,
                 }
             }
         }
-        DocumentTabTransferEvent::Ended => clear_incoming_tab_drops(cx),
+        DocumentTabTransferEvent::Ended => {
+            hide_tab_drag_chip(cx);
+            clear_incoming_tab_drops(cx);
+        }
         DocumentTabTransferEvent::Dropped {
             document_id,
             position,
         } => {
+            hide_tab_drag_chip(cx);
             clear_incoming_tab_drops(cx);
             let Some(screen) = window_screen_point(source, position, cx) else {
                 return;
@@ -3121,6 +3278,15 @@ mod review_driver {
 
     fn shot(cx: &mut AsyncApp, out: &std::path::Path, name: &str, log: &mut std::fs::File) {
         cx.update(|cx| {
+            if let Some(handle) = cx.try_global::<TabDragPreview>().map(|preview| preview.handle) {
+                let path = out.join(format!("{name}-chip.png"));
+                if let Ok((bounds, image)) = handle.update(cx, |_, window, _| {
+                    (window.bounds(), window.render_to_image())
+                }) {
+                    let saved = image.map(|image| image.save(&path).is_ok());
+                    writeln!(log, "{name} chip frame={bounds:?} saved={saved:?}").unwrap();
+                }
+            }
             let active = active_document_window(cx).map(|entry| entry.handle);
             for (index, entry) in document_window_entries(cx).into_iter().enumerate() {
                 let titles = entry

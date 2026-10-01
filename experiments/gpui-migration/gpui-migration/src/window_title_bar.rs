@@ -13,24 +13,51 @@ pub const MACOS_TITLE_BAR_CONTROL_INSET: gpui::Pixels = px(80.);
 
 /// Formats the window title from the active document and the number of open
 /// documents. The document tab remains the owner of dirty-state presentation.
-pub fn format_window_title(active_document_name: Option<&str>, document_count: usize) -> String {
-    format_window_title_for_application(active_document_name, document_count, APPLICATION_TITLE)
+/// Longest list of tab names before the rest are counted ("+3").
+pub const WINDOW_TITLE_MAX_CHARS: usize = 100;
+const WINDOW_TITLE_SEPARATOR: &str = " | ";
+
+/// The window title lists its tabs without extensions, the active tab first
+/// and the rest in tab order: "second | review | third". With no tabs it is
+/// the application title. A long list ends with a count of the tabs left out.
+pub fn format_window_title(tab_names: &[&str], active_index: Option<usize>) -> String {
+    format_window_title_for_application(tab_names, active_index, APPLICATION_TITLE)
 }
 
 pub fn format_window_title_for_application(
-    active_document_name: Option<&str>,
-    document_count: usize,
+    tab_names: &[&str],
+    active_index: Option<usize>,
     application_title: &str,
 ) -> String {
-    let Some(active_document_name) = active_document_name else {
+    if tab_names.is_empty() {
         return application_title.to_owned();
-    };
-    let other_document_count = document_count.saturating_sub(1);
-    if other_document_count == 0 {
-        format!("{active_document_name} — {application_title}")
-    } else {
-        format!("{active_document_name} (+{other_document_count}) — {application_title}")
     }
+    let active = active_index.filter(|index| *index < tab_names.len());
+    let ordered = active
+        .into_iter()
+        .chain((0..tab_names.len()).filter(|index| Some(*index) != active))
+        .map(|index| crate::document_tab_bar::format_document_tab_label(tab_names[index]));
+    let mut title = String::new();
+    let mut shown = 0;
+    for name in ordered {
+        let separator = if shown == 0 { "" } else { WINDOW_TITLE_SEPARATOR };
+        let remaining_after = tab_names.len() - shown - 1;
+        let suffix_reserve = if remaining_after > 0 { 6 } else { 0 };
+        if shown > 0
+            && title.chars().count() + separator.len() + name.chars().count() + suffix_reserve
+                > WINDOW_TITLE_MAX_CHARS
+        {
+            break;
+        }
+        title.push_str(separator);
+        title.push_str(name);
+        shown += 1;
+    }
+    let hidden = tab_names.len() - shown;
+    if hidden > 0 {
+        title.push_str(&format!("{WINDOW_TITLE_SEPARATOR}+{hidden}"));
+    }
+    title
 }
 
 /// AppKit owns the macOS title bar, including the user's double-click action

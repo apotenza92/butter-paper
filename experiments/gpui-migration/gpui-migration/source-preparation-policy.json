@@ -320,7 +320,7 @@
     "directory": ".prepared/zed-8b1497d",
     "patch": {
       "path": "patches/gpui-opaque-path-multiply.patch",
-      "sha256": "c41d59fb99e40cda3b1efa2a6a12c15a696ff740220dba4432319ce331f0aa74"
+      "sha256": "c16611cb1708dfbab7b054e11b2d4616abe76cc3cb390899573bba28a4f9a197"
     },
     "changedFiles": [
       "Cargo.toml",
@@ -338,13 +338,15 @@
       "crates/gpui_linux/src/linux/platform.rs",
       "crates/gpui_linux/src/linux/wayland/client.rs",
       "crates/gpui_macos/src/platform.rs",
+      "crates/gpui_macos/src/window.rs",
       "crates/gpui_wgpu/src/shaders.wgsl",
       "crates/gpui_wgpu/src/shaders_webgl.wgsl",
       "crates/gpui_wgpu/src/wgpu_renderer.rs",
       "crates/gpui_windows/src/platform.rs",
-      "crates/gpui_windows/src/shaders.hlsl"
+      "crates/gpui_windows/src/shaders.hlsl",
+      "crates/gpui_windows/src/window.rs"
     ],
-    "treeSha256": "10d8791dcbbec4c89c107b66d9c4377c366a9db0ec733635f8c99747ea484bab",
+    "treeSha256": "53b7320d1d932e9f0ac41bcf4b67dc3beec6b0714ff5601601a451e58c738e41",
     "packages": {
       "collections": "crates/collections",
       "derive_refineable": "crates/refineable/derive_refineable",

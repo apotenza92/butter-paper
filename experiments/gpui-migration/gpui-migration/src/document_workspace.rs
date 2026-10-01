@@ -2579,6 +2579,8 @@ pub struct DocumentWorkspace {
     document_id_source: Option<Arc<std::sync::atomic::AtomicU64>>,
     /// Where a tab dragged from another window would land, while it is over this strip.
     incoming_tab_drop: Option<usize>,
+    /// The application shows the dragged tab in its own window beyond the strip.
+    external_tab_drag_preview: bool,
     session_tab_strip_bounds: Rc<Cell<Bounds<Pixels>>>,
     other_window_document_focus: Option<OtherWindowDocumentFocus>,
     opener: Option<Arc<dyn NativeDocumentOpener>>,
@@ -4053,6 +4055,7 @@ impl DocumentWorkspace {
             external_template_authority: false,
             document_id_source: None,
             incoming_tab_drop: None,
+            external_tab_drag_preview: false,
             session_tab_strip_bounds: Rc::new(Cell::new(Bounds::default())),
             other_window_document_focus: None,
             opener: None,
@@ -5471,6 +5474,19 @@ impl DocumentWorkspace {
                 })
                 .count(),
         )
+    }
+
+    /// While true, the dragged tab's in-window copy is hidden beyond the strip
+    /// because the application shows it in a window that can leave this one.
+    pub fn set_external_tab_drag_preview(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.external_tab_drag_preview != active {
+            self.external_tab_drag_preview = active;
+            cx.notify();
+        }
+    }
+
+    pub fn document_title(&self, document_id: DocumentId, cx: &App) -> Option<String> {
+        self.session(document_id, cx).map(|session| session.read(cx).title.clone())
     }
 
     /// Shows where a tab dragged from another window would be inserted.
@@ -25742,7 +25758,11 @@ impl Render for DocumentWorkspace {
         let dragged_tab_ghost = self
             .session_tab_pointer_drag
             .as_ref()
-            .filter(|drag| drag.activated)
+            .filter(|drag| {
+                drag.activated
+                    && !(self.external_tab_drag_preview
+                        && !self.session_tab_strip_bounds.get().contains(&drag.current))
+            })
             .and_then(|drag| {
                 let title = self.session(drag.document_id, cx)?.read(cx).title.clone();
                 // Only a window with other tabs can tear one off.
@@ -25771,14 +25791,10 @@ impl Render for DocumentWorkspace {
                                 .text_sm()
                                 .text_color(cx.theme().foreground)
                                 .opacity(0.92)
-                                .child(label)
-                                .when(outside, |ghost| {
-                                    ghost.child(
-                                        gpui::div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child("New window"),
-                                    )
+                                .child(if outside {
+                                    format!("Open {label} in New window")
+                                } else {
+                                    label
                                 }),
                         ),
                 )

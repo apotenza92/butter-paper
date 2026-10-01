@@ -1,35 +1,39 @@
 use butter_paper_gpui_migration::window_title_bar::{
-    APPLICATION_TITLE, format_window_title, format_window_title_for_application,
-    title_bar_window_options,
+    APPLICATION_TITLE, WINDOW_TITLE_MAX_CHARS, format_window_title,
+    format_window_title_for_application, title_bar_window_options,
 };
 
 #[test]
 fn empty_workspace_uses_the_application_title() {
-    assert_eq!(format_window_title(None, 0), APPLICATION_TITLE);
-}
-
-#[test]
-fn one_document_names_the_document_and_application() {
+    assert_eq!(format_window_title(&[], None), APPLICATION_TITLE);
     assert_eq!(
-        format_window_title(Some("Drawing.pdf"), 1),
-        "Drawing.pdf — Butter Paper"
+        format_window_title_for_application(&[], None, "Butter Paper Beta"),
+        "Butter Paper Beta"
     );
 }
 
 #[test]
-fn multiple_documents_include_the_other_document_count() {
+fn tabs_are_listed_without_extensions_active_first_then_in_tab_order() {
+    assert_eq!(format_window_title(&["Drawing.pdf"], Some(0)), "Drawing");
     assert_eq!(
-        format_window_title(Some("Drawing.pdf"), 4),
-        "Drawing.pdf (+3) — Butter Paper"
+        format_window_title(&["review.pdf", "third.PDF", "second.pdf"], Some(2)),
+        "second | review | third"
+    );
+    assert_eq!(
+        format_window_title(&["review.pdf", "third.pdf"], None),
+        "review | third"
     );
 }
 
 #[test]
-fn packaged_channel_title_replaces_the_development_identity() {
-    assert_eq!(
-        format_window_title_for_application(Some("Drawing.pdf"), 2, "Butter Paper Beta"),
-        "Drawing.pdf (+1) — Butter Paper Beta"
-    );
+fn long_tab_lists_end_with_the_count_left_out() {
+    let names = (0..30).map(|index| format!("Site plan {index}.pdf")).collect::<Vec<_>>();
+    let names = names.iter().map(String::as_str).collect::<Vec<_>>();
+    let title = format_window_title(&names, Some(0));
+    assert!(title.starts_with("Site plan 0 | Site plan 1 | "));
+    assert!(title.chars().count() <= WINDOW_TITLE_MAX_CHARS + 6, "{title}");
+    let shown = title.matches("Site plan").count();
+    assert!(title.ends_with(&format!(" | +{}", 30 - shown)), "{title}");
 }
 
 #[test]
