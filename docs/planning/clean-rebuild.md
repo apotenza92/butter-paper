@@ -70,8 +70,8 @@ launcher becomes `butter-paper`.
    PDFium workflows call xtask.
 8. [x] AGENTS.md, README, CHANGELOG (0.1.0), planning docs rewritten for the
    clean app.
-9. [ ] Gates: cargo test, cargo xtask check, xtask packaging dry runs.
-10. [ ] Release 0.1.0; confirm updater feed, checksums, both casks.
+9. [x] Gates: cargo test, cargo xtask check, xtask packaging dry runs.
+10. [x] Release 0.1.0; confirm updater feed, checksums, both casks.
 11. [ ] Electron 0.0.31 redirect release from `v0.0.30`, pinned to 0.1.0;
     confirm the Electron feed and a migration on a clean machine.
 
@@ -97,3 +97,15 @@ launcher becomes `butter-paper`.
 
 - 2026-10-02: 0.0.32 release run cancelled before publishing (no release
   exists); plan agreed.
+- 2026-10-02: 0.1.0 published (run 36977043231): eight packages, SHA256SUMS,
+  attested Homebrew bundle; both casks at 0.1.0; macOS apps pass codesign,
+  Gatekeeper and stapler checks. Pre-release test gate removed by owner
+  decision; the release workflow caches compiled dependencies.
+- 2026-10-02: Electron 0.0.31 (redirect to 0.1.0) tagged from v0.0.30's
+  line (commit e7ccd58, recorded in main by an `ours` merge so main's tree
+  is unchanged). Its TUF-signed Electron feed must be refreshed or retired
+  before its metadata expires; once Electron users have moved, the feed can
+  lapse.
+- Follow-ups: remove the unused Electron data-import code; per-platform
+  pass over the macOS dead-code warnings; a PDFium build pipeline for the
+  next PDFium upgrade.
