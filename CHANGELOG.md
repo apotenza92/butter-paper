@@ -29,6 +29,12 @@ All notable Butter Paper changes are recorded here.
 - Text boxes, callouts and Cloud+ text use the margin stored with the text
   (3 pt for new text, as in Revu) on screen and in the saved file.
 - Area captions are centred on the area, as in Revu.
+- Clouds have Revu's round curls with small hooks where they meet, on
+  screen and in saved files.
+- Cloud+ markups can be filled.
+- Length and dimension captions turn to follow sloped lines, as in Revu.
+- Revu snapshots can be moved, resized and rotated. Butter Paper keeps
+  Revu's own vector drawing in the file.
 - Pressing Return to finish a callout, Cloud+ or dimension label no longer
   replaces the selected text with a line break.
 

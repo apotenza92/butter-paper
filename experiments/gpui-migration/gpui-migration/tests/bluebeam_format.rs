@@ -532,14 +532,9 @@ fn revu_authored_markups_import_as_their_native_families() {
     assert_eq!(shapes.rectangles()[0].id.as_str(), "MSYMAPZFINTDPPUL");
 
     let measured = PdfPersistenceSession::open(fixture("revu-measure-text-media.pdf")).unwrap();
-    // Kept exactly rather than edited: Revu's vector Snapshot (the model is
-    // raster).
-    let untouched = measured
-        .untouched_annotations()
-        .iter()
-        .map(|annotation| (annotation.name.as_str(), annotation.subtype.as_str()))
-        .collect::<Vec<_>>();
-    assert_eq!(untouched, [("RIJSPWSIYBGOWHST", "Stamp")]);
+    assert!(measured.untouched_annotations().is_empty(), "{:?}", measured.untouched_annotations());
+    // Revu's vector Snapshot is an editable Snapshot that keeps its Form.
+    assert_eq!(measured.vector_snapshot_ids(), [id("RIJSPWSIYBGOWHST")]);
     // A callout whose text was deleted in Revu is still a callout.
     assert_eq!(measured.callouts().len(), 2);
     assert!(measured.callouts().iter().any(|callout| callout.content().is_empty()));
@@ -548,7 +543,7 @@ fn revu_authored_markups_import_as_their_native_families() {
     assert_eq!(measured.measurement_paths().len(), 2);
     assert_eq!(measured.cloud_pluses().len(), 1);
     assert_eq!(measured.images().len(), 1);
-    assert_eq!(measured.snapshots().len(), 0);
+    assert_eq!(measured.snapshots().len(), 1);
     // Revu's 1:100 page viewport and its caption values come through.
     let scale = &measured.page_scales()[0];
     assert_eq!(scale.name, "1:100");
@@ -930,4 +925,131 @@ fn unlabelled_dimension_and_bordered_callout_match_revu() {
     assert_eq!(reopened.dimensions()[0].content(), "");
     assert_eq!(reopened.callouts().len(), 2);
     assert!(reopened.untouched_annotations().is_empty());
+}
+
+#[test]
+fn filled_cloud_plus_saves_and_reopens_its_fill() {
+    let directory = scratch_dir("cloud-plus-fill");
+    let source = directory.join("source.pdf");
+    let target = directory.join("native.pdf");
+    blank_letter_pdf(&source);
+    let mut session = PdfPersistenceSession::open(&source).unwrap();
+    let filled = RectangleAppearance::new("#ff0000", 1., Some("#0000ff"), 1.)
+        .unwrap()
+        .with_fill_opacity(0.5)
+        .unwrap();
+    let line = StraightLineAppearance::new("#ff0000", 1., 1., StrokeStyle::Solid).unwrap();
+    let text = TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.)
+        .unwrap()
+        .with_layout_metrics(13.8, 3.)
+        .unwrap();
+    session
+        .add_cloud_plus(
+            CloudPlusAnnotation::new(
+                id("FILLEDCLOUDPLUSA"),
+                0,
+                vec![
+                    point(58.6721, 150.),
+                    point(116.72, 150.),
+                    point(116.72, 109.4289),
+                    point(58.6721, 109.4289),
+                ],
+                2.,
+                vec![point(124.7705, 130.1), point(159.3372, 130.), point(179.1372, 130.)],
+                rect(179.1372, 115., 310.6372, 146.),
+                "Filled",
+                CloudPlusAppearance::new(filled, line, text).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    save_as(&session, &source, &target);
+    let reopened = PdfPersistenceSession::open(&target).unwrap();
+    assert!(reopened.untouched_annotations().is_empty(), "{:?}", reopened.untouched_annotations());
+    let cloud = reopened.cloud_pluses()[0].appearance.cloud();
+    assert_eq!(cloud.fill_color(), Some("#0000ff"));
+    assert_eq!(cloud.fill_opacity(), 0.5);
+    let (document, dictionaries) = annotation_dictionaries(&target);
+    let polygon = dictionaries
+        .iter()
+        .find(|dictionary| dictionary.get(b"Subtype").ok().map(name_of).as_deref() == Some("Polygon"))
+        .unwrap();
+    assert!(polygon.get(b"IC").is_ok());
+    assert!(appearance_content(&document, polygon).contains("h B"));
+}
+
+#[test]
+fn edited_revu_vector_snapshot_keeps_its_form() {
+    let directory = scratch_dir("vector-snapshot");
+    let source = fixture("revu-measure-text-media.pdf");
+    let target = directory.join("edited.pdf");
+    let original_document = lopdf::Document::load(&source).unwrap();
+    let snapshot_dictionary = |document: &lopdf::Document| {
+        document
+            .objects
+            .values()
+            .filter_map(|object| object.as_dict().ok())
+            .find(|dictionary| {
+                dictionary.get(b"IT").ok().map(name_of).as_deref() == Some("StampSnapshot")
+            })
+            .unwrap()
+            .clone()
+    };
+    let original_form = snapshot_dictionary(&original_document)
+        .get(b"AP")
+        .unwrap()
+        .as_dict()
+        .unwrap()
+        .get(b"N")
+        .unwrap()
+        .as_reference()
+        .unwrap();
+
+    let mut session = PdfPersistenceSession::open(&source).unwrap();
+    let mut snapshot = session.snapshots()[0].clone();
+    snapshot.rect.x += 20.;
+    let snapshot = snapshot.with_rotation_degrees(30.).unwrap();
+    session.replace_snapshot(snapshot.clone()).unwrap();
+    save_as(&session, &source, &target);
+
+    let reopened = PdfPersistenceSession::open(&target).unwrap();
+    assert!(reopened.untouched_annotations().is_empty());
+    assert_eq!(reopened.vector_snapshot_ids(), [snapshot.id.clone()]);
+    let moved = &reopened.snapshots()[0];
+    assert!((moved.rect.x - snapshot.rect.x).abs() < 0.01, "{moved:?}");
+    assert!((moved.rotation_degrees() - 30.).abs() < 0.01);
+
+    let edited = lopdf::Document::load(&target).unwrap();
+    let dictionary = snapshot_dictionary(&edited);
+    assert_eq!(dictionary.get(b"Rotation").unwrap().as_float().unwrap(), 30.);
+    let wrapper_id = dictionary
+        .get(b"AP")
+        .unwrap()
+        .as_dict()
+        .unwrap()
+        .get(b"N")
+        .unwrap()
+        .as_reference()
+        .unwrap();
+    let wrapper = edited.get_object(wrapper_id).unwrap().as_stream().unwrap();
+    let drawn = wrapper
+        .dict
+        .get(b"Resources")
+        .unwrap()
+        .as_dict()
+        .unwrap()
+        .get(b"XObject")
+        .unwrap()
+        .as_dict()
+        .unwrap()
+        .get(b"Snapshot")
+        .unwrap()
+        .as_reference()
+        .unwrap();
+    // Revu's own Form, unchanged, is what the new appearance draws.
+    assert_eq!(drawn, original_form);
+    assert_eq!(
+        edited.get_object(drawn).unwrap(),
+        original_document.get_object(original_form).unwrap()
+    );
 }

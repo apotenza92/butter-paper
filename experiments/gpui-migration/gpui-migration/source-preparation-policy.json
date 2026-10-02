@@ -128,11 +128,11 @@
     },
     {
       "path": "../gpui-migration/src/pdf_worker.rs",
-      "sha256": "be412f9166ed73b5a15782b85eaffdfcf52220d6d6059680b70ef1c2bec28101"
+      "sha256": "64dca979f1d21d4556d55d16c2243cfe61ea6bc9c83242674c0c3323fc4560b8"
     },
     {
       "path": "../gpui-migration/src/annotation_model.rs",
-      "sha256": "d29c674990575d9a454b46efd36eea3901dab7afe95c27aa526c39e2663afdd6"
+      "sha256": "48134e10dd4300e8a64ff1e68636644325a1013aad2214c3fd2c4fe01ff6b8a9"
     },
     {
       "path": "../gpui-migration/src/highlight_compositor.rs",
@@ -144,7 +144,7 @@
     },
     {
       "path": "../gpui-migration/src/annotation_adapter.rs",
-      "sha256": "1ed523f0578b4b420fed5b115d81d0ddac06a7c0c8cda2b692da42e4a5fd79b6"
+      "sha256": "a2d132f895b6a253b4ef601c4418a288b67fca4dc8eb7442d1abd2b24f8bd133"
     },
     {
       "path": "../gpui-migration/src/interaction_chrome.rs",
@@ -172,7 +172,7 @@
     },
     {
       "path": "../gpui-migration/src/pdf_engine.rs",
-      "sha256": "4cb7b9901e0af6d884d29df1ead5655922341fae39a43663b359d4ce663aa797"
+      "sha256": "375fa956a5c0a6f3224437c82f384bc155044f78ca9433273a7e58f0f00ee1c7"
     },
     {
       "path": "../gpui-migration/src/pdf_file_authority.rs",
@@ -184,7 +184,7 @@
     },
     {
       "path": "../gpui-migration/src/bin/butter-paper-pdf-worker.rs",
-      "sha256": "70b37e25880d7526462eb63eef521452834083416800878abcd6e64bce7d8062"
+      "sha256": "fa3dc9365c332f552d6c02250e6df6ca91fa24198a160c7b92268082debb9c7f"
     },
     {
       "path": "../gpui-migration/pdfium-development-binaries.json",

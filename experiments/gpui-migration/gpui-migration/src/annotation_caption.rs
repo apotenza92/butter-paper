@@ -5,15 +5,20 @@ use crate::annotation_model::{
     PdfRect, SceneDimension, SceneLength, SceneMeasurementPath, TextAlignment, TextBoxStyle,
 };
 use gpui::{
-    App, Bounds, FontWeight, Pixels, Point, ShapedLine, TextAlign, TextRun, Window,
-    WindowTextSystem, font, point, px, size,
+    App, Bounds, FontWeight, Pixels, Point, ShapedLine, TextAlign, TextRun, TransformationMatrix,
+    Window, WindowTextSystem, font, point, px, radians, size,
 };
 use gpui_component::try_parse_color;
 
 pub(crate) struct CaptionLayout {
+    /// The painted extent, including any rotation.
     pub bounds: Bounds<Pixels>,
     pub pdf_corners: Vec<PdfPoint>,
     pub width_pt: f64,
+    /// The unrotated text box the lines are laid out in.
+    text_bounds: Bounds<Pixels>,
+    /// Clockwise screen rotation about the text box centre, in radians.
+    rotation: f32,
     lines: Vec<ShapedLine>,
     line_height: Pixels,
     baseline: Pixels,
@@ -23,22 +28,82 @@ pub(crate) struct CaptionLayout {
 
 impl CaptionLayout {
     pub fn paint(&self, page_origin: Point<Pixels>, window: &mut Window, cx: &mut App) {
+        let centre = page_origin + self.text_bounds.center();
+        let scale_factor = window.scale_factor();
+        let transformation = TransformationMatrix::unit()
+            .translate(centre.scale(scale_factor))
+            .rotate(radians(self.rotation))
+            .translate(centre.scale(-scale_factor));
         for (index, line) in self.lines.iter().enumerate() {
             let baseline_offset =
                 (self.line_height - line.ascent - line.descent) / 2. + line.ascent;
             let origin = point(
-                page_origin.x + self.bounds.origin.x + self.inset,
+                page_origin.x + self.text_bounds.origin.x + self.inset,
                 page_origin.y + self.baseline + self.line_height * index as f32 - baseline_offset,
             );
-            let _ = line.paint(
-                origin,
-                self.line_height,
-                self.alignment,
-                Some((self.bounds.size.width - self.inset * 2.).max(px(0.))),
-                window,
-                cx,
-            );
+            let align_width = Some((self.text_bounds.size.width - self.inset * 2.).max(px(0.)));
+            let _ = if self.rotation == 0. {
+                line.paint(origin, self.line_height, self.alignment, align_width, window, cx)
+            } else {
+                line.paint_transformed(
+                    origin,
+                    self.line_height,
+                    self.alignment,
+                    align_width,
+                    transformation,
+                    window,
+                    cx,
+                )
+            };
         }
+    }
+
+    /// Turns the caption about its centre to follow a measurement line from
+    /// `start` to `end`, kept upright as Revu draws it.
+    fn following(mut self, start: PdfPoint, end: PdfPoint, transform: PageTransform) -> Self {
+        let from = transform.point_to_local_pixels(start);
+        let to = transform.point_to_local_pixels(end);
+        let mut angle = (to.y - from.y).atan2(to.x - from.x);
+        if angle > std::f64::consts::FRAC_PI_2 + 1e-9 {
+            angle -= std::f64::consts::PI;
+        } else if angle <= -std::f64::consts::FRAC_PI_2 + 1e-9 {
+            angle += std::f64::consts::PI;
+        }
+        if !angle.is_finite() || angle.abs() < 1e-9 {
+            return self;
+        }
+        let centre = self.text_bounds.center();
+        let (sin, cos) = (angle as f32).sin_cos();
+        let corners = [
+            self.text_bounds.origin,
+            point(self.text_bounds.right(), self.text_bounds.top()),
+            point(self.text_bounds.right(), self.text_bounds.bottom()),
+            point(self.text_bounds.left(), self.text_bounds.bottom()),
+        ]
+        .map(|corner| {
+            let dx = corner.x - centre.x;
+            let dy = corner.y - centre.y;
+            point(centre.x + dx * cos - dy * sin, centre.y + dx * sin + dy * cos)
+        });
+        let Some(pdf_corners) = corners
+            .iter()
+            .map(|corner| {
+                transform
+                    .point_from_local_pixels(f32::from(corner.x) as f64, f32::from(corner.y) as f64)
+                    .ok()
+            })
+            .collect::<Option<Vec<_>>>()
+        else {
+            return self;
+        };
+        let left = corners.iter().map(|corner| corner.x).fold(corners[0].x, Pixels::min);
+        let right = corners.iter().map(|corner| corner.x).fold(corners[0].x, Pixels::max);
+        let top = corners.iter().map(|corner| corner.y).fold(corners[0].y, Pixels::min);
+        let bottom = corners.iter().map(|corner| corner.y).fold(corners[0].y, Pixels::max);
+        self.bounds = Bounds::new(point(left, top), size(right - left, bottom - top));
+        self.pdf_corners = pdf_corners;
+        self.rotation = angle as f32;
+        self
     }
 }
 
@@ -96,6 +161,7 @@ pub(crate) fn length_caption(
         transform,
         text_system,
     )
+    .map(|caption| caption.following(annotation.start, annotation.end, transform))
 }
 
 pub(crate) fn measurement_caption(
@@ -147,6 +213,7 @@ pub(crate) fn dimension_caption(
         transform,
         text_system,
     )
+    .map(|caption| caption.following(annotation.start, annotation.end, transform))
 }
 
 fn layout(
@@ -265,6 +332,8 @@ fn layout(
         bounds,
         pdf_corners,
         width_pt,
+        text_bounds: bounds,
+        rotation: 0.,
         lines,
         line_height,
         baseline,

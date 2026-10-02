@@ -158,7 +158,13 @@ impl RasterSurface {
         let height = (local.height * scale_y)
             .round()
             .clamp(0., f64::from(self.height.saturating_sub(y))) as u32;
-        let crop = self.cropped(x, y, width, height)?;
+        self.cropped(x, y, width, height)?.to_rgba_asset()
+    }
+
+    /// The whole surface as straight-alpha RGBA.
+    fn to_rgba_asset(&self) -> Result<DecodedRgbaAsset, String> {
+        let crop = self;
+        let (width, height) = (self.width, self.height);
         let mut rgba = Vec::with_capacity(crop.pixels_bgra.len());
         for pixel in crop.pixels_bgra.chunks_exact(4) {
             let alpha = u32::from(pixel[3]);
@@ -525,7 +531,8 @@ impl NativeDocumentOpener for PdfiumWorkerBackend {
             Sha256::digest(fs::read(&request.path).map_err(|error| error.to_string())?).into();
         let persistence = PdfPersistenceSession::open(&request.path)
             .map_err(|error| format!("failed to import PDF annotations: {error}"))?;
-        let annotations = persistence.annotations_in_document_order();
+        let vector_snapshot_ids = persistence.vector_snapshot_ids();
+        let mut annotations = persistence.annotations_in_document_order();
         let retained_annotation_obstacles = persistence.retained_annotation_obstacles().to_vec();
         let page_length_calibrations = persistence
             .page_length_calibrations()
@@ -545,6 +552,22 @@ impl NativeDocumentOpener for PdfiumWorkerBackend {
             &self.surface_root,
             request,
         )?;
+        // Revu vector Snapshots: the worker draws each Form for the canvas.
+        // A failure keeps the placeholder; the saved file keeps the Form.
+        for (layer_page, id) in vector_snapshot_ids.iter().enumerate() {
+            let Some(Annotation::Snapshot(snapshot)) = annotations
+                .iter_mut()
+                .find(|annotation| annotation.id() == id)
+            else {
+                continue;
+            };
+            let Ok(layer_page) = u32::try_from(layer_page) else {
+                break;
+            };
+            if let Ok(asset) = resource.render_vector_snapshot(layer_page, snapshot.rect) {
+                *snapshot = snapshot.clone().with_asset(asset);
+            }
+        }
         let page_sizes = resource.page_sizes.clone();
         let page_coordinate_spaces = resource.page_coordinate_spaces.clone();
         let current_page = resource.render_page(0, DEFAULT_PAGE_RENDER_WIDTH)?;
@@ -757,6 +780,68 @@ impl PdfiumWorkerResource {
             response => return Err(unexpected_response("render", response)),
         }
         RasterSurface::new(width, height, surface.pixels().to_vec())
+    }
+
+    /// Rasterises page `layer_page` of the vector Snapshot layer, whose page
+    /// is the Snapshot's unrotated `rect`, at up to four pixels per point.
+    fn render_vector_snapshot(
+        &self,
+        layer_page: u32,
+        rect: PdfRect,
+    ) -> Result<DecodedRgbaAsset, String> {
+        let scale = (2_048. / rect.width.max(rect.height)).min(4.).max(0.01);
+        let width = ((rect.width * scale).round() as u32).clamp(1, 8_192);
+        let height = ((rect.height * scale).round() as u32).clamp(1, 8_192);
+        let byte_len = u64::from(width) * u64::from(height) * 4;
+        let surface_id = SurfaceId(self.next_surface.fetch_add(1, Ordering::Relaxed));
+        let descriptor = SurfaceDescriptor {
+            surface_id,
+            width,
+            height,
+            stride: width * 4,
+            byte_len,
+            format: SurfaceFormat::Bgra8Premultiplied,
+        };
+        let mut guard = self
+            .client
+            .lock()
+            .map_err(|_| "PDF worker client lock was poisoned".to_owned())?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| "PDF worker resource is released".to_owned())?;
+        let surface = client.create_surface(&descriptor).map_err(worker_error)?;
+        let job_id = JobId(self.next_job.fetch_add(1, Ordering::Relaxed));
+        let scale_x = width as f32 / rect.width as f32;
+        let scale_y = height as f32 / rect.height as f32;
+        let response = client
+            .exchange(&WorkerRequest::RenderCrop {
+                request_id: self.request_id(),
+                render: RenderRequest {
+                    job_id,
+                    session_id: self.session_id,
+                    page_index: layer_page,
+                    annotation_mode: AnnotationRenderMode::VectorSnapshots,
+                    transform: [scale_x, 0., 0., scale_y, 0., 0.],
+                    clip: ClipRect {
+                        x: 0,
+                        y: 0,
+                        width,
+                        height,
+                    },
+                    surface: descriptor,
+                },
+            })
+            .map_err(worker_error)?;
+        match response {
+            WorkerResponse::Rendered {
+                job_id: actual_job,
+                surface_id: actual_surface,
+                ..
+            } if actual_job == job_id && actual_surface == surface_id => {}
+            WorkerResponse::Failed { error, .. } => return Err(worker_error(error)),
+            response => return Err(unexpected_response("vector Snapshot render", response)),
+        }
+        RasterSurface::new(width, height, surface.pixels().to_vec())?.to_rgba_asset()
     }
 
     fn request_id(&self) -> RequestId {
@@ -1082,6 +1167,52 @@ fn unexpected_response(operation: &str, response: WorkerResponse) -> String {
 
 #[cfg(test)]
 mod raster_colour_tests {
+    #[test]
+    #[ignore = "requires the checksum-pinned development PDFium library and the worker binary"]
+    fn opening_a_revu_vector_snapshot_rasterises_its_form_for_the_canvas() {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let worker = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .and_then(|deps| deps.parent())
+            .unwrap()
+            .join(if cfg!(windows) {
+                "butter-paper-pdf-worker.exe"
+            } else {
+                "butter-paper-pdf-worker"
+            });
+        let library = std::path::PathBuf::from(
+            std::env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY names libpdfium"),
+        );
+        let surfaces = std::env::temp_dir()
+            .join(format!("bp-vector-snapshot-surfaces-{}", std::process::id()));
+        std::fs::create_dir_all(&surfaces).unwrap();
+        let backend = PdfiumWorkerBackend::new(worker, library, surfaces.clone());
+        let opened = backend
+            .open(&OpenDocumentRequest {
+                document_id: DocumentId::new(1),
+                generation: 1,
+                path: manifest_dir.join("tests/fixtures/bluebeam/revu-measure-text-media.pdf"),
+            })
+            .unwrap();
+        let snapshot = opened
+            .annotations
+            .iter()
+            .find_map(|annotation| match annotation {
+                Annotation::Snapshot(snapshot) => Some(snapshot.clone()),
+                _ => None,
+            })
+            .expect("Revu's vector Snapshot imports as a Snapshot");
+        let asset = snapshot.asset();
+        assert!(asset.width_px() > 100 && asset.height_px() > 100, "{asset:?}");
+        let pixels = asset.rgba().chunks_exact(4).collect::<Vec<_>>();
+        // Revu snapshotted a red Area markup: red strokes on a clear ground.
+        assert!(pixels.iter().any(|pixel| pixel[0] > 200 && pixel[1] < 80 && pixel[2] < 80 && pixel[3] > 200));
+        assert!(pixels.iter().any(|pixel| pixel[3] == 0));
+        opened.resource.close().unwrap();
+        std::fs::remove_dir_all(&surfaces).ok();
+    }
+
     use super::*;
     use crate::annotation_model::{MarkupId, PdfPoint, PenAppearance};
 

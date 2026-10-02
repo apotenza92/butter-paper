@@ -108,22 +108,28 @@ Page scale: page `/VP [<</Type /Viewport /BBox [...] /Measure <</Type /Measure /
 - [x] Area captions are centred on the area, as Revu centres them.
 - [x] A callout or Cloud+ without text writes no text object in its appearance.
 
+- [x] Clouds use Revu's (Adobe's) cloudy border, measured from Revu 21
+  streams: curls are circles centred on the outline at equal perimeter
+  spacing from the first vertex (nominal 7.05 pt × intensity, rounded to a
+  whole number of curls), radius 0.6 × spacing; each curl is an outward arc
+  between its neighbours' meeting points that runs 21.2° past the next one and
+  hooks back (handles 0.1034 r). `/Rect` is the outline grown by 1.789 r.
+- [x] Cloud+ clouds can be filled (Cloud+ tool default); a filled Cloud+
+  appearance path (`B`/`b`) imports.
+- [x] Length and Dimension captions turn to follow the line, kept upright
+  (angle within (-90°, 90°]), on the canvas and in the appearance.
+- [x] Revu vector Snapshots are editable Snapshots. Import records the
+  original Form; the PDF worker rasterises it (render mode `vector_snapshots`,
+  one layer page per Snapshot, transparent ground) for the canvas. An edit
+  writes a new appearance with Butter Paper's rotated-box placement that draws
+  Revu's original Form fitted to the new box; untouched Snapshots stay
+  byte-exact.
+
 ## Known differences (follow-ups)
 
-- Snapshot: Revu snapshots are vector Form copies of the page; native snapshots
-  are raster. Revu snapshots are kept untouched (not editable). Making them
-  movable needs the PDFium worker to rasterise the Form for the canvas and the
-  save path to wrap the original Form in a transformed appearance.
-- Cloud shape: Revu draws Adobe-style cloudy borders (fixture `revu-shapes.pdf`,
-  `BE /I 2`): circles of about 8.45 pt radius centred on the polygon edges,
-  about 14.1 pt apart, each drawn as an outward arc with a small hook where
-  neighbours meet. Native clouds use shallower scallops on the canvas and in
-  the regenerated appearance. Untouched Revu clouds and Cloud+ appearance
-  paths keep Revu's drawing.
-- Cloud+: Revu allows a cloud fill on Cloud+; the native Cloud+ cloud is
-  unfilled, so an imported Cloud+ fill is dropped when it is edited.
-- Measurement captions are horizontal; Revu turns the caption to follow a
-  sloped dimension line. Length `LL` is fixed at 10 pt; a Revu Length with
-  another offset is redrawn at 10 pt when edited.
+- Polylength: Revu also labels each segment along the line; Butter Paper
+  shows the total only.
+- Length `LL` is fixed at 10 pt; a Revu Length with another offset is redrawn
+  at 10 pt when edited.
 - The TypeScript `packages/pdf` reader used by the CLI still understands the
   Electron private keys; it does not write PDFs.

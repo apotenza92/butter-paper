@@ -1331,7 +1331,8 @@ pub struct VertexPathAnnotation {
     pub locked: bool,
 }
 
-pub const DEFAULT_CLOUD_SCALLOP_RADIUS_PT: f64 = 14.28;
+/// Revu's nominal cloud curl spacing at intensity 2; it scales with intensity.
+pub const DEFAULT_CLOUD_SCALLOP_RADIUS_PT: f64 = 14.093;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1383,7 +1384,7 @@ impl CloudAnnotation {
     pub fn scallop_path(&self) -> Vec<PdfPoint> {
         sampled_cloud_scallop_path(
             &self.points,
-            DEFAULT_CLOUD_SCALLOP_RADIUS_PT * (self.border_effect_intensity / 2.0).max(0.25),
+            cloud_nominal_spacing(self.border_effect_intensity),
         )
     }
 
@@ -2171,11 +2172,6 @@ impl CloudPlusAppearance {
         leader: StraightLineAppearance,
         text: TextBoxStyle,
     ) -> Result<Self, AnnotationError> {
-        if cloud.fill_color().is_some() {
-            return Err(AnnotationError::InvalidAppearance(
-                "Cloud+ does not support a cloud fill".into(),
-            ));
-        }
         if cloud.stroke_color() != leader.stroke_color()
             || cloud.stroke_width_pt() != leader.stroke_width_pt()
             || cloud.stroke_style() != leader.stroke_style()
@@ -2312,7 +2308,7 @@ impl CloudPlusAnnotation {
         }
         sampled_cloud_scallop_path(
             &self.cloud_points,
-            DEFAULT_CLOUD_SCALLOP_RADIUS_PT * (self.border_effect_intensity / 2.0).max(0.25),
+            cloud_nominal_spacing(self.border_effect_intensity),
         )
     }
 
@@ -3821,6 +3817,11 @@ impl SnapshotAnnotation {
     }
 
     pub fn same_persisted_state_as(&self, other: &Self) -> bool {
+        self.same_placement_as(other) && self.asset == other.asset
+    }
+
+    /// Everything but the picture: id, page, box, rotation, opacity, lock.
+    pub fn same_placement_as(&self, other: &Self) -> bool {
         const PDF_NUMBER_TOLERANCE: f64 = 0.000_1;
         self.id == other.id
             && self.page_index == other.page_index
@@ -3830,8 +3831,14 @@ impl SnapshotAnnotation {
             && (self.rect.height - other.rect.height).abs() <= PDF_NUMBER_TOLERANCE
             && (self.opacity - other.opacity).abs() <= PDF_NUMBER_TOLERANCE
             && (self.rotation_degrees - other.rotation_degrees).abs() <= PDF_NUMBER_TOLERANCE
-            && self.asset == other.asset
             && self.locked == other.locked
+    }
+
+    /// Replaces the picture, as when the PDF worker rasterises a Revu vector
+    /// Snapshot's Form for the canvas.
+    pub fn with_asset(mut self, asset: DecodedRgbaAsset) -> Self {
+        self.asset = asset;
+        self
     }
 
     pub fn with_rotation_degrees(mut self, rotation_degrees: f64) -> Result<Self, AnnotationError> {
@@ -11869,66 +11876,151 @@ fn validate_vertex_path(points: &[PdfPoint], kind: VertexPathKind) -> Result<(),
     Ok(())
 }
 
-fn sampled_cloud_scallop_path(control_path: &[PdfPoint], radius: f64) -> Vec<PdfPoint> {
+/// Whole curls round the perimeter, their spacing and radius.
+fn cloud_curl_layout(perimeter: f64, nominal_spacing: f64) -> (usize, f64, f64) {
+    let count = ((perimeter / nominal_spacing.max(1.)).round() as usize).max(3);
+    let spacing = perimeter / count as f64;
+    (count, spacing, spacing * 0.6)
+}
+
+/// The curl radius Revu uses for a cloud outline.
+pub fn cloud_curl_radius(control_path: &[PdfPoint], border_effect_intensity: f64) -> f64 {
+    let perimeter = (0..control_path.len())
+        .map(|index| {
+            point_distance(control_path[index], control_path[(index + 1) % control_path.len()])
+        })
+        .sum::<f64>();
+    cloud_curl_layout(perimeter, cloud_nominal_spacing(border_effect_intensity)).2
+}
+
+fn cloud_nominal_spacing(border_effect_intensity: f64) -> f64 {
+    DEFAULT_CLOUD_SCALLOP_RADIUS_PT * (border_effect_intensity / 2.0).max(0.25)
+}
+
+/// Revu's (Adobe's) cloudy border. Curls are circles of one radius centred
+/// on the outline at equal spacing along its perimeter, starting at the first
+/// vertex: the nominal spacing is rounded to a whole number of curls and the
+/// radius is 0.6 of the actual spacing. Each curl is an outward arc from where
+/// it meets the previous curl to where it meets the next, continuing 21.2°
+/// past that point and hooking back to it. Measured from Revu 21 appearance
+/// streams (intensity 2: 14.09 pt spacing, 8.46 pt radius).
+fn sampled_cloud_scallop_path(control_path: &[PdfPoint], nominal_spacing: f64) -> Vec<PdfPoint> {
+    const OVERSHOOT_RADIANS: f64 = 21.2 * std::f64::consts::PI / 180.;
+    const HOOK_HANDLE_RATIO: f64 = 0.1034;
+    const ARC_STEP_RADIANS: f64 = 10. * std::f64::consts::PI / 180.;
     if control_path.len() < 3 {
+        return control_path.to_vec();
+    }
+    let vertices = control_path.len();
+    let edges = (0..vertices)
+        .map(|index| (control_path[index], control_path[(index + 1) % vertices]))
+        .filter(|(from, to)| point_distance(*from, *to) > f64::EPSILON)
+        .collect::<Vec<_>>();
+    let perimeter = edges
+        .iter()
+        .map(|(from, to)| point_distance(*from, *to))
+        .sum::<f64>();
+    if edges.len() < 2 || !perimeter.is_finite() || perimeter <= f64::EPSILON {
         return control_path.to_vec();
     }
     let signed_area = control_path
         .iter()
         .enumerate()
         .map(|(index, point)| {
-            let next = control_path[(index + 1) % control_path.len()];
+            let next = control_path[(index + 1) % vertices];
             point.x * next.y - next.x * point.y
         })
         .sum::<f64>();
-    let orientation = if signed_area >= 0. { 1. } else { -1. };
-    let spacing = radius.max(3.);
-    let mut outline = Vec::new();
-    for (index, start) in control_path.iter().copied().enumerate() {
-        let end = control_path[(index + 1) % control_path.len()];
-        let dx = end.x - start.x;
-        let dy = end.y - start.y;
-        let length = (dx * dx + dy * dy).sqrt();
-        if length <= f64::EPSILON {
-            continue;
+    // Curls turn the same way as the outline: on a clockwise outline (as
+    // Revu draws them) angles decrease and curls bulge left of travel.
+    let turn = if signed_area < 0. { -1. } else { 1. };
+    let (count, spacing, radius) = cloud_curl_layout(perimeter, nominal_spacing);
+    let mut centres = Vec::with_capacity(count);
+    let mut edge_index = 0;
+    let mut edge_start = 0.;
+    for curl in 0..count {
+        let distance = curl as f64 * spacing;
+        while edge_index + 1 < edges.len()
+            && edge_start + point_distance(edges[edge_index].0, edges[edge_index].1) < distance
+        {
+            edge_start += point_distance(edges[edge_index].0, edges[edge_index].1);
+            edge_index += 1;
         }
-        let lobes = (length / spacing).round().max(1.) as usize;
-        let outward_x = orientation * dy / length;
-        let outward_y = orientation * -dx / length;
-        for lobe in 0..lobes {
-            let t0 = lobe as f64 / lobes as f64;
-            let t1 = (lobe + 1) as f64 / lobes as f64;
-            let from = PdfPoint {
-                x: start.x + dx * t0,
-                y: start.y + dy * t0,
+        let (from, to) = edges[edge_index];
+        let length = point_distance(from, to);
+        let t = ((distance - edge_start) / length).clamp(0., 1.);
+        centres.push(PdfPoint {
+            x: from.x + (to.x - from.x) * t,
+            y: from.y + (to.y - from.y) * t,
+        });
+    }
+    let meeting = |first: PdfPoint, second: PdfPoint| {
+        let dx = second.x - first.x;
+        let dy = second.y - first.y;
+        let distance = dx.hypot(dy);
+        let mid = PdfPoint {
+            x: (first.x + second.x) / 2.,
+            y: (first.y + second.y) / 2.,
+        };
+        if distance <= f64::EPSILON {
+            return mid;
+        }
+        let half_chord = (radius * radius - distance * distance / 4.).max(0.).sqrt();
+        PdfPoint {
+            x: mid.x + turn * dy / distance * half_chord,
+            y: mid.y - turn * dx / distance * half_chord,
+        }
+    };
+    let on_circle = |centre: PdfPoint, angle: f64| PdfPoint {
+        x: canonical_float(centre.x + radius * angle.cos()),
+        y: canonical_float(centre.y + radius * angle.sin()),
+    };
+    let mut outline = Vec::new();
+    for curl in 0..count {
+        let centre = centres[curl];
+        let start = meeting(centres[(curl + count - 1) % count], centre);
+        let end = meeting(centre, centres[(curl + 1) % count]);
+        let start_angle = (start.y - centre.y).atan2(start.x - centre.x);
+        let end_angle = (end.y - centre.y).atan2(end.x - centre.x);
+        let mut sweep = (turn * (end_angle - start_angle)).rem_euclid(std::f64::consts::TAU);
+        if sweep <= f64::EPSILON {
+            sweep = std::f64::consts::TAU;
+        }
+        let total = sweep + OVERSHOOT_RADIANS;
+        let steps = (total / ARC_STEP_RADIANS).ceil().max(1.) as usize;
+        if outline.is_empty() {
+            outline.push(on_circle(centre, start_angle));
+        }
+        for step in 1..=steps {
+            let angle = start_angle + turn * total * step as f64 / steps as f64;
+            outline.push(on_circle(centre, angle));
+        }
+        // The hook: back from the overshoot to the meeting point, leaving and
+        // arriving along this curl's tangent.
+        let overshoot_angle = start_angle + turn * total;
+        let tangent = |angle: f64| (-turn * angle.sin(), turn * angle.cos());
+        let handle = radius * HOOK_HANDLE_RATIO;
+        let hook_start = on_circle(centre, overshoot_angle);
+        let (leave_x, leave_y) = tangent(overshoot_angle);
+        let (arrive_x, arrive_y) = tangent(end_angle);
+        let control_1 = PdfPoint {
+            x: hook_start.x - leave_x * handle,
+            y: hook_start.y - leave_y * handle,
+        };
+        let control_2 = PdfPoint {
+            x: end.x + arrive_x * handle,
+            y: end.y + arrive_y * handle,
+        };
+        for sample in 1..=4 {
+            let t = sample as f64 / 4.;
+            let u = 1. - t;
+            let blend = |a: f64, b: f64, c: f64, d: f64| {
+                u * u * u * a + 3. * u * u * t * b + 3. * u * t * t * c + t * t * t * d
             };
-            let to = PdfPoint {
-                x: start.x + dx * t1,
-                y: start.y + dy * t1,
-            };
-            let control = PdfPoint {
-                x: (from.x + to.x) / 2. + outward_x * radius * 0.65,
-                y: (from.y + to.y) / 2. + outward_y * radius * 0.65,
-            };
-            if outline.is_empty() {
-                outline.push(from);
-            }
-            for sample in 1..=8 {
-                let t = sample as f64 / 8.;
-                let one_minus_t = 1. - t;
-                outline.push(PdfPoint {
-                    x: canonical_float(
-                        one_minus_t * one_minus_t * from.x
-                            + 2. * one_minus_t * t * control.x
-                            + t * t * to.x,
-                    ),
-                    y: canonical_float(
-                        one_minus_t * one_minus_t * from.y
-                            + 2. * one_minus_t * t * control.y
-                            + t * t * to.y,
-                    ),
-                });
-            }
+            outline.push(PdfPoint {
+                x: canonical_float(blend(hook_start.x, control_1.x, control_2.x, end.x)),
+                y: canonical_float(blend(hook_start.y, control_1.y, control_2.y, end.y)),
+            });
         }
     }
     if let Some(first) = outline.first().copied() {
@@ -15283,6 +15375,41 @@ mod tests {
         let redone = document.snapshot();
         assert!(!redone.lengths[0].calibration().show_caption());
         assert!(!redone.measurement_paths[0].calibration().show_caption());
+    }
+
+    #[test]
+    fn cloud_scallops_reproduce_revu_curl_geometry() {
+        // Revu 21's own Cloud (tests/fixtures/bluebeam/revu-shapes.pdf,
+        // intensity 2): its appearance starts where the first and last curls
+        // meet, and each curl runs past the next meeting point and hooks back.
+        let vertices = [
+            PdfPoint { x: 288.3672, y: 670.2866 },
+            PdfPoint { x: 364.8282, y: 670.2866 },
+            PdfPoint { x: 364.8282, y: 612.8628 },
+            PdfPoint { x: 288.3672, y: 612.8628 },
+        ];
+        let path = sampled_cloud_scallop_path(&vertices, DEFAULT_CLOUD_SCALLOP_RADIUS_PT);
+        let near = |x: f64, y: f64| {
+            path.iter()
+                .any(|point| (point.x - x).abs() < 0.01 && (point.y - y).abs() < 0.01)
+        };
+        assert!((path[0].x - 283.693).abs() < 0.01 && (path[0].y - 663.2401).abs() < 0.01);
+        assert!(near(296.6271, 672.0964), "overshoot past the first meeting point");
+        assert!(near(295.4137, 674.9608), "first meeting point");
+        // The curl centred 8.1 pt below the top-right corner bulges right.
+        assert!(path.iter().any(|point| point.x > 373.2 && (point.y - 662.189).abs() < 2.));
+        assert_eq!(path.first(), path.last());
+        // Every curl bulges outwards: nothing falls inside the outline by
+        // more than the hooks reach.
+        assert!(path.iter().all(|point| point.y > 612.8628 - 9. && point.y < 670.2866 + 9.));
+        assert!(path.iter().any(|point| point.y > 678.));
+
+        // The same outline drawn anticlockwise bulges outwards too.
+        let mut reversed = vertices;
+        reversed.reverse();
+        let reversed_path = sampled_cloud_scallop_path(&reversed, DEFAULT_CLOUD_SCALLOP_RADIUS_PT);
+        assert!(reversed_path.iter().any(|point| point.y > 678.));
+        assert!(reversed_path.iter().any(|point| point.y < 605.));
     }
 
     #[test]

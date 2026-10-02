@@ -263,6 +263,9 @@ pub enum AnnotationRenderMode {
     RetainedOnly,
     /// Raw original PDFium annotation oracle; excludes Widgets/form drawing.
     All,
+    /// The render-only page of `pdf_engine::vector_snapshot_layer` at
+    /// `page_index`: one Revu vector Snapshot drawn for the canvas.
+    VectorSnapshots,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

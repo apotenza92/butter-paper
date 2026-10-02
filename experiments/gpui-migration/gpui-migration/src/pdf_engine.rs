@@ -39,7 +39,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
 use crate::annotation_model::{
-    built_in_scale_presets, measurement_line_layout, MeasurementLineLayout, LENGTH_LEADER_LENGTH_PT, DIMENSION_LEADER_EXTENSION_PT,
+    built_in_scale_presets, cloud_curl_radius, measurement_line_layout, MeasurementLineLayout, LENGTH_LEADER_LENGTH_PT, DIMENSION_LEADER_EXTENSION_PT,
     Annotation, AnnotationError, ArcAnnotation, BlendMode, CalloutAnnotation, CalloutAppearance,
     CalloutDiskGeometry, CloudAnnotation, CloudAppearancePathCommand, CloudPlusAnnotation,
     CloudPlusAppearance, DecodedRgbaAsset, DimensionAnnotation, DimensionAppearance,
@@ -115,6 +115,8 @@ pub struct PdfPersistenceSession {
     image_native_names: HashMap<MarkupId, String>,
     snapshots: Vec<SnapshotAnnotation>,
     snapshot_native_names: HashMap<MarkupId, String>,
+    /// Revu vector Snapshots, in document order, with their original Form.
+    vector_snapshot_sources: Vec<(MarkupId, VectorSnapshotSource)>,
     annotation_order: Vec<MarkupId>,
     page_scales: Vec<PageScale>,
     original_page_scales: Vec<PageScale>,
@@ -1188,6 +1190,7 @@ impl PdfPersistenceSession {
             image_native_names: imported.image_native_names,
             snapshots: imported.snapshots,
             snapshot_native_names: imported.snapshot_native_names,
+            vector_snapshot_sources: imported.vector_snapshot_sources,
             annotation_order: imported.annotation_order,
             original_page_scales: page_scales.clone(),
             page_scales,
@@ -1784,6 +1787,11 @@ impl PdfPersistenceSession {
         self.page_scales = next_scales;
         self.page_length_calibrations = next_calibrations;
         Ok(())
+    }
+
+    /// Revu vector Snapshots in the order of `vector_snapshot_layer` pages.
+    pub fn vector_snapshot_ids(&self) -> Vec<MarkupId> {
+        self.vector_snapshot_sources.iter().map(|(id, _)| id.clone()).collect()
     }
 
     pub fn untouched_annotations(&self) -> &[UntouchedAnnotation] {
@@ -3770,8 +3778,16 @@ impl PdfPersistenceSession {
             |value| &value.id,
             "snapshot",
         )?;
-        // An unchanged markup keeps its original bytes, whoever wrote it.
-        if self.snapshots[index].same_persisted_state_as(&annotation) {
+        let vector_source = self
+            .vector_snapshot_sources
+            .iter()
+            .find(|(id, _)| id == &annotation.id)
+            .map(|(_, source)| *source);
+        // An unchanged markup keeps its original bytes, whoever wrote it. A
+        // vector Snapshot's raster is only its canvas picture of the Form.
+        if self.snapshots[index].same_persisted_state_as(&annotation)
+            || (vector_source.is_some() && self.snapshots[index].same_placement_as(&annotation))
+        {
             return Ok(());
         }
         let original_page_index = self.snapshots[index].page_index;
@@ -3790,7 +3806,9 @@ impl PdfPersistenceSession {
         let original =
             resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
         let old_appearance_ids = image_appearance_object_ids(&self.document, &original);
-        let appearance_id = if self.snapshots[index].asset() == annotation.asset() {
+        let appearance_id = if let Some(source) = vector_source {
+            add_vector_snapshot_appearance(&mut self.document, &annotation, &source)
+        } else if self.snapshots[index].asset() == annotation.asset() {
             old_appearance_ids
                 .get(1)
                 .copied()
@@ -3835,6 +3853,7 @@ impl PdfPersistenceSession {
             remove_object_if_unreferenced(&mut self.document, object_id);
         }
         self.snapshot_native_names.remove(id);
+        self.vector_snapshot_sources.retain(|(source_id, _)| source_id != id);
         self.snapshots.remove(index);
         self.annotation_order.retain(|candidate| candidate != id);
         Ok(())
@@ -6792,6 +6811,12 @@ fn length_bounds(annotation: &LengthAnnotation) -> PdfRect {
             true,
         )
         .rect
+    })
+    .map(|rect| {
+        rotated_rect_bounds(
+            rect,
+            measurement_caption_angle(annotation.start, annotation.end).to_degrees(),
+        )
     });
     measurement_line_bounds(&layout, annotation.appearance.line().stroke_width_pt(), caption)
 }
@@ -6918,31 +6943,34 @@ fn vertex_path_dictionary(
 }
 
 fn cloud_bounds(annotation: &CloudAnnotation) -> PdfRect {
+    // Revu's `/Rect` is the outline's bounds grown by 1.789 curl radii; it
+    // also always holds the drawn curls and their stroke.
     let path = annotation.scallop_path();
     let padding = annotation.appearance.stroke_width_pt() / 2.0 + 1.0;
+    let revu_padding = 1.7889 * cloud_curl_radius(annotation.points(), annotation.border_effect_intensity());
+    let points = annotation.points();
     let min_x = path
         .iter()
-        .map(|point| point.x)
+        .map(|point| point.x - padding)
+        .chain(points.iter().map(|point| point.x - revu_padding))
         .fold(f64::INFINITY, f64::min);
     let max_x = path
         .iter()
-        .map(|point| point.x)
+        .map(|point| point.x + padding)
+        .chain(points.iter().map(|point| point.x + revu_padding))
         .fold(f64::NEG_INFINITY, f64::max);
     let min_y = path
         .iter()
-        .map(|point| point.y)
+        .map(|point| point.y - padding)
+        .chain(points.iter().map(|point| point.y - revu_padding))
         .fold(f64::INFINITY, f64::min);
     let max_y = path
         .iter()
-        .map(|point| point.y)
+        .map(|point| point.y + padding)
+        .chain(points.iter().map(|point| point.y + revu_padding))
         .fold(f64::NEG_INFINITY, f64::max);
-    PdfRect::new(
-        min_x - padding,
-        min_y - padding,
-        (max_x - min_x).max(0.0) + padding * 2.0,
-        (max_y - min_y).max(0.0) + padding * 2.0,
-    )
-    .expect("validated cloud points must have finite padded bounds")
+    PdfRect::new(min_x, min_y, (max_x - min_x).max(0.0), (max_y - min_y).max(0.0))
+        .expect("validated cloud points must have finite padded bounds")
 }
 
 fn add_cloud_appearance(
@@ -7053,8 +7081,12 @@ fn add_cloud_plus_cloud_appearance(
             .map_or_else(String::new, |(dash, gap)| {
                 format!("[{dash:.6} {gap:.6}] 0 d\n")
             });
+    let fill_operation = appearance.fill_color().map_or_else(String::new, |color| {
+        let (red, green, blue) = color_components(color);
+        format!("{red:.6} {green:.6} {blue:.6} rg\n")
+    });
     let mut content = format!(
-        "q\n/GS0 gs\n1 J 1 j\n{red:.6} {green:.6} {blue:.6} RG\n{dash_operation}{:.6} w\n",
+        "q\n/GS0 gs\n1 J 1 j\n{red:.6} {green:.6} {blue:.6} RG\n{fill_operation}{dash_operation}{:.6} w\n",
         appearance.stroke_width_pt(),
     );
     for command in path {
@@ -7087,7 +7119,7 @@ fn add_cloud_plus_cloud_appearance(
             CloudAppearancePathCommand::Close => content.push_str("h\n"),
         }
     }
-    content.push_str("S\nQ\n");
+    content.push_str(if appearance.fill_color().is_some() { "B\nQ\n" } else { "S\nQ\n" });
     Ok(document.add_object(Stream::new(
         dictionary! {
             "Type" => "XObject",
@@ -7099,7 +7131,11 @@ fn add_cloud_plus_cloud_appearance(
                     "GS0" => dictionary! {
                         "Type" => "ExtGState",
                         "CA" => Object::Real(appearance.opacity() as f32),
-                        "ca" => Object::Real(appearance.opacity() as f32),
+                        "ca" => Object::Real(if appearance.fill_color().is_some() {
+                            appearance.fill_opacity() as f32
+                        } else {
+                            appearance.opacity() as f32
+                        }),
                     },
                 },
             },
@@ -8032,6 +8068,14 @@ fn add_length_appearance(
             .as_deref()
             .expect("visible length caption must have text");
         let caption = measurement_caption_layout(layout.caption_center, caption_text, text, true);
+        content.extend_from_slice(
+            caption_rotation_operator(
+                caption.rect,
+                bounds,
+                measurement_caption_angle(annotation.start, annotation.end),
+            )
+            .as_bytes(),
+        );
         if uses_helvetica_winansi_fast_path(caption_text, text.font_family()) {
             let encoded = text_appearance_line_bytes(caption_text);
             content.extend_from_slice(format!(
@@ -8061,7 +8105,7 @@ fn add_length_appearance(
                 caption.text_origin.y - bounds.y,
             );
         }
-        content.extend_from_slice(b"ET\n");
+        content.extend_from_slice(b"ET\nQ\n");
     }
     content.extend_from_slice(b"Q\n");
     Ok(document.add_object(Stream::new(
@@ -8189,6 +8233,31 @@ fn measurement_line_bounds(
     caption.map_or(bounds, |caption| union_measurement_bounds(bounds, caption))
 }
 
+/// Revu turns a Length or Dimension caption to follow its line, kept
+/// upright: the angle in radians, within (-90°, 90°].
+fn measurement_caption_angle(start: PdfPoint, end: PdfPoint) -> f64 {
+    let mut angle = (end.y - start.y).atan2(end.x - start.x);
+    if angle > std::f64::consts::FRAC_PI_2 + 1e-9 {
+        angle -= std::f64::consts::PI;
+    } else if angle <= -std::f64::consts::FRAC_PI_2 + 1e-9 {
+        angle += std::f64::consts::PI;
+    }
+    angle
+}
+
+/// `q … cm` turning the caption about its centre (appearance coordinates).
+fn caption_rotation_operator(caption: PdfRect, bounds: PdfRect, angle: f64) -> String {
+    let centre_x = caption.x + caption.width / 2. - bounds.x;
+    let centre_y = caption.y + caption.height / 2. - bounds.y;
+    let (sin, cos) = angle.sin_cos();
+    format!(
+        "q {cos:.6} {sin:.6} {:.6} {cos:.6} {:.6} {:.6} cm\n",
+        -sin,
+        centre_x - cos * centre_x + sin * centre_y,
+        centre_y - sin * centre_x - cos * centre_y,
+    )
+}
+
 fn dimension_bounds(annotation: &DimensionAnnotation) -> PdfRect {
     let layout = dimension_line_layout(annotation);
     let caption = (!annotation.content().is_empty()).then(|| {
@@ -8199,6 +8268,12 @@ fn dimension_bounds(annotation: &DimensionAnnotation) -> PdfRect {
             true,
         )
         .rect
+    })
+    .map(|rect| {
+        rotated_rect_bounds(
+            rect,
+            measurement_caption_angle(annotation.start, annotation.end).to_degrees(),
+        )
     });
     measurement_line_bounds(&layout, annotation.appearance.line().stroke_width_pt(), caption)
 }
@@ -8266,6 +8341,16 @@ fn add_dimension_appearance(
     );
     let (caption_x, caption_y) = local(caption.text_origin);
     let mut content = content.into_bytes();
+    if !annotation.content().is_empty() {
+        content.extend_from_slice(
+            caption_rotation_operator(
+                caption.rect,
+                bounds,
+                measurement_caption_angle(annotation.start, annotation.end),
+            )
+            .as_bytes(),
+        );
+    }
     if annotation.content().is_empty() {
         // An unlabelled Dimension, like Revu's, draws no text.
     } else if uses_helvetica_winansi_fast_path(annotation.content(), text.font_family()) {
@@ -8291,7 +8376,7 @@ fn add_dimension_appearance(
         );
     }
     if !annotation.content().is_empty() {
-        content.extend_from_slice(b"ET\n");
+        content.extend_from_slice(b"ET\nQ\n");
     }
     content.extend_from_slice(b"Q\n");
     Ok(document.add_object(Stream::new(
@@ -9641,6 +9726,7 @@ struct ImportedAnnotations {
     image_native_names: HashMap<MarkupId, String>,
     snapshots: Vec<SnapshotAnnotation>,
     snapshot_native_names: HashMap<MarkupId, String>,
+    vector_snapshot_sources: Vec<(MarkupId, VectorSnapshotSource)>,
     annotation_order: Vec<MarkupId>,
     untouched: Vec<UntouchedAnnotation>,
     retained_annotation_obstacles: Vec<RetainedAnnotationObstacle>,
@@ -10393,6 +10479,7 @@ fn import_annotations(
         image_native_names: HashMap::new(),
         snapshots: Vec::new(),
         snapshot_native_names: HashMap::new(),
+        vector_snapshot_sources: Vec::new(),
         annotation_order: Vec::new(),
         untouched: Vec::new(),
         retained_annotation_obstacles: Vec::new(),
@@ -10516,13 +10603,22 @@ fn import_annotations(
                             .push(UntouchedAnnotation { name, subtype });
                         continue;
                     };
-                    match import_snapshot(document, annotation, stable_name, page_index) {
-                        Ok(snapshot)
+                    let imported_snapshot =
+                        match import_snapshot(document, annotation, stable_name.clone(), page_index) {
+                            Ok(snapshot) => Ok((snapshot, None)),
+                            Err(_) => import_vector_snapshot(document, annotation, stable_name, page_index)
+                                .map(|(snapshot, source)| (snapshot, Some(source))),
+                        };
+                    match imported_snapshot {
+                        Ok((snapshot, source))
                             if !imported.snapshot_native_names.contains_key(&snapshot.id) =>
                         {
                             imported
                                 .snapshot_native_names
                                 .insert(snapshot.id.clone(), name);
+                            if let Some(source) = source {
+                                imported.vector_snapshot_sources.push((snapshot.id.clone(), source));
+                            }
                             imported.annotation_order.push(snapshot.id.clone());
                             imported.snapshots.push(snapshot);
                         }
@@ -11990,7 +12086,8 @@ fn import_cloud_plus_appearance_path(
                 });
             }
             "h" if !painted => path.push(CloudAppearancePathCommand::Close),
-            "S" => {
+            // A filled Cloud+ (as Revu allows) fills and strokes its path.
+            "S" | "B" | "B*" => {
                 if painted || path.is_empty() {
                     return Err(PdfPersistenceError::InvalidDocument(
                         "Cloud+ appearance must contain exactly one stroked path".into(),
@@ -12002,7 +12099,7 @@ fn import_cloud_plus_appearance_path(
                 }
                 painted = true;
             }
-            "s" => {
+            "s" | "b" | "b*" => {
                 if painted || path.is_empty() {
                     return Err(PdfPersistenceError::InvalidDocument(
                         "Cloud+ appearance must contain exactly one closed stroke".into(),
@@ -12100,9 +12197,8 @@ fn import_cloud_plus_pair(
         cloud.appearance.opacity(),
         leader_style,
     )?;
-    // TODO(pdf-format): Revu Cloud+ clouds can be filled; the native Cloud+ cannot yet.
     let appearance = CloudPlusAppearance::new(
-        cloud.appearance.clone().without_fill(),
+        cloud.appearance.clone(),
         leader_appearance,
         text_style,
     )?;
@@ -12634,6 +12730,208 @@ fn import_snapshot(
     .with_rotation_degrees(rotation_degrees)?;
     imported.locked = annotation_locked(annotation);
     Ok(imported)
+}
+
+/// Revu's Snapshot appearance is a vector Form copy of page content rather
+/// than an image. Edits redraw that Form; the canvas shows a raster of it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct VectorSnapshotSource {
+    form_id: ObjectId,
+    bbox: PdfRect,
+    matrix: [f64; 6],
+}
+
+fn vector_snapshot_source(document: &Document, annotation: &Dictionary) -> Option<VectorSnapshotSource> {
+    let form_id = normal_appearance_object_id(annotation)?;
+    let stream = document.get_object(form_id).ok()?.as_stream().ok()?;
+    if dictionary_name(&stream.dict, b"Subtype").as_deref() != Some("Form") {
+        return None;
+    }
+    let bbox = import_pdf_rect(&stream.dict, b"BBox").ok()?;
+    let matrix = match stream.dict.get(b"Matrix") {
+        Ok(matrix) => {
+            let values = matrix
+                .as_array()
+                .ok()?
+                .iter()
+                .map(|value| value.as_float().ok().map(f64::from))
+                .collect::<Option<Vec<_>>>()?;
+            <[f64; 6]>::try_from(values).ok()?
+        }
+        Err(_) => [1., 0., 0., 1., 0., 0.],
+    };
+    let determinant = matrix[0] * matrix[3] - matrix[1] * matrix[2];
+    (determinant.abs() > f64::EPSILON && bbox.width > 0. && bbox.height > 0.)
+        .then_some(VectorSnapshotSource { form_id, bbox, matrix })
+}
+
+/// Shown until the PDF worker has drawn the Form for the canvas.
+fn vector_snapshot_placeholder() -> Result<DecodedRgbaAsset, PdfPersistenceError> {
+    Ok(DecodedRgbaAsset::new(1, 1, vec![200, 200, 200, 96])?)
+}
+
+fn import_vector_snapshot(
+    document: &Document,
+    annotation: &Dictionary,
+    name: String,
+    page_index: u32,
+) -> Result<(SnapshotAnnotation, VectorSnapshotSource), PdfPersistenceError> {
+    let source = vector_snapshot_source(document, annotation).ok_or_else(|| {
+        PdfPersistenceError::InvalidDocument("Snapshot appearance is neither image nor Form".into())
+    })?;
+    let (rect, rotation_degrees) = import_padded_rotated_box(document, annotation)?;
+    let mut imported = SnapshotAnnotation::new(
+        MarkupId::new(name)?,
+        page_index,
+        rect,
+        vector_snapshot_placeholder()?,
+        import_opacity(annotation),
+    )?
+    .with_rotation_degrees(rotation_degrees)?;
+    imported.locked = annotation_locked(annotation);
+    Ok((imported, source))
+}
+
+/// Row-vector PDF affine product: `first` then `second`.
+fn multiply_affine(first: [f64; 6], second: [f64; 6]) -> [f64; 6] {
+    [
+        first[0] * second[0] + first[1] * second[2],
+        first[0] * second[1] + first[1] * second[3],
+        first[2] * second[0] + first[3] * second[2],
+        first[2] * second[1] + first[3] * second[3],
+        first[4] * second[0] + first[5] * second[2] + second[4],
+        first[4] * second[1] + first[5] * second[3] + second[5],
+    ]
+}
+
+fn invert_affine(matrix: [f64; 6]) -> [f64; 6] {
+    let [a, b, c, d, e, f] = matrix;
+    let determinant = a * d - b * c;
+    [
+        d / determinant,
+        -b / determinant,
+        -c / determinant,
+        a / determinant,
+        (c * f - d * e) / determinant,
+        (b * e - a * f) / determinant,
+    ]
+}
+
+/// The `cm` that, followed by the Form's own `/Matrix` in `Do`, draws the
+/// Form's `/BBox` content onto `target` (unrotated, in the drawing space).
+fn vector_snapshot_placement(source: &VectorSnapshotSource, target: PdfRect) -> [f64; 6] {
+    let scale_x = target.width / source.bbox.width;
+    let scale_y = target.height / source.bbox.height;
+    let fit = [
+        scale_x,
+        0.,
+        0.,
+        scale_y,
+        target.x - scale_x * source.bbox.x,
+        target.y - scale_y * source.bbox.y,
+    ];
+    multiply_affine(invert_affine(source.matrix), fit)
+}
+
+fn add_vector_snapshot_appearance(
+    document: &mut Document,
+    annotation: &SnapshotAnnotation,
+    source: &VectorSnapshotSource,
+) -> ObjectId {
+    let (bbox, matrix, _) =
+        rotated_box_appearance_placement(annotation.rect, annotation.rotation_degrees());
+    let translucent = annotation.opacity() < 1.;
+    let [a, b, c, d, e, f] = vector_snapshot_placement(source, annotation.rect);
+    let content = format!(
+        "q\n{}{a:.6} {b:.6} {c:.6} {d:.6} {e:.6} {f:.6} cm\n/Snapshot Do\nQ\n",
+        if translucent { "/GS0 gs\n" } else { "" },
+    );
+    let mut resources = dictionary! {
+        "XObject" => dictionary! { "Snapshot" => source.form_id },
+    };
+    if translucent {
+        resources.set(
+            "ExtGState",
+            dictionary! { "GS0" => dictionary! {
+                "Type" => "ExtGState",
+                "CA" => Object::Real(annotation.opacity() as f32),
+                "ca" => Object::Real(annotation.opacity() as f32),
+            } },
+        );
+    }
+    document.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "FormType" => 1,
+            "BBox" => bbox,
+            "Matrix" => matrix,
+            "Resources" => resources,
+        },
+        content.into_bytes(),
+    ))
+}
+
+/// A render-only PDF with one page per Revu vector Snapshot, in import
+/// order, each the Snapshot's unrotated box with its Form drawn on it. The PDF
+/// worker rasterises these pages for the canvas.
+pub fn vector_snapshot_layer(document: &Document) -> Result<Option<Vec<u8>>, PdfPersistenceError> {
+    let calibrations = import_page_scales(document)
+        .iter()
+        .filter_map(|scale| {
+            LengthCalibration::from_page_scale(scale)
+                .ok()
+                .map(|value| (scale.page_index, value))
+        })
+        .collect();
+    let imported = import_annotations(document, &calibrations)?;
+    if imported.vector_snapshot_sources.is_empty() {
+        return Ok(None);
+    }
+    let mut layer = document.clone();
+    let pages_id = layer.new_object_id();
+    let mut kids = Vec::new();
+    for (id, source) in &imported.vector_snapshot_sources {
+        let snapshot = imported
+            .snapshots
+            .iter()
+            .find(|snapshot| &snapshot.id == id)
+            .expect("every vector Snapshot source was imported as a Snapshot");
+        let size = PdfRect::new(0., 0., snapshot.rect.width, snapshot.rect.height)?;
+        let [a, b, c, d, e, f] = vector_snapshot_placement(source, size);
+        let content_id = layer.add_object(Stream::new(
+            Dictionary::new(),
+            format!("q {a:.6} {b:.6} {c:.6} {d:.6} {e:.6} {f:.6} cm /Snapshot Do Q").into_bytes(),
+        ));
+        let page_id = layer.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![
+                0.into(),
+                0.into(),
+                Object::Real(size.width as f32),
+                Object::Real(size.height as f32),
+            ],
+            "Contents" => content_id,
+            "Resources" => dictionary! {
+                "XObject" => dictionary! { "Snapshot" => source.form_id },
+            },
+        });
+        kids.push(Object::Reference(page_id));
+    }
+    layer.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Count" => i64::try_from(kids.len()).unwrap_or(i64::MAX),
+            "Kids" => kids,
+        }),
+    );
+    let catalog_id = layer.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    layer.trailer = dictionary! { "Root" => catalog_id };
+    let mut bytes = Vec::new();
+    layer.save_to(&mut bytes)?;
+    Ok(Some(bytes))
 }
 
 /// The first image XObject reachable from a resource dictionary, searching
@@ -14213,6 +14511,42 @@ mod tests {
     }
 
     #[test]
+    fn sloped_measurement_captions_follow_their_line_upright() {
+        use super::*;
+        let point = |x, y| PdfPoint::new(x, y).unwrap();
+        let degrees = |start, end| measurement_caption_angle(start, end).to_degrees();
+        assert!((degrees(point(0., 0.), point(100., 100.)) - 45.).abs() < 1e-9);
+        // Drawn right to left or downwards, the text still reads upright.
+        assert!(degrees(point(100., 0.), point(0., 0.)).abs() < 1e-9);
+        assert!((degrees(point(100., 100.), point(0., 0.)) - 45.).abs() < 1e-9);
+        assert!((degrees(point(0., 100.), point(0., 0.)) - 90.).abs() < 1e-9);
+
+        let line = StraightLineAppearance::new("#ff0000", 1., 1., StrokeStyle::Solid).unwrap();
+        let text = TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.)
+            .unwrap()
+            .with_layout_metrics(13.8, 3.)
+            .unwrap();
+        let sloped = DimensionAnnotation::new(
+            MarkupId::new("SLOPEDDIMENSIONA").unwrap(),
+            0,
+            point(0., 0.),
+            point(100., 100.),
+            10.,
+            "WWW",
+            DimensionAppearance::new(line, text).unwrap(),
+        )
+        .unwrap();
+        let mut document = Document::with_version("1.7");
+        let appearance_id = add_dimension_appearance(&mut document, &sloped).unwrap();
+        let content = String::from_utf8(
+            document.get_object(appearance_id).unwrap().as_stream().unwrap().content.clone(),
+        )
+        .unwrap();
+        assert!(content.contains("q 0.707107 0.707107 -0.707107 0.707107 "));
+        assert!(content.contains("ET\nQ\n"));
+    }
+
+    #[test]
     fn measurement_line_layout_matches_revu_inside_and_outside_arrows() {
         use super::*;
         let point = |x, y| PdfPoint::new(x, y).unwrap();
@@ -14724,7 +15058,8 @@ mod tests {
         use super::*;
         for content in [
             "0 0 m 20 20 40 20 60 0 v h S",
-            "0 0 m 60 0 l 60 60 l 0 60 l h B",
+            // Fill without stroke (a filled Cloud+ fills and strokes).
+            "0 0 m 60 0 l 60 60 l 0 60 l h f",
             "0 0 m 60 0 l 60 60 l 0 60 l h W n",
             "q 0 0 m 60 0 l 60 60 l 0 60 l h S",
             "0 0 m 60 0 l 60 60 l 0 60 l h S /Foreign Do",

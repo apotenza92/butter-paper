@@ -13480,8 +13480,12 @@ fn cloud_plus_tool_appearance(
         fill_colour: None,
         ..properties.clone()
     };
+    let cloud_properties = ToolProperties {
+        width_pt: 1.0,
+        ..properties.clone()
+    };
     CloudPlusAppearance::new(
-        rectangle_tool_appearance(&line_properties, false)?,
+        rectangle_tool_appearance(&cloud_properties, true)?,
         straight_line_tool_appearance(&line_properties)?,
         text_box_tool_style(properties)?,
     )
@@ -14839,6 +14843,8 @@ fn cloud_plus_cloud_hit(annotation: &CloudPlusAnnotation, point: PdfPoint, toler
             .scallop_path()
             .windows(2)
             .any(|segment| point_segment_distance(point, segment[0], segment[1]) <= edge_tolerance)
+        || (annotation.appearance.cloud().fill_color().is_some()
+            && point_in_polygon(point, &annotation.scallop_path()))
 }
 
 fn cloud_plus_hit(annotation: &CloudPlusAnnotation, point: PdfPoint, tolerance: f64) -> bool {
@@ -17676,7 +17682,7 @@ mod tests {
         let cloud_plus = &cloud_plus.snapshot(7).unwrap().cloud_pluses[0];
         assert_eq!(cloud_plus.appearance.cloud().stroke_color(), "#336699");
         assert_eq!(cloud_plus.appearance.cloud().stroke_width_pt(), 1.0);
-        assert_eq!(cloud_plus.appearance.cloud().fill_color(), None);
+        assert_eq!(cloud_plus.appearance.cloud().fill_color(), Some("#abcdef"));
         assert_eq!(cloud_plus.appearance.cloud().opacity(), 0.55);
         assert_eq!(cloud_plus.appearance.text().font_size_pt(), 18.0);
         assert_eq!(cloud_plus.border_effect_intensity(), 3.0);

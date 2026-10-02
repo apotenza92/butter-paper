@@ -18392,6 +18392,21 @@ fn paint_cloud_plus_annotation(
     let stroke_color = try_parse_color(cloud.stroke_color())
         .unwrap_or(selection_color)
         .opacity(cloud.opacity() as f32);
+    if !annotation.draft
+        && annotation.scallop_path.len() >= 3
+        && let Some(fill_color) = cloud.fill_color()
+        && let Ok(color) = try_parse_color(fill_color)
+    {
+        let mut fill = PathBuilder::fill();
+        fill.move_to(project(annotation.scallop_path[0]));
+        for sample in annotation.scallop_path.iter().copied().skip(1) {
+            fill.line_to(project(sample));
+        }
+        fill.close();
+        if let Ok(path) = fill.build() {
+            window.paint_path(path, color.opacity(cloud.fill_opacity() as f32));
+        }
+    }
     let mut scallop = PathBuilder::stroke(stroke_width);
     scallop.move_to(project(annotation.scallop_path[0]));
     for sample in annotation.scallop_path.iter().copied().skip(1) {

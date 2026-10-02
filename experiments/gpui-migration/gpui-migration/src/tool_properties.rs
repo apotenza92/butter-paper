@@ -59,6 +59,7 @@ const CLOUD_FIELDS: &[ToolPropertyField] = &[
 ];
 const CLOUD_PLUS_FIELDS: &[ToolPropertyField] = &[
     ToolPropertyField::Colour,
+    ToolPropertyField::FillColour,
     ToolPropertyField::FontSizePt,
     ToolPropertyField::Opacity,
     ToolPropertyField::CloudIntensity,

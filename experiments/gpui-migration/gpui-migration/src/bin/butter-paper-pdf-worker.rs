@@ -4,6 +4,7 @@ use butter_paper_gpui_migration::pdf_content_geometry::{
 };
 use butter_paper_gpui_migration::pdf_engine::{
     RetainedAnnotationRender, pdfium_display_render_bytes, retained_annotation_render,
+    vector_snapshot_layer,
 };
 use butter_paper_gpui_migration::pdf_worker::{
     AnnotationRenderMode, CancellationRegistry, DocumentInfo, FileSurfaceStore, PageGeometry,
@@ -39,6 +40,7 @@ struct PdfiumDocument {
     document: PdfDocument<'static>,
     metadata: PdfMetadataDocument,
     retained: RetainedPdfiumDocument,
+    vector_snapshots: Option<Result<PdfDocument<'static>, WorkerError>>,
 }
 
 enum RetainedPdfiumDocument {
@@ -110,6 +112,7 @@ impl PdfBackend for PdfiumBackend {
                 document,
                 metadata,
                 retained: RetainedPdfiumDocument::Unprepared,
+                vector_snapshots: None,
             },
             DocumentInfo {
                 page_count,
@@ -248,7 +251,39 @@ impl PdfBackend for PdfiumBackend {
                 });
             document.retained = prepared.unwrap_or_else(RetainedPdfiumDocument::Failed);
         }
+        if request.annotation_mode == AnnotationRenderMode::VectorSnapshots
+            && document.vector_snapshots.is_none()
+        {
+            let prepared = vector_snapshot_layer(&document.metadata)
+                .map_err(|error| {
+                    WorkerError::with_detail(
+                        WorkerErrorCode::MalformedDocument,
+                        format!("vector Snapshot preparation failed: {error}"),
+                    )
+                })
+                .and_then(|layer| {
+                    let bytes = layer.ok_or_else(|| {
+                        WorkerError::with_detail(
+                            WorkerErrorCode::PageError,
+                            "the document has no vector Snapshots",
+                        )
+                    })?;
+                    let metadata = PdfMetadataDocument::load_mem(&bytes).map_err(|error| {
+                        WorkerError::with_detail(
+                            WorkerErrorCode::MalformedDocument,
+                            format!("vector Snapshot layer parser rejected the PDF: {error}"),
+                        )
+                    })?;
+                    self.load_display_document(&metadata, bytes, None)
+                });
+            document.vector_snapshots = Some(prepared);
+        }
         let (raster_document, render_annotations) = match request.annotation_mode {
+            AnnotationRenderMode::VectorSnapshots => match &document.vector_snapshots {
+                Some(Ok(layer)) => (layer, false),
+                Some(Err(error)) => return Err(error.clone()),
+                None => unreachable!("vector Snapshot layer prepared above"),
+            },
             AnnotationRenderMode::None => (&document.document, false),
             AnnotationRenderMode::All => (&document.document, true),
             AnnotationRenderMode::RetainedOnly => match &document.retained {
@@ -281,6 +316,12 @@ impl PdfBackend for PdfiumBackend {
             .reset_matrix(PdfMatrix::new(a, b, c, d, e, f))
             .map_err(map_pdfium_error)?
             .clip(0, 0, width, height);
+        // A vector Snapshot's Form is drawn on a transparent page.
+        let config = if request.annotation_mode == AnnotationRenderMode::VectorSnapshots {
+            config.set_clear_color(PdfColor::new(255, 255, 255, 0))
+        } else {
+            config
+        };
         page.render_into_bitmap_with_config(&mut bitmap, &config)
             .map_err(map_pdfium_error)?;
         if cancelled.load(Ordering::Acquire) {
