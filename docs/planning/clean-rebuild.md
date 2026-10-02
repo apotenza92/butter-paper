@@ -54,8 +54,9 @@ launcher becomes `butter-paper`.
    gpui-component patches to `apotenza92/zed` and `apotenza92/gpui-component`;
    depend on them by `rev`.
 2. [x] Move the crate to `crates/butter-paper`; rename binaries; root Cargo
-   workspace. The Electron data import stays: Electron 0.0.31's migration
-   exports data that 0.1.0 imports on first start.
+   workspace. Startup keeps `StartupDataPolicy::NativeOnly` (no Electron
+   data import, by the earlier owner decision); removing the unused import
+   code is a separate cleanup.
 3. [x] Delete `apps/cli`, `packages/core`, `packages/pdf` (CLI dropped).
 4. [x] Delete leftovers: `experiments/` (performance harness, archive,
    prototypes, research, migration docs), `native/`, Playwright output,

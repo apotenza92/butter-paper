@@ -19,8 +19,8 @@ Beta (macOS) follows beta releases.
   old version's `uninstall.ps1`; on Linux run the old version's
   `uninstall-user.sh`, then the new `install-user.sh`. Your settings,
   templates and signatures carry over.
-- The Electron app updates to 0.1.0 itself and brings its settings and
-  templates across.
+- The Electron app updates itself to 0.1.0. As with the move to 0.0.26, the
+  native app starts with fresh settings; your Electron files stay on disk.
 
 ### Packages
 

@@ -6,7 +6,7 @@
 - The repository is a Cargo workspace: the app in `crates/butter-paper` (binaries `butter-paper` and `butter-paper-pdf-worker`), the Apache-licensed `ztracing` shim in `crates/ztracing-shim`, and build, packaging and release tasks in `xtask` (`cargo xtask`). The Cloudflare signature relay used by phone signing is a standalone TypeScript project in `services/signature-relay` with its own `package.json` and lockfile; it is the only JavaScript in the repository.
 - GPUI and GPUI Component come from Butter Paper's forks (`apotenza92/zed` and `apotenza92/gpui-kit`, branch `butter-paper`), pinned by commit in the workspace `Cargo.toml`. Change them by committing to the fork and moving the pin. Zed's GPL `ztracing` must stay replaced by the shim.
 - PDFium is the human-approved chromium/7881 build, published once as the `pdfium-7881` release and pinned by SHA-256 in `xtask/pdfium.json`; `cargo xtask pdfium` fetches it. Its build patches are kept in `docs/pdfium/`.
-- The Electron application was removed after 0.0.30, and the migration-era tooling and experiments with 0.1.0. They remain in git history (the Electron tree is tagged `electron-final`); do not revive them. 0.1.0 still imports the data that Electron's final release exports (`electron_data_migration.rs`); keep that path working.
+- The Electron application was removed after 0.0.30, and the migration-era tooling and experiments with 0.1.0. They remain in git history (the Electron tree is tagged `electron-final`); do not revive them. By owner decision, native startup imports no Electron data (`StartupDataPolicy::NativeOnly`).
 - Application icons live in `assets/app` (generated artefacts, committed; sources in `assets/icon-source`).
 
 ## UI conventions
