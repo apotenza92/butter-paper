@@ -8,11 +8,13 @@ by auto-update. Supersedes the release work in
 
 Choices (user, or recommendations the user deferred to):
 - GPUI and gpui-component come from patched forks pinned by commit
-  (`apotenza92/zed`, `apotenza92/gpui-component`); no prepare scripts.
+  (`apotenza92/zed`, `apotenza92/gpui-kit`); no prepare scripts.
 - Packaging, signing and release tooling is a Rust `cargo xtask`.
 - The signature relay stays a TypeScript Cloudflare Worker, isolated in
   `services/signature-relay` with its own package.json.
-- The CLI is `butter-paper inspect`, built on `pdf_engine`.
+- The never-published TypeScript CLI is dropped rather than ported: it had
+  no users, and a console subcommand in the Windows GUI binary needs extra
+  console handling for no benefit.
 - One final Electron release redirects remaining Electron users to 0.1.0.
 
 ## Users and update paths
@@ -48,29 +50,47 @@ launcher becomes `butter-paper`.
 
 ## Plan
 
-1. [ ] Forks: push `8b1497d` + the two GPUI patches and `c27f5d5` + the six
+1. [x] Forks: push `8b1497d` + the two GPUI patches and `c27f5d5` + the six
    gpui-component patches to `apotenza92/zed` and `apotenza92/gpui-component`;
    depend on them by `rev`.
-2. [ ] Move the crate to `crates/butter-paper`; rename binaries; root Cargo
-   workspace; remove Electron data migration and startup import code.
-3. [ ] `butter-paper inspect` replaces `apps/cli`; delete `apps/cli`,
-   `packages/core`, `packages/pdf`.
-4. [ ] Delete leftovers: `experiments/` (performance harness, archive,
+2. [x] Move the crate to `crates/butter-paper`; rename binaries; root Cargo
+   workspace. The Electron data import stays: Electron 0.0.31's migration
+   exports data that 0.1.0 imports on first start.
+3. [x] Delete `apps/cli`, `packages/core`, `packages/pdf` (CLI dropped).
+4. [x] Delete leftovers: `experiments/` (performance harness, archive,
    prototypes, research, migration docs), `native/`, Playwright output,
    TypeScript root config; move the phone helper to its own home.
-5. [ ] `cargo xtask`: PDFium staging, macOS assemble/sign/notarise/zip,
+5. [x] `cargo xtask`: PDFium staging, macOS assemble/sign/notarise/zip,
    Windows and Linux packages, Homebrew bundle, release-check, version,
    repository and UI policy checks. Port the tests that guard them.
-6. [ ] Relay to `services/signature-relay`; repository root has no
+6. [x] Relay to `services/signature-relay`; repository root has no
    package.json.
-7. [ ] Updater and install layout use the new names; release workflow and
+7. [x] Updater and install layout use the new names; release workflow and
    PDFium workflows call xtask.
-8. [ ] AGENTS.md, README, CHANGELOG (0.1.0), planning docs rewritten for the
+8. [x] AGENTS.md, README, CHANGELOG (0.1.0), planning docs rewritten for the
    clean app.
 9. [ ] Gates: cargo test, cargo xtask check, xtask packaging dry runs.
 10. [ ] Release 0.1.0; confirm updater feed, checksums, both casks.
 11. [ ] Electron 0.0.31 redirect release from `v0.0.30`, pinned to 0.1.0;
     confirm the Electron feed and a migration on a clean machine.
+
+## Decisions made while rebuilding
+
+- PDFium: the approved build (run 36525856484, whose artifact would expire
+  2026-10-29) is published once as the immutable `pdfium-7881` release and
+  pinned by SHA-256 in `xtask/pdfium.json`; development uses it too. The
+  PDFium build and approval workflows were removed; their patches are in
+  `docs/pdfium/`. A PDFium upgrade needs a new build pipeline (follow-up).
+- Packages no longer carry intermediate receipts; safety comes from pinned
+  inputs, binary checks (architecture, minimum macOS), signing, notarisation
+  and the updater's own checks, checksums and attestations.
+- THIRD_PARTY_NOTICES.md is generated per target from the locked graph
+  (`cargo xtask notices`), with standard texts for crates that ship none.
+- Butter Paper Beta uses its own icon set.
+- `release.yml` has an unsigned dry run (workflow_dispatch) for packaging
+  changes.
+- Fixed: the updater compared a beta's CFBundleShortVersionString with
+  `X.Y.Z-beta.N` and would have rejected every macOS beta update.
 
 ## Status
 

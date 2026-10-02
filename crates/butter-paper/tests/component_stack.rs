@@ -21,20 +21,6 @@ use gpui_component::{
 
 #[gpui::test]
 fn window_appearance_changes_project_complete_component_and_base_themes(cx: &mut TestAppContext) {
-    let pinned_theme_source =
-        include_str!("../.prepared/gpui-component-c27f5d5c/crates/ui/src/theme/mod.rs");
-    for projection in [
-        "cx.set_global(base_theme);",
-        "tokens: self.semantic_tokens(),",
-        ".with_mode(self.scrollbar_mode)",
-        "handle: self.border,",
-        "active_handle: self.drag_border,",
-    ] {
-        assert!(
-            pinned_theme_source.contains(projection),
-            "the pinned GPUI Component Base projection must retain {projection:?}"
-        );
-    }
     cx.update(gpui_component::init);
     let (_, cx) = cx.add_window_view(|window, cx| {
         let view = cx.new(|_| CompatibilityView {

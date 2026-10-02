@@ -1,5 +1,9 @@
 # Release pipeline
 
+Superseded by [clean-rebuild.md](clean-rebuild.md): the same release design
+(tag push, publish once, attested Homebrew bundle) now runs on `cargo xtask`,
+and 0.0.32 became 0.1.0. Kept for its constraints and findings.
+
 Decision (2026-10-02, user): plan and complete the whole pipeline before the
 next release (0.0.32). Goals: safety, speed, convenience, automation.
 

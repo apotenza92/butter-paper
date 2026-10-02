@@ -2951,11 +2951,7 @@ fn real_mixed_document_application_close_saves_generated_target_and_releases_res
         });
     let library = std::env::var_os("BP_PDFIUM_LIBRARY")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            manifest_dir.join(
-                "../gpui-migration/target/pdfium-development/x86_64-unknown-linux-gnu/lib/libpdfium.so",
-            )
-        });
+        .expect("BP_PDFIUM_LIBRARY names libpdfium (cargo xtask pdfium prints its path)");
     let public_sources = [
         manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf"),
         manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf"),
@@ -3428,11 +3424,7 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
         });
     let library = std::env::var_os("BP_PDFIUM_LIBRARY")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            manifest_dir.join(
-                "../gpui-migration/target/pdfium-development/x86_64-unknown-linux-gnu/lib/libpdfium.so",
-            )
-        });
+        .expect("BP_PDFIUM_LIBRARY names libpdfium (cargo xtask pdfium prints its path)");
     let public_source =
         manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     assert!(worker.is_file());
@@ -4130,11 +4122,7 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
         });
     let library = std::env::var_os("BP_PDFIUM_LIBRARY")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            manifest_dir.join(
-                "../gpui-migration/target/pdfium-development/x86_64-unknown-linux-gnu/lib/libpdfium.so",
-            )
-        });
+        .expect("BP_PDFIUM_LIBRARY names libpdfium (cargo xtask pdfium prints its path)");
     let public_source =
         manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     assert!(worker.is_file());
@@ -4857,11 +4845,7 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
         });
     let library = std::env::var_os("BP_PDFIUM_LIBRARY")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            manifest_dir.join(
-                "../gpui-migration/target/pdfium-development/x86_64-unknown-linux-gnu/lib/libpdfium.so",
-            )
-        });
+        .expect("BP_PDFIUM_LIBRARY names libpdfium (cargo xtask pdfium prints its path)");
     let public_source =
         manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     assert!(worker.is_file());
@@ -5761,11 +5745,7 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
         });
     let library = std::env::var_os("BP_PDFIUM_LIBRARY")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            manifest_dir.join(
-                "../gpui-migration/target/pdfium-development/x86_64-unknown-linux-gnu/lib/libpdfium.so",
-            )
-        });
+        .expect("BP_PDFIUM_LIBRARY names libpdfium (cargo xtask pdfium prints its path)");
     let public_source =
         manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
     let public_image =

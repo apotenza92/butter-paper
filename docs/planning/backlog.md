@@ -18,7 +18,7 @@ Production PDFium supply/licensing/redistribution; signature security and workfl
 
 ### Source-backed release blockers
 
-Reviewed against GPUI `f42b9af0390bb632c1c8cee60043e9ed17092f77` on 2026-09-25. Paths below are relative to `experiments/gpui-migration/gpui-migration/` unless stated otherwise. These findings motivate tasks 6–7; the durable-storage substep below is now implemented, while production integration remains open.
+Reviewed against GPUI `f42b9af0390bb632c1c8cee60043e9ed17092f77` on 2026-09-25. Paths below are relative to `crates/butter-paper/` unless stated otherwise. These findings motivate tasks 6–7; the durable-storage substep below is now implemented, while production integration remains open.
 
 | Finding | Source | Required outcome |
 | --- | --- | --- |

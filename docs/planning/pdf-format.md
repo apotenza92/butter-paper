@@ -13,7 +13,7 @@ smooth-curves, image aspect lock, measurement show-caption.
 
 Specimens were drawn in licensed Revu 21 (Windows 11 VM) with the GUI and
 varied with `ScriptEngine.exe` `MarkupSet`, then saved by Revu. Reference files
-live in `experiments/gpui-migration/gpui-migration/tests/fixtures/bluebeam/`.
+live in `crates/butter-paper/tests/fixtures/bluebeam/`.
 `tests/bluebeam_format.rs` writes the same markups natively and checks every
 family's dictionary keys against these files.
 

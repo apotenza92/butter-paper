@@ -1,19 +1,22 @@
 name: Release
 
-# Pushing vX.Y.Z (every target, Butter Paper and Butter Paper Beta for macOS)
-# or vX.Y.Z-beta.N (Butter Paper Beta for macOS only) builds, signs and
-# publishes one complete GitHub release. Releases are immutable once
-# published, so every asset, SHA256SUMS.txt and the attested Homebrew bundle
-# go up as a draft first. The tap (apotenza92/homebrew-tap) is then asked to
-# publish the casks; its registry names this workflow file.
+# Pushing vX.Y.Z (every target; Butter Paper and Butter Paper Beta on macOS)
+# or vX.Y.Z-beta.N (Butter Paper Beta on macOS only) builds, signs and
+# publishes one complete GitHub release with cargo xtask. Releases are
+# immutable once published, so every asset, SHA256SUMS.txt and the attested
+# Homebrew bundle go up as a draft first. The tap (apotenza92/homebrew-tap)
+# is then asked to publish the casks; its registry names this workflow file.
+#
+# Running it by hand (workflow_dispatch) from main is a dry run: every target
+# is built and packaged, unsigned, and nothing is published.
 
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
-  actions: read
   contents: read
 
 concurrency:
@@ -27,8 +30,7 @@ jobs:
       tag: ${{ steps.identity.outputs.tag }}
       version: ${{ steps.identity.outputs.version }}
       prerelease: ${{ steps.identity.outputs.prerelease }}
-      build_number: ${{ steps.identity.outputs.build_number }}
-      approval_run_id: ${{ steps.identity.outputs.approval_run_id }}
+      dry_run: ${{ steps.identity.outputs.dry_run }}
       targets: ${{ steps.identity.outputs.targets }}
       required: ${{ steps.identity.outputs.required }}
     steps:
@@ -40,151 +42,99 @@ jobs:
       - id: identity
         shell: bash
         env:
-          APPROVED_PDFIUM_RUN_ID: ${{ vars.BP_PDFIUM_APPROVAL_RUN_ID }}
-          APPROVED_PDFIUM_RUN_ATTEMPT: ${{ vars.BP_PDFIUM_APPROVAL_RUN_ATTEMPT }}
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
           SOURCE_REVISION: ${{ github.sha }}
           TAG: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          if [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+          crate_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/butter-paper/Cargo.toml | head -1)"
+          dry_run=false
+          if [[ "$EVENT" == workflow_dispatch ]]; then
+            dry_run=true
+            TAG="v$crate_version"
+          fi
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             prerelease=false
-            stage=90000
-          elif [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)-beta\.([1-9][0-9]{0,3})$ ]]; then
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[1-9][0-9]*$ ]]; then
             prerelease=true
-            stage=$((10#${BASH_REMATCH[4]}))
           else
             echo "::error::Release tags must be vX.Y.Z or vX.Y.Z-beta.N"
             exit 1
           fi
-          major=$((10#${BASH_REMATCH[1]})); minor=$((10#${BASH_REMATCH[2]})); patch=$((10#${BASH_REMATCH[3]}))
-          # As Macsimize: a release builds above its own betas.
-          build_number=$(( ((major * 1000000) + (minor * 1000) + patch) * 100000 + stage ))
           version="${TAG#v}"
-          [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
-          test "$(git rev-parse "$TAG^{commit}")" = "$SOURCE_REVISION"
+          if [[ "$dry_run" == false ]]; then
+            test "$(git rev-parse "$TAG^{commit}")" = "$SOURCE_REVISION"
+          fi
           git fetch --no-tags origin main
           if ! git merge-base --is-ancestor HEAD origin/main; then
             echo "::error::$TAG is not on main"
             exit 1
           fi
-          if [[ "$(node -p "require('./package.json').version")" != "$version" ]]; then
-            echo "::error::package.json version does not match $TAG (run pnpm release:version)"
+          if [[ "$crate_version" != "$version" ]]; then
+            echo "::error::crates/butter-paper is $crate_version, not $version (run cargo xtask version)"
             exit 1
           fi
           if ! grep -qxF "## [$version]" CHANGELOG.md; then
             echo "::error::CHANGELOG.md has no ## [$version] section"
             exit 1
           fi
-          [[ "$APPROVED_PDFIUM_RUN_ID" =~ ^[1-9][0-9]*$ ]]
-          [[ "$APPROVED_PDFIUM_RUN_ATTEMPT" =~ ^[1-9][0-9]{0,4}$ ]]
-          approval_run="$RUNNER_TEMP/pdfium-approval-run.json"
-          gh api "repos/$REPOSITORY/actions/runs/$APPROVED_PDFIUM_RUN_ID" > "$approval_run"
-          gh api "repos/$REPOSITORY/actions/runs/$APPROVED_PDFIUM_RUN_ID/artifacts" > "$RUNNER_TEMP/pdfium-approval-artifacts.json"
-          node --input-type=module - "$approval_run" "$RUNNER_TEMP/pdfium-approval-artifacts.json" "$APPROVED_PDFIUM_RUN_ATTEMPT" "$REPOSITORY" <<'NODE'
-          import { readFile } from 'node:fs/promises';
-          const [path, artifactsPath, expectedAttempt, repository] = process.argv.slice(2);
-          const run = JSON.parse(await readFile(path, 'utf8'));
-          if (run.path !== '.github/workflows/approve-gpui-pdfium-production.yml' ||
-              run.event !== 'workflow_dispatch' || run.status !== 'completed' ||
-              run.conclusion !== 'success' || String(run.run_attempt) !== expectedAttempt ||
-              run.head_repository?.full_name !== repository) {
-            throw new Error('PDFium approval must be the exact successful same-repository approval workflow attempt');
-          }
-          const { artifacts } = JSON.parse(await readFile(artifactsPath, 'utf8'));
-          const approved = artifacts.find((artifact) => artifact.name === 'gpui-pdfium-production-approved');
-          if (!approved || approved.expired) {
-            throw new Error('the approved PDFium artifact has expired; re-run the PDFium approval and update BP_PDFIUM_APPROVAL_RUN_ID');
-          }
-          NODE
-          node --input-type=module - "$prerelease" "$GITHUB_OUTPUT" <<'NODE'
-          import { appendFile, readFile } from 'node:fs/promises';
-          const [prerelease, output] = process.argv.slice(2);
-          const beta = prerelease === 'true';
-          // Windows and Linux ship the stable app only; Butter Paper Beta is
-          // macOS-only, and each macOS job packages both identities.
-          const targets = JSON.parse(await readFile('.github/release-targets.json', 'utf8'))
-            .filter((target) => !beta || target.os === 'macos')
-            .map((target) => (target.os === 'macos' ? { ...target, channels: beta ? 'beta' : 'stable beta' } : target));
-          const required = targets.flatMap(({ label, os }) =>
-            os !== 'macos' ? [label] : beta ? [`${label}-beta`] : [label, `${label}-beta`]);
-          await appendFile(output, `targets=${JSON.stringify(targets)}\nrequired=${required.join(',')}\n`);
-          NODE
+          # Windows and Linux ship the stable app only; Butter Paper Beta is
+          # macOS-only, and each macOS job packages both identities.
+          if [[ "$prerelease" == true ]]; then
+            targets="$(jq -c '[.[] | select(.os == "macos") | . + {channels: "beta"}]' .github/release-targets.json)"
+            required="Butter-Paper-Beta-macOS-arm64.zip Butter-Paper-Beta-macOS-x64.zip"
+          else
+            targets="$(jq -c '[.[] | if .os == "macos" then . + {channels: "stable,beta"} else . + {channels: "stable"} end]' .github/release-targets.json)"
+            required="Butter-Paper-macOS-arm64.zip Butter-Paper-macOS-x64.zip Butter-Paper-Beta-macOS-arm64.zip Butter-Paper-Beta-macOS-x64.zip Butter-Paper-Windows-x64.zip Butter-Paper-Windows-arm64.zip Butter-Paper-Linux-x64.tar.xz Butter-Paper-Linux-arm64.tar.xz"
+          fi
           {
             echo "tag=$TAG"
             echo "version=$version"
             echo "prerelease=$prerelease"
-            echo "build_number=$build_number"
-            echo "approval_run_id=$APPROVED_PDFIUM_RUN_ID"
+            echo "dry_run=$dry_run"
+            echo "targets=$targets"
+            echo "required=$required"
           } >> "$GITHUB_OUTPUT"
 
   package:
     needs: validate
     runs-on: ${{ matrix.runner }}
-    environment: release-signing
+    # Signing secrets are released to tag pushes only.
+    environment: ${{ needs.validate.outputs.dry_run == 'false' && 'release-signing' || '' }}
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.validate.outputs.targets) }}
     env:
       CARGO_INCREMENTAL: "0"
-      MIGRATION_ROOT: experiments/gpui-migration/gpui-migration
-      PHONE_ROOT: experiments/phone-signature-prototype
-      TARGET_LABEL: ${{ matrix.label }}
       TARGET_TRIPLE: ${{ matrix.target }}
-      VERSION: ${{ needs.validate.outputs.version }}
-      BUILD_VERSION: ${{ needs.validate.outputs.build_number }}
-      SOURCE_REVISION: ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24.16.0
-      - uses: pnpm/action-setup@008330803749db0355799c700092d9a85fd074e9 # v6.0.9
-        with:
-          version: 10.33.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: 1.24.1
           cache: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: 3.12.10
-      - name: Install Linux native build prerequisites
+      - name: Install Linux build prerequisites
         if: matrix.os == 'linux'
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            build-essential \
-            clang \
-            libdbus-1-dev \
-            libfontconfig-dev \
-            libvulkan-dev \
-            libx11-dev \
-            libxcb1-dev \
-            libxcb-xkb-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
-            pkg-config \
-            xz-utils
-      - name: Verify native runner and pinned source
+            build-essential clang libdbus-1-dev libfontconfig-dev libvulkan-dev \
+            libx11-dev libxcb1-dev libxcb-xkb-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev pkg-config xz-utils
+      - name: Install the pinned Rust toolchain
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$BUILD_VERSION" =~ ^[0-9]+$ ]]
-          test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
-          test "$(node -p 'process.arch')" = "${{ matrix.node_arch }}"
-          test "$(go version | awk '{print $3}')" = go1.24.1
-          rustup toolchain install 1.97.1 --profile minimal --target "$TARGET_TRIPLE"
-          [[ "$(rustc +1.97.1 --version)" == "rustc 1.97.1 "* ]]
+          # rust-toolchain.toml pins the version; add the release target.
+          rustup toolchain install
+          rustup target add "${{ matrix.target }}"
       # Downloads only: Cargo verifies every crate against Cargo.lock, and
       # builds always start from clean, pinned sources.
       - name: Cache Cargo downloads
@@ -194,24 +144,7 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: cargo-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('experiments/gpui-migration/gpui-migration/Cargo.lock') }}
-      - name: Install and verify pinned source inputs
-        shell: bash
-        run: |
-          set -euo pipefail
-          pnpm install --frozen-lockfile
-          node "$MIGRATION_ROOT/scripts/prepare.mjs" prepare
-          node "$MIGRATION_ROOT/scripts/prepare.mjs" verify
-          cargo +1.97.1 fetch --locked --manifest-path "$MIGRATION_ROOT/Cargo.toml"
-          node "$MIGRATION_ROOT/scripts/verify-cargo-graph.mjs"
-      - name: Download reviewed production PDFium inputs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: gpui-pdfium-production-approved
-          path: ${{ runner.temp }}/approved-pdfium
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ needs.validate.outputs.approval_run_id }}
+          key: cargo-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
       - name: Activate matching Windows MSVC and LLVM toolchain
         if: matrix.os == 'windows'
         shell: pwsh
@@ -296,88 +229,16 @@ jobs:
           $cargoTargetKey = $targetKey.ToUpperInvariant()
           "CARGO_TARGET_${cargoTargetKey}_LINKER=$($resolvedTools['link.exe'])" |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Build release binaries and local phone helper
+      - name: Package
+        if: matrix.os != 'macos' || needs.validate.outputs.dry_run == 'true'
         shell: bash
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
         run: |
           set -euo pipefail
-          cargo +1.97.1 build --manifest-path "$MIGRATION_ROOT/Cargo.toml" --locked --release --no-default-features --target "$TARGET_TRIPLE" --bin gpui-migration --bin butter-paper-pdf-worker
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            python_executable="${pythonLocation//\\//}/python.exe"
-            "$python_executable" "$PHONE_ROOT/prepare.py"
-          else
-            python "$PHONE_ROOT/prepare.py"
-          fi
-          case "$TARGET_TRIPLE" in
-            aarch64-apple-darwin) helper_os=darwin; helper_arch=arm64; helper_suffix= ;;
-            x86_64-apple-darwin) helper_os=darwin; helper_arch=amd64; helper_suffix= ;;
-            aarch64-pc-windows-msvc) helper_os=windows; helper_arch=arm64; helper_suffix=.exe ;;
-            x86_64-pc-windows-msvc) helper_os=windows; helper_arch=amd64; helper_suffix=.exe ;;
-            aarch64-unknown-linux-gnu) helper_os=linux; helper_arch=arm64; helper_suffix= ;;
-            x86_64-unknown-linux-gnu) helper_os=linux; helper_arch=amd64; helper_suffix= ;;
-            *) echo "unsupported phone-helper target: $TARGET_TRIPLE" >&2; exit 1 ;;
-          esac
-          helper_source="$PHONE_ROOT/dist/qrcp-3b176183de83bdb945e733e978497fb727ede2c5"
-          (cd "$helper_source" && env CGO_ENABLED=0 GOOS="$helper_os" GOARCH="$helper_arch" GOTOOLCHAIN=local GOMAXPROCS=2 \
-            GOCACHE="$GITHUB_WORKSPACE/$PHONE_ROOT/dist/gocache" GOMODCACHE="$GITHUB_WORKSPACE/$PHONE_ROOT/dist/gomodcache" \
-            go build -mod=readonly -p=1 -trimpath -buildvcs=false -o "$RUNNER_TEMP/butter-paper-signature-phone$helper_suffix" ./cmd/bp-prototype)
-          test -f "$RUNNER_TEMP/butter-paper-signature-phone$helper_suffix"
-          node "$PHONE_ROOT/collect-go-notices.mjs" --module-root "$helper_source" --output "$PHONE_ROOT/dist/PHONE_HELPER_THIRD_PARTY_NOTICES.md"
-      - name: Package Linux candidate
-        if: matrix.os == 'linux'
+          cargo xtask package --target "${{ matrix.target }}" --channel "${{ matrix.channels }}" --out "$RUNNER_TEMP/assets"
+      - name: Package, sign and notarise
+        if: matrix.os == 'macos' && needs.validate.outputs.dry_run == 'false'
         shell: bash
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
-        run: |
-          set -euo pipefail
-          input="$RUNNER_TEMP/package-input"
-          stage="$RUNNER_TEMP/pdfium-stage"
-          output="$RUNNER_TEMP/candidate/$TARGET_LABEL"
-          node "$MIGRATION_ROOT/scripts/stage-nonmac-pdfium-production.mjs" --manifest "$RUNNER_TEMP/approved-pdfium/production-pdfium-approved.json" --artifact-root "$RUNNER_TEMP/approved-pdfium" --target "$TARGET_TRIPLE" --output-dir "$stage"
-          mkdir -p "$input" "$output"
-          cp "$CARGO_TARGET_DIR/$TARGET_TRIPLE/release/gpui-migration" "$input/gpui-migration"
-          cp "$CARGO_TARGET_DIR/$TARGET_TRIPLE/release/butter-paper-pdf-worker" "$input/butter-paper-pdf-worker"
-          cp "$RUNNER_TEMP/butter-paper-signature-phone" "$input/butter-paper-signature-phone"
-          cp "$stage/libpdfium.so" "$stage/THIRD_PARTY_NOTICES.md" "$stage/production-pdfium-linux-${{ matrix.arch }}.json" "$input/"
-          cp "$PHONE_ROOT/dist/PHONE_HELPER_THIRD_PARTY_NOTICES.md" "$input/PHONE_HELPER_THIRD_PARTY_NOTICES.md"
-          cp "$PHONE_ROOT/dist/QRCP_LICENSE" "$input/QRCP_LICENSE"
-          cp "$PHONE_ROOT/dist/package/LICENSE" "$input/SIGNATURE_PAD_LICENSE"
-          printf '%s\n' 'Runtime dependencies: glibc, libfontconfig, X11 and Wayland system libraries.' > "$input/README.md"
-          chmod 755 "$input/gpui-migration" "$input/butter-paper-pdf-worker" "$input/butter-paper-signature-phone"
-          node "$MIGRATION_ROOT/scripts/package-linux-x86_64-production.mjs" --input "$input" --output "$RUNNER_TEMP/package" --version "$VERSION" --revision "$SOURCE_REVISION" --icon assets/butter-paper-icon.png --architecture "${{ matrix.arch }}"
-          archive="$RUNNER_TEMP/package/butter-paper-linux-${{ matrix.arch }}-$VERSION.tar.xz"
-          node "$MIGRATION_ROOT/scripts/verify-linux-production-package.mjs" --input "$archive" --package-manifest "$output/$TARGET_LABEL.package.json" --verification-receipt "$output/$TARGET_LABEL.verification.json" --architecture "${{ matrix.arch }}" --version "$VERSION" --revision "$SOURCE_REVISION" --artifact-path "$TARGET_LABEL.tar.xz"
-          cp "$archive" "$output/$TARGET_LABEL.tar.xz"
-      - name: Package and verify unsigned Windows candidate
-        if: matrix.os == 'windows'
-        shell: pwsh
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $input = Join-Path $env:RUNNER_TEMP 'package-input'
-          $stage = Join-Path $env:RUNNER_TEMP 'pdfium-stage'
-          $package = Join-Path $env:RUNNER_TEMP 'unsigned-package'
-          $output = Join-Path $env:RUNNER_TEMP "candidate/$env:TARGET_LABEL"
-          node "$env:MIGRATION_ROOT/scripts/stage-nonmac-pdfium-production.mjs" --manifest "$env:RUNNER_TEMP/approved-pdfium/production-pdfium-approved.json" --artifact-root "$env:RUNNER_TEMP/approved-pdfium" --target $env:TARGET_TRIPLE --output-dir $stage
-          New-Item -ItemType Directory -Path $input, $output | Out-Null
-          Copy-Item "$env:CARGO_TARGET_DIR/$env:TARGET_TRIPLE/release/gpui-migration.exe" "$input/gpui-migration.exe"
-          Copy-Item "$env:CARGO_TARGET_DIR/$env:TARGET_TRIPLE/release/butter-paper-pdf-worker.exe" "$input/butter-paper-pdf-worker.exe"
-          Copy-Item "$env:RUNNER_TEMP/butter-paper-signature-phone.exe" "$input/butter-paper-signature-phone.exe"
-          Copy-Item "$stage/pdfium.dll", "$stage/THIRD_PARTY_NOTICES.md", "$stage/production-pdfium-windows-${{ matrix.arch }}.json" $input
-          Copy-Item "$env:PHONE_ROOT/dist/PHONE_HELPER_THIRD_PARTY_NOTICES.md" "$input/PHONE_HELPER_THIRD_PARTY_NOTICES.md"
-          Copy-Item "$env:PHONE_ROOT/dist/QRCP_LICENSE" "$input/QRCP_LICENSE"
-          Copy-Item "$env:PHONE_ROOT/dist/package/LICENSE" "$input/SIGNATURE_PAD_LICENSE"
-          'This manual-download build is intentionally unsigned. Windows may display a SmartScreen warning. Runtime dependencies: Microsoft Visual C++ runtime.' | Set-Content -LiteralPath "$input/README.md" -Encoding utf8NoBOM
-          node "$env:MIGRATION_ROOT/scripts/package-windows-x86_64-production.mjs" --input $input --icon assets/app/icon.ico --output $package --version $env:VERSION --revision $env:SOURCE_REVISION --architecture '${{ matrix.arch }}'
-          $unsigned = "$package/butter-paper-windows-${{ matrix.arch }}-$env:VERSION.zip"
-          node "$env:MIGRATION_ROOT/scripts/verify-windows-unsigned-production.mjs" --input $unsigned --output "$output/$env:TARGET_LABEL.zip" --package-manifest "$output/$env:TARGET_LABEL.package.json" --verification-receipt "$output/$env:TARGET_LABEL.verification.json" --architecture '${{ matrix.arch }}' --version $env:VERSION --revision $env:SOURCE_REVISION --artifact-path "$env:TARGET_LABEL.zip"
-      - name: Assemble, sign and notarise macOS candidate
-        if: matrix.os == 'macos'
-        shell: bash
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
           APPLE_NOTARYTOOL_ISSUER_ID: ${{ vars.APPLE_NOTARYTOOL_ISSUER_ID }}
           APPLE_NOTARYTOOL_KEY_ID: ${{ vars.APPLE_NOTARYTOOL_KEY_ID }}
           APPLE_NOTARYTOOL_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARYTOOL_KEY_P8_BASE64 }}
@@ -387,120 +248,53 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
-          test "$APPLE_SIGNING_IDENTITY" = 'Developer ID Application: Alexander Potenza (27JL2VERNC)'
-          for value in APPLE_NOTARYTOOL_ISSUER_ID APPLE_NOTARYTOOL_KEY_ID APPLE_NOTARYTOOL_KEY_P8_BASE64 APPLE_SIGNING_CERTIFICATE_P12_BASE64 APPLE_SIGNING_CERTIFICATE_PASSWORD APPLE_SIGNING_CERTIFICATE_SHA256; do test -n "${!value}"; done
+          for value in APPLE_NOTARYTOOL_ISSUER_ID APPLE_NOTARYTOOL_KEY_ID APPLE_NOTARYTOOL_KEY_P8_BASE64 APPLE_SIGNING_CERTIFICATE_P12_BASE64 APPLE_SIGNING_CERTIFICATE_PASSWORD APPLE_SIGNING_CERTIFICATE_SHA256 APPLE_SIGNING_IDENTITY; do test -n "${!value}"; done
           signing="$RUNNER_TEMP/signing"
-          stage="$RUNNER_TEMP/pdfium-stage"
+          keychain="$signing/signing.keychain-db"
           mkdir -p "$signing"
           chmod 700 "$signing"
+          trap 'security delete-keychain "$keychain" 2>/dev/null || true; rm -rf "$signing"' EXIT
           printf '%s' "$APPLE_SIGNING_CERTIFICATE_P12_BASE64" | base64 -D > "$signing/original.p12"
           printf '%s' "$APPLE_NOTARYTOOL_KEY_P8_BASE64" | base64 -D > "$signing/AuthKey.p8"
           printf '%s' "$APPLE_SIGNING_CERTIFICATE_PASSWORD" > "$signing/p12-password"
           chmod 600 "$signing/original.p12" "$signing/AuthKey.p8" "$signing/p12-password"
-          openssl_bin="$(node --input-type=module -e "import { resolvePkcs12OpenSsl } from './scripts/resolve-openssl.mjs'; process.stdout.write(resolvePkcs12OpenSsl())")"
-          "$openssl_bin" pkcs12 -legacy -in "$signing/original.p12" -passin "file:$signing/p12-password" -nodes -out "$signing/combined.pem"
-          "$openssl_bin" pkcs12 -legacy -export -in "$signing/combined.pem" -passout pass:butter-paper-disposable-import -out "$signing/import.p12" -name 'Butter Paper Developer ID'
-          security create-keychain -p '' "$signing/signing.keychain-db"
-          security set-keychain-settings -lut 21600 "$signing/signing.keychain-db"
-          security unlock-keychain -p '' "$signing/signing.keychain-db"
-          security import "$signing/import.p12" -k "$signing/signing.keychain-db" -P butter-paper-disposable-import -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k '' "$signing/signing.keychain-db"
-          security default-keychain -d user -s "$signing/signing.keychain-db"
-          xcrun notarytool store-credentials bp-gpui-notary --key "$signing/AuthKey.p8" --key-id "$APPLE_NOTARYTOOL_KEY_ID" --issuer "$APPLE_NOTARYTOOL_ISSUER_ID" --keychain "$signing/signing.keychain-db"
-          node "$MIGRATION_ROOT/scripts/stage-pdfium-production.mjs" --manifest "$RUNNER_TEMP/approved-pdfium/production-pdfium-approved.json" --artifact-root "$RUNNER_TEMP/approved-pdfium" --target "$TARGET_TRIPLE" --output-dir "$stage"
-          xcrun swiftc -swift-version 5 -O -target "${{ matrix.arch == 'arm64' && 'arm64' || 'x86_64' }}-apple-macos13.0" "$MIGRATION_ROOT/native/SignatureCamera.swift" -o "$RUNNER_TEMP/butter-paper-signature-camera"
-          # One build, two identities: Butter Paper and Butter Paper Beta
-          # (a beta tag builds the Beta identity only).
-          for channel in ${{ matrix.channels }}; do
-            if [[ "$channel" == beta ]]; then
-              app="$RUNNER_TEMP/$channel/Butter Paper Beta.app"
-              output="$RUNNER_TEMP/candidate/$TARGET_LABEL-beta"
-            else
-              app="$RUNNER_TEMP/$channel/Butter Paper.app"
-              output="$RUNNER_TEMP/candidate/$TARGET_LABEL"
-            fi
-            work="$RUNNER_TEMP/$channel"
-            mkdir -p "$work" "$output"
-            chmod 700 "$output"
-            node "$MIGRATION_ROOT/scripts/prepare-macos-production-inputs.mjs" --application "$CARGO_TARGET_DIR/$TARGET_TRIPLE/release/gpui-migration" --worker "$CARGO_TARGET_DIR/$TARGET_TRIPLE/release/butter-paper-pdf-worker" --camera-helper "$RUNNER_TEMP/butter-paper-signature-camera" --phone-helper "$RUNNER_TEMP/butter-paper-signature-phone" --target "$TARGET_TRIPLE" --minimum-system-version 13.0 --build-version "$BUILD_VERSION" --channel "$channel" --output-root "$work/input" --receipt "$work/macos-input.json"
-            node "$MIGRATION_ROOT/scripts/bind-macos-production-manifest.mjs" --input-receipt "$work/macos-input.json" --pdfium-stage "$stage" --manifest "$work/macos-manifest.json"
-            node "$MIGRATION_ROOT/scripts/assemble-macos-production.mjs" --manifest "$work/macos-manifest.json" --input-root "$work/input" --pdfium-stage "$stage" --output-dir "$app"
-            node "$MIGRATION_ROOT/scripts/sign-notarize-macos-production.mjs" --app "$app" --manifest "$work/macos-manifest.json" --identity "$APPLE_SIGNING_IDENTITY" --fingerprint "$APPLE_SIGNING_CERTIFICATE_SHA256" --notary-profile bp-gpui-notary --receipt "$work/macos-signing.json"
-            node "$MIGRATION_ROOT/scripts/package-macos-signed-production.mjs" --app "$app" --receipt "$work/macos-signing.json" --manifest "$work/macos-manifest.json" --output "$output" --revision "$SOURCE_REVISION" --fingerprint "$APPLE_SIGNING_CERTIFICATE_SHA256"
+          # Re-wrap the certificate in legacy PKCS#12, which security import reads;
+          # that needs OpenSSL 3 (macOS's LibreSSL has no -legacy).
+          openssl=
+          for candidate in /opt/homebrew/opt/openssl@3/bin/openssl /usr/local/opt/openssl@3/bin/openssl /opt/homebrew/bin/openssl /usr/local/bin/openssl; do
+            if [[ -x "$candidate" ]] && "$candidate" pkcs12 -help 2>&1 | grep -q -- -legacy; then openssl="$candidate"; break; fi
           done
-          security delete-keychain "$signing/signing.keychain-db"
-          rm -rf "$signing"
-      - name: Upload verified target candidate
-        if: matrix.os != 'macos' || contains(matrix.channels, 'stable')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: gpui-package-${{ matrix.label }}
-          path: ${{ runner.temp }}/candidate/${{ matrix.label }}
-          if-no-files-found: error
-          retention-days: 14
-      - name: Upload verified Beta candidate
-        if: matrix.os == 'macos' && contains(matrix.channels, 'beta')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: gpui-package-${{ matrix.label }}-beta
-          path: ${{ runner.temp }}/candidate/${{ matrix.label }}-beta
-          if-no-files-found: error
-          retention-days: 14
-
-  aggregate:
-    needs: [validate, package]
-    if: always() && needs.validate.result == 'success' && needs.package.result == 'success'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ${{ github.sha }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: gpui-package-*
-          path: ${{ runner.temp }}/candidate-input
-      - name: Bind and aggregate exact candidate inventory
-        shell: bash
-        env:
-          SOURCE_REVISION: ${{ github.sha }}
-          VERSION: ${{ needs.validate.outputs.version }}
-          REQUIRED: ${{ needs.validate.outputs.required }}
-        run: |
-          set -euo pipefail
-          root="$RUNNER_TEMP/candidate-input"
-          node --input-type=module - "$root" "$VERSION" "$SOURCE_REVISION" <<'NODE'
-          import { readdir, writeFile } from 'node:fs/promises';
-          import { join } from 'node:path';
-          const [root, version, sourceRevision] = process.argv.slice(2);
-          const records = [];
-          for (const directory of (await readdir(root)).sort()) {
-            if (!directory.startsWith('gpui-package-')) throw new Error(`unexpected artifact directory ${directory}`);
-            const target = directory.slice('gpui-package-'.length);
-            const names = (await readdir(join(root, directory))).sort();
-            const artifact = names.find((name) => !name.endsWith('.json'));
-            const packageManifest = names.find((name) => name.endsWith('.package.json'));
-            const verificationReceipt = names.find((name) => name.endsWith('.verification.json'));
-            if (!artifact || !packageManifest || !verificationReceipt || names.length !== 3) throw new Error(`target ${target} does not contain exactly one package and two receipts`);
-            records.push({ target, artifact: `${directory}/${artifact}`, packageManifest: `${directory}/${packageManifest}`, verificationReceipt: `${directory}/${verificationReceipt}` });
-          }
-          await writeFile(join(root, 'candidate.json'), `${JSON.stringify({ schema: 'butter-paper/stable-candidate-input', schemaVersion: 2, channel: 'stable', version, sourceRevision, targets: records }, null, 2)}\n`, { flag: 'wx' });
-          NODE
-          mkdir "$RUNNER_TEMP/final-candidate"
-          node experiments/gpui-migration/gpui-migration/scripts/aggregate-stable-candidate.mjs --input "$root" --output "$RUNNER_TEMP/final-candidate/stable-candidate.json" --required "$REQUIRED"
-          cp -R "$root"/. "$RUNNER_TEMP/final-candidate/"
+          test -n "$openssl"
+          "$openssl" pkcs12 -legacy -in "$signing/original.p12" -passin "file:$signing/p12-password" -nodes -out "$signing/combined.pem"
+          "$openssl" pkcs12 -legacy -export -in "$signing/combined.pem" -passout pass:butter-paper-disposable-import -out "$signing/import.p12" -name 'Butter Paper Developer ID'
+          security create-keychain -p '' "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p '' "$keychain"
+          security import "$signing/import.p12" -k "$keychain" -P butter-paper-disposable-import -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k '' "$keychain"
+          read -r -a keychains <<< "$(security list-keychains -d user | tr -d '"' | xargs)"
+          security list-keychains -d user -s "$keychain" "${keychains[@]}"
+          fingerprint="$(security find-certificate -a -Z -c "$APPLE_SIGNING_IDENTITY" "$keychain" | awk '/SHA-256 hash:/ { print $3 }' | head -1)"
+          expected="$(printf '%s' "$APPLE_SIGNING_CERTIFICATE_SHA256" | tr -d ': ' | tr '[:lower:]' '[:upper:]')"
+          if [[ "$fingerprint" != "$expected" ]]; then
+            echo "::error::the signing certificate does not match APPLE_SIGNING_CERTIFICATE_SHA256"
+            exit 1
+          fi
+          xcrun notarytool store-credentials bp-notary --key "$signing/AuthKey.p8" --key-id "$APPLE_NOTARYTOOL_KEY_ID" --issuer "$APPLE_NOTARYTOOL_ISSUER_ID" --keychain "$keychain"
+          BP_SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY" BP_NOTARY_PROFILE=bp-notary \
+            cargo xtask package --target "${{ matrix.target }}" --channel "${{ matrix.channels }}" --out "$RUNNER_TEMP/assets" --sign
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: gpui-release-candidate-${{ github.sha }}
-          path: ${{ runner.temp }}/final-candidate
+          name: package-${{ matrix.label }}
+          path: ${{ runner.temp }}/assets
           if-no-files-found: error
           retention-days: 14
 
   publish:
-    needs: [validate, aggregate]
+    needs: [validate, package]
     runs-on: ubuntu-24.04
-    # The only job that can write a release, and only after every package is
-    # signed or verified and aggregated.
+    # The only job that can write a release, and only after every package
+    # is built, signed and notarised.
     permissions:
       contents: write
       id-token: write
@@ -512,49 +306,35 @@ jobs:
           ref: ${{ github.sha }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: gpui-release-candidate-${{ github.sha }}
-          path: ${{ runner.temp }}/final-candidate
-      - name: Stage release assets and the Homebrew bundle
+          pattern: package-*
+          path: ${{ runner.temp }}/assets
+          merge-multiple: true
+      - name: Add the Homebrew bundle and checksums
         shell: bash
         env:
+          REQUIRED: ${{ needs.validate.outputs.required }}
           TAG: ${{ needs.validate.outputs.tag }}
         run: |
           set -euo pipefail
-          candidate="$RUNNER_TEMP/final-candidate"
           assets="$RUNNER_TEMP/assets"
-          mkdir "$assets"
-          # The names the native updater looks for (native_updater::asset_name).
-          for directory in "$candidate"/gpui-package-*; do
-            label="${directory##*/gpui-package-}"
-            case "$label" in
-              macos-arm64) name=Butter-Paper-macOS-arm64.zip ;;
-              macos-x64) name=Butter-Paper-macOS-x64.zip ;;
-              macos-arm64-beta) name=Butter-Paper-Beta-macOS-arm64.zip ;;
-              macos-x64-beta) name=Butter-Paper-Beta-macOS-x64.zip ;;
-              windows-arm64) name=Butter-Paper-Windows-arm64.zip ;;
-              windows-x64) name=Butter-Paper-Windows-x64.zip ;;
-              linux-arm64) name=Butter-Paper-Linux-arm64.tar.xz ;;
-              linux-x64) name=Butter-Paper-Linux-x64.tar.xz ;;
-              *) echo "unknown release target $label" >&2; exit 1 ;;
-            esac
-            package="$(find "$directory" -maxdepth 1 -type f ! -name '*.json')"
-            test "$(printf '%s\n' "$package" | wc -l)" -eq 1
-            cp "$package" "$assets/$name"
-          done
-          cp "$candidate/stable-candidate.json" "$assets/"
-          node scripts/build-homebrew-publication.mjs --tag "$TAG" --commit "$GITHUB_SHA" \
-            --assets "$assets" --output "$RUNNER_TEMP/publication" \
-            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
-            --jobs "$(find "$candidate" -maxdepth 1 -type d -name 'gpui-package-macos-*' -printf 'package %f\n' | sed 's/ gpui-package-/ /' | LC_ALL=C sort | paste -sd, -)"
-          (cd "$RUNNER_TEMP/publication" && tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 --format=ustar \
-            -czf "$assets/homebrew-publication.tar.gz" manifest.json SHA256SUMS Casks)
-          (cd "$assets" && sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS.txt" && mv "$RUNNER_TEMP/SHA256SUMS.txt" SHA256SUMS.txt)
+          read -r -a required <<< "$REQUIRED"
+          expected="$(printf '%s\n' "${required[@]}" | LC_ALL=C sort)"
+          actual="$(find "$assets" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)"
+          if [[ "$expected" != "$actual" ]]; then
+            printf 'Expected:\n%s\nActual:\n%s\n' "$expected" "$actual"
+            exit 1
+          fi
+          jobs="$(printf '%s\n' "${required[@]}" | sed -n 's/^Butter-Paper-\(Beta-\)\{0,1\}macOS-\(.*\)\.zip$/package macos-\2/p' | LC_ALL=C sort -u | paste -sd, -)"
+          cargo xtask publish-assets --assets "$assets" --tag "$TAG" --commit "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --jobs "$jobs"
           ls -l "$assets"
       - name: Attest release assets
+        if: needs.validate.outputs.dry_run == 'false'
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
         with:
           subject-path: ${{ runner.temp }}/assets/*
       - name: Publish the complete release once
+        if: needs.validate.outputs.dry_run == 'false'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -588,6 +368,7 @@ jobs:
 
   homebrew:
     needs: [validate, publish]
+    if: needs.validate.outputs.dry_run == 'false'
     runs-on: ubuntu-24.04
     environment: homebrew-dispatch
     permissions:

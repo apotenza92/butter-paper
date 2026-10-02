@@ -4,9 +4,29 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
-## [0.0.32]
+## [0.1.0]
 
-0.0.31 was prepared but not published; its changes are part of this release.
+Butter Paper is now a single native app built from a clean Rust codebase,
+with the old Electron and migration-era code removed. From this release
+Butter Paper updates itself on macOS, Windows and Linux, and Butter Paper
+Beta (macOS) follows beta releases.
+
+### Updating to 0.1.0
+
+- Homebrew: `brew upgrade --cask butter-paper`.
+- Butter Paper 0.0.26 cannot update itself, so install 0.1.0 by hand once:
+  on macOS replace the app; on Windows run the new `install.ps1`, then the
+  old version's `uninstall.ps1`; on Linux run the old version's
+  `uninstall-user.sh`, then the new `install-user.sh`. Your settings,
+  templates and signatures carry over.
+- The Electron app updates to 0.1.0 itself and brings its settings and
+  templates across.
+
+### Packages
+
+- Each package carries complete third-party notices for everything it
+  contains, including every Rust library.
+- Butter Paper Beta has its own icon.
 
 ### Markup files
 

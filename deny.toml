@@ -45,6 +45,8 @@ required-git-spec = "rev"
 unused-allowed-source = "allow"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
+    "https://github.com/apotenza92/gpui-kit",
+    "https://github.com/apotenza92/zed",
     "https://github.com/ajrcarey/pdfium-render",
     "https://github.com/proptest-rs/proptest",
     "https://github.com/zed-industries/font-kit",

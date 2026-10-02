@@ -83,6 +83,18 @@ impl ReleaseVersion {
         self.3 != Self::RELEASE
     }
 
+    /// `major.minor.patch`, which macOS shows as CFBundleShortVersionString.
+    pub fn core(self) -> String {
+        format!("{}.{}.{}", self.0, self.1, self.2)
+    }
+
+    /// CFBundleVersion: `(M*1e6 + m*1e3 + p)*1e5 + N`, where N is the beta
+    /// number or 90000 for the release, so a release builds above its betas.
+    pub fn build_number(self) -> u64 {
+        let stage = if self.is_beta() { self.3 } else { 90_000 };
+        (self.0 * 1_000_000 + self.1 * 1_000 + self.2) * 100_000 + stage
+    }
+
     pub fn parse(value: &str) -> Option<Self> {
         let value = value.strip_prefix('v').unwrap_or(value);
         let (core, beta) = match value.split_once("-beta.") {
@@ -606,13 +618,18 @@ fn prepare_macos(
             .arg(&downloaded),
         "macOS did not accept the new app.",
     )?;
-    let version = Command::new("/usr/bin/plutil")
-        .args(["-extract", "CFBundleShortVersionString", "raw", "-o", "-"])
-        .arg(downloaded.join("Contents/Info.plist"))
-        .output()
-        .ok()
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
-    if version.as_deref() != Some(update.version.to_string().as_str()) {
+    let plist_value = |key: &str| {
+        Command::new("/usr/bin/plutil")
+            .args(["-extract", key, "raw", "-o", "-"])
+            .arg(downloaded.join("Contents/Info.plist"))
+            .output()
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    // A beta shows its core version; its build number tells it apart.
+    if plist_value("CFBundleShortVersionString") != Some(update.version.core())
+        || plist_value("CFBundleVersion") != Some(update.version.build_number().to_string())
+    {
         return Err(UpdateError::new("The downloaded app is not the expected version."));
     }
     // Stage beside the installed app so the final swap is a same-volume rename.
@@ -955,6 +972,18 @@ mod tests {
         assert!(ReleaseVersion::parse("0.31").is_none());
         assert!(ReleaseVersion::stable(0, 0, 10) > ReleaseVersion::stable(0, 0, 9));
         assert_eq!(ReleaseVersion::stable(0, 0, 31).to_string(), "0.0.31");
+    }
+
+    #[test]
+    fn macos_bundle_versions_match_the_release_workflow() {
+        // The workflow writes these into Info.plist; the updater checks them.
+        assert_eq!(ReleaseVersion::stable(0, 1, 0).core(), "0.1.0");
+        assert_eq!(ReleaseVersion::stable(0, 1, 0).build_number(), 100_090_000);
+        let beta = ReleaseVersion::beta(0, 1, 1, 2);
+        assert_eq!(beta.core(), "0.1.1");
+        assert_eq!(beta.build_number(), 100_100_002);
+        assert!(beta.build_number() < ReleaseVersion::stable(0, 1, 1).build_number());
+        assert_eq!(ReleaseVersion::stable(1, 2, 3).build_number(), 100_200_390_000);
     }
 
     #[test]

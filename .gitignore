@@ -1,18 +1,10 @@
-node_modules
-.pnpm-store
-.amp/portals/
-dist
-.turbo
-.vite
-coverage
-playwright-report
-test-results
-artifacts
+# Cargo output, including tests' scratch files under crates/*/target
+target/
+
+# Signature relay (services/signature-relay)
+node_modules/
+.wrangler/
+dist/
+
 .DS_Store
 *.log
-*.tsbuildinfo
-apps/signature-relay/.wrangler
-tests/fixtures/generated
-native/*/target
-target/
-crates/*/.prepared/

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Butter Paper
+Comment=Read and annotate PDF documents
+Exec=butter-paper %F
+Icon=butter-paper
+Terminal=false
+Categories=Office;Viewer;
+MimeType=application/pdf;
+StartupNotify=true

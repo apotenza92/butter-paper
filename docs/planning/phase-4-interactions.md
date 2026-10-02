@@ -1,6 +1,6 @@
 # Phase 4 interaction parity
 
-Reference contract and native assessment for canvas interaction appearance and behaviour. Source audits completed 2026-09-17 against the Electron implementation (main checkout) and the native crate (`experiments/gpui-migration/gpui-migration/src/`). This file records step 1 of the delivery order (reference and contracts); it claims no implementation or visual acceptance.
+Reference contract and native assessment for canvas interaction appearance and behaviour. Source audits completed 2026-09-17 against the Electron implementation (main checkout) and the native crate (`crates/butter-paper/src/`). This file records step 1 of the delivery order (reference and contracts); it claims no implementation or visual acceptance.
 
 ## Reference contract (Electron)
 
@@ -93,7 +93,7 @@ Current main routing correction (2026-09-25): App registers its keydown listener
 
 ## Native assessment
 
-Crate `experiments/gpui-migration/gpui-migration/src/`, audited 2026-09-17.
+Crate `crates/butter-paper/src/`, audited 2026-09-17.
 
 - Gesture state is emergent: `ActivePointer` (~30 variants) for in-drag gestures, six pointer-less staged drafts (vertex-path, measurement-path, cloud, cloud-plus, arc, snapshot), and a workspace-retained pointer gating move/up delivery (`annotation_adapter.rs:532-909`, `document_workspace.rs:2155,11976-12966`).
 - Marquee: every marquee starts as lasso; box exists only as the post-click armed state applied on the next press. Thresholds match the reference (6px marquee, 3px drag). Direction is X-only with lasso kind latched after first |dx| > 6. Hit-testing branches containment versus intersection (`selection_geometry.rs:88-177`). Alt-remove wins over Shift-add (`selection_geometry.rs:34-44`).

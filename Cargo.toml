@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/butter-paper", "crates/ztracing-shim"]
+members = ["crates/butter-paper", "crates/ztracing-shim", "xtask"]
 default-members = ["crates/butter-paper"]
 
 # GPUI is Zed 8b1497d plus Butter Paper's patches (apotenza92/zed, branch

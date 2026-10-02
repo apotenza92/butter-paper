@@ -1,0 +1,68 @@
+{
+  "release": "https://github.com/apotenza92/butter-paper/releases/download/pdfium-7881/",
+  "source": "https://pdfium.googlesource.com/pdfium@91b9d569b34be4f38eed7b3c49b227356c3aadad",
+  "approval": "workflow run 36525856484; evidence in approval-evidence.tar.gz",
+  "evidenceSha256": "513b5be1eb4849aab017b31959244e9ee3afaec64e44b26b2c9bad61ee3c736f",
+  "targets": {
+    "aarch64-apple-darwin": {
+      "library": {
+        "name": "aarch64-apple-darwin-libpdfium.dylib",
+        "sha256": "52135e1487657c069e239bcccd0af181b91714a400c96ea1599cdd70e9ff0310"
+      },
+      "notices": {
+        "name": "aarch64-apple-darwin-NOTICES.md",
+        "sha256": "f499ca13f7892bf362d9b1705f009ce108668a10be61aaf1462ac3dcf797fcf0"
+      }
+    },
+    "aarch64-pc-windows-msvc": {
+      "library": {
+        "name": "aarch64-pc-windows-msvc-pdfium.dll",
+        "sha256": "0dab16dce3733692585c9a93183c7db64280ece5ab8958425f2059c914f70bba"
+      },
+      "notices": {
+        "name": "aarch64-pc-windows-msvc-NOTICES.md",
+        "sha256": "37ea132830a31067c1f537a256ab635a6f02570c4326ac9cd7eafc597844d6ec"
+      }
+    },
+    "aarch64-unknown-linux-gnu": {
+      "library": {
+        "name": "aarch64-unknown-linux-gnu-libpdfium.so",
+        "sha256": "b41cad13bed81b2ddb218cf39033e781e6ecc720ae740c5fd8f9602ab714802a"
+      },
+      "notices": {
+        "name": "aarch64-unknown-linux-gnu-NOTICES.md",
+        "sha256": "ff198e1f5dc9949a900cd30dd4a0b51ea1064118bd2458c3acff4a366537ad65"
+      }
+    },
+    "x86_64-apple-darwin": {
+      "library": {
+        "name": "x86_64-apple-darwin-libpdfium.dylib",
+        "sha256": "7732906cb19e610a5fe29fc0e7c65500657e1b1f644f91a95330e8be8db80846"
+      },
+      "notices": {
+        "name": "x86_64-apple-darwin-NOTICES.md",
+        "sha256": "f499ca13f7892bf362d9b1705f009ce108668a10be61aaf1462ac3dcf797fcf0"
+      }
+    },
+    "x86_64-pc-windows-msvc": {
+      "library": {
+        "name": "x86_64-pc-windows-msvc-pdfium.dll",
+        "sha256": "39cfddba58720cf47754e7a92c99f984253eb20809fbb82b763e31a2a8d0a6aa"
+      },
+      "notices": {
+        "name": "x86_64-pc-windows-msvc-NOTICES.md",
+        "sha256": "37ea132830a31067c1f537a256ab635a6f02570c4326ac9cd7eafc597844d6ec"
+      }
+    },
+    "x86_64-unknown-linux-gnu": {
+      "library": {
+        "name": "x86_64-unknown-linux-gnu-libpdfium.so",
+        "sha256": "cd11a0ca0d5815bd2f2e2eddbe59aa0d4204dd926a8f43cc1a00a23fd6c792a3"
+      },
+      "notices": {
+        "name": "x86_64-unknown-linux-gnu-NOTICES.md",
+        "sha256": "865057a97f84aaa8d007943f43286570b93baa744546a44ec5deb1008c5eed04"
+      }
+    }
+  }
+}
