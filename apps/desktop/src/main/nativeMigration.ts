@@ -276,7 +276,7 @@ async function installOnLinux(nativePackage: NativePackage, archive: string, wor
   await run('tar', ['-xJf', archive, '-C', workDirectory]);
   const packageDirectory = join(workDirectory, linuxPackageDirectory(nativePackage.target));
   const dataHome = process.env.XDG_DATA_HOME?.startsWith('/') ? process.env.XDG_DATA_HOME : join(homedir(), '.local/share');
-  const executable = join(dataHome, 'butter-paper', NATIVE_RELEASE.version, 'gpui-migration');
+  const executable = join(dataHome, 'butter-paper', NATIVE_RELEASE.version, 'butter-paper');
   if (!(await exists(executable))) {
     try {
       await run('/bin/sh', [join(packageDirectory, 'install-user.sh')]);

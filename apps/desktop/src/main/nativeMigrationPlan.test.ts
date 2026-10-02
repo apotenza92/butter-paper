@@ -36,9 +36,9 @@ function peBytes(machine: number): Uint8Array {
 }
 
 describe('native app migration plan', () => {
-  it('pins the exact published v0.0.26 package for each target', () => {
+  it('pins the exact published v0.1.0 package for each target', () => {
     expect(nativePackageUrl(NATIVE_PACKAGES['windows-x64'])).toBe(
-      'https://github.com/apotenza92/butter-paper/releases/download/v0.0.26/Butter-Paper-Windows-x64.zip',
+      'https://github.com/apotenza92/butter-paper/releases/download/v0.1.0/Butter-Paper-Windows-x64.zip',
     );
     for (const nativePackage of Object.values(NATIVE_PACKAGES)) {
       expect(nativePackage.sha256).toMatch(/^[0-9a-f]{64}$/);
@@ -74,8 +74,8 @@ describe('native app migration plan', () => {
     expect(resolveMigrationEligibility({ ...macHost, platform: 'linux', arch: 'x64' })).toEqual({ eligible: false, reason: 'unsupported-install' });
     expect(resolveMigrationEligibility({ ...macHost, platform: 'linux', arch: 'x64', appImagePath: '/home-dir/Butter-Paper-Linux-x64.AppImage' }))
       .toMatchObject({ nativePackage: { target: 'linux-x64' } });
-    expect(linuxPackageDirectory('linux-x64')).toBe('butter-paper-linux-x86_64-0.0.26');
-    expect(linuxPackageDirectory('linux-arm64')).toBe('butter-paper-linux-arm64-0.0.26');
+    expect(linuxPackageDirectory('linux-x64')).toBe('butter-paper-linux-x86_64-0.1.0');
+    expect(linuxPackageDirectory('linux-arm64')).toBe('butter-paper-linux-arm64-0.1.0');
   });
 
   it('installs the Mac app beside the running app only inside an Applications folder', () => {

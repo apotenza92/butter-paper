@@ -2,9 +2,9 @@
 // install onto the native Butter Paper release and removes the Electron app.
 
 export const NATIVE_RELEASE = {
-  version: '0.0.26',
-  tag: 'v0.0.26',
-  pageUrl: 'https://github.com/apotenza92/butter-paper/releases/tag/v0.0.26',
+  version: '0.1.0',
+  tag: 'v0.1.0',
+  pageUrl: 'https://github.com/apotenza92/butter-paper/releases/tag/v0.1.0',
   macTeamIdentifier: '27JL2VERNC',
   macBundleIdentifier: 'com.butterpaper.desktop',
   macMinimumMajorVersion: 13,
@@ -19,14 +19,14 @@ export interface NativePackage {
   readonly sha256: string;
 }
 
-// Exact published v0.0.26 assets; the download must match these byte-for-byte.
+// Exact published v0.1.0 assets; the download must match these byte-for-byte.
 export const NATIVE_PACKAGES: Readonly<Record<NativeTarget, NativePackage>> = {
-  'macos-arm64': { target: 'macos-arm64', assetName: 'Butter-Paper-macOS-arm64.zip', bytes: 30778782, sha256: '3fe0adfb5347a216c960972fbe23855c06d37a841d88a302cde536b2f8295d45' },
-  'macos-x64': { target: 'macos-x64', assetName: 'Butter-Paper-macOS-x64.zip', bytes: 33104987, sha256: '7fe1a530c141f32512707b45ee9579e6b20470c5992a60193bae5a6c7a891f3b' },
-  'windows-arm64': { target: 'windows-arm64', assetName: 'Butter-Paper-Windows-arm64.zip', bytes: 69209286, sha256: '4c3d5a683e1607f78af0e8909c4e37a2f162ee594408a0855e01c40d0e1c8545' },
-  'windows-x64': { target: 'windows-x64', assetName: 'Butter-Paper-Windows-x64.zip', bytes: 77801166, sha256: 'acbed65d95cd39f1a65f64d0b20e9e7462ceddf016f7d126002bfcaefdb51c5d' },
-  'linux-arm64': { target: 'linux-arm64', assetName: 'Butter-Paper-Linux-arm64.tar.xz', bytes: 25567396, sha256: '4a38c38281c3f5085e1420a63c9a52b0adbfbe8839a441c67d7186d4b99d6c9d' },
-  'linux-x64': { target: 'linux-x64', assetName: 'Butter-Paper-Linux-x64.tar.xz', bytes: 27964072, sha256: '42ffb70ffeb21b054469d54912312a55d5083b80b58587c9100f53d2ddc482f9' },
+  'macos-arm64': { target: 'macos-arm64', assetName: 'Butter-Paper-macOS-arm64.zip', bytes: 34582189, sha256: '3946ab95874661f93cc99900d437931514074d48a691015f7d7d67da1f0cf637' },
+  'macos-x64': { target: 'macos-x64', assetName: 'Butter-Paper-macOS-x64.zip', bytes: 37000187, sha256: 'cb04a28998b4595cbea412e723cf9e451f04e55adb13f41550bb20734e7ec075' },
+  'windows-arm64': { target: 'windows-arm64', assetName: 'Butter-Paper-Windows-arm64.zip', bytes: 74200190, sha256: '147137eb3f792e7077587c7cfc85657dd50dc68a314d7f1a3e74045918579b27' },
+  'windows-x64': { target: 'windows-x64', assetName: 'Butter-Paper-Windows-x64.zip', bytes: 83390247, sha256: '88bad356a3dcbf372ce7bb75be68ab0f3443b48703dd747cf0dcb2a015c5276a' },
+  'linux-arm64': { target: 'linux-arm64', assetName: 'Butter-Paper-Linux-arm64.tar.xz', bytes: 26681928, sha256: '8e072163ab298f2584c746b4c802cb5df15c9285720e06f7599e72511892f856' },
+  'linux-x64': { target: 'linux-x64', assetName: 'Butter-Paper-Linux-x64.tar.xz', bytes: 29658164, sha256: '77d4f0d08b3add68533ce953de8be5d8fd6ed05f11959b34bc0d787a9ff33601' },
 };
 
 export function nativePackageUrl(nativePackage: NativePackage): string {
@@ -192,7 +192,7 @@ try {
   }
   $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
   $installRoot = Join-Path $localAppData ('Programs\\Butter Paper\\' + $version + '\\' + $architecture)
-  $executable = Join-Path $installRoot 'gpui-migration.exe'
+  $executable = Join-Path $installRoot 'butter-paper.exe'
   if (-not (Test-Path -LiteralPath $executable)) {
     # Clear registrations left by a native install whose folder an Electron uninstaller removed.
     $progId = 'ButterPaper.PDF.' + $version + '.' + $architecture

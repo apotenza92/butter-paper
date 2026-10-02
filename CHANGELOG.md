@@ -2,6 +2,15 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.31]
+
+### Move to the native app
+
+- Moves to the native Butter Paper 0.1.0 app automatically after this update
+  restarts, as 0.0.30 did for 0.0.26. Native 0.1.0 then keeps itself up to
+  date. Your PDFs are not changed.
+- This is the last Electron release.
+
 ## [0.0.30]
 
 ### Move to the native app
