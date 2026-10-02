@@ -1,5 +1,10 @@
 name: Build GPUI stable candidate
 
+# One run builds and publishes one release tier. The primary tier (Apple
+# silicon macOS, Windows x64, Linux x64) ships first; run the secondary tier
+# (Intel macOS, Windows arm64, Linux arm64) afterwards for the same tag. Each
+# tier adds its packages and checksums to the same GitHub release.
+
 on:
   workflow_dispatch:
     inputs:
@@ -19,13 +24,21 @@ on:
         description: Numeric macOS bundle build version
         required: true
         type: string
+      tier:
+        description: Release tier to build and publish (targets in .github/release-targets.json)
+        required: true
+        default: primary
+        type: choice
+        options:
+          - primary
+          - secondary
 
 permissions:
   actions: read
   contents: read
 
 concurrency:
-  group: gpui-stable-candidate-${{ inputs.source_revision }}
+  group: gpui-stable-candidate-${{ inputs.source_revision }}-${{ inputs.tier }}
   cancel-in-progress: false
 
 jobs:
@@ -33,6 +46,8 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.identity.outputs.version }}
+      targets: ${{ steps.identity.outputs.targets }}
+      required: ${{ steps.identity.outputs.required }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -48,6 +63,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           SOURCE_REVISION: ${{ inputs.source_revision }}
+          TIER: ${{ inputs.tier }}
         run: |
           set -euo pipefail
           [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
@@ -73,6 +89,16 @@ jobs:
           }
           NODE
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          node --input-type=module - "$TIER" "$GITHUB_OUTPUT" <<'NODE'
+          import { appendFile, readFile } from 'node:fs/promises';
+          const [tier, output] = process.argv.slice(2);
+          const targets = JSON.parse(await readFile('.github/release-targets.json', 'utf8'))
+            .filter((target) => target.tier === tier);
+          if (targets.length === 0) throw new Error(`release tier ${tier} has no targets`);
+          // macOS jobs also publish Butter Paper Beta from the same build.
+          const required = targets.flatMap(({ label, os }) => (os === 'macos' ? [label, `${label}-beta`] : [label]));
+          await appendFile(output, `targets=${JSON.stringify(targets)}\nrequired=${required.join(',')}\n`);
+          NODE
 
   package:
     needs: validate
@@ -81,72 +107,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - label: macos-arm64
-            target: aarch64-apple-darwin
-            runner: macos-26
-            os: macos
-            arch: arm64
-            node_arch: arm64
-            channel: stable
-            optional: false
-          - label: macos-x64
-            target: x86_64-apple-darwin
-            runner: macos-26-intel
-            os: macos
-            arch: x64
-            node_arch: x64
-            channel: stable
-            optional: false
-          # Butter Paper Beta installs beside the stable app; beta copies
-          # keep this identity when a release ships both packages.
-          - label: macos-arm64-beta
-            target: aarch64-apple-darwin
-            runner: macos-26
-            os: macos
-            arch: arm64
-            node_arch: arm64
-            channel: beta
-            optional: false
-          - label: macos-x64-beta
-            target: x86_64-apple-darwin
-            runner: macos-26-intel
-            os: macos
-            arch: x64
-            node_arch: x64
-            channel: beta
-            optional: false
-          - label: windows-arm64
-            target: aarch64-pc-windows-msvc
-            runner: windows-11-arm
-            os: windows
-            arch: arm64
-            node_arch: arm64
-            msvc_arch: arm64
-            optional: false
-          - label: windows-x64
-            target: x86_64-pc-windows-msvc
-            runner: windows-2025
-            os: windows
-            arch: x86_64
-            node_arch: x64
-            msvc_arch: x64
-            optional: false
-          - label: linux-arm64
-            target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
-            os: linux
-            arch: arm64
-            node_arch: arm64
-            optional: false
-          - label: linux-x64
-            target: x86_64-unknown-linux-gnu
-            runner: ubuntu-24.04
-            os: linux
-            arch: x86_64
-            node_arch: x64
-            optional: false
-    continue-on-error: ${{ matrix.optional }}
+        include: ${{ fromJSON(needs.validate.outputs.targets) }}
     env:
       CARGO_INCREMENTAL: "0"
       MIGRATION_ROOT: experiments/gpui-migration/gpui-migration
@@ -399,12 +360,9 @@ jobs:
           test "$APPLE_SIGNING_IDENTITY" = 'Developer ID Application: Alexander Potenza (27JL2VERNC)'
           for value in APPLE_NOTARYTOOL_ISSUER_ID APPLE_NOTARYTOOL_KEY_ID APPLE_NOTARYTOOL_KEY_P8_BASE64 APPLE_SIGNING_CERTIFICATE_P12_BASE64 APPLE_SIGNING_CERTIFICATE_PASSWORD APPLE_SIGNING_CERTIFICATE_SHA256; do test -n "${!value}"; done
           signing="$RUNNER_TEMP/signing"
-          app="$RUNNER_TEMP/${{ matrix.channel == 'beta' && 'Butter Paper Beta.app' || 'Butter Paper.app' }}"
-          input="$RUNNER_TEMP/macos-input"
           stage="$RUNNER_TEMP/pdfium-stage"
-          output="$RUNNER_TEMP/candidate/$TARGET_LABEL"
-          mkdir -p "$signing" "$output"
-          chmod 700 "$signing" "$output"
+          mkdir -p "$signing"
+          chmod 700 "$signing"
           printf '%s' "$APPLE_SIGNING_CERTIFICATE_P12_BASE64" | base64 -D > "$signing/original.p12"
           printf '%s' "$APPLE_NOTARYTOOL_KEY_P8_BASE64" | base64 -D > "$signing/AuthKey.p8"
           printf '%s' "$APPLE_SIGNING_CERTIFICATE_PASSWORD" > "$signing/p12-password"
@@ -421,11 +379,24 @@ jobs:
           xcrun notarytool store-credentials bp-gpui-notary --key "$signing/AuthKey.p8" --key-id "$APPLE_NOTARYTOOL_KEY_ID" --issuer "$APPLE_NOTARYTOOL_ISSUER_ID" --keychain "$signing/signing.keychain-db"
           node "$MIGRATION_ROOT/scripts/stage-pdfium-production.mjs" --manifest "$RUNNER_TEMP/approved-pdfium/production-pdfium-approved.json" --artifact-root "$RUNNER_TEMP/approved-pdfium" --target "$TARGET_TRIPLE" --output-dir "$stage"
           xcrun swiftc -swift-version 5 -O -target "${{ matrix.arch == 'arm64' && 'arm64' || 'x86_64' }}-apple-macos13.0" "$MIGRATION_ROOT/native/SignatureCamera.swift" -o "$RUNNER_TEMP/butter-paper-signature-camera"
-          node "$MIGRATION_ROOT/scripts/prepare-macos-production-inputs.mjs" --application "$CARGO_TARGET_DIR/$TARGET_TRIPLE/release/gpui-migration" --worker "$CARGO_TARGET_DIR/$TARGET_TRIPLE/release/butter-paper-pdf-worker" --camera-helper "$RUNNER_TEMP/butter-paper-signature-camera" --phone-helper "$RUNNER_TEMP/butter-paper-signature-phone" --target "$TARGET_TRIPLE" --minimum-system-version 13.0 --build-version "$BUILD_VERSION" --channel "${{ matrix.channel }}" --output-root "$input" --receipt "$RUNNER_TEMP/macos-input.json"
-          node "$MIGRATION_ROOT/scripts/bind-macos-production-manifest.mjs" --input-receipt "$RUNNER_TEMP/macos-input.json" --pdfium-stage "$stage" --manifest "$RUNNER_TEMP/macos-manifest.json"
-          node "$MIGRATION_ROOT/scripts/assemble-macos-production.mjs" --manifest "$RUNNER_TEMP/macos-manifest.json" --input-root "$input" --pdfium-stage "$stage" --output-dir "$app"
-          node "$MIGRATION_ROOT/scripts/sign-notarize-macos-production.mjs" --app "$app" --manifest "$RUNNER_TEMP/macos-manifest.json" --identity "$APPLE_SIGNING_IDENTITY" --fingerprint "$APPLE_SIGNING_CERTIFICATE_SHA256" --notary-profile bp-gpui-notary --receipt "$RUNNER_TEMP/macos-signing.json"
-          node "$MIGRATION_ROOT/scripts/package-macos-signed-production.mjs" --app "$app" --receipt "$RUNNER_TEMP/macos-signing.json" --manifest "$RUNNER_TEMP/macos-manifest.json" --output "$output" --revision "$SOURCE_REVISION" --fingerprint "$APPLE_SIGNING_CERTIFICATE_SHA256"
+          # One build, two identities: Butter Paper and Butter Paper Beta.
+          for channel in stable beta; do
+            if [[ "$channel" == beta ]]; then
+              app="$RUNNER_TEMP/$channel/Butter Paper Beta.app"
+              output="$RUNNER_TEMP/candidate/$TARGET_LABEL-beta"
+            else
+              app="$RUNNER_TEMP/$channel/Butter Paper.app"
+              output="$RUNNER_TEMP/candidate/$TARGET_LABEL"
+            fi
+            work="$RUNNER_TEMP/$channel"
+            mkdir -p "$work" "$output"
+            chmod 700 "$output"
+            node "$MIGRATION_ROOT/scripts/prepare-macos-production-inputs.mjs" --application "$CARGO_TARGET_DIR/$TARGET_TRIPLE/release/gpui-migration" --worker "$CARGO_TARGET_DIR/$TARGET_TRIPLE/release/butter-paper-pdf-worker" --camera-helper "$RUNNER_TEMP/butter-paper-signature-camera" --phone-helper "$RUNNER_TEMP/butter-paper-signature-phone" --target "$TARGET_TRIPLE" --minimum-system-version 13.0 --build-version "$BUILD_VERSION" --channel "$channel" --output-root "$work/input" --receipt "$work/macos-input.json"
+            node "$MIGRATION_ROOT/scripts/bind-macos-production-manifest.mjs" --input-receipt "$work/macos-input.json" --pdfium-stage "$stage" --manifest "$work/macos-manifest.json"
+            node "$MIGRATION_ROOT/scripts/assemble-macos-production.mjs" --manifest "$work/macos-manifest.json" --input-root "$work/input" --pdfium-stage "$stage" --output-dir "$app"
+            node "$MIGRATION_ROOT/scripts/sign-notarize-macos-production.mjs" --app "$app" --manifest "$work/macos-manifest.json" --identity "$APPLE_SIGNING_IDENTITY" --fingerprint "$APPLE_SIGNING_CERTIFICATE_SHA256" --notary-profile bp-gpui-notary --receipt "$work/macos-signing.json"
+            node "$MIGRATION_ROOT/scripts/package-macos-signed-production.mjs" --app "$app" --receipt "$work/macos-signing.json" --manifest "$work/macos-manifest.json" --output "$output" --revision "$SOURCE_REVISION" --fingerprint "$APPLE_SIGNING_CERTIFICATE_SHA256"
+          done
           security delete-keychain "$signing/signing.keychain-db"
           rm -rf "$signing"
       - name: Upload verified target candidate
@@ -433,6 +404,14 @@ jobs:
         with:
           name: gpui-package-${{ matrix.label }}
           path: ${{ runner.temp }}/candidate/${{ matrix.label }}
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload verified Beta candidate
+        if: matrix.os == 'macos'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gpui-package-${{ matrix.label }}-beta
+          path: ${{ runner.temp }}/candidate/${{ matrix.label }}-beta
           if-no-files-found: error
           retention-days: 14
 
@@ -454,6 +433,8 @@ jobs:
         env:
           SOURCE_REVISION: ${{ inputs.source_revision }}
           VERSION: ${{ needs.validate.outputs.version }}
+          REQUIRED: ${{ needs.validate.outputs.required }}
+          TIER: ${{ inputs.tier }}
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/candidate-input"
@@ -475,12 +456,87 @@ jobs:
           await writeFile(join(root, 'candidate.json'), `${JSON.stringify({ schema: 'butter-paper/stable-candidate-input', schemaVersion: 2, channel: 'stable', version, sourceRevision, targets: records }, null, 2)}\n`, { flag: 'wx' });
           NODE
           mkdir "$RUNNER_TEMP/final-candidate"
-          node experiments/gpui-migration/gpui-migration/scripts/aggregate-stable-candidate.mjs --input "$root" --output "$RUNNER_TEMP/final-candidate/stable-candidate.json"
+          node experiments/gpui-migration/gpui-migration/scripts/aggregate-stable-candidate.mjs --input "$root" --output "$RUNNER_TEMP/final-candidate/stable-candidate-$TIER.json" --required "$REQUIRED"
           cp -R "$root"/. "$RUNNER_TEMP/final-candidate/"
-          sha256sum "$RUNNER_TEMP/final-candidate/stable-candidate.json" > "$RUNNER_TEMP/final-candidate/stable-candidate.json.sha256"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: gpui-stable-candidate-${{ inputs.source_revision }}
+          name: gpui-stable-candidate-${{ inputs.source_revision }}-${{ inputs.tier }}
           path: ${{ runner.temp }}/final-candidate
           if-no-files-found: error
           retention-days: 14
+
+  publish:
+    needs: [validate, aggregate]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    # Both tiers add to one release; never edit its checksums concurrently.
+    concurrency:
+      group: gpui-release-publish-${{ needs.validate.outputs.version }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.source_revision }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: gpui-stable-candidate-${{ inputs.source_revision }}-${{ inputs.tier }}
+          path: ${{ runner.temp }}/final-candidate
+      - name: Publish this tier's packages to the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          TIER: ${{ inputs.tier }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          git fetch --no-tags origin "refs/tags/$tag:refs/tags/$tag"
+          test "$(git rev-parse "$tag^{commit}")" = "$SOURCE_REVISION"
+          candidate="$RUNNER_TEMP/final-candidate"
+          assets="$RUNNER_TEMP/assets"
+          mkdir "$assets"
+          # The names the native updater looks for (native_updater::asset_name).
+          for directory in "$candidate"/gpui-package-*; do
+            label="${directory##*/gpui-package-}"
+            case "$label" in
+              macos-arm64) name=Butter-Paper-macOS-arm64.zip ;;
+              macos-x64) name=Butter-Paper-macOS-x64.zip ;;
+              macos-arm64-beta) name=Butter-Paper-Beta-macOS-arm64.zip ;;
+              macos-x64-beta) name=Butter-Paper-Beta-macOS-x64.zip ;;
+              windows-arm64) name=Butter-Paper-Windows-arm64.zip ;;
+              windows-x64) name=Butter-Paper-Windows-x64.zip ;;
+              linux-arm64) name=Butter-Paper-Linux-arm64.tar.xz ;;
+              linux-x64) name=Butter-Paper-Linux-x64.tar.xz ;;
+              *) echo "unknown release target $label" >&2; exit 1 ;;
+            esac
+            package="$(find "$directory" -maxdepth 1 -type f ! -name '*.json')"
+            test "$(printf '%s\n' "$package" | wc -l)" -eq 1
+            cp "$package" "$assets/$name"
+          done
+          cp "$candidate/stable-candidate-$TIER.json" "$assets/"
+          if ! gh release view "$tag" -R "$REPOSITORY" > /dev/null 2>&1; then
+            # The first tier to finish creates the release from the changelog.
+            awk -v heading="## [$VERSION]" '$0 == heading { found = 1; next } found && /^## \[/ { exit } found { print }' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+            test -s "$RUNNER_TEMP/notes.md"
+            gh release create "$tag" -R "$REPOSITORY" --verify-tag --title "Butter Paper $VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          # Merge this tier's checksums into the release's SHA256SUMS.txt.
+          sums="$RUNNER_TEMP/SHA256SUMS.txt"
+          if gh release download "$tag" -R "$REPOSITORY" -p SHA256SUMS.txt -O "$RUNNER_TEMP/previous-sums.txt" 2> /dev/null; then
+            cp "$RUNNER_TEMP/previous-sums.txt" "$sums"
+          else
+            : > "$sums"
+          fi
+          (cd "$assets" && for file in *; do
+            grep -v "  $file\$" "$sums" > "$sums.next" || true
+            mv "$sums.next" "$sums"
+            sha256sum "$file" >> "$sums"
+          done)
+          sort -k2 "$sums" -o "$sums"
+          gh release upload "$tag" -R "$REPOSITORY" --clobber "$assets"/*
+          gh release upload "$tag" -R "$REPOSITORY" --clobber "$sums"

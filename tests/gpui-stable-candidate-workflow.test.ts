@@ -5,6 +5,10 @@ import { describe, expect, it } from "vitest";
 const path = ".github/workflows/build-gpui-stable-candidate.yml";
 const source = readFileSync(path, "utf8");
 const workflow = YAML.parse(source);
+// The build matrix comes from this table, filtered by the dispatched tier.
+const releaseTargets = JSON.parse(
+  readFileSync(".github/release-targets.json", "utf8"),
+);
 
 const targets = [
   "aarch64-apple-darwin",
@@ -27,56 +31,39 @@ describe("GPUI stable candidate workflow", () => {
     }
   });
 
-  it("packages all six targets as required release artifacts", () => {
-    const matrix = workflow.jobs.package.strategy.matrix.include;
-    const stable = matrix.filter(
-      ({ channel }: { channel?: string }) => channel !== "beta",
+  it("packages all six targets across two release tiers", () => {
+    expect(workflow.jobs.package.strategy.matrix.include).toBe(
+      "${{ fromJSON(needs.validate.outputs.targets) }}",
     );
     expect(
-      stable.map(({ target }: { target: string }) => target).sort(),
+      releaseTargets.map(({ target }: { target: string }) => target).sort(),
     ).toEqual([...targets].sort());
-    // Butter Paper Beta for macOS ships beside the stable packages.
+    // The common targets ship first; the rest follow in a second run.
     expect(
-      matrix
-        .filter(({ channel }: { channel?: string }) => channel === "beta")
-        .map(({ label, target }: { label: string; target: string }) => [
-          label,
-          target,
-        ]),
-    ).toEqual([
-      ["macos-arm64-beta", "aarch64-apple-darwin"],
-      ["macos-x64-beta", "x86_64-apple-darwin"],
+      releaseTargets
+        .filter(({ tier }: { tier: string }) => tier === "primary")
+        .map(({ label }: { label: string }) => label),
+    ).toEqual(["macos-arm64", "windows-x64", "linux-x64"]);
+    expect(
+      releaseTargets
+        .filter(({ tier }: { tier: string }) => tier === "secondary")
+        .map(({ label }: { label: string }) => label),
+    ).toEqual(["macos-x64", "windows-arm64", "linux-arm64"]);
+    expect(workflow.on.workflow_dispatch.inputs.tier.options).toEqual([
+      "primary",
+      "secondary",
     ]);
-    expect(
-      matrix.find(
-        ({ target }: { target: string }) => target === "x86_64-apple-darwin",
-      )?.label,
-    ).toBe("macos-x64");
-    expect(
-      matrix.find(
-        ({ target }: { target: string }) => target === "x86_64-apple-darwin",
-      )?.optional,
-    ).toBe(false);
-    expect(
-      matrix.filter(({ optional }: { optional: boolean }) => !optional),
-    ).toHaveLength(8);
-    expect(workflow.jobs.package["continue-on-error"]).toBe(
-      "${{ matrix.optional }}",
-    );
+    const runner = (target: string) =>
+      releaseTargets.find((entry: { target: string }) => entry.target === target)
+        ?.runner;
+    expect(runner("aarch64-pc-windows-msvc")).toBe("windows-11-arm");
+    expect(runner("aarch64-unknown-linux-gnu")).toBe("ubuntu-24.04-arm");
+    // Each macOS job packages Butter Paper and Butter Paper Beta from one
+    // build, so a release never carries one without the other.
+    expect(source).toContain("for channel in stable beta; do");
+    expect(source).toContain("name: gpui-package-${{ matrix.label }}-beta");
     expect(workflow.jobs.aggregate.if).toContain("always()");
     expect(source).toContain("aggregate-stable-candidate.mjs");
-    expect(
-      matrix.find(
-        ({ target }: { target: string }) =>
-          target === "aarch64-pc-windows-msvc",
-      )?.runner,
-    ).toBe("windows-11-arm");
-    expect(
-      matrix.find(
-        ({ target }: { target: string }) =>
-          target === "aarch64-unknown-linux-gnu",
-      )?.runner,
-    ).toBe("ubuntu-24.04-arm");
   });
 
   it("binds an exact main-reachable source commit and human-approved PDFium handoff", () => {
@@ -176,12 +163,13 @@ describe("GPUI stable candidate workflow", () => {
 
   it("creates nested per-target candidate output directories before packaging", () => {
     expect(source).toContain('mkdir -p "$input" "$output"');
-    expect(source).toContain('mkdir -p "$signing" "$output"');
-    expect(source).toContain('chmod 700 "$signing" "$output"');
+    expect(source).toContain('mkdir -p "$work" "$output"');
+    expect(source).toContain('chmod 700 "$output"');
+    expect(source).toContain('chmod 700 "$signing"');
   });
 
   it("activates architecture-matched MSVC and LLVM tools before Windows builds", () => {
-    const matrix = workflow.jobs.package.strategy.matrix.include;
+    const matrix = releaseTargets;
     expect(
       matrix.find(
         ({ target }: { target: string }) =>
@@ -260,7 +248,7 @@ describe("GPUI stable candidate workflow", () => {
     }
   });
 
-  it("aggregates packages without publishing a release", () => {
+  it("aggregates packages, then only the publish job may write the release", () => {
     expect(source).toContain("aggregate-stable-candidate.mjs");
     expect(source).toContain("butter-paper/stable-candidate-input");
     expect(workflow.jobs.aggregate.needs).toEqual([
@@ -284,9 +272,19 @@ describe("GPUI stable candidate workflow", () => {
     expect(aggregateSource).not.toContain("runtime");
     expect(aggregateSource).not.toContain("target === 'macos-x64'");
     expect(workflow.permissions).toEqual({ actions: "read", contents: "read" });
-    expect(source).not.toMatch(
-      /contents:\s*write|id-token:\s*write|gh release|create-release|publish never/,
-    );
+    // Publishing waits for this tier's verified, aggregated receipt and is
+    // the only job that can write; signing jobs never can.
+    for (const [name, job] of Object.entries(workflow.jobs) as [string, any][]) {
+      if (name === "publish") continue;
+      expect(JSON.stringify(job)).not.toMatch(/contents"?:\s*"?write|gh release/);
+    }
+    expect(workflow.jobs.publish.needs).toEqual(["validate", "aggregate"]);
+    expect(workflow.jobs.publish.permissions).toEqual({ contents: "write" });
+    expect(workflow.jobs.publish).not.toHaveProperty("environment");
+    expect(source).not.toMatch(/id-token:\s*write|create-release/);
+    const publish = JSON.stringify(workflow.jobs.publish);
+    expect(publish).toContain('test \\"$(git rev-parse \\"$tag^{commit}\\")\\" = \\"$SOURCE_REVISION\\"');
+    expect(publish).toContain("SHA256SUMS.txt");
     const actions = [...source.matchAll(/uses: ([^\s]+) # /g)].map(
       (match) => match[1],
     );

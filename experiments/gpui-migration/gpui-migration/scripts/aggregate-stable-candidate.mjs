@@ -5,7 +5,7 @@ import { lstat, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REQUIRED_TARGETS = [
+const DEFAULT_REQUIRED_TARGETS = [
   "linux-arm64",
   "linux-x64",
   "macos-arm64",
@@ -15,8 +15,8 @@ const REQUIRED_TARGETS = [
 ];
 // Butter Paper Beta for macOS ships beside the stable packages so beta
 // copies keep their identity when they update.
-const OPTIONAL_TARGETS = ["macos-arm64-beta", "macos-x64-beta"];
-const ALL_TARGETS = new Set([...REQUIRED_TARGETS, ...OPTIONAL_TARGETS]);
+const BETA_TARGETS = ["macos-arm64-beta", "macos-x64-beta"];
+const ALL_TARGETS = new Set([...DEFAULT_REQUIRED_TARGETS, ...BETA_TARGETS]);
 const REVISION = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const STABLE_SEMVER =
@@ -133,7 +133,23 @@ function checkNoDevelopmentMarkers(value, label) {
     fail(`${label} contains a development PDFium or override marker`);
 }
 
-export async function aggregateStableCandidate({ inputDir, outputPath }) {
+/// A release tier names exactly the targets it publishes; without one, the
+/// six stable targets are required and the macOS Beta packages are optional.
+export async function aggregateStableCandidate({
+  inputDir,
+  outputPath,
+  requiredTargets = DEFAULT_REQUIRED_TARGETS,
+}) {
+  const REQUIRED_TARGETS = [...requiredTargets].sort();
+  if (
+    REQUIRED_TARGETS.length === 0 ||
+    REQUIRED_TARGETS.some((target) => !ALL_TARGETS.has(target)) ||
+    new Set(REQUIRED_TARGETS).size !== REQUIRED_TARGETS.length
+  ) {
+    fail("required targets must be distinct known release targets");
+  }
+  const OPTIONAL_TARGETS =
+    requiredTargets === DEFAULT_REQUIRED_TARGETS ? BETA_TARGETS : [];
   const root = resolve(inputDir);
   const output = resolve(outputPath);
   const rootStat = await lstat(root);
@@ -175,7 +191,8 @@ export async function aggregateStableCandidate({ inputDir, outputPath }) {
   const results = [];
   for (const record of descriptor.targets) {
     const target = record?.target;
-    if (!ALL_TARGETS.has(target)) fail(`unexpected target: ${String(target)}`);
+    if (!REQUIRED_TARGETS.includes(target) && !OPTIONAL_TARGETS.includes(target))
+      fail(`unexpected target: ${String(target)}`);
     if (seenTargets.has(target)) fail(`duplicate target: ${target}`);
     seenTargets.add(target);
 
@@ -319,19 +336,22 @@ async function main() {
   const values = new Map();
   for (let index = 0; index < args.length; index += 1) {
     if (
-      !["--input", "--output"].includes(args[index]) ||
+      !["--input", "--output", "--required"].includes(args[index]) ||
       !args[index + 1] ||
       values.has(args[index])
     ) {
-      fail("usage: aggregate-stable-candidate.mjs --input DIR --output FILE");
+      fail("usage: aggregate-stable-candidate.mjs --input DIR --output FILE [--required T1,T2]");
     }
     values.set(args[index], args[++index]);
   }
-  if (values.size !== 2)
-    fail("usage: aggregate-stable-candidate.mjs --input DIR --output FILE");
+  if (!values.has("--input") || !values.has("--output"))
+    fail("usage: aggregate-stable-candidate.mjs --input DIR --output FILE [--required T1,T2]");
   await aggregateStableCandidate({
     inputDir: values.get("--input"),
     outputPath: values.get("--output"),
+    ...(values.has("--required")
+      ? { requiredTargets: values.get("--required").split(",") }
+      : {}),
   });
 }
 

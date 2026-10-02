@@ -78,7 +78,7 @@ Live GUI review of the native app uses an isolated, disposable data root (`BP_NA
 
 Keep the release process lean. `pnpm check` and the native tests run locally are the release gate; do not add GitHub-hosted smoke, audit, or rehearsal jobs beyond the native candidate workflow.
 
-- Native releases are manual downloads published to GitHub Releases with a `SHA256SUMS.txt`, built by `.github/workflows/build-gpui-stable-candidate.yml`. macOS packages are Developer ID signed and notarised; Windows and Linux packages are unsigned.
+- Native releases are published to GitHub Releases with a `SHA256SUMS.txt` by `.github/workflows/build-gpui-stable-candidate.yml`, dispatched from the `v<version>` tag (the signing environment accepts only `v*` tags). Each run builds one tier from `.github/release-targets.json`: run `primary` (Apple silicon macOS, Windows x64, Linux x64) first, then `secondary` (Intel macOS, Windows arm64, Linux arm64); each tier adds its packages and checksums to the same release, which the first tier creates from the version's `CHANGELOG.md` section. macOS jobs package Butter Paper and Butter Paper Beta from one build. macOS packages are Developer ID signed and notarised; Windows and Linux packages are unsigned.
 - Release tags must resolve to commits reachable from `main`.
 - Never log, copy into artifacts, or commit any signing key or certificate.
 - Do not stage, commit, push, open pull requests, alter remote settings, or create issues unless the user explicitly requests it.

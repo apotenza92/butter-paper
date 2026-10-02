@@ -147,6 +147,40 @@ test("accepts Butter Paper Beta for macOS beside the stable packages", async (t)
   });
 });
 
+test("a release tier requires exactly its own targets", async (t) => {
+  const PRIMARY = ["macos-arm64", "macos-arm64-beta", "windows-x64", "linux-x64"];
+  const { root } = await fixture(PRIMARY);
+  const result = await aggregateStableCandidate({
+    inputDir: root,
+    outputPath: join(root, "..", `tier-${Math.random().toString(16).slice(2)}.json`),
+    requiredTargets: PRIMARY,
+  });
+  assert.deepEqual(result.manifest.requiredTargets, [...PRIMARY].sort());
+  assert.deepEqual(result.manifest.optionalTargets, []);
+  await t.test("missing a tier target", async () => {
+    const { root: partial } = await fixture(PRIMARY.slice(1));
+    await assert.rejects(
+      aggregateStableCandidate({
+        inputDir: partial,
+        outputPath: join(partial, "..", "partial.json"),
+        requiredTargets: PRIMARY,
+      }),
+      /missing required target: macos-arm64/,
+    );
+  });
+  await t.test("another tier's target", async () => {
+    const { root: extra } = await fixture([...PRIMARY, "linux-arm64"]);
+    await assert.rejects(
+      aggregateStableCandidate({
+        inputDir: extra,
+        outputPath: join(extra, "..", "extra.json"),
+        requiredTargets: PRIMARY,
+      }),
+      /unexpected target: linux-arm64/,
+    );
+  });
+});
+
 test("rejects missing, duplicate, and unexpected targets", async (t) => {
   await t.test("missing required target", async () => {
     const { root } = await fixture(REQUIRED.slice(1));
