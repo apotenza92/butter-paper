@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = ["crates/butter-paper", "crates/ztracing-shim"]
+default-members = ["crates/butter-paper"]
+
+# GPUI is Zed 8b1497d plus Butter Paper's patches (apotenza92/zed, branch
+# butter-paper). gpui-component names the upstream Zed URL too, so every Zed
+# crate is redirected to the fork to keep a single GPUI.
+[patch."https://github.com/zed-industries/zed"]
+# Zed's tracing facade is GPL; this Apache shim replaces it.
+ztracing = { path = "crates/ztracing-shim" }
+collections = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+derive_refineable = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+gpui = { version = "=0.2.2", git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+gpui_apple = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+gpui_linux = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+gpui_macos = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+gpui_macros = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+gpui_platform = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+gpui_shared_string = { version = "=0.1.0", git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+gpui_util = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+gpui_web = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+gpui_wgpu = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+gpui_windows = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+http_client = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+media = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+perf = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+refineable = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+scheduler = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+sum_tree = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+util_macros = { git = "https://github.com/apotenza92/zed", rev = "6df1b6b3287a39c4cc1a1e0f27dc7c4a527f942d" }
+
+# The fork's own crates name ztracing within its workspace; replace it there too.
+[patch."https://github.com/apotenza92/zed"]
+ztracing = { path = "crates/ztracing-shim" }
+
+[profile.dev]
+codegen-units = 1
+debug = 0
+incremental = false
+strip = "symbols"
+
+[profile.test]
+codegen-units = 1
+debug = 0
+incremental = false
+strip = "symbols"

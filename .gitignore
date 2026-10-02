@@ -14,3 +14,5 @@ artifacts
 apps/signature-relay/.wrangler
 tests/fixtures/generated
 native/*/target
+target/
+crates/*/.prepared/

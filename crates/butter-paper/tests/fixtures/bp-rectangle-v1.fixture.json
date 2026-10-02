@@ -1,0 +1,137 @@
+{
+  "schema_version": "bp-fixture-spec-v1",
+  "fixture_id": "bp-rectangle-v1",
+  "source": {
+    "kind": "deterministically-generated",
+    "license": "MIT",
+    "contains_private_material": false
+  },
+  "coordinate_space": "pdf-points-bottom-left",
+  "document": {
+    "page_count": 1,
+    "pages": [
+      {
+        "page_id": "bp-rectangle-v1:page:001",
+        "width": 612,
+        "height": 792
+      }
+    ]
+  },
+  "commands": [
+    {
+      "command_id": "rectangle:create:001",
+      "operation": "create-rectangle",
+      "annotation_id": "bp-rectangle-v1:rectangle:0001",
+      "page_id": "bp-rectangle-v1:page:001",
+      "pointer_path_pdf": [
+        { "t_ms": 0, "x": 72, "y": 144 },
+        { "t_ms": 8.333, "x": 252, "y": 240 }
+      ],
+      "style": {
+        "stroke_rgba": [0.113725, 0.431373, 0.847059, 1],
+        "fill_rgba": [0.113725, 0.431373, 0.847059, 0.08],
+        "stroke_width_pt": 2,
+        "stroke_style": "solid"
+      }
+    },
+    {
+      "command_id": "rectangle:select:001",
+      "operation": "select-annotation",
+      "annotation_id": "bp-rectangle-v1:rectangle:0001",
+      "page_id": "bp-rectangle-v1:page:001",
+      "point_pdf": { "x": 162, "y": 192 }
+    },
+    {
+      "command_id": "rectangle:move:001",
+      "operation": "translate-annotation",
+      "annotation_id": "bp-rectangle-v1:rectangle:0001",
+      "page_id": "bp-rectangle-v1:page:001",
+      "delta_pdf": { "x": 18, "y": -12 }
+    },
+    {
+      "command_id": "rectangle:resize-east:001",
+      "operation": "resize-annotation",
+      "annotation_id": "bp-rectangle-v1:rectangle:0001",
+      "page_id": "bp-rectangle-v1:page:001",
+      "handle": "east",
+      "delta_pdf": { "x": 30, "y": 0 }
+    },
+    {
+      "command_id": "rectangle:style:001",
+      "operation": "set-annotation-style",
+      "annotation_id": "bp-rectangle-v1:rectangle:0001",
+      "page_id": "bp-rectangle-v1:page:001",
+      "style": {
+        "stroke_rgba": [0.862745, 0.14902, 0.14902, 1],
+        "fill_rgba": [0.862745, 0.14902, 0.14902, 0.12],
+        "stroke_width_pt": 3,
+        "stroke_style": "dashed"
+      }
+    },
+    {
+      "command_id": "rectangle:undo-style:001",
+      "operation": "undo",
+      "target_command_id": "rectangle:style:001"
+    },
+    {
+      "command_id": "rectangle:redo-style:001",
+      "operation": "redo",
+      "target_command_id": "rectangle:style:001"
+    },
+    {
+      "command_id": "rectangle:verify:001",
+      "operation": "assert-canonical-state",
+      "expected_sha256": "935fce671f16c98104012ac386e3089dab509c6e577d6e3166aa28a27142eba9"
+    }
+  ],
+  "visual_crops": [
+    {
+      "crop_id": "rectangle-final-appearance",
+      "page_id": "bp-rectangle-v1:page:001",
+      "pdf_rect": { "x": 78, "y": 120, "width": 234, "height": 120 },
+      "expected_annotation_ids": ["bp-rectangle-v1:rectangle:0001"],
+      "minimum_settled_density": 1
+    },
+    {
+      "crop_id": "rectangle-empty-control",
+      "page_id": "bp-rectangle-v1:page:001",
+      "pdf_rect": { "x": 360, "y": 120, "width": 144, "height": 120 },
+      "expected_annotation_ids": [],
+      "minimum_settled_density": 1
+    }
+  ],
+  "artifact_sha256": {
+    "pdf": "b870d6806a14a11566448026884e25275ddc25cc7b4f2407bde73a888809cc42",
+    "commands": "c30098b7ca2660d58423dff27f9538c9bba4464be7b1fb04abe87aa1ff8062e8",
+    "expected": "935fce671f16c98104012ac386e3089dab509c6e577d6e3166aa28a27142eba9",
+    "crops": "4b80d0aaf11e8ec042d9048e51c8ac2c45a51101b0aaa71d3f4cf07339a88a01"
+  },
+  "canonical_expected": {
+    "sha256": "935fce671f16c98104012ac386e3089dab509c6e577d6e3166aa28a27142eba9",
+    "state": {
+      "schema_version": "bp-canonical-annotation-state-v1",
+      "fixture_id": "bp-rectangle-v1",
+      "document": {
+        "page_count": 1,
+        "page_ids": ["bp-rectangle-v1:page:001"]
+      },
+      "annotations": [
+        {
+          "annotation_id": "bp-rectangle-v1:rectangle:0001",
+          "type": "rectangle",
+          "page_id": "bp-rectangle-v1:page:001",
+          "bounds": { "x": 90, "y": 132, "width": 210, "height": 96 },
+          "style": {
+            "stroke_rgba": [0.862745, 0.14902, 0.14902, 1],
+            "fill_rgba": [0.862745, 0.14902, 0.14902, 0.12],
+            "stroke_width_pt": 3,
+            "stroke_style": "dashed"
+          }
+        }
+      ],
+      "selected_annotation_ids": ["bp-rectangle-v1:rectangle:0001"],
+      "history": { "undo_depth": 4, "redo_depth": 0 },
+      "dirty": true
+    }
+  }
+}
