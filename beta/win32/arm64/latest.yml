@@ -1,24 +1,20 @@
-version: 0.0.30
+version: 0.0.31
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.30/Butter-Paper-Beta-Windows-arm64-Setup.exe
-    sha512: WeD6hvivwuwz6ZtyvwPnn2wr6v3LSoSMUzHMxj6teQM6jGzC4DbFDJaBV9/jFkBFCUMr/ApQBPP0ndxM+0fQVg==
-    size: 124758700
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.30/Butter-Paper-Beta-Windows-arm64-Setup.exe
-sha512: WeD6hvivwuwz6ZtyvwPnn2wr6v3LSoSMUzHMxj6teQM6jGzC4DbFDJaBV9/jFkBFCUMr/ApQBPP0ndxM+0fQVg==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-Beta-Windows-arm64-Setup.exe
+    sha512: pGb02e8mhp6RV3nMnTFnRgxd+V8ex1Jgq7YgbgIM3r/czi+f+TVcWDm8Ptv5ss04Bp8SAJNj+C1/3HCBnEaBnw==
+    size: 124758800
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-Beta-Windows-arm64-Setup.exe
+sha512: pGb02e8mhp6RV3nMnTFnRgxd+V8ex1Jgq7YgbgIM3r/czi+f+TVcWDm8Ptv5ss04Bp8SAJNj+C1/3HCBnEaBnw==
 releaseNotes: "### Move to the native app\r
 
   \r
 
-  - Moves to the native Butter Paper 0.0.26 app automatically after this update\r
+  - Moves to the native Butter Paper 0.1.0 app automatically after this update\r
 
-  \  restarts: Butter Paper downloads the verified native package for your\r
+  \  restarts, as 0.0.30 did for 0.0.26. Native 0.1.0 then keeps itself up to\r
 
-  \  computer, installs it, removes the old Butter Paper apps and opens the new\r
+  \  date. Your PDFs are not changed.\r
 
-  \  one. Your PDFs are not changed.\r
-
-  - macOS 12 stays on this version, because the native app requires macOS 13 or\r
-
-  \  later."
-releaseDate: 2026-09-30T10:38:40.806Z
+  - This is the last Electron release."
+releaseDate: 2026-10-02T08:36:21.005Z
 butterPaperChannel: beta

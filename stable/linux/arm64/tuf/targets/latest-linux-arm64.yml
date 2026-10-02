@@ -1,25 +1,23 @@
-version: 0.0.30
+version: 0.0.31
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.30/Butter-Paper-Linux-arm64.AppImage
-    sha512: aJp3hZmOelP4CWOppPRJygs3AnOgGTqYNfamK/OMgX0HR5ErvwWquCU24VpngdFQ5MHM/50Z+uEyKSVuCVN78Q==
-    size: 116879820
-    blockMapSize: 122136
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.30/Butter-Paper-Linux-arm64.deb
-    sha512: thPbL/yhsikdbvOSIwVxyUtAI2cnkF7PB7zJKQRmC4GscQJBwWWvysRGDI8sZ20JZPO11krDkfSEYtENSLA+/Q==
-    size: 114663404
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.30/Butter-Paper-Linux-arm64.rpm
-    sha512: FFX1kxjF0kxud0RSEvOcSCpr7J4QXFcrmwqNkpEd0fsdqyjnVk4eAr99eX6kI38Qp8q1NH4qDDHdtVFT46ZscQ==
-    size: 101051313
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.30/Butter-Paper-Linux-arm64.AppImage
-sha512: aJp3hZmOelP4CWOppPRJygs3AnOgGTqYNfamK/OMgX0HR5ErvwWquCU24VpngdFQ5MHM/50Z+uEyKSVuCVN78Q==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-Linux-arm64.AppImage
+    sha512: xas094GMxbzV9vdq6/Be4mwU9Eh2Lgy7CxZIJmEMN7opsuZfcnmsQoyxPwbs+7EnxJ4Z1Us9EyR1Wy6dyApE3w==
+    size: 116879643
+    blockMapSize: 121959
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-Linux-arm64.deb
+    sha512: zwxyaqkuOe1Esj6nyZlVDjjZK/qfGup1jgQwUVklyp4Bt/5zNEG30D6K0M2+z6kAMsqos0hB34IVHT+FYx4u0w==
+    size: 114663408
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-Linux-arm64.rpm
+    sha512: 32y7ulR529Wdyhu2z3CCxxV8mJTIBXsxYyWBCFcOMtVH8aZynFmQIjeF2nRztASpq7tij1Iz9afv/cGiABkBCQ==
+    size: 101052269
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-Linux-arm64.AppImage
+sha512: xas094GMxbzV9vdq6/Be4mwU9Eh2Lgy7CxZIJmEMN7opsuZfcnmsQoyxPwbs+7EnxJ4Z1Us9EyR1Wy6dyApE3w==
 releaseNotes: |-
   ### Move to the native app
 
-  - Moves to the native Butter Paper 0.0.26 app automatically after this update
-    restarts: Butter Paper downloads the verified native package for your
-    computer, installs it, removes the old Butter Paper apps and opens the new
-    one. Your PDFs are not changed.
-  - macOS 12 stays on this version, because the native app requires macOS 13 or
-    later.
-releaseDate: 2026-09-30T10:39:14.847Z
+  - Moves to the native Butter Paper 0.1.0 app automatically after this update
+    restarts, as 0.0.30 did for 0.0.26. Native 0.1.0 then keeps itself up to
+    date. Your PDFs are not changed.
+  - This is the last Electron release.
+releaseDate: 2026-10-02T08:37:47.186Z
 butterPaperChannel: stable

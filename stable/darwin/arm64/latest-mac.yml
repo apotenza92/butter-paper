@@ -1,21 +1,19 @@
-version: 0.0.30
+version: 0.0.31
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.30/Butter-Paper-macOS-arm64.zip
-    sha512: Z72tbAz22ENhBt2Vfox5d9v6iNTIrIkEWcZC+3kkLGmq/8u6hNmmXrvAKnWzBF1Q3vIgyJCayycdfn8DANqMqQ==
-    size: 145226047
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.30/Butter-Paper-macOS-arm64.dmg
-    sha512: IzPn33cQXcvq/f0rMVHkMkUNV2wHkSrPb9NGs3n5noGaHuDiAZFP18jw4L6FhP/xZdUbSGTc2JvQWbWYooigvg==
-    size: 150272939
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.30/Butter-Paper-macOS-arm64.zip
-sha512: Z72tbAz22ENhBt2Vfox5d9v6iNTIrIkEWcZC+3kkLGmq/8u6hNmmXrvAKnWzBF1Q3vIgyJCayycdfn8DANqMqQ==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-macOS-arm64.zip
+    sha512: 5Q4GJ0NwUxqd0vkd4mYE0WPQYqnzcSKhtYOVnEyLXurXJXB4wLkDXLvrh1ocJ9TiKuxOyZdTvSukxqgIgZqQ6g==
+    size: 145225967
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-macOS-arm64.dmg
+    sha512: K/WxIStcr8S/IlZa/4GvR8ZSBEWzePCD6oDR5X/8Yu8NwAy4ewGONP3dMdDpPVJIOBefWkn8h1M2qBjAugDtww==
+    size: 150272801
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-macOS-arm64.zip
+sha512: 5Q4GJ0NwUxqd0vkd4mYE0WPQYqnzcSKhtYOVnEyLXurXJXB4wLkDXLvrh1ocJ9TiKuxOyZdTvSukxqgIgZqQ6g==
 releaseNotes: |-
   ### Move to the native app
 
-  - Moves to the native Butter Paper 0.0.26 app automatically after this update
-    restarts: Butter Paper downloads the verified native package for your
-    computer, installs it, removes the old Butter Paper apps and opens the new
-    one. Your PDFs are not changed.
-  - macOS 12 stays on this version, because the native app requires macOS 13 or
-    later.
-releaseDate: 2026-09-30T10:38:15.280Z
+  - Moves to the native Butter Paper 0.1.0 app automatically after this update
+    restarts, as 0.0.30 did for 0.0.26. Native 0.1.0 then keeps itself up to
+    date. Your PDFs are not changed.
+  - This is the last Electron release.
+releaseDate: 2026-10-02T08:36:21.786Z
 butterPaperChannel: stable
