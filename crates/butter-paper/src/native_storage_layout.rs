@@ -1,8 +1,7 @@
-//! Storage ownership for the development application and isolated benchmarks.
+//! Storage ownership for the application and isolated benchmarks.
 //!
-//! Durable stores never fall back to the OS temporary directory. This does not
-//! migrate Electron data or the former `butter-paper-document-workspace` temp
-//! tree: those locations remain untouched pending a validated import workflow.
+//! Durable stores never fall back to the OS temporary directory. Data from the
+//! retired Electron app is never read.
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,20 +39,12 @@ impl NativeReleaseChannel {
     }
 }
 
-/// Channel-specific roots for a production Electron-to-native transition.
-///
-/// Native durable state is deliberately keyed by bundle identifier rather than
-/// pointed at Electron's product-name directory. The only native reader of the
-/// Electron tree will be the versioned migration importer, and it receives the
-/// narrow exchange directory rather than the whole legacy store.
+/// Channel-specific production storage. Durable state is keyed by bundle
+/// identifier; the Electron app's product-name folders are never read.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeProductionStorage {
     channel: NativeReleaseChannel,
     layout: NativeStorageLayout,
-    electron_user_data_root: PathBuf,
-    legacy_development_root: PathBuf,
-    migration_exchange_root: PathBuf,
-    migration_backup_root: PathBuf,
 }
 
 impl NativeProductionStorage {
@@ -62,20 +53,14 @@ impl NativeProductionStorage {
             home,
             "the production home directory must be absolute and canonical-looking",
         )?;
-        let application_support = home.join("Library/Application Support");
-        let electron_user_data_root = application_support.join(channel.product_name());
-        let native_application_root = application_support.join(channel.bundle_identifier());
+        let native_application_root = home
+            .join("Library/Application Support")
+            .join(channel.bundle_identifier());
         let surface_root = home
             .join("Library/Caches")
             .join(channel.bundle_identifier())
             .join("native-v1/render-surfaces");
-        Self::from_platform_roots(
-            channel,
-            electron_user_data_root,
-            application_support.join("GPUI Migration"),
-            native_application_root,
-            surface_root,
-        )
+        Self::from_platform_roots(channel, native_application_root, surface_root)
     }
 
     /// Resolve production storage under the Windows roaming/local application
@@ -97,18 +82,11 @@ impl NativeProductionStorage {
         let surface_root = local_application_data
             .join(channel.bundle_identifier())
             .join("native-v1/render-surfaces");
-        Self::from_platform_roots(
-            channel,
-            roaming_application_data.join(channel.product_name()),
-            roaming_application_data.join("GPUI Migration"),
-            native_application_root,
-            surface_root,
-        )
+        Self::from_platform_roots(channel, native_application_root, surface_root)
     }
 
-    /// Resolve production storage under freedesktop/XDG data, cache and
-    /// configuration roots. Electron's predecessor lives under the config
-    /// root; native state deliberately uses the data and cache roots instead.
+    /// Resolve production storage under the freedesktop/XDG data and cache
+    /// roots. The configuration root is validated but not used.
     pub fn linux(
         data_home: &Path,
         cache_home: &Path,
@@ -131,35 +109,17 @@ impl NativeProductionStorage {
         let surface_root = cache_home
             .join(channel.bundle_identifier())
             .join("native-v1/render-surfaces");
-        Self::from_platform_roots(
-            channel,
-            config_home.join(channel.product_name()),
-            data_home.join("GPUI Migration"),
-            native_application_root,
-            surface_root,
-        )
+        Self::from_platform_roots(channel, native_application_root, surface_root)
     }
 
     fn from_platform_roots(
         channel: NativeReleaseChannel,
-        electron_user_data_root: PathBuf,
-        legacy_development_root: PathBuf,
         native_application_root: PathBuf,
         surface_root: PathBuf,
     ) -> Result<Self, &'static str> {
         let native_root = native_application_root.join("native-v1");
         let layout = NativeStorageLayout::development(Some(native_root), surface_root)?;
-        Ok(Self {
-            channel,
-            migration_exchange_root: electron_user_data_root.join("gpui-migration-export/v1"),
-            // Keep immutable predecessor backups outside the atomically
-            // published native-v1 destination so a migration can back up its
-            // complete input before that destination exists.
-            migration_backup_root: native_application_root.join("migration-backups/v1"),
-            electron_user_data_root,
-            legacy_development_root,
-            layout,
-        })
+        Ok(Self { channel, layout })
     }
 
     pub fn layout(&self) -> &NativeStorageLayout {
@@ -170,48 +130,47 @@ impl NativeProductionStorage {
         self.channel
     }
 
-    pub fn electron_user_data_root(&self) -> &Path {
-        &self.electron_user_data_root
-    }
-
-    pub fn migration_exchange_root(&self) -> &Path {
-        &self.migration_exchange_root
-    }
-
-    pub fn legacy_development_root(&self) -> &Path {
-        &self.legacy_development_root
-    }
-
-    /// Detects the former channel-neutral development store without adopting
-    /// or mutating it. Production migration must ask for an explicit policy
-    /// before any legacy GPUI data can enter a stable or beta destination.
-    pub fn legacy_development_store_present(&self) -> std::io::Result<bool> {
-        let metadata = match std::fs::symlink_metadata(&self.legacy_development_root) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(error),
-        };
-        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "legacy GPUI migration store must be a real directory",
-            ));
+    /// Checks the durable root before startup uses it: every existing path
+    /// component must be a real directory (not a symlink or file), and on Unix
+    /// the root must belong to this user. Returns whether the root exists.
+    /// Nothing is created, read or changed.
+    pub fn check_durable_root(&self) -> Result<bool, String> {
+        let path = self.layout.durable_root();
+        let mut current = PathBuf::new();
+        let mut last = None;
+        for component in path.components() {
+            current.push(component.as_os_str());
+            #[cfg(windows)]
+            if matches!(
+                component,
+                std::path::Component::Prefix(_) | std::path::Component::RootDir
+            ) {
+                // A bare drive prefix such as `C:` is drive-relative; inspect
+                // from the complete `C:\` root onwards.
+                continue;
+            }
+            let metadata = match std::fs::symlink_metadata(&current) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => return Err(format!("{}: {error}", current.display())),
+            };
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+                return Err(format!(
+                    "native application data path component {} must be a real directory",
+                    current.display()
+                ));
+            }
+            last = Some(metadata);
         }
+        let _metadata = last.ok_or("native application data root is empty")?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt as _;
-            if metadata.uid() != unsafe { libc::geteuid() } {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "legacy GPUI migration store belongs to another user",
-                ));
+            if _metadata.uid() != unsafe { libc::geteuid() } {
+                return Err("the native application data root must belong to the current user".into());
             }
         }
         Ok(true)
-    }
-
-    pub fn migration_backup_root(&self) -> &Path {
-        &self.migration_backup_root
     }
 }
 
@@ -323,7 +282,9 @@ mod tests {
     static SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
     fn root() -> PathBuf {
-        std::env::temp_dir().join(format!(
+        // Resolved: macOS's temporary folder sits behind the /var symlink,
+        // which the durable-root check rightly refuses.
+        std::env::temp_dir().canonicalize().unwrap().join(format!(
             "bp-storage-layout-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
@@ -348,18 +309,10 @@ mod tests {
     }
 
     #[test]
-    fn production_macos_identity_matches_electron_channels_without_sharing_state_roots() {
+    fn production_macos_channels_never_share_state_roots() {
         let home = absolute("/Users/tester");
         let stable = NativeProductionStorage::macos(&home, NativeReleaseChannel::Stable).unwrap();
         let beta = NativeProductionStorage::macos(&home, NativeReleaseChannel::Beta).unwrap();
-        assert_eq!(
-            stable.electron_user_data_root(),
-            home.join("Library/Application Support/Butter Paper")
-        );
-        assert_eq!(
-            beta.electron_user_data_root(),
-            home.join("Library/Application Support/Butter Paper Beta")
-        );
         assert_eq!(
             stable.layout().preferences_root(),
             home.join("Library/Application Support/com.butterpaper.desktop/native-v1")
@@ -371,18 +324,6 @@ mod tests {
         assert_eq!(
             stable.layout().surface_root(),
             home.join("Library/Caches/com.butterpaper.desktop/native-v1/render-surfaces")
-        );
-        assert_eq!(
-            stable.migration_exchange_root(),
-            home.join("Library/Application Support/Butter Paper/gpui-migration-export/v1")
-        );
-        assert_eq!(
-            stable.migration_backup_root(),
-            home.join("Library/Application Support/com.butterpaper.desktop/migration-backups/v1")
-        );
-        assert_eq!(
-            stable.legacy_development_root(),
-            home.join("Library/Application Support/GPUI Migration")
         );
         assert_eq!(
             NativeReleaseChannel::Stable.signature_keychain_service(),
@@ -399,42 +340,19 @@ mod tests {
         for left in [
             stable.layout().preferences_root(),
             stable.layout().surface_root(),
-            stable.electron_user_data_root(),
-            stable.migration_exchange_root(),
-            stable.migration_backup_root(),
         ] {
             for right in [
                 beta.layout().preferences_root(),
                 beta.layout().surface_root(),
-                beta.electron_user_data_root(),
-                beta.migration_exchange_root(),
-                beta.migration_backup_root(),
             ] {
                 assert_ne!(left, right, "stable and beta storage must stay isolated");
                 assert!(!left.starts_with(right) && !right.starts_with(left));
             }
         }
-        for (left, right) in [
-            (
-                stable.layout().preferences_root(),
-                stable.layout().surface_root(),
-            ),
-            (
-                stable.layout().preferences_root(),
-                stable.migration_backup_root(),
-            ),
-            (
-                stable.layout().surface_root(),
-                stable.migration_backup_root(),
-            ),
-            (
-                stable.migration_backup_root(),
-                stable.migration_exchange_root(),
-            ),
-        ] {
-            assert_ne!(left, right);
-            assert!(!left.starts_with(right) && !right.starts_with(left));
-        }
+        assert!(
+            !stable.layout().preferences_root().starts_with(stable.layout().surface_root())
+                && !stable.layout().surface_root().starts_with(stable.layout().preferences_root())
+        );
         assert!(
             NativeProductionStorage::macos(Path::new("relative"), NativeReleaseChannel::Stable)
                 .is_err()
@@ -458,20 +376,12 @@ mod tests {
             NativeProductionStorage::windows(&roaming, &local, NativeReleaseChannel::Stable)
                 .unwrap();
         assert_eq!(
-            stable.electron_user_data_root(),
-            roaming.join("Butter Paper")
-        );
-        assert_eq!(
             stable.layout().durable_root(),
             roaming.join("com.butterpaper.desktop/native-v1")
         );
         assert_eq!(
             stable.layout().surface_root(),
             local.join("com.butterpaper.desktop/native-v1/render-surfaces")
-        );
-        assert_eq!(
-            stable.legacy_development_root(),
-            roaming.join("GPUI Migration")
         );
         assert!(
             NativeProductionStorage::windows(
@@ -484,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn production_linux_keeps_native_data_cache_and_electron_config_separate() {
+    fn production_linux_keeps_native_data_and_cache_separate() {
         let data = absolute("/home/tester/.local/share");
         let cache = absolute("/home/tester/.cache");
         let config = absolute("/home/tester/.config");
@@ -492,20 +402,12 @@ mod tests {
             NativeProductionStorage::linux(&data, &cache, &config, NativeReleaseChannel::Stable)
                 .unwrap();
         assert_eq!(
-            stable.electron_user_data_root(),
-            config.join("Butter Paper")
-        );
-        assert_eq!(
             stable.layout().durable_root(),
             data.join("com.butterpaper.desktop/native-v1")
         );
         assert_eq!(
             stable.layout().surface_root(),
             cache.join("com.butterpaper.desktop/native-v1/render-surfaces")
-        );
-        assert_eq!(
-            stable.legacy_development_root(),
-            data.join("GPUI Migration")
         );
         let invalid_absolute = absolute("/home/tester/../other");
         for invalid in [Path::new("relative"), invalid_absolute.as_path()] {
@@ -522,32 +424,54 @@ mod tests {
     }
 
     #[test]
-    fn legacy_development_store_is_detected_but_never_created_or_adopted() {
+    fn durable_root_check_reports_presence_without_creating_anything() {
         let home = root();
-        let production =
-            NativeProductionStorage::macos(&home, NativeReleaseChannel::Stable).unwrap();
-        assert!(!production.legacy_development_store_present().unwrap());
-        assert!(!production.legacy_development_root().exists());
-        std::fs::create_dir_all(production.legacy_development_root()).unwrap();
-        std::fs::write(
-            production
-                .legacy_development_root()
-                .join("application-shell.json"),
-            b"legacy",
-        )
-        .unwrap();
-        assert!(production.legacy_development_store_present().unwrap());
-        assert!(!production.layout().durable_root().exists());
+        let storage = NativeProductionStorage::macos(&home, NativeReleaseChannel::Stable).unwrap();
+        assert!(!storage.check_durable_root().unwrap());
+        assert!(!storage.layout().durable_root().exists());
+        std::fs::create_dir_all(storage.layout().durable_root()).unwrap();
+        std::fs::write(storage.layout().durable_root().join("native-state"), b"native").unwrap();
+        assert!(storage.check_durable_root().unwrap());
         assert_eq!(
-            std::fs::read(
-                production
-                    .legacy_development_root()
-                    .join("application-shell.json")
-            )
-            .unwrap(),
-            b"legacy"
+            std::fs::read(storage.layout().durable_root().join("native-state")).unwrap(),
+            b"native"
         );
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn durable_root_check_rejects_files_and_symlinks_without_touching_targets() {
+        use std::os::unix::fs::symlink;
+
+        let file_home = root();
+        let file_storage =
+            NativeProductionStorage::macos(&file_home, NativeReleaseChannel::Stable).unwrap();
+        std::fs::create_dir_all(file_storage.layout().durable_root().parent().unwrap()).unwrap();
+        std::fs::write(file_storage.layout().durable_root(), b"partial").unwrap();
+        assert!(file_storage.check_durable_root().is_err());
+        assert_eq!(std::fs::read(file_storage.layout().durable_root()).unwrap(), b"partial");
+        std::fs::remove_dir_all(file_home).unwrap();
+
+        // A symlinked root, and a symlinked parent, are both refused.
+        for parent in [false, true] {
+            let home = root();
+            let storage = NativeProductionStorage::macos(&home, NativeReleaseChannel::Beta).unwrap();
+            let link = if parent {
+                storage.layout().durable_root().parent().unwrap().to_path_buf()
+            } else {
+                storage.layout().durable_root().to_path_buf()
+            };
+            let target = root();
+            std::fs::create_dir_all(&target).unwrap();
+            std::fs::write(target.join("marker"), b"outside").unwrap();
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            symlink(&target, &link).unwrap();
+            assert!(storage.check_durable_root().is_err());
+            assert_eq!(std::fs::read(target.join("marker")).unwrap(), b"outside");
+            std::fs::remove_dir_all(home).unwrap();
+            std::fs::remove_dir_all(target).unwrap();
+        }
     }
 
     #[test]

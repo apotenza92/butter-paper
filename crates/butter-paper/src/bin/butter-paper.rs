@@ -30,10 +30,6 @@ use butter_paper::document_workspace::{
     init_document_workspace_actions,
     register_document_workspace_actions_for,
 };
-#[cfg(not(feature = "development-pdfium-override"))]
-use butter_paper::electron_data_migration::{
-    StartupDataPolicy, prepare_startup_data,
-};
 use butter_paper::generated_document::GeneratedDocumentStore;
 use butter_paper::macos_process_lifecycle::AppRootLifecycleReceipt;
 use butter_paper::native_application::{
@@ -1999,8 +1995,7 @@ fn resolve_storage_context(
                 channel,
             )
         };
-        prepare_startup_data(&storage, StartupDataPolicy::NativeOnly)
-            .map_err(|error| error.to_string())?;
+        storage.check_durable_root()?;
         let preferences =
             ApplicationShellPreferencesStore::new(storage.layout().preferences_root())
                 .load()

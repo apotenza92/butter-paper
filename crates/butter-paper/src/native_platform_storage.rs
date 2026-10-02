@@ -59,7 +59,7 @@ fn xdg_root(
     Ok(path)
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "windows", target_os = "linux")))]
 mod tests {
     use super::*;
     use std::path::Path;

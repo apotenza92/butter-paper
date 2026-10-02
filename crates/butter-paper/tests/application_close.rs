@@ -1,3 +1,5 @@
+// Compiled standalone: variants built only by the workspace are unused here.
+#[allow(dead_code)]
 #[path = "../src/application_close.rs"]
 mod application_close;
 

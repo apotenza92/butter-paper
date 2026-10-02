@@ -414,44 +414,8 @@ impl TemplateLibrary {
     }
 }
 
-pub(crate) fn serialise_migration_index(
-    records: &[TemplateRecord],
-    last_template_id: &str,
-) -> Result<Vec<u8>, TemplateLibraryError> {
-    let mut ids = std::collections::BTreeSet::new();
-    for record in records {
-        if BUILT_IN_TEMPLATE_IDS.contains(&record.id()) || !ids.insert(record.id()) {
-            return Err(TemplateLibraryError(
-                "template library contains a duplicate identifier".into(),
-            ));
-        }
-        StoredRecord::from_record(record).into_record()?;
-    }
-    if !BUILT_IN_TEMPLATE_IDS.contains(&last_template_id) && !ids.contains(last_template_id) {
-        return Err(TemplateLibraryError(
-            "the selected template does not exist".into(),
-        ));
-    }
-    let stored = StoredIndex {
-        version: INDEX_VERSION,
-        records: records.iter().map(StoredRecord::from_record).collect(),
-        last_template_id: last_template_id.into(),
-        legacy_blank_migrated: false,
-    };
-    let mut bytes = serde_json::to_vec_pretty(&stored)?;
-    bytes.push(b'\n');
-    Ok(bytes)
-}
 
-pub(crate) fn normalise_imported_template_name(name: &str) -> String {
-    normalize_imported_name(name)
-}
 
-pub(crate) fn normalise_generated_template_name(
-    name: &str,
-) -> Result<String, TemplateLibraryError> {
-    normalize_custom_name(name)
-}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct StoredIndex {

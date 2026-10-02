@@ -1087,11 +1087,6 @@ impl PdfPersistenceSession {
         Self::from_document(source_path, document, None)
     }
 
-    pub(crate) fn page_count_from_bytes(bytes: &[u8]) -> Result<usize, PdfPersistenceError> {
-        let document = Document::load_mem(bytes)?;
-        let session = Self::from_document(PathBuf::from("migration-memory.pdf"), document, None)?;
-        Ok(session.page_count())
-    }
 
     pub fn open_for_update(
         path: impl AsRef<Path>,
@@ -3888,12 +3883,6 @@ impl PdfPersistenceSession {
         }
     }
 
-    fn prepare_save_ambient_for_development(
-        &self,
-        target: impl AsRef<Path>,
-    ) -> Result<PreparedPdfSave, PdfPersistenceError> {
-        self.prepare_save_inner(target.as_ref(), None)
-    }
 
     fn prepare_save_inner(
         &self,
@@ -4041,20 +4030,6 @@ impl PdfPersistenceSession {
         }
     }
 
-    /// Publishes a new file without overwriting an existing path.
-    ///
-    /// The complete PDF is written and synced to a same-directory temporary
-    /// file. A hard link then creates the destination atomically only when it
-    /// does not already exist. Removing the temporary name leaves the synced
-    /// inode reachable through the destination name.
-    pub(crate) fn save_as_ambient_for_development(
-        &self,
-        target: impl AsRef<Path>,
-    ) -> Result<(), PdfPersistenceError> {
-        self.prepare_save_ambient_for_development(target)?
-            .publish()
-            .map(|_| ())
-    }
 
     pub fn prepare_save_replacing(
         &self,
@@ -13667,24 +13642,6 @@ mod tests {
 
     // Mirrors current Electron's /BPAppearance + /DA text fields. The import
     // entrypoints below cover all caption families, not only the shared helper.
-    fn caption_import_dictionary() -> lopdf::Dictionary {
-        lopdf::dictionary! {
-            "L" => Object::Array(vec![0.into(), 0.into(), 100.into(), 0.into()]),
-            "Vertices" => Object::Array(vec![0.into(), 0.into(), 100.into(), 0.into(), 100.into(), 50.into()]),
-            "LL" => 24,
-            "Contents" => super::pdf_literal("WWW iii"),
-            "C" => Object::Array(vec![0.2.into(), 0.3.into(), 0.4.into()]),
-            "BPAppearance" => super::pdf_literal(&json!({
-                "text": { "fontId": "Arimo", "fontSizePt": 20, "color": "#172b4d", "align": "left", "lineHeightPt": 13.8, "insetPt": 0 },
-                "opacity": 1
-            }).to_string()),
-            "DA" => super::pdf_literal("0.0902 0.1686 0.302 rg /BPArimo 20 Tf"),
-            "BPScale" => lopdf::dictionary! {
-                "PaperPoints" => 100, "RealWorldValue" => 1,
-                "Unit" => super::pdf_literal("m"), "Precision" => 2,
-            },
-        }
-    }
 
     #[test]
     fn generated_page_grid_metadata_imports_and_invalid_metadata_fails_closed() {

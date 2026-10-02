@@ -15,7 +15,7 @@ use std::{
 };
 
 use butter_paper::annotation_adapter::{
-    AnnotationAdapter, AnnotationTool, LENGTH_SCALE_REQUIRED_MESSAGE, PointerPhaseOutcome,
+    AnnotationAdapter, AnnotationTool, PointerPhaseOutcome,
     StraightLinePropertyEdit, ellipse_resize_handle_point_for_rect,
     ellipse_rotation_handle_point_for_rect, snapshot_resize_handle_point,
     snapshot_rotation_handle_point,
@@ -308,72 +308,8 @@ fn run_gpui_test_with_native_main_stack(name: &'static str, test: fn(&mut TestAp
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-struct NativeAnnotationGraphOracle {
-    object_id: ObjectId,
-    dictionary: String,
-    resolved_appearance_graph: Vec<(ObjectId, String)>,
-}
 
-fn native_annotation_graph_oracle(path: &Path, name: &str) -> NativeAnnotationGraphOracle {
-    let document = LopdfDocument::load(path).expect("the native annotation oracle must load");
-    let object_id = native_annotation_object_id(&document, name);
-    let dictionary = document
-        .get_object(object_id)
-        .and_then(LopdfObject::as_dict)
-        .expect("the native annotation oracle must resolve one dictionary");
-    let mut resolved_appearance_graph = Vec::new();
-    let mut visited = std::collections::BTreeSet::new();
-    if let Ok(appearance) = dictionary.get(b"AP") {
-        collect_native_object_graph(
-            &document,
-            appearance,
-            &mut visited,
-            &mut resolved_appearance_graph,
-        );
-    }
-    NativeAnnotationGraphOracle {
-        object_id,
-        dictionary: format!("{dictionary:?}"),
-        resolved_appearance_graph,
-    }
-}
 
-fn collect_native_object_graph(
-    document: &LopdfDocument,
-    object: &LopdfObject,
-    visited: &mut std::collections::BTreeSet<ObjectId>,
-    output: &mut Vec<(ObjectId, String)>,
-) {
-    match object {
-        LopdfObject::Reference(object_id) => {
-            if !visited.insert(*object_id) {
-                return;
-            }
-            let resolved = document
-                .get_object(*object_id)
-                .expect("the native appearance graph must resolve every reference");
-            output.push((*object_id, format!("{resolved:?}")));
-            collect_native_object_graph(document, resolved, visited, output);
-        }
-        LopdfObject::Array(values) => {
-            for value in values {
-                collect_native_object_graph(document, value, visited, output);
-            }
-        }
-        LopdfObject::Dictionary(dictionary) => {
-            for (_, value) in dictionary.iter() {
-                collect_native_object_graph(document, value, visited, output);
-            }
-        }
-        LopdfObject::Stream(stream) => {
-            for (_, value) in stream.dict.iter() {
-                collect_native_object_graph(document, value, visited, output);
-            }
-        }
-        _ => {}
-    }
-}
 
 fn native_annotation_object_id(document: &LopdfDocument, name: &str) -> ObjectId {
     for (_, page_id) in document.get_pages() {
@@ -413,58 +349,7 @@ fn native_annotation_object_id(document: &LopdfDocument, name: &str) -> ObjectId
     panic!("native annotation {name:?} must exist");
 }
 
-fn append_normalized_duplicate_length(source: &Path, target: &Path) {
-    let mut document = LopdfDocument::load(source).expect("the duplicate fixture source must load");
-    let source_id = native_annotation_object_id(&document, "length-1");
-    let mut duplicate = document
-        .get_object(source_id)
-        .and_then(LopdfObject::as_dict)
-        .expect("the legacy Length must be an indirect dictionary")
-        .clone();
-    duplicate.set("NM", lopdf::text_string("bp:length-1"));
-    let duplicate_id = document.add_object(duplicate);
-    let page_id = *document
-        .get_pages()
-        .get(&1)
-        .expect("the duplicate fixture must retain page one");
-    let annotation_array = document
-        .get_object(page_id)
-        .and_then(LopdfObject::as_dict)
-        .and_then(|page| page.get(b"Annots"))
-        .expect("the duplicate fixture must expose page-one /Annots")
-        .clone();
-    match annotation_array {
-        LopdfObject::Reference(array_id) => document
-            .get_object_mut(array_id)
-            .and_then(LopdfObject::as_array_mut)
-            .expect("the indirect /Annots object must remain an array")
-            .push(duplicate_id.into()),
-        LopdfObject::Array(_) => document
-            .get_object_mut(page_id)
-            .and_then(LopdfObject::as_dict_mut)
-            .and_then(|page| page.get_mut(b"Annots"))
-            .and_then(LopdfObject::as_array_mut)
-            .expect("the direct /Annots object must remain an array")
-            .push(duplicate_id.into()),
-        _ => panic!("the duplicate fixture requires an array /Annots"),
-    }
-    document
-        .save(target)
-        .expect("the duplicate Length fixture must serialize");
-}
 
-fn rewrite_length_fixture(
-    source: &Path,
-    target: &Path,
-    mut rewrite: impl FnMut(&mut LopdfDocument, ObjectId),
-) {
-    let mut document = LopdfDocument::load(source).expect("the Length fixture source must load");
-    let length_id = native_annotation_object_id(&document, "length-1");
-    rewrite(&mut document, length_id);
-    document
-        .save(target)
-        .expect("the rewritten Length fixture must serialize");
-}
 
 fn save_with_unrelated_rectangle_edit(source: &Path, target: &Path, generation: u64) {
     let session = PdfPersistenceSession::open(source).unwrap();
@@ -495,62 +380,7 @@ fn save_with_unrelated_rectangle_edit(source: &Path, target: &Path, generation: 
         .expect("the unrelated save must succeed");
 }
 
-fn first_length_oracle(path: &Path) -> NativeAnnotationGraphOracle {
-    let document = LopdfDocument::load(path).expect("the Length oracle source must load");
-    for (_, page_id) in document.get_pages() {
-        let page = document.get_object(page_id).unwrap().as_dict().unwrap();
-        let annotations = match page.get(b"Annots").unwrap() {
-            LopdfObject::Reference(array_id) => {
-                document.get_object(*array_id).unwrap().as_array().unwrap()
-            }
-            LopdfObject::Array(values) => values,
-            _ => continue,
-        };
-        for annotation in annotations {
-            let (object_id, dictionary) = match annotation {
-                LopdfObject::Reference(object_id) => (
-                    *object_id,
-                    document.get_object(*object_id).unwrap().as_dict().unwrap(),
-                ),
-                LopdfObject::Dictionary(dictionary) => ((0, 0), dictionary),
-                _ => continue,
-            };
-            if dictionary
-                .get(b"Subtype")
-                .ok()
-                .and_then(|value| value.as_name().ok())
-                != Some(b"Line".as_slice())
-                || dictionary.get(b"Measure").is_err()
-            {
-                continue;
-            }
-            let mut resolved_appearance_graph = Vec::new();
-            let mut visited = std::collections::BTreeSet::new();
-            if let Ok(appearance) = dictionary.get(b"AP") {
-                collect_native_object_graph(
-                    &document,
-                    appearance,
-                    &mut visited,
-                    &mut resolved_appearance_graph,
-                );
-            }
-            return NativeAnnotationGraphOracle {
-                object_id,
-                dictionary: format!("{dictionary:?}"),
-                resolved_appearance_graph,
-            };
-        }
-    }
-    panic!("the fixture must contain one Length-like Line");
-}
 
-fn object_ids_exist(path: &Path, object_ids: &[ObjectId]) -> Vec<bool> {
-    let document = LopdfDocument::load(path).unwrap();
-    object_ids
-        .iter()
-        .map(|object_id| document.objects.contains_key(object_id))
-        .collect()
-}
 
 fn append_page_one_annotation(document: &mut LopdfDocument, annotation: LopdfObject) {
     let annotation_id = document.add_object(annotation);
@@ -3719,20 +3549,21 @@ fn length_scale_is_page_scoped_and_generic_drag_creation_is_rejected() {
         .unwrap();
     adapter.set_tool(AnnotationTool::Length).unwrap();
 
-    let missing_scale = adapter
-        .begin_length_placement(
-            1,
-            1,
-            MarkupId::new("workspace:length:page-1").unwrap(),
-            PdfPoint::new(72., 240.).unwrap(),
-        )
-        .unwrap_err();
+    // An uncalibrated page measures at Revu's default 1 in = 1 in.
     assert_eq!(
-        missing_scale,
-        butter_paper::annotation_model::AnnotationError::InvalidGeometry(
-            LENGTH_SCALE_REQUIRED_MESSAGE.to_owned(),
-        )
+        adapter
+            .begin_length_placement(
+                1,
+                1,
+                MarkupId::new("workspace:length:page-1").unwrap(),
+                PdfPoint::new(72., 240.).unwrap(),
+            )
+            .unwrap(),
+        PointerPhaseOutcome::PlacementPending
     );
+    let default_scale = adapter.measurement_calibration(1, 1);
+    assert_eq!(default_scale.unit(), "in");
+    adapter.cancel(butter_paper::annotation_model::PointerCancelReason::ToolChanged).unwrap();
     assert!(adapter.document_scene(1, 1).lengths.is_empty());
 
     let legacy_drag = adapter
@@ -21242,31 +21073,6 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
     );
     let to_view =
         |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale));
-    cx.simulate_click(to_view(72., 240.), Modifiers::default());
-    assert_eq!(
-        workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
-        Some("Set page scale before placing measurement markups.".to_owned())
-    );
-    assert!(
-        workspace
-            .read_with(cx, |workspace, cx| workspace
-                .annotation_snapshot(request.document_id, cx))
-            .unwrap()
-            .lengths
-            .is_empty()
-    );
-    let rejected = workspace
-        .read_with(cx, |workspace, cx| {
-            workspace.annotation_snapshot(request.document_id, cx)
-        })
-        .unwrap();
-    assert_eq!((rejected.revision, rejected.undo_depth), (0, 0));
-    assert_eq!(
-        workspace.read_with(cx, |workspace, cx| workspace
-            .annotation_tool(request.document_id, cx)),
-        Some(AnnotationTool::Length),
-        "a missing page scale must leave Length armed"
-    );
 
     workspace
         .update(cx, |workspace, cx| {
@@ -44348,4 +44154,118 @@ fn assert_same_persisted_page_scales(actual: &[PageScale], expected: &[PageScale
             "{actual:?} != {expected:?}"
         );
     }
+}
+
+fn annotation_count(
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: DocumentId,
+    cx: &mut gpui::VisualTestContext,
+) -> usize {
+    workspace
+        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .unwrap()
+        .annotation_order
+        .len()
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Gesture {
+    Drag,
+    ClicksThenDoubleClick,
+    ClickTypeThenClickAway,
+}
+
+fn tool_creates_with(
+    cx: &mut TestAppContext,
+    tool: AnnotationTool,
+    gesture: Gesture,
+) -> (bool, Option<String>) {
+    let (workspace, document_id, cx) = scrolled_test_workspace(cx, 300.);
+    workspace
+        .update(cx, |workspace, cx| workspace.set_annotation_tool(document_id, tool, cx))
+        .unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    let at = |dx: f32, dy: f32| point(viewport.origin.x + px(dx), viewport.origin.y + px(dy));
+    let before = annotation_count(&workspace, document_id, cx);
+    match gesture {
+        Gesture::Drag => {
+            cx.simulate_mouse_down(at(80., 80.), MouseButton::Left, Modifiers::default());
+            for step in 1..=8 {
+                let t = step as f32 / 8.;
+                cx.simulate_mouse_move(at(80. + 120. * t, 80. + 60. * t), Some(MouseButton::Left), Modifiers::default());
+            }
+            cx.simulate_mouse_up(at(200., 140.), MouseButton::Left, Modifiers::default());
+        }
+        Gesture::ClickTypeThenClickAway => {
+            cx.simulate_click(at(120., 120.), Modifiers::default());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.simulate_input("Hello");
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.simulate_click(at(400., 400.), Modifiers::default());
+        }
+        Gesture::ClicksThenDoubleClick => {
+            for (x, y) in [(80., 80.), (200., 80.), (200., 160.)] {
+                cx.simulate_click(at(x, y), Modifiers::default());
+            }
+            let last = at(80., 160.);
+            cx.simulate_click(last, Modifiers::default());
+            cx.simulate_event(gpui::MouseDownEvent {
+                position: last,
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count: 2,
+                first_mouse: false,
+            });
+            cx.simulate_event(gpui::MouseUpEvent {
+                position: last,
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count: 2,
+            });
+        }
+    }
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let created = annotation_count(&workspace, document_id, cx) > before;
+    (created, workspace.read_with(cx, |workspace, _| workspace.annotation_status()))
+}
+
+/// Every creation tool makes a markup through real pointer input with the
+/// gesture Revu uses for it. (Image needs a picked file and is covered by its
+/// placement tests.)
+#[gpui::test]
+fn every_tool_creates_a_markup_with_its_real_gesture(cx: &mut TestAppContext) {
+    use Gesture::{ClickTypeThenClickAway as Type, ClicksThenDoubleClick as Clicks, Drag};
+    let cases = [
+        (AnnotationTool::Rectangle, Drag),
+        (AnnotationTool::Ellipse, Drag),
+        (AnnotationTool::Redact, Drag),
+        (AnnotationTool::Line, Drag),
+        (AnnotationTool::Arrow, Drag),
+        (AnnotationTool::Pen, Drag),
+        (AnnotationTool::Highlight, Drag),
+        (AnnotationTool::Cloud, Drag),
+        (AnnotationTool::Cloud, Clicks),
+        (AnnotationTool::CloudPlus, Drag),
+        (AnnotationTool::CloudPlus, Clicks),
+        (AnnotationTool::Callout, Drag),
+        (AnnotationTool::Snapshot, Drag),
+        (AnnotationTool::Snapshot, Clicks),
+        (AnnotationTool::Arc, Clicks),
+        (AnnotationTool::Polyline, Clicks),
+        (AnnotationTool::Polygon, Clicks),
+        (AnnotationTool::Polylength, Clicks),
+        (AnnotationTool::Area, Clicks),
+        (AnnotationTool::Dimension, Clicks),
+        (AnnotationTool::Length, Clicks),
+        (AnnotationTool::TextBox, Type),
+    ];
+    let failures: Vec<String> = cases
+        .into_iter()
+        .filter_map(|(tool, gesture)| {
+            let (created, status) = tool_creates_with(cx, tool, gesture);
+            (!created).then(|| format!("{tool:?} by {gesture:?} created nothing (status: {status:?})"))
+        })
+        .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

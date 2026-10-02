@@ -187,6 +187,8 @@ impl Drop for SessionManifestScratch {
 
 struct NativeShellPidScratchGuard {
     root: PathBuf,
+    // Matched against /proc on Linux before a leftover worker is stopped.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     worker_executable: PathBuf,
     worker_pids: Vec<u32>,
 }

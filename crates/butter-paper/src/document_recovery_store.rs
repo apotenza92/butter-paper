@@ -249,8 +249,12 @@ pub struct DocumentRecoveryStore {
     objects: PathBuf,
     heads: PathBuf,
     staging: PathBuf,
+    // Windows reaches these by path; Unix uses the retained directory handles.
+    #[cfg(windows)]
     staging_lease: PathBuf,
+    #[cfg(any(windows, test))]
     index: PathBuf,
+    #[cfg(windows)]
     lease: PathBuf,
     #[cfg(unix)]
     store_directory: File,
@@ -317,17 +321,17 @@ impl DocumentRecoveryStore {
             open_or_create_private_directory_at(&store_directory, STAGING_DIRECTORY, &staging)?;
         #[cfg(windows)]
         create_private_directory(&staging)?;
-        let staging_lease = store.join(STAGING_LEASE_NAME);
-        let index = store.join(INDEX_NAME);
-        let lease = store.join(LEASE_NAME);
         let result = Self {
+            #[cfg(windows)]
+            staging_lease: store.join(STAGING_LEASE_NAME),
+            #[cfg(any(windows, test))]
+            index: store.join(INDEX_NAME),
+            #[cfg(windows)]
+            lease: store.join(LEASE_NAME),
             store,
             objects,
             heads,
             staging,
-            staging_lease,
-            index,
-            lease,
             #[cfg(unix)]
             store_directory,
             #[cfg(unix)]
@@ -1714,6 +1718,7 @@ impl DocumentRecoveryStore {
         Ok(changed)
     }
 
+    #[cfg(any(windows, test))]
     fn head_path(&self, id: RecoveryDocumentId) -> PathBuf {
         self.heads.join(format!("{}.json", id.to_hex()))
     }
@@ -2038,6 +2043,7 @@ fn validate_source_path(path: &Path) -> Result<(), Corruption> {
     Ok(())
 }
 
+#[cfg(windows)]
 fn create_private_directory(path: &Path) -> Result<(), DocumentRecoveryStoreError> {
     match fs::symlink_metadata(path) {
         Ok(_) => validate_private_directory(path),
@@ -2065,6 +2071,7 @@ fn create_private_directory(path: &Path) -> Result<(), DocumentRecoveryStoreErro
     }
 }
 
+#[cfg(windows)]
 fn validate_private_directory(path: &Path) -> Result<(), DocumentRecoveryStoreError> {
     validate_directory(path, "inspect recovery directory")?;
     #[cfg(unix)]
@@ -2096,6 +2103,7 @@ fn validate_directory(
     Ok(())
 }
 
+#[cfg(windows)]
 fn validate_regular_file(
     path: &Path,
     operation: &'static str,
@@ -2105,6 +2113,7 @@ fn validate_regular_file(
     Ok(metadata)
 }
 
+#[cfg(windows)]
 fn open_regular_file(
     path: &Path,
     operation: &'static str,
@@ -2216,6 +2225,8 @@ impl RecoveryTemporary {
         destination_leaf: &Path,
     ) -> Result<(), DocumentRecoveryStoreError> {
         self.close();
+        #[cfg(unix)]
+        let _ = destination_directory;
         #[cfg(unix)]
         rustix::fs::renameat(
             &self.directory,
@@ -2532,7 +2543,7 @@ fn remove_regular_at(
         .map_err(|error| io_error(operation, io::Error::from(error)))
 }
 
-fn read_bounded_file(mut file: File, limit: u64) -> Result<Vec<u8>, DocumentRecoveryStoreError> {
+fn read_bounded_file(file: File, limit: u64) -> Result<Vec<u8>, DocumentRecoveryStoreError> {
     let mut bytes = Vec::new();
     file.take(limit + 1)
         .read_to_end(&mut bytes)
@@ -2637,66 +2648,7 @@ fn write_and_sync(file: &mut File, bytes: &[u8]) -> Result<(), DocumentRecoveryS
         .map_err(|error| io_error("sync recovery file", error))
 }
 
-fn hash_file_bounded(
-    path: &Path,
-    limit: u64,
-) -> Result<([u8; 32], u64), DocumentRecoveryStoreError> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-    }
-    let mut file = options
-        .open(path)
-        .map_err(|error| io_error("open recovery object", error))?;
-    validate_regular_metadata(
-        &file
-            .metadata()
-            .map_err(|error| io_error("inspect recovery object", error))?,
-    )?;
-    let mut hasher = Sha256::new();
-    let mut byte_len = 0_u64;
-    let mut buffer = [0_u8; STREAM_BUFFER_BYTES];
-    loop {
-        let count = file
-            .read(&mut buffer)
-            .map_err(|error| io_error("read recovery object", error))?;
-        if count == 0 {
-            break;
-        }
-        byte_len = byte_len
-            .checked_add(count as u64)
-            .ok_or(DocumentRecoveryStoreError::Corrupt(Corruption::Oversize))?;
-        if byte_len > limit {
-            return Err(DocumentRecoveryStoreError::Corrupt(Corruption::Oversize));
-        }
-        hasher.update(&buffer[..count]);
-    }
-    Ok((hasher.finalize().into(), byte_len))
-}
 
-fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, DocumentRecoveryStoreError> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-    }
-    let file = options
-        .open(path)
-        .map_err(|error| io_error("open recovery file", error))?;
-    let mut bytes = Vec::new();
-    file.take(limit + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| io_error("read recovery file", error))?;
-    if bytes.len() as u64 > limit {
-        return Err(DocumentRecoveryStoreError::Corrupt(Corruption::Oversize));
-    }
-    Ok(bytes)
-}
 
 fn sync_directory(
     path: &Path,
@@ -2706,11 +2658,11 @@ fn sync_directory(
     directory
         .sync_all()
         .map_err(|error| io_error("sync recovery directory", error))?;
-    #[cfg(windows)]
     let _ = path;
     Ok(())
 }
 
+#[cfg(windows)]
 fn sync_directory_path(path: &Path) -> Result<(), DocumentRecoveryStoreError> {
     #[cfg(unix)]
     File::open(path)
@@ -2900,25 +2852,6 @@ fn hex_nibble(value: u8) -> Option<u8> {
         b'0'..=b'9' => Some(value - b'0'),
         b'a'..=b'f' => Some(value - b'a' + 10),
         _ => None,
-    }
-}
-
-struct TemporaryGuard(PathBuf);
-
-impl TemporaryGuard {
-    fn new(path: PathBuf) -> Self {
-        Self(path)
-    }
-    fn disarm(&mut self) {
-        self.0.clear();
-    }
-}
-
-impl Drop for TemporaryGuard {
-    fn drop(&mut self) {
-        if !self.0.as_os_str().is_empty() {
-            let _ = fs::remove_file(&self.0);
-        }
     }
 }
 

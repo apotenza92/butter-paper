@@ -193,6 +193,8 @@ impl RasterSurface {
         pixels.any(|pixel| pixel != first)
     }
 
+    // Windows and Linux composite highlights into the raster; macOS draws them.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub(crate) fn precompose_highlights(
         &mut self,
         page_index: u32,

@@ -16,6 +16,7 @@ fn halo_colour() -> Hsla {
 }
 
 /// Locked handles are visibly inert; they do not imply the active yellow affordance.
+#[cfg(test)]
 pub(super) fn locked_handle_colour() -> Hsla {
     rgb(0x94a3b8).into()
 }
@@ -416,6 +417,7 @@ fn marquee_paths(
 
 /// Active marquee hits take Hover precedence even over primary selection.
 /// The locked flag continues to suppress handles in each domain painter.
+#[cfg(test)]
 pub(super) fn outline_for_marquee_candidate(
     selected: bool,
     focused: bool,
@@ -435,6 +437,7 @@ pub(super) fn outline_for_marquee_candidate(
 /// draft, focused primary selection, ordinary hover, plain selection.
 /// Returns None when the annotation carries no feedback state. Widths, dashes
 /// and handle geometry are a separate parity slice; this resolves colour only.
+#[cfg(test)]
 pub(super) fn outline_for(
     selected: bool,
     focused: bool,

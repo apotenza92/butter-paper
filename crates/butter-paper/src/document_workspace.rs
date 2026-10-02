@@ -107,7 +107,7 @@ use crate::{
     annotation_adapter::{
         AnnotationAdapter, AnnotationTool, CALLOUT_BODY_ID, CALLOUT_TEXT_BOX_ID, CLOUD_BODY_ID,
         DIMENSION_BODY_ID, DIMENSION_END_HANDLE_ID, DIMENSION_OFFSET_HANDLE_ID,
-        DIMENSION_START_HANDLE_ID, LENGTH_SCALE_REQUIRED_MESSAGE, NATURAL_IMAGE_MAX_PAGE_FRACTION,
+        DIMENSION_START_HANDLE_ID, NATURAL_IMAGE_MAX_PAGE_FRACTION,
         PendingImagePreview, PointerInputModifiers, PointerPhaseOutcome, StraightLinePropertyEdit,
         VertexPathPropertyEdit, callout_resize_handle_id, ellipse_resize_handle_point_for_rect,
         ellipse_rotation_handle_point_for_rect, redact_resize_handle_id, snapshot_resize_handle_id,
@@ -16465,6 +16465,52 @@ impl DocumentWorkspace {
             cx.notify();
             return true;
         }
+        // Double-click places the last vertex and finishes, as in Revu
+        // (Enter still finishes without adding one).
+        if matches!(tool, AnnotationTool::Polyline | AnnotationTool::Polygon)
+            && click_count >= 2
+            && session
+                .read(cx)
+                .annotations
+                .vertex_path_pending(interaction.document_id.value())
+        {
+            let pointer_id = self.next_pointer_id;
+            let outcome = self.update_annotation_history_with_result(
+                interaction.document_id,
+                cx,
+                |annotations, document_id| {
+                    let placed = annotations.pointer_down(
+                        document_id,
+                        interaction.page_index,
+                        pointer_id,
+                        point,
+                        interaction.transform.tolerance_points(4.)?,
+                    )?;
+                    // A polygon closed on its first vertex is already created.
+                    let outcome = if matches!(placed, PointerPhaseOutcome::AnnotationCreated(_)) {
+                        placed
+                    } else {
+                        annotations.finish_vertex_path(document_id)?
+                    };
+                    if matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_)) {
+                        annotations.set_tool(AnnotationTool::Select)?;
+                    }
+                    Ok::<PointerPhaseOutcome, AnnotationError>(outcome)
+                },
+            );
+            match outcome {
+                Ok(PointerPhaseOutcome::AnnotationCreated(_)) => {
+                    self.annotation_statuses.remove(&interaction.document_id);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    self.annotation_statuses
+                        .insert(interaction.document_id, error.to_string());
+                }
+            }
+            cx.notify();
+            return true;
+        }
         if tool == AnnotationTool::Cloud
             && click_count >= 2
             && session
@@ -16744,12 +16790,6 @@ impl DocumentWorkspace {
                     self.annotation_statuses.remove(&interaction.document_id);
                 }
                 Ok(_) => {}
-                Err(AnnotationError::InvalidGeometry(message))
-                    if message == LENGTH_SCALE_REQUIRED_MESSAGE =>
-                {
-                    self.annotation_statuses
-                        .insert(interaction.document_id, message);
-                }
                 Err(error) => {
                     self.annotation_statuses
                         .insert(interaction.document_id, error.to_string());
@@ -17597,6 +17637,19 @@ impl DocumentWorkspace {
             return false;
         }
         let tool = session.read(cx).annotations.tool();
+        // Releasing a Snapshot drag away from its start captures that box,
+        // exactly as a second click there would. A click keeps the two-click form.
+        if tool == AnnotationTool::Snapshot
+            && session
+                .read(cx)
+                .annotations
+                .snapshot_pending_rect_to(active.document_id.value(), active.page_index, point)
+                .is_some_and(|rect| rect.width > 2. && rect.height > 2.)
+        {
+            let handled = self.begin_annotation_pointer(position, modifiers, 1, window, cx);
+            self.active_annotation_pointer = None;
+            return handled;
+        }
         let selection_supplement =
             self.annotation_caption_selection_paths(active.document_id, active.page_index, cx);
         let recovery_store = self.document_recovery_store.clone();

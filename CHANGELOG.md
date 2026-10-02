@@ -4,6 +4,20 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.1.1]
+
+### Tools
+
+- Cloud: drag to draw a rectangular cloud, or click its corners and
+  double-click to finish.
+- Polyline and Polygon finish with a double-click, as in Revu (Enter still
+  works).
+- Snapshot: drag a box to capture it (two clicks still work).
+- Length, Polylength and Area measure straight away on a page without a
+  scale, at Revu's default of 1 in = 1 in. Set the page scale to change it.
+- Every drawing tool is now covered by a test that draws with it the way
+  you would.
+
 ## [0.1.0]
 
 Butter Paper is now a single native app built from a clean Rust codebase,
@@ -13,7 +27,10 @@ Beta (macOS) follows beta releases.
 
 ### Updating to 0.1.0
 
-- Homebrew: `brew upgrade --cask butter-paper`.
+- Homebrew: `brew upgrade --cask --greedy butter-paper` (or `butter-paper@beta`); `--greedy` is needed once, because older versions could not update themselves.
+  If Homebrew says the Beta app "is not there", the move from Electron already
+  replaced it: run `brew uninstall --cask --force butter-paper@beta`, then
+  `brew install --cask --force butter-paper`.
 - Butter Paper 0.0.26 cannot update itself, so install 0.1.0 by hand once:
   on macOS replace the app; on Windows run the new `install.ps1`, then the
   old version's `uninstall.ps1`; on Linux run the old version's

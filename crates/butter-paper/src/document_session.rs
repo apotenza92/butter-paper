@@ -204,6 +204,8 @@ pub(crate) struct ThumbnailPresentation {
     pub(crate) page_index: u32,
     pub(crate) base_raster: RasterSurface,
     pub(crate) image: Arc<RenderImage>,
+    // Read where highlights are precomposed (Windows and Linux).
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub(crate) highlight_pixels: usize,
 }
 

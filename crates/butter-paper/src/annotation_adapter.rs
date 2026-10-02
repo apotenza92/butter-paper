@@ -70,8 +70,6 @@ const LENGTH_MINIMUM_PDF_DISTANCE: f64 = 2.0;
 const ARC_MINIMUM_BULGE_CSS_PX: f64 = 8.0;
 pub const ROTATION_HANDLE_OFFSET_CSS_PX: f64 = 12.0;
 pub const ELLIPSE_ROTATION_HANDLE_ID: &str = "ellipse.rotate";
-pub const LENGTH_SCALE_REQUIRED_MESSAGE: &str =
-    "Set page scale before placing measurement markups.";
 pub const ARC_START_HANDLE_ID: &str = "arc.point.start";
 pub const ARC_MID_HANDLE_ID: &str = "arc.point.mid";
 pub const ARC_END_HANDLE_ID: &str = "arc.point.end";
@@ -3760,6 +3758,18 @@ impl AnnotationAdapter {
             .and_then(|document| document.page_length_calibration(page_index))
     }
 
+    /// The page's calibration, or Revu's default for an uncalibrated page:
+    /// 1 in on paper = 1 in, to two decimal places. Measuring never waits for
+    /// a scale to be set; setting one changes later measurements.
+    pub fn measurement_calibration(&self, document_id: u64, page_index: u32) -> LengthCalibration {
+        self.document_page_length_calibration(document_id, page_index)
+            .cloned()
+            .unwrap_or_else(|| {
+                LengthCalibration::from_scale(72., 1., "in", 2, true)
+                    .expect("the default 1 in = 1 in scale is valid")
+            })
+    }
+
     pub fn document_page_scale(&self, document_id: u64, page_index: u32) -> Option<&PageScale> {
         self.documents
             .get(&document_id)
@@ -3780,14 +3790,6 @@ impl AnnotationAdapter {
         start: PdfPoint,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
         self.cancel(PointerCancelReason::AdapterError)?;
-        if self
-            .document_page_length_calibration(document_id, page_index)
-            .is_none()
-        {
-            return Err(AnnotationError::InvalidGeometry(
-                LENGTH_SCALE_REQUIRED_MESSAGE.into(),
-            ));
-        }
         let start = self.resolve_semantic_creation_point(document_id, page_index, start, false);
         self.documents
             .entry(document_id)
@@ -4816,12 +4818,7 @@ impl AnnotationAdapter {
         {
             return Ok(PointerPhaseOutcome::Ignored);
         }
-        let calibration = self
-            .document_page_length_calibration(document_id, page_index)
-            .cloned()
-            .ok_or_else(|| {
-                AnnotationError::InvalidGeometry(LENGTH_SCALE_REQUIRED_MESSAGE.into())
-            })?;
+        let calibration = self.measurement_calibration(document_id, page_index);
         let properties = self.tool_properties(AnnotationTool::Length);
         let annotation = LengthAnnotation::new_with_appearance(
             id.clone(),
@@ -6691,12 +6688,7 @@ impl AnnotationAdapter {
                 }
                 draft.hover = point;
             } else {
-                let calibration = self
-                    .document_page_length_calibration(document_id, page_index)
-                    .cloned()
-                    .ok_or_else(|| {
-                        AnnotationError::InvalidGeometry(LENGTH_SCALE_REQUIRED_MESSAGE.into())
-                    })?;
+                let calibration = self.measurement_calibration(document_id, page_index);
                 let id = self.next_id(self.tool)?;
                 self.documents
                     .entry(document_id)
@@ -8807,6 +8799,28 @@ impl AnnotationAdapter {
             require_pointer(draft.pointer_id, pointer_id)?;
             draft.current = point;
             return Ok(PointerPhaseOutcome::PlacementPending);
+        }
+        // Dragging out the first Cloud segment draws a rectangular cloud;
+        // clicking places vertices one by one.
+        if self.tool == AnnotationTool::Cloud
+            && let Some(draft) = self.cloud_draft.as_mut()
+            && draft.points.len() == 1
+        {
+            let start = draft.points[0];
+            let pixels_per_point = self.observed_pixels_per_point.0;
+            let wide = (point.x - start.x).abs() * pixels_per_point >= CLOUD_DRAG_MINIMUM_CSS_PX;
+            let tall = (point.y - start.y).abs() * pixels_per_point >= CLOUD_DRAG_MINIMUM_CSS_PX;
+            if wide && tall {
+                draft.points = vec![
+                    start,
+                    PdfPoint { x: point.x, y: start.y },
+                    point,
+                    PdfPoint { x: start.x, y: point.y },
+                ];
+                draft.hover = start;
+                let document_id = draft.document_id;
+                return self.finish_cloud(document_id);
+            }
         }
         let active = self.active.take().ok_or(AnnotationError::NoActiveGesture)?;
         let outcome = match active {
@@ -13396,6 +13410,9 @@ fn moving_snap_context(
     (anchors, excluded_ids)
 }
 
+/// The smallest drag, on each axis, that draws a rectangular cloud.
+const CLOUD_DRAG_MINIMUM_CSS_PX: f64 = 8.0;
+
 fn point_distance_css_px(start: PdfPoint, end: PdfPoint, observed_pixels_per_point: f64) -> f64 {
     (end.x - start.x).hypot(end.y - start.y) * observed_pixels_per_point
 }
@@ -13500,11 +13517,13 @@ fn dimension_tool_appearance(
     )
 }
 
+#[cfg(test)]
 fn default_cloud_plus_appearance() -> Result<CloudPlusAppearance, AnnotationError> {
     let properties = ToolProperties::for_tool(AnnotationTool::CloudPlus);
     cloud_plus_tool_appearance(&properties)
 }
 
+#[cfg(test)]
 fn default_dimension_appearance() -> Result<DimensionAppearance, AnnotationError> {
     let properties = ToolProperties::for_tool(AnnotationTool::Dimension);
     dimension_tool_appearance(&properties)

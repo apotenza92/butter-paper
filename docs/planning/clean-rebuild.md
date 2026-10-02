@@ -106,6 +106,12 @@ launcher becomes `butter-paper`.
   is unchanged). Its TUF-signed Electron feed must be refreshed or retired
   before its metadata expires; once Electron users have moved, the feed can
   lapse.
-- Follow-ups: remove the unused Electron data-import code; per-platform
-  pass over the macOS dead-code warnings; a PDFium build pipeline for the
-  next PDFium upgrade.
+- 2026-10-02 (0.1.1): Electron data-import code removed (startup keeps only
+  the durable-root check); dead code and warnings cleared, with
+  platform-specific code gated to its platform. Owner reported tools doing
+  nothing: an end-to-end test now draws with every tool. Fixed Cloud drag,
+  Polyline/Polygon double-click, Snapshot drag, and measuring without a page
+  scale (Revu's 1 in = 1 in default). PDFium upgrades: docs/pdfium/README.md.
+- Accepted: the Electron feed's TUF metadata expires about six weeks after
+  0.0.31 and is not refreshed; Electron users who have not opened the app by
+  then download 0.1.x directly.
