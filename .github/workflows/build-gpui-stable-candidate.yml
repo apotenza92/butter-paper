@@ -88,6 +88,7 @@ jobs:
             os: macos
             arch: arm64
             node_arch: arm64
+            channel: stable
             optional: false
           - label: macos-x64
             target: x86_64-apple-darwin
@@ -95,6 +96,25 @@ jobs:
             os: macos
             arch: x64
             node_arch: x64
+            channel: stable
+            optional: false
+          # Butter Paper Beta installs beside the stable app; beta copies
+          # keep this identity when a release ships both packages.
+          - label: macos-arm64-beta
+            target: aarch64-apple-darwin
+            runner: macos-26
+            os: macos
+            arch: arm64
+            node_arch: arm64
+            channel: beta
+            optional: false
+          - label: macos-x64-beta
+            target: x86_64-apple-darwin
+            runner: macos-26-intel
+            os: macos
+            arch: x64
+            node_arch: x64
+            channel: beta
             optional: false
           - label: windows-arm64
             target: aarch64-pc-windows-msvc
@@ -377,6 +397,7 @@ jobs:
           test "$APPLE_SIGNING_IDENTITY" = 'Developer ID Application: Alexander Potenza (27JL2VERNC)'
           for value in APPLE_NOTARYTOOL_ISSUER_ID APPLE_NOTARYTOOL_KEY_ID APPLE_NOTARYTOOL_KEY_P8_BASE64 APPLE_SIGNING_CERTIFICATE_P12_BASE64 APPLE_SIGNING_CERTIFICATE_PASSWORD APPLE_SIGNING_CERTIFICATE_SHA256; do test -n "${!value}"; done
           signing="$RUNNER_TEMP/signing"
+          app="$RUNNER_TEMP/${{ matrix.channel == 'beta' && 'Butter Paper Beta.app' || 'Butter Paper.app' }}"
           input="$RUNNER_TEMP/macos-input"
           stage="$RUNNER_TEMP/pdfium-stage"
           output="$RUNNER_TEMP/candidate/$TARGET_LABEL"
@@ -398,11 +419,11 @@ jobs:
           xcrun notarytool store-credentials bp-gpui-notary --key "$signing/AuthKey.p8" --key-id "$APPLE_NOTARYTOOL_KEY_ID" --issuer "$APPLE_NOTARYTOOL_ISSUER_ID" --keychain "$signing/signing.keychain-db"
           node "$MIGRATION_ROOT/scripts/stage-pdfium-production.mjs" --manifest "$RUNNER_TEMP/approved-pdfium/production-pdfium-approved.json" --artifact-root "$RUNNER_TEMP/approved-pdfium" --target "$TARGET_TRIPLE" --output-dir "$stage"
           xcrun swiftc -swift-version 5 -O -target "${{ matrix.arch == 'arm64' && 'arm64' || 'x86_64' }}-apple-macos13.0" "$MIGRATION_ROOT/native/SignatureCamera.swift" -o "$RUNNER_TEMP/butter-paper-signature-camera"
-          node "$MIGRATION_ROOT/scripts/prepare-macos-production-inputs.mjs" --application "$CARGO_TARGET_DIR/$TARGET_TRIPLE/release/gpui-migration" --worker "$CARGO_TARGET_DIR/$TARGET_TRIPLE/release/butter-paper-pdf-worker" --camera-helper "$RUNNER_TEMP/butter-paper-signature-camera" --phone-helper "$RUNNER_TEMP/butter-paper-signature-phone" --target "$TARGET_TRIPLE" --minimum-system-version 13.0 --build-version "$BUILD_VERSION" --output-root "$input" --receipt "$RUNNER_TEMP/macos-input.json"
+          node "$MIGRATION_ROOT/scripts/prepare-macos-production-inputs.mjs" --application "$CARGO_TARGET_DIR/$TARGET_TRIPLE/release/gpui-migration" --worker "$CARGO_TARGET_DIR/$TARGET_TRIPLE/release/butter-paper-pdf-worker" --camera-helper "$RUNNER_TEMP/butter-paper-signature-camera" --phone-helper "$RUNNER_TEMP/butter-paper-signature-phone" --target "$TARGET_TRIPLE" --minimum-system-version 13.0 --build-version "$BUILD_VERSION" --channel "${{ matrix.channel }}" --output-root "$input" --receipt "$RUNNER_TEMP/macos-input.json"
           node "$MIGRATION_ROOT/scripts/bind-macos-production-manifest.mjs" --input-receipt "$RUNNER_TEMP/macos-input.json" --pdfium-stage "$stage" --manifest "$RUNNER_TEMP/macos-manifest.json"
-          node "$MIGRATION_ROOT/scripts/assemble-macos-production.mjs" --manifest "$RUNNER_TEMP/macos-manifest.json" --input-root "$input" --pdfium-stage "$stage" --output-dir "$RUNNER_TEMP/Butter Paper.app"
-          node "$MIGRATION_ROOT/scripts/sign-notarize-macos-production.mjs" --app "$RUNNER_TEMP/Butter Paper.app" --manifest "$RUNNER_TEMP/macos-manifest.json" --identity "$APPLE_SIGNING_IDENTITY" --fingerprint "$APPLE_SIGNING_CERTIFICATE_SHA256" --notary-profile bp-gpui-notary --receipt "$RUNNER_TEMP/macos-signing.json"
-          node "$MIGRATION_ROOT/scripts/package-macos-signed-production.mjs" --app "$RUNNER_TEMP/Butter Paper.app" --receipt "$RUNNER_TEMP/macos-signing.json" --manifest "$RUNNER_TEMP/macos-manifest.json" --output "$output" --revision "$SOURCE_REVISION" --fingerprint "$APPLE_SIGNING_CERTIFICATE_SHA256"
+          node "$MIGRATION_ROOT/scripts/assemble-macos-production.mjs" --manifest "$RUNNER_TEMP/macos-manifest.json" --input-root "$input" --pdfium-stage "$stage" --output-dir "$app"
+          node "$MIGRATION_ROOT/scripts/sign-notarize-macos-production.mjs" --app "$app" --manifest "$RUNNER_TEMP/macos-manifest.json" --identity "$APPLE_SIGNING_IDENTITY" --fingerprint "$APPLE_SIGNING_CERTIFICATE_SHA256" --notary-profile bp-gpui-notary --receipt "$RUNNER_TEMP/macos-signing.json"
+          node "$MIGRATION_ROOT/scripts/package-macos-signed-production.mjs" --app "$app" --receipt "$RUNNER_TEMP/macos-signing.json" --manifest "$RUNNER_TEMP/macos-manifest.json" --output "$output" --revision "$SOURCE_REVISION" --fingerprint "$APPLE_SIGNING_CERTIFICATE_SHA256"
           security delete-keychain "$signing/signing.keychain-db"
           rm -rf "$signing"
       - name: Upload verified target candidate

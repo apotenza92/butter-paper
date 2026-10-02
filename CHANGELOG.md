@@ -4,6 +4,10 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.0.32]
+
+0.0.31 was prepared but not published; its changes are part of this release.
+
 ### Markup files
 
 - Markups are saved exactly as Bluebeam Revu saves the same tool: standard PDF
@@ -38,8 +42,6 @@ All notable Butter Paper changes are recorded here.
 - Pressing Return to finish a callout, Cloud+ or dimension label no longer
   replaces the selected text with a line break.
 
-## [0.0.31]
-
 ### Updates
 
 - Butter Paper now updates itself. It checks GitHub weekly by default (change
@@ -48,6 +50,8 @@ All notable Butter Paper changes are recorded here.
   published checksums (and, on macOS, its Developer ID signature), and installs
   it when you quit or choose Restart. Beta copies also receive newer stable
   releases.
+- Butter Paper Beta for macOS is published with each release. It installs
+  beside Butter Paper, keeps its own settings and stays on the Beta channel.
 
 ### Windows and tabs
 

@@ -29,9 +29,24 @@ describe("GPUI stable candidate workflow", () => {
 
   it("packages all six targets as required release artifacts", () => {
     const matrix = workflow.jobs.package.strategy.matrix.include;
+    const stable = matrix.filter(
+      ({ channel }: { channel?: string }) => channel !== "beta",
+    );
     expect(
-      matrix.map(({ target }: { target: string }) => target).sort(),
+      stable.map(({ target }: { target: string }) => target).sort(),
     ).toEqual([...targets].sort());
+    // Butter Paper Beta for macOS ships beside the stable packages.
+    expect(
+      matrix
+        .filter(({ channel }: { channel?: string }) => channel === "beta")
+        .map(({ label, target }: { label: string; target: string }) => [
+          label,
+          target,
+        ]),
+    ).toEqual([
+      ["macos-arm64-beta", "aarch64-apple-darwin"],
+      ["macos-x64-beta", "x86_64-apple-darwin"],
+    ]);
     expect(
       matrix.find(
         ({ target }: { target: string }) => target === "x86_64-apple-darwin",
@@ -44,7 +59,7 @@ describe("GPUI stable candidate workflow", () => {
     ).toBe(false);
     expect(
       matrix.filter(({ optional }: { optional: boolean }) => !optional),
-    ).toHaveLength(6);
+    ).toHaveLength(8);
     expect(workflow.jobs.package["continue-on-error"]).toBe(
       "${{ matrix.optional }}",
     );

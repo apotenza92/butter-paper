@@ -74,31 +74,35 @@ export async function packageSignedMacosProduction({
   const receiptBytes = await readFile(receiptFile);
   const manifest = readJson(manifestBytes, "native assembly manifest");
   const signingReceipt = readJson(receiptBytes, "signed app receipt");
-  if (manifest.channel !== "stable") fail("only stable signed macOS production apps can be packaged");
-  const target = targetNames.get(manifest.target);
-  if (!target) fail("native assembly target must be a supported macOS release target");
+  const channel = manifest.channel;
+  if (channel !== "stable" && channel !== "beta") fail("signed macOS production apps must be stable or beta");
+  const platform = targetNames.get(manifest.target);
+  if (!platform) fail("native assembly target must be a supported macOS release target");
+  // Beta packages install Butter Paper Beta beside the stable app.
+  const target = channel === "beta" ? `${platform}-beta` : platform;
+  const fileStem = `butter-paper-${target}`;
   const version = manifest.version;
   if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+([0-9A-Za-z.-]+))?$/.test(version ?? "")) fail("version must be stable semver");
-  const appName = "Butter Paper.app";
-  if (basename(app) !== appName) fail("signed app filename does not match the stable channel");
+  const appName = channel === "beta" ? "Butter Paper Beta.app" : "Butter Paper.app";
+  if (basename(app) !== appName) fail(`signed app filename does not match the ${channel} channel`);
   if (
     signingReceipt.schema !== "butter-paper/signed-native-macos-production" || signingReceipt.version !== 1 ||
-    signingReceipt.channel !== "stable" || signingReceipt.target !== manifest.target ||
+    signingReceipt.channel !== channel || signingReceipt.target !== manifest.target ||
     signingReceipt.identity !== "Developer ID Application: Alexander Potenza (27JL2VERNC)" ||
     signingReceipt.signingCertificateSha256 !== trustedFingerprint ||
     signingReceipt.codeObjectCount !== 5 ||
     signingReceipt.manifestSha256 !== sha256(manifestBytes) || signingReceipt.notarisation?.status !== "Accepted" ||
     typeof signingReceipt.notarisation?.submissionId !== "string" || !signingReceipt.notarisation.submissionId ||
     signingReceipt.stapled !== true || signingReceipt.verified !== true
-  ) fail("signing receipt does not match the stable assembly manifest and trusted notarised identity");
+  ) fail(`signing receipt does not match the ${channel} assembly manifest and trusted notarised identity`);
 
   await mkdir(output, { recursive: true });
   const realApp = await realpath(app);
   const realOutput = await realpath(output);
   if (!outside(realOutput, realApp)) fail("output directory must be outside the signed app bundle");
-  const archive = join(realOutput, `butter-paper-macos-${target === "macos-arm64" ? "arm64" : "x64"}-${version}.zip`);
-  const packageManifestPath = join(realOutput, `butter-paper-macos-${target === "macos-arm64" ? "arm64" : "x64"}-${version}.package.json`);
-  const verificationReceiptPath = join(realOutput, `butter-paper-macos-${target === "macos-arm64" ? "arm64" : "x64"}-${version}.verification.json`);
+  const archive = join(realOutput, `${fileStem}-${version}.zip`);
+  const packageManifestPath = join(realOutput, `${fileStem}-${version}.package.json`);
+  const verificationReceiptPath = join(realOutput, `${fileStem}-${version}.verification.json`);
   const destinations = [archive, packageManifestPath, verificationReceiptPath];
   for (const path of destinations) {
     try { await lstat(path); fail(`package output already exists: ${path}`); }
@@ -110,19 +114,19 @@ export async function packageSignedMacosProduction({
   const installed = [];
   try {
     const verification = await verify({ appPath: app, manifestPath: manifestFile, fingerprint: trustedFingerprint, run });
-    if (verification.channel !== "stable" || verification.target !== manifest.target || verification.codeObjectCount !== signingReceipt.codeObjectCount) fail("strict signed verifier returned mismatched channel, target, or code-object inventory");
+    if (verification.channel !== channel || verification.target !== manifest.target || verification.codeObjectCount !== signingReceipt.codeObjectCount) fail("strict signed verifier returned mismatched channel, target, or code-object inventory");
     await run(dittoPath, ["-c", "-k", "--keepParent", app, pending[0]]);
     const extractedRoot = join(temporaryRoot, "extracted");
     await mkdir(extractedRoot, { mode: 0o700 });
     await run(dittoPath, ["-x", "-k", pending[0], extractedRoot]);
     const extractedApp = join(extractedRoot, appName);
     const extractedVerification = await verify({ appPath: extractedApp, manifestPath: manifestFile, fingerprint: trustedFingerprint, run });
-    if (extractedVerification.channel !== "stable" || extractedVerification.target !== manifest.target || extractedVerification.codeObjectCount !== signingReceipt.codeObjectCount) fail("extracted signed verifier returned mismatched channel, target, or code-object inventory");
+    if (extractedVerification.channel !== channel || extractedVerification.target !== manifest.target || extractedVerification.codeObjectCount !== signingReceipt.codeObjectCount) fail("extracted signed verifier returned mismatched channel, target, or code-object inventory");
 
     const archiveBytes = await readFile(pending[0]);
     if (archiveBytes.length === 0) fail("release ZIP is empty");
     const artifact = { path: basename(archive), bytes: archiveBytes.length, sha256: sha256(archiveBytes) };
-    const identity = { target, channel: "stable", version, sourceRevision };
+    const identity = { target, channel, version, sourceRevision };
     const packageManifest = {
       schema: "butter-paper/package-manifest", schemaVersion: 1, ...identity, artifact,
       archiveFormat: "zip", appBundle: appName, assemblyManifestSha256: sha256(manifestBytes),

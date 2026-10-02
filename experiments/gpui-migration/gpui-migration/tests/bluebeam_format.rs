@@ -1053,3 +1053,86 @@ fn edited_revu_vector_snapshot_keeps_its_form() {
         original_document.get_object(original_form).unwrap()
     );
 }
+
+/// Run with `BP_REVIEW_SPECIMEN_OUT=/abs/out.pdf cargo test --test
+/// bluebeam_format -- --ignored` to export the visual review specimen: sloped
+/// measurements, a bordered callout and filled Cloud+.
+#[test]
+#[ignore = "exports a visual review specimen"]
+fn export_visual_review_specimen() {
+    let Some(target) = std::env::var_os("BP_REVIEW_SPECIMEN_OUT").map(PathBuf::from) else {
+        eprintln!("set BP_REVIEW_SPECIMEN_OUT to export the specimen");
+        return;
+    };
+    let source = target.with_extension("source.pdf");
+    blank_letter_pdf(&source);
+    let _ = std::fs::remove_file(&target);
+    let mut session = PdfPersistenceSession::open(&source).unwrap();
+    let text = TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.)
+        .unwrap()
+        .with_layout_metrics(13.8, 3.)
+        .unwrap();
+    let line = StraightLineAppearance::new("#ff0000", 1., 1., StrokeStyle::Solid).unwrap();
+    let wide = StraightLineAppearance::new("#ff0000", 2., 1., StrokeStyle::Solid).unwrap();
+    let calibration = LengthCalibration::from_scale(1., 100., "m", 2, true).unwrap();
+    session
+        .add_length(
+            LengthAnnotation::new_with_appearance(
+                id("REVIEWSLOPEDLENG"),
+                0,
+                point(80., 600.),
+                point(260., 700.),
+                calibration,
+                DimensionAppearance::new(line.clone(), text.clone()).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    session
+        .add_dimension(
+            DimensionAnnotation::new(
+                id("REVIEWSLOPEDDIME"),
+                0,
+                point(320., 700.),
+                point(480., 600.),
+                12.,
+                "door",
+                DimensionAppearance::new(line.clone(), text.clone()).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    session
+        .add_callout(
+            CalloutAnnotation::new(
+                id("REVIEWBORDERCALL"),
+                0,
+                vec![point(100., 450.), point(160., 500.)],
+                rect(160., 480., 280., 520.),
+                "Bordered",
+                CalloutAppearance::new(wide, text.clone()).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let filled = RectangleAppearance::new("#ff0000", 1., Some("#9999ff"), 1.)
+        .unwrap()
+        .with_fill_opacity(0.6)
+        .unwrap();
+    session
+        .add_cloud_plus(
+            CloudPlusAnnotation::new(
+                id("REVIEWFILLEDCLOU"),
+                0,
+                vec![point(330., 470.), point(450., 470.), point(450., 380.), point(330., 380.)],
+                2.,
+                vec![point(458., 425.), point(480., 425.), point(500., 425.)],
+                rect(500., 410., 570., 440.),
+                "Filled",
+                CloudPlusAppearance::new(filled, line, text).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    save_as(&session, &source, &target);
+}

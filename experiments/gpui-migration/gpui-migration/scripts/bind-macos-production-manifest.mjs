@@ -42,7 +42,7 @@ function validateInputReceipt(receipt, packageVersion) {
   if (
     receipt.schema !== "butter-paper/native-macos-production-inputs" ||
     receipt.version !== 1 ||
-    receipt.channel !== "stable" ||
+    (receipt.channel !== "stable" && receipt.channel !== "beta") ||
     receipt.applicationVersion !== packageVersion ||
     receipt.readyForAssembly !== false ||
     JSON.stringify(receipt.blockedOn) !==

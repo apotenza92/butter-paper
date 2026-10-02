@@ -13,7 +13,9 @@ const REQUIRED_TARGETS = [
   "windows-arm64",
   "windows-x64",
 ];
-const OPTIONAL_TARGETS = [];
+// Butter Paper Beta for macOS ships beside the stable packages so beta
+// copies keep their identity when they update.
+const OPTIONAL_TARGETS = ["macos-arm64-beta", "macos-x64-beta"];
 const ALL_TARGETS = new Set([...REQUIRED_TARGETS, ...OPTIONAL_TARGETS]);
 const REVISION = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -105,11 +107,11 @@ function parseJson(bytes, label) {
 function validateIdentity(value, expected, label) {
   if (
     value?.target !== expected.target ||
-    value?.channel !== "stable" ||
+    value?.channel !== (expected.target.endsWith("-beta") ? "beta" : "stable") ||
     value?.version !== expected.version ||
     value?.sourceRevision !== expected.sourceRevision
   ) {
-    fail(`${label} identity does not match the stable candidate descriptor`);
+    fail(`${label} identity does not match the candidate descriptor`);
   }
 }
 

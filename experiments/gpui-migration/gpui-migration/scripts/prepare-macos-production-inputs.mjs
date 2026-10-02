@@ -214,10 +214,14 @@ export async function prepareMacosProductionInputs({
   target,
   minimumSystemVersion,
   buildVersion,
+  channel = "stable",
   outputRoot,
   receiptPath,
   supportingFiles,
 }) {
+  if (channel !== "stable" && channel !== "beta") {
+    throw new Error("production input channel must be stable or beta");
+  }
   if (!supportedTargets.has(target))
     throw new Error("unsupported macOS production target");
   if (!/^(?:1[0-9]|2[0-9])\.[0-9]+$/.test(minimumSystemVersion)) {
@@ -308,7 +312,7 @@ export async function prepareMacosProductionInputs({
     const inputReceipt = {
       schema: "butter-paper/native-macos-production-inputs",
       version: 1,
-      channel: "stable",
+      channel,
       target,
       applicationVersion: packageVersion,
       buildVersion,
@@ -371,7 +375,7 @@ function argumentsMap(argv) {
       values.has(argv[index])
     ) {
       throw new Error(
-        "usage: prepare-macos-production-inputs.mjs --application FILE --worker FILE --camera-helper FILE --phone-helper FILE --target TRIPLE --minimum-system-version VERSION --build-version NUMBER --output-root DIR --receipt FILE",
+        "usage: prepare-macos-production-inputs.mjs --application FILE --worker FILE --camera-helper FILE --phone-helper FILE --target TRIPLE --minimum-system-version VERSION --build-version NUMBER --output-root DIR --receipt FILE [--channel stable|beta]",
       );
     }
     values.set(argv[index], argv[index + 1]);
@@ -410,6 +414,7 @@ if (process.argv[1] === scriptPath) {
       buildVersion: values.get("--build-version"),
       outputRoot: values.get("--output-root"),
       receiptPath: values.get("--receipt"),
+      channel: values.get("--channel") ?? "stable",
       supportingFiles: defaultSupportingFiles(iconAssetCatalogPath),
     });
   } finally {

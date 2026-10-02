@@ -49,7 +49,7 @@ async function fixture(targets = REQUIRED) {
     };
     const identity = {
       target,
-      channel: "stable",
+      channel: target.endsWith("-beta") ? "beta" : "stable",
       version: "1.2.3",
       sourceRevision: REVISION,
     };
@@ -127,6 +127,24 @@ test("aggregates exact required six-platform coverage deterministically", async 
     (await readFile(first.checksumPath, "utf8")).trim(),
     `${first.sha256}  ${first.outputPath.split("/").at(-1)}`,
   );
+});
+
+test("accepts Butter Paper Beta for macOS beside the stable packages", async (t) => {
+  const BETA = ["macos-arm64-beta", "macos-x64-beta"];
+  const { root } = await fixture([...REQUIRED, ...BETA]);
+  const result = await outputFor(root);
+  assert.deepEqual(result.manifest.optionalTargets, BETA);
+  assert.deepEqual(
+    result.manifest.targets.map(({ target }) => target),
+    [...REQUIRED, ...BETA].sort(),
+  );
+  await t.test("a beta package must declare the beta channel", async () => {
+    const { root: mislabelled } = await fixture([...REQUIRED, ...BETA]);
+    const receipt = join(mislabelled, "receipts/macos_arm64_beta.package.json");
+    const manifest = JSON.parse(await readFile(receipt, "utf8"));
+    await writeFile(receipt, JSON.stringify({ ...manifest, channel: "stable" }));
+    await assert.rejects(outputFor(mislabelled), /identity does not match/);
+  });
 });
 
 test("rejects missing, duplicate, and unexpected targets", async (t) => {
