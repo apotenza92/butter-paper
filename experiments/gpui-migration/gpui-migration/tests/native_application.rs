@@ -493,7 +493,7 @@ fn update_menu_items_follow_the_updater_state() {
     assert!(matches!(item(&checking, "Checking for Updates…"), MenuItem::Action { disabled: true, .. }));
 
     let ready = product(UpdateMenuState {
-        status: UpdateMenuStatus::Ready(ReleaseVersion(0, 0, 32)),
+        status: UpdateMenuStatus::Ready(ReleaseVersion::stable(0, 0, 32)),
         ..idle_state()
     });
     assert_action(item(&ready, "Restart to Update to 0.0.32"), |action| {
