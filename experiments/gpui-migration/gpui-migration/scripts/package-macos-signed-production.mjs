@@ -82,7 +82,8 @@ export async function packageSignedMacosProduction({
   const target = channel === "beta" ? `${platform}-beta` : platform;
   const fileStem = `butter-paper-${target}`;
   const version = manifest.version;
-  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+([0-9A-Za-z.-]+))?$/.test(version ?? "")) fail("version must be stable semver");
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.[1-9]\d*)?(?:\+([0-9A-Za-z.-]+))?$/.test(version ?? "")) fail("version must be X.Y.Z or X.Y.Z-beta.N");
+  if (version.includes("-beta.") && channel !== "beta") fail("a beta version packages Butter Paper Beta only");
   const appName = channel === "beta" ? "Butter Paper Beta.app" : "Butter Paper.app";
   if (basename(app) !== appName) fail(`signed app filename does not match the ${channel} channel`);
   if (

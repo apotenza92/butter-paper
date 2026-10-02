@@ -36,7 +36,10 @@
     "generate:fixtures": "node scripts/generate-fixtures.mjs",
     "generate:icons": "node scripts/render-brand-icons.mjs && node scripts/generate-icons.mjs",
     "lint:ui": "pnpm check:ui",
-    "check:ui": "node --test experiments/gpui-migration/gpui-migration/tests/document-tab-style-source.test.mjs experiments/gpui-migration/gpui-migration/tests/application-menu-source.test.mjs experiments/gpui-migration/gpui-migration/tests/ui-policy-source.test.mjs"
+    "check:ui": "node --test experiments/gpui-migration/gpui-migration/tests/document-tab-style-source.test.mjs experiments/gpui-migration/gpui-migration/tests/application-menu-source.test.mjs experiments/gpui-migration/gpui-migration/tests/ui-policy-source.test.mjs",
+    "release:version": "node scripts/release-version.mjs",
+    "release:check": "node scripts/release-check.mjs",
+    "release": "node scripts/release.mjs"
   },
   "devDependencies": {
     "@types/node": "25.6.0",

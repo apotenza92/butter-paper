@@ -2,10 +2,12 @@ import { readFileSync } from "node:fs";
 import YAML from "yaml";
 import { describe, expect, it } from "vitest";
 
-const path = ".github/workflows/build-gpui-stable-candidate.yml";
+// The Homebrew tap's registry names this file as Butter Paper's release
+// workflow; renaming it breaks Homebrew publication.
+const path = ".github/workflows/release.yml";
 const source = readFileSync(path, "utf8");
 const workflow = YAML.parse(source);
-// The build matrix comes from this table, filtered by the dispatched tier.
+// The build matrix comes from this table (macOS only for beta tags).
 const releaseTargets = JSON.parse(
   readFileSync(".github/release-targets.json", "utf8"),
 );
@@ -19,7 +21,7 @@ const targets = [
   "x86_64-unknown-linux-gnu",
 ];
 
-describe("GPUI stable candidate workflow", () => {
+describe("Release workflow", () => {
   it("keeps production binary messages clear of release-verifier marker strings", () => {
     for (const nativeSource of [
       "experiments/gpui-migration/gpui-migration/src/bin/gpui-migration.rs",
@@ -31,63 +33,69 @@ describe("GPUI stable candidate workflow", () => {
     }
   });
 
-  it("packages all six targets across two release tiers", () => {
+  it("releases from a pushed vX.Y.Z or vX.Y.Z-beta.N tag", () => {
+    expect(workflow.on).toEqual({ push: { tags: ["v*"] } });
+    expect(source).toContain("^v([0-9]+)\\.([0-9]+)\\.([0-9]+)$");
+    expect(source).toContain("-beta\\.([1-9][0-9]{0,3})$");
+    // As Macsimize: a release builds above its own betas.
+    expect(source).toContain(
+      "build_number=$(( ((major * 1000000) + (minor * 1000) + patch) * 100000 + stage ))",
+    );
+    expect(workflow.concurrency).toEqual({
+      group: "butter-paper-release",
+      "cancel-in-progress": false,
+    });
+  });
+
+  it("packages all six targets, and Butter Paper Beta for macOS, in one release", () => {
     expect(workflow.jobs.package.strategy.matrix.include).toBe(
       "${{ fromJSON(needs.validate.outputs.targets) }}",
     );
     expect(
       releaseTargets.map(({ target }: { target: string }) => target).sort(),
     ).toEqual([...targets].sort());
-    // The common targets ship first; the rest follow in a second run.
-    expect(
-      releaseTargets
-        .filter(({ tier }: { tier: string }) => tier === "primary")
-        .map(({ label }: { label: string }) => label),
-    ).toEqual(["macos-arm64", "windows-x64", "linux-x64"]);
-    expect(
-      releaseTargets
-        .filter(({ tier }: { tier: string }) => tier === "secondary")
-        .map(({ label }: { label: string }) => label),
-    ).toEqual(["macos-x64", "windows-arm64", "linux-arm64"]);
-    expect(workflow.on.workflow_dispatch.inputs.tier.options).toEqual([
-      "primary",
-      "secondary",
-    ]);
-    const runner = (target: string) =>
-      releaseTargets.find((entry: { target: string }) => entry.target === target)
-        ?.runner;
-    expect(runner("aarch64-pc-windows-msvc")).toBe("windows-11-arm");
-    expect(runner("aarch64-unknown-linux-gnu")).toBe("ubuntu-24.04-arm");
-    // Each macOS job packages Butter Paper and Butter Paper Beta from one
-    // build, so a release never carries one without the other.
-    expect(source).toContain("for channel in stable beta; do");
+    const entry = (target: string) =>
+      releaseTargets.find((candidate: { target: string }) => candidate.target === target);
+    expect(entry("aarch64-pc-windows-msvc")?.runner).toBe("windows-11-arm");
+    expect(entry("aarch64-unknown-linux-gnu")?.runner).toBe("ubuntu-24.04-arm");
+    // Intel macOS is cross-compiled on the Apple silicon runner.
+    expect(entry("x86_64-apple-darwin")?.runner).toBe("macos-26");
+    expect(entry("x86_64-apple-darwin")?.node_arch).toBe("arm64");
+    // Each macOS job packages both identities from one build; a beta tag
+    // builds Butter Paper Beta for macOS only.
+    expect(source).toContain("for channel in ${{ matrix.channels }}; do");
+    expect(source).toContain("channels: beta ? 'beta' : 'stable beta'");
+    expect(source).toContain(".filter((target) => !beta || target.os === 'macos')");
     expect(source).toContain("name: gpui-package-${{ matrix.label }}-beta");
     expect(workflow.jobs.aggregate.if).toContain("always()");
     expect(source).toContain("aggregate-stable-candidate.mjs");
   });
 
-  it("binds an exact main-reachable source commit and human-approved PDFium handoff", () => {
-    expect(workflow.on.workflow_dispatch.inputs.source_revision.required).toBe(
-      true,
+  it("caches Cargo downloads only, never build output", () => {
+    const cache = workflow.jobs.package.steps.find(
+      ({ name }: { name?: string }) => name === "Cache Cargo downloads",
     );
-    expect(
-      workflow.on.workflow_dispatch.inputs.approved_pdfium_run_id.required,
-    ).toBe(true);
-    expect(
-      workflow.on.workflow_dispatch.inputs.approved_pdfium_run_attempt.required,
-    ).toBe(true);
-    expect(workflow.on.workflow_dispatch.inputs).not.toHaveProperty(
-      "approved_pdfium_artifact",
-    );
-    expect(source).toContain('[[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]');
+    expect(cache.with.path.trim().split("\n")).toEqual([
+      "~/.cargo/registry/index",
+      "~/.cargo/registry/cache",
+      "~/.cargo/git/db",
+    ]);
+    expect(source).not.toMatch(/path:[^\n]*cargo-target/);
+  });
+
+  it("binds the tag's commit on main and the human-approved PDFium handoff", () => {
+    expect(source).toContain('test "$(git rev-parse "$TAG^{commit}")" = "$SOURCE_REVISION"');
     expect(source).toContain("git merge-base --is-ancestor HEAD origin/main");
+    expect(source).toContain('grep -qxF "## [$version]" CHANGELOG.md');
+    expect(source).toContain("require('./package.json').version");
     expect(
-      source.match(/ref: \$\{\{ inputs\.source_revision \}\}/g)?.length,
-    ).toBeGreaterThanOrEqual(2);
+      source.match(/ref: \$\{\{ github\.sha \}\}/g)?.length,
+    ).toBeGreaterThanOrEqual(4);
     expect(source).toContain("production-pdfium-approved.json");
-    expect(source).toContain("approved_pdfium_run_id");
+    expect(source).toContain("vars.BP_PDFIUM_APPROVAL_RUN_ID");
     expect(source).toContain("run.path !== '.github/workflows/approve-gpui-pdfium-production.yml'");
     expect(source).toContain("run.head_repository?.full_name !== repository");
+    expect(source).toContain("approved.expired");
     expect(source).toContain("name: gpui-pdfium-production-approved");
     expect(source).toContain("stage-pdfium-production.mjs");
     expect(source).toContain("stage-nonmac-pdfium-production.mjs");
@@ -221,70 +229,75 @@ describe("GPUI stable candidate workflow", () => {
     expect(source).toContain("notarytool store-credentials");
   });
 
-  it("passes dispatch inputs through environment variables before using them in shell scripts", () => {
+  it("passes tag and approval values through environment variables before using them in shell scripts", () => {
     expect(
       workflow.jobs.validate.steps.find(
         ({ id }: { id?: string }) => id === "identity",
       )?.env,
     ).toMatchObject({
-      APPROVED_PDFIUM_RUN_ID: "${{ inputs.approved_pdfium_run_id }}",
-      APPROVED_PDFIUM_RUN_ATTEMPT:
-        "${{ inputs.approved_pdfium_run_attempt }}",
-      BUILD_VERSION: "${{ inputs.build_version }}",
-      SOURCE_REVISION: "${{ inputs.source_revision }}",
+      APPROVED_PDFIUM_RUN_ID: "${{ vars.BP_PDFIUM_APPROVAL_RUN_ID }}",
+      APPROVED_PDFIUM_RUN_ATTEMPT: "${{ vars.BP_PDFIUM_APPROVAL_RUN_ATTEMPT }}",
+      SOURCE_REVISION: "${{ github.sha }}",
+      TAG: "${{ github.ref_name }}",
     });
     expect(workflow.jobs.package.env).toMatchObject({
-      BUILD_VERSION: "${{ inputs.build_version }}",
-      SOURCE_REVISION: "${{ inputs.source_revision }}",
+      BUILD_VERSION: "${{ needs.validate.outputs.build_number }}",
+      SOURCE_REVISION: "${{ github.sha }}",
     });
     for (const job of Object.values(workflow.jobs) as Array<{
       steps?: Array<{ run?: unknown }>;
     }>) {
       for (const step of job.steps ?? []) {
         if (typeof step.run === "string") {
-          expect(step.run).not.toMatch(/\$\{\{\s*inputs\./);
+          expect(step.run).not.toMatch(/\$\{\{\s*(inputs|github\.ref|github\.head_ref|vars)\b/);
         }
       }
     }
   });
 
-  it("aggregates packages, then only the publish job may write the release", () => {
+  it("publishes one complete immutable release, then hands Homebrew to the tap", () => {
     expect(source).toContain("aggregate-stable-candidate.mjs");
     expect(source).toContain("butter-paper/stable-candidate-input");
-    expect(workflow.jobs.aggregate.needs).toEqual([
-      "validate",
-      "package",
-    ]);
+    expect(workflow.jobs.aggregate.needs).toEqual(["validate", "package"]);
     expect(workflow.jobs.aggregate.if).toContain(
       "needs.package.result == 'success'",
     );
-    const aggregateDownloads = workflow.jobs.aggregate.steps.filter(
-      ({ uses }: { uses?: string }) =>
-        uses?.startsWith("actions/download-artifact@"),
-    );
-    expect(
-      aggregateDownloads.map(
-        ({ with: options }: { with: { pattern?: string } }) => options.pattern,
-      ),
-    ).toEqual(["gpui-package-*"]);
-    const aggregateSource = JSON.stringify(workflow.jobs.aggregate);
-    expect(aggregateSource).toContain("schemaVersion: 2");
-    expect(aggregateSource).not.toContain("runtime");
-    expect(aggregateSource).not.toContain("target === 'macos-x64'");
     expect(workflow.permissions).toEqual({ actions: "read", contents: "read" });
-    // Publishing waits for this tier's verified, aggregated receipt and is
-    // the only job that can write; signing jobs never can.
+    // Only the publish job can write a release, and only after every package
+    // is signed or verified and aggregated; signing jobs never can.
+    // (The homebrew job's app token writes to the tap repository only; its
+    // own permissions are checked below.)
     for (const [name, job] of Object.entries(workflow.jobs) as [string, any][]) {
-      if (name === "publish") continue;
-      expect(JSON.stringify(job)).not.toMatch(/contents"?:\s*"?write|gh release/);
+      if (name === "publish" || name === "homebrew") continue;
+      expect(JSON.stringify(job)).not.toMatch(/contents"?:\s*"?write|gh release|id-token/);
     }
     expect(workflow.jobs.publish.needs).toEqual(["validate", "aggregate"]);
-    expect(workflow.jobs.publish.permissions).toEqual({ contents: "write" });
+    expect(workflow.jobs.publish.permissions).toEqual({
+      contents: "write",
+      "id-token": "write",
+      attestations: "write",
+    });
     expect(workflow.jobs.publish).not.toHaveProperty("environment");
-    expect(source).not.toMatch(/id-token:\s*write|create-release/);
     const publish = JSON.stringify(workflow.jobs.publish);
-    expect(publish).toContain('test \\"$(git rev-parse \\"$tag^{commit}\\")\\" = \\"$SOURCE_REVISION\\"');
+    // Immutable releases: a draft carries every asset, which is checked
+    // before the single publication.
+    expect(publish).toContain("--draft --verify-tag");
+    expect(publish).toContain("--draft=false");
+    expect(publish).toContain("already exists; releases are immutable");
     expect(publish).toContain("SHA256SUMS.txt");
+    expect(publish).toContain("build-homebrew-publication.mjs");
+    expect(publish).toContain("homebrew-publication.tar.gz");
+    expect(publish).toContain("actions/attest@");
+    expect(publish).toContain(".immutable");
+    expect(publish).not.toContain("--clobber");
+    // The tap is asked to publish with the dispatch-only app token.
+    expect(workflow.jobs.homebrew.needs).toEqual(["validate", "publish"]);
+    expect(workflow.jobs.homebrew.environment).toBe("homebrew-dispatch");
+    expect(workflow.jobs.homebrew.permissions).toEqual({ contents: "read" });
+    const homebrew = JSON.stringify(workflow.jobs.homebrew);
+    expect(homebrew).toContain("publish-homebrew-v1");
+    expect(homebrew).toContain("repos/apotenza92/homebrew-tap/dispatches");
+    expect(homebrew).toContain("--arg product butter-paper");
     const actions = [...source.matchAll(/uses: ([^\s]+) # /g)].map(
       (match) => match[1],
     );

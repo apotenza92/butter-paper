@@ -62,23 +62,52 @@ impl fmt::Display for UpdateError {
 
 impl std::error::Error for UpdateError {}
 
-/// A `major.minor.patch` release version, optionally written with a `v`.
+/// A `major.minor.patch` release, or its `major.minor.patch-beta.N` betas,
+/// optionally written with a `v`. The last field is the beta number, or
+/// `u64::MAX` for the release itself, so a release sorts above its betas.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct ReleaseVersion(pub u64, pub u64, pub u64);
+pub struct ReleaseVersion(pub u64, pub u64, pub u64, pub u64);
 
 impl ReleaseVersion {
+    const RELEASE: u64 = u64::MAX;
+
+    pub const fn stable(major: u64, minor: u64, patch: u64) -> Self {
+        Self(major, minor, patch, Self::RELEASE)
+    }
+
+    pub const fn beta(major: u64, minor: u64, patch: u64, beta: u64) -> Self {
+        Self(major, minor, patch, beta)
+    }
+
+    pub const fn is_beta(self) -> bool {
+        self.3 != Self::RELEASE
+    }
+
     pub fn parse(value: &str) -> Option<Self> {
         let value = value.strip_prefix('v').unwrap_or(value);
-        let mut parts = value.split('.');
+        let (core, beta) = match value.split_once("-beta.") {
+            Some((core, beta)) => {
+                let number = beta.parse::<u64>().ok().filter(|number| {
+                    *number >= 1 && *number < Self::RELEASE && !beta.starts_with('0')
+                })?;
+                (core, number)
+            }
+            None => (value, Self::RELEASE),
+        };
+        let mut parts = core.split('.');
         let mut next = || parts.next()?.parse::<u64>().ok();
-        let version = Self(next()?, next()?, next()?);
+        let version = Self(next()?, next()?, next()?, beta);
         parts.next().is_none().then_some(version)
     }
 }
 
 impl fmt::Display for ReleaseVersion {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}.{}.{}", self.0, self.1, self.2)
+        write!(formatter, "{}.{}.{}", self.0, self.1, self.2)?;
+        if self.is_beta() {
+            write!(formatter, "-beta.{}", self.3)?;
+        }
+        Ok(())
     }
 }
 
@@ -216,9 +245,12 @@ pub fn parse_releases(bytes: &[u8]) -> Result<Vec<Release>, UpdateError> {
         .into_iter()
         .filter(|release| !release.draft)
         .filter_map(|release| {
+            let version = ReleaseVersion::parse(&release.tag_name)?;
             Some(Release {
-                version: ReleaseVersion::parse(&release.tag_name)?,
-                prerelease: release.prerelease,
+                version,
+                // A `-beta.N` tag is a beta even if its release is not
+                // marked as a prerelease.
+                prerelease: release.prerelease || version.is_beta(),
                 page_url: release.html_url,
                 assets: release
                     .assets
@@ -902,16 +934,27 @@ mod tests {
     }
 
     const MAC: UpdateTarget = UpdateTarget::MacosArm64;
-    const CURRENT: ReleaseVersion = ReleaseVersion(0, 0, 31);
+    const CURRENT: ReleaseVersion = ReleaseVersion::stable(0, 0, 31);
 
     #[test]
     fn versions_parse_and_order_numerically() {
-        assert_eq!(ReleaseVersion::parse("v0.0.31"), Some(ReleaseVersion(0, 0, 31)));
-        assert_eq!(ReleaseVersion::parse("1.2.3"), Some(ReleaseVersion(1, 2, 3)));
+        assert_eq!(ReleaseVersion::parse("v0.0.31"), Some(ReleaseVersion::stable(0, 0, 31)));
+        assert_eq!(ReleaseVersion::parse("1.2.3"), Some(ReleaseVersion::stable(1, 2, 3)));
         assert!(ReleaseVersion::parse("0.0.31-beta").is_none());
+        assert!(ReleaseVersion::parse("0.0.31-beta.0").is_none());
+        assert!(ReleaseVersion::parse("0.0.31-beta.01").is_none());
+        assert!(ReleaseVersion::parse("0.0.31-rc.1").is_none());
+        let beta = ReleaseVersion::parse("v0.0.33-beta.2").unwrap();
+        assert_eq!(beta, ReleaseVersion::beta(0, 0, 33, 2));
+        assert_eq!(beta.to_string(), "0.0.33-beta.2");
+        assert!(beta.is_beta());
+        // A release sorts above its own betas and below the next ones.
+        assert!(ReleaseVersion::stable(0, 0, 32) < ReleaseVersion::beta(0, 0, 33, 1));
+        assert!(ReleaseVersion::beta(0, 0, 33, 1) < ReleaseVersion::beta(0, 0, 33, 10));
+        assert!(ReleaseVersion::beta(0, 0, 33, 10) < ReleaseVersion::stable(0, 0, 33));
         assert!(ReleaseVersion::parse("0.31").is_none());
-        assert!(ReleaseVersion(0, 0, 10) > ReleaseVersion(0, 0, 9));
-        assert_eq!(ReleaseVersion(0, 0, 31).to_string(), "0.0.31");
+        assert!(ReleaseVersion::stable(0, 0, 10) > ReleaseVersion::stable(0, 0, 9));
+        assert_eq!(ReleaseVersion::stable(0, 0, 31).to_string(), "0.0.31");
     }
 
     #[test]
@@ -925,9 +968,20 @@ mod tests {
         let releases = parse_releases(feed).unwrap();
         assert_eq!(
             releases.iter().map(|release| (release.version, release.prerelease)).collect::<Vec<_>>(),
-            [(ReleaseVersion(0, 0, 32), true), (ReleaseVersion(0, 0, 31), false)]
+            [(ReleaseVersion::stable(0, 0, 32), true), (ReleaseVersion::stable(0, 0, 31), false)]
         );
         assert!(parse_releases(b"not json").is_err());
+        // Beta tags as Butter Paper's other apps and the Homebrew tap name
+        // them; one missing the prerelease flag is still a beta.
+        let betas = parse_releases(
+            br#"[{"tag_name":"v0.0.33-beta.1","prerelease":false,"assets":[]},
+                {"tag_name":"v0.0.33-beta.2","prerelease":true,"assets":[]}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            betas.iter().map(|release| (release.version, release.prerelease)).collect::<Vec<_>>(),
+            [(ReleaseVersion::beta(0, 0, 33, 1), true), (ReleaseVersion::beta(0, 0, 33, 2), true)]
+        );
     }
 
     #[test]
@@ -953,7 +1007,7 @@ mod tests {
             release("v0.0.31", false, &stable),
         ];
         let update = select_update(CURRENT, UpdateChannel::Stable, &releases, MAC).unwrap();
-        assert_eq!((update.version, update.identity), (ReleaseVersion(0, 0, 32), PackageIdentity::Stable));
+        assert_eq!((update.version, update.identity), (ReleaseVersion::stable(0, 0, 32), PackageIdentity::Stable));
         assert!(select_update(CURRENT, UpdateChannel::Stable, &releases[3..], MAC).is_none());
     }
 
@@ -969,7 +1023,7 @@ mod tests {
             MAC,
         )
         .unwrap();
-        assert_eq!((update.version, update.identity), (ReleaseVersion(0, 0, 33), PackageIdentity::Beta));
+        assert_eq!((update.version, update.identity), (ReleaseVersion::stable(0, 0, 33), PackageIdentity::Beta));
         // A stable release newer than the betas moves the copy to stable.
         let update = select_update(
             CURRENT,
@@ -978,7 +1032,7 @@ mod tests {
             MAC,
         )
         .unwrap();
-        assert_eq!((update.version, update.identity), (ReleaseVersion(0, 0, 34), PackageIdentity::Stable));
+        assert_eq!((update.version, update.identity), (ReleaseVersion::stable(0, 0, 34), PackageIdentity::Stable));
         // A stable release that also ships a beta package keeps the beta identity.
         let both = assets(MAC, &[PackageIdentity::Stable, PackageIdentity::Beta]);
         let update = select_update(CURRENT, UpdateChannel::Beta, &[release("v0.0.34", false, &both)], MAC).unwrap();
@@ -1027,7 +1081,7 @@ mod tests {
     #[test]
     fn handover_scripts_wait_swap_and_quote_paths() {
         let prepared = PreparedUpdate {
-            version: ReleaseVersion(0, 0, 32),
+            version: ReleaseVersion::stable(0, 0, 32),
             work_directory: PathBuf::from("/tmp/it's work"),
             handover: Handover::Macos {
                 staged: PathBuf::from("/Applications/.Butter Paper 0.0.32 update.app"),
@@ -1064,7 +1118,7 @@ mod tests {
         fs::write(applications.join(".Butter Paper 0.0.32 update.app/new"), b"").unwrap();
         fs::create_dir_all(&work).unwrap();
         let prepared = PreparedUpdate {
-            version: ReleaseVersion(0, 0, 32),
+            version: ReleaseVersion::stable(0, 0, 32),
             work_directory: work.clone(),
             handover: Handover::Macos {
                 staged: applications.join(".Butter Paper 0.0.32 update.app"),
@@ -1092,7 +1146,7 @@ mod tests {
     fn real_release_updates_a_stand_in_install() {
         let target = UpdateTarget::current().unwrap();
         let releases = fetch_releases(RELEASE_FEED_URL).unwrap();
-        let update = select_update(ReleaseVersion(0, 0, 25), UpdateChannel::Stable, &releases, target)
+        let update = select_update(ReleaseVersion::stable(0, 0, 25), UpdateChannel::Stable, &releases, target)
             .expect("a newer stable macOS release is published");
         let root = std::env::temp_dir().join(format!("bp-real-update-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -1136,7 +1190,7 @@ mod tests {
     fn real_release_updates_and_rolls_back_a_stand_in_linux_install() {
         let target = UpdateTarget::current().unwrap();
         let releases = fetch_releases(RELEASE_FEED_URL).unwrap();
-        let update = select_update(ReleaseVersion(0, 0, 25), UpdateChannel::Stable, &releases, target)
+        let update = select_update(ReleaseVersion::stable(0, 0, 25), UpdateChannel::Stable, &releases, target)
             .expect("a newer stable Linux release is published");
         let new = update.version.to_string();
         let old = ReleaseVersion(update.version.0, update.version.1, update.version.2 - 1).to_string();
@@ -1207,7 +1261,7 @@ mod tests {
     fn write_windows_handover_for_manual_review() {
         let var = |name: &str| std::env::var(name).unwrap();
         let prepared = PreparedUpdate {
-            version: ReleaseVersion(0, 0, 0),
+            version: ReleaseVersion::stable(0, 0, 0),
             work_directory: PathBuf::from(var("BP_HANDOVER_WORK")),
             handover: Handover::Windows {
                 old_root: PathBuf::from(var("BP_HANDOVER_OLD")),

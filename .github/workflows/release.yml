@@ -1,51 +1,34 @@
-name: Build GPUI stable candidate
+name: Release
 
-# One run builds and publishes one release tier. The primary tier (Apple
-# silicon macOS, Windows x64, Linux x64) ships first; run the secondary tier
-# (Intel macOS, Windows arm64, Linux arm64) afterwards for the same tag. Each
-# tier adds its packages and checksums to the same GitHub release.
+# Pushing vX.Y.Z (every target, Butter Paper and Butter Paper Beta for macOS)
+# or vX.Y.Z-beta.N (Butter Paper Beta for macOS only) builds, signs and
+# publishes one complete GitHub release. Releases are immutable once
+# published, so every asset, SHA256SUMS.txt and the attested Homebrew bundle
+# go up as a draft first. The tap (apotenza92/homebrew-tap) is then asked to
+# publish the casks; its registry names this workflow file.
 
 on:
-  workflow_dispatch:
-    inputs:
-      source_revision:
-        description: Full lowercase commit reachable from main
-        required: true
-        type: string
-      approved_pdfium_run_id:
-        description: Run containing the human-approved production PDFium artifact
-        required: true
-        type: string
-      approved_pdfium_run_attempt:
-        description: Exact successful approval workflow attempt containing the reviewed artifact
-        required: true
-        type: string
-      build_version:
-        description: Numeric macOS bundle build version
-        required: true
-        type: string
-      tier:
-        description: Release tier to build and publish (targets in .github/release-targets.json)
-        required: true
-        default: primary
-        type: choice
-        options:
-          - primary
-          - secondary
+  push:
+    tags:
+      - "v*"
 
 permissions:
   actions: read
   contents: read
 
 concurrency:
-  group: gpui-stable-candidate-${{ inputs.source_revision }}-${{ inputs.tier }}
+  group: butter-paper-release
   cancel-in-progress: false
 
 jobs:
   validate:
     runs-on: ubuntu-24.04
     outputs:
+      tag: ${{ steps.identity.outputs.tag }}
       version: ${{ steps.identity.outputs.version }}
+      prerelease: ${{ steps.identity.outputs.prerelease }}
+      build_number: ${{ steps.identity.outputs.build_number }}
+      approval_run_id: ${{ steps.identity.outputs.approval_run_id }}
       targets: ${{ steps.identity.outputs.targets }}
       required: ${{ steps.identity.outputs.required }}
     steps:
@@ -53,52 +36,89 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ inputs.source_revision }}
+          ref: ${{ github.sha }}
       - id: identity
         shell: bash
         env:
-          APPROVED_PDFIUM_RUN_ID: ${{ inputs.approved_pdfium_run_id }}
-          APPROVED_PDFIUM_RUN_ATTEMPT: ${{ inputs.approved_pdfium_run_attempt }}
-          BUILD_VERSION: ${{ inputs.build_version }}
+          APPROVED_PDFIUM_RUN_ID: ${{ vars.BP_PDFIUM_APPROVAL_RUN_ID }}
+          APPROVED_PDFIUM_RUN_ATTEMPT: ${{ vars.BP_PDFIUM_APPROVAL_RUN_ATTEMPT }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          SOURCE_REVISION: ${{ inputs.source_revision }}
-          TIER: ${{ inputs.tier }}
+          SOURCE_REVISION: ${{ github.sha }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          if [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            prerelease=false
+            stage=90000
+          elif [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)-beta\.([1-9][0-9]{0,3})$ ]]; then
+            prerelease=true
+            stage=$((10#${BASH_REMATCH[4]}))
+          else
+            echo "::error::Release tags must be vX.Y.Z or vX.Y.Z-beta.N"
+            exit 1
+          fi
+          major=$((10#${BASH_REMATCH[1]})); minor=$((10#${BASH_REMATCH[2]})); patch=$((10#${BASH_REMATCH[3]}))
+          # As Macsimize: a release builds above its own betas.
+          build_number=$(( ((major * 1000000) + (minor * 1000) + patch) * 100000 + stage ))
+          version="${TAG#v}"
           [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
+          test "$(git rev-parse "$TAG^{commit}")" = "$SOURCE_REVISION"
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$TAG is not on main"
+            exit 1
+          fi
+          if [[ "$(node -p "require('./package.json').version")" != "$version" ]]; then
+            echo "::error::package.json version does not match $TAG (run pnpm release:version)"
+            exit 1
+          fi
+          if ! grep -qxF "## [$version]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no ## [$version] section"
+            exit 1
+          fi
           [[ "$APPROVED_PDFIUM_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$APPROVED_PDFIUM_RUN_ATTEMPT" =~ ^[1-9][0-9]{0,4}$ ]]
-          [[ "$BUILD_VERSION" =~ ^[0-9]+$ ]]
-          test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
-          git fetch --no-tags origin main
-          git merge-base --is-ancestor HEAD origin/main
-          version="$(node -p "require('./package.json').version")"
-          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z.-]+)?$ ]]
           approval_run="$RUNNER_TEMP/pdfium-approval-run.json"
           gh api "repos/$REPOSITORY/actions/runs/$APPROVED_PDFIUM_RUN_ID" > "$approval_run"
-          node --input-type=module - "$approval_run" "$APPROVED_PDFIUM_RUN_ATTEMPT" "$REPOSITORY" <<'NODE'
+          gh api "repos/$REPOSITORY/actions/runs/$APPROVED_PDFIUM_RUN_ID/artifacts" > "$RUNNER_TEMP/pdfium-approval-artifacts.json"
+          node --input-type=module - "$approval_run" "$RUNNER_TEMP/pdfium-approval-artifacts.json" "$APPROVED_PDFIUM_RUN_ATTEMPT" "$REPOSITORY" <<'NODE'
           import { readFile } from 'node:fs/promises';
-          const [path, expectedAttempt, repository] = process.argv.slice(2);
+          const [path, artifactsPath, expectedAttempt, repository] = process.argv.slice(2);
           const run = JSON.parse(await readFile(path, 'utf8'));
           if (run.path !== '.github/workflows/approve-gpui-pdfium-production.yml' ||
               run.event !== 'workflow_dispatch' || run.status !== 'completed' ||
               run.conclusion !== 'success' || String(run.run_attempt) !== expectedAttempt ||
               run.head_repository?.full_name !== repository) {
-            throw new Error('PDFium approval input must be the exact successful same-repository approval workflow attempt');
+            throw new Error('PDFium approval must be the exact successful same-repository approval workflow attempt');
+          }
+          const { artifacts } = JSON.parse(await readFile(artifactsPath, 'utf8'));
+          const approved = artifacts.find((artifact) => artifact.name === 'gpui-pdfium-production-approved');
+          if (!approved || approved.expired) {
+            throw new Error('the approved PDFium artifact has expired; re-run the PDFium approval and update BP_PDFIUM_APPROVAL_RUN_ID');
           }
           NODE
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          node --input-type=module - "$TIER" "$GITHUB_OUTPUT" <<'NODE'
+          node --input-type=module - "$prerelease" "$GITHUB_OUTPUT" <<'NODE'
           import { appendFile, readFile } from 'node:fs/promises';
-          const [tier, output] = process.argv.slice(2);
+          const [prerelease, output] = process.argv.slice(2);
+          const beta = prerelease === 'true';
+          // Windows and Linux ship the stable app only; Butter Paper Beta is
+          // macOS-only, and each macOS job packages both identities.
           const targets = JSON.parse(await readFile('.github/release-targets.json', 'utf8'))
-            .filter((target) => target.tier === tier);
-          if (targets.length === 0) throw new Error(`release tier ${tier} has no targets`);
-          // macOS jobs also publish Butter Paper Beta from the same build.
-          const required = targets.flatMap(({ label, os }) => (os === 'macos' ? [label, `${label}-beta`] : [label]));
+            .filter((target) => !beta || target.os === 'macos')
+            .map((target) => (target.os === 'macos' ? { ...target, channels: beta ? 'beta' : 'stable beta' } : target));
+          const required = targets.flatMap(({ label, os }) =>
+            os !== 'macos' ? [label] : beta ? [`${label}-beta`] : [label, `${label}-beta`]);
           await appendFile(output, `targets=${JSON.stringify(targets)}\nrequired=${required.join(',')}\n`);
           NODE
+          {
+            echo "tag=$TAG"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "build_number=$build_number"
+            echo "approval_run_id=$APPROVED_PDFIUM_RUN_ID"
+          } >> "$GITHUB_OUTPUT"
 
   package:
     needs: validate
@@ -115,13 +135,13 @@ jobs:
       TARGET_LABEL: ${{ matrix.label }}
       TARGET_TRIPLE: ${{ matrix.target }}
       VERSION: ${{ needs.validate.outputs.version }}
-      BUILD_VERSION: ${{ inputs.build_version }}
-      SOURCE_REVISION: ${{ inputs.source_revision }}
+      BUILD_VERSION: ${{ needs.validate.outputs.build_number }}
+      SOURCE_REVISION: ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ inputs.source_revision }}
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.16.0
@@ -165,6 +185,16 @@ jobs:
           test "$(go version | awk '{print $3}')" = go1.24.1
           rustup toolchain install 1.97.1 --profile minimal --target "$TARGET_TRIPLE"
           [[ "$(rustc +1.97.1 --version)" == "rustc 1.97.1 "* ]]
+      # Downloads only: Cargo verifies every crate against Cargo.lock, and
+      # builds always start from clean, pinned sources.
+      - name: Cache Cargo downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('experiments/gpui-migration/gpui-migration/Cargo.lock') }}
       - name: Install and verify pinned source inputs
         shell: bash
         run: |
@@ -181,7 +211,7 @@ jobs:
           path: ${{ runner.temp }}/approved-pdfium
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
-          run-id: ${{ inputs.approved_pdfium_run_id }}
+          run-id: ${{ needs.validate.outputs.approval_run_id }}
       - name: Activate matching Windows MSVC and LLVM toolchain
         if: matrix.os == 'windows'
         shell: pwsh
@@ -379,8 +409,9 @@ jobs:
           xcrun notarytool store-credentials bp-gpui-notary --key "$signing/AuthKey.p8" --key-id "$APPLE_NOTARYTOOL_KEY_ID" --issuer "$APPLE_NOTARYTOOL_ISSUER_ID" --keychain "$signing/signing.keychain-db"
           node "$MIGRATION_ROOT/scripts/stage-pdfium-production.mjs" --manifest "$RUNNER_TEMP/approved-pdfium/production-pdfium-approved.json" --artifact-root "$RUNNER_TEMP/approved-pdfium" --target "$TARGET_TRIPLE" --output-dir "$stage"
           xcrun swiftc -swift-version 5 -O -target "${{ matrix.arch == 'arm64' && 'arm64' || 'x86_64' }}-apple-macos13.0" "$MIGRATION_ROOT/native/SignatureCamera.swift" -o "$RUNNER_TEMP/butter-paper-signature-camera"
-          # One build, two identities: Butter Paper and Butter Paper Beta.
-          for channel in stable beta; do
+          # One build, two identities: Butter Paper and Butter Paper Beta
+          # (a beta tag builds the Beta identity only).
+          for channel in ${{ matrix.channels }}; do
             if [[ "$channel" == beta ]]; then
               app="$RUNNER_TEMP/$channel/Butter Paper Beta.app"
               output="$RUNNER_TEMP/candidate/$TARGET_LABEL-beta"
@@ -400,6 +431,7 @@ jobs:
           security delete-keychain "$signing/signing.keychain-db"
           rm -rf "$signing"
       - name: Upload verified target candidate
+        if: matrix.os != 'macos' || contains(matrix.channels, 'stable')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gpui-package-${{ matrix.label }}
@@ -407,7 +439,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Upload verified Beta candidate
-        if: matrix.os == 'macos'
+        if: matrix.os == 'macos' && contains(matrix.channels, 'beta')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gpui-package-${{ matrix.label }}-beta
@@ -423,7 +455,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ inputs.source_revision }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: gpui-package-*
@@ -431,10 +463,9 @@ jobs:
       - name: Bind and aggregate exact candidate inventory
         shell: bash
         env:
-          SOURCE_REVISION: ${{ inputs.source_revision }}
+          SOURCE_REVISION: ${{ github.sha }}
           VERSION: ${{ needs.validate.outputs.version }}
           REQUIRED: ${{ needs.validate.outputs.required }}
-          TIER: ${{ inputs.tier }}
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/candidate-input"
@@ -456,11 +487,11 @@ jobs:
           await writeFile(join(root, 'candidate.json'), `${JSON.stringify({ schema: 'butter-paper/stable-candidate-input', schemaVersion: 2, channel: 'stable', version, sourceRevision, targets: records }, null, 2)}\n`, { flag: 'wx' });
           NODE
           mkdir "$RUNNER_TEMP/final-candidate"
-          node experiments/gpui-migration/gpui-migration/scripts/aggregate-stable-candidate.mjs --input "$root" --output "$RUNNER_TEMP/final-candidate/stable-candidate-$TIER.json" --required "$REQUIRED"
+          node experiments/gpui-migration/gpui-migration/scripts/aggregate-stable-candidate.mjs --input "$root" --output "$RUNNER_TEMP/final-candidate/stable-candidate.json" --required "$REQUIRED"
           cp -R "$root"/. "$RUNNER_TEMP/final-candidate/"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: gpui-stable-candidate-${{ inputs.source_revision }}-${{ inputs.tier }}
+          name: gpui-release-candidate-${{ github.sha }}
           path: ${{ runner.temp }}/final-candidate
           if-no-files-found: error
           retention-days: 14
@@ -468,35 +499,27 @@ jobs:
   publish:
     needs: [validate, aggregate]
     runs-on: ubuntu-24.04
+    # The only job that can write a release, and only after every package is
+    # signed or verified and aggregated.
     permissions:
       contents: write
-    # Both tiers add to one release; never edit its checksums concurrently.
-    concurrency:
-      group: gpui-release-publish-${{ needs.validate.outputs.version }}
-      cancel-in-progress: false
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
           persist-credentials: false
-          ref: ${{ inputs.source_revision }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: gpui-stable-candidate-${{ inputs.source_revision }}-${{ inputs.tier }}
+          name: gpui-release-candidate-${{ github.sha }}
           path: ${{ runner.temp }}/final-candidate
-      - name: Publish this tier's packages to the GitHub release
+      - name: Stage release assets and the Homebrew bundle
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          SOURCE_REVISION: ${{ inputs.source_revision }}
-          VERSION: ${{ needs.validate.outputs.version }}
-          TIER: ${{ inputs.tier }}
+          TAG: ${{ needs.validate.outputs.tag }}
         run: |
           set -euo pipefail
-          tag="v$VERSION"
-          git fetch --no-tags origin "refs/tags/$tag:refs/tags/$tag"
-          test "$(git rev-parse "$tag^{commit}")" = "$SOURCE_REVISION"
           candidate="$RUNNER_TEMP/final-candidate"
           assets="$RUNNER_TEMP/assets"
           mkdir "$assets"
@@ -518,25 +541,78 @@ jobs:
             test "$(printf '%s\n' "$package" | wc -l)" -eq 1
             cp "$package" "$assets/$name"
           done
-          cp "$candidate/stable-candidate-$TIER.json" "$assets/"
-          if ! gh release view "$tag" -R "$REPOSITORY" > /dev/null 2>&1; then
-            # The first tier to finish creates the release from the changelog.
-            awk -v heading="## [$VERSION]" '$0 == heading { found = 1; next } found && /^## \[/ { exit } found { print }' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
-            test -s "$RUNNER_TEMP/notes.md"
-            gh release create "$tag" -R "$REPOSITORY" --verify-tag --title "Butter Paper $VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          cp "$candidate/stable-candidate.json" "$assets/"
+          node scripts/build-homebrew-publication.mjs --tag "$TAG" --commit "$GITHUB_SHA" \
+            --assets "$assets" --output "$RUNNER_TEMP/publication" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --jobs "$(find "$candidate" -maxdepth 1 -type d -name 'gpui-package-macos-*' -printf 'package %f\n' | sed 's/ gpui-package-/ /' | LC_ALL=C sort | paste -sd, -)"
+          (cd "$RUNNER_TEMP/publication" && tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 --format=ustar \
+            -czf "$assets/homebrew-publication.tar.gz" manifest.json SHA256SUMS Casks)
+          (cd "$assets" && sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS.txt" && mv "$RUNNER_TEMP/SHA256SUMS.txt" SHA256SUMS.txt)
+          ls -l "$assets"
+      - name: Attest release assets
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-path: ${{ runner.temp }}/assets/*
+      - name: Publish the complete release once
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ needs.validate.outputs.tag }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          assets="$RUNNER_TEMP/assets"
+          if gh release view "$TAG" -R "$REPOSITORY" > /dev/null 2>&1; then
+            echo "::error::Release $TAG already exists; releases are immutable, so tag a new version."
+            exit 1
           fi
-          # Merge this tier's checksums into the release's SHA256SUMS.txt.
-          sums="$RUNNER_TEMP/SHA256SUMS.txt"
-          if gh release download "$tag" -R "$REPOSITORY" -p SHA256SUMS.txt -O "$RUNNER_TEMP/previous-sums.txt" 2> /dev/null; then
-            cp "$RUNNER_TEMP/previous-sums.txt" "$sums"
-          else
-            : > "$sums"
+          awk -v heading="## [$VERSION]" '$0 == heading { found = 1; next } found && /^## \[/ { exit } found { print }' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          test -s "$RUNNER_TEMP/notes.md"
+          flags=(--draft --verify-tag --title "Butter Paper $VERSION" --notes-file "$RUNNER_TEMP/notes.md")
+          if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease --latest=false); fi
+          gh release create "$TAG" -R "$REPOSITORY" "${flags[@]}" "$assets"/*
+          # Every staged asset is on the draft at its exact size before publishing.
+          expected="$(cd "$assets" && for file in *; do printf '%s %s\n' "$file" "$(stat -c %s "$file")"; done | LC_ALL=C sort)"
+          actual="$(gh release view "$TAG" -R "$REPOSITORY" --json assets --jq '.assets[] | "\(.name) \(.size)"' | LC_ALL=C sort)"
+          if [[ "$expected" != "$actual" ]]; then
+            printf 'Expected:\n%s\nActual:\n%s\n' "$expected" "$actual"
+            exit 1
           fi
-          (cd "$assets" && for file in *; do
-            grep -v "  $file\$" "$sums" > "$sums.next" || true
-            mv "$sums.next" "$sums"
-            sha256sum "$file" >> "$sums"
-          done)
-          sort -k2 "$sums" -o "$sums"
-          gh release upload "$tag" -R "$REPOSITORY" --clobber "$assets"/*
-          gh release upload "$tag" -R "$REPOSITORY" --clobber "$sums"
+          gh release edit "$TAG" -R "$REPOSITORY" --draft=false
+          gh release download "$TAG" -R "$REPOSITORY" -p SHA256SUMS.txt -O "$RUNNER_TEMP/published-sums.txt"
+          cmp "$RUNNER_TEMP/published-sums.txt" "$assets/SHA256SUMS.txt"
+          test "$(gh api "repos/$REPOSITORY/releases/tags/$TAG" --jq '.immutable')" = true
+
+  homebrew:
+    needs: [validate, publish]
+    runs-on: ubuntu-24.04
+    environment: homebrew-dispatch
+    permissions:
+      contents: read
+    steps:
+      - name: Mint dispatch-only tap token
+        id: dispatcher
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2
+        with:
+          app-id: ${{ vars.HOMEBREW_DISPATCHER_APP_ID }}
+          private-key: ${{ secrets.HOMEBREW_DISPATCHER_PRIVATE_KEY }}
+          owner: apotenza92
+          repositories: homebrew-tap
+          permission-contents: write
+          permission-actions: read
+      - name: Ask the tap to publish the attested casks
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.dispatcher.outputs.token }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          correlation="${GITHUB_REPOSITORY}:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${TAG}"
+          jq -n --arg product butter-paper --arg tag "$TAG" --arg release_commit "$GITHUB_SHA" \
+            --arg source_run_id "$GITHUB_RUN_ID" --arg source_run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg correlation_id "$correlation" \
+            '{event_type:"publish-homebrew-v1",client_payload:{product:$product,tag:$tag,release_commit:$release_commit,source_run_id:$source_run_id,source_run_attempt:$source_run_attempt,correlation_id:$correlation_id}}' |
+            gh api --method POST repos/apotenza92/homebrew-tap/dispatches --input -

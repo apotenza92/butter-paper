@@ -19,8 +19,9 @@ const BETA_TARGETS = ["macos-arm64-beta", "macos-x64-beta"];
 const ALL_TARGETS = new Set([...DEFAULT_REQUIRED_TARGETS, ...BETA_TARGETS]);
 const REVISION = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
+// X.Y.Z, or X.Y.Z-beta.N for a Butter Paper Beta (macOS-only) release.
 const STABLE_SEMVER =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+([0-9A-Za-z.-]+))?$/;
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.[1-9]\d*)?(?:\+([0-9A-Za-z.-]+))?$/;
 const FORBIDDEN_MARKER =
   /(?:development|dev)[-_\s.]*pdfium|pdfium[-_\s.]*(?:development|dev)|(?:pdfium.{0,80}(?<![a-z0-9])override(?![a-z0-9])|(?<![a-z0-9])override(?![a-z0-9]).{0,80}pdfium)|\b(?:BP_UPDATE_TEST_MODE|PDFIUM_(?:DEV|DEVELOPMENT|OVERRIDE)|DEV_PDFIUM|PDFIUM_OVERRIDE)\b/i;
 

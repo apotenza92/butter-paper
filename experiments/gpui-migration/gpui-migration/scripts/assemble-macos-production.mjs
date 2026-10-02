@@ -325,7 +325,8 @@ function infoPlist(manifest, contract) {
     CFBundleIconName: "Icon",
     CFBundleIdentifier: contract.bundleIdentifier,
     CFBundleName: contract.productName,
-    CFBundleShortVersionString: manifest.version,
+    // macOS wants X.Y.Z here; a beta is told apart by its build number.
+    CFBundleShortVersionString: manifest.version.replace(/-beta\.[1-9][0-9]*$/, ""),
     CFBundleVersion: manifest.buildVersion,
     LSMinimumSystemVersion: manifest.minimumSystemVersion,
   };
