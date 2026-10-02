@@ -1,4 +1,4 @@
-//! Retained property presentation for one selected Arc, Cloud, or Snapshot.
+//! Retained property presentation for one selected Arc, Cloud, Image or Snapshot.
 //!
 //! The workspace owns identity, revision validation, persistence, and history.
 
@@ -39,6 +39,12 @@ pub const ENGINEERING_VISUAL_INSPECTOR_OPACITY_TRACK_ID: &str =
     "engineering-visual-property-inspector-opacity-track";
 pub const ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID: &str =
     "engineering-visual-property-inspector-intensity";
+pub const ENGINEERING_VISUAL_INSPECTOR_FILL_COLOR_ID: &str =
+    "engineering-visual-property-inspector-fill-color";
+pub const ENGINEERING_VISUAL_INSPECTOR_APPLY_FILL_ID: &str =
+    "engineering-visual-property-inspector-apply-fill";
+pub const ENGINEERING_VISUAL_INSPECTOR_NO_FILL_ID: &str =
+    "engineering-visual-property-inspector-no-fill";
 pub const ENGINEERING_VISUAL_INSPECTOR_WIDTH_PX: f32 = 300.;
 const ENGINEERING_VISUAL_INSPECTOR_HEADER_ID: &str = "engineering-visual-property-inspector-header";
 const ENGINEERING_VISUAL_INSPECTOR_SCROLL_ID: &str = "engineering-visual-property-inspector-scroll";
@@ -124,6 +130,9 @@ pub enum EngineeringVisualPropertyPatch {
     WidthPt(f64),
     Opacity(f64),
     CloudIntensity(f64),
+    /// A Cloud fill, as Revu allows; `None` removes it.
+    FillColor(Option<String>),
+    FillColorAndOpacity { color: String, opacity: f64 },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -147,6 +156,8 @@ pub struct EngineeringVisualPropertyInspector {
     opacity: gpui::Entity<SliderState>,
     opacity_input: gpui::Entity<InputState>,
     color: gpui::Entity<ColorPickerState>,
+    fill_color: gpui::Entity<ColorPickerState>,
+    fill_preview_available: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -184,6 +195,11 @@ impl EngineeringVisualPropertyInspector {
         let color = cx.new(|cx| {
             ColorPickerState::new(window, cx).default_value(
                 try_parse_color("#ff0000").expect("the built-in visual color must parse"),
+            )
+        });
+        let fill_color = cx.new(|cx| {
+            ColorPickerState::new(window, cx).default_value(
+                try_parse_color("#ffffff").expect("the reset fill preview must parse"),
             )
         });
         let opacity_input_for_slider = opacity_input.clone();
@@ -273,6 +289,12 @@ impl EngineeringVisualPropertyInspector {
                     cx.notify();
                 }
             }),
+            cx.subscribe(&fill_color, |this, _, _: &ColorPickerEvent, cx| {
+                if !this.syncing {
+                    this.fill_preview_available = true;
+                    cx.notify();
+                }
+            }),
         ];
         Self {
             snapshot: None,
@@ -286,6 +308,8 @@ impl EngineeringVisualPropertyInspector {
             opacity,
             opacity_input,
             color,
+            fill_color,
+            fill_preview_available: false,
             _subscriptions: subscriptions,
         }
     }
@@ -335,10 +359,24 @@ impl EngineeringVisualPropertyInspector {
                     .update(cx, |picker, cx| picker.set_value(color, window, cx));
             }
         }
-        if let EngineeringVisualPropertyValues::Cloud { intensity, .. } = &snapshot.values {
+        if let EngineeringVisualPropertyValues::Cloud {
+            intensity,
+            appearance,
+        } = &snapshot.values
+        {
             self.intensity.update(cx, |input, cx| {
                 input.set_value(format_property_number(*intensity), window, cx);
             });
+            let mut fill = appearance
+                .fill_color()
+                .and_then(|value| try_parse_color(value).ok())
+                .unwrap_or_else(|| {
+                    try_parse_color("#ffffff").expect("the reset fill preview must parse")
+                });
+            fill.a = appearance.fill_opacity() as f32;
+            self.fill_color
+                .update(cx, |picker, cx| picker.set_value(fill, window, cx));
+            self.fill_preview_available = false;
         }
         self.opacity.update(cx, |slider, cx| {
             slider.set_value((snapshot.values.opacity() * 100.) as f32, window, cx);
@@ -373,6 +411,31 @@ impl EngineeringVisualPropertyInspector {
     }
     pub fn color_picker(&self) -> gpui::Entity<ColorPickerState> {
         self.color.clone()
+    }
+    pub fn fill_color_picker(&self) -> gpui::Entity<ColorPickerState> {
+        self.fill_color.clone()
+    }
+
+    fn apply_preview_fill(&mut self, cx: &mut Context<Self>) {
+        if !self.fill_preview_available {
+            return;
+        }
+        let Some(appearance) = self
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.values.appearance())
+        else {
+            return;
+        };
+        let Some(color) = self.fill_color.read(cx).value() else {
+            return;
+        };
+        let patch = EngineeringVisualPropertyPatch::FillColorAndOpacity {
+            color: rgb_hex(color),
+            opacity: canonical_picker_opacity(color.a, appearance.fill_opacity()),
+        };
+        self.emit_patch(patch, cx);
+        self.fill_preview_available = false;
     }
 
     fn apply_preview_color(&mut self, cx: &mut Context<Self>) {
@@ -483,10 +546,64 @@ impl Render for EngineeringVisualPropertyInspector {
                     .disabled(disabled),
             ),
         );
-        if matches!(
-            snapshot.values,
-            EngineeringVisualPropertyValues::Cloud { .. }
-        ) {
+        if let EngineeringVisualPropertyValues::Cloud {
+            appearance: cloud, ..
+        } = &snapshot.values
+        {
+            let fill_preview_available = self.fill_preview_available;
+            let has_fill = cloud.fill_color().is_some();
+            let apply_fill = cx.entity().downgrade();
+            let remove_fill = cx.entity().downgrade();
+            let fill_control = if disabled {
+                Button::new(ENGINEERING_VISUAL_INSPECTOR_FILL_COLOR_ID)
+                    .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_FILL_COLOR_ID.into())
+                    .label(format!("Fill: {}", cloud.fill_color().unwrap_or("none")))
+                    .disabled(true)
+                    .into_any_element()
+            } else {
+                div()
+                    .id(ENGINEERING_VISUAL_INSPECTOR_FILL_COLOR_ID)
+                    .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_FILL_COLOR_ID.into())
+                    .child(property_color_picker(&self.fill_color, "Fill"))
+                    .into_any_element()
+            };
+            appearance = appearance.child(
+                Field::new().label("Fill").child(
+                    div()
+                        .child(fill_control)
+                        .child(
+                            div()
+                                .id(ENGINEERING_VISUAL_INSPECTOR_APPLY_FILL_ID)
+                                .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_APPLY_FILL_ID.into())
+                                .child(
+                                    Button::new(
+                                        "engineering-visual-property-inspector-apply-fill-button",
+                                    )
+                                    .label("Apply fill")
+                                    .disabled(disabled || !fill_preview_available)
+                                    .on_click(move |_, _, cx| {
+                                        let _ = apply_fill.update(cx, |inspector, cx| {
+                                            inspector.apply_preview_fill(cx)
+                                        });
+                                    }),
+                                ),
+                        )
+                        .child(
+                            Button::new(ENGINEERING_VISUAL_INSPECTOR_NO_FILL_ID)
+                                .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_NO_FILL_ID.into())
+                                .label("No fill")
+                                .disabled(disabled || !has_fill)
+                                .on_click(move |_, _, cx| {
+                                    let _ = remove_fill.update(cx, |inspector, cx| {
+                                        inspector.emit_patch(
+                                            EngineeringVisualPropertyPatch::FillColor(None),
+                                            cx,
+                                        )
+                                    });
+                                }),
+                        ),
+                ),
+            );
             appearance = appearance.child(
                 Field::new().label("Intensity").child(
                     PropertyNumericInput::new(
@@ -597,6 +714,17 @@ fn patch_matches_snapshot(
         EngineeringVisualPropertyPatch::Opacity(value) => snapshot.values.opacity() == *value,
         EngineeringVisualPropertyPatch::CloudIntensity(value) => matches!(
             snapshot.values, EngineeringVisualPropertyValues::Cloud { intensity, .. } if intensity == *value
+        ),
+        EngineeringVisualPropertyPatch::FillColor(value) => matches!(
+            &snapshot.values,
+            EngineeringVisualPropertyValues::Cloud { appearance, .. }
+                if appearance.fill_color() == value.as_deref()
+        ),
+        EngineeringVisualPropertyPatch::FillColorAndOpacity { color, opacity } => matches!(
+            &snapshot.values,
+            EngineeringVisualPropertyValues::Cloud { appearance, .. }
+                if appearance.fill_color() == Some(color.as_str())
+                    && appearance.fill_opacity() == *opacity
         ),
     }
 }

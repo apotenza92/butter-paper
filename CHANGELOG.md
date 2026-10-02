@@ -17,6 +17,20 @@ All notable Butter Paper changes are recorded here.
 - Measurements show Revu's figures: thousands separators, "sq" area units, and
   page-scale lengths no longer drift by a few parts per million.
 - Files Revu has edited and saved incrementally now open correctly.
+- Length measurements and dimensions are drawn as Revu draws them: extension
+  lines, a dimension line 10 pt out, closed arrowheads that move outside when
+  the caption fills the gap, and the caption centred on the line.
+- New dimensions start without a label, like Revu's; you can still add one.
+- Callouts and Cloud+ text draw a border round their text whenever the line
+  width is not the default 1 pt, as in Revu.
+- Clouds can be filled. Revu clouds keep their fill when you edit them.
+- Callouts whose text was deleted in Revu open as callouts, and dash patterns
+  from Revu survive edits that keep the same line style.
+- Text boxes, callouts and Cloud+ text use the margin stored with the text
+  (3 pt for new text, as in Revu) on screen and in the saved file.
+- Area captions are centred on the area, as in Revu.
+- Pressing Return to finish a callout, Cloud+ or dimension label no longer
+  replaces the selected text with a line break.
 
 ## [0.0.31]
 

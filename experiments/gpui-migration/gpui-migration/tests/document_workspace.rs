@@ -24968,12 +24968,12 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
         Some(&created.dimensions[0].id)
     );
     assert_eq!(created.dimensions[0].id.as_str(), "workspace:dimension:1");
-    assert_eq!(created.dimensions[0].content(), "Dimension");
+    assert_eq!(created.dimensions[0].content(), "");
     assert_eq!(created.dimensions[0].dimension_line_offset(), 24.);
     assert!(cx.debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID).is_some());
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
-        Some("Dimension".to_owned())
+        Some(String::new())
     );
     let editor_focus = workspace
         .read_with(cx, |workspace, cx| workspace.pending_text_box_focus(cx))
@@ -24984,15 +24984,15 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE} enter"));
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
-        Some("café\n".to_owned()),
-        "invalid non-ASCII input must remain available for correction",
+        Some("café".to_owned()),
+        "invalid non-ASCII input must remain available for correction, without the submitting newline",
     );
     let rejected = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
         })
         .unwrap();
-    assert_eq!(rejected.dimensions[0].content(), "Dimension");
+    assert_eq!(rejected.dimensions[0].content(), "");
     assert_eq!((rejected.revision, rejected.undo_depth), (1, 1));
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} d o o r space w i d t h enter"));
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -25296,7 +25296,7 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
     cx.run_until_parked();
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
-        Some("mètre\n".to_owned())
+        Some("mètre".to_owned())
     );
     assert_eq!(
         workspace

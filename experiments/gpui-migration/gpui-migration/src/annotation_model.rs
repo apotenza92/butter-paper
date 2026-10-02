@@ -428,6 +428,105 @@ impl PdfRect {
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct MarkupId(String);
 
+/// How far a dimension's extension lines run past the dimension line: Revu's
+/// default `/LLE`.
+pub const DIMENSION_LEADER_EXTENSION_PT: f64 = 2.;
+
+/// Revu's Length measurement dimension-line offset (`/LL`).
+pub const LENGTH_LEADER_LENGTH_PT: f64 = 10.;
+
+/// Gap left in the dimension line on each side of its caption.
+const MEASUREMENT_CAPTION_GAP_PT: f64 = 4.;
+
+/// The lines and arrowheads Revu draws for a Dimension or Length
+/// measurement, in PDF points.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeasurementLineLayout {
+    /// From each measured point to just past the dimension line.
+    pub extension_lines: [(PdfPoint, PdfPoint); 2],
+    pub dimension_segments: Vec<(PdfPoint, PdfPoint)>,
+    /// Closed arrowheads: tip, then the two base corners.
+    pub arrowheads: [[PdfPoint; 3]; 2],
+    /// The middle of the dimension line, where the caption is centred.
+    pub caption_center: PdfPoint,
+}
+
+/// Lays out a measurement line as Revu does. Arrowheads are `7.8w` long and
+/// `9w` wide, with tips `w` inside the extension lines. When the caption and
+/// both arrowheads do not fit between the extension lines, the arrowheads
+/// move outside them on `15.6w` tails and the caption sits on the line.
+pub fn measurement_line_layout(
+    start: PdfPoint,
+    end: PdfPoint,
+    offset_pt: f64,
+    stroke_width_pt: f64,
+    caption_width_pt: f64,
+) -> Option<MeasurementLineLayout> {
+    let delta_x = end.x - start.x;
+    let delta_y = end.y - start.y;
+    let length = delta_x.hypot(delta_y);
+    if !length.is_finite() || length <= f64::EPSILON || !stroke_width_pt.is_finite() {
+        return None;
+    }
+    let unit = (delta_x / length, delta_y / length);
+    let normal = (-unit.1, unit.0);
+    let at = |origin: PdfPoint, along: f64, across: f64| PdfPoint {
+        x: origin.x + unit.0 * along + normal.0 * across,
+        y: origin.y + unit.1 * along + normal.1 * across,
+    };
+    let extension = offset_pt + DIMENSION_LEADER_EXTENSION_PT.copysign(offset_pt);
+    let width = stroke_width_pt.max(0.);
+    let arrow_length = 7.8 * width;
+    let arrow_half_width = 4.5 * width;
+    let arrowhead = |tip: PdfPoint, direction: f64| {
+        let base = at(tip, -direction * arrow_length, 0.);
+        [
+            tip,
+            at(base, 0., arrow_half_width),
+            at(base, 0., -arrow_half_width),
+        ]
+    };
+    let caption_center = at(start, length * 0.5, offset_pt);
+    let caption_gap = if caption_width_pt > 0. {
+        caption_width_pt + MEASUREMENT_CAPTION_GAP_PT * 2.
+    } else {
+        0.
+    };
+    let inside = length - 2. * width >= 2. * arrow_length + caption_gap;
+    let (dimension_segments, arrowheads) = if inside {
+        let first = at(start, width, offset_pt);
+        let last = at(start, length - width, offset_pt);
+        let segments = if caption_gap > 0. {
+            vec![
+                (first, at(start, (length - caption_gap) * 0.5, offset_pt)),
+                (at(start, (length + caption_gap) * 0.5, offset_pt), last),
+            ]
+        } else {
+            vec![(first, last)]
+        };
+        (segments, [arrowhead(first, -1.), arrowhead(last, 1.)])
+    } else {
+        let first = at(start, -width, offset_pt);
+        let last = at(start, length + width, offset_pt);
+        (
+            vec![
+                (first, at(first, -2. * arrow_length, 0.)),
+                (last, at(last, 2. * arrow_length, 0.)),
+            ],
+            [arrowhead(first, 1.), arrowhead(last, -1.)],
+        )
+    };
+    Some(MeasurementLineLayout {
+        extension_lines: [
+            (start, at(start, 0., extension)),
+            (end, at(start, length, extension)),
+        ],
+        dimension_segments,
+        arrowheads,
+        caption_center,
+    })
+}
+
 /// Groups the integer digits of a formatted measurement with commas, as Revu
 /// captions do (`2,697.37`). Fractional parts such as `1/2` are untouched.
 pub fn group_measurement_thousands(value: &str) -> String {
@@ -1258,11 +1357,6 @@ impl CloudAnnotation {
         if !(0.0..=4.0).contains(&border_effect_intensity) {
             return Err(AnnotationError::InvalidAppearance(
                 "cloud intensity must be between 0 and 4".into(),
-            ));
-        }
-        if appearance.fill_color().is_some() {
-            return Err(AnnotationError::InvalidAppearance(
-                "cloud annotations do not support a fill".into(),
             ));
         }
         Ok(Self {
@@ -2155,7 +2249,7 @@ impl CloudPlusAnnotation {
         validate_cloud_plus_leader_points(&leader_points)?;
         validate_layout_rect(text_box, "Cloud+ text box")?;
         let content = content.into();
-        validate_text(&content, "Cloud+ content", MAX_TEXT_BOX_BYTES)?;
+        validate_optional_text(&content, "Cloud+ content", MAX_TEXT_BOX_BYTES)?;
         Ok(Self {
             id,
             page_index,
@@ -2499,7 +2593,7 @@ impl CalloutAnnotation {
         }
         validate_layout_rect(text_box, "callout text box")?;
         let content = content.into();
-        validate_text(&content, "callout content", MAX_TEXT_BOX_BYTES)?;
+        validate_optional_text(&content, "callout content", MAX_TEXT_BOX_BYTES)?;
         Self {
             id,
             page_index,
@@ -3394,7 +3488,7 @@ impl DimensionAnnotation {
             ));
         }
         let content = content.into();
-        validate_text(&content, "dimension content", MAX_TEXT_BOX_BYTES)?;
+        validate_optional_text(&content, "dimension content", MAX_TEXT_BOX_BYTES)?;
         Ok(Self {
             id,
             page_index,
@@ -10058,7 +10152,7 @@ impl AnnotationDocument {
                 Ok((AnnotationKind::Dimension, true))
             }
             AnnotationEdit::SetDimensionContent(content) => {
-                validate_text(&content, "dimension content", MAX_TEXT_BOX_BYTES)?;
+                validate_optional_text(&content, "dimension content", MAX_TEXT_BOX_BYTES)?;
                 let annotation = self.dimension(id).ok_or(AnnotationError::NoSelection)?;
                 if annotation.locked {
                     return Err(AnnotationError::LockedMarkup(id.clone()));
@@ -10580,7 +10674,7 @@ impl AnnotationDocument {
                 text_box,
                 leader_points,
             } => {
-                validate_text(&content, "Cloud+ content", MAX_TEXT_BOX_BYTES)?;
+                validate_optional_text(&content, "Cloud+ content", MAX_TEXT_BOX_BYTES)?;
                 validate_layout_rect(text_box, "Cloud+ text box")?;
                 validate_cloud_plus_leader_points(&leader_points)?;
                 let annotation = self.cloud_plus(id).ok_or(AnnotationError::NoSelection)?;
@@ -10617,7 +10711,7 @@ impl AnnotationDocument {
                 Ok((AnnotationKind::CloudPlus, true))
             }
             AnnotationEdit::SetCloudPlusContent(content) => {
-                validate_text(&content, "Cloud+ content", MAX_TEXT_BOX_BYTES)?;
+                validate_optional_text(&content, "Cloud+ content", MAX_TEXT_BOX_BYTES)?;
                 let annotation = self.cloud_plus(id).ok_or(AnnotationError::NoSelection)?;
                 if annotation.locked {
                     return Err(AnnotationError::LockedMarkup(id.clone()));
@@ -10686,7 +10780,7 @@ impl AnnotationDocument {
                 Ok((AnnotationKind::CloudPlus, true))
             }
             AnnotationEdit::SetCalloutContent(content) => {
-                validate_text(&content, "callout content", MAX_TEXT_BOX_BYTES)?;
+                validate_optional_text(&content, "callout content", MAX_TEXT_BOX_BYTES)?;
                 let annotation = self.callout(id).ok_or(AnnotationError::NoSelection)?;
                 if annotation.locked {
                     return Err(AnnotationError::LockedMarkup(id.clone()));
@@ -11522,10 +11616,10 @@ fn annotation_selection_paths(
             } else {
                 -1.
             };
-            // Match Electron dimensionHitPath, including its four-point overhang
-            // path, rather than the baseline or the full painted extension lines.
-            let overhang_x = -delta_y / length * sign * 4.;
-            let overhang_y = delta_x / length * sign * 4.;
+            // The dimension line plus the extension-line overhang past it,
+            // rather than the baseline or the full painted extension lines.
+            let overhang_x = -delta_y / length * sign * DIMENSION_LEADER_EXTENSION_PT;
+            let overhang_y = delta_x / length * sign * DIMENSION_LEADER_EXTENSION_PT;
             vec![path(
                 vec![
                     PdfPoint {
@@ -11551,7 +11645,25 @@ fn annotation_selection_paths(
             .collect(),
         Annotation::TextBox(annotation) => vec![rect_path(annotation.layout_rect, 0.)],
         Annotation::Length(annotation) => {
-            vec![path(vec![annotation.start, annotation.end], false)]
+            // Revu draws a Length as a dimension line `LL` above the points.
+            match measurement_line_layout(
+                annotation.start,
+                annotation.end,
+                LENGTH_LEADER_LENGTH_PT,
+                annotation.appearance.line().stroke_width_pt(),
+                0.,
+            ) {
+                Some(layout) => vec![path(
+                    vec![
+                        layout.extension_lines[0].0,
+                        layout.extension_lines[0].1,
+                        layout.extension_lines[1].1,
+                        layout.extension_lines[1].0,
+                    ],
+                    false,
+                )],
+                None => vec![path(vec![annotation.start, annotation.end], false)],
+            }
         }
         Annotation::Image(annotation) => vec![rect_path(annotation.rect, 0.)],
         Annotation::Snapshot(annotation) => {
@@ -11906,6 +12018,16 @@ fn validate_snapshot_opacity(opacity: f64) -> Result<(), AnnotationError> {
         return Err(AnnotationError::InvalidAppearance(
             "snapshot opacity must be between zero and one".into(),
         ));
+    }
+    Ok(())
+}
+
+/// Callout, Cloud+ and Dimension text may be empty, as in Revu.
+fn validate_optional_text(value: &str, field: &str, max_bytes: usize) -> Result<(), AnnotationError> {
+    if value.len() > max_bytes || value.contains('\0') {
+        return Err(AnnotationError::InvalidGeometry(format!(
+            "{field} must contain at most {max_bytes} UTF-8 bytes without NUL"
+        )));
     }
     Ok(())
 }
@@ -15386,14 +15508,14 @@ mod tests {
             let body_path = paths.first().expect("dimension body path");
             let expected = [
                 point(
-                    dimension_start.x + normal.0 * sign * 4.,
-                    dimension_start.y + normal.1 * sign * 4.,
+                    dimension_start.x + normal.0 * sign * DIMENSION_LEADER_EXTENSION_PT,
+                    dimension_start.y + normal.1 * sign * DIMENSION_LEADER_EXTENSION_PT,
                 ),
                 dimension_start,
                 dimension_end,
                 point(
-                    dimension_end.x + normal.0 * sign * 4.,
-                    dimension_end.y + normal.1 * sign * 4.,
+                    dimension_end.x + normal.0 * sign * DIMENSION_LEADER_EXTENSION_PT,
+                    dimension_end.y + normal.1 * sign * DIMENSION_LEADER_EXTENSION_PT,
                 ),
             ];
             assert!(!body_path.closed);

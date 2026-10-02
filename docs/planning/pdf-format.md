@@ -88,24 +88,42 @@ Page scale: page `/VP [<</Type /Viewport /BBox [...] /Measure <</Type /Measure /
   base-unit `/Measure`, and keep the exact page-scale factor (previously
   rounded to 6 decimal places of a per-point factor, ~6 ppm error).
 
+- [x] Clouds can be filled (`IC`, `FillOpacity`), as in Revu; the canvas, the
+  Cloud tool defaults and the Cloud properties panel all expose the fill.
+- [x] Callouts without text import and save as callouts.
+- [x] Revu dash arrays (`dashed1..6`) are kept on edit when the width and
+  style are unchanged.
+- [x] Callout and Cloud+ text draw a box border when `/BS /W` > 0 (Butter
+  Paper writes `W 0` for the default 1 pt leader).
+- [x] Dimension: no label by default, no `Contents`/`RC` when unlabelled,
+  `LLE 2`.
+- [x] Length and Dimension appearances follow Revu's drawing (2026-10-02
+  fixture streams): extension lines from the points to `LL + LLE`; tips `w`
+  inside the extension lines; closed arrowheads `7.8w` long and `9w` wide,
+  filled and stroked (`b`); when the caption and both arrowheads do not fit,
+  the arrowheads sit outside on `15.6w` tails; the caption is centred on the
+  dimension line. Length uses `LL 10` on screen as well as in the file.
+- [x] Text box, callout and Cloud+ appearances use the style's margin (`DS
+  margin`) instead of a fixed inset.
+- [x] Area captions are centred on the area, as Revu centres them.
+- [x] A callout or Cloud+ without text writes no text object in its appearance.
+
 ## Known differences (follow-ups)
 
-- Cloud fill: Revu clouds can be filled; the native model rejects a cloud fill,
-  so an imported fill is dropped when the cloud is edited.
 - Snapshot: Revu snapshots are vector Form copies of the page; native snapshots
-  are raster. Revu snapshots are kept untouched (not editable).
-- Callout without text: kept untouched; the model requires callout text.
-- Dash patterns: native Dashed `[4w 2w]` / Dotted `[w 2w]`; Revu's
-  `dashed1..6` patterns map to the nearest native style and are rewritten on
-  edit.
-- Callout border: Revu draws a text-box border when `/BS /W` > 0; native
-  callouts draw only the leader. Native writes `W 0` for the default 1 pt
-  leader so the default looks identical.
-- Dimension: the native Dimension carries label text (`/Contents`, `/RC`) and
-  `LLE 4`; Revu's Dimension has no text and `LLE 2`.
-- Appearance streams are native drawings (e.g. Length shows no arrowheads,
-  captions sit differently); Revu regenerates its own appearance on edit.
-- Text box appearance uses a fixed 2 pt inset while `DS` records the style's
-  margin (3 pt for new text, matching Revu).
+  are raster. Revu snapshots are kept untouched (not editable). Making them
+  movable needs the PDFium worker to rasterise the Form for the canvas and the
+  save path to wrap the original Form in a transformed appearance.
+- Cloud shape: Revu draws Adobe-style cloudy borders (fixture `revu-shapes.pdf`,
+  `BE /I 2`): circles of about 8.45 pt radius centred on the polygon edges,
+  about 14.1 pt apart, each drawn as an outward arc with a small hook where
+  neighbours meet. Native clouds use shallower scallops on the canvas and in
+  the regenerated appearance. Untouched Revu clouds and Cloud+ appearance
+  paths keep Revu's drawing.
+- Cloud+: Revu allows a cloud fill on Cloud+; the native Cloud+ cloud is
+  unfilled, so an imported Cloud+ fill is dropped when it is edited.
+- Measurement captions are horizontal; Revu turns the caption to follow a
+  sloped dimension line. Length `LL` is fixed at 10 pt; a Revu Length with
+  another offset is redrawn at 10 pt when edited.
 - The TypeScript `packages/pdf` reader used by the CLI still understands the
   Electron private keys; it does not write PDFs.

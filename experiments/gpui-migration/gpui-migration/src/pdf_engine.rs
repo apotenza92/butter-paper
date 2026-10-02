@@ -39,7 +39,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
 use crate::annotation_model::{
-    built_in_scale_presets,
+    built_in_scale_presets, measurement_line_layout, MeasurementLineLayout, LENGTH_LEADER_LENGTH_PT, DIMENSION_LEADER_EXTENSION_PT,
     Annotation, AnnotationError, ArcAnnotation, BlendMode, CalloutAnnotation, CalloutAppearance,
     CalloutDiskGeometry, CloudAnnotation, CloudAppearancePathCommand, CloudPlusAnnotation,
     CloudPlusAppearance, DecodedRgbaAsset, DimensionAnnotation, DimensionAppearance,
@@ -1821,7 +1821,9 @@ impl PdfPersistenceSession {
             replacement.page_index,
             replacement.id.as_str(),
         )?;
-        let original = self.document.get_object(object_id)?.as_dict()?.clone();
+        // Revu writes some entries (such as `/BS`) as indirect objects.
+        let original =
+            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
         let appearance_id = add_rectangle_appearance(&mut self.document, &replacement);
         let replacement_dictionary = rectangle_dictionary(&replacement, appearance_id, &original)?;
         self.document
@@ -1898,7 +1900,9 @@ impl PdfPersistenceSession {
                 ))
             })?;
         let object_id = identity.object_id;
-        let original = self.document.get_object(object_id)?.as_dict()?.clone();
+        // Revu writes some entries (such as `/BS`) as indirect objects.
+        let original =
+            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
         let native_name = canonical_native_annotation_name(&annotation.id);
         let dictionary = redact_dictionary(&annotation, &original, &native_name)?;
         self.document
@@ -1977,7 +1981,9 @@ impl PdfPersistenceSession {
                 ))
             })?;
         let object_id = identity.object_id;
-        let original = self.document.get_object(object_id)?.as_dict()?.clone();
+        // Revu writes some entries (such as `/BS`) as indirect objects.
+        let original =
+            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
         let old_appearance_id = normal_appearance_object_id(&original);
         let native_name = canonical_native_annotation_name(&annotation.id);
         let appearance_id = add_ellipse_appearance(&mut self.document, &annotation);
@@ -2061,7 +2067,9 @@ impl PdfPersistenceSession {
                 ))
             })?;
         let object_id = identity.object_id;
-        let original = self.document.get_object(object_id)?.as_dict()?.clone();
+        // Revu writes some entries (such as `/BS`) as indirect objects.
+        let original =
+            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
         let native_name = canonical_native_annotation_name(&annotation.id);
         let appearance_id = add_arc_appearance(&mut self.document, &annotation);
         let dictionary = arc_dictionary(&annotation, appearance_id, &original, &native_name)?;
@@ -2301,7 +2309,9 @@ impl PdfPersistenceSession {
                 ))
             })?;
         let object_id = identity.object_id;
-        let original = self.document.get_object(object_id)?.as_dict()?.clone();
+        // Revu writes some entries (such as `/BS`) as indirect objects.
+        let original =
+            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
         let old_appearance_id = normal_appearance_object_id(&original);
         let appearance_id = add_pen_appearance(&mut self.document, &annotation);
         let canonical_name = canonical_native_annotation_name(&annotation.id);
@@ -2395,7 +2405,9 @@ impl PdfPersistenceSession {
             annotation.page_index,
             annotation.id.as_str(),
         )?;
-        let original = self.document.get_object(object_id)?.as_dict()?.clone();
+        // Revu writes some entries (such as `/BS`) as indirect objects.
+        let original =
+            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
         let appearance_id = add_text_appearance(&mut self.document, &annotation)?;
         let font_resources = text_appearance_font_resources(&self.document, appearance_id);
         self.document.objects.insert(
@@ -2663,7 +2675,9 @@ impl PdfPersistenceSession {
             .map(String::as_str)
             .unwrap_or(annotation.id.as_str());
         let object_id = annotation_object_id(&self.document, annotation.page_index, native_name)?;
-        let original = self.document.get_object(object_id)?.as_dict()?.clone();
+        // Revu writes some entries (such as `/BS`) as indirect objects.
+        let original =
+            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
         let appearance_id = add_dimension_appearance(&mut self.document, &annotation)?;
         let font_resources = text_appearance_font_resources(&self.document, appearance_id);
         self.document.objects.insert(
@@ -2795,7 +2809,9 @@ impl PdfPersistenceSession {
                 annotation.id,
             )));
         }
-        let original = self.document.get_object(object_id)?.as_dict()?.clone();
+        // Revu writes some entries (such as `/BS`) as indirect objects.
+        let original =
+            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
         let old_appearance_id = normal_appearance_object_id(&original);
         let replacement =
             straight_line_pdf::rebuild_managed(&mut self.document, &annotation, &original)?;
@@ -2889,7 +2905,9 @@ impl PdfPersistenceSession {
                 ))
             })?;
         let object_id = identity.object_id;
-        let original = self.document.get_object(object_id)?.as_dict()?.clone();
+        // Revu writes some entries (such as `/BS`) as indirect objects.
+        let original =
+            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
         let old_appearance_id = normal_appearance_object_id(&original);
         let appearance_id = add_vertex_path_appearance(&mut self.document, &annotation)?;
         let dictionary = vertex_path_dictionary(&annotation, appearance_id, &original)?;
@@ -2973,7 +2991,9 @@ impl PdfPersistenceSession {
                 ))
             })?;
         let object_id = identity.object_id;
-        let original = self.document.get_object(object_id)?.as_dict()?.clone();
+        // Revu writes some entries (such as `/BS`) as indirect objects.
+        let original =
+            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
         let old_appearance_id = normal_appearance_object_id(&original);
         let appearance_id = add_cloud_appearance(&mut self.document, &annotation)?;
         let dictionary = cloud_dictionary(&annotation, appearance_id, &original)?;
@@ -3356,7 +3376,9 @@ impl PdfPersistenceSession {
                 ))
             })?;
         let object_id = identity.object_id;
-        let original = self.document.get_object(object_id)?.as_dict()?.clone();
+        // Revu writes some entries (such as `/BS`) as indirect objects.
+        let original =
+            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
         let old_appearance_id = normal_appearance_object_id(&original);
         let appearance_id = add_callout_appearance(&mut self.document, &annotation)?;
         let font_resources = text_appearance_font_resources(&self.document, appearance_id);
@@ -3500,7 +3522,9 @@ impl PdfPersistenceSession {
                 ))
             })?;
         let object_id = identity.object_id;
-        let original = self.document.get_object(object_id)?.as_dict()?.clone();
+        // Revu writes some entries (such as `/BS`) as indirect objects.
+        let original =
+            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
         let old_appearance_id = normal_appearance_object_id(&original);
         let appearance_id = add_measurement_path_appearance(&mut self.document, &annotation)?;
         let font_resources = text_appearance_font_resources(&self.document, appearance_id);
@@ -3670,7 +3694,9 @@ impl PdfPersistenceSession {
             .map(String::as_str)
             .unwrap_or(annotation.id.as_str());
         let object_id = annotation_object_id(&self.document, annotation.page_index, native_name)?;
-        let original = self.document.get_object(object_id)?.as_dict()?.clone();
+        // Revu writes some entries (such as `/BS`) as indirect objects.
+        let original =
+            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
         let old_appearance_ids = image_appearance_object_ids(&self.document, &original);
         let (appearance_id, image_id) = add_image_appearance(&mut self.document, &annotation);
         self.document.objects.insert(
@@ -3702,7 +3728,9 @@ impl PdfPersistenceSession {
             .map(String::as_str)
             .unwrap_or(id.as_str());
         let object_id = annotation_object_id(&self.document, page_index, native_name)?;
-        let original = self.document.get_object(object_id)?.as_dict()?.clone();
+        // Revu writes some entries (such as `/BS`) as indirect objects.
+        let original =
+            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
         let old_appearance_ids = image_appearance_object_ids(&self.document, &original);
         remove_annotation_reference(&mut self.document, page_index, object_id)?;
         self.document.objects.remove(&object_id);
@@ -3758,7 +3786,9 @@ impl PdfPersistenceSession {
             .map(String::as_str)
             .unwrap_or(annotation.id.as_str());
         let object_id = annotation_object_id(&self.document, original_page_index, native_name)?;
-        let original = self.document.get_object(object_id)?.as_dict()?.clone();
+        // Revu writes some entries (such as `/BS`) as indirect objects.
+        let original =
+            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
         let old_appearance_ids = image_appearance_object_ids(&self.document, &original);
         let appearance_id = if self.snapshots[index].asset() == annotation.asset() {
             old_appearance_ids
@@ -3795,7 +3825,9 @@ impl PdfPersistenceSession {
             .map(String::as_str)
             .unwrap_or(id.as_str());
         let object_id = annotation_object_id(&self.document, page_index, native_name)?;
-        let original = self.document.get_object(object_id)?.as_dict()?.clone();
+        // Revu writes some entries (such as `/BS`) as indirect objects.
+        let original =
+            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
         let old_appearance_ids = image_appearance_object_ids(&self.document, &original);
         remove_annotation_reference(&mut self.document, page_index, object_id)?;
         self.document.objects.remove(&object_id);
@@ -5145,6 +5177,7 @@ fn add_callout_appearance(
         }
         content.extend_from_slice(b"S\n");
     }
+    append_callout_box_border(&mut content, annotation.text_box, bounds, line.stroke_width_pt());
     if leader.len() >= 2 {
         let tip = leader[0];
         let next = leader[1];
@@ -5178,7 +5211,9 @@ fn add_callout_appearance(
         + ((annotation.text_box.height - total_height) * 0.5).max(0.)
         + total_height
         - text.font_size_pt();
-    if uses_helvetica_winansi_fast_path(annotation.content(), text.font_family()) {
+    if annotation.content().is_empty() {
+        // Revu allows a callout without text; it draws no text object.
+    } else if uses_helvetica_winansi_fast_path(annotation.content(), text.font_family()) {
         content.extend_from_slice(
             format!(
                 "BT\n/Helv {:.6} Tf\n{text_red:.6} {text_green:.6} {text_blue:.6} rg\n",
@@ -5191,7 +5226,7 @@ fn add_callout_appearance(
             content.extend_from_slice(
                 format!(
                     "1 0 0 1 {:.6} {:.6} Tm\n(",
-                    annotation.text_box.x + 3. - bounds.x,
+                    annotation.text_box.x + text.inset_pt() - bounds.x,
                     start_y - index as f64 * line_height - bounds.y,
                 )
                 .as_bytes(),
@@ -5207,7 +5242,7 @@ fn add_callout_appearance(
             content.extend_from_slice(
                 format!(
                     "1 0 0 1 {:.6} {:.6} Tm\n",
-                    annotation.text_box.x + 3. - bounds.x,
+                    annotation.text_box.x + text.inset_pt() - bounds.x,
                     start_y - index as f64 * line_height - bounds.y,
                 )
                 .as_bytes(),
@@ -5216,12 +5251,15 @@ fn add_callout_appearance(
                 &mut content,
                 line_text,
                 text.font_size_pt(),
-                annotation.text_box.x + 3. - bounds.x,
+                annotation.text_box.x + text.inset_pt() - bounds.x,
                 start_y - index as f64 * line_height - bounds.y,
             );
         }
     }
-    content.extend_from_slice(b"ET\nQ\n");
+    if !annotation.content().is_empty() {
+        content.extend_from_slice(b"ET\n");
+    }
+    content.extend_from_slice(b"Q\n");
     Ok(document.add_object(Stream::new(
         dictionary! {
             "Type" => "XObject",
@@ -5240,6 +5278,25 @@ fn add_callout_appearance(
         },
         content,
     )))
+}
+
+/// Revu strokes the callout text box whenever the border width is not the
+/// default 1 pt leader (`BS W 0`).
+fn append_callout_box_border(content: &mut Vec<u8>, text_box: PdfRect, bounds: PdfRect, width_pt: f64) {
+    if revu_callout_border_width(width_pt) <= 0. {
+        return;
+    }
+    let inset = width_pt * 0.5;
+    content.extend_from_slice(
+        format!(
+            "{:.6} {:.6} {:.6} {:.6} re\nS\n",
+            text_box.x + inset - bounds.x,
+            text_box.y + inset - bounds.y,
+            (text_box.width - width_pt).max(0.),
+            (text_box.height - width_pt).max(0.),
+        )
+        .as_bytes(),
+    );
 }
 
 /// Revu's callout border width: `0` draws the default 1 pt leader with no
@@ -5295,7 +5352,6 @@ fn callout_dictionary(
     Ok(dictionary)
 }
 
-const TEXT_APPEARANCE_INSET_PT: f64 = 2.;
 const TEXT_APPEARANCE_LINE_HEIGHT_FACTOR: f64 = 1.15;
 
 // Character advances for Base-14 Helvetica with WinAnsiEncoding, in thousandths
@@ -6482,10 +6538,15 @@ fn union_measurement_bounds(left: PdfRect, right: PdfRect) -> PdfRect {
         .expect("validated measurement bounds must have a finite union")
 }
 
-fn text_appearance_line_x(box_width: f64, line_width: f64, alignment: TextAlignment) -> f64 {
-    let available = (box_width - TEXT_APPEARANCE_INSET_PT * 2.).max(0.);
+fn text_appearance_line_x(
+    box_width: f64,
+    line_width: f64,
+    alignment: TextAlignment,
+    inset_pt: f64,
+) -> f64 {
+    let available = (box_width - inset_pt * 2.).max(0.);
     let remaining = (available - line_width).max(0.);
-    TEXT_APPEARANCE_INSET_PT
+    inset_pt
         + match alignment {
             TextAlignment::Left => 0.,
             TextAlignment::Center => remaining * 0.5,
@@ -6511,7 +6572,8 @@ fn add_text_appearance(
     let (red, green, blue) = color_components(annotation.style().color());
     let font_size = annotation.style().font_size_pt();
     let line_height = font_size * TEXT_APPEARANCE_LINE_HEIGHT_FACTOR;
-    let start_y = (annotation.layout_rect.height - TEXT_APPEARANCE_INSET_PT - font_size).max(0.);
+    let inset = annotation.style().inset_pt();
+    let start_y = (annotation.layout_rect.height - inset - font_size).max(0.);
     let mut fonts = Dictionary::new();
     let mut content = format!("q\n/GS0 gs\nBT\n{red:.6} {green:.6} {blue:.6} rg\n").into_bytes();
     if !annotation.rich_text_runs().is_empty() {
@@ -6528,6 +6590,7 @@ fn add_text_appearance(
                     annotation.layout_rect.width,
                     width,
                     annotation.style().alignment(),
+                    inset,
                 );
             let y = annotation.layout_rect.y + start_y - line_index as f64 * line_height;
             for span in &line.spans {
@@ -6561,6 +6624,7 @@ fn add_text_appearance(
                     annotation.layout_rect.width,
                     width,
                     annotation.style().alignment(),
+                    inset,
                 );
             let y = annotation.layout_rect.y + start_y - index as f64 * line_height;
             content.extend_from_slice(format!("1 0 0 1 {x:.6} {y:.6} Tm\n(").as_bytes());
@@ -6578,6 +6642,7 @@ fn add_text_appearance(
                     annotation.layout_rect.width,
                     width,
                     annotation.style().alignment(),
+                    inset,
                 );
             let y = annotation.layout_rect.y + start_y - index as f64 * line_height;
             content.extend_from_slice(format!("1 0 0 1 {x:.6} {y:.6} Tm\n").as_bytes());
@@ -6718,25 +6783,17 @@ fn text_box_dictionary(
 }
 
 fn length_bounds(annotation: &LengthAnnotation) -> PdfRect {
-    let line = annotation.appearance.line();
-    let bounds = measurement_points_bounds(
-        &[annotation.start, annotation.end],
-        8_f64.max(line.stroke_width_pt() * 0.5),
-    );
-    if !annotation.calibration().show_caption() {
-        return bounds;
-    }
-    let anchor = PdfPoint {
-        x: (annotation.start.x + annotation.end.x) * 0.5,
-        y: (annotation.start.y + annotation.end.y) * 0.5,
-    };
-    let caption = measurement_caption_layout(
-        anchor,
-        &annotation.caption(),
-        annotation.appearance.text(),
-        false,
-    );
-    union_measurement_bounds(bounds, caption.rect)
+    let layout = length_line_layout(annotation);
+    let caption = length_caption_text(annotation).map(|caption| {
+        measurement_caption_layout(
+            layout.caption_center,
+            &caption,
+            annotation.appearance.text(),
+            true,
+        )
+        .rect
+    });
+    measurement_line_bounds(&layout, annotation.appearance.line().stroke_width_pt(), caption)
 }
 
 fn vertex_path_bounds(annotation: &VertexPathAnnotation) -> PdfRect {
@@ -7147,13 +7204,16 @@ fn add_cloud_plus_text_appearance(
         }
         content.extend_from_slice(b"S\n");
     }
+    append_callout_box_border(&mut content, annotation.text_box, bounds, line.stroke_width_pt());
     let line_height = text.font_size_pt() * 1.15;
     let total_height = line_height * lines.len() as f64;
     let start_y = annotation.text_box.y
         + ((annotation.text_box.height - total_height) * 0.5).max(0.)
         + total_height
         - text.font_size_pt();
-    if uses_helvetica_winansi_fast_path(annotation.content(), text.font_family()) {
+    if annotation.content().is_empty() {
+        // Revu allows a callout without text; it draws no text object.
+    } else if uses_helvetica_winansi_fast_path(annotation.content(), text.font_family()) {
         content.extend_from_slice(
             format!(
                 "BT\n/Helv {:.6} Tf\n{text_red:.6} {text_green:.6} {text_blue:.6} rg\n",
@@ -7166,7 +7226,7 @@ fn add_cloud_plus_text_appearance(
             content.extend_from_slice(
                 format!(
                     "1 0 0 1 {:.6} {:.6} Tm\n(",
-                    annotation.text_box.x + 3. - bounds.x,
+                    annotation.text_box.x + text.inset_pt() - bounds.x,
                     start_y - index as f64 * line_height - bounds.y,
                 )
                 .as_bytes(),
@@ -7182,7 +7242,7 @@ fn add_cloud_plus_text_appearance(
             content.extend_from_slice(
                 format!(
                     "1 0 0 1 {:.6} {:.6} Tm\n",
-                    annotation.text_box.x + 3. - bounds.x,
+                    annotation.text_box.x + text.inset_pt() - bounds.x,
                     start_y - index as f64 * line_height - bounds.y,
                 )
                 .as_bytes(),
@@ -7191,12 +7251,15 @@ fn add_cloud_plus_text_appearance(
                 &mut content,
                 line_text,
                 text.font_size_pt(),
-                annotation.text_box.x + 3. - bounds.x,
+                annotation.text_box.x + text.inset_pt() - bounds.x,
                 start_y - index as f64 * line_height - bounds.y,
             );
         }
     }
-    content.extend_from_slice(b"ET\nQ\n");
+    if !annotation.content().is_empty() {
+        content.extend_from_slice(b"ET\n");
+    }
+    content.extend_from_slice(b"Q\n");
     Ok(document.add_object(Stream::new(
         dictionary! {
             "Type" => "XObject",
@@ -7303,11 +7366,12 @@ fn measurement_path_bounds(annotation: &MeasurementPathAnnotation) -> PdfRect {
         MeasurementPathKind::Polylength => measurement_path_midpoint(annotation.points()),
         MeasurementPathKind::Area => measurement_vertex_mean(annotation.points()),
     };
+    // Revu centres an Area caption inside the area.
     let caption = measurement_caption_layout(
         anchor,
         &annotation.caption(),
         annotation.text_style(),
-        false,
+        annotation.kind == MeasurementPathKind::Area,
     );
     union_measurement_bounds(bounds, caption.rect)
 }
@@ -7377,7 +7441,12 @@ fn add_measurement_path_appearance(
         let caption_text = caption_text
             .as_deref()
             .expect("visible measurement caption must have text");
-        let caption = measurement_caption_layout(anchor, caption_text, text, false);
+        let caption = measurement_caption_layout(
+            anchor,
+            caption_text,
+            text,
+            annotation.kind == MeasurementPathKind::Area,
+        );
         let caption_x = caption.text_origin.x - bounds.x;
         let caption_y = caption.text_origin.y - bounds.y;
         if uses_helvetica_winansi_fast_path(caption_text, text.font_family()) {
@@ -7927,10 +7996,7 @@ fn add_length_appearance(
     document: &mut Document,
     annotation: &LengthAnnotation,
 ) -> Result<ObjectId, PdfPersistenceError> {
-    let caption_text = annotation
-        .calibration()
-        .show_caption()
-        .then(|| annotation.caption());
+    let caption_text = length_caption_text(annotation);
     let mut caption_lines = caption_text
         .as_deref()
         .map(|caption| {
@@ -7947,30 +8013,25 @@ fn add_length_appearance(
     let bounds = length_bounds(annotation);
     let line = annotation.appearance.line();
     let text = annotation.appearance.text();
-    let start_x = annotation.start.x - bounds.x;
-    let start_y = annotation.start.y - bounds.y;
-    let end_x = annotation.end.x - bounds.x;
-    let end_y = annotation.end.y - bounds.y;
+    let layout = length_line_layout(annotation);
+    let local = |point: PdfPoint| (point.x - bounds.x, point.y - bounds.y);
     let (stroke_red, stroke_green, stroke_blue) = color_components(line.stroke_color());
     let (text_red, text_green, text_blue) = color_components(text.color());
     let dash_operation = rectangle_dash_pattern(line.stroke_style(), line.stroke_width_pt())
         .map_or_else(String::new, |(dash, gap)| {
             format!("[{dash:.6} {gap:.6}] 0 d\n")
         });
-    let mut content = format!(
-        "q\n/GS0 gs\n{stroke_red:.6} {stroke_green:.6} {stroke_blue:.6} RG {dash_operation}{:.6} w\n{start_x:.6} {start_y:.6} m {end_x:.6} {end_y:.6} l S\n",
+    let mut lines = format!(
+        "q\n/GS0 gs\n{stroke_red:.6} {stroke_green:.6} {stroke_blue:.6} RG\n{stroke_red:.6} {stroke_green:.6} {stroke_blue:.6} rg\n{dash_operation}{:.6} w\n",
         line.stroke_width_pt()
-    )
-    .into_bytes();
+    );
+    append_measurement_line(&mut lines, &layout, local);
+    let mut content = lines.into_bytes();
     if annotation.calibration().show_caption() {
-        let anchor = PdfPoint {
-            x: (annotation.start.x + annotation.end.x) * 0.5,
-            y: (annotation.start.y + annotation.end.y) * 0.5,
-        };
         let caption_text = caption_text
             .as_deref()
             .expect("visible length caption must have text");
-        let caption = measurement_caption_layout(anchor, caption_text, text, false);
+        let caption = measurement_caption_layout(layout.caption_center, caption_text, text, true);
         if uses_helvetica_winansi_fast_path(caption_text, text.font_family()) {
             let encoded = text_appearance_line_bytes(caption_text);
             content.extend_from_slice(format!(
@@ -8044,8 +8105,8 @@ fn length_dictionary(
         "C" => color_array(line.stroke_color()),
         "IC" => color_array(line.stroke_color()),
         "LE" => vec![Object::Name(b"ClosedArrow".to_vec()), Object::Name(b"ClosedArrow".to_vec())],
-        "LL" => 10,
-        "LLE" => 2,
+        "LL" => Object::Real(LENGTH_LEADER_LENGTH_PT as f32),
+        "LLE" => Object::Real(DIMENSION_LEADER_EXTENSION_PT as f32),
         "Cap" => Object::Boolean(true),
         "MeasurementTypes" => 130,
         "Measure" => calibration_measure_dictionary(calibration),
@@ -8067,112 +8128,107 @@ fn length_dictionary(
     dictionary
 }
 
-fn dimension_geometry(
-    annotation: &DimensionAnnotation,
-) -> (PdfPoint, PdfPoint, PdfPoint, PdfPoint) {
-    let (dimension_start, dimension_end) = annotation.dimension_line_points();
-    let delta_x = annotation.end.x - annotation.start.x;
-    let delta_y = annotation.end.y - annotation.start.y;
-    let length = delta_x.hypot(delta_y);
-    let normal_x = -delta_y / length;
-    let normal_y = delta_x / length;
-    let overhang = if annotation.dimension_line_offset() >= 0. {
-        4.
-    } else {
-        -4.
-    };
-    (
-        dimension_start,
-        dimension_end,
-        PdfPoint {
-            x: dimension_start.x + normal_x * overhang,
-            y: dimension_start.y + normal_y * overhang,
-        },
-        PdfPoint {
-            x: dimension_end.x + normal_x * overhang,
-            y: dimension_end.y + normal_y * overhang,
-        },
-    )
+fn dimension_caption_text_width(annotation: &DimensionAnnotation) -> f64 {
+    if annotation.content().is_empty() {
+        return 0.;
+    }
+    let text = annotation.appearance.text();
+    appearance_text_width_pt(annotation.content(), text.font_size_pt(), text.font_family())
 }
 
-fn dimension_line_segments(
-    annotation: &DimensionAnnotation,
-    caption_width: f64,
-) -> [(PdfPoint, PdfPoint); 2] {
-    let (start, end) = annotation.dimension_line_points();
-    let delta_x = annotation.end.x - annotation.start.x;
-    let delta_y = annotation.end.y - annotation.start.y;
-    let length = delta_x.hypot(delta_y);
-    let unit_x = delta_x / length;
-    let unit_y = delta_y / length;
-    let center = annotation.caption_center();
-    let half_gap = (caption_width * 0.5 + 4.).min((length * 0.5 - 1.).max(0.));
-    [
-        (
-            start,
-            PdfPoint {
-                x: center.x - unit_x * half_gap,
-                y: center.y - unit_y * half_gap,
-            },
-        ),
-        (
-            PdfPoint {
-                x: center.x + unit_x * half_gap,
-                y: center.y + unit_y * half_gap,
-            },
-            end,
-        ),
-    ]
+fn dimension_line_layout(annotation: &DimensionAnnotation) -> MeasurementLineLayout {
+    measurement_line_layout(
+        annotation.start,
+        annotation.end,
+        annotation.dimension_line_offset(),
+        annotation.appearance.line().stroke_width_pt(),
+        dimension_caption_text_width(annotation),
+    )
+    .expect("validated Dimension endpoints are distinct")
+}
+
+fn length_caption_text(annotation: &LengthAnnotation) -> Option<String> {
+    annotation
+        .calibration()
+        .show_caption()
+        .then(|| annotation.caption())
+}
+
+fn length_line_layout(annotation: &LengthAnnotation) -> MeasurementLineLayout {
+    let text = annotation.appearance.text();
+    let caption_width = length_caption_text(annotation).map_or(0., |caption| {
+        appearance_text_width_pt(&caption, text.font_size_pt(), text.font_family())
+    });
+    measurement_line_layout(
+        annotation.start,
+        annotation.end,
+        LENGTH_LEADER_LENGTH_PT,
+        annotation.appearance.line().stroke_width_pt(),
+        caption_width,
+    )
+    .expect("validated Length endpoints are distinct")
+}
+
+fn measurement_line_bounds(
+    layout: &MeasurementLineLayout,
+    stroke_width_pt: f64,
+    caption: Option<PdfRect>,
+) -> PdfRect {
+    let mut points = Vec::new();
+    for (from, to) in layout
+        .extension_lines
+        .iter()
+        .chain(layout.dimension_segments.iter())
+    {
+        points.extend([*from, *to]);
+    }
+    for arrowhead in &layout.arrowheads {
+        points.extend(arrowhead.iter().copied());
+    }
+    let bounds = measurement_points_bounds(&points, stroke_width_pt.max(1.));
+    caption.map_or(bounds, |caption| union_measurement_bounds(bounds, caption))
 }
 
 fn dimension_bounds(annotation: &DimensionAnnotation) -> PdfRect {
-    let (dimension_start, dimension_end, extension_start, extension_end) =
-        dimension_geometry(annotation);
-    let caption = measurement_caption_layout(
-        annotation.caption_center(),
-        annotation.content(),
-        annotation.appearance.text(),
-        true,
-    );
-    let points = [
-        annotation.start,
-        annotation.end,
-        dimension_start,
-        dimension_end,
-        extension_start,
-        extension_end,
-        PdfPoint {
-            x: caption.rect.x,
-            y: caption.rect.y,
-        },
-        PdfPoint {
-            x: caption.rect.x + caption.rect.width,
-            y: caption.rect.y + caption.rect.height,
-        },
-    ];
-    let min_x = points
+    let layout = dimension_line_layout(annotation);
+    let caption = (!annotation.content().is_empty()).then(|| {
+        measurement_caption_layout(
+            layout.caption_center,
+            annotation.content(),
+            annotation.appearance.text(),
+            true,
+        )
+        .rect
+    });
+    measurement_line_bounds(&layout, annotation.appearance.line().stroke_width_pt(), caption)
+}
+
+/// Strokes the extension lines and dimension line, then fills and strokes
+/// the closed arrowheads, as Revu's appearance does.
+fn append_measurement_line(
+    content: &mut String,
+    layout: &MeasurementLineLayout,
+    local: impl Fn(PdfPoint) -> (f64, f64),
+) {
+    for (from, to) in layout
+        .extension_lines
         .iter()
-        .map(|point| point.x)
-        .fold(f64::INFINITY, f64::min);
-    let min_y = points
-        .iter()
-        .map(|point| point.y)
-        .fold(f64::INFINITY, f64::min);
-    let max_x = points
-        .iter()
-        .map(|point| point.x)
-        .fold(f64::NEG_INFINITY, f64::max);
-    let max_y = points
-        .iter()
-        .map(|point| point.y)
-        .fold(f64::NEG_INFINITY, f64::max);
-    PdfRect::new(
-        min_x,
-        min_y,
-        (max_x - min_x).max(1.),
-        (max_y - min_y).max(1.),
-    )
-    .expect("validated Dimension geometry has finite bounds")
+        .chain(layout.dimension_segments.iter())
+    {
+        let (from_x, from_y) = local(*from);
+        let (to_x, to_y) = local(*to);
+        content.push_str(&format!(
+            "{from_x:.6} {from_y:.6} m {to_x:.6} {to_y:.6} l S\n"
+        ));
+    }
+    content.push_str("[] 0 d\n");
+    for arrowhead in &layout.arrowheads {
+        let [tip, left, right] = arrowhead.map(&local);
+        content.push_str(&format!(
+            "{:.6} {:.6} m {:.6} {:.6} l {:.6} {:.6} l b\n",
+            left.0, left.1, tip.0, tip.1, right.0, right.1,
+        ));
+    }
 }
 
 fn add_dimension_appearance(
@@ -8189,8 +8245,7 @@ fn add_dimension_appearance(
     let font_resources = appearance_text_font_resources(document, &mut caption_lines)?;
     let bounds = dimension_bounds(annotation);
     let line = annotation.appearance.line();
-    let (dimension_start, dimension_end, extension_start, extension_end) =
-        dimension_geometry(annotation);
+    let layout = dimension_line_layout(annotation);
     let local = |point: PdfPoint| (point.x - bounds.x, point.y - bounds.y);
     let (stroke_red, stroke_green, stroke_blue) = color_components(line.stroke_color());
     let (text_red, text_green, text_blue) = color_components(text.color());
@@ -8199,72 +8254,21 @@ fn add_dimension_appearance(
             format!("[{dash:.6} {gap:.6}] 0 d\n")
         });
     let mut content = format!(
-        "q\n/GSDimension gs\n{stroke_red:.6} {stroke_green:.6} {stroke_blue:.6} RG\n{dash_operation}{:.6} w\n",
+        "q\n/GSDimension gs\n{stroke_red:.6} {stroke_green:.6} {stroke_blue:.6} RG\n{stroke_red:.6} {stroke_green:.6} {stroke_blue:.6} rg\n{dash_operation}{:.6} w\n",
         line.stroke_width_pt(),
     );
-    for (from, to) in [
-        (extension_start, annotation.start),
-        (annotation.start, dimension_start),
-        (extension_end, annotation.end),
-        (annotation.end, dimension_end),
-    ] {
-        let (from_x, from_y) = local(from);
-        let (to_x, to_y) = local(to);
-        content.push_str(&format!(
-            "{from_x:.6} {from_y:.6} m {to_x:.6} {to_y:.6} l S\n"
-        ));
-    }
+    append_measurement_line(&mut content, &layout, local);
     let caption = measurement_caption_layout(
-        annotation.caption_center(),
+        layout.caption_center,
         annotation.content(),
         text,
         true,
     );
-    for (from, to) in dimension_line_segments(annotation, caption.rect.width) {
-        let (from_x, from_y) = local(from);
-        let (to_x, to_y) = local(to);
-        content.push_str(&format!(
-            "{from_x:.6} {from_y:.6} m {to_x:.6} {to_y:.6} l S\n"
-        ));
-    }
-    let arrow = |from: PdfPoint, to: PdfPoint| {
-        let dx = to.x - from.x;
-        let dy = to.y - from.y;
-        let distance = dx.hypot(dy);
-        let unit_x = dx / distance;
-        let unit_y = dy / distance;
-        let arrow_length = (line.stroke_width_pt() * 8.).max(7.);
-        let half_width = (line.stroke_width_pt() * 5.).max(4.) * 0.5;
-        let base_x = to.x - unit_x * arrow_length;
-        let base_y = to.y - unit_y * arrow_length;
-        [
-            to,
-            PdfPoint {
-                x: base_x - unit_y * half_width,
-                y: base_y + unit_x * half_width,
-            },
-            PdfPoint {
-                x: base_x + unit_y * half_width,
-                y: base_y - unit_x * half_width,
-            },
-        ]
-    };
-    content.push_str(&format!(
-        "{stroke_red:.6} {stroke_green:.6} {stroke_blue:.6} rg\n"
-    ));
-    for points in [
-        arrow(dimension_end, dimension_start),
-        arrow(dimension_start, dimension_end),
-    ] {
-        let [tip, left, right] = points.map(local);
-        content.push_str(&format!(
-            "{:.6} {:.6} m {:.6} {:.6} l {:.6} {:.6} l h f\n",
-            tip.0, tip.1, left.0, left.1, right.0, right.1,
-        ));
-    }
     let (caption_x, caption_y) = local(caption.text_origin);
     let mut content = content.into_bytes();
-    if uses_helvetica_winansi_fast_path(annotation.content(), text.font_family()) {
+    if annotation.content().is_empty() {
+        // An unlabelled Dimension, like Revu's, draws no text.
+    } else if uses_helvetica_winansi_fast_path(annotation.content(), text.font_family()) {
         let encoded = text_appearance_line_bytes(annotation.content());
         content.extend_from_slice(format!(
             "BT {text_red:.6} {text_green:.6} {text_blue:.6} rg /Helv {:.6} Tf 1 0 0 1 {caption_x:.6} {caption_y:.6} Tm (",
@@ -8286,7 +8290,10 @@ fn add_dimension_appearance(
             caption_y,
         );
     }
-    content.extend_from_slice(b"ET\nQ\n");
+    if !annotation.content().is_empty() {
+        content.extend_from_slice(b"ET\n");
+    }
+    content.extend_from_slice(b"Q\n");
     Ok(document.add_object(Stream::new(
         dictionary! {
             "Type" => "XObject",
@@ -8335,13 +8342,18 @@ fn dimension_dictionary(
         "IC" => color_array(line.stroke_color()),
         "LE" => vec![Object::Name(b"ClosedArrow".to_vec()), Object::Name(b"ClosedArrow".to_vec())],
         "LL" => Object::Real(annotation.dimension_line_offset() as f32),
-        "LLE" => Object::Real(4.),
+        "LLE" => Object::Real(DIMENSION_LEADER_EXTENSION_PT as f32),
         "Cap" => Object::Boolean(true),
         "PitchRun" => 12,
         "SlopeType" => 0,
         "AP" => dictionary! { "N" => appearance_id },
     };
-    set_measurement_caption(&mut replacement, text, annotation.content());
+    if annotation.content().is_empty() {
+        // Revu's Dimension carries only its text style, no label.
+        replacement.set("DS", pdf_literal(&revu_default_style(text, None)));
+    } else {
+        set_measurement_caption(&mut replacement, text, annotation.content());
+    }
     if text.font_family() != "Helvetica" {
         replacement.set("DR", dictionary! { "Font" => font_resources });
     }
@@ -8858,6 +8870,7 @@ fn preserve_annotation_metadata(replacement: &mut Dictionary, original: &Diction
         replacement.set("CreationDate", pdf_literal(&now));
     }
     replacement.set("M", pdf_literal(&now));
+    preserve_dash_pattern(replacement, original);
     // Empty comments and full opacity are defaults Revu leaves implicit.
     if matches!(replacement.get(b"Contents"), Ok(Object::String(value, _)) if value.is_empty()) {
         replacement.remove(b"Contents");
@@ -8869,6 +8882,39 @@ fn preserve_annotation_metadata(replacement: &mut Dictionary, original: &Diction
         .is_some_and(|opacity| opacity >= 1.)
     {
         replacement.remove(b"CA");
+    }
+}
+
+/// Keeps the original `/BS /D` dash array when an edit leaves the line's
+/// style and width unchanged, so a Revu `dashed1..6` pattern is not replaced
+/// by the nearest native pattern.
+fn preserve_dash_pattern(replacement: &mut Dictionary, original: &Dictionary) {
+    let border = |dictionary: &Dictionary| {
+        dictionary
+            .get(b"BS")
+            .ok()
+            .and_then(|value| value.as_dict().ok())
+            .cloned()
+    };
+    let (Some(mut next), Some(previous)) = (border(replacement), border(original)) else {
+        return;
+    };
+    let is_dashed = |border: &Dictionary| dictionary_name(border, b"S").as_deref() == Some("D");
+    if !is_dashed(&next) || !is_dashed(&previous) || previous.get(b"D").is_err() {
+        return;
+    }
+    let width = |border: &Dictionary| dictionary_float(border, b"W").unwrap_or(1.);
+    if (width(&next) - width(&previous)).abs() > 1e-4 {
+        return;
+    }
+    let style = |dictionary: &Dictionary, border: &Dictionary| {
+        let mut probe = dictionary.clone();
+        probe.set("BS", border.clone());
+        import_stroke_style(&probe, width(border))
+    };
+    if style(replacement, &next) == style(original, &previous) {
+        next.set("D", previous.get(b"D").expect("checked above").clone());
+        replacement.set("BS", next);
     }
 }
 
@@ -11689,7 +11735,9 @@ fn import_callout(
     name: String,
     page_index: u32,
 ) -> Result<CalloutAnnotation, PdfPersistenceError> {
-    let imported_text = import_text_box(document, annotation, name.clone(), page_index)?;
+    // Read the style and text directly: a callout's text may be empty.
+    let imported_style = import_text_style(document, annotation, true)?;
+    let imported_content = dictionary_text_box_contents(annotation, b"Contents")?.unwrap_or_default();
     let outer = import_pdf_rect(annotation, b"Rect")?;
     let text_box = annotation
         .get(b"RD")
@@ -11726,19 +11774,19 @@ fn import_callout(
         &dictionary_string(annotation, b"DA").unwrap_or_default(),
     )
     .0
-    .unwrap_or_else(|| imported_text.style().color().to_owned());
+    .unwrap_or_else(|| (&imported_style).color().to_owned());
     let width = import_callout_leader_width(annotation);
-    let opacity = imported_text.style().opacity();
+    let opacity = (&imported_style).opacity();
     let appearance = CalloutAppearance::new(
         StraightLineAppearance::new(stroke_color, width, opacity, StrokeStyle::Solid)?,
-        imported_text.style().clone(),
+        (&imported_style).clone(),
     )?;
     let mut imported = CalloutAnnotation::new(
         MarkupId::new(name)?,
         page_index,
         leader,
         text_box,
-        imported_text.content(),
+        imported_content.as_str(),
         appearance,
     )?;
     imported.locked = annotation_locked(annotation);
@@ -12005,8 +12053,8 @@ fn import_cloud_plus_pair(
     page_index: u32,
 ) -> Result<CloudPlusAnnotation, PdfPersistenceError> {
     let cloud = import_cloud(cloud_dictionary, stable_name.clone(), page_index)?;
-    let imported_text =
-        import_text_box(document, text_dictionary, stable_name.clone(), page_index)?;
+    let imported_content =
+        dictionary_text_box_contents(text_dictionary, b"Contents")?.unwrap_or_default();
     let leader_values = text_dictionary.get(b"CL")?.as_array()?;
     if !matches!(leader_values.len(), 0 | 6) {
         return Err(PdfPersistenceError::InvalidDocument(
@@ -12052,8 +12100,12 @@ fn import_cloud_plus_pair(
         cloud.appearance.opacity(),
         leader_style,
     )?;
-    let appearance =
-        CloudPlusAppearance::new(cloud.appearance.clone(), leader_appearance, text_style)?;
+    // TODO(pdf-format): Revu Cloud+ clouds can be filled; the native Cloud+ cannot yet.
+    let appearance = CloudPlusAppearance::new(
+        cloud.appearance.clone().without_fill(),
+        leader_appearance,
+        text_style,
+    )?;
     let cloud_appearance_path = import_cloud_plus_appearance_path(document, cloud_dictionary)?
         .filter(|path| {
             let imported = sample_cloud_appearance_path(path);
@@ -12070,7 +12122,7 @@ fn import_cloud_plus_pair(
         cloud.border_effect_intensity(),
         leader_points,
         import_cloud_plus_text_box(text_dictionary)?,
-        imported_text.content(),
+        imported_content.as_str(),
         appearance,
     )?
     .with_cloud_appearance_path(cloud_appearance_path)?;
@@ -12169,15 +12221,7 @@ fn import_dimension(
         StraightLineAppearance::new(stroke_color, stroke_width, opacity, stroke_style)?,
         import_measurement_text_style(document, annotation, opacity)?,
     )?;
-    let content = dictionary_string(annotation, b"Contents")
-        .or_else(|| {
-            annotation
-                .get(b"Cap")
-                .ok()
-                .and_then(|value| value.as_str().ok())
-                .map(|value| String::from_utf8_lossy(value).into_owned())
-        })
-        .unwrap_or_else(|| "Dimension".into());
+    let content = dictionary_string(annotation, b"Contents").unwrap_or_default();
     let offset = dictionary_float(annotation, b"LL")
         .unwrap_or_else(|| DimensionAnnotation::default_offset(start, end));
     let mut imported = DimensionAnnotation::new(
@@ -12331,8 +12375,7 @@ fn import_cloud(
         .and_then(|value| value.as_dict().ok())
         .and_then(|effect| dictionary_float(effect, b"I"))
         .unwrap_or(2.0);
-    // TODO(pdf-format): Revu clouds can be filled; the native model cannot yet.
-    let appearance = imported.appearance.clone().without_fill();
+    let appearance = imported.appearance.clone();
     let points = imported.points().to_vec();
     let mut cloud = CloudAnnotation::new(
         imported.id,
@@ -14054,10 +14097,21 @@ mod tests {
             DimensionAppearance::new(line, text.clone()).unwrap(),
         )
         .unwrap();
-        assert_eq!(
-            length_bounds(&length),
-            PdfRect::new(-8., -8., 120., 32.).unwrap()
-        );
+        // Revu draws a Length `LL` 10 pt above its points, caption centred on
+        // that line; the bounds hold the extension lines, arrowheads and caption.
+        let bounds = length_bounds(&length);
+        let caption = measurement_caption_layout(
+            PdfPoint::new(50., 10.).unwrap(),
+            &length.caption(),
+            &text,
+            true,
+        )
+        .rect;
+        assert!((bounds.y + 1.).abs() < 0.000_001);
+        assert!(bounds.y + bounds.height >= 14.5);
+        assert!(bounds.x <= caption.x && bounds.x + bounds.width >= caption.x + caption.width);
+        assert!((caption.y + caption.height * 0.5 - 10.).abs() < 0.000_001);
+        assert!(bounds.y + bounds.height + 0.000_001 >= caption.y + caption.height);
 
         let points = vec![
             PdfPoint::new(0., 0.).unwrap(),
@@ -14091,11 +14145,26 @@ mod tests {
             text,
         )
         .unwrap();
+        // Revu centres the Area caption on the area (here the vertex mean).
         let area_bounds = measurement_path_bounds(&area);
-        assert!((area_bounds.x + 8.).abs() < 0.000_001);
+        let area_caption = measurement_caption_layout(
+            PdfPoint::new(200. / 3., 10. / 3.).unwrap(),
+            &area.caption(),
+            area.text_style(),
+            true,
+        )
+        .rect;
+        assert!(
+            (area_caption.x + area_caption.width / 2. - 200. / 3.).abs() < 0.000_001
+                && (area_caption.y + area_caption.height / 2. - 10. / 3.).abs() < 0.000_001
+        );
         assert!((area_bounds.y + 8.).abs() < 0.000_001);
-        assert!((area_bounds.width - (136. + 2. / 3.)).abs() < 0.000_001);
-        assert!((area_bounds.height - (35. + 1. / 3.)).abs() < 0.000_001);
+        assert!(area_bounds.x <= area_caption.x.min(-8.) + 0.000_001);
+        assert!(
+            area_bounds.x + area_bounds.width + 0.000_001
+                >= (area_caption.x + area_caption.width).max(108.)
+        );
+        assert!(area_bounds.y + area_bounds.height + 0.000_001 >= 18.);
     }
 
     #[test]
@@ -14116,11 +14185,16 @@ mod tests {
             DimensionAppearance::new(line, text).unwrap(),
         )
         .unwrap();
+        // Revu's layout: tips 1 pt inside the extension lines, 7.8 pt by 9 pt
+        // closed arrowheads, a 4 pt gap either side of the caption.
         let bounds = dimension_bounds(&annotation);
-        assert_eq!(bounds, PdfRect::new(0., 0., 100., 30.9).unwrap());
-        let segments = dimension_line_segments(&annotation, 37.984);
-        assert!((segments[0].1.x - 27.008).abs() < 0.000_001);
-        assert!((segments[1].0.x - 72.992).abs() < 0.000_001);
+        assert_eq!(bounds, PdfRect::new(-1., -1., 102., 31.9).unwrap());
+        let layout = dimension_line_layout(&annotation);
+        assert_eq!(layout.dimension_segments.len(), 2);
+        assert!((layout.dimension_segments[0].0.x - 1.).abs() < 0.000_001);
+        assert!((layout.dimension_segments[0].1.x - 29.008).abs() < 0.000_001);
+        assert!((layout.dimension_segments[1].0.x - 70.992).abs() < 0.000_001);
+        assert!((layout.dimension_segments[1].1.x - 99.).abs() < 0.000_001);
 
         let mut document = Document::with_version("1.7");
         let appearance_id = add_dimension_appearance(&mut document, &annotation).unwrap();
@@ -14129,15 +14203,53 @@ mod tests {
             .unwrap()
             .as_stream()
             .unwrap();
-        assert_eq!(
-            stream.dict.get(b"BBox").unwrap(),
-            &rect_bbox(PdfRect::new(0., 0., 100., 30.9).unwrap())
-        );
+        assert_eq!(stream.dict.get(b"BBox").unwrap(), &rect_bbox(bounds));
         let content = String::from_utf8(stream.content.clone()).unwrap();
-        assert!(content.contains("0.000000 24.000000 m 27.008000 24.000000 l S"));
-        assert!(content.contains("72.992000 24.000000 m 100.000000 24.000000 l S"));
-        assert!(!content.contains("0.000000 24.000000 m 100.000000 24.000000 l S"));
-        assert!(content.contains("1 0 0 1 33.008000 17.900000 Tm (WWW) Tj"));
+        assert!(content.contains("1.000000 1.000000 m 1.000000 27.000000 l S"));
+        assert!(content.contains("2.000000 25.000000 m 30.008000 25.000000 l S"));
+        assert!(content.contains("71.992000 25.000000 m 100.000000 25.000000 l S"));
+        assert!(content.contains("9.800000 29.500000 m 2.000000 25.000000 l 9.800000 20.500000 l b"));
+        assert!(content.contains("1 0 0 1 34.008000 18.900000 Tm (WWW) Tj"));
+    }
+
+    #[test]
+    fn measurement_line_layout_matches_revu_inside_and_outside_arrows() {
+        use super::*;
+        let point = |x, y| PdfPoint::new(x, y).unwrap();
+        // Revu's unlabelled Dimension: arrows inside, one continuous line.
+        let inside = measurement_line_layout(
+            point(173.5196, 729.895),
+            point(249.9806, 729.895),
+            10.,
+            1.,
+            0.,
+        )
+        .unwrap();
+        assert_eq!(inside.extension_lines[0].1.y, 741.895);
+        assert_eq!(inside.dimension_segments.len(), 1);
+        assert!((inside.dimension_segments[0].0.x - 174.5196).abs() < 0.000_01);
+        assert!((inside.dimension_segments[0].1.x - 248.9806).abs() < 0.000_01);
+        assert!((inside.arrowheads[0][1].x - 182.3196).abs() < 0.000_01);
+        assert!((inside.arrowheads[0][1].y - 744.395).abs() < 0.000_01);
+        // Revu's Length whose caption fills the gap: arrows outside.
+        let outside = measurement_line_layout(
+            point(58.6721, 589.4564),
+            point(135.1331, 589.4564),
+            10.,
+            1.,
+            70.032,
+        )
+        .unwrap();
+        assert!((outside.dimension_segments[0].0.x - 57.6721).abs() < 0.000_01);
+        assert!((outside.dimension_segments[0].1.x - 42.0721).abs() < 0.000_01);
+        assert!((outside.dimension_segments[1].1.x - 151.7331).abs() < 0.000_01);
+        assert!((outside.arrowheads[0][1].x - 49.8721).abs() < 0.000_01);
+        assert!((outside.arrowheads[1][1].x - 143.9331).abs() < 0.000_01);
+        assert!((outside.caption_center.y - 599.4564).abs() < 0.000_01);
+        // Arrowheads scale with the line width (Revu at 0.5 pt: 3.9 by 4.5).
+        let thin = measurement_line_layout(point(0., 0.), point(100., 0.), 10., 0.5, 0.).unwrap();
+        assert!((thin.arrowheads[0][1].x - 4.4).abs() < 0.000_001);
+        assert!((thin.arrowheads[0][1].y - 12.25).abs() < 0.000_001);
     }
 
 
@@ -17899,23 +18011,23 @@ mod tests {
         assert_eq!(text_appearance_line_bytes("世界"), b"??");
         assert!((helvetica_text_width_pt(&[0xe9, 0x80], 12.) - 13.344).abs() < 0.000_001);
 
-        assert!((text_appearance_line_x(120., 10.656, TextAlignment::Left) - 2.).abs() < 0.000_001);
+        assert!((text_appearance_line_x(120., 10.656, TextAlignment::Left, 2.) - 2.).abs() < 0.000_001);
         assert!(
-            (text_appearance_line_x(120., 10.656, TextAlignment::Center) - 54.672).abs()
+            (text_appearance_line_x(120., 10.656, TextAlignment::Center, 2.) - 54.672).abs()
                 < 0.000_001
         );
         assert!(
-            (text_appearance_line_x(120., 10.656, TextAlignment::Right) - 107.344).abs()
+            (text_appearance_line_x(120., 10.656, TextAlignment::Right, 2.) - 107.344).abs()
                 < 0.000_001
         );
         assert!(
-            (text_appearance_line_x(120., 45.312, TextAlignment::Center) - 37.344).abs()
+            (text_appearance_line_x(120., 45.312, TextAlignment::Center, 2.) - 37.344).abs()
                 < 0.000_001
         );
         assert!(
-            (text_appearance_line_x(120., 45.312, TextAlignment::Right) - 72.688).abs() < 0.000_001
+            (text_appearance_line_x(120., 45.312, TextAlignment::Right, 2.) - 72.688).abs() < 0.000_001
         );
-        assert_eq!(text_appearance_line_x(20., 200., TextAlignment::Right), 2.);
+        assert_eq!(text_appearance_line_x(20., 200., TextAlignment::Right, 2.), 2.);
     }
 
     #[test]

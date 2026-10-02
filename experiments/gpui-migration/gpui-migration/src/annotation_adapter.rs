@@ -3955,7 +3955,7 @@ impl AnnotationAdapter {
                     draft.page_index,
                     draft.points,
                     properties.cloud_intensity,
-                    rectangle_tool_appearance(&properties, false)?,
+                    rectangle_tool_appearance(&properties, true)?,
                 )?,
             )))?;
         Ok(PointerPhaseOutcome::AnnotationCreated(id))
@@ -4653,7 +4653,7 @@ impl AnnotationAdapter {
             start,
             end,
             DimensionAnnotation::default_offset(start, end),
-            "Dimension",
+            "",
             dimension_tool_appearance(&properties)?,
         )?;
         self.documents
@@ -12202,7 +12202,7 @@ impl AnnotationAdapter {
             {
                 points.push(draft.hover);
             }
-            let appearance = rectangle_tool_appearance(&properties, false)
+            let appearance = rectangle_tool_appearance(&properties, true)
                 .expect("stored Cloud tool properties are validated");
             let scallop_path = if points.len() >= 3 {
                 CloudAnnotation::new(
@@ -12957,7 +12957,7 @@ impl AnnotationAdapter {
                 *start,
                 *current,
                 DimensionAnnotation::default_offset(*start, *current),
-                "Dimension",
+                "",
                 dimension_tool_appearance(&properties)
                     .expect("stored Dimension tool properties are validated"),
             ) {
@@ -14133,8 +14133,21 @@ fn annotation_body_contains(
         .iter()
         .find(|annotation| &annotation.id == id)
     {
+        let Some(layout) = crate::annotation_model::measurement_line_layout(
+            annotation.start,
+            annotation.end,
+            crate::annotation_model::LENGTH_LEADER_LENGTH_PT,
+            annotation.appearance.line().stroke_width_pt(),
+            0.,
+        ) else {
+            return false;
+        };
         return annotation.page_index == page_index
-            && point_segment_distance(point, annotation.start, annotation.end) <= tolerance;
+            && layout
+                .extension_lines
+                .iter()
+                .chain(layout.dimension_segments.iter())
+                .any(|(from, to)| point_segment_distance(point, *from, *to) <= tolerance);
     }
     if let Some(annotation) = document
         .pens()
@@ -14807,6 +14820,7 @@ fn cloud_hit(annotation: &CloudAnnotation, point: PdfPoint, tolerance: f64) -> b
     points
         .windows(2)
         .any(|segment| point_segment_distance(point, segment[0], segment[1]) <= edge_tolerance)
+        || (annotation.appearance.fill_color().is_some() && point_in_polygon(point, &points))
 }
 
 fn cloud_plus_cloud_hit(annotation: &CloudPlusAnnotation, point: PdfPoint, tolerance: f64) -> bool {
@@ -17594,7 +17608,7 @@ mod tests {
         }
         cloud.finish_cloud(7).unwrap();
         let cloud = &cloud.snapshot(7).unwrap().clouds[0];
-        assert_rectangle_properties(&cloud.appearance, None);
+        assert_rectangle_properties(&cloud.appearance, Some("#abcdef"));
         assert_eq!(cloud.border_effect_intensity(), 3.0);
 
         for tool in [AnnotationTool::Polylength, AnnotationTool::Area] {
@@ -19938,8 +19952,9 @@ mod tests {
 
         let document = adapter.documents.get_mut(&7).unwrap();
         assert!(document.select(&length_id));
-        adapter.pointer_down(7, 0, 54, point(50., 50.), 3.).unwrap();
-        adapter.pointer_move(54, point(79., 31.)).unwrap();
+        // A Length is drawn, and pressed, on its dimension line 10 pt above.
+        adapter.pointer_down(7, 0, 54, point(50., 60.), 3.).unwrap();
+        adapter.pointer_move(54, point(79., 41.)).unwrap();
         let preview = adapter.document_scene(7, 0);
         let length = preview
             .lengths

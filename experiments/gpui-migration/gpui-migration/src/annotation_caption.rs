@@ -79,11 +79,20 @@ pub(crate) fn length_caption(
     if !annotation.show_caption {
         return None;
     }
+    // Revu centres a Length caption on its dimension line, `LL` above.
+    let caption_center = crate::annotation_model::measurement_line_layout(
+        annotation.start,
+        annotation.end,
+        crate::annotation_model::LENGTH_LEADER_LENGTH_PT,
+        0.,
+        0.,
+    )?
+    .caption_center;
     layout(
         &annotation.caption,
         annotation.appearance.text(),
-        midpoint(annotation.start, annotation.end),
-        false,
+        caption_center,
+        true,
         transform,
         text_system,
     )
@@ -106,11 +115,12 @@ pub(crate) fn measurement_caption(
     } else {
         path_midpoint(&annotation.points)?
     };
+    // Revu centres an Area caption inside the area.
     layout(
         &annotation.caption,
         &annotation.text_style,
         anchor,
-        false,
+        annotation.kind == MeasurementPathKind::Area,
         transform,
         text_system,
     )
@@ -482,8 +492,13 @@ mod tests {
             assert!(length_caption(&length, transform, &text_system).is_none());
             length.show_caption = true;
             let visible = length_caption(&length, transform, &text_system).unwrap();
-            assert!((visible.pdf_corners[0].x - 66.).abs() < 0.001);
-            assert!((visible.pdf_corners[2].y - 26.).abs() < 0.001);
+            // Centred on the dimension line 10 pt above the points, as in Revu.
+            let min_x = visible.pdf_corners.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+            let max_x = visible.pdf_corners.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max);
+            let min_y = visible.pdf_corners.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
+            let max_y = visible.pdf_corners.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max);
+            assert!(((min_x + max_x) / 2. - 60.).abs() < 0.001);
+            assert!(((min_y + max_y) / 2. - 30.).abs() < 0.001);
             assert!(
                 TextBoxStyle::new("Helvetica", 12., "#000000", 1.)
                     .unwrap()

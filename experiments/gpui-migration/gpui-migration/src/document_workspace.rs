@@ -3509,6 +3509,10 @@ struct PendingTextBoxEditor {
     target: PendingTextEditorTarget,
     authority: Option<PendingTextEditorAuthority>,
     input: Entity<TextareaState>,
+    /// The text after the last change the workspace has observed. GPUI
+    /// delivers a submitting Enter as typed text too, replacing any selection
+    /// before the submit handler runs; Enter submits this text instead.
+    text_before_enter: String,
 }
 
 #[derive(Clone)]
@@ -6360,6 +6364,47 @@ impl DocumentWorkspace {
                     )?;
                 }
             }
+            EngineeringVisualPropertyPatch::FillColor(fill)
+                if event.expected_kind == EngineeringVisualPropertyKind::Cloud =>
+            {
+                let appearance = RectangleAppearance::new(
+                    current_appearance.stroke_color(),
+                    current_appearance.stroke_width_pt(),
+                    fill.clone(),
+                    current_appearance.opacity(),
+                )
+                .and_then(|appearance| appearance.with_fill_opacity(current_appearance.fill_opacity()))
+                .map(|appearance| appearance.with_stroke_style(current_appearance.stroke_style()))
+                .map_err(|error| error.to_string())?;
+                self.update_engineering_visual_appearance(
+                    event.document_id,
+                    event.annotation_id.clone(),
+                    event.expected_kind,
+                    appearance,
+                    cx,
+                )?;
+            }
+            EngineeringVisualPropertyPatch::FillColorAndOpacity { color, opacity }
+                if event.expected_kind == EngineeringVisualPropertyKind::Cloud
+                    && (0.0..=1.).contains(opacity) =>
+            {
+                let appearance = RectangleAppearance::new(
+                    current_appearance.stroke_color(),
+                    current_appearance.stroke_width_pt(),
+                    Some(color.clone()),
+                    current_appearance.opacity(),
+                )
+                .and_then(|appearance| appearance.with_fill_opacity(*opacity))
+                .map(|appearance| appearance.with_stroke_style(current_appearance.stroke_style()))
+                .map_err(|error| error.to_string())?;
+                self.update_engineering_visual_appearance(
+                    event.document_id,
+                    event.annotation_id.clone(),
+                    event.expected_kind,
+                    appearance,
+                    cx,
+                )?;
+            }
             _ => return Ok(false),
         }
         Ok(true)
@@ -7803,6 +7848,7 @@ impl DocumentWorkspace {
             },
             authority: None,
             input: input.clone(),
+            text_before_enter: String::new(),
         });
         self.pending_text_box_subscriptions.push(input_subscription);
         input_focus.focus(window, cx);
@@ -7903,7 +7949,10 @@ impl DocumentWorkspace {
             &input,
             window,
             move |workspace, _, event: &InputEvent, window, cx| match event {
-                InputEvent::Change => cx.notify(),
+                InputEvent::Change => {
+                    workspace.observe_pending_text_change(cx);
+                    cx.notify();
+                }
                 InputEvent::Blur => {
                     if let Err(error) = workspace.commit_pending_text_box(cx) {
                         workspace.text_box_commit_error = Some(error);
@@ -7911,6 +7960,7 @@ impl DocumentWorkspace {
                     }
                 }
                 InputEvent::PressEnter { shift: false, .. } if submit_on_enter => {
+                    workspace.restore_text_before_enter(window, cx);
                     if let Err(error) = workspace.commit_pending_text_box_from_enter(cx) {
                         workspace.text_box_commit_error = Some(error);
                         cx.notify();
@@ -7929,9 +7979,10 @@ impl DocumentWorkspace {
             authority: Some(PendingTextEditorAuthority {
                 resource_generation,
                 baseline_revision,
-                baseline_text: content,
+                baseline_text: content.clone(),
             }),
             input: input.clone(),
+            text_before_enter: content,
         });
         self.pending_text_box_subscriptions.push(input_subscription);
         input.update(cx, |input, cx| input.select_all(window, cx));
@@ -7978,6 +8029,26 @@ impl DocumentWorkspace {
 
     fn commit_pending_text_box(&mut self, cx: &mut Context<Self>) -> Result<bool, String> {
         self.commit_pending_text_box_with_policy(false, cx)
+    }
+
+    fn observe_pending_text_change(&mut self, cx: &mut Context<Self>) {
+        if let Some(editor) = self.pending_text_box_editor.as_mut() {
+            editor.text_before_enter = editor.input.read(cx).value().to_string();
+        }
+    }
+
+    /// Undoes the text GPUI inserted for a submitting Enter (which replaces a
+    /// selection, such as the select-all an editor opens with).
+    fn restore_text_before_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.pending_text_box_editor.as_ref() else {
+            return;
+        };
+        let before = editor.text_before_enter.clone();
+        if editor.input.read(cx).value().as_ref() != before.as_str() {
+            editor
+                .input
+                .update(cx, |input, cx| input.set_value(before, window, cx));
+        }
     }
 
     fn commit_pending_text_box_from_enter(
@@ -18262,6 +18333,35 @@ fn paint_ellipse_annotations(
     }
 }
 
+/// Revu strokes a callout's text box whenever its line width is not the
+/// default 1 pt leader.
+fn paint_callout_box_border(
+    window: &mut Window,
+    text_box: Bounds<Pixels>,
+    width_pt: f64,
+    scale: f32,
+    color: gpui::Hsla,
+) {
+    if width_pt == 1. {
+        return;
+    }
+    let width = px((width_pt as f32 * scale).max(1.));
+    let inset = width / 2.;
+    let left = text_box.origin.x + inset;
+    let top = text_box.origin.y + inset;
+    let right = (text_box.origin.x + text_box.size.width - inset).max(left);
+    let bottom = (text_box.origin.y + text_box.size.height - inset).max(top);
+    let mut border = PathBuilder::stroke(width);
+    border.move_to(point(left, top));
+    border.line_to(point(right, top));
+    border.line_to(point(right, bottom));
+    border.line_to(point(left, bottom));
+    border.close();
+    if let Ok(path) = border.build() {
+        window.paint_path(path, color);
+    }
+}
+
 fn paint_cloud_plus_annotation(
     annotation: SceneCloudPlus,
     transform: &PageTransform,
@@ -18339,10 +18439,20 @@ fn paint_cloud_plus_annotation(
         ),
         size(px(local.width as f32), px(local.height as f32)),
     );
+    let leader_appearance = annotation.appearance.leader();
+    paint_callout_box_border(
+        window,
+        text_box_bounds,
+        leader_appearance.stroke_width_pt(),
+        scale,
+        try_parse_color(leader_appearance.stroke_color())
+            .unwrap_or(selection_color)
+            .opacity(leader_appearance.opacity() as f32),
+    );
     let text_style = annotation.appearance.text();
     let font_size = px(text_style.font_size_pt() as f32 * scale);
     let line_height = px(text_style.font_size_pt() as f32 * 1.15 * scale);
-    let inset = px(3. * scale);
+    let inset = px(text_style.inset_pt() as f32 * scale);
     let line_count = annotation.content.split('\n').count().max(1) as f32;
     let text_height = line_height * line_count;
     let content_bounds = Bounds::new(
@@ -18476,6 +18586,53 @@ fn paint_cloud_plus_annotation(
     }
 }
 
+/// Paints a Dimension or Length line as Revu draws it.
+fn paint_measurement_line(
+    layout: &crate::annotation_model::MeasurementLineLayout,
+    project: &impl Fn(PdfPoint) -> Point<Pixels>,
+    stroke_width: Pixels,
+    stroke_style: StrokeStyle,
+    color: gpui::Hsla,
+    window: &mut Window,
+) {
+    for (from, to) in layout
+        .extension_lines
+        .iter()
+        .chain(layout.dimension_segments.iter())
+    {
+        let mut builder = PathBuilder::stroke(stroke_width);
+        builder = match stroke_style {
+            StrokeStyle::Solid => builder,
+            StrokeStyle::Dashed => builder.dash_array(&[stroke_width * 4., stroke_width * 2.]),
+            StrokeStyle::Dotted => builder.dash_array(&[stroke_width, stroke_width * 2.]),
+        };
+        builder.move_to(project(*from));
+        builder.line_to(project(*to));
+        if let Ok(path) = builder.build() {
+            window.paint_path(path, color);
+        }
+    }
+    for arrowhead in &layout.arrowheads {
+        let points = arrowhead.map(|point| project(point));
+        let mut fill = PathBuilder::fill();
+        fill.move_to(points[0]);
+        fill.line_to(points[1]);
+        fill.line_to(points[2]);
+        fill.close();
+        if let Ok(path) = fill.build() {
+            window.paint_path(path, color);
+        }
+        let mut outline = PathBuilder::stroke(stroke_width);
+        outline.move_to(points[1]);
+        outline.line_to(points[0]);
+        outline.line_to(points[2]);
+        outline.close();
+        if let Ok(path) = outline.build() {
+            window.paint_path(path, color);
+        }
+    }
+}
+
 fn paint_dimension_annotation(
     annotation: SceneDimension,
     transform: &PageTransform,
@@ -18525,79 +18682,34 @@ fn paint_dimension_annotation(
     let stroke_color = try_parse_color(line.stroke_color())
         .unwrap_or(selection_color)
         .opacity(line.opacity() as f32);
-    let sign = if annotation.dimension_line_offset >= 0. {
-        1.
-    } else {
-        -1.
-    };
-    let overhang = 4. * sign;
-    let extension_start_outer = PdfPoint {
-        x: dimension_start.x + normal_x * overhang,
-        y: dimension_start.y + normal_y * overhang,
-    };
-    let extension_end_outer = PdfPoint {
-        x: dimension_end.x + normal_x * overhang,
-        y: dimension_end.y + normal_y * overhang,
-    };
-    for (from, to) in [
-        (extension_start_outer, annotation.start),
-        (annotation.start, dimension_start),
-        (extension_end_outer, annotation.end),
-        (annotation.end, dimension_end),
-    ] {
-        let mut builder = PathBuilder::stroke(stroke_width);
-        builder.move_to(project(from));
-        builder.line_to(project(to));
-        if let Ok(path) = builder.build() {
-            window.paint_path(path, stroke_color);
-        }
-    }
-
     let caption_layout =
         crate::annotation_caption::dimension_caption(&annotation, *transform, window.text_system());
-    let caption_width_pt = caption_layout.as_ref().map_or(0., |layout| layout.width_pt);
-    let half_gap = (caption_width_pt * 0.5 + 4.).min((length * 0.5 - 1.).max(0.));
-    let unit_x = delta_x / length;
-    let unit_y = delta_y / length;
-    for (from, to) in [
-        (
-            dimension_start,
-            PdfPoint {
-                x: caption_center.x - unit_x * half_gap,
-                y: caption_center.y - unit_y * half_gap,
-            },
-        ),
-        (
-            PdfPoint {
-                x: caption_center.x + unit_x * half_gap,
-                y: caption_center.y + unit_y * half_gap,
-            },
-            dimension_end,
-        ),
-    ] {
-        let mut builder = PathBuilder::stroke(stroke_width);
-        builder.move_to(project(from));
-        builder.line_to(project(to));
-        if let Ok(path) = builder.build() {
-            window.paint_path(path, stroke_color);
-        }
-    }
-    for (from, to) in [
-        (dimension_end, dimension_start),
-        (dimension_start, dimension_end),
-    ] {
-        if let Some(points) = straight_line_arrowhead_points(from, to, line.stroke_width_pt()) {
-            let points = points.map(project);
-            let mut builder = PathBuilder::fill();
-            builder.move_to(points[0]);
-            builder.line_to(points[1]);
-            builder.line_to(points[2]);
-            builder.close();
-            if let Ok(path) = builder.build() {
-                window.paint_path(path, stroke_color);
-            }
-        }
-    }
+    let caption_text_width_pt = if annotation.content.is_empty() {
+        0.
+    } else {
+        caption_layout.as_ref().map_or(0., |layout| {
+            (layout.width_pt - annotation.appearance.text().inset_pt() * 2.).max(0.)
+        })
+    };
+    let Some(measurement_layout) = crate::annotation_model::measurement_line_layout(
+        annotation.start,
+        annotation.end,
+        annotation.dimension_line_offset,
+        line.stroke_width_pt(),
+        caption_text_width_pt,
+    ) else {
+        return;
+    };
+    let extension_start_outer = measurement_layout.extension_lines[0].1;
+    let extension_end_outer = measurement_layout.extension_lines[1].1;
+    paint_measurement_line(
+        &measurement_layout,
+        &project,
+        stroke_width,
+        line.stroke_style(),
+        stroke_color,
+        window,
+    );
 
     if let Some(layout) = &caption_layout {
         layout.paint(page_bounds.origin, window, cx);
@@ -20387,8 +20499,25 @@ fn annotation_layer(
                             let stroke_color = try_parse_color(annotation.appearance.stroke_color())
                                 .unwrap_or(selection_color)
                                 .opacity(annotation.appearance.opacity() as f32);
-                            let mut builder = PathBuilder::stroke(stroke_width);
                             let first = project(annotation.scallop_path[0]);
+                            if let Some(fill_color) = annotation.appearance.fill_color()
+                                && let Ok(color) = try_parse_color(fill_color)
+                                && annotation.scallop_path.len() >= 3
+                            {
+                                let mut fill_builder = PathBuilder::fill();
+                                fill_builder.move_to(first);
+                                for sample in annotation.scallop_path.iter().copied().skip(1) {
+                                    fill_builder.line_to(project(sample));
+                                }
+                                fill_builder.close();
+                                if let Ok(path) = fill_builder.build() {
+                                    window.paint_path(
+                                        path,
+                                        color.opacity(annotation.appearance.fill_opacity() as f32),
+                                    );
+                                }
+                            }
+                            let mut builder = PathBuilder::stroke(stroke_width);
                             builder.move_to(first);
                             for sample in annotation.scallop_path.iter().copied().skip(1) {
                                 builder.line_to(project(sample));
@@ -20530,10 +20659,17 @@ fn annotation_layer(
                                 ),
                                 size(px(local.width as f32), px(local.height as f32)),
                             );
+                            paint_callout_box_border(
+                                window,
+                                text_box_bounds,
+                                line.stroke_width_pt(),
+                                scale,
+                                stroke_color,
+                            );
                             let text_style = annotation.appearance.text();
                             let font_size = px(text_style.font_size_pt() as f32 * scale);
                             let line_height = px(text_style.font_size_pt() as f32 * 1.15 * scale);
-                            let inset = px(3. * scale);
+                            let inset = px(text_style.inset_pt() as f32 * scale);
                             let line_count = annotation.content.split('\n').count().max(1) as f32;
                             let text_height = line_height * line_count;
                             let content_bounds = Bounds::new(
@@ -20844,7 +20980,7 @@ fn annotation_layer(
                             let scale = f32::from(page_bounds.size.width) / page_size.0;
                             let font_size = px(annotation.style.font_size_pt() as f32 * scale);
                             let line_height = px(annotation.style.font_size_pt() as f32 * 1.15 * scale);
-                            let inset = px(5. * scale);
+                            let inset = px(annotation.style.inset_pt() as f32 * scale);
                             let base_text_color = try_parse_color(annotation.style.color())
                                 .unwrap_or(selection_color);
                             let color =
@@ -21028,15 +21164,34 @@ fn annotation_layer(
                             let color = try_parse_color(line.stroke_color())
                                 .unwrap_or(selection_color)
                                 .opacity(line.opacity() as f32);
-                            let mut builder = PathBuilder::stroke(px(
-                                (line.stroke_width_pt() as f32 * scale).max(1.),
-                            ));
-                            builder.move_to(start);
-                            builder.line_to(end);
-                            if let Ok(path) = builder.build() {
-                                window.paint_path(path, color);
+                            let caption_layout = crate::annotation_caption::length_caption(
+                                &annotation,
+                                transform,
+                                window.text_system(),
+                            );
+                            let caption_text_width_pt = caption_layout.as_ref().map_or(0., |layout| {
+                                (layout.width_pt - annotation.appearance.text().inset_pt() * 2.)
+                                    .max(0.)
+                            });
+                            if let Some(measurement_layout) =
+                                crate::annotation_model::measurement_line_layout(
+                                    annotation.start,
+                                    annotation.end,
+                                    crate::annotation_model::LENGTH_LEADER_LENGTH_PT,
+                                    line.stroke_width_pt(),
+                                    caption_text_width_pt,
+                                )
+                            {
+                                paint_measurement_line(
+                                    &measurement_layout,
+                                    &project,
+                                    px((line.stroke_width_pt() as f32 * scale).max(1.)),
+                                    line.stroke_style(),
+                                    color,
+                                    window,
+                                );
                             }
-                            if let Some(layout) = crate::annotation_caption::length_caption(&annotation, transform, window.text_system()) {
+                            if let Some(layout) = caption_layout {
                                 layout.paint(page_bounds.origin, window, cx);
                             }
                             let transform_hovered = hot_handle
@@ -21425,9 +21580,9 @@ fn annotation_layer(
                                 .text_color(text_colour)
                                 .editor_paddings(Edges {
                                     top: vertical_inset,
-                                    right: px(5. * scale),
+                                    right: px(pending.style.inset_pt() as f32 * scale),
                                     bottom: vertical_inset,
-                                    left: px(5. * scale),
+                                    left: px(pending.style.inset_pt() as f32 * scale),
                                 }),
                         ),
                 )
@@ -27700,6 +27855,12 @@ fn engineering_visual_patch_matches(
         EngineeringVisualPropertyPatch::Opacity(value) => appearance.opacity() == *value,
         EngineeringVisualPropertyPatch::CloudIntensity(value) => {
             kind == EngineeringVisualPropertyKind::Cloud && intensity == Some(*value)
+        }
+        EngineeringVisualPropertyPatch::FillColor(value) => {
+            appearance.fill_color() == value.as_deref()
+        }
+        EngineeringVisualPropertyPatch::FillColorAndOpacity { color, opacity } => {
+            appearance.fill_color() == Some(color.as_str()) && appearance.fill_opacity() == *opacity
         }
     }
 }

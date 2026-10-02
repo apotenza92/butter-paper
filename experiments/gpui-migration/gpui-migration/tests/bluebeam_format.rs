@@ -255,7 +255,7 @@ pub fn write_reference(source: &Path, target: &Path) {
                 point(173.5196, 400.),
                 point(249.9806, 400.),
                 10.,
-                "76.46",
+                "",
                 DimensionAppearance::new(line.clone(), caption.clone()).unwrap(),
             )
             .unwrap(),
@@ -460,18 +460,9 @@ fn every_native_markup_family_writes_revu_key_sets() {
             .map(|(_, keys)| keys)
             .collect::<Vec<_>>();
         assert!(!candidates.is_empty(), "Revu has no {identity:?} specimen");
-        // Butter Paper's Dimension carries its label text; Revu's has none.
-        let extra_allowed: &[&str] = if identity.3 == "Dimension" {
-            &["Contents", "RC"]
-        } else {
-            &[]
-        };
         let comparable = |set: &BTreeSet<String>| {
             set.iter()
-                .filter(|key| {
-                    !OPTIONAL_VALUE_KEYS.contains(&key.as_str())
-                        && !extra_allowed.contains(&key.as_str())
-                })
+                .filter(|key| !OPTIONAL_VALUE_KEYS.contains(&key.as_str()))
                 .cloned()
                 .collect::<BTreeSet<_>>()
         };
@@ -541,22 +532,17 @@ fn revu_authored_markups_import_as_their_native_families() {
     assert_eq!(shapes.rectangles()[0].id.as_str(), "MSYMAPZFINTDPPUL");
 
     let measured = PdfPersistenceSession::open(fixture("revu-measure-text-media.pdf")).unwrap();
-    // Kept exactly rather than edited: a callout whose text was deleted (the
-    // model requires text) and Revu's vector Snapshot (the model is raster).
-    let mut untouched = measured
+    // Kept exactly rather than edited: Revu's vector Snapshot (the model is
+    // raster).
+    let untouched = measured
         .untouched_annotations()
         .iter()
         .map(|annotation| (annotation.name.as_str(), annotation.subtype.as_str()))
         .collect::<Vec<_>>();
-    untouched.sort();
-    assert_eq!(
-        untouched,
-        [
-            ("KTDWQBACELBROIVN", "FreeText"),
-            ("RIJSPWSIYBGOWHST", "Stamp")
-        ]
-    );
-    assert_eq!(measured.callouts().len(), 1);
+    assert_eq!(untouched, [("RIJSPWSIYBGOWHST", "Stamp")]);
+    // A callout whose text was deleted in Revu is still a callout.
+    assert_eq!(measured.callouts().len(), 2);
+    assert!(measured.callouts().iter().any(|callout| callout.content().is_empty()));
     assert_eq!(measured.dimensions().len(), 1);
     assert_eq!(measured.lengths().len(), 2);
     assert_eq!(measured.measurement_paths().len(), 2);
@@ -672,6 +658,25 @@ fn edited_revu_markup_keeps_revu_keys_and_metadata() {
             .unwrap()
             .clone()
     };
+    // Revu's dash array survives an edit that keeps the line style.
+    let dash = |document: &lopdf::Document| {
+        let border = square(document).get(b"BS").unwrap().clone();
+        let border = match border {
+            lopdf::Object::Reference(id) => document.get_object(id).unwrap().clone(),
+            other => other,
+        };
+        border.as_dict().unwrap().get(b"D").unwrap().clone()
+    };
+    assert_eq!(
+        dash(&edited)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_float().unwrap())
+            .collect::<Vec<_>>(),
+        [2., 2.]
+    );
+    assert_eq!(dash(&edited), dash(&original));
     for key in [b"T".as_slice(), b"CreationDate", b"NM", b"Subj", b"P"] {
         assert_eq!(
             square(&edited).get(key).unwrap(),
@@ -764,4 +769,165 @@ fn revu_edits_to_native_markups_reopen_typed() {
             .iter()
             .any(|pen| pen.appearance.color() == "#00aa00")
     );
+}
+
+fn save_as(session: &PdfPersistenceSession, source: &Path, target: &Path) {
+    let authority = SaveAsTargetAuthority::bind(target.to_path_buf(), source).unwrap();
+    session
+        .prepare_save_authorized(&authority)
+        .unwrap()
+        .publish()
+        .unwrap();
+}
+
+fn annotation_dictionaries(path: &Path) -> (lopdf::Document, Vec<lopdf::Dictionary>) {
+    let document = lopdf::Document::load(path).unwrap();
+    let dictionaries = document
+        .objects
+        .values()
+        .filter_map(|object| object.as_dict().ok())
+        .filter(|dictionary| dictionary.get(b"NM").is_ok())
+        .cloned()
+        .collect();
+    (document, dictionaries)
+}
+
+fn appearance_content(document: &lopdf::Document, annotation: &lopdf::Dictionary) -> String {
+    let appearance = annotation.get(b"AP").unwrap().as_dict().unwrap();
+    let stream_id = appearance.get(b"N").unwrap().as_reference().unwrap();
+    let stream = document.get_object(stream_id).unwrap().as_stream().unwrap();
+    String::from_utf8_lossy(
+        &stream
+            .decompressed_content()
+            .unwrap_or_else(|_| stream.content.clone()),
+    )
+    .into_owned()
+}
+
+#[test]
+fn revu_cloud_fill_survives_an_edit() {
+    let directory = scratch_dir("cloud-fill");
+    let source = fixture("revu-shapes-styled.pdf");
+    let target = directory.join("edited.pdf");
+    let mut session = PdfPersistenceSession::open(&source).unwrap();
+    let cloud = session.clouds()[0].clone();
+    assert_eq!(cloud.appearance.fill_color(), Some("#0000ff"));
+    let moved = CloudAnnotation::new(
+        cloud.id.clone(),
+        cloud.page_index,
+        cloud
+            .points()
+            .iter()
+            .map(|vertex| point(vertex.x + 5., vertex.y))
+            .collect(),
+        cloud.border_effect_intensity(),
+        cloud.appearance.clone(),
+    )
+    .unwrap();
+    session.replace_cloud(moved.clone()).unwrap();
+    save_as(&session, &source, &target);
+    let reopened = PdfPersistenceSession::open(&target).unwrap();
+    assert!(reopened.clouds()[0].same_persisted_state_as(&moved));
+    let (document, dictionaries) = annotation_dictionaries(&target);
+    let saved = dictionaries
+        .iter()
+        .find(|dictionary| string_of(dictionary.get(b"NM").unwrap()) == cloud.id.as_str())
+        .unwrap();
+    assert_eq!(
+        saved.get(b"IC").unwrap().as_array().unwrap().len(),
+        3,
+        "Revu stores the cloud fill as /IC"
+    );
+    assert!(appearance_content(&document, saved).contains("h B"));
+}
+
+#[test]
+fn unlabelled_dimension_and_bordered_callout_match_revu() {
+    let directory = scratch_dir("dimension-callout");
+    let source = directory.join("source.pdf");
+    let target = directory.join("native.pdf");
+    blank_letter_pdf(&source);
+    let mut session = PdfPersistenceSession::open(&source).unwrap();
+    let text = TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.)
+        .unwrap()
+        .with_layout_metrics(13.8, 3.)
+        .unwrap();
+    let thin = StraightLineAppearance::new("#ff0000", 1., 1., StrokeStyle::Solid).unwrap();
+    let wide = StraightLineAppearance::new("#ff0000", 2., 1., StrokeStyle::Solid).unwrap();
+    session
+        .add_dimension(
+            DimensionAnnotation::new(
+                id("ABCDEFGHIJKLMNOP"),
+                0,
+                point(173.5196, 729.895),
+                point(249.9806, 729.895),
+                10.,
+                "",
+                DimensionAppearance::new(thin.clone(), text.clone()).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    for (name, line) in [("PLAINCALLOUTAAAA", thin), ("BORDERCALLOUTAAA", wide)] {
+        session
+            .add_callout(
+                CalloutAnnotation::new(
+                    id(name),
+                    0,
+                    vec![point(288.3672, 450.), point(335.18, 482.6304)],
+                    rect(335.18, 470., 403.68, 500.),
+                    "",
+                    CalloutAppearance::new(line, text.clone()).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    save_as(&session, &source, &target);
+    let (document, dictionaries) = annotation_dictionaries(&target);
+    let by_name = |name: &str| {
+        dictionaries
+            .iter()
+            .find(|dictionary| string_of(dictionary.get(b"NM").unwrap()) == name)
+            .unwrap()
+    };
+
+    // Revu's Dimension: no label keys, `LLE 2`, arrows inside a continuous
+    // dimension line.
+    let dimension = by_name("ABCDEFGHIJKLMNOP");
+    assert!(dimension.get(b"Contents").is_err());
+    assert!(dimension.get(b"RC").is_err());
+    assert!(dimension.get(b"DS").is_ok());
+    assert_eq!(dimension.get(b"LLE").unwrap().as_float().unwrap(), 2.);
+    let content = appearance_content(&document, dimension);
+    assert!(!content.contains("BT"), "an unlabelled Dimension draws no text");
+    assert_eq!(content.matches(" b\n").count(), 2, "two closed arrowheads");
+
+    // `W 0` is Revu's default 1 pt leader; any other width also strokes the box.
+    let plain = by_name("PLAINCALLOUTAAAA");
+    let bordered = by_name("BORDERCALLOUTAAA");
+    let border_width = |dictionary: &lopdf::Dictionary| {
+        dictionary
+            .get(b"BS")
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .get(b"W")
+            .unwrap()
+            .as_float()
+            .unwrap()
+    };
+    assert_eq!(border_width(plain), 0.);
+    assert_eq!(border_width(bordered), 2.);
+    assert!(!appearance_content(&document, plain).contains(" re\n"));
+    assert!(
+        !appearance_content(&document, plain).contains("BT"),
+        "a callout without text draws no text object"
+    );
+    assert!(appearance_content(&document, bordered).contains(" re\nS\n"));
+
+    let reopened = PdfPersistenceSession::open(&target).unwrap();
+    assert_eq!(reopened.dimensions()[0].content(), "");
+    assert_eq!(reopened.callouts().len(), 2);
+    assert!(reopened.untouched_annotations().is_empty());
 }
