@@ -18,6 +18,16 @@ All notable Butter Paper changes are recorded here.
 - Every drawing tool is now covered by a test that draws with it the way
   you would.
 
+### Scrolling and zooming
+
+- Trackpad pinch zooms smoothly about the point between your fingers.
+- Ctrl+wheel zoom goes the natural way: scrolling up zooms in, whichever way
+  macOS natural scrolling or tools such as LinearMouse set the wheel.
+  Reverse Scroll Zoom still flips it.
+- Zoom keeps the point under the pointer in place.
+- The document's scroll bars stay on the edges of the view instead of
+  moving with the page.
+
 ## [0.1.0]
 
 Butter Paper is now a single native app built from a clean Rust codebase,

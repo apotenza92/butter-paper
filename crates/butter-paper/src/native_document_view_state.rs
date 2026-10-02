@@ -350,10 +350,23 @@ impl NativeDocumentViewState {
         }
 
         self.single_page_wheel_delta = 0.;
+        // A wheel movement that would scroll up zooms in (Maps, Revu), so zoom
+        // follows whatever direction LinearMouse or natural scrolling gives the
+        // scroll. Reverse Scroll Zoom flips it.
         let delta = if reverse_zoom { -delta_y } else { delta_y }.clamp(-120., 120.);
-        let next = self.zoom_percent / 100. * (-delta * 0.00165).exp();
+        let next = self.zoom_percent / 100. * (delta * 0.00165).exp();
         self.set_manual_zoom(next * 100.);
         WheelOutcome::Zoom(self.zoom_percent)
+    }
+
+    /// A trackpad pinch: `delta` is the gesture's magnification step
+    /// (0.1 = 10% larger). Returns the new zoom percentage.
+    pub fn pinch(&mut self, delta: f32) -> f32 {
+        if delta.is_finite() {
+            self.single_page_wheel_delta = 0.;
+            self.set_manual_zoom(self.zoom_percent * (1. + delta.clamp(-0.5, 1.)));
+        }
+        self.zoom_percent
     }
 
     pub fn keyboard(
@@ -444,7 +457,7 @@ mod tests {
         let mut view = NativeDocumentViewState::default();
         assert_eq!(view.wheel(4, 1, 0., 20., false, false), WheelOutcome::NativeScroll);
         assert!(
-            matches!(view.wheel(4, 1, 0., -120., true, false), WheelOutcome::Zoom(zoom) if (zoom - 121.9).abs() < 0.1)
+            matches!(view.wheel(4, 1, 0., 120., true, false), WheelOutcome::Zoom(zoom) if (zoom - 121.9).abs() < 0.1)
         );
         view.set_mode(PageViewMode::SinglePage);
         view.set_wheel_behavior(PageViewMode::SinglePage, WheelBehavior::Scroll);
@@ -461,9 +474,19 @@ mod tests {
     fn reverse_scroll_zoom_flips_only_the_zoom_direction() {
         let mut view = NativeDocumentViewState::default();
         assert!(
-            matches!(view.wheel(4, 1, 0., -120., true, true), WheelOutcome::Zoom(zoom) if (zoom - 82.0).abs() < 0.1)
+            matches!(view.wheel(4, 1, 0., 120., true, true), WheelOutcome::Zoom(zoom) if (zoom - 82.0).abs() < 0.1)
         );
         assert_eq!(view.wheel(4, 1, 0., 20., false, true), WheelOutcome::NativeScroll);
+    }
+
+    #[test]
+    fn pinching_scales_the_zoom_by_its_magnification() {
+        let mut view = NativeDocumentViewState::default();
+        let start = view.zoom_percent();
+        assert!((view.pinch(0.1) - start * 1.1).abs() < 0.01);
+        assert!((view.pinch(-0.1) - start * 1.1 * 0.9).abs() < 0.01);
+        let before = view.zoom_percent();
+        assert_eq!(view.pinch(f32::NAN), before);
     }
 
     #[test]

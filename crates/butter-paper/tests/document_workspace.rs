@@ -33371,7 +33371,7 @@ fn native_view_navigation_routes_real_single_page_wheel_and_control_zoom(cx: &mu
         .zoom_percent();
     cx.simulate_event(ScrollWheelEvent {
         position: viewport.center(),
-        delta: ScrollDelta::Pixels(point(px(0.), px(120.))),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-120.))),
         modifiers: Modifiers {
             control: true,
             ..Default::default()
@@ -33384,6 +33384,7 @@ fn native_view_navigation_routes_real_single_page_wheel_and_control_zoom(cx: &mu
             workspace.document_view_state(request.document_id, cx)
         })
         .unwrap();
+    // Control-wheel scrolling down zooms out.
     assert!(after.zoom_percent() < before_zoom);
     assert_eq!(
         after.zoom_preset(),
@@ -43806,7 +43807,7 @@ fn control_wheel_zoom_keeps_the_document_point_under_the_pointer(cx: &mut TestAp
     let (zoom_before, scroll_before) = view(cx);
     cx.simulate_event(ScrollWheelEvent {
         position: pointer,
-        delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-120.))),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.), px(120.))),
         modifiers: Modifiers {
             control: true,
             ..Modifiers::default()
@@ -43817,9 +43818,42 @@ fn control_wheel_zoom_keeps_the_document_point_under_the_pointer(cx: &mut TestAp
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let (zoom_after, scroll_after) = view(cx);
-    assert!(zoom_after > zoom_before, "control-wheel up zooms in by default");
+    assert!(zoom_after > zoom_before, "control-wheel scrolling up zooms in by default");
     let ratio = zoom_after / zoom_before;
     // Page geometry scales with zoom; only fixed page padding does not.
+    let expected_y = (scroll_before.1 + local.1) * ratio - local.1;
+    let expected_x = (scroll_before.0 + local.0) * ratio - local.0;
+    assert!((scroll_after.1 - expected_y).abs() < 40., "{scroll_after:?} vs y {expected_y}");
+    assert!((scroll_after.0 - expected_x).abs() < 40., "{scroll_after:?} vs x {expected_x}");
+}
+
+#[gpui::test]
+fn trackpad_pinch_zooms_about_the_pinch_centre(cx: &mut TestAppContext) {
+    let (workspace, document_id, cx) = pan_test_workspace(cx);
+    let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    let centre = point(viewport.origin.x + px(300.), viewport.origin.y + px(200.));
+    let local = (300.0_f32, 200.0_f32);
+    let view = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            let view = workspace.document_view_state(document_id, cx).unwrap();
+            (view.zoom_percent(), view.scroll())
+        })
+    };
+    let (zoom_before, scroll_before) = view(cx);
+    for _ in 0..3 {
+        cx.simulate_event(gpui::PinchEvent {
+            position: centre,
+            delta: 0.08,
+            modifiers: Modifiers::default(),
+            phase: gpui::TouchPhase::Moved,
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (zoom_after, scroll_after) = view(cx);
+    let ratio = zoom_after / zoom_before;
+    assert!((ratio - 1.08_f32.powi(3)).abs() < 0.01, "three 8% pinch steps, got {ratio}");
     let expected_y = (scroll_before.1 + local.1) * ratio - local.1;
     let expected_x = (scroll_before.0 + local.0) * ratio - local.0;
     assert!((scroll_after.1 - expected_y).abs() < 40., "{scroll_after:?} vs y {expected_y}");
@@ -44268,4 +44302,26 @@ fn every_tool_creates_a_markup_with_its_real_gesture(cx: &mut TestAppContext) {
         })
         .collect();
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[gpui::test]
+fn viewport_scrollbars_stay_on_the_viewport_while_scrolling(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::DOCUMENT_VIEWPORT_SCROLLBARS_ID;
+    let (_workspace, _document_id, cx) = pan_test_workspace(cx);
+    let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    for _ in 0..4 {
+        cx.simulate_event(ScrollWheelEvent {
+            position: viewport.center(),
+            delta: gpui::ScrollDelta::Pixels(point(px(-60.), px(-150.))),
+            ..Default::default()
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            cx.debug_bounds(DOCUMENT_VIEWPORT_SCROLLBARS_ID).unwrap(),
+            cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap(),
+            "the scroll bar layer must not move with the content"
+        );
+    }
 }

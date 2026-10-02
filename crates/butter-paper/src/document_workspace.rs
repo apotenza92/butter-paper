@@ -460,6 +460,7 @@ pub fn register_document_workspace_actions_for(
 pub const DOCUMENT_WORKSPACE_ID: &str = "document-workspace";
 pub const DOCUMENT_THUMBNAIL_STRIP_ID: &str = "document-thumbnail-strip";
 pub const DOCUMENT_PAGE_ID: &str = "document-current-page";
+pub const DOCUMENT_VIEWPORT_SCROLLBARS_ID: &str = "document-workspace-viewport-scrollbars";
 pub const DOCUMENT_VIEWPORT_ID: &str = "document-native-viewport";
 pub const DOCUMENT_OPEN_STATUS_ID: &str = "document-open-status";
 pub const DOCUMENT_OPEN_PROGRESS_ID: &str = "document-open-progress";
@@ -11010,43 +11011,68 @@ impl DocumentWorkspace {
                 true
             }
             WheelOutcome::Zoom(zoom_percent) => {
-                let bounds = self.viewport_bounds.get(&document_id).copied();
-                // The scroll container may already have applied this wheel
-                // delta; anchor to the content that was painted under the pointer.
-                let painted_scroll = self.viewport_painted_scroll.get(&document_id).copied();
-                session.update(cx, |session, cx| {
-                    if let (Some(bounds), Some(old_scroll)) = (bounds, painted_scroll) {
-                        let local_x = f32::from(event.position.x - bounds.origin.x);
-                        let local_y = f32::from(event.position.y - bounds.origin.y);
-                        // Resolved against the new layout in refresh_viewport_async,
-                        // before it is drawn, so the pointed page point stays put.
-                        session.pending_zoom_anchor =
-                            session.viewer.plan_snapshot().and_then(|plan| {
-                                crate::zoom_anchor::zoom_anchor_at(
-                                    &plan.page_layouts,
-                                    old_scroll,
-                                    (local_x, local_y),
-                                )
-                            });
-                    }
-                    session
-                        .viewer
-                        .configure(session.view_state.mode(), zoom_percent);
-                    cx.notify();
-                });
-                if let Some((width, height)) = session.read(cx).view_state.viewport_size() {
-                    let _ = self.refresh_viewport_async(
-                        document_id,
-                        width,
-                        height,
-                        window.scale_factor(),
-                        cx,
-                    );
-                }
-                cx.notify();
+                self.apply_anchored_zoom(document_id, event.position, zoom_percent, window, cx);
                 true
             }
         }
+    }
+
+    /// A trackpad pinch zooms smoothly about the pinch centre.
+    fn handle_viewport_pinch(
+        &mut self,
+        document_id: DocumentId,
+        event: &gpui::PinchEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
+        let input_at = cx.background_executor().now();
+        self.observe_viewer_input_at(document_id, input_at, cx);
+        let zoom_percent = session.update(cx, |session, _| session.view_state.pinch(event.delta));
+        self.apply_anchored_zoom(document_id, event.position, zoom_percent, window, cx);
+    }
+
+    /// Applies a new zoom, keeping the document point under `position` fixed.
+    fn apply_anchored_zoom(
+        &mut self,
+        document_id: DocumentId,
+        position: gpui::Point<Pixels>,
+        zoom_percent: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
+        let bounds = self.viewport_bounds.get(&document_id).copied();
+        // The scroll container may already have applied this wheel
+        // delta; anchor to the content that was painted under the pointer.
+        let painted_scroll = self.viewport_painted_scroll.get(&document_id).copied();
+        session.update(cx, |session, cx| {
+            if let (Some(bounds), Some(old_scroll)) = (bounds, painted_scroll) {
+                let local_x = f32::from(position.x - bounds.origin.x);
+                let local_y = f32::from(position.y - bounds.origin.y);
+                // Resolved against the new layout in refresh_viewport_async,
+                // before it is drawn, so the pointed page point stays put.
+                session.pending_zoom_anchor = session.viewer.plan_snapshot().and_then(|plan| {
+                    crate::zoom_anchor::zoom_anchor_at(
+                        &plan.page_layouts,
+                        old_scroll,
+                        (local_x, local_y),
+                    )
+                });
+            }
+            session
+                .viewer
+                .configure(session.view_state.mode(), zoom_percent);
+            cx.notify();
+        });
+        if let Some((width, height)) = session.read(cx).view_state.viewport_size() {
+            let _ = self.refresh_viewport_async(document_id, width, height, window.scale_factor(), cx);
+        }
+        cx.notify();
     }
 
     fn apply_document_navigation(
@@ -27446,7 +27472,14 @@ impl Render for DocumentWorkspace {
                         .size_full()
                         .p_4()
                         .bg(cx.theme().secondary)
+                        // The scroll bars sit in a fixed layer over the viewport;
+                        // as children of the scrolling element they would move
+                        // with the content.
                         .child(
+                            gpui::div()
+                                .relative()
+                                .size_full()
+                                .child(
                             gpui::div()
                                 .id(DOCUMENT_VIEWPORT_ID)
                                 .debug_selector(|| DOCUMENT_VIEWPORT_ID.into())
@@ -27460,6 +27493,11 @@ impl Render for DocumentWorkspace {
                                         if workspace.handle_viewport_wheel(document_id, event, window, cx) {
                                             window.prevent_default();
                                         }
+                                    },
+                                ))
+                                .on_pinch(cx.listener(
+                                    move |workspace, event: &gpui::PinchEvent, window, cx| {
+                                        workspace.handle_viewport_pinch(document_id, event, window, cx);
                                     },
                                 ))
                                 .child(viewport_observer)
@@ -27776,8 +27814,18 @@ impl Render for DocumentWorkspace {
                                             ),
                                     )
                                 })
-                                .vertical_scrollbar(&viewer_scroll)
-                                .horizontal_scrollbar(&viewer_scroll),
+                                )
+                                .child(
+                                    gpui::div()
+                                        .absolute()
+                                        .inset_0()
+                                        .debug_selector(|| DOCUMENT_VIEWPORT_SCROLLBARS_ID.into())
+                                        .child(
+                                            gpui_component::scroll::Scrollbar::new(&viewer_scroll)
+                                                .id("document-viewport-scrollbars")
+                                                .axis(gpui_component::scroll::ScrollbarAxis::Both),
+                                        ),
+                                ),
                         ),
                 ))
                 ,
