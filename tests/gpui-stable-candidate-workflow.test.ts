@@ -210,7 +210,9 @@ describe("GPUI stable candidate workflow", () => {
     expect(source).toContain("$gitBash = 'C:\\Program Files\\Git\\bin\\bash.exe'");
     expect(source).toContain("Split-Path -Parent $gitBash");
     expect(source).toContain("& $gitBash --version");
-    expect(source.indexOf("Split-Path -Parent $gitBash")).toBeLessThan(
+    // Later GITHUB_PATH entries are searched first: Git Bash must be added
+    // after the VsDevCmd path, whose System32 holds WSL's bash.exe.
+    expect(source.indexOf("Split-Path -Parent $gitBash |")).toBeGreaterThan(
       source.indexOf("$pathValue.Split(';'")
     );
     expect(

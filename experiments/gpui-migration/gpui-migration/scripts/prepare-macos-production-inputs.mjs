@@ -398,7 +398,11 @@ function argumentsMap(argv) {
 
 if (process.argv[1] === scriptPath) {
   const values = argumentsMap(process.argv.slice(2));
-  const iconCatalogRoot = await mkdtemp(join(tmpdir(), "bp-icon-catalog-"));
+  // macOS temporary directories sit behind the /var -> /private/var symlink,
+  // which the staged-input checks reject.
+  const iconCatalogRoot = await realpath(
+    await mkdtemp(join(tmpdir(), "bp-icon-catalog-")),
+  );
   let receipt;
   try {
     const iconAssetCatalogPath = await compileMacosIconAssetCatalog({
