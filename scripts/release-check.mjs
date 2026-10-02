@@ -90,6 +90,9 @@ export async function releaseCheck({ skipNativeTests = false } = {}) {
     process.stdout.write(`Casks: ${manifest.casks.join(", ")}\n`);
 
     step("macOS packaging dry run (stub binaries)");
+    // The same pinned inputs the release workflow prepares and verifies.
+    run("node", ["scripts/prepare.mjs", "prepare"], { cwd: crate, quiet: true });
+    run("node", ["scripts/prepare.mjs", "verify"], { cwd: crate, quiet: true });
     run("python3", ["prepare.py"], { cwd: phone, quiet: true });
     run("node", [
       "collect-go-notices.mjs",
