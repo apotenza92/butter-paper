@@ -36,9 +36,7 @@ const USAGE: &str = "usage: cargo xtask <command>
                               build and package one release asset
   publish-assets --assets DIR --tag vX.Y.Z --commit SHA --run-id N --run-attempt N --jobs a,b
                               add the Homebrew bundle and SHA256SUMS.txt
-  release-check [--skip-tests]
-                              everything the release workflow would reject
-  release [--skip-tests]      release-check, then push the version tag";
+  release                     check the version and changelog, then push the tag";
 
 fn main() -> ExitCode {
     let mut args = Args(env::args().skip(1).collect());
@@ -54,7 +52,6 @@ fn main() -> ExitCode {
         "notices" => notices::run(&mut args),
         "package" => package::run(&mut args),
         "publish-assets" => homebrew::run(&mut args),
-        "release-check" => release::check(&mut args).map(|_| ()),
         "release" => release::release(&mut args),
         _ => Err(USAGE.to_string()),
     };

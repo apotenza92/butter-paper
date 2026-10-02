@@ -135,16 +135,23 @@ jobs:
           # rust-toolchain.toml pins the version; add the release target.
           rustup toolchain install
           rustup target add "${{ matrix.target }}"
-      # Downloads only: Cargo verifies every crate against Cargo.lock, and
-      # builds always start from clean, pinned sources.
-      - name: Cache Cargo downloads
+      # Downloads and compiled dependencies, per target, so a release mostly
+      # rebuilds Butter Paper's own crates. Cargo still verifies every crate
+      # against Cargo.lock.
+      - name: Cache Cargo downloads and builds
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: cargo-downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+            target/${{ matrix.target }}/release/deps
+            target/${{ matrix.target }}/release/build
+            target/${{ matrix.target }}/release/.fingerprint
+            target/debug
+          key: cargo-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ matrix.target }}-
       - name: Activate matching Windows MSVC and LLVM toolchain
         if: matrix.os == 'windows'
         shell: pwsh

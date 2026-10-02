@@ -62,7 +62,7 @@ launcher becomes `butter-paper`.
    prototypes, research, migration docs), `native/`, Playwright output,
    TypeScript root config; move the phone helper to its own home.
 5. [x] `cargo xtask`: PDFium staging, macOS assemble/sign/notarise/zip,
-   Windows and Linux packages, Homebrew bundle, release-check, version,
+   Windows and Linux packages, Homebrew bundle, release (no pre-release test gate), version,
    repository and UI policy checks. Port the tests that guard them.
 6. [x] Relay to `services/signature-relay`; repository root has no
    package.json.
