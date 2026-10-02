@@ -94,6 +94,8 @@ export async function releaseCheck({ skipNativeTests = false } = {}) {
     run("node", ["scripts/prepare.mjs", "prepare"], { cwd: crate, quiet: true });
     run("node", ["scripts/prepare.mjs", "verify"], { cwd: crate, quiet: true });
     run("python3", ["prepare.py"], { cwd: phone, quiet: true });
+    // Generated and ignored; the collector refuses to overwrite it.
+    await rm(join(phone, "dist/PHONE_HELPER_THIRD_PARTY_NOTICES.md"), { force: true });
     run("node", [
       "collect-go-notices.mjs",
       "--module-root",
