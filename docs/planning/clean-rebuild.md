@@ -115,3 +115,7 @@ launcher becomes `butter-paper`.
 - Accepted: the Electron feed's TUF metadata expires about six weeks after
   0.0.31 and is not refreshed; Electron users who have not opened the app by
   then download 0.1.x directly.
+- 2026-10-02: 0.1.1 published (run 36995117964) with the tool fixes, pinch
+  zoom about the pinch centre, natural wheel-zoom direction (scroll up zooms
+  in; Reverse Scroll Zoom flips it) and scroll bars fixed to the view; both
+  casks at 0.1.1. The clean rebuild is complete.
