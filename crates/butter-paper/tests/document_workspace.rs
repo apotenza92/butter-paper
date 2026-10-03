@@ -5592,12 +5592,14 @@ fn native_open_session_restore_keeps_partial_failure_feedback_and_intended_valid
                 .collect::<Vec<_>>()
         }),
         [
+            // Small negative scroll is a page panned into the blank space
+            // beside it, which the viewer now allows.
             RestartView::new(
                 2,
                 PageViewMode::SinglePage,
                 RestartZoom::Manual(6_400.),
-                0.,
-                0.,
+                -3.,
+                -4.,
             ),
             RestartView::new(1, PageViewMode::Continuous, RestartZoom::FitPage, 7., 8.,),
         ],
@@ -6038,9 +6040,8 @@ fn imported_ellipse_first_press_resizes_preview_and_commits_once_on_native_stack
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot = feedback_handles_at(cx, east);
     let ordinary = feedback_handles_at(cx, north_west);
-    assert_eq!(hot.len(), 1);
-    assert_eq!(ordinary.len(), 1);
-    assert!(hot[0].bounds.size.width.0 > ordinary[0].bounds.size.width.0);
+    assert!(hot.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(ordinary.is_empty(), "item controls are not painted; the item itself is the grab target");
     let hover_scene = workspace.read_with(cx, |workspace, cx| {
         workspace.annotation_scene(request.document_id, 0, cx)
     });
@@ -14251,16 +14252,8 @@ fn imported_rectangle_pointer_move_and_resize_commit_previewed_geometry_on_nativ
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot_resize = feedback_handles_at(cx, resize_start);
     let ordinary_resize = feedback_handles_at(cx, ordinary_resize);
-    assert_eq!(hot_resize.len(), 1);
-    assert_eq!(ordinary_resize.len(), 1);
-    assert!(
-        hot_resize[0].bounds.size.width.0 > ordinary_resize[0].bounds.size.width.0,
-        "only the exact unselected Rectangle resize control must grow when hot",
-    );
-    assert_eq!(
-        hot_resize[0].border_widths.top.0,
-        2. * cx.update(|window, _| window.scale_factor()),
-    );
+    assert!(hot_resize.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(ordinary_resize.is_empty(), "item controls are not painted; the item itself is the grab target");
     assert!(
         feedback_handles_at(cx, hover_rotation).is_empty(),
         "Electron hides Rectangle rotation controls until selection"
@@ -15161,7 +15154,7 @@ fn line_feedback_adapter_distinguishes_length_creation_from_committed_scene() {
 }
 
 #[gpui::test]
-fn line_feedback_workspace_paints_square_endpoints_without_model_mutation(cx: &mut TestAppContext) {
+fn line_feedback_workspace_paints_no_endpoint_handles_without_model_mutation(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
         init_document_workspace_actions(cx);
@@ -15248,7 +15241,7 @@ fn line_feedback_workspace_paints_square_endpoints_without_model_mutation(cx: &m
         workspace.update(cx, |workspace, cx| {
             workspace.set_view_configuration(request.document_id, mode, zoom, cx)
         });
-        for (id, x, y, locked) in &fixtures {
+        for (id, x, y, _locked) in &fixtures {
             assert!(
                 workspace.update(cx, |workspace, cx| workspace.select_annotation(
                     request.document_id,
@@ -15281,26 +15274,10 @@ fn line_feedback_workspace_paints_square_endpoints_without_model_mutation(cx: &m
                             && quad.border_widths.top.0 > 0.
                     })
                     .collect::<Vec<_>>();
-                if *locked {
-                    assert!(
-                        handles.is_empty(),
-                        "locked {id:?} must hide endpoint handles"
-                    );
-                } else {
-                    assert_eq!(handles.len(), 1, "{id:?} at zoom {zoom}");
-                    let quad = handles[0];
-                    assert_eq!(
-                        quad.bounds.size.width.0,
-                        8. * device_scale,
-                        "nominal seven-pixel square plus centred border"
-                    );
-                    assert_eq!(quad.bounds.size.height.0, 8. * device_scale);
-                    assert_eq!(quad.border_widths.top.0, device_scale);
-                    assert_eq!(
-                        quad.corner_radii.top_left.0, 0.,
-                        "old rounded dot must not survive"
-                    );
-                }
+                assert!(
+                    handles.is_empty(),
+                    "selected {id:?} paints no handles at zoom {zoom}; the item itself is the grab target"
+                );
             }
             let after = workspace
                 .read_with(cx, |workspace, cx| {
@@ -15374,8 +15351,8 @@ fn line_feedback_workspace_paints_square_endpoints_without_model_mutation(cx: &m
     );
     assert_eq!(
         handle_count(moved_end),
-        1,
-        "endpoint transform must retain only its active handle"
+        0,
+        "the dragged endpoint is the line itself; no handle is painted"
     );
     cx.simulate_keystrokes("escape");
     let after_cancel = workspace
@@ -15540,26 +15517,15 @@ fn unselected_line_arrow_and_length_hover_controls_start_endpoint_drag_on_first_
             })
             .collect::<Vec<_>>()
     };
-    let device_scale = cx.update(|window, _| window.scale_factor());
-    for (family, y) in [("Line", 550.), ("Arrow", 450.), ("Length", 350.)] {
+    for (_family, y) in [("Line", 550.), ("Arrow", 450.), ("Length", 350.)] {
         let hovered_start = project(100., y);
         let ordinary_end = project(200., y);
         cx.simulate_mouse_move(hovered_start, None, Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let hot_start = feedback_handles_at(cx, hovered_start);
         let ordinary_end = feedback_handles_at(cx, ordinary_end);
-        assert_eq!(
-            hot_start.len(),
-            1,
-            "the unselected {family} start endpoint must paint"
-        );
-        assert_eq!(
-            ordinary_end.len(),
-            1,
-            "the unselected {family} end endpoint must paint"
-        );
-        assert!(hot_start[0].bounds.size.width.0 > ordinary_end[0].bounds.size.width.0);
-        assert_eq!(hot_start[0].border_widths.top.0, 2. * device_scale);
+        assert!(hot_start.is_empty(), "item controls are not painted; the item itself is the grab target");
+        assert!(ordinary_end.is_empty(), "item controls are not painted; the item itself is the grab target");
     }
     let after_hover = workspace
         .read_with(cx, |workspace, cx| {
@@ -15836,9 +15802,8 @@ fn unselected_cloud_hover_controls_start_vertex_drag_on_first_press_on_native_st
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot_quads = feedback_handles_at(cx, hot);
     let ordinary_quads = feedback_handles_at(cx, project(points[1]));
-    assert_eq!(hot_quads.len(), 1, "only the topmost unlocked Cloud paints");
-    assert_eq!(ordinary_quads.len(), 1, "all hovered Cloud vertices paint");
-    assert!(hot_quads[0].bounds.size.width.0 > ordinary_quads[0].bounds.size.width.0);
+    assert!(hot_quads.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(ordinary_quads.is_empty(), "item controls are not painted; the item itself is the grab target");
     let after_hover = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -16015,10 +15980,9 @@ fn unselected_arc_hover_controls_start_control_drag_on_first_press_on_native_sta
     let hot_quads = feedback_handles_at(cx, hot);
     let ordinary_start = feedback_handles_at(cx, project(start));
     let ordinary_end = feedback_handles_at(cx, project(end));
-    assert_eq!(hot_quads.len(), 1, "only the topmost unlocked Arc paints");
-    assert_eq!(ordinary_start.len(), 1);
-    assert_eq!(ordinary_end.len(), 1);
-    assert!(hot_quads[0].bounds.size.width.0 > ordinary_start[0].bounds.size.width.0);
+    assert!(hot_quads.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(ordinary_start.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(ordinary_end.is_empty(), "item controls are not painted; the item itself is the grab target");
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| {
@@ -16206,9 +16170,8 @@ fn unselected_vertex_path_hover_controls_start_drag_on_first_press_on_native_sta
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot_quads = feedback_handles_at(cx, hot);
     let ordinary = feedback_handles_at(cx, project(points[0]));
-    assert_eq!(hot_quads.len(), 1, "only the topmost unlocked path paints");
-    assert_eq!(ordinary.len(), 1, "all hovered path vertices paint");
-    assert!(hot_quads[0].bounds.size.width.0 > ordinary[0].bounds.size.width.0);
+    assert!(hot_quads.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(ordinary.is_empty(), "item controls are not painted; the item itself is the grab target");
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| {
@@ -16409,13 +16372,8 @@ fn unselected_measurement_path_hover_controls_start_drag_on_first_press_on_nativ
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot_quads = feedback_handles_at(cx, hot);
     let ordinary = feedback_handles_at(cx, project(points[0]));
-    assert_eq!(
-        hot_quads.len(),
-        1,
-        "only the topmost unlocked measurement paints"
-    );
-    assert_eq!(ordinary.len(), 1, "all hovered measurement vertices paint");
-    assert!(hot_quads[0].bounds.size.width.0 > ordinary[0].bounds.size.width.0);
+    assert!(hot_quads.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(ordinary.is_empty(), "item controls are not painted; the item itself is the grab target");
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| {
@@ -17023,7 +16981,7 @@ fn path_feedback_adapter_marks_creation_and_vertex_edit_previews() {
 }
 
 #[gpui::test]
-fn path_feedback_workspace_paints_square_vertices_without_model_mutation(cx: &mut TestAppContext) {
+fn path_feedback_workspace_paints_no_vertex_handles_without_model_mutation(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
         init_document_workspace_actions(cx);
@@ -17127,7 +17085,7 @@ fn path_feedback_workspace_paints_square_vertices_without_model_mutation(cx: &mu
         workspace.update(cx, |workspace, cx| {
             workspace.set_view_configuration(request.document_id, mode, zoom, cx)
         });
-        for (id, points, locked) in &fixtures {
+        for (id, points, _locked) in &fixtures {
             assert!(
                 workspace.update(cx, |workspace, cx| workspace.select_annotation(
                     request.document_id,
@@ -17160,23 +17118,10 @@ fn path_feedback_workspace_paints_square_vertices_without_model_mutation(cx: &mu
                             && quad.border_widths.top.0 > 0.
                     })
                     .collect::<Vec<_>>();
-                if *locked {
-                    assert!(handles.is_empty(), "locked {id:?} must hide vertex handles");
-                } else {
-                    assert_eq!(handles.len(), 1, "{id:?} at zoom {zoom}");
-                    let quad = handles[0];
-                    assert_eq!(
-                        quad.bounds.size.width.0,
-                        8. * device_scale,
-                        "nominal seven-pixel square plus centred border"
-                    );
-                    assert_eq!(quad.bounds.size.height.0, 8. * device_scale);
-                    assert_eq!(quad.border_widths.top.0, device_scale);
-                    assert_eq!(
-                        quad.corner_radii.top_left.0, 0.,
-                        "old rounded dot must not survive"
-                    );
-                }
+                assert!(
+                    handles.is_empty(),
+                    "selected {id:?} paints no handles at zoom {zoom}; the item itself is the grab target"
+                );
             }
             let after = workspace
                 .read_with(cx, |workspace, cx| {
@@ -17194,7 +17139,7 @@ fn path_feedback_workspace_paints_square_vertices_without_model_mutation(cx: &mu
 }
 
 #[gpui::test]
-fn shape_feedback_workspace_paints_square_handles_and_locked_rotation_omission(
+fn shape_feedback_workspace_paints_no_resize_handles_and_locked_rotation_omission(
     cx: &mut TestAppContext,
 ) {
     cx.update(|cx| {
@@ -17355,23 +17300,10 @@ fn shape_feedback_workspace_paints_square_handles_and_locked_rotation_omission(
                             && quad.border_widths.top.0 > 0.
                     })
                     .collect::<Vec<_>>();
-                if *locked {
-                    assert!(handles.is_empty(), "locked {id:?} must hide vertex handles");
-                } else {
-                    assert_eq!(handles.len(), 1, "{id:?} at zoom {zoom}");
-                    let quad = handles[0];
-                    assert_eq!(
-                        quad.bounds.size.width.0,
-                        8. * device_scale,
-                        "nominal seven-pixel square plus centred border"
-                    );
-                    assert_eq!(quad.bounds.size.height.0, 8. * device_scale);
-                    assert_eq!(quad.border_widths.top.0, device_scale);
-                    assert_eq!(
-                        quad.corner_radii.top_left.0, 0.,
-                        "old rounded dot must not survive"
-                    );
-                }
+                assert!(
+                    handles.is_empty(),
+                    "selected {id:?} paints no handles at zoom {zoom}; the item itself is the grab target"
+                );
             }
             if let Some(rect) = rotation_rect {
                 let center = point(
@@ -17399,8 +17331,13 @@ fn shape_feedback_workspace_paints_square_handles_and_locked_rotation_omission(
                         1,
                         "rotation stem is a path, circle is one quad"
                     );
-                    assert_eq!(controls[0].bounds.size.width.0, 9. * device_scale);
-                    assert_eq!(controls[0].corner_radii.top_left.0, 4.5 * device_scale);
+                    // A 4 px knob ringed by the 1.5 px selection outline stroke.
+                    assert_eq!(controls[0].bounds.size.width.0, 9.5 * device_scale);
+                    assert!(
+                        controls[0].corner_radii.top_left.0
+                            >= controls[0].bounds.size.width.0 / 2.,
+                        "the rotation knob is a circle"
+                    );
                 }
             }
             let after = workspace
@@ -17526,8 +17463,8 @@ fn marquee_candidates_paint_multiple_hits_without_mutating_selection(cx: &mut Te
             .collect::<Vec<_>>()
     };
     assert!(
-        !border_colours(cx, 400., 100.).is_empty(),
-        "selected Dimension must paint its square start handle",
+        border_colours(cx, 400., 100.).is_empty(),
+        "a selected Dimension paints no handle; the item itself is the grab target",
     );
     assert!(
         workspace.update(cx, |workspace, cx| workspace.select_annotation(
@@ -17538,8 +17475,8 @@ fn marquee_candidates_paint_multiple_hits_without_mutating_selection(cx: &mut Te
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(
-        !border_colours(cx, 72., 96.).is_empty(),
-        "selected Rectangle must paint a corner handle"
+        border_colours(cx, 72., 96.).is_empty(),
+        "a selected Rectangle paints no corner handle; the item itself is the grab target"
     );
     let before = workspace
         .read_with(cx, |workspace, cx| {
@@ -17591,8 +17528,9 @@ fn marquee_candidates_paint_multiple_hits_without_mutating_selection(cx: &mut Te
         before
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    // Rectangle outlines are now Paths, which this harness does not expose. Its
-    // real handle quads still prove candidate feedback suppresses selection handles.
+    // Rectangle outlines are Paths, which this harness does not expose, and
+    // selected items paint no handle quads, so these only guard against any
+    // handle reappearing on a candidate.
     assert!(
         border_colours(cx, 72., 96.).is_empty(),
         "candidate Rectangle must suppress its selected handle"
@@ -19846,8 +19784,10 @@ fn text_box_click_opens_real_multiline_editor_and_blur_commits_once(cx: &mut Tes
     let initial_rect = workspace
         .read_with(cx, |workspace, _| workspace.pending_text_box_rect())
         .expect("fresh Text Box creation must expose one live PDF-space rectangle");
-    assert_eq!(initial_rect.width, 11.);
-    assert_eq!(initial_rect.height, 18.);
+    // Revu's 3 pt text margin pads the caret and the 13.8 pt line on all four
+    // sides, so a click-placed box's text is vertically centred.
+    assert_eq!(initial_rect.width, 7.);
+    assert!((initial_rect.height - 19.8).abs() <= 0.000_1);
     assert!((initial_rect.x + initial_rect.width / 2. - 72.).abs() <= 0.000_1);
     assert!((initial_rect.y + initial_rect.height / 2. - 96.).abs() <= 0.000_1);
     assert!(
@@ -19859,13 +19799,13 @@ fn text_box_click_opens_real_multiline_editor_and_blur_commits_once(cx: &mut Tes
         .debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID)
         .expect("the pending Text Box editor must render over the page");
     let initial_editor_origin = point(
-        placement.x - px(11. * scale / 2.),
-        placement.y - px(18. * scale / 2.),
+        placement.x - px(7. * scale / 2.),
+        placement.y - px(19.8 * scale / 2.),
     );
     assert!((f32::from(editor_bounds.origin.x - initial_editor_origin.x)).abs() < 1.);
     assert!((f32::from(editor_bounds.origin.y - initial_editor_origin.y)).abs() < 1.);
-    assert!((f32::from(editor_bounds.size.width) - (11. * scale).max(24.)).abs() < 1.);
-    assert!((f32::from(editor_bounds.size.height) - (18. * scale).max(18.)).abs() < 1.);
+    assert!((f32::from(editor_bounds.size.width) - (7. * scale).max(24.)).abs() < 1.);
+    assert!((f32::from(editor_bounds.size.height) - (19.8 * scale).max(18.)).abs() < 1.);
     assert!(cx.update(|window, _| editor_focus.is_focused(window)));
     let pending = workspace
         .read_with(cx, |workspace, cx| {
@@ -19962,6 +19902,11 @@ fn text_box_click_opens_real_multiline_editor_and_blur_commits_once(cx: &mut Tes
     assert_eq!(committed.text_boxes[0].style().font_family(), "Helvetica");
     assert_eq!(committed.text_boxes[0].style().font_size_pt(), 12.);
     assert_eq!(committed.text_boxes[0].style().color(), "#ff0000");
+    assert_eq!(
+        committed.text_boxes[0].style().inset_pt(),
+        3.,
+        "the committed box keeps the margin its editor and hugging size used"
+    );
     assert_eq!((committed.revision, committed.undo_depth), (1, 1));
     assert_eq!(committed.selected_id, None);
     assert_eq!(
@@ -20452,22 +20397,26 @@ fn unselected_text_box_and_image_hover_controls_start_resize_on_first_press_on_n
     let west = to_view(100., 136.);
     cx.simulate_mouse_move(east, None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let painted_handle_at = |cx: &mut gpui::VisualTestContext, center: Point<Pixels>| {
+    let painted_handles_at = |cx: &mut gpui::VisualTestContext, center: Point<Pixels>| {
         let device_scale = cx.update(|window, _| window.scale_factor());
         cx.update(|window, _| window.painted_quads())
             .into_iter()
-            .find(|quad| {
+            .filter(|quad| {
                 let quad_x = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
                 let quad_y = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
                 (quad_x - f32::from(center.x) * device_scale).abs() < 1.
                     && (quad_y - f32::from(center.y) * device_scale).abs() < 1.
                     && quad.border_widths.top.0 > 0.
             })
-            .expect("the unselected hovered Text Box must paint its control")
+            .count()
     };
-    let hot_east = painted_handle_at(cx, east);
-    let ordinary_west = painted_handle_at(cx, west);
-    assert!(hot_east.bounds.size.width.0 > ordinary_west.bounds.size.width.0);
+    assert_eq!(painted_handles_at(cx, east), 0, "item controls are not painted");
+    assert_eq!(painted_handles_at(cx, west), 0, "item controls are not painted");
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.hot_annotation_handle()),
+        Some((id.clone(), 3)),
+        "the Text Box east edge is the hot resize zone"
+    );
 
     let east_end = point(east.x + px(12.), east.y);
     cx.simulate_mouse_down(east, MouseButton::Left, Modifiers::default());
@@ -20553,11 +20502,12 @@ fn unselected_text_box_and_image_hover_controls_start_resize_on_first_press_on_n
     );
     cx.simulate_mouse_move(image_south_west, None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let hot_south_west = painted_handle_at(cx, image_south_west);
-    let ordinary_north_east = painted_handle_at(cx, image_north_east);
-    assert!(
-        hot_south_west.bounds.size.width.0 > ordinary_north_east.bounds.size.width.0,
-        "Image adapter SouthWest index must grow the painted SouthWest control"
+    assert_eq!(painted_handles_at(cx, image_south_west), 0);
+    assert_eq!(painted_handles_at(cx, image_north_east), 0);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.hot_annotation_handle()),
+        Some((image_id.clone(), 0)),
+        "the Image adapter SouthWest index is the hot resize zone"
     );
     let image_east = to_view(
         image_rect.x + image_rect.width,
@@ -20565,7 +20515,7 @@ fn unselected_text_box_and_image_hover_controls_start_resize_on_first_press_on_n
     );
     cx.simulate_mouse_move(image_east, None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    painted_handle_at(cx, image_east);
+    assert_eq!(painted_handles_at(cx, image_east), 0);
     let image_east_end = point(image_east.x + px(12.), image_east.y);
     cx.simulate_mouse_down(image_east, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(
@@ -24031,12 +23981,8 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
         };
     let hot_unselected_knee = unselected_feedback_handles_at(cx, knee_center);
     let ordinary_unselected_start = unselected_feedback_handles_at(cx, leader_start);
-    assert_eq!(hot_unselected_knee.len(), 1);
-    assert_eq!(ordinary_unselected_start.len(), 1);
-    assert!(
-        hot_unselected_knee[0].bounds.size.width.0
-            > ordinary_unselected_start[0].bounds.size.width.0
-    );
+    assert!(hot_unselected_knee.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(ordinary_unselected_start.is_empty(), "item controls are not painted; the item itself is the grab target");
     let before_first_press = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -24133,32 +24079,14 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
             .collect::<Vec<_>>()
     };
     let stable_knee_handles = feedback_handles_at(cx, knee_center);
-    assert_eq!(stable_knee_handles.len(), 1);
-    assert_eq!(stable_knee_handles[0].corner_radii.top_left.0, 0.);
-    assert_eq!(
-        stable_knee_handles[0].bounds.size.width.0,
-        8. * cx.update(|window, _| window.scale_factor()),
-        "Callout must use the shared seven-pixel square plus centred border",
-    );
+    assert!(stable_knee_handles.is_empty(), "item controls are not painted; the item itself is the grab target");
     cx.simulate_mouse_move(knee_center, None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot_knee_handles = feedback_handles_at(cx, knee_center);
-    assert_eq!(hot_knee_handles.len(), 1);
-    assert_eq!(
-        hot_knee_handles[0].bounds.size.width.0,
-        10. * cx.update(|window, _| window.scale_factor()),
-        "pointer-hot Callout controls must use the shared one-pixel growth and two-pixel border",
-    );
-    assert_eq!(
-        hot_knee_handles[0].border_widths.top.0,
-        2. * cx.update(|window, _| window.scale_factor())
-    );
+    assert!(hot_knee_handles.is_empty(), "item controls are not painted; the item itself is the grab target");
     cx.simulate_mouse_move(project(500., 500.), None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert_eq!(
-        feedback_handles_at(cx, knee_center)[0].bounds.size.width.0,
-        8. * cx.update(|window, _| window.scale_factor())
-    );
+    assert!(feedback_handles_at(cx, knee_center).is_empty());
     let moved_knee = point(knee_center.x + px(16.), knee_center.y - px(10.));
     cx.simulate_mouse_down(knee_center, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(moved_knee, Some(MouseButton::Left), Modifiers::default());
@@ -24217,7 +24145,7 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
             as f32,
         (pointer_edited.callouts[0].text_box.y + pointer_edited.callouts[0].text_box.height) as f32,
     );
-    assert_eq!(feedback_handles_at(cx, stable_north).len(), 1);
+    assert!(feedback_handles_at(cx, stable_north).is_empty());
     let moved_north = point(stable_north.x, stable_north.y - px(18.));
     cx.simulate_mouse_down(stable_north, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(moved_north, Some(MouseButton::Left), Modifiers::default());
@@ -24448,9 +24376,8 @@ fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor_on_nati
     };
     let hot = feedback_handles_at(cx, hot_vertex);
     let ordinary = feedback_handles_at(cx, ordinary_vertex);
-    assert_eq!(hot.len(), 1);
-    assert_eq!(ordinary.len(), 1);
-    assert!(hot[0].bounds.size.width.0 > ordinary[0].bounds.size.width.0);
+    assert!(hot.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(ordinary.is_empty(), "item controls are not painted; the item itself is the grab target");
     let before_first_press = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -24856,13 +24783,9 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
     let ordinary_end = painted_handles_at(cx, hover_project(edited.dimensions[0].end));
     let ordinary_offset =
         painted_handles_at(cx, hover_project(edited.dimensions[0].caption_center()));
-    assert_eq!(hot_start.len(), 1);
-    assert_eq!(ordinary_end.len(), 1);
-    assert_eq!(ordinary_offset.len(), 1);
-    assert!(
-        hot_start[0].bounds.size.width.0 > ordinary_end[0].bounds.size.width.0,
-        "only the stable hot Dimension control must grow"
-    );
+    assert!(hot_start.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(ordinary_end.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(ordinary_offset.is_empty(), "item controls are not painted; the item itself is the grab target");
 
     let before_first_press = workspace
         .read_with(cx, |workspace, cx| {
@@ -26456,9 +26379,8 @@ fn redact_workspace_renders_real_component_tool_and_truthful_pending_overlay_on_
     };
     let hot = feedback_handles_at(cx, east);
     let ordinary = feedback_handles_at(cx, north_west);
-    assert_eq!(hot.len(), 1);
-    assert_eq!(ordinary.len(), 1);
-    assert!(hot[0].bounds.size.width.0 > ordinary[0].bounds.size.width.0);
+    assert!(hot.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(ordinary.is_empty(), "item controls are not painted; the item itself is the grab target");
     let moved_east = project_deselected(350., 252.);
     cx.simulate_mouse_down(east, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(moved_east, Some(MouseButton::Left), Modifiers::default());
@@ -43550,6 +43472,53 @@ fn hand_tool_drag_pans_the_canvas_with_the_pointer(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn hand_tool_pans_pages_into_blank_space_past_their_edges(cx: &mut TestAppContext) {
+    let (workspace, document_id, cx) = pan_test_workspace(cx);
+    let hand = cx.debug_bounds("document-workspace-pan-tool").unwrap();
+    cx.simulate_click(hand.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let page = |cx: &mut gpui::VisualTestContext| {
+        cx.debug_bounds("document-1-annotation-layer-0").unwrap()
+    };
+    let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    // Start at the document's top-left corner, then drag right and down.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_viewport_scroll(document_id, 0., 0., cx);
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let at_origin = page(cx);
+    let start = viewport.center();
+    let end = point(start.x + px(200.), start.y + px(150.));
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        pan_scroll(cx, &workspace, document_id),
+        (-200., -150.),
+        "the page follows the pointer past its top-left edge"
+    );
+    let panned = page(cx);
+    assert_eq!(panned.origin.x - at_origin.origin.x, px(200.));
+    assert_eq!(panned.origin.y - at_origin.origin.y, px(150.));
+
+    // Far past the edge, a strip of the page stays in view.
+    let far = point(start.x + viewport.size.width * 3., start.y + viewport.size.height * 3.);
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(far, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(far, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let stopped = page(cx);
+    // `PAN_KEEP_VISIBLE_PX` in the viewer.
+    let keep = px(48.);
+    assert!(
+        (stopped.origin.x - (viewport.right() - keep)).abs() <= px(1.)
+            && (stopped.origin.y - (viewport.bottom() - keep)).abs() <= px(1.),
+        "panning stops with {keep:?} of the page in view: page={stopped:?}, viewport={viewport:?}"
+    );
+}
+
+#[gpui::test]
 fn middle_button_drag_pans_the_canvas_with_any_tool(cx: &mut TestAppContext) {
     let (workspace, document_id, cx) = pan_test_workspace(cx);
     assert!(!workspace.read_with(cx, |workspace, _| workspace.is_pan_tool_active()));
@@ -44324,4 +44293,314 @@ fn viewport_scrollbars_stay_on_the_viewport_while_scrolling(cx: &mut TestAppCont
             "the scroll bar layer must not move with the content"
         );
     }
+}
+
+#[gpui::test]
+fn existing_text_box_double_click_edits_in_place_without_opening_properties(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("inline-text-edit.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    let document_id = request.document_id;
+    let id = MarkupId::new("inline:text-box").unwrap();
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_text_box(
+                document_id,
+                TextBoxAnnotation::new(
+                    id.clone(),
+                    0,
+                    PdfRect::new(300., 300., 100., 40.).unwrap(),
+                    "baseline",
+                    TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+                )
+                .unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
+    let layer = cx.debug_bounds(layer_id).unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let body = point(origin.x + px(340. * scale), origin.y + px((792. - 320.) * scale));
+    for click_count in [1, 2] {
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: body,
+            modifiers: Modifiers::default(),
+            click_count,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            button: MouseButton::Left,
+            position: body,
+            modifiers: Modifiers::default(),
+            click_count,
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    let input = workspace
+        .read_with(cx, |workspace, _| workspace.pending_text_box_input())
+        .expect("double-click must open the Text Box editor");
+    assert!(
+        cx.debug_bounds("document-workspace-properties-sidebar").is_none(),
+        "editing a Text Box must not open the properties sidebar"
+    );
+    let editor = cx
+        .debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID)
+        .expect("the editor must render on the canvas");
+    let expected = gpui::Bounds::new(
+        point(origin.x + px(300. * scale), origin.y + px((792. - 340.) * scale)),
+        size(px(100. * scale), px(40. * scale)),
+    );
+    for (actual, wanted) in [
+        (editor.origin.x, expected.origin.x),
+        (editor.origin.y, expected.origin.y),
+        (editor.size.width, expected.size.width),
+        (editor.size.height, expected.size.height),
+    ] {
+        assert!(
+            (f32::from(actual - wanted)).abs() < 1.,
+            "the editor must cover the Text Box: editor={editor:?}, box={expected:?}"
+        );
+    }
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            input.replace_text_in_range(Some(0..8), "edited live", window, cx)
+        })
+    });
+    cx.run_until_parked();
+    let outside = point(origin.x + px(100. * scale), origin.y + px(100. * scale));
+    cx.simulate_mouse_down(outside, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    let committed = workspace
+        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .unwrap();
+    assert_eq!(committed.text_boxes[0].content(), "edited live");
+    assert!(
+        workspace
+            .read_with(cx, |workspace, _| workspace.pending_text_box_input())
+            .is_none()
+    );
+}
+
+#[gpui::test]
+fn signature_menu_opens_on_a_phone_qr_session_when_enabled(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    workspace.update(cx, |workspace, _| {
+        workspace.use_phone_signature_by_default(true);
+        // A closed local port: the session attempt fails at once, offline.
+        workspace.set_phone_relay_origin(Some("https://127.0.0.1:1".into()));
+    });
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("phone-default.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SIGNATURE_TOOL_ID);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let signature_tool = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap();
+    cx.simulate_click(signature_tool.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds(DOCUMENT_SIGNATURE_ERROR_ALERT_ID).is_some(),
+        "opening the Signature menu must start a phone session straight away"
+    );
+}
+
+#[gpui::test]
+fn rectangle_resizes_live_from_any_edge_and_cursors_follow_the_pointer(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("rectangle-cursors.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let view = |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale));
+    let draw = |cx: &mut gpui::VisualTestContext| cx.update(|window, cx| window.draw(cx).clear(cx));
+    let cursor = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, _| workspace.viewport_cursor())
+    };
+    let cursor_at = |cx: &mut gpui::VisualTestContext, position: gpui::Point<Pixels>| {
+        cx.simulate_mouse_move(position, None, Modifiers::default());
+        draw(cx);
+        cursor(cx)
+    };
+    let rectangles = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace.annotation_scene(request.document_id, 0, cx).rectangles
+        })
+    };
+    // Painted width of the (red, unrotated) Rectangle outline in logical px.
+    let painted_width = |cx: &mut gpui::VisualTestContext| {
+        let device_scale = cx.update(|window, _| window.scale_factor());
+        cx.update(|window, _| window.painted_quads())
+            .into_iter()
+            .find(|quad| {
+                quad.border_widths.top.0 > 0.
+                    && quad.border_color.h < 0.05
+                    && quad.border_color.s > 0.5
+            })
+            .map(|quad| quad.bounds.size.width.0 / device_scale)
+            .expect("the Rectangle outline must paint")
+    };
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Rectangle, cx)
+        })
+        .unwrap();
+    assert_eq!(cursor_at(cx, view(100., 600.)), CursorStyle::Crosshair);
+    cx.simulate_mouse_down(view(100., 600.), MouseButton::Left, Modifiers::default());
+    let mut created_width = 0.;
+    for step in 1..=5 {
+        let step = step as f32;
+        cx.simulate_mouse_move(
+            view(100. + step * 30., 600. - step * 20.),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        draw(cx);
+        let width = rectangles(cx)[0].rect.width;
+        assert!(width > created_width, "creation previews every drag step");
+        created_width = width;
+    }
+    cx.simulate_mouse_up(view(250., 500.), MouseButton::Left, Modifiers::default());
+    draw(cx);
+    let rect = rectangles(cx)[0].rect;
+    let (left, bottom) = (rect.x as f32, rect.y as f32);
+    let (right, top) = (left + rect.width as f32, bottom + rect.height as f32);
+    let (mid_x, mid_y) = ((left + right) / 2., (bottom + top) / 2.);
+
+    assert_eq!(cursor_at(cx, view(mid_x, mid_y)), CursorStyle::OpenHand, "selected interior moves");
+    assert_eq!(cursor_at(cx, view(right, top - 15.)), CursorStyle::ResizeLeftRight, "any point on the east edge resizes");
+    assert_eq!(cursor_at(cx, view(mid_x + 30., top)), CursorStyle::ResizeUpDown, "any point on the north edge resizes");
+    assert_eq!(cursor_at(cx, view(right, top)), CursorStyle::ResizeUpRightDownLeft);
+    assert_eq!(cursor_at(cx, view(left, bottom)), CursorStyle::ResizeUpRightDownLeft);
+    assert_eq!(cursor_at(cx, view(left, top)), CursorStyle::ResizeUpLeftDownRight);
+    assert_eq!(
+        cursor_at(cx, view(right + 7. / scale, mid_y + 20.)),
+        CursorStyle::OpenHand,
+        "the band along the dashed outline moves"
+    );
+    assert_eq!(cursor_at(cx, view(mid_x, top + 12. / scale)), CursorStyle::PointingHand, "rotation knob");
+    assert_eq!(cursor_at(cx, view(500., 100.)), CursorStyle::Arrow);
+
+    // Resize from the east edge away from its midpoint: the outline repaints
+    // on every move and the resize cursor holds for the whole drag.
+    let start = view(right, top - 15.);
+    cx.simulate_mouse_move(start, None, Modifiers::default());
+    draw(cx);
+    let before = painted_width(cx);
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    let mut previous = before;
+    for step in 1..=4 {
+        cx.simulate_mouse_move(
+            point(start.x + px(step as f32 * 20.), start.y),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        draw(cx);
+        let width = painted_width(cx);
+        assert!(
+            (width - previous - 20.).abs() < 1.,
+            "step {step}: the outline must follow the pointer live ({previous} -> {width})"
+        );
+        previous = width;
+        assert_eq!(cursor(cx), CursorStyle::ResizeLeftRight);
+        assert!(rectangles(cx)[0].preview);
+    }
+    let end = point(start.x + px(80.), start.y);
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    draw(cx);
+    let committed = workspace
+        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .unwrap()
+        .rectangles[0]
+        .rect;
+    assert!((committed.width - rect.width - f64::from(80. / scale)).abs() < 0.5);
+    assert!((committed.height - rect.height).abs() < 0.001, "an east edge resize keeps the height");
+    assert_eq!(cursor(cx), CursorStyle::ResizeLeftRight, "release keeps the cursor of what is under it");
+
+    // Moving from the interior grabs with a closed hand.
+    let middle = view(mid_x, mid_y);
+    cx.simulate_mouse_move(middle, None, Modifiers::default());
+    draw(cx);
+    cx.simulate_mouse_down(middle, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(point(middle.x, middle.y + px(30.)), Some(MouseButton::Left), Modifiers::default());
+    draw(cx);
+    assert_eq!(cursor(cx), CursorStyle::ClosedHand);
+    cx.simulate_mouse_up(point(middle.x, middle.y + px(30.)), MouseButton::Left, Modifiers::default());
+    draw(cx);
+    assert!(rectangles(cx)[0].rect.y < committed.y, "the Rectangle moved down");
 }

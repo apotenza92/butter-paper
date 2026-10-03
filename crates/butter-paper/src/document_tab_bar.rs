@@ -37,7 +37,11 @@ pub const TEMPLATE_PICKER_LIST_ID: &str = "template-picker-list";
 pub const TEMPLATE_PICKER_PREVIEW_ID: &str = "template-picker-preview";
 /// Electron's picker is 560 px wide; the native footer's extra Save Document
 /// as Template action needs a little more room.
-pub const TEMPLATE_PICKER_WIDTH: f32 = 600.;
+/// Wide enough that each half keeps the 348px the list had beside the old
+/// fixed 240px preview, so descriptions do not wrap and six rows still fit.
+pub const TEMPLATE_PICKER_WIDTH: f32 = 708.;
+/// Each of the picker's two equal columns, either side of the 12px gap.
+pub const TEMPLATE_PICKER_COLUMN_WIDTH: f32 = (TEMPLATE_PICKER_WIDTH - 12.) / 2.;
 pub const DOCUMENT_TAB_LIST_ACCESSIBLE_NAME: &str = "Open documents";
 pub const DOCUMENT_TAB_REORDER_STATUS_ID: &str = "document-tab-reorder-status";
 pub const DOCUMENT_TAB_REORDER_KEYSHORTCUTS: &str = "Alt+Shift+ArrowLeft Alt+Shift+ArrowRight";
@@ -608,12 +612,13 @@ impl Render for TemplateSplitControl {
                                     .gap_1()
                                     .children(template_rows),
                             )
+                            // The list and preview split the picker evenly.
                             .child(template_preview_card(
                                 &selected.preview,
                                 selected.name.clone(),
                                 TEMPLATE_PICKER_PREVIEW_ID,
                                 true,
-                                240.,
+                                TEMPLATE_PICKER_COLUMN_WIDTH,
                                 cx,
                             )),
                     )

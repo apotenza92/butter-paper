@@ -2196,7 +2196,11 @@ fn template_split_traces_pointer_keyboard_dismissal_disabled_and_independence(
     );
     bounds(cx, TEMPLATE_PICKER_POPOVER_ID);
     for stable_id in TEMPLATE_ITEM_IDS {
-        bounds(cx, stable_id);
+        assert_eq!(
+            bounds(cx, stable_id).size.width,
+            px(butter_paper::document_tab_bar::TEMPLATE_PICKER_COLUMN_WIDTH),
+            "template rows and preview split the picker 50/50"
+        );
     }
     bounds(cx, TEMPLATE_MANAGE_ID);
     bounds(cx, TEMPLATE_CREATE_ID);

@@ -291,6 +291,9 @@ impl ComponentStory {
                 story.sync_window_title(window, cx);
                 story.schedule_recovery_marker_checkpoint(cx);
             });
+        document_workspace.update(cx, |workspace, _| {
+            workspace.use_phone_signature_by_default(true);
+        });
         if template_manager.is_some() {
             document_workspace.update(cx, |workspace, _| {
                 workspace.use_external_template_authority(true);

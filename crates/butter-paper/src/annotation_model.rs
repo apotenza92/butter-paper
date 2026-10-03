@@ -39,6 +39,8 @@ const MIN_SNAPSHOT_SIZE_PT: f64 = 2.0;
 pub const MIN_RECT_CREATE_SIZE_PT: f64 = 2.0;
 pub const MIN_STRAIGHT_LINE_LENGTH_PT: f64 = 2.0;
 pub const ROTATION_HANDLE_OFFSET_PT: f64 = 12.0;
+/// Selection bounds are drawn this many screen pixels outside the item.
+pub const SELECTION_OUTSET_CSS_PX: f64 = 6.0;
 pub const MAX_STREAMED_PATH_POINTS: usize = 100_000;
 pub const MAX_COALESCED_PEN_SAMPLES: usize = 4_096;
 pub const MAX_TEXT_BOX_BYTES: usize = 64 * 1024;
@@ -793,6 +795,33 @@ impl RectangleAnnotation {
 
     fn world_to_local(&self, point: PdfPoint) -> PdfPoint {
         rotate_point_around_rect_center(point, self.rect, self.rotation_degrees)
+    }
+
+    /// The side whose edge, away from its corners, lies within `tolerance_pt`
+    /// of `point`. With no painted handles, a selected Rectangle resizes from
+    /// anywhere along an edge.
+    pub fn edge_resize_handle(
+        &self,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Option<RectangleResizeHandle> {
+        let local = self.world_to_local(point);
+        let rect = self.rect;
+        let (left, right) = (rect.x, rect.x + rect.width);
+        let (bottom, top) = (rect.y, rect.y + rect.height);
+        let along_x = local.x > left + tolerance_pt && local.x < right - tolerance_pt;
+        let along_y = local.y > bottom + tolerance_pt && local.y < top - tolerance_pt;
+        if along_y && (local.x - right).abs() <= tolerance_pt {
+            Some(RectangleResizeHandle::East)
+        } else if along_y && (local.x - left).abs() <= tolerance_pt {
+            Some(RectangleResizeHandle::West)
+        } else if along_x && (local.y - top).abs() <= tolerance_pt {
+            Some(RectangleResizeHandle::North)
+        } else if along_x && (local.y - bottom).abs() <= tolerance_pt {
+            Some(RectangleResizeHandle::South)
+        } else {
+            None
+        }
     }
 
     fn rotation_handle_world_point(&self, offset_pt: f64) -> PdfPoint {
@@ -8611,6 +8640,14 @@ impl AnnotationDocument {
                     handle,
                 }));
             }
+            if !selected.locked
+                && let Some(handle) = selected.edge_resize_handle(point, tolerance_pt)
+            {
+                return Ok(Some(HitTarget::ResizeHandle {
+                    id: selected.id.clone(),
+                    handle,
+                }));
+            }
         }
         if let Some(hit) = self
             .state
@@ -8629,7 +8666,7 @@ impl AnnotationDocument {
         {
             return Ok(Some(hit));
         }
-        Ok(self
+        if let Some(hit) = self
             .state
             .straight_lines
             .iter()
@@ -8639,7 +8676,55 @@ impl AnnotationDocument {
                     && point_segment_distance(point, annotation.start, annotation.end)
                         <= tolerance_pt.max(annotation.appearance.stroke_width_pt / 2.0)
             })
-            .map(|annotation| HitTarget::Body(annotation.id.clone())))
+            .map(|annotation| HitTarget::Body(annotation.id.clone()))
+        {
+            return Ok(Some(hit));
+        }
+        // Both offsets are fixed screen distances expressed in page points.
+        let outset_pt =
+            rotation_handle_offset_pt * SELECTION_OUTSET_CSS_PX / ROTATION_HANDLE_OFFSET_PT;
+        Ok(self
+            .selected_outline_zone_hit(page_index, point, tolerance_pt + outset_pt)
+            .map(HitTarget::Body))
+    }
+
+    /// The selected item whose outline zone contains `point`: its own bounds
+    /// grown by `margin_pt`, which covers the gaps inside an unfilled shape
+    /// and the band around its outset selection outline. Dragging there moves
+    /// the item.
+    pub fn selected_outline_zone_hit(
+        &self,
+        page_index: u32,
+        point: PdfPoint,
+        margin_pt: f64,
+    ) -> Option<MarkupId> {
+        self.selected_ids.iter().rev().find_map(|id| {
+            let annotation = self.annotation_owned(id)?;
+            if annotation.page_index() != page_index {
+                return None;
+            }
+            if let Annotation::Rectangle(rectangle) = &annotation {
+                let local = rectangle.world_to_local(point);
+                return rectangle.rect.contains(local, margin_pt).then(|| id.clone());
+            }
+            let paths = annotation_selection_paths(&annotation, &|sample: PdfPoint| {
+                SelectionPoint { x: sample.x, y: sample.y }
+            });
+            let mut samples = paths.iter().flat_map(|path| path.points.iter());
+            let first = samples.next()?;
+            let (mut min_x, mut min_y, mut max_x, mut max_y) = (first.x, first.y, first.x, first.y);
+            for sample in samples {
+                min_x = min_x.min(sample.x);
+                min_y = min_y.min(sample.y);
+                max_x = max_x.max(sample.x);
+                max_y = max_y.max(sample.y);
+            }
+            (point.x >= min_x - margin_pt
+                && point.x <= max_x + margin_pt
+                && point.y >= min_y - margin_pt
+                && point.y <= max_y + margin_pt)
+                .then(|| id.clone())
+        })
     }
 
     pub fn spatial_query_work(
@@ -14018,8 +14103,17 @@ mod tests {
         document.commit_gesture(8).unwrap();
 
         assert_eq!(
-            document.hit_test(0, point(10.0, 40.0), 2.0).unwrap(),
+            document.hit_test(0, point(40.0, 40.0), 2.0).unwrap(),
             Some(HitTarget::Body(id("front")))
+        );
+        // With no painted handles, the selected Rectangle resizes from
+        // anywhere along an edge.
+        assert_eq!(
+            document.hit_test(0, point(10.0, 40.0), 2.0).unwrap(),
+            Some(HitTarget::ResizeHandle {
+                id: id("front"),
+                handle: RectangleResizeHandle::West,
+            })
         );
         for (handle, handle_point) in [
             (RectangleResizeHandle::NorthWest, point(10.0, 70.0)),
@@ -14040,6 +14134,35 @@ mod tests {
             );
         }
         assert_eq!(document.hit_test(1, point(10.0, 40.0), 2.0).unwrap(), None);
+    }
+
+    #[test]
+    fn selected_item_moves_from_the_band_around_its_outset_outline() {
+        let mut document = AnnotationDocument::default();
+        document
+            .begin_create(8, id("rect"), 0, point(10.0, 20.0), RectangleAppearance::default())
+            .unwrap();
+        document.update_gesture(8, point(110.0, 70.0)).unwrap();
+        document.commit_gesture(8).unwrap();
+        // 4 pt outside the left edge, between its corner and midpoint
+        // controls: inside the 6 pt outline band plus a 1 pt tolerance.
+        let band = point(6.0, 30.0);
+        assert_eq!(
+            document.hit_test(0, band, 1.0).unwrap(),
+            Some(HitTarget::Body(id("rect"))),
+            "a selected item moves from the band along its dashed outline"
+        );
+        assert_eq!(
+            document.hit_test(0, point(2.0, 30.0), 1.0).unwrap(),
+            None,
+            "beyond the band the press misses"
+        );
+        document.clear_selection();
+        assert_eq!(
+            document.hit_test(0, band, 1.0).unwrap(),
+            None,
+            "an unselected item has no outline band"
+        );
     }
 
     #[test]
@@ -14846,8 +14969,8 @@ mod tests {
     fn thumbnail_scene_projects_committed_page_geometry_without_editor_chrome() {
         let mut document = AnnotationDocument::default();
         create_rectangle(&mut document, "thumbnail");
-        document.begin_move(55, 0, point(10.0, 40.0), 2.0).unwrap();
-        document.update_gesture(55, point(30.0, 60.0)).unwrap();
+        document.begin_move(55, 0, point(40.0, 40.0), 2.0).unwrap();
+        document.update_gesture(55, point(60.0, 60.0)).unwrap();
 
         assert_eq!(
             document.thumbnail_scene(0),
@@ -16177,11 +16300,12 @@ mod tests {
         }
         document.commit_gesture(1).unwrap();
 
-        document.begin_move(1, 0, point(72.0, 600.0), 4.0).unwrap();
+        // Pressed inside: the selected Rectangle's edges resize.
+        document.begin_move(1, 0, point(100.0, 600.0), 4.0).unwrap();
         for sample in 1..=SAMPLES {
             let progress = f64::from(sample) / f64::from(SAMPLES);
             document
-                .update_gesture(1, point(72.0 + 36.0 * progress, 600.0 - 24.0 * progress))
+                .update_gesture(1, point(100.0 + 36.0 * progress, 600.0 - 24.0 * progress))
                 .unwrap();
         }
         document.commit_gesture(1).unwrap();

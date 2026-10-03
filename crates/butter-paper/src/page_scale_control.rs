@@ -1110,7 +1110,10 @@ fn build_dialog_content(
                             "{page_label}. Choose a scale and the pages it applies to."
                         )))
                         .child(
-                            div().absolute().top(px(-8.)).right(px(-8.)).child(
+                            // Inside the dialog content: the stock body clips anything
+                            // above it, which left the top half of an outset close
+                            // button unhoverable.
+                            div().absolute().top_0().right_0().child(
                                 DialogClose::new().child(accessible_icon_button(
                                     Button::new(PAGE_SCALE_CLOSE_ID)
                                         .debug_selector(|| PAGE_SCALE_CLOSE_ID.into())

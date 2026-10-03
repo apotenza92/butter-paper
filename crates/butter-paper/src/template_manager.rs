@@ -1924,7 +1924,9 @@ impl Render for TemplateManagerView {
                     "Create reusable paper or import a PDF that you already use as a template.",
                 ))
                 .child(
-                    div().absolute().top(px(-8.)).right(px(-8.)).child(
+                    // Inside the dialog content: the stock body clips anything above it, which
+                    // left the top half of an outset close button unhoverable.
+                    div().absolute().top_0().right_0().child(
                         DialogClose::new().child(accessible_icon_button(
                             Button::new(TEMPLATE_MANAGER_CLOSE_ID)
                                 .debug_selector(|| TEMPLATE_MANAGER_CLOSE_ID.into())
@@ -1943,12 +1945,20 @@ impl Render for TemplateManagerView {
         } else {
             TEMPLATE_MANAGER_BROWSE_PAGE_ID
         };
+        // Side by side, the list and preview split the dialog content evenly:
+        // the stock dialog pads its content by 16px either side and the two
+        // columns are separated by a 16px gap.
+        let browse_preview_width = if constrained {
+            280.
+        } else {
+            (template_manager_dialog_width(viewport_width) - 32. - 16.) / 2.
+        };
         let browse_preview = crate::template_preview::template_preview_card(
             &selected.preview(),
             selected.name().to_owned(),
             browse_page_id,
             false,
-            280.,
+            browse_preview_width,
             cx,
         );
 
@@ -1964,7 +1974,8 @@ impl Render for TemplateManagerView {
                 let preview = v_flex()
                     .id(TEMPLATE_MANAGER_PREVIEW_ID)
                     .debug_selector(|| TEMPLATE_MANAGER_PREVIEW_ID.into())
-                    .flex_none()
+                    .when(constrained, |preview| preview.flex_none())
+                    .when(!constrained, |preview| preview.flex_1().min_w_0())
                     .child(browse_preview);
                 let library_content = if constrained {
                     v_flex()

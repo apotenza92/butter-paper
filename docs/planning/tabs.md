@@ -10,6 +10,8 @@ Overflow: stock properly sized chevron immediately before vertical separator and
 
 ## Current assessment
 
+Reveal-without-movement correction (2026-10-02): a centred label used to re-centre into the narrower space beside the revealed close button. The label's centred start is now measured during prepaint with the tab's own text style; on reveal it keeps that start and truncates against the close lane. The real-workspace hover regression adds a short-title case. Visual acceptance open.
+
 Phase 1 tab composition and interaction are accepted at checkpoint `95bfb62725cf1248bcdfb24c28796c686bdb58ae`. Historical “acceptance pending” statements below describe earlier checkpoints and do not reopen the accepted shell. Phase 2 must preserve the current actual-workspace tab path.
 
 Empty-state boundary correction: no-active-document rendering now retains the tab row's bottom border, full-height trailing action divider and permanent right pinning. Empty/loading row reserves the stock 32px tab frame plus vertical padding so its height matches loaded tabs. New native regression asserts empty row height, divider extents, action clearance, trailing inset and absent overflow lane. Build, 25 native tests and pnpm check pass. Live Mac verification closed eight disposable fixture tabs through Cmd+W; after the final close both boundaries remain and Open/New stay pinned. Reference checkout `test-results/workspace-integration/empty-tabs-after.jpg` and `empty-tabs-comparison.png` independently inspected. The earlier `overflow-lane-before.jpg` supplies the empty pre-fix baseline. No user files were deleted.

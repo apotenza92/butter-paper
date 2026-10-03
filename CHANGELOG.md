@@ -4,6 +4,40 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.1.2]
+
+### Selecting and editing markups
+
+- The blue dashed outline now sits just outside a selected markup, so the
+  markup itself stays visible, and the yellow handle dots are gone.
+- Resize a selected rectangle from anywhere along an edge, or from a corner;
+  the pointer shows the resize direction and keeps it while you drag.
+- Drag inside a selected markup, or along its dashed outline, to move it
+  (open hand to grab, closed hand while moving). The rotation knob stays on
+  the outline.
+- Double-click a text box to edit its text in place on the page, without the
+  properties panel.
+- New text boxes pad their text evenly, so a single line sits in the middle.
+
+### Viewing
+
+- Pan freely past the edges of the page into blank space, as in the Electron
+  app, and zoom with the pointer over blank space without the page jumping.
+
+### Signatures
+
+- Phone signing works again: it goes through the secure relay, as the
+  Electron app did, and opening Signature shows the phone QR code straight
+  away (Draw here instead, Type and Image are still there).
+
+### Tabs and dialogs
+
+- Hovering a tab no longer shifts its title; the title truncates to make
+  room for the close button.
+- The template list and preview split the space evenly, in both New from
+  template and Manage templates.
+- Dialog close buttons respond to hover across the whole button.
+
 ## [0.1.1]
 
 ### Tools

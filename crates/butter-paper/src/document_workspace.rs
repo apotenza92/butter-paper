@@ -513,6 +513,7 @@ pub const DOCUMENT_SIGNATURE_CLEAR_ID: &str = "document-workspace-signature-clea
 pub const DOCUMENT_SIGNATURE_PREVIEW_ID: &str = "document-workspace-signature-preview";
 pub const DOCUMENT_SIGNATURE_ADD_ID: &str = "document-workspace-signature-add";
 pub const DOCUMENT_SIGNATURE_ERROR_ALERT_ID: &str = "document-workspace-signature-error-alert";
+pub const DOCUMENT_SIGNATURE_DRAW_HERE_ID: &str = "document-workspace-signature-draw-here";
 pub const DOCUMENT_SIGNATURE_LOADING_ID: &str = "document-workspace-signature-loading";
 pub const DOCUMENT_SIGNATURE_MODE_DRAW_ID: &str = "document-workspace-signature-mode-draw";
 pub const DOCUMENT_SIGNATURE_MODE_TYPE_ID: &str = "document-workspace-signature-mode-type";
@@ -667,9 +668,10 @@ pub fn rectangle_resize_cursor_style(
     }
 }
 
-/// Resolves only native-representable resize cursors. Point, rotation and
-/// snapped-hidden cursors remain Arrow because GPUI has no equivalent for the
-/// Electron SVG move/rotate/hidden cursors.
+/// Resolves the cursor over an item's grab zone, which has no painted handle.
+/// Box edges and corners take the nearest native resize cursor; vertices,
+/// endpoints and other point controls take a crosshair. Rotation stays Arrow
+/// because GPUI has no equivalent for Electron's SVG rotate cursor.
 pub fn annotation_resize_cursor_style(
     scene: &AnnotationScene,
     id: &MarkupId,
@@ -733,12 +735,20 @@ pub fn annotation_resize_cursor_style(
         .iter()
         .find(|annotation| &annotation.id == id)
     {
-        let resize_index = index.checked_sub(annotation.cloud_points.len())?;
+        let Some(resize_index) = index.checked_sub(annotation.cloud_points.len()) else {
+            return Some(CursorStyle::Crosshair);
+        };
         (RectangleResizeHandle::ALL.get(resize_index).copied(), 0.)
     } else {
-        (None, 0.)
+        return Some(CursorStyle::Crosshair);
     };
-    handle.map(|handle| rectangle_resize_cursor_style(handle, rotation_degrees))
+    // Box shapes number their rotation knob after the eight resize handles;
+    // GPUI has no rotate cursor, so it reads as a pressable control.
+    Some(
+        handle
+            .map(|handle| rectangle_resize_cursor_style(handle, rotation_degrees))
+            .unwrap_or(CursorStyle::PointingHand),
+    )
 }
 
 fn is_pdf_path(path: &Path) -> bool {
@@ -2488,6 +2498,7 @@ pub struct DocumentWorkspace {
     session_tab_reveal: Option<DocumentId>,
     session_tab_last_active: Option<DocumentId>,
     session_tab_hovered: Option<DocumentId>,
+    session_tab_label_offsets: HashMap<DocumentId, Rc<Cell<Pixels>>>,
     hovered_annotation: Option<(DocumentId, u32, MarkupId)>,
     hot_annotation_handle: Option<(DocumentId, u32, MarkupId, usize)>,
     select_hover_hit: Option<(DocumentId, u32, HitTarget)>,
@@ -2527,6 +2538,16 @@ pub struct DocumentWorkspace {
     signature_prepare_state: SignaturePrepareState,
     drawn_signature: DrawnSignature,
     signature_input_mode: SignatureInputMode,
+    /// Opening the Signature menu starts a phone QR session (the application
+    /// enables this; tests opt in so they make no relay requests).
+    phone_signature_by_default: bool,
+    /// The HTTPS relay phone signing goes through, when this build has one.
+    phone_relay_origin: Option<String>,
+    /// The cursor the document viewport showed in the latest frame.
+    viewport_cursor: CursorStyle,
+    /// The cursor kept while a Select-tool drag on an item is in progress:
+    /// the grabbed control's cursor, or a closed hand while moving.
+    gesture_cursor: Option<CursorStyle>,
     signature_operation: Option<crate::phone_signature::SignatureOperation>,
     signature_camera_available: bool,
     signature_name_input: Option<Entity<InputState>>,
@@ -3525,6 +3546,9 @@ struct PendingTextBoxPresentation {
     input: Entity<TextareaState>,
     editor_bounds: Option<Bounds<Pixels>>,
     display_scale: f32,
+    /// The existing Text Box edited in place; the layer hides its committed
+    /// text while the editor draws the live value over it.
+    existing_id: Option<MarkupId>,
 }
 
 #[derive(Clone)]
@@ -3743,10 +3767,14 @@ fn pending_text_box_size(
             ))
         })
         .fold(0., f64::max);
-    let width = (widest + 10.).max(font_size / 12. + 10.);
+    // The committed text box draws its text one inset in from every edge, so
+    // the hugging box pads the text by that inset on all four sides. Equal
+    // top and bottom padding keeps a click-placed box's text vertically
+    // centred, and the text does not move when its editor commits.
+    let inset = style.inset_pt();
+    let width = (widest + inset * 2.).max(font_size / 12. + inset * 2.);
     let line_count = content.split('\n').count().max(1) as f64;
-    let vertical_inset = ((font_size * 1.5 - line_height) / 2.).max(0.);
-    (width, line_count * line_height + vertical_inset * 2.)
+    (width, line_count * line_height + inset * 2.)
 }
 
 fn initial_pending_text_box_rect(
@@ -3971,6 +3999,7 @@ impl DocumentWorkspace {
             session_tab_reveal: None,
             session_tab_last_active: None,
             session_tab_hovered: None,
+            session_tab_label_offsets: HashMap::new(),
             hovered_annotation: None,
             hot_annotation_handle: None,
             select_hover_hit: None,
@@ -4010,6 +4039,10 @@ impl DocumentWorkspace {
             signature_prepare_state: SignaturePrepareState::Idle,
             drawn_signature: DrawnSignature::default(),
             signature_input_mode: SignatureInputMode::Draw,
+            phone_signature_by_default: false,
+            phone_relay_origin: crate::phone_signature::configured_origin().ok(),
+            viewport_cursor: CursorStyle::Arrow,
+            gesture_cursor: None,
             signature_operation: None,
             signature_camera_available: crate::camera_signature::helper_path().is_some(),
             signature_name_input: None,
@@ -5591,6 +5624,7 @@ impl DocumentWorkspace {
         if self.session_tab_hovered == Some(document_id) {
             self.session_tab_hovered = None;
         }
+        self.session_tab_label_offsets.remove(&document_id);
         let session = self.sessions.remove(index);
         self.page_interactions.retain(|(owner, _), _| *owner != document_id);
         self.last_painted_page_evidence
@@ -5659,6 +5693,16 @@ impl DocumentWorkspace {
                 && normalized_document_path(&session.path) == normalized_document_path(path))
             .then_some(session.id)
         })
+    }
+
+    /// Whether opening the Signature menu shows a phone QR code straight away.
+    pub fn use_phone_signature_by_default(&mut self, enabled: bool) {
+        self.phone_signature_by_default = enabled;
+    }
+
+    /// Replaces the build's phone relay origin (tests use a closed local port).
+    pub fn set_phone_relay_origin(&mut self, origin: Option<String>) {
+        self.phone_relay_origin = origin;
     }
 
     pub fn use_external_template_authority(&mut self, enabled: bool) {
@@ -7504,6 +7548,19 @@ impl DocumentWorkspace {
             .map(|editor| editor.input.read(cx).focus_handle(cx))
     }
 
+    /// The cursor the document viewport showed in the latest frame.
+    pub fn viewport_cursor(&self) -> CursorStyle {
+        self.viewport_cursor
+    }
+
+    /// The unpainted item control under the pointer: its annotation and the
+    /// adapter's handle index, which selects the resize cursor.
+    pub fn hot_annotation_handle(&self) -> Option<(MarkupId, usize)> {
+        self.hot_annotation_handle
+            .as_ref()
+            .map(|(_, _, id, index)| (id.clone(), *index))
+    }
+
     pub fn pending_text_box_input(&self) -> Option<Entity<TextareaState>> {
         self.pending_text_box_editor
             .as_ref()
@@ -7805,12 +7862,8 @@ impl DocumentWorkspace {
             .read(cx)
             .annotations
             .tool_properties(AnnotationTool::TextBox);
-        let Ok(style) = TextBoxStyle::new(
-            &properties.font_family,
-            properties.font_size_pt,
-            &properties.colour,
-            properties.opacity,
-        ) else {
+        // Revu's text margin, as for every other Text Box creation path.
+        let Ok(style) = crate::annotation_adapter::text_box_tool_style(&properties) else {
             return false;
         };
         let Ok(rect) = initial_pending_text_box_rect(anchor, &style, window.text_system()) else {
@@ -7884,6 +7937,21 @@ impl DocumentWorkspace {
         *rect = next;
         self.text_box_commit_error = None;
         Ok(())
+    }
+
+    /// The existing Text Box the open editor changes in place on the canvas.
+    /// Rotated boxes keep the properties editor: the canvas editor is upright.
+    fn inline_existing_text_box<'a>(
+        &self,
+        document_id: DocumentId,
+        id: &MarkupId,
+        cx: &'a App,
+    ) -> Option<&'a TextBoxAnnotation> {
+        self.session(document_id, cx)?
+            .read(cx)
+            .annotations
+            .exact_selected_text_box(document_id.value())
+            .filter(|text_box| &text_box.id == id && text_box.rotation_degrees() == 0.)
     }
 
     fn begin_pending_composite_text_editor(
@@ -11129,9 +11197,9 @@ impl DocumentWorkspace {
             }
             DocumentNavigationOutcome::Scroll { x, y } => {
                 session.update(cx, |session, _| {
-                    let offset = session.viewer.scroll_handle().offset();
-                    let scroll_x = (-f32::from(offset.x) + x).max(0.);
-                    let scroll_y = (-f32::from(offset.y) + y).max(0.);
+                    let (current_x, current_y) = session.viewer.logical_scroll();
+                    let scroll_x = current_x + x;
+                    let scroll_y = current_y + y;
                     session.view_state.set_scroll(scroll_x, scroll_y);
                     session.viewer.set_scroll(scroll_x, scroll_y);
                 });
@@ -11155,10 +11223,8 @@ impl DocumentWorkspace {
         let Some(session) = self.session(document_id, cx).cloned() else {
             return Err("document session is closed".into());
         };
-        let scroll = session.read(cx).viewer.scroll_handle().offset();
+        let (mut scroll_x, mut scroll_y) = session.read(cx).viewer.logical_scroll();
         let previous_page = session.read(cx).current_page;
-        let mut scroll_x = (-f32::from(scroll.x)).max(0.);
-        let mut scroll_y = (-f32::from(scroll.y)).max(0.);
         let now = cx.background_executor().now();
         session.update(cx, |session, _| {
             if !matches!(session.status, NativeDocumentStatus::Ready) {
@@ -11195,6 +11261,7 @@ impl DocumentWorkspace {
                     &plan.page_layouts,
                     (plan.total_width, plan.total_height),
                     (viewport_width, viewport_height),
+                    session.viewer.pan_margin(),
                 )
             {
                 scroll_x = anchored_x;
@@ -15249,10 +15316,18 @@ impl DocumentWorkspace {
             Done(Result<Option<SanitizedSignatureFile>, String>),
         }
         let (tx, rx) = async_channel::bounded(2);
+        let relay_origin = self
+            .phone_relay_origin
+            .clone()
+            .ok_or_else(|| "Phone transfer is not configured in this build.".to_owned());
         let background = cx.background_executor().spawn(async move {
             let result = if let Some(mode) = phone {
-                crate::local_phone_signature::receive(mode, cancel, |asset| {
-                    tx.try_send(Event::Qr(asset)).is_ok()
+                // Through the HTTPS relay, as Electron did: the phone needs no
+                // route to this computer's local network.
+                relay_origin.and_then(|origin| {
+                    crate::phone_signature::receive(origin, mode, cancel, |asset| {
+                        tx.try_send(Event::Qr(asset)).is_ok()
+                    })
                 })
             } else {
                 crate::camera_signature::capture(cancel)
@@ -16298,7 +16373,10 @@ impl DocumentWorkspace {
         self.pan_drag = Some((
             document_id,
             position,
-            session.read(cx).viewer.scroll_handle().offset(),
+            {
+                let (x, y) = session.read(cx).viewer.logical_scroll();
+                point(px(x), px(y))
+            },
         ));
         true
     }
@@ -16316,6 +16394,15 @@ impl DocumentWorkspace {
         cx: &mut Context<Self>,
     ) -> bool {
         let pressed_hot_annotation_handle = self.hot_annotation_handle.clone();
+        // The cursor a drag keeps: the grabbed control's, or a closed hand when
+        // the press lands on an item to move it.
+        let pressed_gesture_cursor = if pressed_hot_annotation_handle.is_some() {
+            Some(self.viewport_cursor)
+        } else if self.hovered_annotation.is_some() {
+            Some(CursorStyle::ClosedHand)
+        } else {
+            None
+        };
         self.clear_hover_candidate(cx);
         // This global capture listener runs before the popover's occluding surface.
         // Let the open signature surface own its press, including outside dismissal.
@@ -16378,7 +16465,10 @@ impl DocumentWorkspace {
             self.pan_drag = Some((
                 document_id,
                 position,
-                session.read(cx).viewer.scroll_handle().offset(),
+                {
+                    let (x, y) = session.read(cx).viewer.logical_scroll();
+                    point(px(x), px(y))
+                },
             ));
             return true;
         }
@@ -16703,10 +16793,6 @@ impl DocumentWorkspace {
                 Ok(PointerPhaseOutcome::SelectionChanged(Some(id))) => {
                     self.active_annotation_pointer = None;
                     self.annotation_statuses.remove(&interaction.document_id);
-                    self.right_rail_actions_open = properties_double_click_sidebar_open(
-                        already_selected,
-                        self.right_rail_actions_open,
-                    );
                     let target = if session
                         .read(cx)
                         .annotations
@@ -16724,6 +16810,21 @@ impl DocumentWorkspace {
                     } else {
                         PendingTextEditorTarget::ExistingTextBox { id }
                     };
+                    // A Text Box edits its text where it sits; other text
+                    // markups still edit in the properties sidebar.
+                    let edits_inline = matches!(
+                        &target,
+                        PendingTextEditorTarget::ExistingTextBox { id }
+                            if self
+                                .inline_existing_text_box(interaction.document_id, id, cx)
+                                .is_some()
+                    );
+                    if !edits_inline {
+                        self.right_rail_actions_open = properties_double_click_sidebar_open(
+                            already_selected,
+                            self.right_rail_actions_open,
+                        );
+                    }
                     let _ = self.begin_pending_composite_text_editor(
                         interaction.document_id,
                         interaction.page_index,
@@ -17189,6 +17290,8 @@ impl DocumentWorkspace {
                     Some(PointerPhaseOutcome::PlacementPending)
                 ),
             });
+            self.gesture_cursor =
+                (tool == AnnotationTool::Select).then_some(pressed_gesture_cursor).flatten();
             cx.notify();
         }
         if retained_pointer.is_some()
@@ -17562,13 +17665,9 @@ impl DocumentWorkspace {
                 return false;
             }
             if self.session(document_id, cx).is_some() {
-                let next = offset + position - origin;
-                self.set_viewport_scroll(
-                    document_id,
-                    (-f32::from(next.x)).max(0.),
-                    (-f32::from(next.y)).max(0.),
-                    cx,
-                );
+                // `offset` is the logical scroll when the pan began.
+                let next = offset - (position - origin);
+                self.set_viewport_scroll(document_id, f32::from(next.x), f32::from(next.y), cx);
                 return true;
             }
             self.pan_drag = None;
@@ -20182,6 +20281,7 @@ fn annotation_layer(
                                             && matches!(
                                                 &editor.target,
                                                 PendingTextEditorTarget::NewTextBox { .. }
+                                                    | PendingTextEditorTarget::ExistingTextBox { .. }
                                             )
                                     },
                                 )
@@ -21102,7 +21202,12 @@ fn annotation_layer(
                             // Explicit text lines may overflow the retained layout rectangle, as
                             // in the Electron canvas. The viewer owns clipping; the rectangle
                             // remains the alignment/editing geometry and saved PDF annotation box.
-                            if annotation.rich_text_runs.is_empty() {
+                            let edited_inline = painted_pending_text_box
+                                .as_ref()
+                                .is_some_and(|pending| pending.existing_id.as_ref() == Some(&annotation.id));
+                            if edited_inline {
+                                // The in-place editor draws the live text.
+                            } else if annotation.rich_text_runs.is_empty() {
                                 for (line_index, line) in annotation.content.split('\n').enumerate()
                                 {
                                     let text: SharedString = line.to_owned().into();
@@ -21518,7 +21623,10 @@ fn annotation_layer(
                         }
                         }
                     }
-                    if let Some(pending) = painted_pending_text_box.as_ref() {
+                    if let Some(pending) = painted_pending_text_box
+                        .as_ref()
+                        .filter(|pending| pending.existing_id.is_none())
+                    {
                         let rect = pending.rect;
                         let corners = [
                             PdfPoint { x: rect.x, y: rect.y + rect.height },
@@ -21633,13 +21741,9 @@ fn annotation_layer(
             |layer, (pending, bounds, scale)| {
                 let font_size = px(pending.style.font_size_pt() as f32 * scale);
                 let line_height = px(pending.style.line_height_pt() as f32 * scale);
-                let vertical_inset = px(
-                    ((pending.style.font_size_pt() * 1.5
-                        - pending.style.line_height_pt())
-                        / 2.)
-                        .max(0.) as f32
-                        * scale,
-                );
+                // Matches the committed text box, which draws text one inset
+                // in from the top.
+                let vertical_inset = px(pending.style.inset_pt() as f32 * scale);
                 let text_colour = try_parse_color(pending.style.color())
                     .unwrap_or(gpui::black())
                     .opacity(pending.style.opacity() as f32);
@@ -22388,6 +22492,15 @@ fn annotation_tool_group(
                     workspace.drawn_signature.clear();
                     workspace.signature_input_mode = SignatureInputMode::Draw;
                     workspace.load_recent_signatures(cx);
+                    if workspace.phone_signature_by_default
+                        && workspace.phone_relay_origin.is_some()
+                    {
+                        workspace.begin_platform_signature(
+                            document_id,
+                            Some(crate::phone_signature::PhoneMode::Draw),
+                            cx,
+                        );
+                    }
                     cx.notify();
                 } else {
                     workspace.dismiss_signature_popover(document_id, Some(window), cx);
@@ -22409,6 +22522,7 @@ fn annotation_tool_group(
             let clear_control = signature_content_control.clone();
             let clear_name_input = signature_name_input.clone();
             let draw_mode_control = signature_content_control.clone();
+            let draw_here_control = signature_content_control.clone();
             let type_mode_control = signature_content_control.clone();
             let image_mode_control = signature_content_control.clone();
             let loading = matches!(
@@ -22512,12 +22626,31 @@ fn annotation_tool_group(
                 );
             content = match &signature_prepare_state {
                 SignaturePrepareState::PhoneQr(image) => content.child(
-                    v_flex().gap_2().child("Scan with your phone").child(
-                        gpui::img(image.clone())
-                            .w_full()
-                            .h_48()
-                            .object_fit(gpui::ObjectFit::Contain),
-                    ),
+                    v_flex()
+                        .gap_2()
+                        .child("Scan with your phone")
+                        .child(
+                            gpui::img(image.clone())
+                                .w_full()
+                                .h_48()
+                                .object_fit(gpui::ObjectFit::Contain),
+                        )
+                        .child(
+                            Button::new(DOCUMENT_SIGNATURE_DRAW_HERE_ID)
+                                .debug_selector(|| DOCUMENT_SIGNATURE_DRAW_HERE_ID.into())
+                                .ghost()
+                                .small()
+                                .label("Draw here instead")
+                                .on_click(move |_, _, cx| {
+                                    let _ = draw_here_control.update(cx, |workspace, cx| {
+                                        workspace.cancel_signature_operation(cx);
+                                        workspace.signature_input_mode = SignatureInputMode::Draw;
+                                        workspace.signature_prepare_state =
+                                            SignaturePrepareState::Idle;
+                                        cx.notify();
+                                    });
+                                }),
+                        ),
                 ),
                 SignaturePrepareState::Idle => content.child(signature_input_surface(
                     signature_input_mode,
@@ -22595,7 +22728,7 @@ fn annotation_tool_group(
                 && camera_available;
             let show_phone = !phone_pairing
                 && signature_input_mode != SignatureInputMode::Type
-                && crate::local_phone_signature::helper_path().is_some();
+                && crate::phone_signature::configured_origin().is_ok();
             let show_choose = !phone_pairing && signature_input_mode == SignatureInputMode::Image;
             let sources = h_flex()
                 .w_full()
@@ -22622,7 +22755,7 @@ fn annotation_tool_group(
                 .when(
                     !phone_pairing
                         && signature_input_mode != SignatureInputMode::Type
-                        && crate::local_phone_signature::helper_path().is_some(),
+                        && crate::phone_signature::configured_origin().is_ok(),
                     |sources| {
                         sources.child(
                             Button::new("signature-phone")
@@ -23123,7 +23256,35 @@ fn annotation_tool_group(
 
 // Measure the natural label once in layout; reveal-time truncation must not
 // change the tab width or move neighbouring controls.
-fn session_tab_overlay_label(label: String, group: String, revealed: bool) -> impl IntoElement {
+//
+// `text_offset` records where the centred label starts at rest. On reveal the
+// label keeps that start and truncates against the close lane, so the text
+// never re-centres into the narrower space beside the close button.
+fn session_tab_overlay_label(
+    label: String,
+    group: String,
+    revealed: bool,
+    text_offset: Rc<Cell<Pixels>>,
+) -> impl IntoElement {
+    let measured_label = SharedString::from(label.clone());
+    let measured_offset = text_offset.clone();
+    // Shapes the label with the tab's inherited text style during prepaint and
+    // records the centred start for the next reveal.
+    let measure = canvas(
+        move |bounds, window, _| {
+            let style = window.text_style();
+            let font_size = style.font_size.to_pixels(window.rem_size());
+            let run = style.to_run(measured_label.len());
+            let width = window
+                .text_system()
+                .shape_line(measured_label.clone(), font_size, &[run], None)
+                .width;
+            measured_offset.set(((bounds.size.width - width) / 2.).max(px(0.)));
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0();
     // Fill the tab (tabs have a minimum width) so revealing the close button
     // narrows the label rather than collapsing a short title to an ellipsis.
     gpui::div()
@@ -23137,16 +23298,17 @@ fn session_tab_overlay_label(label: String, group: String, revealed: bool) -> im
                 .opacity(0.)
                 .child(label.clone()),
         )
+        .child(measure)
         .child(
             gpui::div()
                 .absolute()
                 .inset_0()
-                .when(revealed, |this| this.pr_6())
+                .when(revealed, |this| this.pl(text_offset.get()).pr_6())
                 .child(
                     gpui::div()
                         .w_full()
                         .min_w_0()
-                        .text_center()
+                        .when(!revealed, |this| this.text_center())
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .debug_selector(move || format!("{group}-visible-label").into())
@@ -23180,6 +23342,19 @@ impl Render for DocumentWorkspace {
             self.session_tab_last_active = self.active_document_id;
             self.session_tab_reveal = self.active_document_id;
         }
+        // An existing Text Box editor follows its page's latest painted
+        // geometry, recorded before this frame repaints the pages.
+        let inline_editor_interaction = self
+            .pending_text_box_editor
+            .as_ref()
+            .filter(|editor| {
+                matches!(&editor.target, PendingTextEditorTarget::ExistingTextBox { .. })
+            })
+            .and_then(|editor| {
+                self.page_interactions
+                    .get(&(editor.document_id, editor.page_index))
+                    .cloned()
+            });
         self.page_interactions.clear();
         let page_scale_control = self.ensure_page_scale_control(window, cx);
         let signature_name_input = self.ensure_signature_name_input(window, cx);
@@ -23570,6 +23745,10 @@ impl Render for DocumentWorkspace {
                             },
                             tab_selector,
                             reveal_close,
+                            self.session_tab_label_offsets
+                                .entry(document_id)
+                                .or_default()
+                                .clone(),
                         ))
                         .aria_label(accessibility_label)
                         .aria_description(DOCUMENT_TAB_REORDER_DESCRIPTION)
@@ -23840,6 +24019,7 @@ impl Render for DocumentWorkspace {
             thumbnails,
             viewer_plan,
             viewer_scroll,
+            viewer_pan_margin,
             viewer_pages,
         ) = {
             let document_id = session.id;
@@ -24154,6 +24334,7 @@ impl Render for DocumentWorkspace {
                 .collect::<Vec<_>>();
             let viewer_plan = session.viewer.plan_snapshot().cloned();
             let viewer_scroll = session.viewer.scroll_handle();
+            let viewer_pan_margin = session.viewer.pan_margin();
             let viewer_pages = viewer_plan
                 .as_ref()
                 .map(|plan| {
@@ -24268,6 +24449,7 @@ impl Render for DocumentWorkspace {
                 thumbnails,
                 viewer_plan,
                 viewer_scroll,
+                viewer_pan_margin,
                 viewer_pages,
             )
         };
@@ -24296,7 +24478,26 @@ impl Render for DocumentWorkspace {
                     return None;
                 }
                 annotation_resize_cursor_style(&annotation_scene, id, *index)
+            })
+            .or_else(|| {
+                // A selected item moves from its interior and outline band.
+                let (hover_document, hover_page, id) = self.hovered_annotation.as_ref()?;
+                (*hover_document == document_id
+                    && *hover_page == current_page
+                    && self
+                        .session(document_id, cx)?
+                        .read(cx)
+                        .annotations
+                        .selected_ids(document_id.value())
+                        .contains(id))
+                .then_some(CursorStyle::OpenHand)
             });
+        // While dragging an item, keep the cursor the press began with.
+        let select_hover_cursor = self
+            .active_annotation_pointer
+            .filter(|active| active.document_id == document_id)
+            .and(self.gesture_cursor)
+            .or(select_hover_cursor);
         let viewport_cursor_style = document_viewport_cursor_style(
             annotation_tool,
             self.pan_tool_active,
@@ -24305,6 +24506,7 @@ impl Render for DocumentWorkspace {
             active_selection_marquee.is_some(),
             select_hover_cursor,
         );
+        self.viewport_cursor = viewport_cursor_style;
         if let Some((id, offset, show_offset, appearance, locked)) = selected_dimension.as_ref() {
             let snapshot = DimensionPropertySnapshot {
                 document_id,
@@ -24582,10 +24784,23 @@ impl Render for DocumentWorkspace {
                 };
                 let _ = viewport_control.update(cx, |workspace, cx| {
                     workspace.viewport_bounds.insert(document_id, visible);
-                    workspace.viewport_painted_scroll.insert(
-                        document_id,
-                        ((-f32::from(offset.x)).max(0.), (-f32::from(offset.y)).max(0.)),
-                    );
+                    let painted_scroll = workspace
+                        .session(document_id, cx)
+                        .cloned()
+                        .map(|session| {
+                            session.update(cx, |session, _| {
+                                session.viewer.observe_viewport_size(
+                                    f32::from(bounds.size.width),
+                                    f32::from(bounds.size.height),
+                                );
+                                session.viewer.reconcile_scroll();
+                                session.viewer.logical_scroll()
+                            })
+                        })
+                        .unwrap_or_default();
+                    workspace
+                        .viewport_painted_scroll
+                        .insert(document_id, painted_scroll);
                     workspace.observe_viewport(
                         document_id,
                         f32::from(bounds.size.width),
@@ -24609,14 +24824,24 @@ impl Render for DocumentWorkspace {
             .as_ref()
             .filter(|editor| editor.document_id == document_id)
             .and_then(|editor| {
-                let PendingTextEditorTarget::NewTextBox {
-                    rect,
-                    style,
-                    interaction,
-                    ..
-                } = &editor.target
-                else {
-                    return None;
+                let (id, rect, style, interaction) = match &editor.target {
+                    PendingTextEditorTarget::ExistingTextBox { id } => {
+                        let text_box =
+                            self.inline_existing_text_box(editor.document_id, id, cx)?;
+                        (
+                            Some(id.clone()),
+                            &text_box.layout_rect,
+                            text_box.style(),
+                            inline_editor_interaction.as_ref()?,
+                        )
+                    }
+                    PendingTextEditorTarget::NewTextBox {
+                        rect,
+                        style,
+                        interaction,
+                        ..
+                    } => (None, rect, style, interaction),
+                    _ => return None,
                 };
                 let local = interaction.transform.rect_to_local_pixels(*rect);
                 let editor_bounds = Some(Bounds::new(
@@ -24636,18 +24861,21 @@ impl Render for DocumentWorkspace {
                     input: editor.input.clone(),
                     editor_bounds,
                     display_scale: interaction.transform.pixels_per_point() as f32,
+                    existing_id: id,
                 })
             });
+        let pending_editor_inline = pending_text_box_presentation.is_some();
         let pending_non_creation_editor =
             self.pending_text_box_editor.as_ref().is_some_and(|editor| {
                 !matches!(&editor.target, PendingTextEditorTarget::NewTextBox { .. })
-            });
+            }) && !pending_editor_inline;
         let pending_text_box_input = self
             .pending_text_box_editor
             .as_ref()
             .filter(|editor| {
                 editor.document_id == document_id
                     && !matches!(&editor.target, PendingTextEditorTarget::NewTextBox { .. })
+                    && !pending_editor_inline
             })
             .map(|editor| editor.input.clone());
         let highlight_open_control = cx.entity().downgrade();
@@ -25444,7 +25672,10 @@ impl Render for DocumentWorkspace {
                             format!("* {}", format_document_tab_label(&tab_title))
                         } else {
                             format_document_tab_label(&tab_title).to_owned()
-                        }, tab_id.clone(), reveal_close))
+                        }, tab_id.clone(), reveal_close, self.session_tab_label_offsets
+                            .entry(tab_document_id)
+                            .or_default()
+                            .clone()))
                         .aria_label(accessibility_label)
                         .aria_description(DOCUMENT_TAB_REORDER_DESCRIPTION)
                         .aria_keyshortcuts(DOCUMENT_TAB_REORDER_KEYSHORTCUTS)
@@ -26295,12 +26526,22 @@ impl Render for DocumentWorkspace {
                     }
                     let finished = up_control
                         .update(cx, |workspace, cx| {
-                            workspace.finish_annotation_pointer(
+                            let finished = workspace.finish_annotation_pointer(
                                 event.position,
                                 event.modifiers,
                                 window,
                                 cx,
-                            )
+                            );
+                            // The cursor reflects what is under the pointer
+                            // now, without waiting for the next move.
+                            if finished {
+                                workspace.update_annotation_hover(
+                                    event.position,
+                                    event.modifiers,
+                                    cx,
+                                );
+                            }
+                            finished
                         })
                         .unwrap_or(false);
                     if finished {
@@ -27511,7 +27752,16 @@ impl Render for DocumentWorkspace {
                                                 + 24.
                                         })
                                         .fold(1., f32::max);
+                                    // Blank space around the pages lets them be
+                                    // panned past their edges (see `pan_margin`).
                                     viewport.child(
+                                        gpui::div()
+                                            .flex_none()
+                                            .w(px(content_width + viewer_pan_margin.0 * 2.))
+                                            .h(px(plan.total_height.max(1.) + viewer_pan_margin.1 * 2.))
+                                            .px(px(viewer_pan_margin.0))
+                                            .py(px(viewer_pan_margin.1))
+                                            .child(
                                         gpui::div()
                                             .relative()
                                             .w(px(content_width))
@@ -27723,6 +27973,7 @@ impl Render for DocumentWorkspace {
                                                         .children(render_error_surface)
                                                 },
                                             )),
+                                            ),
                                     )
                                 })
                                 .when(!has_viewer_pages, |viewport| {

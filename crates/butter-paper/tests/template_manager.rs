@@ -11,7 +11,7 @@ use butter_paper::template_manager::{
     TEMPLATE_MANAGER_COLOR_IDS, TEMPLATE_MANAGER_COLOR_INPUT_ID,
     TEMPLATE_MANAGER_CREATE_DOCUMENT_ID, TEMPLATE_MANAGER_CREATE_ID, TEMPLATE_MANAGER_DONE_ID,
     TEMPLATE_MANAGER_HEIGHT_INPUT_ID, TEMPLATE_MANAGER_ID, TEMPLATE_MANAGER_IMPORT_ID,
-    TEMPLATE_MANAGER_IMPORTED_PREVIEW_ID, TEMPLATE_MANAGER_LIST_ID, TEMPLATE_MANAGER_NAME_FIELD_ID,
+    TEMPLATE_MANAGER_CLOSE_ID, TEMPLATE_MANAGER_IMPORTED_PREVIEW_ID, TEMPLATE_MANAGER_LIST_ID, TEMPLATE_MANAGER_NAME_FIELD_ID,
     TEMPLATE_MANAGER_NAME_INPUT_ID, TEMPLATE_MANAGER_ORIENTATION_IDS, TEMPLATE_MANAGER_PAPER_IDS,
     TEMPLATE_MANAGER_PATTERN_IDS, TEMPLATE_MANAGER_PREVIEW_ID, TEMPLATE_MANAGER_PREVIEW_PAGE_ID,
     TEMPLATE_MANAGER_SAVE_ID, TEMPLATE_MANAGER_SCROLL_ID, TEMPLATE_MANAGER_SPACING_IDS,
@@ -218,6 +218,19 @@ fn rendered_browse_and_create_layouts_stay_horizontally_bounded_and_scrollable(
         list.bottom() <= preview.top(),
         "stacked browse regions overlap"
     );
+
+    cx.simulate_resize(size(px(1200.), px(800.)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let list = cx.debug_bounds(TEMPLATE_MANAGER_LIST_ID).unwrap();
+    let preview = cx.debug_bounds(TEMPLATE_MANAGER_PREVIEW_ID).unwrap();
+    assert_eq!(list.size.width, preview.size.width, "side-by-side list and preview split 50/50");
+    // The stock dialog body clips its content; an outset close button lost
+    // hover over its clipped half.
+    let content = cx.debug_bounds(TEMPLATE_MANAGER_ID).unwrap();
+    let close = cx.debug_bounds(TEMPLATE_MANAGER_CLOSE_ID).unwrap();
+    assert!(close.top() >= content.top() && close.right() <= content.right(), "close must sit wholly inside the dialog content: {close:?} in {content:?}");
+    cx.simulate_resize(size(px(320.), px(480.)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
 
     let scroll_into_view = |cx: &mut gpui::VisualTestContext, target_id: &'static str| {
         for _ in 0..12 {

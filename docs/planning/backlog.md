@@ -97,3 +97,6 @@ All 15 formerly open issues were moved to local planning at the user's request. 
 
 - **Camera signature capture — open:** on native macOS, exercise permission handling, an actual capture, cancellation and device release after closing. Helper compilation and deterministic pipe/lifecycle checks passed; these do not prove physical-camera behaviour. Carried forward when the user requested Phase 3 closure.
 - **Physical-phone signing — waived for Phase 3 by the user:** retain same-Mac transfer evidence; do not describe physical QR scanning/touch as tested.
+- **Live resize (user report 2026-10-02):** "everything disappears" while resizing a rectangle. Native harness shows the preview rectangle repainting live mid-drag (scene preview plus painted outline growing); the failure was not reproduced because background input cannot drive the canvas. Needs a live repro (which shape, snapping on/off, zoom) before changing code.
+- Remove the now-unused local phone helper (`local_phone_signature`, `xtask/src/phone.rs`, `phone-helper/`, its packaging and notices) once relay phone signing is accepted.
+- Text box appearance export places the first baseline one font size below the inset, about 1.8 pt lower than the canvas at 12 pt; align the export with the canvas line box.

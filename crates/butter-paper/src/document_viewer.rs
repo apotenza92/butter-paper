@@ -14,6 +14,8 @@ use gpui::{RenderImage, ScrollHandle, point, px};
 use crate::adaptive_performance::{AdaptiveViewerPerformance, ViewerRenderDiagnostics};
 use crate::page_view_control::PageViewMode;
 
+/// While panned into blank space, at least this much of the pages stays in view.
+pub const PAN_KEEP_VISIBLE_PX: f32 = 48.;
 const PAGE_GAP: f32 = 24.;
 const MAX_ACTIVE_TILE_JOBS: usize = 2;
 const FIT_ZOOM_STEP: f32 = 0.02;
@@ -187,6 +189,12 @@ pub(crate) struct DocumentViewerState {
     thumbnail_navigation_target: Option<usize>,
     viewport_key: Option<ViewportKey>,
     cad_layout: Option<(CadOrganisation, usize)>,
+    /// The painted viewport, which sizes the pan margin.
+    viewport_size: (f32, f32),
+    /// An offset placed before the scrolled content could hold it (GPUI clamps
+    /// the handle to the content laid out so far). It is re-applied until it
+    /// sticks, and is the intended scroll meanwhile.
+    pending_offset: std::cell::Cell<Option<gpui::Point<gpui::Pixels>>>,
 }
 
 impl Default for DocumentViewerState {
@@ -205,6 +213,8 @@ impl Default for DocumentViewerState {
             cache: TileCache::new(cache_policy(FULL_CACHE_BYTES)),
             detail_cache: TileCache::new(cache_policy(DETAIL_CACHE_BYTES)),
             scroll_handle: ScrollHandle::new(),
+            viewport_size: (0., 0.),
+            pending_offset: std::cell::Cell::new(None),
             rejected_stale_tiles: 0,
             error: None,
             page_errors: HashMap::new(),
@@ -370,8 +380,8 @@ impl DocumentViewerState {
             viewport: ViewportGeometry {
                 width: viewport_width,
                 height: viewport_height,
-                scroll_x: scroll_x.max(0.),
-                scroll_y: scroll_y.max(0.),
+                scroll_x,
+                scroll_y,
                 visible_rect: Rect::new(0., 0., viewport_width, viewport_height),
             },
         };
@@ -571,12 +581,12 @@ impl DocumentViewerState {
         device_scale: f32,
         current_page: usize,
     ) -> bool {
-        let offset = self.scroll_handle.offset();
+        let (scroll_x, scroll_y) = self.logical_scroll();
         let key = ViewportKey {
             width: viewport_width.ceil() as i32,
             height: viewport_height.ceil() as i32,
-            scroll_x: (-f32::from(offset.x)).max(0.).round() as i32,
-            scroll_y: (-f32::from(offset.y)).max(0.).round() as i32,
+            scroll_x: scroll_x.round() as i32,
+            scroll_y: scroll_y.round() as i32,
             device_scale_millis: (device_scale * 1_000.).round() as i32,
             current_page,
         };
@@ -831,9 +841,88 @@ impl DocumentViewerState {
         self.scroll_handle.clone()
     }
 
+    /// Room on every side of the pages, so a page can be panned into blank
+    /// space until only [`PAN_KEEP_VISIBLE_PX`] of it stays in view, rather
+    /// than stopping at the page edge.
+    pub fn pan_margin(&self) -> (f32, f32) {
+        (
+            (self.viewport_size.0 - PAN_KEEP_VISIBLE_PX).max(0.),
+            (self.viewport_size.1 - PAN_KEEP_VISIBLE_PX).max(0.),
+        )
+    }
+
+    /// Records the painted viewport size. The pan margin follows it, so the
+    /// same page point stays at the viewport origin when it changes.
+    pub fn observe_viewport_size(&mut self, width: f32, height: f32) {
+        if !(width.is_finite() && height.is_finite()) || self.viewport_size == (width, height) {
+            return;
+        }
+        let (scroll_x, scroll_y) = self.logical_scroll();
+        self.viewport_size = (width, height);
+        self.place_scroll(scroll_x, scroll_y);
+    }
+
+    /// The page-space position at the viewport's top-left corner. It is
+    /// negative, or beyond the far edge, while panned into the margin.
+    pub fn logical_scroll(&self) -> (f32, f32) {
+        let offset = self
+            .pending_offset
+            .get()
+            .unwrap_or_else(|| self.scroll_handle.offset());
+        let (margin_x, margin_y) = self.pan_margin();
+        (-f32::from(offset.x) - margin_x, -f32::from(offset.y) - margin_y)
+    }
+
     pub fn set_scroll(&self, scroll_x: f32, scroll_y: f32) {
-        self.scroll_handle
-            .set_offset(point(px(-scroll_x.max(0.)), px(-scroll_y.max(0.))));
+        self.place_scroll(scroll_x, scroll_y);
+    }
+
+    fn place_scroll(&self, scroll_x: f32, scroll_y: f32) {
+        let (margin_x, margin_y) = self.pan_margin();
+        let finite = |value: f32| if value.is_finite() { value } else { 0. };
+        let (mut scroll_x, mut scroll_y) = (finite(scroll_x), finite(scroll_y));
+        if let Some(plan) = self.plan.as_ref().filter(|plan| !plan.page_layouts.is_empty()) {
+            // Stop while PAN_KEEP_VISIBLE_PX of the pages is still in view.
+            let pages = plan.page_layouts.iter().map(|layout| layout.logical_rect);
+            let left = pages.clone().map(|rect| rect.x).fold(f32::INFINITY, f32::min);
+            let top = pages.clone().map(|rect| rect.y).fold(f32::INFINITY, f32::min);
+            let right = pages.clone().map(|rect| rect.x + rect.width).fold(0., f32::max);
+            let bottom = pages.map(|rect| rect.y + rect.height).fold(0., f32::max);
+            let range = |value: f32, start: f32, end: f32, viewport: f32| {
+                let low = start - (viewport - PAN_KEEP_VISIBLE_PX).max(0.);
+                let high = (end - PAN_KEEP_VISIBLE_PX.min(viewport)).max(low);
+                value.clamp(low, high)
+            };
+            scroll_x = range(scroll_x, left, right, self.viewport_size.0);
+            scroll_y = range(scroll_y, top, bottom, self.viewport_size.1);
+        }
+        let offset = point(px(-(scroll_x + margin_x)), px(-(scroll_y + margin_y)));
+        self.scroll_handle.set_offset(offset);
+        self.pending_offset.set(Some(offset));
+    }
+
+    /// Called once the viewport has painted: re-applies a placed offset that
+    /// the scroll container clamped before its content was laid out, and
+    /// otherwise lets the handle's own (native wheel) scrolling stand.
+    pub fn reconcile_scroll(&self) {
+        let Some(pending) = self.pending_offset.get() else {
+            // Native wheel scrolling may reach the whole margin; keep the same
+            // sliver of the pages in view as a pan does.
+            let (scroll_x, scroll_y) = self.logical_scroll();
+            let before = self.scroll_handle.offset();
+            self.place_scroll(scroll_x, scroll_y);
+            if self.scroll_handle.offset() == before {
+                self.pending_offset.set(None);
+            }
+            return;
+        };
+        if self.scroll_handle.offset() == pending {
+            if self.plan.is_some() {
+                self.pending_offset.set(None);
+            }
+        } else {
+            self.scroll_handle.set_offset(pending);
+        }
     }
 
     pub fn snapshot(&self) -> DocumentViewerSnapshot {

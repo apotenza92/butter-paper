@@ -814,6 +814,7 @@ fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestA
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(RecordingBackend::default()), cx));
     let first = workspace.update(cx, |workspace, cx| workspace.open_path(PathBuf::from("/tmp/first-document.pdf"), cx));
     let second = workspace.update(cx, |workspace, cx| workspace.open_path(PathBuf::from("/tmp/second-document.pdf"), cx));
+    let short = workspace.update(cx, |workspace, cx| workspace.open_path(PathBuf::from("/tmp/a.pdf"), cx));
     cx.run_until_parked();
     let (_, cx) = cx.add_window_view(move |window, cx| Root::new(workspace, window, cx));
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -855,6 +856,19 @@ fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestA
             cx.update(|window, cx| window.draw(cx).clear(cx));
             assert_eq!(cx.debug_bounds(label_id).unwrap(), label, "exit must restore full label");
         }
+        // A short centred title must keep its start when the close button
+        // appears: the label truncates in place rather than re-centring.
+        let tab_id: &'static str = Box::leak(document_session_tab_id(short).into_boxed_str());
+        let label_id: &'static str = Box::leak(format!("{tab_id}-visible-label").into_boxed_str());
+        let rest = cx.debug_bounds(label_id).unwrap();
+        let short_centre = cx.debug_bounds(tab_id).unwrap().center();
+        cx.simulate_mouse_move(short_centre, None, gpui::Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let revealed = cx.debug_bounds(label_id).unwrap();
+        assert!(revealed.left() > rest.left(), "short label must keep its centred start on reveal: rest={rest:?}, revealed={revealed:?}");
+        assert!(revealed.right() < rest.right(), "revealed label must stop before the close lane");
+        cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
     }
 }
 

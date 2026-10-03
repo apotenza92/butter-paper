@@ -75,10 +75,10 @@ fn inspectors_panels_viewer_toolbar_and_system_theme_use_tokens_or_domain_colour
 
 #[test]
 fn shared_interaction_chrome_is_the_single_authored_canvas_colour_source() {
-    // Pale yellow is the hover-handle fill; keep it owned by the shared painter.
+    // Item controls are unpainted, so the shared painter has no handle colours.
     let allowed = [
-        "rgb(0x2563eb", "rgb(0xfacc15", "rgb(0x111827", "rgb(0xffffff", "rgb(0x94a3b8",
-        "rgb(0x93c5fd", "rgb(0x1d4ed8", "rgb(0x0f766e", "rgb(0xfef08a", "rgb(0x22c55e",
+        "rgb(0x2563eb", "rgb(0xffffff", "rgb(0x94a3b8", "rgb(0x93c5fd", "rgb(0x1d4ed8",
+        "rgb(0x0f766e", "rgb(0x22c55e",
     ];
     // Each interaction colour owns one semantic role, so each appears once.
     assert_eq!(literal_colour_calls(&source("interaction_chrome.rs")), allowed);
@@ -159,7 +159,10 @@ fn close_controls_overlay_naturally_sized_labels_without_a_reserved_suffix() {
     assert_eq!(count(r"\.child\(session_tab_overlay_label\(", &source), 2);
     let label = between(&source, "fn session_tab_overlay_label", "impl Render for DocumentWorkspace");
     assert!(matches(r"\.opacity\(0\.\)\s*\.child\(label\.clone\(\)\)", label));
-    assert!(label.contains(".when(revealed, |this| this.pr_6())"));
+    // Revealing the close button keeps the label's measured start and
+    // truncates against the close lane instead of re-centring.
+    assert!(label.contains(".when(revealed, |this| this.pl(text_offset.get()).pr_6())"));
+    assert!(label.contains(".when(!revealed, |this| this.text_center())"));
     assert!(!label.contains(".group_hover("));
 }
 

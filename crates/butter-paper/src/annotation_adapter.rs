@@ -5315,6 +5315,7 @@ impl AnnotationAdapter {
                 point,
                 tolerance_pt,
                 supplement,
+                self.observed_pixels_per_point.0,
             )
         }))
     }
@@ -5398,15 +5399,26 @@ impl AnnotationAdapter {
                 .map(|(index, _)| (annotation.id.clone(), index))
         };
         let selected = document.selected_id();
-        let hit = selected
-            .and_then(|selected| {
-                document.rectangles().iter().find(|annotation| {
-                    annotation.page_index == page_index
-                        && &annotation.id == selected
-                        && !annotation.locked
-                })
+        let selected_rectangle = selected.and_then(|selected| {
+            document.rectangles().iter().find(|annotation| {
+                annotation.page_index == page_index
+                    && &annotation.id == selected
+                    && !annotation.locked
             })
+        });
+        let hit = selected_rectangle
             .and_then(to_hit)
+            .or_else(|| {
+                // The selected Rectangle also resizes from anywhere along an
+                // edge, within the press tolerance so the band along its
+                // outset outline still moves it.
+                let annotation = selected_rectangle?;
+                let handle = annotation.edge_resize_handle(point, tolerance_pt)?;
+                let index = RectangleResizeHandle::ALL
+                    .iter()
+                    .position(|candidate| *candidate == handle)?;
+                Some((annotation.id.clone(), index))
+            })
             .or_else(|| {
                 document
                     .rectangles()
@@ -6946,6 +6958,7 @@ impl AnnotationAdapter {
                             point,
                             tolerance_pt,
                             supplement,
+                            self.observed_pixels_per_point.0,
                         )
                     });
                 if let Some((id, control)) = hit_selected_arc_control_point(
@@ -7509,6 +7522,7 @@ impl AnnotationAdapter {
                     point,
                     tolerance_pt,
                     supplement,
+                    self.observed_pixels_per_point.0,
                 ) {
                     if let Some(annotation) = document
                         .rectangles()
@@ -13454,7 +13468,9 @@ fn pen_tool_appearance(properties: &ToolProperties) -> Result<PenAppearance, Ann
 /// Text in boxes, callouts and Cloud+ uses Revu's 3 pt margin.
 const REVU_TEXT_MARGIN_PT: f64 = 3.;
 
-fn text_box_tool_style(properties: &ToolProperties) -> Result<TextBoxStyle, AnnotationError> {
+pub(crate) fn text_box_tool_style(
+    properties: &ToolProperties,
+) -> Result<TextBoxStyle, AnnotationError> {
     let style = TextBoxStyle::new(
         properties.font_family.clone(),
         properties.font_size_pt,
@@ -13982,6 +13998,7 @@ fn hit_annotation_body_in_document_order(
     point: PdfPoint,
     tolerance: f64,
     supplement: &AnnotationSelectionSupplement,
+    observed_pixels_per_point: f64,
 ) -> Option<MarkupId> {
     document
         .annotation_order()
@@ -13992,6 +14009,13 @@ fn hit_annotation_body_in_document_order(
                 || annotation_caption_contains(document, id, page_index, point, supplement)
         })
         .cloned()
+        .or_else(|| {
+            // Inside an unfilled selected item, or on the band around its
+            // outset selection outline, the press still belongs to it.
+            let outset_pt = crate::annotation_model::SELECTION_OUTSET_CSS_PX
+                / observed_pixels_per_point.max(f64::EPSILON);
+            document.selected_outline_zone_hit(page_index, point, tolerance + outset_pt)
+        })
 }
 
 fn annotation_caption_contains(

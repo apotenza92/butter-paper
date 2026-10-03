@@ -297,8 +297,10 @@ impl NativeDocumentViewState {
             resolve_fit_zoom_percent(preset, width, height, page_size.0, page_size.1);
     }
 
+    /// Scroll is negative while the viewport is panned past the first page.
     pub fn set_scroll(&mut self, x: f32, y: f32) {
-        self.scroll = (x.max(0.), y.max(0.));
+        let finite = |value: f32| if value.is_finite() { value } else { 0. };
+        self.scroll = (finite(x), finite(y));
     }
 
     pub fn wheel(

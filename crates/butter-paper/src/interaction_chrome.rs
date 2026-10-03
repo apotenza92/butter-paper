@@ -5,12 +5,6 @@ use gpui::{Bounds, Hsla, Path, PathBuilder, Pixels, Point, Window, fill, px, rgb
 pub(super) fn selection_colour() -> Hsla {
     rgb(0x2563eb).into()
 }
-fn handle_colour() -> Hsla {
-    rgb(0xfacc15).into()
-}
-fn handle_outline() -> Hsla {
-    rgb(0x111827).into()
-}
 fn halo_colour() -> Hsla {
     rgb(0xffffff).into()
 }
@@ -113,16 +107,79 @@ pub(super) fn chrome_style(state: ChromeState) -> ChromeStyle {
     }
 }
 
+/// Closed selection bounds sit this far outside the item, so the dashes and
+/// halo never cover the item's own outline.
+pub(super) const SELECTION_OUTSET_PX: f32 =
+    crate::annotation_model::SELECTION_OUTSET_CSS_PX as f32;
+
 /// Paint a screen-space control polygon or rectangle with the reference halo and dash roles.
+/// Closed bounds are drawn [`SELECTION_OUTSET_PX`] outside the given outline.
 pub(super) fn paint_feedback_path(
     points: &[Point<Pixels>],
     closed: bool,
     state: ChromeState,
     window: &mut Window,
 ) {
+    let outset;
+    let points = if closed && points.len() >= 3 {
+        outset = outset_polygon(points, SELECTION_OUTSET_PX);
+        &outset[..]
+    } else {
+        points
+    };
     for (path, colour) in feedback_paths(points, closed, state) {
         window.paint_path(path, colour);
     }
+}
+
+/// Moves each edge of a simple polygon outward by `distance`, joining the
+/// moved edges with mitres. Exact for rectangles at any rotation.
+fn outset_polygon(points: &[Point<Pixels>], distance: f32) -> Vec<Point<Pixels>> {
+    let count = points.len();
+    let xy = |point: Point<Pixels>| (f32::from(point.x), f32::from(point.y));
+    let signed_area: f32 = (0..count)
+        .map(|index| {
+            let (x0, y0) = xy(points[index]);
+            let (x1, y1) = xy(points[(index + 1) % count]);
+            x0 * y1 - x1 * y0
+        })
+        .sum();
+    if !signed_area.is_finite() || signed_area == 0. {
+        return points.to_vec();
+    }
+    // Outward normal of the edge leaving `index`, for either winding.
+    let normal = |index: usize| {
+        let (x0, y0) = xy(points[index]);
+        let (x1, y1) = xy(points[(index + 1) % count]);
+        let (dx, dy) = (x1 - x0, y1 - y0);
+        let length = dx.hypot(dy);
+        if length <= f32::EPSILON {
+            return None;
+        }
+        let (nx, ny) = (dy / length, -dx / length);
+        Some(if signed_area > 0. { (nx, ny) } else { (-nx, -ny) })
+    };
+    (0..count)
+        .map(|index| {
+            let previous = normal((index + count - 1) % count);
+            let next = normal(index);
+            let (nx, ny) = match (previous, next) {
+                (Some((ax, ay)), Some((bx, by))) => {
+                    let (sx, sy) = (ax + bx, ay + by);
+                    let dot = sx * ax + sy * ay;
+                    if dot <= 0.25 {
+                        (bx, by)
+                    } else {
+                        (sx / dot, sy / dot)
+                    }
+                }
+                (Some(normal), None) | (None, Some(normal)) => normal,
+                (None, None) => (0., 0.),
+            };
+            let (x, y) = xy(points[index]);
+            gpui::point(px(x + nx * distance), px(y + ny * distance))
+        })
+        .collect()
 }
 
 fn feedback_paths(
@@ -185,52 +242,23 @@ pub(super) fn paint_line_feedback(
     state: ChromeState,
     window: &mut Window,
 ) {
+    // The envelope already clears the line, so it is not outset again.
     if let Some(points) = line_feedback_points(start, end) {
-        paint_feedback_path(&points, true, state, window);
+        for (path, colour) in feedback_paths(&points, true, state) {
+            window.paint_path(path, colour);
+        }
     }
 }
 
-fn feedback_handle_style(state: ChromeState, hot: bool) -> Option<(f32, f32, Hsla, Hsla)> {
-    let size = chrome_style(state).handle? + if hot { 1. } else { 0. };
-    let border = if hot { 2. } else { 1. };
-    let selected = matches!(state, ChromeState::Selected | ChromeState::Focused);
-    let (fill_colour, stroke) = if selected || hot {
-        (handle_colour(), handle_outline())
-    } else {
-        (rgb(0xfef08a).into(), handle_colour())
-    };
-    Some((size, border, fill_colour, stroke))
-}
-
-fn feedback_handle_quad(
-    center: Point<Pixels>,
-    state: ChromeState,
-    hot: bool,
-) -> Option<gpui::PaintQuad> {
-    let (size, border, fill_colour, stroke) = feedback_handle_style(state, hot)?;
-    // SVG strokes straddle the nominal square; GPUI borders lie inside their bounds.
-    let outer_size = size + border;
-    let bounds = Bounds::new(
-        center - gpui::point(px(outer_size / 2.), px(outer_size / 2.)),
-        gpui::size(px(outer_size), px(outer_size)),
-    );
-    Some(
-        fill(bounds, fill_colour)
-            .border_widths(px(border))
-            .border_color(stroke),
-    )
-}
-
-/// Caller owns locked/active-handle visibility; ordinary handles are square, without a dot halo.
+/// Resize and point handles are not painted: the item's own corners, edges
+/// and vertices are the grab targets, announced by the pointer cursor, and
+/// the outset selection outline leaves them visible. Hit-testing is unchanged.
 pub(super) fn paint_feedback_handle(
-    center: Point<Pixels>,
-    state: ChromeState,
-    hot: bool,
-    window: &mut Window,
+    _center: Point<Pixels>,
+    _state: ChromeState,
+    _hot: bool,
+    _window: &mut Window,
 ) {
-    if let Some(quad) = feedback_handle_quad(center, state, hot) {
-        window.paint_quad(quad);
-    }
 }
 
 pub(super) fn rotate_feedback_point(
@@ -247,56 +275,14 @@ pub(super) fn rotate_feedback_point(
     )
 }
 
-fn rotated_handle_paths(
-    center: Point<Pixels>,
-    degrees: f64,
-    state: ChromeState,
-    hot: bool,
-) -> Vec<(Path<Pixels>, Hsla)> {
-    let Some((size, border, fill_colour, stroke)) = feedback_handle_style(state, hot) else {
-        return Vec::new();
-    };
-    let half = px(size / 2.);
-    let corners = [
-        gpui::point(center.x - half, center.y - half),
-        gpui::point(center.x + half, center.y - half),
-        gpui::point(center.x + half, center.y + half),
-        gpui::point(center.x - half, center.y + half),
-    ]
-    .map(|point| rotate_feedback_point(point, center, degrees));
-    let mut paths = Vec::with_capacity(2);
-    for filled in [true, false] {
-        let mut builder = if filled {
-            PathBuilder::fill()
-        } else {
-            PathBuilder::stroke(px(border))
-        };
-        builder.move_to(corners[0]);
-        for corner in &corners[1..] {
-            builder.line_to(*corner);
-        }
-        builder.close();
-        if let Ok(path) = builder.build() {
-            paths.push((path, if filled { fill_colour } else { stroke }));
-        }
-    }
-    paths
-}
-
+/// See [`paint_feedback_handle`]: rotated resize handles are not painted either.
 pub(super) fn paint_rotated_feedback_handle(
-    center: Point<Pixels>,
-    degrees: f64,
-    state: ChromeState,
-    hot: bool,
-    window: &mut Window,
+    _center: Point<Pixels>,
+    _degrees: f64,
+    _state: ChromeState,
+    _hot: bool,
+    _window: &mut Window,
 ) {
-    if degrees == 0. {
-        paint_feedback_handle(center, state, hot, window);
-    } else {
-        for (path, colour) in rotated_handle_paths(center, degrees, state, hot) {
-            window.paint_path(path, colour);
-        }
-    }
 }
 
 pub(super) fn rotation_feedback_radius(state: ChromeState, hot: bool) -> f32 {
@@ -308,7 +294,13 @@ fn rotation_feedback_quad(
     state: ChromeState,
     hot: bool,
 ) -> Option<gpui::PaintQuad> {
-    let (_, border, fill_colour, stroke) = feedback_handle_style(state, hot)?;
+    // The rotation knob belongs to the blue selection outline: outlined in
+    // the state colour over the halo, and filled with it while hot.
+    let style = chrome_style(state);
+    style.handle?;
+    let border = if hot { 2. } else { style.width };
+    let stroke = style.colour;
+    let fill_colour = if hot { style.colour } else { halo_colour() };
     let radius = rotation_feedback_radius(state, hot) + border / 2.;
     Some(
         fill(
@@ -335,14 +327,18 @@ pub(super) fn paint_rotation_feedback(
     window: &mut Window,
 ) {
     let style = chrome_style(state);
-    let mut builder = PathBuilder::stroke(px(style.width));
-    if let Some((dash, gap)) = style.dash {
-        builder = builder.dash_array(&[px(dash), px(gap)]);
-    }
-    builder.move_to(start);
-    builder.line_to(end);
-    if let Ok(path) = builder.build() {
-        window.paint_path(path, style.colour);
+    // The stem leaves from the outset selection outline, not the item itself.
+    let (dx, dy) = (f32::from(end.x - start.x), f32::from(end.y - start.y));
+    let length = dx.hypot(dy);
+    if length > SELECTION_OUTSET_PX {
+        let scale = SELECTION_OUTSET_PX / length;
+        let start = gpui::point(start.x + px(dx * scale), start.y + px(dy * scale));
+        let mut builder = PathBuilder::stroke(px(style.width));
+        builder.move_to(start);
+        builder.line_to(end);
+        if let Ok(path) = builder.build() {
+            window.paint_path(path, style.colour);
+        }
     }
     if let Some(quad) = rotation_feedback_quad(center, state, hot) {
         window.paint_quad(quad);
@@ -469,25 +465,47 @@ mod tests {
     use crate::selection_geometry::SelectionOperation;
 
     #[test]
-    fn shape_feedback_rotation_circle_and_rotated_square_emit_reference_geometry() {
+    fn rotation_knob_is_part_of_the_blue_selection_outline() {
         let center = gpui::point(px(20.), px(30.));
         let circle = rotation_feedback_quad(center, ChromeState::Selected, false).unwrap();
-        assert_eq!(circle.bounds.size, gpui::size(px(9.), px(9.)));
-        assert_eq!(circle.corner_radii.top_left, px(4.5));
-        assert_eq!(circle.border_widths.top, px(1.));
-        let square = rotated_handle_paths(center, 45., ChromeState::Selected, false);
-        assert_eq!(square.len(), 2);
-        assert_eq!(square[0].1, handle_colour());
-        assert_eq!(square[1].1, handle_outline());
-        let diagonal = 7. * 2_f32.sqrt();
-        assert!((f32::from(square[0].0.bounds.size.width) - diagonal).abs() < 0.001);
-        assert!((f32::from(square[0].0.bounds.size.height) - diagonal).abs() < 0.001);
-        assert!(
-            square[1].0.bounds.size.width > square[0].0.bounds.size.width,
-            "centred SVG stroke expands the rotated fill"
-        );
-        assert!(!square[0].0.vertices.is_empty());
-        assert!(!square[1].0.vertices.is_empty());
+        assert_eq!(circle.border_color, selection_colour());
+        assert_eq!(circle.corner_radii.top_left, circle.bounds.size.width / 2.);
+        let hot = rotation_feedback_quad(center, ChromeState::Selected, true).unwrap();
+        assert_eq!(hot.border_color, selection_colour());
+        assert_eq!(hot.border_widths.top, px(2.));
+        assert!(rotation_feedback_quad(center, ChromeState::Draft, false).is_none());
+    }
+
+    #[test]
+    fn closed_selection_bounds_sit_outside_the_item_at_any_rotation() {
+        let square = [
+            gpui::point(px(10.), px(10.)),
+            gpui::point(px(30.), px(10.)),
+            gpui::point(px(30.), px(30.)),
+            gpui::point(px(10.), px(30.)),
+        ];
+        let expected = [
+            gpui::point(px(4.), px(4.)),
+            gpui::point(px(36.), px(4.)),
+            gpui::point(px(36.), px(36.)),
+            gpui::point(px(4.), px(36.)),
+        ];
+        assert_eq!(outset_polygon(&square, 6.), expected);
+        let mut reversed = square;
+        reversed.reverse();
+        let mut reversed_expected = expected;
+        reversed_expected.reverse();
+        assert_eq!(outset_polygon(&reversed, 6.), reversed_expected, "either winding grows outward");
+        let diamond = [
+            gpui::point(px(20.), px(0.)),
+            gpui::point(px(40.), px(20.)),
+            gpui::point(px(20.), px(40.)),
+            gpui::point(px(0.), px(20.)),
+        ];
+        let grown = outset_polygon(&diamond, 6.);
+        let diagonal = 6. * 2_f32.sqrt();
+        assert!((f32::from(grown[0].y) - (0. - diagonal)).abs() < 0.001);
+        assert!((f32::from(grown[1].x) - (40. + diagonal)).abs() < 0.001);
     }
 
     #[test]
@@ -547,27 +565,6 @@ mod tests {
             paths[0].0.vertices.len() > open[0].0.vertices.len(),
             "closed envelope includes the return edge"
         );
-    }
-
-    #[test]
-    fn feedback_geometry_handles_are_square_with_centred_svg_border() {
-        let center = gpui::point(px(50.), px(60.));
-        let normal = feedback_handle_quad(center, ChromeState::Selected, false).unwrap();
-        assert_eq!(
-            normal.bounds,
-            Bounds::new(gpui::point(px(46.), px(56.)), gpui::size(px(8.), px(8.)))
-        );
-        assert_eq!(normal.corner_radii.top_left, px(0.));
-        assert_eq!(normal.border_widths.top, px(1.));
-        assert_eq!(normal.border_color, handle_outline());
-        let hot = feedback_handle_quad(center, ChromeState::Hover, true).unwrap();
-        assert_eq!(hot.bounds.size.width, px(9.));
-        assert_eq!(hot.border_widths.top, px(2.));
-        assert_eq!(hot.border_color, handle_outline());
-        let hover = feedback_handle_quad(center, ChromeState::Hover, false).unwrap();
-        assert_eq!(hover.bounds.size.width, px(7.));
-        assert_eq!(hover.border_color, handle_colour());
-        assert!(feedback_handle_quad(center, ChromeState::Draft, false).is_none());
     }
 
     #[test]
@@ -648,9 +645,7 @@ mod tests {
         assert_ne!(crossing, window);
         assert_eq!(alpha, 0.14);
         assert!(dashed);
-        assert_ne!(handle_colour(), selection_colour());
-        assert_ne!(handle_outline(), handle_colour());
-        assert_ne!(locked_handle_colour(), handle_colour());
+        assert_ne!(locked_handle_colour(), selection_colour());
     }
 
     #[test]

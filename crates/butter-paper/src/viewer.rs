@@ -420,8 +420,8 @@ impl RenderPlanner {
 
         let local_visible = input.viewport.visible_rect;
         let visible = Rect::new(
-            finite_nonnegative(input.viewport.scroll_x) + local_visible.x,
-            finite_nonnegative(input.viewport.scroll_y) + local_visible.y,
+            finite_or_zero(input.viewport.scroll_x) + local_visible.x,
+            finite_or_zero(input.viewport.scroll_y) + local_visible.y,
             local_visible.width.min(input.viewport.width).max(0.0),
             local_visible.height.min(input.viewport.height).max(0.0),
         );
@@ -675,6 +675,11 @@ fn finite_positive(value: f32, fallback: f32) -> f32 {
     } else {
         fallback
     }
+}
+
+/// Scroll may be negative while the viewport is panned past the first page.
+fn finite_or_zero(value: f32) -> f32 {
+    if value.is_finite() { value } else { 0.0 }
 }
 
 fn finite_nonnegative(value: f32) -> f32 {
