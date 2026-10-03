@@ -25,29 +25,30 @@
 ## Sources of truth
 
 - Keep durable repository conventions in this file.
-- Keep plans, region briefs, decisions and current work state in local Markdown under `docs/planning/`. Start at `docs/planning/README.md`; update existing files in place. Do not create duplicate GitHub plans, chronological worklogs or agent transcripts.
+- Keep open work, decisions and behaviour contracts in local Markdown under `docs/planning/`. Start at `docs/planning/README.md`; update existing files in place and remove finished items. Do not create duplicate GitHub plans, chronological worklogs, evidence trails or agent transcripts.
 - Keep disposable output under ignored `target/` directories (tests write scratch files to `crates/butter-paper/target/test-scratch`).
 - Do not add machine-specific absolute paths to tracked files.
 
 ## Agent skills
 
-### GPUI migration UX review
+### UX review
 
-For native UI changes and acceptance reviews, use the gpui-migration-ux-review skill alongside gpui-component. Always read docs/planning/ux-review.md and the relevant region brief, including if skill discovery is unavailable. Perform its contradiction-seeking review on the actual final screenshots before handoff. Maintain reusable lessons in that checklist and current defects in the region brief; do not duplicate plans or treat build success as visual acceptance.
+For native UI changes and acceptance reviews, use the gpui-migration-ux-review skill alongside gpui-component. Always read docs/planning/ux-review.md, and docs/planning/interactions.md when canvas behaviour is involved, including if skill discovery is unavailable. Perform its contradiction-seeking review on the actual final screenshots before handoff. Maintain reusable lessons in that checklist and open defects in docs/planning/backlog.md; do not treat build success as visual acceptance.
 
 GPUI properties use the application toolkit in `crates/butter-paper/src/property_controls.rs`, composed from stock GPUI Component controls. Reuse its panel, header, stepper-free numeric and slider/input layouts for new property families. Keep applicability/ranges in `tool_properties.rs`, defaults in the session adapter and selected-object mutations in identity-checked workspace/domain paths. New controls require a real rendering/persistence path and per-family tests; adding a field or hiding a missing capability does not complete a migration.
 
 ### Local planning
 
-Read `docs/planning/README.md` and update the relevant local plan. Skill requests
+Read `docs/planning/README.md` and update the relevant file. Skill requests
 to publish issues or tickets are adapted to local Markdown; see
-`docs/agents/issue-tracker.md`. Use the local states in
-`docs/agents/triage-labels.md`.
+`docs/agents/issue-tracker.md`.
 
 ### Domain docs
 
-This monorepo uses a multi-context domain-document layout. See
-`docs/agents/domain.md`.
+Domain decisions live in `docs/planning/decisions.md`, canvas behaviour in
+`docs/planning/interactions.md` and the markup storage format in
+`docs/planning/pdf-format.md`. Use their terms in code, tests and docs, and
+surface conflicts with them instead of silently overriding them.
 
 ## Required workflow
 

@@ -131,5 +131,3 @@ Page scale: page `/VP [<</Type /Viewport /BBox [...] /Measure <</Type /Measure /
   shows the total only.
 - Length `LL` is fixed at 10 pt; a Revu Length with another offset is redrawn
   at 10 pt when edited.
-- The TypeScript `packages/pdf` reader used by the CLI still understands the
-  Electron private keys; it does not write PDFs.

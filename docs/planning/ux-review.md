@@ -1,6 +1,6 @@
-# Migration UX review
+# UX review
 
-This is the maintained review procedure for all Electron-to-GPUI migration regions. The roadmap owns scope and acceptance rules; region briefs own current findings and evidence. Use with the GPUI Component design/coding guides. This checklist does not authorise redesigns or new custom components.
+The review procedure for native UI changes, used with the GPUI Component design and coding guides. It does not authorise redesigns or new custom components.
 
 ## Review to disprove, not confirm
 
@@ -28,7 +28,7 @@ For each compound control, specify which elements should respond together. Exerc
 
 ## Geometry and content
 
-- Inventory reference grouping and control type, not only field names: record paired columns, full-width spans and slider/input pairs. A plain numeric field replacing a working slider, or a stacked layout replacing paired columns, is a structural migration gap—not density polish waived by general visual approval.
+- Inventory reference grouping and control type, not only field names: record paired columns, full-width spans and slider/input pairs. A plain numeric field replacing a working slider, or a stacked layout replacing paired columns, is a structural gap, not density polish waived by general visual approval.
 - Inspect numeric text at the minimum paired-column width, including units. If display precision is reduced to fit, prove that unchanged focus/blur leaves the full stored value and undo history untouched; formatting is not a domain edit.
 - Inspect full hit targets and hover/focus backgrounds, not just glyphs. Check clearance from rounded corners, text/icon baselines and centring, internal leading/trailing padding, label-to-icon space, repeated button/group gaps and app/region-edge insets.
 - Test short, long and truncated labels plus relevant modified/loading/error states. A hidden action must follow the approved space policy: reserved space where intended, or a stable-width overlay with truncation where intended. Reveal must not unexpectedly move neighbouring tabs/actions.
@@ -62,7 +62,7 @@ For each compound control, specify which elements should respond together. Exerc
 
 ## Handoff gate
 
-For relevant checks record pass, fail, blocked or not run in the region brief. Separate source/build checks, runtime interaction checks, visual checks and user acceptance. Passing one category does not imply the others.
+For relevant checks record pass, fail, blocked or not run in the handoff. Separate source/build checks, runtime interaction checks, visual checks and user acceptance. Passing one category does not imply the others.
 
 Check coupled values, not just the edited control: a stepper must update its slider and document defaults immediately; a resized fitted canvas must agree with the toolbar percentage in both resize directions. Test popup opening with native accessibility active, since headless rendering may omit that code path. Inspect complete glyph strokes against the SVG viewport, including composite overlays that deliberately extend beyond the base icon; correct source coordinates alone do not prove unclipped pixels.
 
@@ -74,7 +74,7 @@ For blended annotations, compare the live reference separately from exported PDF
 
 ## Maintaining the checklist
 
-When a demonstrated miss recurs or teaches a general review failure, update the narrowest rule here with a concrete observable check. Keep the current defect, suspected cause, resolution and evidence in its region brief. Consolidate overlapping rules; do not append transcripts, dated worklogs or universal restrictions inferred from one example. Do not modify the upstream GPUI guides to encode application-specific preferences.
+When a demonstrated miss recurs or teaches a general review failure, update the narrowest rule here with a concrete observable check. Track open defects in backlog.md. Consolidate overlapping rules; do not append transcripts, dated worklogs or universal restrictions inferred from one example. Do not modify the upstream GPUI guides to encode application-specific preferences.
 
 ### Native macOS launch and Signature evidence
 
