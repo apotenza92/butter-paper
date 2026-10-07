@@ -38,6 +38,11 @@ the running app.
   Node.js 20.
 - Windows: ordinary Save falls back to Save As; qualify native save and file
   pickers.
+- Windows: 0.1.0–0.1.2 updates installed the new version beside the old one
+  and never removed it (their handover PowerShell never ran), so such
+  machines keep several versions and Start menu entries. Consider having the
+  app retire older sibling installs under `Programs\Butter Paper\<version>`
+  on startup.
 - Linux: qualify production graphics (OpenGL, window resize).
 - macOS 12 is unsupported (minimum 13.0); supporting it needs an older Go
   toolchain for the phone helper and a real macOS 12 run.

@@ -764,11 +764,7 @@ impl PreparedUpdate {
         let mut command = if matches!(self.handover, Handover::Windows { .. }) {
             let path = self.work_directory.join("handover.ps1");
             fs::write(&path, script)?;
-            let mut command = Command::new("powershell.exe");
-            command
-                .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File"])
-                .arg(path);
-            command
+            windows_script_command(&path)
         } else {
             let path = self.work_directory.join("handover.sh");
             fs::write(&path, script)?;
@@ -776,26 +772,40 @@ impl PreparedUpdate {
             command.arg(path);
             command
         };
-        command
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            // A new session, so the script survives this process exiting.
-            command.process_group(0);
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const DETACHED_PROCESS: u32 = 0x0000_0008;
-            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
-        }
-        command.spawn().map(drop)
+        spawn_outliving(&mut command)
     }
+}
+
+fn windows_script_command(script: &Path) -> Command {
+    let mut command = Command::new("powershell.exe");
+    command
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File"])
+        .arg(script);
+    command
+}
+
+/// Starts `command` so that it keeps running after this process exits.
+fn spawn_outliving(command: &mut Command) -> io::Result<()> {
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // A new session, so the script survives this process exiting.
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // A hidden console, not DETACHED_PROCESS: PowerShell started without
+        // a console exits at once without running its script.
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+    }
+    command.spawn().map(drop)
 }
 
 fn macos_script(
@@ -1163,6 +1173,31 @@ mod tests {
         assert!(!applications.join("Butter Paper Beta.app").exists());
         assert!(!applications.join(".Butter Paper 0.0.32 update.app").exists());
         assert!(!work.exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The handover PowerShell must actually run its script. Started with
+    /// DETACHED_PROCESS it exited at once without doing so, and every Windows
+    /// update stopped after installing the new version beside the old one.
+    #[cfg(windows)]
+    #[test]
+    fn windows_handover_powershell_runs_its_script() {
+        let root = std::env::temp_dir().join(format!("bp-windows-handover-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let marker = root.join("ran");
+        let script = root.join("handover.ps1");
+        fs::write(
+            &script,
+            format!("Set-Content -LiteralPath {} -Value $PID", powershell_literal(&marker)),
+        )
+        .unwrap();
+        spawn_outliving(&mut windows_script_command(&script)).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while !marker.is_file() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(marker.is_file(), "the handover script did not run");
         fs::remove_dir_all(&root).unwrap();
     }
 

@@ -4,6 +4,15 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.1.3]
+
+### Updating
+
+- Windows: updates finish installing. Until now the update installed the new
+  version beside the old one but never switched over, so Butter Paper kept
+  opening the old version. If you have more than one Butter Paper entry in the
+  Start menu, open the newest; this version and later ones update in place.
+
 ## [0.1.2]
 
 ### Selecting and editing markups
