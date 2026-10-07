@@ -2,6 +2,18 @@
 
 All notable Butter Paper changes are recorded here.
 
+## [0.0.32]
+
+### Move to the native app
+
+- Windows: the move to the native app now finishes. In 0.0.27 to 0.0.31 the
+  installer that should take over after Butter Paper closed never started,
+  so every launch downloaded the new app again and nothing changed.
+- Moves to the native Butter Paper 0.1.3 app automatically after this update
+  restarts. Native 0.1.3 then keeps itself up to date. Your PDFs are not
+  changed.
+- This is the last Electron release.
+
 ## [0.0.31]
 
 ### Move to the native app

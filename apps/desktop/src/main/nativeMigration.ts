@@ -18,7 +18,9 @@ import {
   peMachine,
   requiredPeMachine,
   resolveMigrationEligibility,
+  windowsHandoverLaunch,
   windowsHandoverScript,
+  windowsHandoverStartedLine,
   type NativePackage,
 } from './nativeMigrationPlan';
 
@@ -264,12 +266,24 @@ async function handOverOnWindows(nativePackage: NativePackage, archive: string, 
   }
   const scriptPath = join(workDirectory, 'handover.ps1');
   const logPath = join(app.getPath('temp'), 'butter-paper-native-migration.log');
-  await writeFile(scriptPath, windowsHandoverScript({ electronProcessId: process.pid, packageDirectory, target: nativePackage.target, pdfPaths, logPath }), { encoding: 'utf8' });
-  spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', scriptPath], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-  }).unref();
+  const runId = randomBytes(8).toString('hex');
+  await writeFile(scriptPath, windowsHandoverScript({ electronProcessId: process.pid, packageDirectory, target: nativePackage.target, pdfPaths, logPath, runId }), { encoding: 'utf8' });
+  const launch = windowsHandoverLaunch(scriptPath);
+  try {
+    await run(launch.command, [...launch.args], { windowsHide: true });
+  } catch {
+    throw new MigrationError('The installer could not be started.');
+  }
+  // Exit only once the script is running; otherwise report the failure
+  // instead of closing with nothing installed.
+  const startedLine = windowsHandoverStartedLine(runId);
+  const deadline = Date.now() + 30_000;
+  while (!(await readFile(logPath, 'utf8').catch(() => '')).includes(startedLine)) {
+    if (Date.now() > deadline) {
+      throw new MigrationError('The installer did not start.');
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 200));
+  }
 }
 
 async function installOnLinux(nativePackage: NativePackage, archive: string, workDirectory: string, pdfPaths: readonly string[]): Promise<void> {

@@ -2,9 +2,9 @@
 // install onto the native Butter Paper release and removes the Electron app.
 
 export const NATIVE_RELEASE = {
-  version: '0.1.0',
-  tag: 'v0.1.0',
-  pageUrl: 'https://github.com/apotenza92/butter-paper/releases/tag/v0.1.0',
+  version: '0.1.3',
+  tag: 'v0.1.3',
+  pageUrl: 'https://github.com/apotenza92/butter-paper/releases/tag/v0.1.3',
   macTeamIdentifier: '27JL2VERNC',
   macBundleIdentifier: 'com.butterpaper.desktop',
   macMinimumMajorVersion: 13,
@@ -19,14 +19,14 @@ export interface NativePackage {
   readonly sha256: string;
 }
 
-// Exact published v0.1.0 assets; the download must match these byte-for-byte.
+// Exact published v0.1.3 assets; the download must match these byte-for-byte.
 export const NATIVE_PACKAGES: Readonly<Record<NativeTarget, NativePackage>> = {
-  'macos-arm64': { target: 'macos-arm64', assetName: 'Butter-Paper-macOS-arm64.zip', bytes: 34582189, sha256: '3946ab95874661f93cc99900d437931514074d48a691015f7d7d67da1f0cf637' },
-  'macos-x64': { target: 'macos-x64', assetName: 'Butter-Paper-macOS-x64.zip', bytes: 37000187, sha256: 'cb04a28998b4595cbea412e723cf9e451f04e55adb13f41550bb20734e7ec075' },
-  'windows-arm64': { target: 'windows-arm64', assetName: 'Butter-Paper-Windows-arm64.zip', bytes: 74200190, sha256: '147137eb3f792e7077587c7cfc85657dd50dc68a314d7f1a3e74045918579b27' },
-  'windows-x64': { target: 'windows-x64', assetName: 'Butter-Paper-Windows-x64.zip', bytes: 83390247, sha256: '88bad356a3dcbf372ce7bb75be68ab0f3443b48703dd747cf0dcb2a015c5276a' },
-  'linux-arm64': { target: 'linux-arm64', assetName: 'Butter-Paper-Linux-arm64.tar.xz', bytes: 26681928, sha256: '8e072163ab298f2584c746b4c802cb5df15c9285720e06f7599e72511892f856' },
-  'linux-x64': { target: 'linux-x64', assetName: 'Butter-Paper-Linux-x64.tar.xz', bytes: 29658164, sha256: '77d4f0d08b3add68533ce953de8be5d8fd6ed05f11959b34bc0d787a9ff33601' },
+  'macos-arm64': { target: 'macos-arm64', assetName: 'Butter-Paper-macOS-arm64.zip', bytes: 34528168, sha256: 'a3f65334a2b702746399a08b10440b5be98a41d2ba162ba59e18f744a55b4d13' },
+  'macos-x64': { target: 'macos-x64', assetName: 'Butter-Paper-macOS-x64.zip', bytes: 36951898, sha256: '9d1538f2b631560ee5623fdb370b9318babdd542b49f878536eeb25118202e68' },
+  'windows-arm64': { target: 'windows-arm64', assetName: 'Butter-Paper-Windows-arm64.zip', bytes: 74059390, sha256: 'e4255742c19bf91d18a9122b21b545024a8436c1d183106ece3bd30857053ba7' },
+  'windows-x64': { target: 'windows-x64', assetName: 'Butter-Paper-Windows-x64.zip', bytes: 83322663, sha256: 'c6b81b6e2b25b02d54f48a5527d468d3919656941a4035ff313b20d54bb44bc6' },
+  'linux-arm64': { target: 'linux-arm64', assetName: 'Butter-Paper-Linux-arm64.tar.xz', bytes: 26685912, sha256: '7bbd6b096b76347a52bc085c00566735050808933c997caddd53625049223928' },
+  'linux-x64': { target: 'linux-x64', assetName: 'Butter-Paper-Linux-x64.tar.xz', bytes: 29587324, sha256: '7acf3ddd713fd38ce1c77dfdf981634ffa06e9d3cd086df48d380f8e590a4c18' },
 };
 
 export function nativePackageUrl(nativePackage: NativePackage): string {
@@ -103,9 +103,25 @@ export function macElectronBundleCandidates(homeDirectory: string): string[] {
 
 export const MAC_DESIGNATED_REQUIREMENT = `=identifier "${NATIVE_RELEASE.macBundleIdentifier}" and anchor apple generic and certificate leaf[subject.OU] = "${NATIVE_RELEASE.macTeamIdentifier}"`;
 
-// Electron bundles are replaced; a bundle already at the native version is kept.
+// Electron bundles are replaced; a native bundle at or above the pinned
+// version is kept (Electron releases end at 0.0.x, native ones start at 0.1.0).
 export function isNativeBundleVersion(shortVersion: string | null): boolean {
-  return shortVersion === NATIVE_RELEASE.version;
+  const version = parseVersionCore(shortVersion);
+  const pinned = parseVersionCore(NATIVE_RELEASE.version);
+  if (version == null || pinned == null) {
+    return false;
+  }
+  for (let index = 0; index < 3; index += 1) {
+    if (version[index] !== pinned[index]) {
+      return version[index] > pinned[index];
+    }
+  }
+  return true;
+}
+
+function parseVersionCore(value: string | null): [number, number, number] | null {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(value ?? '');
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
 }
 
 export function windowsNativeArchitecture(target: NativeTarget): 'arm64' | 'x86_64' {
@@ -143,6 +159,31 @@ export interface WindowsHandoverOptions {
   readonly target: NativeTarget;
   readonly pdfPaths: readonly string[];
   readonly logPath: string;
+  // Logged first, so Electron can confirm this run's script started.
+  readonly runId: string;
+}
+
+// The first line each handover run writes to its log.
+export function windowsHandoverStartedLine(runId: string): string {
+  return `handover ${runId} started`;
+}
+
+// Starts the handover script so it outlives Electron. PowerShell started with
+// Node's detached option (DETACHED_PROCESS) exits without running its script,
+// and a plain child is in libuv's kill-on-close job, so dies with Electron.
+// This plain child PowerShell starts the script with Start-Process, which
+// leaves the job (libuv allows silent breakaway), and then exits.
+export function windowsHandoverLaunch(scriptPath: string): { readonly command: string; readonly args: readonly string[] } {
+  const scriptArguments = `-NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`;
+  return {
+    command: 'powershell.exe',
+    args: [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList ${powershellString(scriptArguments)}`,
+    ],
+  };
 }
 
 // Runs after Electron exits: uninstall every Electron Butter Paper install first
@@ -167,6 +208,7 @@ function Stop-Handover($message) {
   exit 1
 }
 try {
+  Write-Log ${powershellString(windowsHandoverStartedLine(options.runId))}
   Write-Log 'waiting for Electron to exit'
   Wait-Process -Id ${options.electronProcessId} -Timeout 60 -ErrorAction SilentlyContinue
   $uninstallRoot = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall'

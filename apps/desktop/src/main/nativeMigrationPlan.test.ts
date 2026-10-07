@@ -1,6 +1,8 @@
 import {
   MAC_DESIGNATED_REQUIREMENT,
   NATIVE_PACKAGES,
+  NATIVE_RELEASE,
+  isNativeBundleVersion,
   linuxPackageDirectory,
   macBundlePath,
   macDestinationDirectory,
@@ -9,7 +11,9 @@ import {
   peMachine,
   requiredPeMachine,
   resolveMigrationEligibility,
+  windowsHandoverLaunch,
   windowsHandoverScript,
+  windowsHandoverStartedLine,
   type MigrationHost,
 } from './nativeMigrationPlan';
 
@@ -36,9 +40,9 @@ function peBytes(machine: number): Uint8Array {
 }
 
 describe('native app migration plan', () => {
-  it('pins the exact published v0.1.0 package for each target', () => {
+  it('pins the exact published v0.1.3 package for each target', () => {
     expect(nativePackageUrl(NATIVE_PACKAGES['windows-x64'])).toBe(
-      'https://github.com/apotenza92/butter-paper/releases/download/v0.1.0/Butter-Paper-Windows-x64.zip',
+      'https://github.com/apotenza92/butter-paper/releases/download/v0.1.3/Butter-Paper-Windows-x64.zip',
     );
     for (const nativePackage of Object.values(NATIVE_PACKAGES)) {
       expect(nativePackage.sha256).toMatch(/^[0-9a-f]{64}$/);
@@ -74,8 +78,8 @@ describe('native app migration plan', () => {
     expect(resolveMigrationEligibility({ ...macHost, platform: 'linux', arch: 'x64' })).toEqual({ eligible: false, reason: 'unsupported-install' });
     expect(resolveMigrationEligibility({ ...macHost, platform: 'linux', arch: 'x64', appImagePath: '/home-dir/Butter-Paper-Linux-x64.AppImage' }))
       .toMatchObject({ nativePackage: { target: 'linux-x64' } });
-    expect(linuxPackageDirectory('linux-x64')).toBe('butter-paper-linux-x86_64-0.1.0');
-    expect(linuxPackageDirectory('linux-arm64')).toBe('butter-paper-linux-arm64-0.1.0');
+    expect(linuxPackageDirectory('linux-x64')).toBe('butter-paper-linux-x86_64-0.1.3');
+    expect(linuxPackageDirectory('linux-arm64')).toBe('butter-paper-linux-arm64-0.1.3');
   });
 
   it('installs the Mac app beside the running app only inside an Applications folder', () => {
@@ -107,7 +111,10 @@ describe('native app migration plan', () => {
       target: 'windows-arm64',
       pdfPaths: ['C:\\Docs\\a b.pdf'],
       logPath: 'C:\\Temp\\log.txt',
+      runId: 'abc123',
     });
+    expect(script.indexOf("Write-Log 'handover abc123 started'")).toBeLessThan(script.indexOf('Wait-Process'));
+    expect(windowsHandoverStartedLine('abc123')).toBe('handover abc123 started');
     expect(script).toContain('Wait-Process -Id 4242');
     expect(script).toContain("$packageDirectory = 'C:\\Users\\O''Neil\\Temp\\bp\\package'");
     expect(script).toContain("$architecture = 'arm64'");
@@ -115,7 +122,30 @@ describe('native app migration plan', () => {
     expect(script).toContain("'^Butter Paper( Beta)?( [0-9][0-9.a-z-]*)?$'");
     expect(script.indexOf('Start-Process -FilePath $uninstaller')).toBeLessThan(script.indexOf("install.ps1"));
     expect(script).toContain("Programs\\Butter Paper\\' + $version");
-    expect(windowsHandoverScript({ electronProcessId: 1, packageDirectory: 'C:\\p', target: 'windows-x64', pdfPaths: [], logPath: 'C:\\l' }))
+    expect(windowsHandoverScript({ electronProcessId: 1, packageDirectory: 'C:\\p', target: 'windows-x64', pdfPaths: [], logPath: 'C:\\l', runId: 'r' }))
       .toContain("$architecture = 'x86_64'");
+  });
+
+  it('starts the Windows handover through Start-Process, never as a detached PowerShell', () => {
+    const launch = windowsHandoverLaunch("C:\\Users\\O'Neil\\AppData\\Local\\Temp\\bp\\handover.ps1");
+    expect(launch.command).toBe('powershell.exe');
+    expect(launch.args).toEqual([
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      "Start-Process -FilePath powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\O''Neil\\AppData\\Local\\Temp\\bp\\handover.ps1\"'",
+    ]);
+  });
+
+  it('keeps native Mac bundles at or above the pinned version and replaces Electron ones', () => {
+    const [major, minor, patch] = NATIVE_RELEASE.version.split('.').map(Number);
+    expect(isNativeBundleVersion(NATIVE_RELEASE.version)).toBe(true);
+    expect(isNativeBundleVersion(`${major}.${minor}.${patch + 1}`)).toBe(true);
+    expect(isNativeBundleVersion(`${major}.${minor + 1}.0`)).toBe(true);
+    expect(isNativeBundleVersion(`${major + 1}.0.0-beta.1`)).toBe(true);
+    expect(isNativeBundleVersion('0.0.32')).toBe(false);
+    expect(isNativeBundleVersion('0.0.31')).toBe(false);
+    expect(isNativeBundleVersion(null)).toBe(false);
+    expect(isNativeBundleVersion('garbage')).toBe(false);
   });
 });

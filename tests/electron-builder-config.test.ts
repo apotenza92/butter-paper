@@ -103,7 +103,7 @@ describe('Electron Builder release identity', () => {
       afterPack: 'build/after-pack.cjs',
       compression: 'normal',
       electronLanguages: ['en-US'],
-      releaseNotes: expect.stringContaining('Moves to the native Butter Paper 0.0.26 app automatically'),
+      releaseNotes: expect.stringContaining('Moves to the native Butter Paper 0.1.3 app automatically'),
       nsisInclude: 'build/installer.nsh',
       nsisOneClick: false,
       macMinimumSystemVersion: '12.0',
