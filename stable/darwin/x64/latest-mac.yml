@@ -1,19 +1,22 @@
-version: 0.0.31
+version: 0.0.32
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-macOS-x64.zip
-    sha512: 7B/EUIXFXXmSy7zdVTw+7ihL/TrYZkxEiWbA03XMcifS+/JX5aO6KrckAqIq/uvAaMgN/LzGTpyZ0M9wAVxF1g==
-    size: 151555299
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-macOS-x64.dmg
-    sha512: EytPAd1LKffNfGSg+eaNqLBT+aFwUu/zazbLysFLWjaW9KdHywW+KWvlmz0BE7f+70mwsfal45R7P0eBKqCY7Q==
-    size: 156617392
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-macOS-x64.zip
-sha512: 7B/EUIXFXXmSy7zdVTw+7ihL/TrYZkxEiWbA03XMcifS+/JX5aO6KrckAqIq/uvAaMgN/LzGTpyZ0M9wAVxF1g==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.32/Butter-Paper-macOS-x64.zip
+    sha512: Pi/RIFHJs+XhVB9+znl/8zPw1jZxJHwutPsNKJC2y1YFnGVh6ZpCPFmJKqwdBR4cmIW06bKGYIkN0yyVDTXtJg==
+    size: 151555925
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.32/Butter-Paper-macOS-x64.dmg
+    sha512: Ay0Ikx4Nm3ZcwdwlQ5l3AI/kj2BuX897aLkIRW7VMqQ8kNHIFdRci81XJRuw4GvM6kDREouhctTJuUqBsYRnlA==
+    size: 156612957
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.32/Butter-Paper-macOS-x64.zip
+sha512: Pi/RIFHJs+XhVB9+znl/8zPw1jZxJHwutPsNKJC2y1YFnGVh6ZpCPFmJKqwdBR4cmIW06bKGYIkN0yyVDTXtJg==
 releaseNotes: |-
   ### Move to the native app
 
-  - Moves to the native Butter Paper 0.1.0 app automatically after this update
-    restarts, as 0.0.30 did for 0.0.26. Native 0.1.0 then keeps itself up to
-    date. Your PDFs are not changed.
+  - Windows: the move to the native app now finishes. In 0.0.27 to 0.0.31 the
+    installer that should take over after Butter Paper closed never started,
+    so every launch downloaded the new app again and nothing changed.
+  - Moves to the native Butter Paper 0.1.3 app automatically after this update
+    restarts. Native 0.1.3 then keeps itself up to date. Your PDFs are not
+    changed.
   - This is the last Electron release.
-releaseDate: 2026-10-02T08:36:25.522Z
+releaseDate: 2026-10-07T01:39:02.239Z
 butterPaperChannel: stable

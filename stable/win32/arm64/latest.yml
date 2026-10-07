@@ -1,20 +1,26 @@
-version: 0.0.31
+version: 0.0.32
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-Windows-arm64-Setup.exe
-    sha512: OoG/n80Cr2aTziBUjYUVZXTmd08oV4rtCeKrtKWHHuox7CQv8ZPaMSWdnL+kYX8f5nY+l92mDZEzzszthzXLXA==
-    size: 124755709
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-Windows-arm64-Setup.exe
-sha512: OoG/n80Cr2aTziBUjYUVZXTmd08oV4rtCeKrtKWHHuox7CQv8ZPaMSWdnL+kYX8f5nY+l92mDZEzzszthzXLXA==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.32/Butter-Paper-Windows-arm64-Setup.exe
+    sha512: /CFUmEuhdBZsq406tVexl3tVxnDvp5vT0qRm5hGOoe5zG+1/L5Z2sEHsDlcePrdHgWNr4pMLZuOJ1foMxra8Mw==
+    size: 124756584
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.32/Butter-Paper-Windows-arm64-Setup.exe
+sha512: /CFUmEuhdBZsq406tVexl3tVxnDvp5vT0qRm5hGOoe5zG+1/L5Z2sEHsDlcePrdHgWNr4pMLZuOJ1foMxra8Mw==
 releaseNotes: "### Move to the native app\r
 
   \r
 
-  - Moves to the native Butter Paper 0.1.0 app automatically after this update\r
+  - Windows: the move to the native app now finishes. In 0.0.27 to 0.0.31 the\r
 
-  \  restarts, as 0.0.30 did for 0.0.26. Native 0.1.0 then keeps itself up to\r
+  \  installer that should take over after Butter Paper closed never started,\r
 
-  \  date. Your PDFs are not changed.\r
+  \  so every launch downloaded the new app again and nothing changed.\r
+
+  - Moves to the native Butter Paper 0.1.3 app automatically after this update\r
+
+  \  restarts. Native 0.1.3 then keeps itself up to date. Your PDFs are not\r
+
+  \  changed.\r
 
   - This is the last Electron release."
-releaseDate: 2026-10-02T08:36:31.752Z
+releaseDate: 2026-10-07T01:35:59.108Z
 butterPaperChannel: stable

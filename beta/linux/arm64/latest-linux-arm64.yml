@@ -1,23 +1,26 @@
-version: 0.0.31
+version: 0.0.32
 files:
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-Beta-Linux-arm64.AppImage
-    sha512: cbW+d0yzR1Kl5lPZnvfOc7miRMVyfO1KD3x1D709r8ZmoT1Gtq90TMMh4Uf1vPqDiPWtR32atu/ffDrXD+zjIg==
-    size: 116883763
-    blockMapSize: 121983
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-Beta-Linux-arm64.deb
-    sha512: iIXdaBq5m1JIXtUEnW2gWvP/Xgq4B0pvCQPgqLNlZD0Z4nW7dW+i+Z7nvOE/efrd36ttw7YqNJ/8+Z8ISO7Pgg==
-    size: 114668500
-  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-Beta-Linux-arm64.rpm
-    sha512: GeAX/XQXaBXNEXAeJOGuWHRx9F8vRTrvyHsUaNqJrz+Bjn8JiBb889CJ2kEVwFLzh6+2vw1ibZOrAsCh2KIiGA==
-    size: 101063437
-path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.31/Butter-Paper-Beta-Linux-arm64.AppImage
-sha512: cbW+d0yzR1Kl5lPZnvfOc7miRMVyfO1KD3x1D709r8ZmoT1Gtq90TMMh4Uf1vPqDiPWtR32atu/ffDrXD+zjIg==
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.32/Butter-Paper-Beta-Linux-arm64.AppImage
+    sha512: dPoUd9aJ18qr3R0EEOowy0KN8GFmBJLy94lzmVyXmUE13plPyhGJ8uM1j4M7CEsHWOa5Qs9uvWZFZYQOs6oZ/A==
+    size: 116883837
+    blockMapSize: 122057
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.32/Butter-Paper-Beta-Linux-arm64.deb
+    sha512: s2jeAmGUiVFTGjIKn78TKwo1u1pp2ESxr0ZcKEN0aX+T0Nmp24LS4glsK6ZLBBemMD/+0tj7cYwknhVan0YhJQ==
+    size: 114668712
+  - url: https://github.com/apotenza92/butter-paper/releases/download/v0.0.32/Butter-Paper-Beta-Linux-arm64.rpm
+    sha512: +4DFvgMWPkV/EgJURbFb93roLqnGwjBO6CJQYzceirf6a6KKU1GlcAc9vuPOuyxzS8NN4DoeVwhfF6Tq01lAMw==
+    size: 101057797
+path: https://github.com/apotenza92/butter-paper/releases/download/v0.0.32/Butter-Paper-Beta-Linux-arm64.AppImage
+sha512: dPoUd9aJ18qr3R0EEOowy0KN8GFmBJLy94lzmVyXmUE13plPyhGJ8uM1j4M7CEsHWOa5Qs9uvWZFZYQOs6oZ/A==
 releaseNotes: |-
   ### Move to the native app
 
-  - Moves to the native Butter Paper 0.1.0 app automatically after this update
-    restarts, as 0.0.30 did for 0.0.26. Native 0.1.0 then keeps itself up to
-    date. Your PDFs are not changed.
+  - Windows: the move to the native app now finishes. In 0.0.27 to 0.0.31 the
+    installer that should take over after Butter Paper closed never started,
+    so every launch downloaded the new app again and nothing changed.
+  - Moves to the native Butter Paper 0.1.3 app automatically after this update
+    restarts. Native 0.1.3 then keeps itself up to date. Your PDFs are not
+    changed.
   - This is the last Electron release.
-releaseDate: 2026-10-02T08:36:39.049Z
+releaseDate: 2026-10-07T01:37:43.382Z
 butterPaperChannel: beta
