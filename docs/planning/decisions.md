@@ -7,10 +7,9 @@ changes it; history is in git.
 
 - Butter Paper is the native Rust/GPUI app. The Electron app is frozen at
   `electron-final` and is a reference only. Startup imports no Electron data
-  (`StartupDataPolicy::NativeOnly`). Electron 0.0.32 (branch
-  `electron-redirect-0.0.32`) is the last Electron update: its migration
-  installs a pinned native release. The Electron update feed then lapses
-  when its signed metadata expires.
+  (`StartupDataPolicy::NativeOnly`). Electron 0.0.32 (tag `v0.0.32`) is the
+  last Electron update: its migration installs native 0.1.3. The Electron
+  update feed then lapses when its signed metadata expires.
 - Bluebeam Revu is the reference: settle markup format and markup UX
   questions by matching what Revu does ([pdf-format.md](pdf-format.md)).
 - Supported: macOS 13+ (Apple silicon and Intel), Windows x64 and arm64,
