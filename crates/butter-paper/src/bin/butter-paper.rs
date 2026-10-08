@@ -4,31 +4,24 @@ use butter_paper::application_close_workspace::{
     ApplicationCloseCancelled, ApplicationCloseCheckpointPublisher, ApplicationCloseShell,
     ApplicationCloseWorkspace, RequestApplicationClose, RequestApplicationQuit,
 };
-use butter_paper::document_windows::{
-    WindowCheckpointPublisher, WindowSessionCoordinator,
-};
 #[cfg(feature = "development-pdfium-override")]
 use butter_paper::application_shell::application_data_directory;
 use butter_paper::application_shell::{
     ApplicationShellPreferences, ApplicationShellPreferencesStore, ApplicationUiZoomAction,
     MakeInterfaceBigger, MakeInterfaceSmaller, MinimiseWindow, MoveDocumentToNewWindow, NewWindow,
-    OpenReleasePage,
-    ResetInterfaceSize, ZoomWindow,
-    ReverseScrollZoom, SetAsDefaultPdfApp, ToggleApplicationFullScreen, ToggleApplicationMenuBar,
-    ToggleReverseScrollZoom, apply_application_ui_zoom,
-    focus_initial_command_context, init_application_shell_actions,
+    OpenReleasePage, ResetInterfaceSize, ReverseScrollZoom, SetAsDefaultPdfApp,
+    ToggleApplicationFullScreen, ToggleApplicationMenuBar, ToggleReverseScrollZoom, ZoomWindow,
+    apply_application_ui_zoom, focus_initial_command_context, init_application_shell_actions,
     resolve_application_ui_zoom_level,
 };
-use butter_paper::document_recovery_store::{
-    DocumentRecoveryStore, RecoverySourceKind,
-};
+use butter_paper::document_recovery_store::{DocumentRecoveryStore, RecoverySourceKind};
 use butter_paper::document_tab_bar::TemplateCatalogItem;
+use butter_paper::document_windows::{WindowCheckpointPublisher, WindowSessionCoordinator};
 use butter_paper::document_workspace::{
-    DeferredStartupOpen, DocumentId, DocumentWorkspace, DocumentWorkspaceEvidenceSnapshot,
-    DocumentWorkspaceTemplateCommand, PaintedPageEvidence, PdfDocumentSaver, PdfiumWorkerBackend,
-    DocumentTabTransferEvent, StartupRecoveryAvailability, StartupRecoveryItem,
-    init_document_workspace_actions,
-    register_document_workspace_actions_for,
+    DeferredStartupOpen, DocumentId, DocumentTabTransferEvent, DocumentWorkspace,
+    DocumentWorkspaceEvidenceSnapshot, DocumentWorkspaceTemplateCommand, PaintedPageEvidence,
+    PdfDocumentSaver, PdfiumWorkerBackend, StartupRecoveryAvailability, StartupRecoveryItem,
+    init_document_workspace_actions, register_document_workspace_actions_for,
 };
 use butter_paper::generated_document::GeneratedDocumentStore;
 use butter_paper::macos_process_lifecycle::AppRootLifecycleReceipt;
@@ -74,18 +67,18 @@ use butter_paper::template_manager::{
     PersistentTemplateManager, TemplateManagerView, legacy_blank_request_from_json,
     route_workspace_template_command,
 };
+use butter_paper::window_title_bar::{
+    APPLICATION_TITLE, format_window_title_for_application, title_bar_window_options,
+};
 #[cfg(not(target_os = "macos"))]
 use butter_paper::window_title_bar::{uses_window_title_bar, window_title_bar};
 #[cfg(not(target_os = "macos"))]
 use gpui::prelude::FluentBuilder as _;
-use butter_paper::window_title_bar::{
-    APPLICATION_TITLE, format_window_title_for_application, title_bar_window_options,
-};
 use gpui::{
-    AnyWindowHandle, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, ParentElement as _, PromptLevel, Render, StatefulInteractiveElement as _,
-    Styled as _,
-    Subscription, Task, Window, WindowBounds, WindowOptions, div, px, size,
+    AnyWindowHandle, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle,
+    InteractiveElement as _, IntoElement, ParentElement as _, PromptLevel, Render,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, WindowBounds,
+    WindowOptions, div, px, size,
 };
 use gpui_component::{ActiveTheme as _, Root, WindowExt as _, menu::AppMenuBar, v_flex};
 use serde_json::json;
@@ -247,8 +240,7 @@ struct ComponentStory {
     session_store: Option<Arc<SessionManifestStore>>,
     last_observed_recovery_snapshot:
         Option<butter_paper::session_manifest::SessionRecoverySnapshot>,
-    pending_recovery_snapshot:
-        Option<butter_paper::session_manifest::SessionRecoverySnapshot>,
+    pending_recovery_snapshot: Option<butter_paper::session_manifest::SessionRecoverySnapshot>,
     recovery_marker_task: Option<Task<()>>,
     _document_workspace_subscription: Subscription,
     _template_command_subscription: Option<Subscription>,
@@ -279,8 +271,10 @@ impl ComponentStory {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let document_workspace_subscription =
-            cx.observe_in(&document_workspace, window, |story, workspace, window, cx| {
+        let document_workspace_subscription = cx.observe_in(
+            &document_workspace,
+            window,
+            |story, workspace, window, cx| {
                 // A drag notifies on every pointer move; menus, title and the
                 // recovery marker settle on the notify that ends it.
                 if workspace.read(cx).pointer_gesture_active() {
@@ -290,7 +284,8 @@ impl ComponentStory {
                 story.sync_template_operation_state(cx);
                 story.sync_window_title(window, cx);
                 story.schedule_recovery_marker_checkpoint(cx);
-            });
+            },
+        );
         document_workspace.update(cx, |workspace, _| {
             workspace.use_phone_signature_by_default(true);
         });
@@ -334,10 +329,14 @@ impl ComponentStory {
         // GPUI leaves nothing focused, and the document's single-key shortcuts
         // would stay dead until the next page press. Return focus to it.
         let focus_lost_subscription = cx.on_focus_lost(window, |story, window, cx| {
-            story.document_workspace.read(cx).focus_handle().focus(window, cx);
+            story
+                .document_workspace
+                .read(cx)
+                .focus_handle()
+                .focus(window, cx);
         });
-        let menu_bar_visible =
-            !menu_bar_visibility_supported || shared_application(cx).preferences.get().menu_bar_visible();
+        let menu_bar_visible = !menu_bar_visibility_supported
+            || shared_application(cx).preferences.get().menu_bar_visible();
         // The active document window owns the application menus; refresh them
         // and any template changes made in another window when this one
         // becomes active.
@@ -555,7 +554,10 @@ impl ComponentStory {
     }
 
     fn toggle_reverse_scroll_zoom(&mut self, cx: &mut Context<Self>) {
-        let reverse = !shared_application(cx).preferences.get().reverse_scroll_zoom();
+        let reverse = !shared_application(cx)
+            .preferences
+            .get()
+            .reverse_scroll_zoom();
         self.update_application_preferences(cx, |preferences| {
             preferences.set_reverse_scroll_zoom(reverse)
         });
@@ -575,16 +577,16 @@ impl ComponentStory {
     ) {
         let level = resolve_application_ui_zoom_level(self.ui_zoom_level.get(), action);
         self.ui_zoom_level.set(level);
-        self.update_application_preferences(cx, |preferences| {
-            preferences.set_ui_zoom_level(level)
-        });
+        self.update_application_preferences(cx, |preferences| preferences.set_ui_zoom_level(level));
         apply_application_ui_zoom(level, self.ui_zoom_base_font_size.get(), window, cx);
         // The interface size is application-wide.
         let this_window = self.window_handle;
         cx.defer(move |cx| {
             for entry in document_window_entries(cx) {
                 if let Some(workspace) = entry.workspace.upgrade() {
-                    workspace.update(cx, |workspace, cx| workspace.reset_right_rail_pixel_sizes(cx));
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.reset_right_rail_pixel_sizes(cx)
+                    });
                 }
                 if entry.handle != this_window {
                     let _ = entry.handle.update(cx, |_, window, _| window.refresh());
@@ -1361,8 +1363,9 @@ impl ComponentStory {
                 single_page_view_checked: commands.single_page_view_checked,
                 can_move_document_to_new_window: shared_application(cx).multi_window
                     && workspace.session_count() > 1
-                    && active_document
-                        .is_some_and(|document_id| workspace.can_transfer_document(document_id, cx)),
+                    && active_document.is_some_and(|document_id| {
+                        workspace.can_transfer_document(document_id, cx)
+                    }),
             }
         }
     }
@@ -1371,7 +1374,10 @@ impl ComponentStory {
         ApplicationMenuShellState {
             menu_bar_visible: self.menu_bar_visible,
             menu_bar_visibility_supported: self.menu_bar_visibility_supported,
-            reverse_scroll_zoom: shared_application(cx).preferences.get().reverse_scroll_zoom(),
+            reverse_scroll_zoom: shared_application(cx)
+                .preferences
+                .get()
+                .reverse_scroll_zoom(),
             updates: updates::menu_state(cx),
         }
     }
@@ -1501,7 +1507,9 @@ fn register_application_shell_actions(cx: &mut App) {
     });
     on_window_action::<MinimiseWindow>(cx, |cx| {
         if let Some(entry) = active_document_window(cx) {
-            let _ = entry.handle.update(cx, |_, window, _| window.minimize_window());
+            let _ = entry
+                .handle
+                .update(cx, |_, window, _| window.minimize_window());
         }
     });
     on_window_action::<ZoomWindow>(cx, |cx| {
@@ -1532,7 +1540,9 @@ fn register_application_shell_actions(cx: &mut App) {
         else {
             return;
         };
-        cx.defer(move |cx| move_document_between_windows(entry.handle, document_id, None, screen, cx));
+        cx.defer(move |cx| {
+            move_document_between_windows(entry.handle, document_id, None, screen, cx)
+        });
     });
     on_window_action::<NewWindow>(cx, |cx| {
         if shared_application(cx).multi_window {
@@ -1650,7 +1660,9 @@ impl Render for ComponentStory {
                     // A press on the bar opens a menu but never takes focus itself:
                     // the menu then returns focus to the document, which keeps its
                     // single-key shortcuts and receives menu commands.
-                    .on_mouse_down(gpui::MouseButton::Left, |_, window, _| window.prevent_default())
+                    .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                        window.prevent_default()
+                    })
                     .bg(cx.theme().background)
                     .border_b_1()
                     .border_color(cx.theme().border)
@@ -1668,7 +1680,9 @@ impl Render for ComponentStory {
                 .pl_1()
                 .flex_shrink_0()
                 .track_focus(&self.app_menu_bar_focus)
-                .on_mouse_down(gpui::MouseButton::Left, |_, window, _| window.prevent_default())
+                .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                    window.prevent_default()
+                })
                 .bg(cx.theme().background)
                 .border_b_1()
                 .border_color(cx.theme().border)
@@ -1874,7 +1888,9 @@ fn restore_session_windows(
             .into_iter()
             .find(|entry| entry.workspace == first)
         {
-            let _ = entry.handle.update(cx, |_, window, _| window.activate_window());
+            let _ = entry
+                .handle
+                .update(cx, |_, window, _| window.activate_window());
         }
     });
 }
@@ -2127,10 +2143,12 @@ fn main() {
             },
             |perf| perf.config.pdfium_library.clone(),
         );
-        let generated_store = GeneratedDocumentStore::new(storage_layout.generated_documents_root())
-            .expect("the experiment-owned generated-document store must initialize");
+        let generated_store =
+            GeneratedDocumentStore::new(storage_layout.generated_documents_root())
+                .expect("the experiment-owned generated-document store must initialize");
         let session_state_root = storage_layout.session_state_root();
-        let (session_store, launch_resolution, recovery_marker) = if session_source.requires_store() {
+        let (session_store, launch_resolution, recovery_marker) = if session_source.requires_store()
+        {
             let opened = std::fs::create_dir_all(&session_state_root)
                 .map_err(|error| error.to_string())
                 .and_then(|()| {
@@ -2329,7 +2347,8 @@ struct SharedApplication {
     recent_signature_store: Option<Arc<RecentSignatureStore>>,
     template_manager_root: std::path::PathBuf,
     /// One template library authority for every window, created with the first.
-    template_authority: std::cell::RefCell<Option<Arc<std::sync::Mutex<PersistentTemplateManager>>>>,
+    template_authority:
+        std::cell::RefCell<Option<Arc<std::sync::Mutex<PersistentTemplateManager>>>>,
     coordinator: Arc<WindowSessionCoordinator>,
     /// Document ids are unique across windows so a tab can move between them.
     document_ids: Arc<std::sync::atomic::AtomicU64>,
@@ -2358,10 +2377,8 @@ impl gpui::Global for DocumentWindows {}
 
 struct StartupWindow {
     launch_resolution: NativeLaunchResolution,
-    recovery_marker: Result<
-        Option<butter_paper::session_manifest::SessionRecoverySnapshot>,
-        String,
-    >,
+    recovery_marker:
+        Result<Option<butter_paper::session_manifest::SessionRecoverySnapshot>, String>,
     perf: Option<PerfStoryRuntime>,
     /// Where the restored session's first window was.
     bounds: Option<butter_paper::session_manifest::SessionWindowBounds>,
@@ -2400,7 +2417,8 @@ fn document_window_workspaces(cx: &App) -> Vec<Entity<DocumentWorkspace>> {
 /// The key document window, else the frontmost one, else the newest.
 fn active_document_window(cx: &App) -> Option<DocumentWindowEntry> {
     let entries = document_window_entries(cx);
-    let find = |handle: AnyWindowHandle| entries.iter().find(|entry| entry.handle == handle).cloned();
+    let find =
+        |handle: AnyWindowHandle| entries.iter().find(|entry| entry.handle == handle).cloned();
     cx.active_window()
         .and_then(find)
         .or_else(|| {
@@ -2448,14 +2466,22 @@ fn record_window_bounds(window: &Window, cx: &App) {
 /// place new windows themselves). Once the window is shown, nudge it so the
 /// reported origin and content size match the saved ones, and positions do
 /// not drift across relaunches.
-fn settle_restored_origin(handle: AnyWindowHandle, origin: gpui::Point<gpui::Pixels>, cx: &mut App) {
-    let content = handle.update(cx, |_, window, _| window.viewport_size()).ok();
+fn settle_restored_origin(
+    handle: AnyWindowHandle,
+    origin: gpui::Point<gpui::Pixels>,
+    cx: &mut App,
+) {
+    let content = handle
+        .update(cx, |_, window, _| window.viewport_size())
+        .ok();
     cx.spawn(async move |cx| {
         // What was last asked for; any constant offset between that and the
         // reported origin (decoration insets) is compensated next time.
         let mut requested = origin;
         for _ in 0..4 {
-            cx.background_executor().timer(Duration::from_millis(250)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(250))
+                .await;
             let settled = cx
                 .update(|cx| {
                     handle.update(cx, |_, window, _| {
@@ -2514,7 +2540,9 @@ fn next_window_bounds(cx: &mut App) -> WindowBounds {
     let active = active_document_window(cx).and_then(|entry| {
         entry
             .handle
-            .update(cx, |_, window, _| (window.bounds().origin, window.viewport_size()))
+            .update(cx, |_, window, _| {
+                (window.bounds().origin, window.viewport_size())
+            })
             .ok()
     });
     match active {
@@ -2578,7 +2606,11 @@ fn open_document_window_placed(
         .then(|| DOCUMENT_WINDOW_TABBING_IDENTIFIER.to_owned());
     let window_options = WindowOptions {
         window_bounds: Some(bounds.unwrap_or_else(|| next_window_bounds(cx))),
-        tabbing_identifier: if separate { None } else { tabbing_identifier.clone() },
+        tabbing_identifier: if separate {
+            None
+        } else {
+            tabbing_identifier.clone()
+        },
         display_id,
         ..title_bar_window_options()
     };
@@ -2661,23 +2693,18 @@ fn build_document_window(
             cx,
         );
     }
-    let application_close = cx.new(|_| {
-        match shared.session_store.clone() {
-            Some(store) if shared.checkpoint_enabled => {
-                let checkpoint_publisher: Arc<dyn ApplicationCloseCheckpointPublisher> =
-                    Arc::new(WindowCheckpointPublisher::new(
-                        window_id,
-                        shared.coordinator.clone(),
-                        store,
-                    ));
-                ApplicationCloseWorkspace::with_checkpoint_publisher(
-                    document_workspace.clone(),
-                    shared.saver.clone(),
-                    checkpoint_publisher,
-                )
-            }
-            _ => ApplicationCloseWorkspace::new(document_workspace.clone(), shared.saver.clone()),
+    let application_close = cx.new(|_| match shared.session_store.clone() {
+        Some(store) if shared.checkpoint_enabled => {
+            let checkpoint_publisher: Arc<dyn ApplicationCloseCheckpointPublisher> = Arc::new(
+                WindowCheckpointPublisher::new(window_id, shared.coordinator.clone(), store),
+            );
+            ApplicationCloseWorkspace::with_checkpoint_publisher(
+                document_workspace.clone(),
+                shared.saver.clone(),
+                checkpoint_publisher,
+            )
         }
+        _ => ApplicationCloseWorkspace::new(document_workspace.clone(), shared.saver.clone()),
     });
     let template_manager = shared.multi_window.then(|| {
         cx.new(|cx| {
@@ -2725,21 +2752,29 @@ fn build_document_window(
     });
     shared.coordinator.window_opened(window_id);
     if shared.multi_window {
-        cx.subscribe(&document_workspace, move |_, event: &DocumentTabTransferEvent, cx| {
-            handle_tab_transfer(window_handle, *event, cx);
-        })
+        cx.subscribe(
+            &document_workspace,
+            move |_, event: &DocumentTabTransferEvent, cx| {
+                handle_tab_transfer(window_handle, *event, cx);
+            },
+        )
         .detach();
     }
-    cx.subscribe(&application_close, |_, _: &ApplicationCloseCancelled, cx| {
-        shared_application(cx).coordinator.cancel_quit();
-    })
+    cx.subscribe(
+        &application_close,
+        |_, _: &ApplicationCloseCancelled, cx| {
+            shared_application(cx).coordinator.cancel_quit();
+        },
+    )
     .detach();
-    cx.global_mut::<DocumentWindows>().windows.push(DocumentWindowEntry {
-        handle: window_handle,
-        story: story.downgrade(),
-        workspace: document_workspace.downgrade(),
-        close: application_close.downgrade(),
-    });
+    cx.global_mut::<DocumentWindows>()
+        .windows
+        .push(DocumentWindowEntry {
+            handle: window_handle,
+            story: story.downgrade(),
+            workspace: document_workspace.downgrade(),
+            close: application_close.downgrade(),
+        });
     if story.read(cx).perf.is_some() {
         story.update(cx, |story, _| {
             if let Some(perf) = story.perf.as_mut() {
@@ -2751,7 +2786,8 @@ fn build_document_window(
         cx.spawn(async move |cx| {
             loop {
                 executor.timer(Duration::from_millis(25)).await;
-                let Ok(done) = story_for_monitor.update(cx, |story, cx| story.observe_perf_document(cx))
+                let Ok(done) =
+                    story_for_monitor.update(cx, |story, cx| story.observe_perf_document(cx))
                 else {
                     break;
                 };
@@ -2942,13 +2978,17 @@ fn hide_tab_drag_chip(cx: &mut App) {
     set_external_tab_drag_preview(false, cx);
     if cx.has_global::<TabDragPreview>() {
         let preview = cx.remove_global::<TabDragPreview>();
-        let _ = preview.handle.update(cx, |_, window, _| window.remove_window());
+        let _ = preview
+            .handle
+            .update(cx, |_, window, _| window.remove_window());
     }
 }
 
 fn set_external_tab_drag_preview(active: bool, cx: &mut App) {
     for workspace in document_window_workspaces(cx) {
-        workspace.update(cx, |workspace, cx| workspace.set_external_tab_drag_preview(active, cx));
+        workspace.update(cx, |workspace, cx| {
+            workspace.set_external_tab_drag_preview(active, cx)
+        });
     }
 }
 
@@ -3011,7 +3051,9 @@ fn tab_drop_target(
 
 fn clear_incoming_tab_drops(cx: &mut App) {
     for workspace in document_window_workspaces(cx) {
-        workspace.update(cx, |workspace, cx| workspace.set_incoming_tab_drop(None, cx));
+        workspace.update(cx, |workspace, cx| {
+            workspace.set_incoming_tab_drop(None, cx)
+        });
     }
 }
 
@@ -3031,7 +3073,8 @@ fn handle_tab_transfer(source: AnyWindowHandle, event: DocumentTabTransferEvent,
             } else {
                 None
             };
-            let source_workspace = window_entry(source, cx).and_then(|entry| entry.workspace.upgrade());
+            let source_workspace =
+                window_entry(source, cx).and_then(|entry| entry.workspace.upgrade());
             match (outside_strip, screen, source_workspace) {
                 (true, Some(screen), Some(workspace)) => {
                     let (label, tabs) = {
@@ -3056,7 +3099,9 @@ fn handle_tab_transfer(source: AnyWindowHandle, event: DocumentTabTransferEvent,
                     .filter(|(target, _)| target.handle == entry.handle)
                     .map(|(_, index)| *index);
                 if let Some(workspace) = entry.workspace.upgrade() {
-                    workspace.update(cx, |workspace, cx| workspace.set_incoming_tab_drop(index, cx));
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.set_incoming_tab_drop(index, cx)
+                    });
                 }
             }
         }
@@ -3074,7 +3119,9 @@ fn handle_tab_transfer(source: AnyWindowHandle, event: DocumentTabTransferEvent,
                 return;
             };
             let target = tab_drop_target(source, screen, cx);
-            cx.defer(move |cx| move_document_between_windows(source, document_id, target, screen, cx));
+            cx.defer(move |cx| {
+                move_document_between_windows(source, document_id, target, screen, cx)
+            });
         }
     }
 }
@@ -3093,7 +3140,10 @@ fn move_document_between_windows(
         return;
     };
     let source_tabs = source_workspace.read(cx).session_count();
-    if !source_workspace.read(cx).can_transfer_document(document_id, cx) {
+    if !source_workspace
+        .read(cx)
+        .can_transfer_document(document_id, cx)
+    {
         return;
     }
     let (target_workspace, index) = match target {
@@ -3101,7 +3151,9 @@ fn move_document_between_windows(
             let Some(workspace) = entry.workspace.upgrade() else {
                 return;
             };
-            let _ = entry.handle.update(cx, |_, window, _| window.activate_window());
+            let _ = entry
+                .handle
+                .update(cx, |_, window, _| window.activate_window());
             (workspace, index)
         }
         // Only a window with other tabs can give one up to a new window.
@@ -3128,7 +3180,9 @@ fn move_document_between_windows(
         }
         None => return,
     };
-    let detached = source_workspace.update(cx, |workspace, cx| workspace.detach_document(document_id, cx));
+    let detached = source_workspace.update(cx, |workspace, cx| {
+        workspace.detach_document(document_id, cx)
+    });
     match detached {
         Ok(document) => {
             target_workspace.update(cx, |workspace, cx| {
@@ -3147,7 +3201,11 @@ fn move_document_between_windows(
 
 /// Brings forward the window and tab already showing `path`, if another
 /// window has it open, instead of opening a second copy.
-fn focus_document_in_other_window(own: gpui::EntityId, path: &std::path::Path, cx: &mut App) -> bool {
+fn focus_document_in_other_window(
+    own: gpui::EntityId,
+    path: &std::path::Path,
+    cx: &mut App,
+) -> bool {
     for entry in document_window_entries(cx) {
         let Some(workspace) = entry.workspace.upgrade() else {
             continue;
@@ -3158,8 +3216,12 @@ fn focus_document_in_other_window(own: gpui::EntityId, path: &std::path::Path, c
         let Some(document_id) = workspace.read(cx).document_id_for_path(path, cx) else {
             continue;
         };
-        workspace.update(cx, |workspace, cx| workspace.activate_document(document_id, cx));
-        let _ = entry.handle.update(cx, |_, window, _| window.activate_window());
+        workspace.update(cx, |workspace, cx| {
+            workspace.activate_document(document_id, cx)
+        });
+        let _ = entry
+            .handle
+            .update(cx, |_, window, _| window.activate_window());
         return true;
     }
     false
@@ -3177,9 +3239,7 @@ fn begin_startup_launch(
     match document_recovery_store.as_ref() {
         Some(Ok(store)) => {
             document_workspace.update(cx, |workspace, cx| {
-                workspace.defer_startup_open(deferred_startup_open(
-                    launch_action.clone(),
-                ));
+                workspace.defer_startup_open(deferred_startup_open(launch_action.clone()));
                 workspace.begin_startup_recovery_inspection(cx);
             });
             let store = store.clone();
@@ -3298,10 +3358,10 @@ mod updates {
     use butter_paper::{
         application_close_workspace::RequestApplicationQuit,
         application_shell::{
-            CheckForUpdates, RestartToUpdate, SetUpdateFrequencyAtStartup,
-            SetUpdateFrequencyDaily, SetUpdateFrequencyEverySixHours,
-            SetUpdateFrequencyEveryTwelveHours, SetUpdateFrequencyHourly,
-            SetUpdateFrequencyMonthly, SetUpdateFrequencyNever, SetUpdateFrequencyWeekly,
+            CheckForUpdates, RestartToUpdate, SetUpdateFrequencyAtStartup, SetUpdateFrequencyDaily,
+            SetUpdateFrequencyEverySixHours, SetUpdateFrequencyEveryTwelveHours,
+            SetUpdateFrequencyHourly, SetUpdateFrequencyMonthly, SetUpdateFrequencyNever,
+            SetUpdateFrequencyWeekly,
         },
         native_application::{UpdateMenuState, UpdateMenuStatus},
         native_storage_layout::NativeReleaseChannel,
@@ -3342,7 +3402,9 @@ mod updates {
         let current = ReleaseVersion::parse(env!("CARGO_PKG_VERSION"))
             .expect("the package version is major.minor.patch");
         let store = UpdateSettingsStore::new(settings_root, channel);
-        let settings = store.load().unwrap_or_else(|_| UpdateSettings::defaults(channel));
+        let settings = store
+            .load()
+            .unwrap_or_else(|_| UpdateSettings::defaults(channel));
         // Production builds only: development builds never replace themselves.
         let installation = (!cfg!(feature = "development-pdfium-override"))
             .then(|| std::env::current_exe().ok())
@@ -3394,23 +3456,26 @@ mod updates {
         }
         // Scheduled checks: shortly after launch, then hourly re-evaluation.
         cx.spawn(async move |cx| {
-            cx.background_executor().timer(Duration::from_secs(10)).await;
+            cx.background_executor()
+                .timer(Duration::from_secs(10))
+                .await;
             let mut startup = true;
             loop {
-                let due = cx
-                    .update(|cx| {
-                        let settings = &cx.global::<UpdateService>().settings;
-                        let now = format_canonical_utc_timestamp(std::time::SystemTime::now());
-                        match settings.frequency() {
-                            UpdateFrequency::Startup => startup,
-                            _ => settings.is_check_due(&now).unwrap_or(true),
-                        }
-                    });
+                let due = cx.update(|cx| {
+                    let settings = &cx.global::<UpdateService>().settings;
+                    let now = format_canonical_utc_timestamp(std::time::SystemTime::now());
+                    match settings.frequency() {
+                        UpdateFrequency::Startup => startup,
+                        _ => settings.is_check_due(&now).unwrap_or(true),
+                    }
+                });
                 if due {
                     let _ = cx.update(|cx| check(cx, false));
                 }
                 startup = false;
-                cx.background_executor().timer(Duration::from_secs(60 * 60)).await;
+                cx.background_executor()
+                    .timer(Duration::from_secs(60 * 60))
+                    .await;
             }
         })
         .detach();
@@ -3453,9 +3518,9 @@ mod updates {
 
     fn notify(cx: &mut App, notification: Notification) {
         if let Some(entry) = super::active_document_window(cx) {
-            let _ = entry
-                .handle
-                .update(cx, |_, window, cx| window.push_notification(notification, cx));
+            let _ = entry.handle.update(cx, |_, window, cx| {
+                window.push_notification(notification, cx)
+            });
         }
     }
 
@@ -3516,8 +3581,10 @@ mod updates {
                     let current = cx.global::<UpdateService>().current;
                     notify(
                         cx,
-                        Notification::info(format!("Butter Paper {current} is the latest version."))
-                            .title("You’re up to date"),
+                        Notification::info(format!(
+                            "Butter Paper {current} is the latest version."
+                        ))
+                        .title("You’re up to date"),
                     );
                 }
             }
@@ -3586,15 +3653,15 @@ mod updates {
     fn notify_ready(cx: &mut App, version: ReleaseVersion) {
         notify(
             cx,
-            Notification::success(
-                "Restart now to finish updating, or it installs when you quit.",
-            )
-            .title(format!("Butter Paper {version} is ready"))
-            .action(|_, _, _| {
-                Button::new("restart-to-update")
-                    .label("Restart")
-                    .on_click(|_, window, cx| window.dispatch_action(Box::new(RestartToUpdate), cx))
-            }),
+            Notification::success("Restart now to finish updating, or it installs when you quit.")
+                .title(format!("Butter Paper {version} is ready"))
+                .action(|_, _, _| {
+                    Button::new("restart-to-update")
+                        .label("Restart")
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(RestartToUpdate), cx)
+                        })
+                }),
         );
     }
 }
@@ -4033,7 +4100,7 @@ mod review_driver {
 
     #[cfg(target_os = "macos")]
     unsafe fn float_all_windows() {
-        use std::ffi::{c_void, CString};
+        use std::ffi::{CString, c_void};
         #[link(name = "objc")]
         unsafe extern "C" {
             fn objc_getClass(name: *const std::ffi::c_char) -> *mut c_void;
@@ -4050,7 +4117,10 @@ mod review_driver {
         let send_level: unsafe extern "C" fn(*mut c_void, *mut c_void, isize) =
             unsafe { std::mem::transmute(objc_msgSend as unsafe extern "C" fn()) };
         unsafe {
-            let app = send0(objc_getClass(CString::new("NSApplication").unwrap().as_ptr()), sel("sharedApplication"));
+            let app = send0(
+                objc_getClass(CString::new("NSApplication").unwrap().as_ptr()),
+                sel("sharedApplication"),
+            );
             let windows = send0(app, sel("windows"));
             for index in 0..send_count(windows, sel("count")) {
                 let window = send_index(windows, sel("objectAtIndex:"), index);
@@ -4175,7 +4245,9 @@ mod review_driver {
                 }
                 process.status()
             } else {
-                std::process::Command::new("sh").args(["-c", &command]).status()
+                std::process::Command::new("sh")
+                    .args(["-c", &command])
+                    .status()
             };
             writeln!(log, "{name} screen capture: {status:?}").unwrap();
         }

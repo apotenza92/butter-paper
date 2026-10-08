@@ -81,7 +81,8 @@ impl Args {
     }
 
     pub fn required(&mut self, name: &str) -> Result<String> {
-        self.value(name)?.ok_or_else(|| format!("{name} is required"))
+        self.value(name)?
+            .ok_or_else(|| format!("{name} is required"))
     }
 
     pub fn flag(&mut self, name: &str) -> bool {
@@ -107,7 +108,10 @@ impl Args {
 
 /// The repository root (the parent of this crate).
 pub fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 /// The app crate.
@@ -117,7 +121,9 @@ pub fn app_crate() -> PathBuf {
 
 /// Cargo's target directory for this workspace.
 pub fn target_dir() -> PathBuf {
-    env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|| root().join("target"))
+    env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root().join("target"))
 }
 
 pub fn sha256(bytes: &[u8]) -> String {
@@ -182,13 +188,21 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
 
 /// Runs a command with inherited output; fails on a non-zero exit.
 pub fn exec(command: &mut Command) -> Result {
-    let status = command.status().map_err(|error| format!("{}: {error}", describe(command)))?;
-    if status.success() { Ok(()) } else { Err(format!("{} failed ({status})", describe(command))) }
+    let status = command
+        .status()
+        .map_err(|error| format!("{}: {error}", describe(command)))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{} failed ({status})", describe(command)))
+    }
 }
 
 /// Runs a command and returns its trimmed standard output.
 pub fn output(command: &mut Command) -> Result<String> {
-    let output = command.output().map_err(|error| format!("{}: {error}", describe(command)))?;
+    let output = command
+        .output()
+        .map_err(|error| format!("{}: {error}", describe(command)))?;
     if !output.status.success() {
         return Err(format!(
             "{} failed ({}): {}",
@@ -218,14 +232,26 @@ pub fn download(url: &str, path: &Path, sha256: &str) -> Result {
         create_dir(parent)?;
     }
     let partial = path.with_extension("partial");
-    exec(command("curl")
-        .args(["--fail", "--location", "--silent", "--show-error", "--retry", "3", "--output"])
-        .arg(&partial)
-        .arg(url))?;
+    exec(
+        command("curl")
+            .args([
+                "--fail",
+                "--location",
+                "--silent",
+                "--show-error",
+                "--retry",
+                "3",
+                "--output",
+            ])
+            .arg(&partial)
+            .arg(url),
+    )?;
     let actual = sha256_file(&partial)?;
     if actual != sha256 {
         let _ = fs::remove_file(&partial);
-        return Err(format!("{url}: SHA-256 {actual} does not match the pinned {sha256}"));
+        return Err(format!(
+            "{url}: SHA-256 {actual} does not match the pinned {sha256}"
+        ));
     }
     fs::rename(&partial, path).map_err(|error| format!("{}: {error}", path.display()))
 }

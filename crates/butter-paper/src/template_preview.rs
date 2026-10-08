@@ -6,8 +6,7 @@
 
 use gpui::{
     AnyElement, App, InteractiveElement as _, IntoElement, ParentElement as _, Rgba, SharedString,
-    Styled as _, div,
-    prelude::FluentBuilder as _, px, rgb, svg,
+    Styled as _, div, prelude::FluentBuilder as _, px, rgb, svg,
 };
 use gpui_component::{ActiveTheme as _, h_flex, v_flex};
 
@@ -35,7 +34,11 @@ impl TemplatePreview {
                 "{} × {} mm · {}",
                 format_mm(request.width_mm),
                 format_mm(request.height_mm),
-                if request.width_mm >= request.height_mm { "Landscape" } else { "Portrait" }
+                if request.width_mm >= request.height_mm {
+                    "Landscape"
+                } else {
+                    "Portrait"
+                }
             ),
             Self::ImportedPdf { page_count } => format!(
                 "{page_count} {} · Imported PDF",
@@ -77,7 +80,10 @@ fn pattern_style(pattern: &GeneratedPattern) -> (&'static str, f64, &str) {
 
 fn parse_hex(color: &str) -> Option<Rgba> {
     let hex = color.strip_prefix('#')?;
-    (hex.len() == 6).then(|| u32::from_str_radix(hex, 16).ok()).flatten().map(rgb)
+    (hex.len() == 6)
+        .then(|| u32::from_str_radix(hex, 16).ok())
+        .flatten()
+        .map(rgb)
 }
 
 /// Pattern artwork in page millimetres, drawn at the page's real spacing.
@@ -105,14 +111,22 @@ pub fn template_preview_svg(request: &GeneratedDocumentRequest) -> String {
         let (nx, ny) = (-sin, cos);
         let reach = width.hypot(height);
         let corners = [(0., 0.), (width, 0.), (0., height), (width, height)];
-        let (low, high) = corners.iter().fold((f64::MAX, f64::MIN), |(low, high), (x, y)| {
-            let d = x * nx + y * ny;
-            (low.min(d), high.max(d))
-        });
+        let (low, high) = corners
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(low, high), (x, y)| {
+                let d = x * nx + y * ny;
+                (low.min(d), high.max(d))
+            });
         let mut offset = (low / gap).ceil() * gap;
         while offset <= high {
             let (cx, cy) = (nx * offset, ny * offset);
-            line(marks, cx - cos * reach, cy - sin * reach, cx + cos * reach, cy + sin * reach);
+            line(
+                marks,
+                cx - cos * reach,
+                cy - sin * reach,
+                cx + cos * reach,
+                cy + sin * reach,
+            );
             offset += gap;
         }
     };
@@ -124,7 +138,9 @@ pub fn template_preview_svg(request: &GeneratedDocumentRequest) -> String {
             while y < height {
                 let mut x = step / 2.;
                 while x < width {
-                    dots.push_str(&format!("<circle cx=\"{x:.2}\" cy=\"{y:.2}\" r=\"{radius:.2}\"/>"));
+                    dots.push_str(&format!(
+                        "<circle cx=\"{x:.2}\" cy=\"{y:.2}\" r=\"{radius:.2}\"/>"
+                    ));
                     x += step;
                 }
                 y += step;
@@ -246,7 +262,8 @@ pub fn template_preview_card(
     width: f32,
     cx: &App,
 ) -> AnyElement {
-    let patterned = matches!(preview, TemplatePreview::Generated(request) if request.pattern.is_some());
+    let patterned =
+        matches!(preview, TemplatePreview::Generated(request) if request.pattern.is_some());
     v_flex()
         .w(px(width))
         .flex_none()
@@ -264,7 +281,13 @@ pub fn template_preview_card(
                         .flex_1()
                         .min_w_0()
                         .gap_0p5()
-                        .child(div().truncate().text_sm().font_weight(gpui::FontWeight::MEDIUM).child(name.into()))
+                        .child(
+                            div()
+                                .truncate()
+                                .text_sm()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .child(name.into()),
+                        )
                         .child(
                             div()
                                 .text_xs()
@@ -306,28 +329,52 @@ mod tests {
         let imported = TemplatePreview::ImportedPdf { page_count: 1 };
         assert_eq!(imported.summary(), "1 page · Imported PDF");
         assert_eq!(imported.grid_summary(), "Page grid not defined");
-        let portrait = GeneratedDocumentRequest { width_mm: 210., height_mm: 297.5, ..GeneratedDocumentRequest::a3_landscape_blank() };
-        assert_eq!(TemplatePreview::Generated(portrait).summary(), "210 × 297.5 mm · Portrait");
+        let portrait = GeneratedDocumentRequest {
+            width_mm: 210.,
+            height_mm: 297.5,
+            ..GeneratedDocumentRequest::a3_landscape_blank()
+        };
+        assert_eq!(
+            TemplatePreview::Generated(portrait).summary(),
+            "210 × 297.5 mm · Portrait"
+        );
     }
 
     #[test]
     fn preview_artwork_uses_page_millimetres_and_real_spacing() {
-        for id in ["built-in-dots", "built-in-grid", "built-in-lined", "built-in-isometric", "built-in-triangle"] {
+        for id in [
+            "built-in-dots",
+            "built-in-grid",
+            "built-in-lined",
+            "built-in-isometric",
+            "built-in-triangle",
+        ] {
             let request = crate::template_library::built_in_request(id).unwrap();
             let svg = template_preview_svg(&request);
             assert!(svg.contains("viewBox=\"0 0 420 297\""), "{id}: {svg}");
             assert!(svg.contains("data-spacing-mm=\"10\""), "{id}");
             assert!(svg.contains("M") || svg.contains("<circle"), "{id}");
         }
-        let grid = template_preview_svg(&crate::template_library::built_in_request("built-in-grid").unwrap());
+        let grid = template_preview_svg(
+            &crate::template_library::built_in_request("built-in-grid").unwrap(),
+        );
         // 10 mm across a 297 mm page: 29 horizontal and 42 vertical lines plus edges.
         assert!(grid.matches('M').count() >= 29 + 42);
-        assert!(template_preview_svg(&GeneratedDocumentRequest::a3_landscape_blank()).contains("data-pattern=\"blank\""));
+        assert!(
+            template_preview_svg(&GeneratedDocumentRequest::a3_landscape_blank())
+                .contains("data-pattern=\"blank\"")
+        );
     }
 
     #[test]
     fn pages_fit_the_frame_at_their_aspect_ratio() {
-        assert_eq!(fitted_page(420., 297., (200., 100.)), (100. * 420. / 297., 100.));
-        assert_eq!(fitted_page(210., 297., (100., 200.)), (100., 100. * 297. / 210.));
+        assert_eq!(
+            fitted_page(420., 297., (200., 100.)),
+            (100. * 420. / 297., 100.)
+        );
+        assert_eq!(
+            fitted_page(210., 297., (100., 200.)),
+            (100., 100. * 297. / 210.)
+        );
     }
 }

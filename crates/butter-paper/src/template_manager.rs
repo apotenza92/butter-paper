@@ -170,7 +170,8 @@ impl ListDelegate for TemplateListDelegate {
                 .group(group_id.clone())
                 .rounded_md()
                 .when(selected, |row| {
-                    row.bg(cx.theme().muted).border_color(gpui::transparent_black())
+                    row.bg(cx.theme().muted)
+                        .border_color(gpui::transparent_black())
                 })
                 .child(
                     v_flex()
@@ -1253,7 +1254,9 @@ impl TemplateManagerView {
         else {
             return false;
         };
-        if model.records() == self.model.records() && model.last_used_id() == self.model.last_used_id() {
+        if model.records() == self.model.records()
+            && model.last_used_id() == self.model.last_used_id()
+        {
             return false;
         }
         self.model = model;

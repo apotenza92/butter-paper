@@ -414,9 +414,6 @@ impl TemplateLibrary {
     }
 }
 
-
-
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct StoredIndex {
     version: u32,

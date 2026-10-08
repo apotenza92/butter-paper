@@ -514,8 +514,7 @@ mod tests {
         let executable = absolute("/Applications/Butter Paper.app/Contents/MacOS/butter-paper");
         let worker =
             absolute("/Applications/Butter Paper.app/Contents/MacOS/butter-paper-pdf-worker");
-        let pdfium =
-            absolute("/Applications/Butter Paper.app/Contents/Frameworks/libpdfium.dylib");
+        let pdfium = absolute("/Applications/Butter Paper.app/Contents/Frameworks/libpdfium.dylib");
         let probe = FakeProbe::default()
             .regular(&executable, true)
             .regular(&worker, true)

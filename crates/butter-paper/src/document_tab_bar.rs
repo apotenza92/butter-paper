@@ -1475,7 +1475,11 @@ impl Render for DocumentTabBarTemplateSeam {
                 };
                 Popover::new(format!("document-tab-dirty-close-popover-{}", tab.id))
                     .anchor(Anchor::TopRight)
-                    .open(crate::overlay_state::sync_overlay_open(format!("tab-dirty-close-{}", tab.id), confirmation_open, cx))
+                    .open(crate::overlay_state::sync_overlay_open(
+                        format!("tab-dirty-close-{}", tab.id),
+                        confirmation_open,
+                        cx,
+                    ))
                     .mouse_button(trigger_mouse_button)
                     .overlay_closable(!confirmation_busy)
                     .track_focus(&confirmation_focus)

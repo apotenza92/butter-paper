@@ -15,7 +15,7 @@ pub use tool_properties::{
 };
 
 use crate::annotation_model::{
-    Annotation, AnnotationCommand, TextAlignment, AnnotationDocument, AnnotationEdit, AnnotationError,
+    Annotation, AnnotationCommand, AnnotationDocument, AnnotationEdit, AnnotationError,
     AnnotationKind, AnnotationScene, AnnotationSelectionSupplement, AnnotationSnapshot,
     ArcAnnotation, ArcControlPoint, CalloutAnnotation, CalloutAppearance, CloudAnnotation,
     CloudPlusAnnotation, CloudPlusAppearance, CommandOutcome, DecodedRgbaAsset,
@@ -28,8 +28,8 @@ use crate::annotation_model::{
     SceneAnnotation, SceneArc, SceneCallout, SceneCloud, SceneCloudPlus, SceneDimension,
     SceneInteractionFeedback, SceneLength, SceneMeasurementPath, SceneRectangle, SceneRedact,
     SceneSnapshot, SceneStraightLine, SceneVertexPath, SnapshotAnnotation, SpatialQueryWork,
-    StraightLineAnnotation, StraightLineAppearance, StrokeStyle, TextBoxAnnotation, TextBoxStyle,
-    VertexPathAnnotation, VertexPathKind,
+    StraightLineAnnotation, StraightLineAppearance, StrokeStyle, TextAlignment, TextBoxAnnotation,
+    TextBoxStyle, VertexPathAnnotation, VertexPathKind,
 };
 use crate::cloud_plus_routing::{
     CloudPlusObstacle, CloudPlusRoutingContext, place_initial_cloud_plus_text_box,
@@ -48,9 +48,8 @@ use crate::semantic_snapping::{
     AcquiredTrackingPoint, ObjectSnapTrackingResult, OrthogonalAxis, PageGridDefinition,
     RelationshipSnapGuide, SemanticSnapDecision, SemanticSnapError, SemanticSnapIndex,
     SemanticSnapSettings, SemanticSnapSource, SnapGuideRect, annotation_guide_rects,
-    combined_guide_bounds,
-    find_equal_size_snap, find_equal_spacing_snap, find_object_snap_tracking_point,
-    moving_annotation_snap_anchor_points,
+    combined_guide_bounds, find_equal_size_snap, find_equal_spacing_snap,
+    find_object_snap_tracking_point, moving_annotation_snap_anchor_points,
     moving_annotation_snap_anchor_points_with_selection_supplement,
     quantize_pdf_distance_to_mm_increment, resolve_construction_grid_point,
     toggle_acquired_tracking_point,
@@ -2082,13 +2081,20 @@ impl AnnotationAdapter {
             .documents
             .get(&document_id)
             .map_or(0, AnnotationDocument::revision);
-        let fresh = self.annotation_snap.as_ref().is_some_and(|cache| {
-            let (cached_document, cached_page, cached_revision, cached_excluded, cached_supplement) =
-                &cache.key;
-            (*cached_document, *cached_page, *cached_revision) == (document_id, page_index, revision)
-                && cached_excluded.as_slice() == excluded_owner_ids
-                && cached_supplement == supplement
-        });
+        let fresh =
+            self.annotation_snap.as_ref().is_some_and(|cache| {
+                let (
+                    cached_document,
+                    cached_page,
+                    cached_revision,
+                    cached_excluded,
+                    cached_supplement,
+                ) = &cache.key;
+                (*cached_document, *cached_page, *cached_revision)
+                    == (document_id, page_index, revision)
+                    && cached_excluded.as_slice() == excluded_owner_ids
+                    && cached_supplement == supplement
+            });
         if !fresh {
             let scene = self.document_scene(document_id, page_index);
             let index = SemanticSnapIndex::from_annotation_scene_with_selection_supplement(
@@ -8827,9 +8833,15 @@ impl AnnotationAdapter {
             if wide && tall {
                 draft.points = vec![
                     start,
-                    PdfPoint { x: point.x, y: start.y },
+                    PdfPoint {
+                        x: point.x,
+                        y: start.y,
+                    },
                     point,
-                    PdfPoint { x: start.x, y: point.y },
+                    PdfPoint {
+                        x: start.x,
+                        y: point.y,
+                    },
                 ];
                 draft.hover = start;
                 let document_id = draft.document_id;

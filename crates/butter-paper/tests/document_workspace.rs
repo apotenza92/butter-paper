@@ -15,10 +15,9 @@ use std::{
 };
 
 use butter_paper::annotation_adapter::{
-    AnnotationAdapter, AnnotationTool, PointerPhaseOutcome,
-    StraightLinePropertyEdit, ellipse_resize_handle_point_for_rect,
-    ellipse_rotation_handle_point_for_rect, snapshot_resize_handle_point,
-    snapshot_rotation_handle_point,
+    AnnotationAdapter, AnnotationTool, PointerPhaseOutcome, StraightLinePropertyEdit,
+    ellipse_resize_handle_point_for_rect, ellipse_rotation_handle_point_for_rect,
+    snapshot_resize_handle_point, snapshot_rotation_handle_point,
 };
 use butter_paper::annotation_model::{
     Annotation, AnnotationSnapshot, ArcAnnotation, ArcControlPoint, BlendMode, CloudAnnotation,
@@ -49,7 +48,7 @@ use butter_paper::document_tab_bar::{
     TEMPLATE_PRIMARY_ID, document_tab_drag_id, document_tab_drop_target_id,
 };
 use butter_paper::document_workspace::{
-    DocumentTabTransferEvent, ActualSize, ApplyDisposition, CloseDocument, CloseRequestDisposition, ContinuousView,
+    ActualSize, ApplyDisposition, CloseDocument, CloseRequestDisposition, ContinuousView,
     DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID, DOCUMENT_ACTIVE_INSPECTOR_SLOT_ID,
     DOCUMENT_ARC_PREVIEW_MARKER_ID, DOCUMENT_ARC_TOOL_ID, DOCUMENT_AREA_TOOL_ID,
     DOCUMENT_ARROW_TOOL_ID, DOCUMENT_CALLOUT_TOOL_ID, DOCUMENT_CLOUD_PLUS_TOOL_ID,
@@ -64,7 +63,8 @@ use butter_paper::document_workspace::{
     DOCUMENT_PUBLICATION_WARNING_CLOSE_ID, DOCUMENT_RECOVERY_ALERT_ID,
     DOCUMENT_RECOVERY_PREPARATION_ALERT_ID, DOCUMENT_RECOVERY_PREPARATION_RETRY_ID,
     DOCUMENT_RECOVERY_REBASE_RETRY_ID, DOCUMENT_RECOVERY_RETRY_ID, DOCUMENT_RECTANGLE_TOOL_ID,
-    DOCUMENT_REDACT_PENDING_ALERT_ID, DOCUMENT_REDACT_TOOL_ID, DOCUMENT_SAVE_ERROR_ALERT_ID,
+    DOCUMENT_REDACT_PENDING_ALERT_ID, DOCUMENT_REDACT_TOOL_ID,
+    DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID, DOCUMENT_SAVE_ERROR_ALERT_ID,
     DOCUMENT_SAVE_ERROR_DISMISS_ID, DOCUMENT_SAVE_ERROR_RETRY_ID, DOCUMENT_SAVE_ERROR_SAVE_AS_ID,
     DOCUMENT_SELECT_TOOL_ID, DOCUMENT_SESSION_TABS_ID, DOCUMENT_SIGNATURE_ADD_ID,
     DOCUMENT_SIGNATURE_CANVAS_ID, DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID, DOCUMENT_SIGNATURE_CLEAR_ID,
@@ -75,16 +75,16 @@ use butter_paper::document_workspace::{
     DOCUMENT_SNAP_DIMENSION_INCREMENT_ID, DOCUMENT_SNAP_GUIDES_ID, DOCUMENT_SNAP_MARKUP_ID,
     DOCUMENT_SNAP_POPOVER_ID, DOCUMENT_SNAP_SETTINGS_ID, DOCUMENT_SNAPSHOT_TOOL_ID,
     DOCUMENT_TEXT_BOX_EDITOR_ID, DOCUMENT_TEXT_BOX_TOOL_ID, DOCUMENT_THUMBNAIL_STRIP_ID,
-    DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID, DOCUMENT_TOOLBAR_SCROLL_ID, DOCUMENT_VIEWER_PROGRESS_ID,
-    DOCUMENT_VIEWER_STATUS_ID, RAIL_OVERFLOW_TOOLTIP,
+    DOCUMENT_TOOLBAR_SCROLL_ID, DOCUMENT_VIEWER_PROGRESS_ID, DOCUMENT_VIEWER_STATUS_ID,
     DOCUMENT_VIEWPORT_ID, DOCUMENT_WORKSPACE_ID, DeferredStartupOpen, DirtyCloseResolution,
     DocumentId, DocumentOpenBatchDisposition, DocumentOpenBatchRequest, DocumentOpenBatchStatus,
     DocumentOpenOrigin, DocumentSaveFailureKind, DocumentSaveFailureOperation, DocumentSaveRoute,
-    DocumentWorkspace, FitPage, FitWidth, GeneratedTemplateRequestDisposition,
-    NativeDocumentOpener, NativeDocumentResource, NativeDocumentSaveStatus, NativeDocumentSaver,
-    NativeDocumentStatus, NavigateNextPage, NavigatePreviousPage, OpenDocumentRequest,
-    OpenedNativeDocument, PdfDocumentSaver, PdfiumWorkerBackend, RasterSurface, RotatePageRight,
-    Save, SaveAs, SaveDestination, SaveDocumentRequest, SavedNativeDocument, SinglePageView,
+    DocumentTabTransferEvent, DocumentWorkspace, FitPage, FitWidth,
+    GeneratedTemplateRequestDisposition, NativeDocumentOpener, NativeDocumentResource,
+    NativeDocumentSaveStatus, NativeDocumentSaver, NativeDocumentStatus, NavigateNextPage,
+    NavigatePreviousPage, OpenDocumentRequest, OpenedNativeDocument, PdfDocumentSaver,
+    PdfiumWorkerBackend, RAIL_OVERFLOW_TOOLTIP, RasterSurface, RotatePageRight, Save, SaveAs,
+    SaveDestination, SaveDocumentRequest, SavedNativeDocument, SinglePageView,
     StartupRecoveryAvailability, StartupRecoveryItem, ThumbnailSurface, VIEWPORT_OPEN_DOCUMENT_ID,
     ViewerFitPreset, ViewerRenderQuality, ZoomIn, ZoomOut, annotation_resize_cursor_style,
     document_annotation_layer_id, document_session_close_id, document_session_tab_id,
@@ -134,9 +134,7 @@ use butter_paper::page_scale_control::{
     PAGE_SCALE_TRIGGER_ID, PAGE_SCALE_Y_PDF_LENGTH_ID, PAGE_SCALE_Y_REAL_LENGTH_ID, PageScaleMode,
     PageScalePagesMode,
 };
-use butter_paper::page_view_control::{
-    CONTINUOUS_PRIMARY_ID, SINGLE_PAGE_PRIMARY_ID,
-};
+use butter_paper::page_view_control::{CONTINUOUS_PRIMARY_ID, SINGLE_PAGE_PRIMARY_ID};
 use butter_paper::page_view_control::{PageViewMode, WheelBehavior};
 use butter_paper::pdf_engine::{
     InPlacePublicationCapability, PdfPersistenceSession, PdfPublicationOutcome,
@@ -308,9 +306,6 @@ fn run_gpui_test_with_native_main_stack(name: &'static str, test: fn(&mut TestAp
     }
 }
 
-
-
-
 fn native_annotation_object_id(document: &LopdfDocument, name: &str) -> ObjectId {
     for (_, page_id) in document.get_pages() {
         let page = document
@@ -349,8 +344,6 @@ fn native_annotation_object_id(document: &LopdfDocument, name: &str) -> ObjectId
     panic!("native annotation {name:?} must exist");
 }
 
-
-
 fn save_with_unrelated_rectangle_edit(source: &Path, target: &Path, generation: u64) {
     let session = PdfPersistenceSession::open(source).unwrap();
     let mut snapshot = persistence_annotation_snapshot(&session);
@@ -379,8 +372,6 @@ fn save_with_unrelated_rectangle_edit(source: &Path, target: &Path, generation: 
         })
         .expect("the unrelated save must succeed");
 }
-
-
 
 fn append_page_one_annotation(document: &mut LopdfDocument, annotation: LopdfObject) {
     let annotation_id = document.add_object(annotation);
@@ -2147,8 +2138,6 @@ fn real_page_content_and_form_xobjects_honour_optional_content_before_and_after_
     );
 }
 
-
-
 fn scroll_annotation_target_into_view(
     cx: &mut gpui::VisualTestContext,
     workspace: &gpui::Entity<DocumentWorkspace>,
@@ -2591,8 +2580,19 @@ fn qpdf_canonical_straight_line_dictionary(
     assert_eq!(dictionary["/Subtype"], "/Line");
     // Revu's Line keys; opacity is present only when translucent.
     for key in [
-        "/L", "/Rect", "/BS", "/C", "/F", "/NM", "/Subj", "/T", "/M", "/CreationDate", "/P",
-        "/PitchRun", "/SlopeType",
+        "/L",
+        "/Rect",
+        "/BS",
+        "/C",
+        "/F",
+        "/NM",
+        "/Subj",
+        "/T",
+        "/M",
+        "/CreationDate",
+        "/P",
+        "/PitchRun",
+        "/SlopeType",
     ] {
         assert!(
             !dictionary[key].is_null(),
@@ -2600,7 +2600,10 @@ fn qpdf_canonical_straight_line_dictionary(
         );
     }
     for key in ["/Border", "/ca"] {
-        assert!(dictionary.get(key).is_none(), "{native_name} must not contain {key}");
+        assert!(
+            dictionary.get(key).is_none(),
+            "{native_name} must not contain {key}"
+        );
     }
     assert_eq!(dictionary["/BS"]["/S"], "/S");
     assert!(dictionary["/BS"].get("/D").is_none());
@@ -2679,7 +2682,10 @@ fn qpdf_assert_pending_redact_native(path: &Path, expected: &RedactAnnotation) -
     assert_eq!(dictionary["/IC"], serde_json::json!([0, 0, 0]));
     // The pending-mark look is the viewer's; the file holds only ISO keys.
     for key in ["/CA", "/ca", "/BPAppearance"] {
-        assert!(dictionary.get(key).is_none(), "pending Redact must not contain {key}");
+        assert!(
+            dictionary.get(key).is_none(),
+            "pending Redact must not contain {key}"
+        );
     }
     let expected_rect = [
         expected.rect.x,
@@ -2754,7 +2760,10 @@ fn qpdf_assert_snapshot_native(
     assert_eq!(dictionary["/IT"], "/StampSnapshot");
     assert_eq!(dictionary["/Subj"], "Snapshot");
     for key in ["/Contents", "/BPAssetId", "/ca"] {
-        assert!(dictionary.get(key).is_none(), "Snapshot must not contain {key}");
+        assert!(
+            dictionary.get(key).is_none(),
+            "Snapshot must not contain {key}"
+        );
     }
     assert_eq!(dictionary["/F"], 132);
     assert!((number(&dictionary["/Rotation"]) - expected.rotation_degrees()).abs() < 0.001);
@@ -2810,7 +2819,10 @@ fn qpdf_assert_snapshot_native(
         radians.sin(),
         radians.cos(),
     ]) {
-        assert!((actual - expected).abs() < 0.001, "Snapshot /Matrix changed");
+        assert!(
+            (actual - expected).abs() < 0.001,
+            "Snapshot /Matrix changed"
+        );
     }
     let gs = &form["/Resources"]["/ExtGState"]["/GS0"];
     assert!((number(&gs["/CA"]) - expected.opacity()).abs() < 0.001);
@@ -3019,7 +3031,10 @@ fn qpdf_assert_vertex_path_native(path: &Path, expected: &VertexPathAnnotation) 
     let gs = &stream["/Resources"]["/ExtGState"]["/GS0"];
     assert_eq!(gs["/Type"], "/ExtGState");
     assert!(close(number(&gs["/CA"]), expected.appearance.opacity()));
-    assert!(close(number(&gs["/ca"]), expected.appearance.fill_opacity()));
+    assert!(close(
+        number(&gs["/ca"]),
+        expected.appearance.fill_opacity()
+    ));
     let object_number = appearance_ref.split_whitespace().next().unwrap();
     let content = std::process::Command::new("qpdf")
         .arg(format!("--show-object={object_number}"))
@@ -3206,7 +3221,10 @@ fn qpdf_assert_measurement_path_native(path: &Path, expected: &MeasurementPathAn
     assert_eq!(measure["/Subtype"], "/RL");
     // Revu's scale string and paper-metre target conversion.
     assert_eq!(measure["/R"], "1 in = 2 ft");
-    assert!(close(number(&measure["/TargetUnitConversion"]), 0.0254 / 72.));
+    assert!(close(
+        number(&measure["/TargetUnitConversion"]),
+        0.0254 / 72.
+    ));
     for (key, unit, conversion, force_decimal) in [
         ("/X", "ft", 1. / 36., false),
         ("/D", "ft", 1., false),
@@ -3260,7 +3278,10 @@ fn qpdf_assert_measurement_path_native(path: &Path, expected: &MeasurementPathAn
     assert_eq!(path_state["/Type"], "/ExtGState");
     assert!(close(number(&path_state["/CA"]), opacity));
     // Fill alpha is independent of the stroke opacity, as in Revu.
-    assert!(close(number(&path_state["/ca"]), expected.appearance.fill_opacity()));
+    assert!(close(
+        number(&path_state["/ca"]),
+        expected.appearance.fill_opacity()
+    ));
     let text_state = &stream["/Resources"]["/ExtGState"]["/GSText"];
     assert_eq!(text_state["/Type"], "/ExtGState");
     assert!(close(number(&text_state["/CA"]), opacity));
@@ -3563,7 +3584,9 @@ fn length_scale_is_page_scoped_and_generic_drag_creation_is_rejected() {
     );
     let default_scale = adapter.measurement_calibration(1, 1);
     assert_eq!(default_scale.unit(), "in");
-    adapter.cancel(butter_paper::annotation_model::PointerCancelReason::ToolChanged).unwrap();
+    adapter
+        .cancel(butter_paper::annotation_model::PointerCancelReason::ToolChanged)
+        .unwrap();
     assert!(adapter.document_scene(1, 1).lengths.is_empty());
 
     let legacy_drag = adapter
@@ -4999,8 +5022,7 @@ fn startup_recovery_inspection_blocks_open_until_the_inbox_is_resolved(cx: &mut 
         );
         workspace.finish_startup_recovery_inspection(
             vec![StartupRecoveryItem {
-                id: butter_paper::document_recovery_store::RecoveryDocumentId::generate()
-                    .unwrap(),
+                id: butter_paper::document_recovery_store::RecoveryDocumentId::generate().unwrap(),
                 authority: None,
                 source_path: Some(workspace_save_target("deferred.pdf")),
                 current_revision: None,
@@ -6040,8 +6062,14 @@ fn imported_ellipse_first_press_resizes_preview_and_commits_once_on_native_stack
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot = feedback_handles_at(cx, east);
     let ordinary = feedback_handles_at(cx, north_west);
-    assert!(hot.is_empty(), "item controls are not painted; the item itself is the grab target");
-    assert!(ordinary.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(
+        hot.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
+    assert!(
+        ordinary.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
     let hover_scene = workspace.read_with(cx, |workspace, cx| {
         workspace.annotation_scene(request.document_id, 0, cx)
     });
@@ -6369,8 +6397,7 @@ fn ellipse_workspace_create_edit_lock_delete_undo_and_real_component_tool_are_co
 #[test]
 fn ellipse_workspace_save_as_reconciles_create_edit_and_delete_across_reopens() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
     let created_target = manifest_dir.join(format!(
         "target/test-scratch/ellipse-workspace-created-{}.pdf",
         std::process::id()
@@ -8014,8 +8041,7 @@ fn line_arrow_workspace_arrowhead_uses_the_frozen_pdf_point_geometry() {
 #[test]
 fn line_arrow_workspace_save_as_reconciles_two_typed_reopen_cycles() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
     let created_target = manifest_dir.join(format!(
         "target/test-scratch/line-arrow-create-save-{}.pdf",
         std::process::id()
@@ -10492,8 +10518,8 @@ fn external_source_change_save_failure_keeps_recovery_and_offers_save_as_without
     std::fs::create_dir(&scratch).unwrap();
     let root = scratch.canonicalize().unwrap();
     let _scratch = ScratchDirectories(vec![root.clone()]);
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/bp-multi-page-v1.pdf");
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bp-multi-page-v1.pdf");
     let source = root.join("source.pdf");
     let save_as_target = root.join("recovered.pdf");
     std::fs::copy(&fixture, &source).unwrap();
@@ -14252,8 +14278,14 @@ fn imported_rectangle_pointer_move_and_resize_commit_previewed_geometry_on_nativ
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot_resize = feedback_handles_at(cx, resize_start);
     let ordinary_resize = feedback_handles_at(cx, ordinary_resize);
-    assert!(hot_resize.is_empty(), "item controls are not painted; the item itself is the grab target");
-    assert!(ordinary_resize.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(
+        hot_resize.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
+    assert!(
+        ordinary_resize.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
     assert!(
         feedback_handles_at(cx, hover_rotation).is_empty(),
         "Electron hides Rectangle rotation controls until selection"
@@ -15154,7 +15186,9 @@ fn line_feedback_adapter_distinguishes_length_creation_from_committed_scene() {
 }
 
 #[gpui::test]
-fn line_feedback_workspace_paints_no_endpoint_handles_without_model_mutation(cx: &mut TestAppContext) {
+fn line_feedback_workspace_paints_no_endpoint_handles_without_model_mutation(
+    cx: &mut TestAppContext,
+) {
     cx.update(|cx| {
         gpui_component::init(cx);
         init_document_workspace_actions(cx);
@@ -15524,8 +15558,14 @@ fn unselected_line_arrow_and_length_hover_controls_start_endpoint_drag_on_first_
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let hot_start = feedback_handles_at(cx, hovered_start);
         let ordinary_end = feedback_handles_at(cx, ordinary_end);
-        assert!(hot_start.is_empty(), "item controls are not painted; the item itself is the grab target");
-        assert!(ordinary_end.is_empty(), "item controls are not painted; the item itself is the grab target");
+        assert!(
+            hot_start.is_empty(),
+            "item controls are not painted; the item itself is the grab target"
+        );
+        assert!(
+            ordinary_end.is_empty(),
+            "item controls are not painted; the item itself is the grab target"
+        );
     }
     let after_hover = workspace
         .read_with(cx, |workspace, cx| {
@@ -15802,8 +15842,14 @@ fn unselected_cloud_hover_controls_start_vertex_drag_on_first_press_on_native_st
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot_quads = feedback_handles_at(cx, hot);
     let ordinary_quads = feedback_handles_at(cx, project(points[1]));
-    assert!(hot_quads.is_empty(), "item controls are not painted; the item itself is the grab target");
-    assert!(ordinary_quads.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(
+        hot_quads.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
+    assert!(
+        ordinary_quads.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
     let after_hover = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -15980,9 +16026,18 @@ fn unselected_arc_hover_controls_start_control_drag_on_first_press_on_native_sta
     let hot_quads = feedback_handles_at(cx, hot);
     let ordinary_start = feedback_handles_at(cx, project(start));
     let ordinary_end = feedback_handles_at(cx, project(end));
-    assert!(hot_quads.is_empty(), "item controls are not painted; the item itself is the grab target");
-    assert!(ordinary_start.is_empty(), "item controls are not painted; the item itself is the grab target");
-    assert!(ordinary_end.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(
+        hot_quads.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
+    assert!(
+        ordinary_start.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
+    assert!(
+        ordinary_end.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| {
@@ -16170,8 +16225,14 @@ fn unselected_vertex_path_hover_controls_start_drag_on_first_press_on_native_sta
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot_quads = feedback_handles_at(cx, hot);
     let ordinary = feedback_handles_at(cx, project(points[0]));
-    assert!(hot_quads.is_empty(), "item controls are not painted; the item itself is the grab target");
-    assert!(ordinary.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(
+        hot_quads.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
+    assert!(
+        ordinary.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| {
@@ -16372,8 +16433,14 @@ fn unselected_measurement_path_hover_controls_start_drag_on_first_press_on_nativ
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot_quads = feedback_handles_at(cx, hot);
     let ordinary = feedback_handles_at(cx, project(points[0]));
-    assert!(hot_quads.is_empty(), "item controls are not painted; the item itself is the grab target");
-    assert!(ordinary.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(
+        hot_quads.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
+    assert!(
+        ordinary.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| {
@@ -16981,7 +17048,9 @@ fn path_feedback_adapter_marks_creation_and_vertex_edit_previews() {
 }
 
 #[gpui::test]
-fn path_feedback_workspace_paints_no_vertex_handles_without_model_mutation(cx: &mut TestAppContext) {
+fn path_feedback_workspace_paints_no_vertex_handles_without_model_mutation(
+    cx: &mut TestAppContext,
+) {
     cx.update(|cx| {
         gpui_component::init(cx);
         init_document_workspace_actions(cx);
@@ -17186,8 +17255,11 @@ fn shape_feedback_workspace_paints_no_resize_handles_and_locked_rotation_omissio
                     })
                 }
                 "ellipse" => {
-                    points.extend(RectangleResizeHandle::ALL.map(|handle|
-                        butter_paper::annotation_adapter::ellipse_resize_handle_point_for_rect(rect, 0., handle)));
+                    points.extend(RectangleResizeHandle::ALL.map(|handle| {
+                        butter_paper::annotation_adapter::ellipse_resize_handle_point_for_rect(
+                            rect, 0., handle,
+                        )
+                    }));
                     let mut value =
                         EllipseAnnotation::new(id.clone(), 0, rect, RectangleAppearance::default())
                             .unwrap();
@@ -17334,8 +17406,7 @@ fn shape_feedback_workspace_paints_no_resize_handles_and_locked_rotation_omissio
                     // A 4 px knob ringed by the 1.5 px selection outline stroke.
                     assert_eq!(controls[0].bounds.size.width.0, 9.5 * device_scale);
                     assert!(
-                        controls[0].corner_radii.top_left.0
-                            >= controls[0].bounds.size.width.0 / 2.,
+                        controls[0].corner_radii.top_left.0 >= controls[0].bounds.size.width.0 / 2.,
                         "the rotation knob is a circle"
                     );
                 }
@@ -17852,8 +17923,7 @@ fn fresh_workspace_reopen_advances_generated_annotation_ids_past_imported_ids(
 fn image_picker_delayed_decode_preserves_newer_tool_gesture_and_pan(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let checker =
-        manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
+    let checker = manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -17983,8 +18053,7 @@ fn image_picker_delayed_decode_preserves_newer_tool_gesture_and_pan(cx: &mut Tes
 fn image_picker_cancelled_repick_discards_previous_unplaced_asset(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let checker =
-        manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
+    let checker = manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -19088,9 +19157,7 @@ fn universal_properties_real_controls_keep_live_values_and_one_sidebar(cx: &mut 
 
 #[gpui::test]
 fn universal_tool_defaults_are_scoped_validated_and_history_free(cx: &mut TestAppContext) {
-    use butter_paper::{
-        tool_defaults_panel::ToolDefaultsEvent, tool_properties::ToolProperties,
-    };
+    use butter_paper::{tool_defaults_panel::ToolDefaultsEvent, tool_properties::ToolProperties};
     cx.update(gpui_component::init);
     let (workspace, cx) = cx.add_window_view(|_, cx| DocumentWorkspace::new(cx));
     let request = workspace.update(cx, |workspace, cx| {
@@ -20154,8 +20221,7 @@ fn text_box_input_handler_composition_save_and_reopen_is_coherent(cx: &mut TestA
     assert_eq!(text_box.style().opacity(), 1.);
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     let target = manifest_dir.join(format!(
         "target/test-scratch/text-box-ime-state-{}.pdf",
         std::process::id()
@@ -20410,8 +20476,16 @@ fn unselected_text_box_and_image_hover_controls_start_resize_on_first_press_on_n
             })
             .count()
     };
-    assert_eq!(painted_handles_at(cx, east), 0, "item controls are not painted");
-    assert_eq!(painted_handles_at(cx, west), 0, "item controls are not painted");
+    assert_eq!(
+        painted_handles_at(cx, east),
+        0,
+        "item controls are not painted"
+    );
+    assert_eq!(
+        painted_handles_at(cx, west),
+        0,
+        "item controls are not painted"
+    );
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace.hot_annotation_handle()),
         Some((id.clone(), 3)),
@@ -20472,8 +20546,8 @@ fn unselected_text_box_and_image_hover_controls_start_resize_on_first_press_on_n
         original_rect
     );
 
-    let checker = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/bp-image-checker-v1.png");
+    let checker =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bp-image-checker-v1.png");
     let image_id = MarkupId::new("workspace:image:unselected-first-press").unwrap();
     workspace
         .update(cx, |workspace, cx| {
@@ -21881,8 +21955,7 @@ fn page_scale_dialog_recalibrates_existing_lengths_in_one_history_revision() {
 #[test]
 fn page_scale_dialog_save_as_round_trips_scale_without_a_length_annotation() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
     let target = manifest_dir.join(format!(
         "target/test-scratch/page-scale-only-save-{}.pdf",
         std::process::id()
@@ -21942,8 +22015,7 @@ fn page_scale_dialog_save_as_round_trips_scale_without_a_length_annotation() {
 #[test]
 fn page_rotation_save_as_writes_pdf_rotate_and_independently_reopens_it() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
     let target = manifest_dir.join(format!(
         "target/test-scratch/page-rotation-save-{}.pdf",
         std::process::id()
@@ -22042,8 +22114,7 @@ fn page_rotation_save_as_writes_pdf_rotate_and_independently_reopens_it() {
 #[test]
 fn save_without_rotation_changes_preserves_every_direct_or_inherited_rotate_entry() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     let target = manifest_dir.join(format!(
         "target/test-scratch/page-rotation-untouched-save-{}.pdf",
         std::process::id()
@@ -23981,8 +24052,14 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
         };
     let hot_unselected_knee = unselected_feedback_handles_at(cx, knee_center);
     let ordinary_unselected_start = unselected_feedback_handles_at(cx, leader_start);
-    assert!(hot_unselected_knee.is_empty(), "item controls are not painted; the item itself is the grab target");
-    assert!(ordinary_unselected_start.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(
+        hot_unselected_knee.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
+    assert!(
+        ordinary_unselected_start.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
     let before_first_press = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -24079,11 +24156,17 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
             .collect::<Vec<_>>()
     };
     let stable_knee_handles = feedback_handles_at(cx, knee_center);
-    assert!(stable_knee_handles.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(
+        stable_knee_handles.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
     cx.simulate_mouse_move(knee_center, None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot_knee_handles = feedback_handles_at(cx, knee_center);
-    assert!(hot_knee_handles.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(
+        hot_knee_handles.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
     cx.simulate_mouse_move(project(500., 500.), None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(feedback_handles_at(cx, knee_center).is_empty());
@@ -24376,8 +24459,14 @@ fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor_on_nati
     };
     let hot = feedback_handles_at(cx, hot_vertex);
     let ordinary = feedback_handles_at(cx, ordinary_vertex);
-    assert!(hot.is_empty(), "item controls are not painted; the item itself is the grab target");
-    assert!(ordinary.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(
+        hot.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
+    assert!(
+        ordinary.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
     let before_first_press = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -24783,9 +24872,18 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
     let ordinary_end = painted_handles_at(cx, hover_project(edited.dimensions[0].end));
     let ordinary_offset =
         painted_handles_at(cx, hover_project(edited.dimensions[0].caption_center()));
-    assert!(hot_start.is_empty(), "item controls are not painted; the item itself is the grab target");
-    assert!(ordinary_end.is_empty(), "item controls are not painted; the item itself is the grab target");
-    assert!(ordinary_offset.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(
+        hot_start.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
+    assert!(
+        ordinary_end.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
+    assert!(
+        ordinary_offset.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
 
     let before_first_press = workspace
         .read_with(cx, |workspace, cx| {
@@ -25185,35 +25283,34 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
     );
     assert_eq!(edited.dimensions[0].appearance.text().font_size_pt(), 15.);
 
-    let make_appearance =
-        |dimension: &butter_paper::annotation_model::DimensionAnnotation,
-         stroke: &str,
-         text: &str,
-         opacity: f64| {
-            DimensionAppearance::new(
-                StraightLineAppearance::new(
-                    stroke,
-                    dimension.appearance.line().stroke_width_pt(),
-                    opacity,
-                    dimension.appearance.line().stroke_style(),
-                )
-                .unwrap(),
-                TextBoxStyle::new(
-                    dimension.appearance.text().font_family(),
-                    dimension.appearance.text().font_size_pt(),
-                    text,
-                    opacity,
-                )
-                .and_then(|style| {
-                    style.with_weight_and_alignment(
-                        dimension.appearance.text().weight(),
-                        dimension.appearance.text().alignment(),
-                    )
-                })
-                .unwrap(),
+    let make_appearance = |dimension: &butter_paper::annotation_model::DimensionAnnotation,
+                           stroke: &str,
+                           text: &str,
+                           opacity: f64| {
+        DimensionAppearance::new(
+            StraightLineAppearance::new(
+                stroke,
+                dimension.appearance.line().stroke_width_pt(),
+                opacity,
+                dimension.appearance.line().stroke_style(),
             )
-            .unwrap()
-        };
+            .unwrap(),
+            TextBoxStyle::new(
+                dimension.appearance.text().font_family(),
+                dimension.appearance.text().font_size_pt(),
+                text,
+                opacity,
+            )
+            .and_then(|style| {
+                style.with_weight_and_alignment(
+                    dimension.appearance.text().weight(),
+                    dimension.appearance.text().alignment(),
+                )
+            })
+            .unwrap(),
+        )
+        .unwrap()
+    };
     for (stroke, text) in [("#2563eb", "#ff0000"), ("#2563eb", "#16a34a")] {
         let before = workspace
             .read_with(cx, |workspace, cx| {
@@ -26379,8 +26476,14 @@ fn redact_workspace_renders_real_component_tool_and_truthful_pending_overlay_on_
     };
     let hot = feedback_handles_at(cx, east);
     let ordinary = feedback_handles_at(cx, north_west);
-    assert!(hot.is_empty(), "item controls are not painted; the item itself is the grab target");
-    assert!(ordinary.is_empty(), "item controls are not painted; the item itself is the grab target");
+    assert!(
+        hot.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
+    assert!(
+        ordinary.is_empty(),
+        "item controls are not painted; the item itself is the grab target"
+    );
     let moved_east = project_deselected(350., 252.);
     cx.simulate_mouse_down(east, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(moved_east, Some(MouseButton::Left), Modifiers::default());
@@ -33150,8 +33253,8 @@ fn raster_variation_compares_complete_pixels_instead_of_color_channels() {
 
 #[test]
 fn public_multi_page_fixture_retains_its_reviewed_digest() {
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/bp-multi-page-v1.pdf");
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bp-multi-page-v1.pdf");
     let bytes = std::fs::read(&fixture).expect("the provenance-controlled PDF fixture must exist");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
@@ -33162,8 +33265,7 @@ fn public_multi_page_fixture_retains_its_reviewed_digest() {
 #[test]
 fn deleting_imported_rectangle_removes_only_its_native_pdf_annotation() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
     let target = manifest_dir.join(format!(
         "target/test-scratch/annotation-delete-{}.pdf",
         std::process::id()
@@ -34205,8 +34307,7 @@ fn windows_ordinary_save_routes_to_one_new_target_picker_before_saving(cx: &mut 
 #[test]
 fn native_file_authority_binds_one_exact_non_utf8_pdf_target_and_is_consumed_once() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
     let root = manifest_dir
         .join("target/test-scratch")
         .join(format!("save-target-authority-{}", std::process::id()));
@@ -34251,8 +34352,7 @@ fn native_file_authority_binds_one_exact_non_utf8_pdf_target_and_is_consumed_onc
 #[test]
 fn native_file_authority_rejects_parent_substitution_before_staging_or_publication() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
     let root = manifest_dir
         .join("target/test-scratch")
         .join(format!("save-target-parent-race-{}", std::process::id()));
@@ -34283,8 +34383,7 @@ fn native_file_authority_rejects_parent_substitution_before_staging_or_publicati
 #[test]
 fn native_file_authority_loses_a_target_creation_race_without_overwriting_the_winner() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
     let root = manifest_dir
         .join("target/test-scratch")
         .join(format!("save-target-leaf-race-{}", std::process::id()));
@@ -34311,8 +34410,7 @@ fn native_file_authority_loses_a_target_creation_race_without_overwriting_the_wi
 #[test]
 fn native_file_authority_rejects_staging_name_substitution_before_publication() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
     let root = manifest_dir
         .join("target/test-scratch")
         .join(format!("save-target-stage-race-{}", std::process::id()));
@@ -34346,8 +34444,7 @@ fn native_file_authority_rejects_staging_name_substitution_before_publication() 
 #[test]
 fn native_file_authority_rejects_relative_non_pdf_same_source_and_symlink_parent_inputs() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
     let root = manifest_dir
         .join("target/test-scratch")
         .join(format!("save-target-inputs-{}", std::process::id()));
@@ -34381,8 +34478,7 @@ fn native_file_authority_workspace_save_as_rejects_parent_substitution_after_beg
     cx: &mut TestAppContext,
 ) {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     let root = manifest_dir
         .join("target/test-scratch")
         .join(format!("workspace-save-target-race-{}", std::process::id()));
@@ -34432,8 +34528,7 @@ fn regular_png_native_picker_prepares_the_target_and_rejects_a_closed_session(
 ) {
     cx.update(gpui_component::init);
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let checker =
-        manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
+    let checker = manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -34502,8 +34597,7 @@ fn regular_image_placement_consumes_asset_keeps_tool_and_deselects_without_editi
 ) {
     cx.update(gpui_component::init);
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let checker =
-        manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
+    let checker = manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -35910,10 +36004,8 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     let library = std::env::var_os("BP_PDFIUM_LIBRARY")
         .map(PathBuf::from)
         .expect("BP_PDFIUM_LIBRARY names libpdfium (cargo xtask pdfium prints its path)");
-    let fixture =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
-    let checker =
-        manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
+    let fixture = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let checker = manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
     assert!(worker.is_file());
     assert!(library.is_file());
     assert!(fixture.is_file());
@@ -36447,12 +36539,19 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     assert_eq!(annotation["/NM"], native_name);
     let _ = &asset_id;
     for key in ["/BPAssetId", "/BPAspectLocked"] {
-        assert!(annotation.get(key).is_none(), "Image must not contain {key}");
+        assert!(
+            annotation.get(key).is_none(),
+            "Image must not contain {key}"
+        );
     }
     assert_eq!(annotation["/RD"], serde_json::json!([0, 0, 0, 0]));
     assert_eq!(annotation["/BS"]["/W"], 0);
     // Revu's SquareImage references its raster directly.
-    assert!(annotation["/Image"].as_str().is_some_and(|value| value.ends_with(" R")));
+    assert!(
+        annotation["/Image"]
+            .as_str()
+            .is_some_and(|value| value.ends_with(" R"))
+    );
     assert!(close(number(&annotation["/CA"]), opacity));
     for (actual, expected) in annotation["/Rect"]
         .as_array()
@@ -36519,7 +36618,10 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     let alpha_ref = image_dict["/SMask"].as_str();
     assert_eq!(
         alpha_ref.is_some(),
-        expected_asset.rgba().chunks_exact(4).any(|pixel| pixel[3] != u8::MAX)
+        expected_asset
+            .rgba()
+            .chunks_exact(4)
+            .any(|pixel| pixel[3] != u8::MAX)
     );
     if let Some(alpha_ref) = alpha_ref {
         let alpha_key = format!("obj:{alpha_ref}");
@@ -36691,10 +36793,8 @@ fn regular_png_workspace_create_move_resize_save_reopen_and_release_is_exact(
 ) {
     cx.update(gpui_component::init);
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
-    let checker =
-        manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
+    let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let checker = manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
     let target = manifest_dir.join(format!(
         "target/test-scratch/regular-image-save-{}.pdf",
         std::process::id()
@@ -36855,8 +36955,7 @@ fn regular_png_workspace_create_move_resize_save_reopen_and_release_is_exact(
 #[test]
 fn text_box_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
     let edited_target = manifest_dir.join(format!(
         "target/test-scratch/text-box-edit-save-{}.pdf",
         std::process::id()
@@ -36994,8 +37093,7 @@ fn text_box_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state(
 #[test]
 fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
     let created_target = manifest_dir.join(format!(
         "target/test-scratch/length-create-save-{}.pdf",
         std::process::id()
@@ -37072,11 +37170,11 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
     let created_reopen = PdfPersistenceSession::open(&created_target).unwrap();
     assert_same_persisted_lengths(
         created_reopen.lengths(),
-        &        imported_lengths
+        &imported_lengths
             .iter()
             .cloned()
             .chain([created.clone()])
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>(),
     );
 
     let edited_length = LengthAnnotation::new(
@@ -37136,11 +37234,11 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
     let edited = PdfPersistenceSession::open(&edited_target).unwrap();
     assert_same_persisted_lengths(
         edited.lengths(),
-        &        imported_lengths
+        &imported_lengths
             .iter()
             .cloned()
             .chain([edited_length.clone()])
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>(),
     );
 
     let deleted_id = edited_length.id.clone();
@@ -37196,8 +37294,7 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
 #[test]
 fn pen_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
     let edited_target = manifest_dir.join(format!(
         "target/test-scratch/pen-edit-save-{}.pdf",
         std::process::id()
@@ -37336,8 +37433,7 @@ fn pen_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() {
 #[test]
 fn highlight_save_as_uses_canonical_identity_and_reconciles_create_edit_delete() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
     let created_target = manifest_dir.join(format!(
         "target/test-scratch/highlight-create-save-{}.pdf",
         std::process::id()
@@ -37541,9 +37637,11 @@ fn highlight_save_as_uses_canonical_identity_and_reconciles_create_edit_delete()
 #[test]
 fn save_as_refuses_source_identity_drift_before_writing_a_target() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let reviewed =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
-    let source = manifest_dir.join(format!("target/test-scratch/source-drift-{}.pdf", std::process::id()));
+    let reviewed = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let source = manifest_dir.join(format!(
+        "target/test-scratch/source-drift-{}.pdf",
+        std::process::id()
+    ));
     let target = manifest_dir.join(format!(
         "target/test-scratch/source-drift-target-{}.pdf",
         std::process::id()
@@ -37606,8 +37704,7 @@ fn save_as_refuses_source_identity_drift_before_writing_a_target() {
 #[test]
 fn in_place_save_atomically_replaces_the_regular_source_preserves_mode_and_removes_staging() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let reviewed =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let reviewed = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     let source = manifest_dir.join(format!(
         "target/test-scratch/in-place-save-unit-{}.pdf",
         std::process::id()
@@ -37726,8 +37823,7 @@ fn in_place_save_atomically_replaces_the_regular_source_preserves_mode_and_remov
 #[test]
 fn in_place_save_reports_a_durable_publication_receipt_after_parent_sync() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let reviewed =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let reviewed = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     let source = manifest_dir.join(format!(
         "target/test-scratch/in-place-save-receipt-{}.pdf",
         std::process::id()
@@ -37751,8 +37847,7 @@ fn in_place_save_reports_a_durable_publication_receipt_after_parent_sync() {
 #[test]
 fn in_place_save_in_a_read_only_directory_preserves_source_bytes_without_staging() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let reviewed =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let reviewed = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     let root = manifest_dir
         .join("target/test-scratch")
         .join(format!("in-place-read-only-{}", std::process::id()));
@@ -37803,8 +37898,7 @@ fn in_place_save_in_a_read_only_directory_preserves_source_bytes_without_staging
 #[test]
 fn in_place_save_refuses_a_final_symlink_source_without_writing_or_staging() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let reviewed =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let reviewed = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     let source_link = manifest_dir.join(format!(
         "target/test-scratch/in-place-save-symlink-{}.pdf",
         std::process::id()
@@ -37880,8 +37974,7 @@ fn in_place_save_refuses_a_final_symlink_source_without_writing_or_staging() {
 #[test]
 fn in_place_save_rejects_source_drift_after_prepare_and_removes_the_exact_stage() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let reviewed =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let reviewed = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     let source = manifest_dir.join(format!(
         "target/test-scratch/in-place-save-publish-drift-{}.pdf",
         std::process::id()
@@ -37915,8 +38008,7 @@ fn in_place_save_rejects_source_drift_after_prepare_and_removes_the_exact_stage(
 #[test]
 fn in_place_save_never_deletes_a_substituted_competitor_stage() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let reviewed =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let reviewed = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     let root = manifest_dir.join("target/test-scratch").join(format!(
         "in-place-stage-substitution-{}",
         std::process::id()
@@ -37958,8 +38050,7 @@ fn in_place_save_never_deletes_a_substituted_competitor_stage() {
 #[test]
 fn save_as_does_not_publish_a_target_when_native_reopen_validation_fails() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
     let target = manifest_dir.join(format!(
         "target/test-scratch/rejected-native-reopen-{}.pdf",
         std::process::id()
@@ -39585,7 +39676,9 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     assert_eq!(reopened_snapshot.lengths[0].caption(), "3.000 m");
     assert_same_persisted_page_scales(
         &[fresh_workspace
-            .read_with(cx, |workspace, cx| workspace.page_scale(reopened_document, 0, cx))
+            .read_with(cx, |workspace, cx| {
+                workspace.page_scale(reopened_document, 0, cx)
+            })
             .expect("the reopened page keeps its scale")],
         &[applied_scale],
     );
@@ -41188,8 +41281,7 @@ fn real_native_shell_preserves_independent_view_state_through_fit_scroll_thumbna
     let library = std::env::var_os("BP_PDFIUM_LIBRARY")
         .map(PathBuf::from)
         .expect("BP_PDFIUM_LIBRARY names libpdfium (cargo xtask pdfium prints its path)");
-    let fixture =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let fixture = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     assert!(worker.is_file());
     assert!(library.is_file());
     assert!(fixture.is_file());
@@ -41577,8 +41669,7 @@ fn real_in_place_save_replaces_the_opened_pdf_and_reopens_cleanly(cx: &mut TestA
     let library = std::env::var_os("BP_PDFIUM_LIBRARY")
         .map(PathBuf::from)
         .expect("BP_PDFIUM_LIBRARY names libpdfium (cargo xtask pdfium prints its path)");
-    let fixture =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let fixture = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     assert!(worker.is_file(), "the exact worker must already be built");
     assert!(
         library.is_file(),
@@ -41810,8 +41901,7 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(cx: &mut Tes
     let library = std::env::var_os("BP_PDFIUM_LIBRARY")
         .map(PathBuf::from)
         .expect("BP_PDFIUM_LIBRARY names libpdfium (cargo xtask pdfium prints its path)");
-    let fixture =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let fixture = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     assert!(worker.is_file());
     assert!(library.is_file());
     assert!(fixture.is_file());
@@ -42246,8 +42336,7 @@ fn real_save_as_collision_recovers_to_fresh_target_and_reopens(cx: &mut TestAppC
     let library = std::env::var_os("BP_PDFIUM_LIBRARY")
         .map(PathBuf::from)
         .expect("BP_PDFIUM_LIBRARY names libpdfium (cargo xtask pdfium prints its path)");
-    let fixture =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let fixture = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     assert!(worker.is_file());
     assert!(library.is_file());
     assert!(fixture.is_file());
@@ -42413,8 +42502,7 @@ fn real_worker_crash_recovery_preserves_dirty_document_and_releases_resources(
     let library = std::env::var_os("BP_PDFIUM_LIBRARY")
         .map(PathBuf::from)
         .expect("BP_PDFIUM_LIBRARY names libpdfium (cargo xtask pdfium prints its path)");
-    let fixture =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let fixture = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     assert!(worker.is_file(), "the exact worker must already be built");
     assert!(library.is_file(), "the reviewed PDFium library must exist");
     let surface_root = manifest_dir
@@ -42819,9 +42907,7 @@ struct RecentWorkspaceKeys {
     fail_save: AtomicBool,
     writes: std::sync::atomic::AtomicUsize,
 }
-impl butter_paper::recent_signature_store::SignatureKeyStore
-    for RecentWorkspaceKeys
-{
+impl butter_paper::recent_signature_store::SignatureKeyStore for RecentWorkspaceKeys {
     fn load(
         &self,
     ) -> Result<
@@ -42838,8 +42924,7 @@ impl butter_paper::recent_signature_store::SignatureKeyStore
     fn save(
         &self,
         key: &[u8],
-    ) -> Result<(), butter_paper::recent_signature_store::SignatureKeyStoreError>
-    {
+    ) -> Result<(), butter_paper::recent_signature_store::SignatureKeyStoreError> {
         self.writes.fetch_add(1, Ordering::SeqCst);
         if self.fail_save.load(Ordering::SeqCst) {
             return Err(butter_paper::recent_signature_store::SignatureKeyStoreError::Failure);
@@ -42854,9 +42939,7 @@ fn recent_signature_workspace_renders_order_reuses_and_confirms_removal(cx: &mut
     use butter_paper::document_workspace::{
         DOCUMENT_SIGNATURE_RECENT_REMOVE_CANCEL_ID, DOCUMENT_SIGNATURE_RECENT_REMOVE_CONFIRM_ID,
     };
-    use butter_paper::recent_signature_store::{
-        RecentSignatureSource, RecentSignatureStore,
-    };
+    use butter_paper::recent_signature_store::{RecentSignatureSource, RecentSignatureStore};
     cx.update(gpui_component::init);
     let path = std::env::temp_dir().join(format!("bp-recent-workspace-{}.enc", std::process::id()));
     assert!(!path.exists());
@@ -43449,7 +43532,10 @@ fn pan_scroll(
     document_id: DocumentId,
 ) -> (f32, f32) {
     workspace.read_with(cx, |workspace, cx| {
-        workspace.document_view_state(document_id, cx).unwrap().scroll()
+        workspace
+            .document_view_state(document_id, cx)
+            .unwrap()
+            .scroll()
     })
 }
 
@@ -43468,7 +43554,10 @@ fn hand_tool_drag_pans_the_canvas_with_the_pointer(cx: &mut TestAppContext) {
     cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert_eq!(pan_scroll(cx, &workspace, document_id), (before.0 + 40., before.1 + 50.));
+    assert_eq!(
+        pan_scroll(cx, &workspace, document_id),
+        (before.0 + 40., before.1 + 50.)
+    );
 }
 
 #[gpui::test]
@@ -43503,7 +43592,10 @@ fn hand_tool_pans_pages_into_blank_space_past_their_edges(cx: &mut TestAppContex
     assert_eq!(panned.origin.y - at_origin.origin.y, px(150.));
 
     // Far past the edge, a strip of the page stays in view.
-    let far = point(start.x + viewport.size.width * 3., start.y + viewport.size.height * 3.);
+    let far = point(
+        start.x + viewport.size.width * 3.,
+        start.y + viewport.size.height * 3.,
+    );
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(far, Some(MouseButton::Left), Modifiers::default());
     cx.simulate_mouse_up(far, MouseButton::Left, Modifiers::default());
@@ -43529,7 +43621,10 @@ fn middle_button_drag_pans_the_canvas_with_any_tool(cx: &mut TestAppContext) {
     cx.simulate_mouse_move(end, Some(MouseButton::Middle), Modifiers::default());
     cx.simulate_mouse_up(end, MouseButton::Middle, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert_eq!(pan_scroll(cx, &workspace, document_id), (before.0 - 30., before.1 - 20.));
+    assert_eq!(
+        pan_scroll(cx, &workspace, document_id),
+        (before.0 - 30., before.1 - 20.)
+    );
     assert!(!workspace.read_with(cx, |workspace, _| workspace.is_pan_tool_active()));
 }
 
@@ -43550,9 +43645,17 @@ fn tool_rail_resize_snaps_to_whole_columns_while_dragging(cx: &mut TestAppContex
     let right = rail(cx).right();
     cx.simulate_mouse_down(handle, MouseButton::Left, Modifiers::default());
     // GPUI starts a drag once the pointer moves past its threshold.
-    cx.simulate_mouse_move(point(handle.x - px(4.), handle.y), Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_move(
+        point(handle.x - px(4.), handle.y),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
     // Widths between column stops round to the nearest whole column, live.
-    for (target_width, columns) in [(column_width(3.) + px(9.), 3.), (column_width(7.) - px(9.), 7.), (px(2_000.), 8.)] {
+    for (target_width, columns) in [
+        (column_width(3.) + px(9.), 3.),
+        (column_width(7.) - px(9.), 7.),
+        (px(2_000.), 8.),
+    ] {
         let pointer = point(right - target_width, handle.y);
         cx.simulate_mouse_move(pointer, Some(MouseButton::Left), Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -43571,7 +43674,10 @@ fn tool_rail_overflow_shows_electron_style_fades_without_a_scrollbar(cx: &mut Te
     cx.simulate_resize(size(px(1_200.), px(360.)));
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.debug_bounds("document-workspace-right-rail-overflow-top").is_none());
+    assert!(
+        cx.debug_bounds("document-workspace-right-rail-overflow-top")
+            .is_none()
+    );
     let bottom = cx
         .debug_bounds("document-workspace-right-rail-overflow-bottom")
         .expect("an overflowing rail shows the bottom scroll cue");
@@ -43585,7 +43691,10 @@ fn tool_rail_overflow_shows_electron_style_fades_without_a_scrollbar(cx: &mut Te
         ..Default::default()
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.debug_bounds("document-workspace-right-rail-overflow-top").is_some());
+    assert!(
+        cx.debug_bounds("document-workspace-right-rail-overflow-top")
+            .is_some()
+    );
     assert_eq!(RAIL_OVERFLOW_TOOLTIP, "Scroll to see other tools");
 }
 
@@ -43601,7 +43710,9 @@ fn press_outside_an_open_popover_only_dismisses_it(cx: &mut TestAppContext) {
 
     let rectangles = |cx: &mut gpui::VisualTestContext| {
         workspace
-            .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(document_id, cx)
+            })
             .unwrap()
             .rectangles
             .len()
@@ -43617,7 +43728,10 @@ fn press_outside_an_open_popover_only_dismisses_it(cx: &mut TestAppContext) {
     };
 
     drag(cx);
-    assert!(cx.debug_bounds(DOCUMENT_SNAP_POPOVER_ID).is_none(), "the press dismissed the popover");
+    assert!(
+        cx.debug_bounds(DOCUMENT_SNAP_POPOVER_ID).is_none(),
+        "the press dismissed the popover"
+    );
     assert_eq!(rectangles(cx), before, "the dismissing press drew nothing");
 
     drag(cx);
@@ -43630,7 +43744,9 @@ fn rectangle_count(
     cx: &mut gpui::VisualTestContext,
 ) -> usize {
     workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap()
         .rectangles
         .len()
@@ -43667,10 +43783,18 @@ fn press_that_dismisses_the_canvas_context_menu_draws_nothing(cx: &mut TestAppCo
         !cx.update(|_, cx| gpui_component::GlobalState::is_in_deferred_context(cx)),
         "the press dismissed the context menu"
     );
-    assert_eq!(rectangle_count(&workspace, document_id, cx), before, "the dismissing press drew nothing");
+    assert_eq!(
+        rectangle_count(&workspace, document_id, cx),
+        before,
+        "the dismissing press drew nothing"
+    );
 
     drag_across_viewport(cx);
-    assert_eq!(rectangle_count(&workspace, document_id, cx), before + 1, "the next press draws normally");
+    assert_eq!(
+        rectangle_count(&workspace, document_id, cx),
+        before + 1,
+        "the next press draws normally"
+    );
 }
 
 #[gpui::test]
@@ -43687,12 +43811,20 @@ fn press_while_a_dialog_is_open_never_reaches_the_canvas(cx: &mut TestAppContext
     assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
 
     drag_across_viewport(cx);
-    assert_eq!(rectangle_count(&workspace, document_id, cx), before, "the press drew nothing");
+    assert_eq!(
+        rectangle_count(&workspace, document_id, cx),
+        before,
+        "the press drew nothing"
+    );
 
     cx.update(|window, cx| window.close_all_dialogs(cx));
     cx.update(|window, cx| window.draw(cx).clear(cx));
     drag_across_viewport(cx);
-    assert_eq!(rectangle_count(&workspace, document_id, cx), before + 1, "presses draw again once it closes");
+    assert_eq!(
+        rectangle_count(&workspace, document_id, cx),
+        before + 1,
+        "presses draw again once it closes"
+    );
 }
 
 #[gpui::test]
@@ -43707,7 +43839,8 @@ fn page_press_reclaims_focus_left_outside_the_workspace_for_tool_shortcuts(
     cx.update(|window, cx| outside.focus(window, cx));
     cx.simulate_keystrokes("e");
     assert_ne!(
-        workspace.read_with(cx, |workspace, cx| workspace.annotation_tool(document_id, cx)),
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(document_id, cx)),
         Some(AnnotationTool::Ellipse),
         "shortcuts are scoped to the document"
     );
@@ -43716,7 +43849,8 @@ fn page_press_reclaims_focus_left_outside_the_workspace_for_tool_shortcuts(
     cx.simulate_click(viewport.center(), Modifiers::default());
     cx.simulate_keystrokes("e");
     assert_eq!(
-        workspace.read_with(cx, |workspace, cx| workspace.annotation_tool(document_id, cx)),
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(document_id, cx)),
         Some(AnnotationTool::Ellipse),
         "a page press returns focus to the document"
     );
@@ -43736,7 +43870,10 @@ fn bench_rectangle_drag_frame_cost(cx: &mut TestAppContext) {
     let start = point(viewport.origin.x + px(60.), viewport.origin.y + px(60.));
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     let mut frames = Vec::new();
-    let count: usize = std::env::var("BENCH_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(240);
+    let count: usize = std::env::var("BENCH_FRAMES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(240);
     for step in 0..count {
         let step = step % 240;
         let at = point(start.x + px(step as f32), start.y + px(step as f32 * 0.6));
@@ -43787,13 +43924,22 @@ fn control_wheel_zoom_keeps_the_document_point_under_the_pointer(cx: &mut TestAp
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let (zoom_after, scroll_after) = view(cx);
-    assert!(zoom_after > zoom_before, "control-wheel scrolling up zooms in by default");
+    assert!(
+        zoom_after > zoom_before,
+        "control-wheel scrolling up zooms in by default"
+    );
     let ratio = zoom_after / zoom_before;
     // Page geometry scales with zoom; only fixed page padding does not.
     let expected_y = (scroll_before.1 + local.1) * ratio - local.1;
     let expected_x = (scroll_before.0 + local.0) * ratio - local.0;
-    assert!((scroll_after.1 - expected_y).abs() < 40., "{scroll_after:?} vs y {expected_y}");
-    assert!((scroll_after.0 - expected_x).abs() < 40., "{scroll_after:?} vs x {expected_x}");
+    assert!(
+        (scroll_after.1 - expected_y).abs() < 40.,
+        "{scroll_after:?} vs y {expected_y}"
+    );
+    assert!(
+        (scroll_after.0 - expected_x).abs() < 40.,
+        "{scroll_after:?} vs x {expected_x}"
+    );
 }
 
 #[gpui::test]
@@ -43822,11 +43968,20 @@ fn trackpad_pinch_zooms_about_the_pinch_centre(cx: &mut TestAppContext) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let (zoom_after, scroll_after) = view(cx);
     let ratio = zoom_after / zoom_before;
-    assert!((ratio - 1.08_f32.powi(3)).abs() < 0.01, "three 8% pinch steps, got {ratio}");
+    assert!(
+        (ratio - 1.08_f32.powi(3)).abs() < 0.01,
+        "three 8% pinch steps, got {ratio}"
+    );
     let expected_y = (scroll_before.1 + local.1) * ratio - local.1;
     let expected_x = (scroll_before.0 + local.0) * ratio - local.0;
-    assert!((scroll_after.1 - expected_y).abs() < 40., "{scroll_after:?} vs y {expected_y}");
-    assert!((scroll_after.0 - expected_x).abs() < 40., "{scroll_after:?} vs x {expected_x}");
+    assert!(
+        (scroll_after.1 - expected_y).abs() < 40.,
+        "{scroll_after:?} vs y {expected_y}"
+    );
+    assert!(
+        (scroll_after.0 - expected_x).abs() < 40.,
+        "{scroll_after:?} vs x {expected_x}"
+    );
 }
 
 #[gpui::test]
@@ -43871,13 +44026,19 @@ fn opening_a_document_open_in_another_window_focuses_it_instead_of_duplicating(
 
     assert_eq!(
         *focused.borrow(),
-        vec![(PathBuf::from("/plans/shared.pdf"), Some(request.document_id))]
+        vec![(
+            PathBuf::from("/plans/shared.pdf"),
+            Some(request.document_id)
+        )]
     );
     assert!(
         second.read_with(cx, |workspace, _| workspace.sessions().is_empty()),
         "the second window must not open its own copy"
     );
-    assert_eq!(first.read_with(cx, |workspace, _| workspace.sessions().len()), 1);
+    assert_eq!(
+        first.read_with(cx, |workspace, _| workspace.sessions().len()),
+        1
+    );
 }
 
 fn tab_window_with_documents<'a>(
@@ -43938,22 +44099,26 @@ fn a_detached_document_moves_to_another_workspace_with_its_state_and_identity(
         workspace
     });
     let mut released = Vec::new();
-    let mut open = |workspace: &gpui::Entity<DocumentWorkspace>, name: &str, cx: &mut TestAppContext| {
-        let request = workspace.update(cx, |workspace, cx| {
-            workspace.begin_open(PathBuf::from(format!("/plans/{name}")), cx)
-        });
-        let release = Arc::new(AtomicBool::new(false));
-        workspace.update(cx, |workspace, cx| {
-            workspace.apply_open_result(&request, Ok(opened_document(release.clone())), cx)
-        });
-        released.push(release);
-        request.document_id
-    };
+    let mut open =
+        |workspace: &gpui::Entity<DocumentWorkspace>, name: &str, cx: &mut TestAppContext| {
+            let request = workspace.update(cx, |workspace, cx| {
+                workspace.begin_open(PathBuf::from(format!("/plans/{name}")), cx)
+            });
+            let release = Arc::new(AtomicBool::new(false));
+            workspace.update(cx, |workspace, cx| {
+                workspace.apply_open_result(&request, Ok(opened_document(release.clone())), cx)
+            });
+            released.push(release);
+            request.document_id
+        };
     let moving = open(&first, "moving.pdf", cx);
     let staying = open(&first, "staying.pdf", cx);
     let resident = open(&second, "resident.pdf", cx);
     assert_eq!(
-        [moving, staying, resident].into_iter().collect::<std::collections::HashSet<_>>().len(),
+        [moving, staying, resident]
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
         3,
         "shared ids are unique across windows"
     );
@@ -43971,10 +44136,15 @@ fn a_detached_document_moves_to_another_workspace_with_its_state_and_identity(
         .update(cx, |workspace, cx| workspace.detach_document(moving, cx))
         .unwrap();
     first.read_with(cx, |workspace, cx| {
-        assert_eq!(workspace.session_order(cx), vec![staying, opening.document_id]);
+        assert_eq!(
+            workspace.session_order(cx),
+            vec![staying, opening.document_id]
+        );
         assert_eq!(workspace.active_document_id(), Some(staying));
     });
-    second.update(cx, |workspace, cx| workspace.attach_document(detached, 0, cx));
+    second.update(cx, |workspace, cx| {
+        workspace.attach_document(detached, 0, cx)
+    });
     second.read_with(cx, |workspace, cx| {
         assert_eq!(workspace.session_order(cx), vec![moving, resident]);
         assert_eq!(workspace.active_document_id(), Some(moving));
@@ -44023,19 +44193,28 @@ fn dragging_a_tab_off_the_strip_reports_a_transfer_and_the_strip_accepts_drops(
     });
 
     // Another window's tab hovering at the end shows the drop cue.
-    workspace.update(cx, |workspace, cx| workspace.set_incoming_tab_drop(Some(3), cx));
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_incoming_tab_drop(Some(3), cx)
+    });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx
-        .debug_bounds(Box::leak(
+    assert!(
+        cx.debug_bounds(Box::leak(
             document_tab_drop_target_id(&documents[2].to_string()).into_boxed_str()
         ))
-        .is_some());
-    workspace.update(cx, |workspace, cx| workspace.set_incoming_tab_drop(None, cx));
+        .is_some()
+    );
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_incoming_tab_drop(None, cx)
+    });
 
     let start = first.center();
     let away = point(start.x + px(40.), start.y + px(300.));
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(point(start.x + px(20.), start.y), Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_move(
+        point(start.x + px(20.), start.y),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
     cx.simulate_mouse_move(away, Some(MouseButton::Left), Modifiers::default());
     cx.simulate_event(MouseUpEvent {
         button: MouseButton::Left,
@@ -44073,11 +44252,18 @@ fn short_titled_tabs_keep_a_grab_area_clear_of_the_close_button(cx: &mut TestApp
     let ids = Arc::new(std::sync::atomic::AtomicU64::new(1));
     let (workspace, documents, _released, cx) =
         tab_window_with_documents(cx, &["a.pdf", "b.pdf"], ids);
-    let geometry = workspace.read_with(cx, |workspace, cx| workspace.session_tab_debug_geometry(cx));
+    let geometry =
+        workspace.read_with(cx, |workspace, cx| workspace.session_tab_debug_geometry(cx));
     for (_, tab, close) in &geometry {
-        assert!(tab.size.width >= px(96.), "tab {tab:?} is narrower than the minimum");
+        assert!(
+            tab.size.width >= px(96.),
+            "tab {tab:?} is narrower than the minimum"
+        );
         let close = close.expect("every tab has a close button");
-        assert!(!close.contains(&tab.center()), "the middle of {tab:?} must not be the close button");
+        assert!(
+            !close.contains(&tab.center()),
+            "the middle of {tab:?} must not be the close button"
+        );
     }
     // Pressing the middle of a short tab starts a drag rather than a close.
     let (_, tab, _) = geometry[1];
@@ -44097,11 +44283,15 @@ fn short_titled_tabs_keep_a_grab_area_clear_of_the_close_button(cx: &mut TestApp
 #[gpui::test]
 fn tabs_scrolled_out_of_view_cannot_be_grabbed(cx: &mut TestAppContext) {
     let ids = Arc::new(std::sync::atomic::AtomicU64::new(1));
-    let names = (0..16).map(|index| format!("plan-{index}.pdf")).collect::<Vec<_>>();
+    let names = (0..16)
+        .map(|index| format!("plan-{index}.pdf"))
+        .collect::<Vec<_>>();
     let names = names.iter().map(String::as_str).collect::<Vec<_>>();
     let (workspace, documents, _released, cx) = tab_window_with_documents(cx, &names, ids);
     // Reveal the first tab: later tabs now extend under the strip's actions.
-    workspace.update(cx, |workspace, cx| workspace.activate_document(documents[0], cx));
+    workspace.update(cx, |workspace, cx| {
+        workspace.activate_document(documents[0], cx)
+    });
     for _ in 0..3 {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
@@ -44115,7 +44305,10 @@ fn tabs_scrolled_out_of_view_cannot_be_grabbed(cx: &mut TestAppContext) {
             .find(|(_, tab, _)| tab.contains(&press))
             .map(|(id, _, _)| id)
     });
-    assert!(covered.is_some(), "a scrolled-away tab lies under the Open button");
+    assert!(
+        covered.is_some(),
+        "a scrolled-away tab lies under the Open button"
+    );
     cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace.session_tab_drag_state()),
@@ -44125,7 +44318,8 @@ fn tabs_scrolled_out_of_view_cannot_be_grabbed(cx: &mut TestAppContext) {
     cx.simulate_mouse_up(press, MouseButton::Left, Modifiers::default());
 
     // A visible tab in the overflowing strip can still be grabbed.
-    let (visible, _) = workspace.read_with(cx, |workspace, cx| workspace.session_tab_geometry(1, cx));
+    let (visible, _) =
+        workspace.read_with(cx, |workspace, cx| workspace.session_tab_geometry(1, cx));
     let visible = visible.unwrap();
     cx.simulate_mouse_down(visible.center(), MouseButton::Left, Modifiers::default());
     assert_eq!(
@@ -44165,7 +44359,9 @@ fn annotation_count(
     cx: &mut gpui::VisualTestContext,
 ) -> usize {
     workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap()
         .annotation_order
         .len()
@@ -44185,7 +44381,9 @@ fn tool_creates_with(
 ) -> (bool, Option<String>) {
     let (workspace, document_id, cx) = scrolled_test_workspace(cx, 300.);
     workspace
-        .update(cx, |workspace, cx| workspace.set_annotation_tool(document_id, tool, cx))
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(document_id, tool, cx)
+        })
         .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
@@ -44196,7 +44394,11 @@ fn tool_creates_with(
             cx.simulate_mouse_down(at(80., 80.), MouseButton::Left, Modifiers::default());
             for step in 1..=8 {
                 let t = step as f32 / 8.;
-                cx.simulate_mouse_move(at(80. + 120. * t, 80. + 60. * t), Some(MouseButton::Left), Modifiers::default());
+                cx.simulate_mouse_move(
+                    at(80. + 120. * t, 80. + 60. * t),
+                    Some(MouseButton::Left),
+                    Modifiers::default(),
+                );
             }
             cx.simulate_mouse_up(at(200., 140.), MouseButton::Left, Modifiers::default());
         }
@@ -44230,7 +44432,10 @@ fn tool_creates_with(
     }
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let created = annotation_count(&workspace, document_id, cx) > before;
-    (created, workspace.read_with(cx, |workspace, _| workspace.annotation_status()))
+    (
+        created,
+        workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
+    )
 }
 
 /// Every creation tool makes a markup through real pointer input with the
@@ -44267,7 +44472,8 @@ fn every_tool_creates_a_markup_with_its_real_gesture(cx: &mut TestAppContext) {
         .into_iter()
         .filter_map(|(tool, gesture)| {
             let (created, status) = tool_creates_with(cx, tool, gesture);
-            (!created).then(|| format!("{tool:?} by {gesture:?} created nothing (status: {status:?})"))
+            (!created)
+                .then(|| format!("{tool:?} by {gesture:?} created nothing (status: {status:?})"))
         })
         .collect();
     assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -44348,7 +44554,10 @@ fn existing_text_box_double_click_edits_in_place_without_opening_properties(
         layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
         layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
     );
-    let body = point(origin.x + px(340. * scale), origin.y + px((792. - 320.) * scale));
+    let body = point(
+        origin.x + px(340. * scale),
+        origin.y + px((792. - 320.) * scale),
+    );
     for click_count in [1, 2] {
         cx.simulate_event(MouseDownEvent {
             button: MouseButton::Left,
@@ -44369,14 +44578,18 @@ fn existing_text_box_double_click_edits_in_place_without_opening_properties(
         .read_with(cx, |workspace, _| workspace.pending_text_box_input())
         .expect("double-click must open the Text Box editor");
     assert!(
-        cx.debug_bounds("document-workspace-properties-sidebar").is_none(),
+        cx.debug_bounds("document-workspace-properties-sidebar")
+            .is_none(),
         "editing a Text Box must not open the properties sidebar"
     );
     let editor = cx
         .debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID)
         .expect("the editor must render on the canvas");
     let expected = gpui::Bounds::new(
-        point(origin.x + px(300. * scale), origin.y + px((792. - 340.) * scale)),
+        point(
+            origin.x + px(300. * scale),
+            origin.y + px((792. - 340.) * scale),
+        ),
         size(px(100. * scale), px(40. * scale)),
     );
     for (actual, wanted) in [
@@ -44402,7 +44615,9 @@ fn existing_text_box_double_click_edits_in_place_without_opening_properties(
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
     let committed = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
         .unwrap();
     assert_eq!(committed.text_boxes[0].content(), "edited live");
     assert!(
@@ -44498,7 +44713,9 @@ fn rectangle_resizes_live_from_any_edge_and_cursors_follow_the_pointer(cx: &mut 
     };
     let rectangles = |cx: &mut gpui::VisualTestContext| {
         workspace.read_with(cx, |workspace, cx| {
-            workspace.annotation_scene(request.document_id, 0, cx).rectangles
+            workspace
+                .annotation_scene(request.document_id, 0, cx)
+                .rectangles
         })
     };
     // Painted width of the (red, unrotated) Rectangle outline in logical px.
@@ -44542,18 +44759,43 @@ fn rectangle_resizes_live_from_any_edge_and_cursors_follow_the_pointer(cx: &mut 
     let (right, top) = (left + rect.width as f32, bottom + rect.height as f32);
     let (mid_x, mid_y) = ((left + right) / 2., (bottom + top) / 2.);
 
-    assert_eq!(cursor_at(cx, view(mid_x, mid_y)), CursorStyle::OpenHand, "selected interior moves");
-    assert_eq!(cursor_at(cx, view(right, top - 15.)), CursorStyle::ResizeLeftRight, "any point on the east edge resizes");
-    assert_eq!(cursor_at(cx, view(mid_x + 30., top)), CursorStyle::ResizeUpDown, "any point on the north edge resizes");
-    assert_eq!(cursor_at(cx, view(right, top)), CursorStyle::ResizeUpRightDownLeft);
-    assert_eq!(cursor_at(cx, view(left, bottom)), CursorStyle::ResizeUpRightDownLeft);
-    assert_eq!(cursor_at(cx, view(left, top)), CursorStyle::ResizeUpLeftDownRight);
+    assert_eq!(
+        cursor_at(cx, view(mid_x, mid_y)),
+        CursorStyle::OpenHand,
+        "selected interior moves"
+    );
+    assert_eq!(
+        cursor_at(cx, view(right, top - 15.)),
+        CursorStyle::ResizeLeftRight,
+        "any point on the east edge resizes"
+    );
+    assert_eq!(
+        cursor_at(cx, view(mid_x + 30., top)),
+        CursorStyle::ResizeUpDown,
+        "any point on the north edge resizes"
+    );
+    assert_eq!(
+        cursor_at(cx, view(right, top)),
+        CursorStyle::ResizeUpRightDownLeft
+    );
+    assert_eq!(
+        cursor_at(cx, view(left, bottom)),
+        CursorStyle::ResizeUpRightDownLeft
+    );
+    assert_eq!(
+        cursor_at(cx, view(left, top)),
+        CursorStyle::ResizeUpLeftDownRight
+    );
     assert_eq!(
         cursor_at(cx, view(right + 7. / scale, mid_y + 20.)),
         CursorStyle::OpenHand,
         "the band along the dashed outline moves"
     );
-    assert_eq!(cursor_at(cx, view(mid_x, top + 12. / scale)), CursorStyle::PointingHand, "rotation knob");
+    assert_eq!(
+        cursor_at(cx, view(mid_x, top + 12. / scale)),
+        CursorStyle::PointingHand,
+        "rotation knob"
+    );
     assert_eq!(cursor_at(cx, view(500., 100.)), CursorStyle::Arrow);
 
     // Resize from the east edge away from its midpoint: the outline repaints
@@ -44584,23 +44826,43 @@ fn rectangle_resizes_live_from_any_edge_and_cursors_follow_the_pointer(cx: &mut 
     cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     draw(cx);
     let committed = workspace
-        .read_with(cx, |workspace, cx| workspace.annotation_snapshot(request.document_id, cx))
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
         .unwrap()
         .rectangles[0]
         .rect;
     assert!((committed.width - rect.width - f64::from(80. / scale)).abs() < 0.5);
-    assert!((committed.height - rect.height).abs() < 0.001, "an east edge resize keeps the height");
-    assert_eq!(cursor(cx), CursorStyle::ResizeLeftRight, "release keeps the cursor of what is under it");
+    assert!(
+        (committed.height - rect.height).abs() < 0.001,
+        "an east edge resize keeps the height"
+    );
+    assert_eq!(
+        cursor(cx),
+        CursorStyle::ResizeLeftRight,
+        "release keeps the cursor of what is under it"
+    );
 
     // Moving from the interior grabs with a closed hand.
     let middle = view(mid_x, mid_y);
     cx.simulate_mouse_move(middle, None, Modifiers::default());
     draw(cx);
     cx.simulate_mouse_down(middle, MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(point(middle.x, middle.y + px(30.)), Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_move(
+        point(middle.x, middle.y + px(30.)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
     draw(cx);
     assert_eq!(cursor(cx), CursorStyle::ClosedHand);
-    cx.simulate_mouse_up(point(middle.x, middle.y + px(30.)), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(
+        point(middle.x, middle.y + px(30.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     draw(cx);
-    assert!(rectangles(cx)[0].rect.y < committed.y, "the Rectangle moved down");
+    assert!(
+        rectangles(cx)[0].rect.y < committed.y,
+        "the Rectangle moved down"
+    );
 }

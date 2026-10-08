@@ -83,21 +83,41 @@ pub fn windows_registry_commands(executable: &Path) -> Vec<Vec<String>> {
     };
     vec![
         add(&prog_id, None, "PDF Document"),
-        add(&format!(r"{prog_id}\DefaultIcon"), None, &format!("\"{executable}\",0")),
+        add(
+            &format!(r"{prog_id}\DefaultIcon"),
+            None,
+            &format!("\"{executable}\",0"),
+        ),
         add(
             &format!(r"{prog_id}\shell\open\command"),
             None,
             &format!("\"{executable}\" \"%1\""),
         ),
-        add(r"HKCU\Software\Classes\.pdf\OpenWithProgids", Some(WINDOWS_PROG_ID), ""),
-        add(&format!(r"HKCU\{capabilities}"), Some("ApplicationName"), PRODUCT_NAME),
+        add(
+            r"HKCU\Software\Classes\.pdf\OpenWithProgids",
+            Some(WINDOWS_PROG_ID),
+            "",
+        ),
+        add(
+            &format!(r"HKCU\{capabilities}"),
+            Some("ApplicationName"),
+            PRODUCT_NAME,
+        ),
         add(
             &format!(r"HKCU\{capabilities}"),
             Some("ApplicationDescription"),
             "PDF review and markup",
         ),
-        add(&format!(r"HKCU\{capabilities}\FileAssociations"), Some(".pdf"), WINDOWS_PROG_ID),
-        add(r"HKCU\Software\RegisteredApplications", Some(PRODUCT_NAME), &capabilities),
+        add(
+            &format!(r"HKCU\{capabilities}\FileAssociations"),
+            Some(".pdf"),
+            WINDOWS_PROG_ID,
+        ),
+        add(
+            r"HKCU\Software\RegisteredApplications",
+            Some(PRODUCT_NAME),
+            &capabilities,
+        ),
     ]
 }
 
@@ -126,7 +146,10 @@ mod macos {
             role: u32,
             handler_bundle_id: CFStringRef,
         ) -> i32;
-        fn LSCopyDefaultRoleHandlerForContentType(content_type: CFStringRef, role: u32) -> CFStringRef;
+        fn LSCopyDefaultRoleHandlerForContentType(
+            content_type: CFStringRef,
+            role: u32,
+        ) -> CFStringRef;
     }
 
     const ROLES_ALL: u32 = 0xFFFF_FFFF;
@@ -154,10 +177,13 @@ mod macos {
             )
         };
         if status != 0 {
-            return Err(format!("macOS did not change the default PDF app (error {status})."));
+            return Err(format!(
+                "macOS did not change the default PDF app (error {status})."
+            ));
         }
         let current = unsafe {
-            let current = LSCopyDefaultRoleHandlerForContentType(pdf.as_concrete_TypeRef(), ROLES_ALL);
+            let current =
+                LSCopyDefaultRoleHandlerForContentType(pdf.as_concrete_TypeRef(), ROLES_ALL);
             (!current.is_null()).then(|| CFString::wrap_under_create_rule(current).to_string())
         };
         if current.is_some_and(|current| current.eq_ignore_ascii_case(&bundle_id)) {
@@ -203,18 +229,23 @@ mod linux {
         let data_home = std::env::var_os("XDG_DATA_HOME")
             .map(std::path::PathBuf::from)
             .filter(|path| path.is_absolute())
-            .or_else(|| std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".local/share")));
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|home| std::path::Path::new(&home).join(".local/share"))
+            });
         let installed = data_home
             .into_iter()
             .chain([
                 std::path::PathBuf::from("/usr/local/share"),
                 std::path::PathBuf::from("/usr/share"),
             ])
-            .any(|root| root.join("applications").join(super::LINUX_DESKTOP_FILE).is_file());
+            .any(|root| {
+                root.join("applications")
+                    .join(super::LINUX_DESKTOP_FILE)
+                    .is_file()
+            });
         if !installed {
-            return Err(
-                "Install Butter Paper with install-user.sh first, then try again.".into(),
-            );
+            return Err("Install Butter Paper with install-user.sh first, then try again.".into());
         }
         let status = Command::new("xdg-mime")
             .args(["default", super::LINUX_DESKTOP_FILE, "application/pdf"])
@@ -242,8 +273,13 @@ mod tests {
 
     #[test]
     fn windows_registration_lists_butter_paper_for_pdfs_under_the_current_user() {
-        let commands = windows_registry_commands(&PathBuf::from(r"C:\Apps\Butter Paper\butter-paper.exe"));
-        assert!(commands.iter().all(|command| command[0] == "add" && command[1].starts_with("HKCU\\")));
+        let commands =
+            windows_registry_commands(&PathBuf::from(r"C:\Apps\Butter Paper\butter-paper.exe"));
+        assert!(
+            commands
+                .iter()
+                .all(|command| command[0] == "add" && command[1].starts_with("HKCU\\"))
+        );
         assert!(commands.contains(&vec![
             "add".into(),
             r"HKCU\Software\Classes\ButterPaper.PDF\shell\open\command".into(),

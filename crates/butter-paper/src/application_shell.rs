@@ -370,7 +370,12 @@ mod tests {
             init_application_shell_actions(cx);
             let bindings = cx.key_bindings();
             let bindings = bindings.borrow();
-            assert_eq!(bindings.bindings_for_action(&RequestApplicationQuit).count(), 0);
+            assert_eq!(
+                bindings
+                    .bindings_for_action(&RequestApplicationQuit)
+                    .count(),
+                0
+            );
         });
     }
 

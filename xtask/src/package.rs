@@ -10,8 +10,10 @@ use std::{
 use serde_json::json;
 
 use crate::{
-    Args, Result, app_crate, archive::{self, Entry}, command, copy, create_dir, fresh_dir, notices,
-    output, pdfium, phone, read, read_text, root, exec, set_mode, sha256,
+    Args, Result, app_crate,
+    archive::{self, Entry},
+    command, copy, create_dir, exec, fresh_dir, notices, output, pdfium, phone, read, read_text,
+    root, set_mode, sha256,
     target::{Arch, Channel, Os, Target},
     target_dir,
     version::{self, Version},
@@ -42,7 +44,9 @@ pub fn run(args: &mut Args) -> Result {
         return Err("Butter Paper Beta is macOS-only".into());
     }
     if channels.contains(&Channel::Stable) && version.is_beta() {
-        return Err(format!("{version} is a beta; package the Beta channel only"));
+        return Err(format!(
+            "{version} is a beta; package the Beta channel only"
+        ));
     }
     if sign && target.os != Os::Macos {
         return Err("only macOS packages are signed".into());
@@ -97,23 +101,45 @@ struct Inputs {
 }
 
 fn build(target: Target) -> Result<PathBuf> {
-    exec(command("cargo")
-        .args(["build", "--release", "--locked", "--no-default-features", "--package", "butter-paper"])
-        .args(["--target", target.triple(), "--bin", APP, "--bin", WORKER])
-        .current_dir(root()))?;
+    exec(
+        command("cargo")
+            .args([
+                "build",
+                "--release",
+                "--locked",
+                "--no-default-features",
+                "--package",
+                "butter-paper",
+            ])
+            .args(["--target", target.triple(), "--bin", APP, "--bin", WORKER])
+            .current_dir(root()),
+    )?;
     Ok(target_dir().join(target.triple()).join("release"))
 }
 
 fn source_revision() -> Result<String> {
-    output(command("git").args(["rev-parse", "HEAD"]).current_dir(root()))
+    output(
+        command("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root()),
+    )
 }
 
 /// MANIFEST.json for the Windows and Linux install scripts: the package's
 /// identity and every other file's size and SHA-256.
-fn manifest(target: Target, version: Version, files: &BTreeMap<String, (Vec<u8>, u32)>) -> Result<Vec<u8>> {
+fn manifest(
+    target: Target,
+    version: Version,
+    files: &BTreeMap<String, (Vec<u8>, u32)>,
+) -> Result<Vec<u8>> {
     let records: serde_json::Map<String, serde_json::Value> = files
         .iter()
-        .map(|(name, (bytes, _))| (name.clone(), json!({ "bytes": bytes.len(), "sha256": sha256(bytes) })))
+        .map(|(name, (bytes, _))| {
+            (
+                name.clone(),
+                json!({ "bytes": bytes.len(), "sha256": sha256(bytes) }),
+            )
+        })
         .collect();
     let manifest = json!({
         "schemaVersion": 1,
@@ -127,7 +153,10 @@ fn manifest(target: Target, version: Version, files: &BTreeMap<String, (Vec<u8>,
 }
 
 fn entries(files: BTreeMap<String, (Vec<u8>, u32)>) -> Vec<Entry> {
-    files.into_iter().map(|(path, (bytes, mode))| Entry { path, bytes, mode }).collect()
+    files
+        .into_iter()
+        .map(|(path, (bytes, mode))| Entry { path, bytes, mode })
+        .collect()
 }
 
 fn windows(target: Target, version: Version, inputs: &Inputs, out: &Path) -> Result<PathBuf> {
@@ -142,8 +171,14 @@ fn windows(target: Target, version: Version, inputs: &Inputs, out: &Path) -> Res
         check_pe(&bytes, target, dll).map_err(|error| format!("{name}: {error}"))?;
         files.insert(name, (bytes, 0o755));
     }
-    files.insert("butter-paper.ico".into(), (read(&root().join("assets/app/icon.ico"))?, 0o644));
-    files.insert("THIRD_PARTY_NOTICES.md".into(), (inputs.notices.clone().into_bytes(), 0o644));
+    files.insert(
+        "butter-paper.ico".into(),
+        (read(&root().join("assets/app/icon.ico"))?, 0o644),
+    );
+    files.insert(
+        "THIRD_PARTY_NOTICES.md".into(),
+        (inputs.notices.clone().into_bytes(), 0o644),
+    );
     files.insert(
         "README.md".into(),
         (
@@ -157,13 +192,27 @@ fn windows(target: Target, version: Version, inputs: &Inputs, out: &Path) -> Res
         ),
     );
     let arch = target.package_architecture();
-    let render = |template: &str| template.replace("@VERSION@", &version.to_string()).replace("@ARCH@", arch);
+    let render = |template: &str| {
+        template
+            .replace("@VERSION@", &version.to_string())
+            .replace("@ARCH@", arch)
+    };
     let uninstall = render(include_str!("../templates/windows/uninstall.ps1"));
     files.insert("uninstall.ps1".into(), (uninstall.into_bytes(), 0o644));
     // install.ps1 lists the package (itself included) and the manifest's files.
-    let mut names: Vec<String> = files.keys().cloned().chain(["install.ps1".to_string()]).collect();
+    let mut names: Vec<String> = files
+        .keys()
+        .cloned()
+        .chain(["install.ps1".to_string()])
+        .collect();
     names.sort();
-    let quoted = |names: &[String]| names.iter().map(|name| format!("'{name}'")).collect::<Vec<_>>().join(", ");
+    let quoted = |names: &[String]| {
+        names
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     let manifest_names = quoted(&names);
     names.push("MANIFEST.json".into());
     let install = render(include_str!("../templates/windows/install.ps1"))
@@ -186,15 +235,27 @@ fn linux(target: Target, version: Version, inputs: &Inputs, out: &Path) -> Resul
         ("libpdfium.so", &inputs.pdfium),
     ] {
         let bytes = read(path)?;
-        check_elf(&bytes, target, name == "libpdfium.so").map_err(|error| format!("{name}: {error}"))?;
+        check_elf(&bytes, target, name == "libpdfium.so")
+            .map_err(|error| format!("{name}: {error}"))?;
         files.insert(name.to_string(), (bytes, 0o755));
     }
-    files.insert("butter-paper.png".into(), (read(&root().join("assets/app/linux/1024x1024.png"))?, 0o644));
+    files.insert(
+        "butter-paper.png".into(),
+        (read(&root().join("assets/app/linux/1024x1024.png"))?, 0o644),
+    );
     files.insert(
         "butter-paper.desktop".into(),
-        (include_str!("../templates/linux/butter-paper.desktop").as_bytes().to_vec(), 0o644),
+        (
+            include_str!("../templates/linux/butter-paper.desktop")
+                .as_bytes()
+                .to_vec(),
+            0o644,
+        ),
     );
-    files.insert("THIRD_PARTY_NOTICES.md".into(), (inputs.notices.clone().into_bytes(), 0o644));
+    files.insert(
+        "THIRD_PARTY_NOTICES.md".into(),
+        (inputs.notices.clone().into_bytes(), 0o644),
+    );
     files.insert(
         "README.md".into(),
         (
@@ -211,15 +272,44 @@ fn linux(target: Target, version: Version, inputs: &Inputs, out: &Path) -> Resul
     let render = |template: &str| {
         template
             .replace("@VERSION@", &version.to_string())
-            .replace("@PAYLOAD_WORDS@", &payload.iter().map(|name| format!("'{name}'")).collect::<Vec<_>>().join(" "))
-            .replace("@PAYLOAD_CASES@", &payload.iter().map(|name| format!("'{name}'")).collect::<Vec<_>>().join("|"))
+            .replace(
+                "@PAYLOAD_WORDS@",
+                &payload
+                    .iter()
+                    .map(|name| format!("'{name}'"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
+            .replace(
+                "@PAYLOAD_CASES@",
+                &payload
+                    .iter()
+                    .map(|name| format!("'{name}'"))
+                    .collect::<Vec<_>>()
+                    .join("|"),
+            )
             .replace("@PAYLOAD_COUNT@", &payload.len().to_string())
     };
-    files.insert("install-user.sh".into(), (render(include_str!("../templates/linux/install-user.sh")).into_bytes(), 0o755));
-    files.insert("uninstall-user.sh".into(), (render(include_str!("../templates/linux/uninstall-user.sh")).into_bytes(), 0o755));
+    files.insert(
+        "install-user.sh".into(),
+        (
+            render(include_str!("../templates/linux/install-user.sh")).into_bytes(),
+            0o755,
+        ),
+    );
+    files.insert(
+        "uninstall-user.sh".into(),
+        (
+            render(include_str!("../templates/linux/uninstall-user.sh")).into_bytes(),
+            0o755,
+        ),
+    );
     let manifest = manifest(target, version, &files)?;
     files.insert("MANIFEST.json".into(), (manifest, 0o644));
-    let root_name = format!("butter-paper-linux-{}-{version}", target.package_architecture());
+    let root_name = format!(
+        "butter-paper-linux-{}-{version}",
+        target.package_architecture()
+    );
     let path = out.join(target.asset_name(Channel::Stable));
     write(&path, archive::tar_xz(&root_name, &mut entries(files))?)?;
     Ok(path)
@@ -247,28 +337,35 @@ fn macos(
         Arch::X64 => "x86_64",
     };
     let camera = staging.join(CAMERA);
-    exec(command("xcrun")
-        .args(["swiftc", "-swift-version", "5", "-O", "-target"])
-        .arg(format!("{swift_arch}-apple-macos{MINIMUM_MACOS}"))
-        .arg(app_crate().join("macos/SignatureCamera.swift"))
-        .arg("-o")
-        .arg(&camera))?;
+    exec(
+        command("xcrun")
+            .args(["swiftc", "-swift-version", "5", "-O", "-target"])
+            .arg(format!("{swift_arch}-apple-macos{MINIMUM_MACOS}"))
+            .arg(app_crate().join("macos/SignatureCamera.swift"))
+            .arg("-o")
+            .arg(&camera),
+    )?;
 
     let executables = [
         (contents.join("MacOS").join(product), &inputs.app),
         (contents.join("MacOS").join(WORKER), &inputs.worker),
         (contents.join("MacOS").join(CAMERA), &camera),
-        (contents.join("MacOS").join(phone::EXECUTABLE), &inputs.phone),
+        (
+            contents.join("MacOS").join(phone::EXECUTABLE),
+            &inputs.phone,
+        ),
     ];
     for (destination, source) in &executables {
         let bytes = read(source)?;
-        check_macho(&bytes, target, MACHO_EXECUTE).map_err(|error| format!("{}: {error}", source.display()))?;
+        check_macho(&bytes, target, MACHO_EXECUTE)
+            .map_err(|error| format!("{}: {error}", source.display()))?;
         write(destination, bytes)?;
         set_mode(destination, 0o755)?;
     }
     let library = contents.join("Frameworks/libpdfium.dylib");
     let bytes = read(&inputs.pdfium)?;
-    check_macho(&bytes, target, MACHO_DYLIB).map_err(|error| format!("libpdfium.dylib: {error}"))?;
+    check_macho(&bytes, target, MACHO_DYLIB)
+        .map_err(|error| format!("libpdfium.dylib: {error}"))?;
     write(&library, bytes)?;
     set_mode(&library, 0o755)?;
 
@@ -278,7 +375,11 @@ fn macos(
     };
     let resources = contents.join("Resources");
     copy(&icons.join("icon.icns"), &resources.join("icon.icns"))?;
-    compile_icon(&icons.join(format!("macos/{product}.icon")), &staging.join("icon"), &resources)?;
+    compile_icon(
+        &icons.join(format!("macos/{product}.icon")),
+        &staging.join("icon"),
+        &resources,
+    )?;
     write(&resources.join("THIRD_PARTY_NOTICES.md"), &inputs.notices)?;
     write(&contents.join("Info.plist"), info_plist(channel, version))?;
 
@@ -289,7 +390,12 @@ fn macos(
     if path.exists() {
         std::fs::remove_file(&path).map_err(|error| error.to_string())?;
     }
-    exec(command("/usr/bin/ditto").args(["-c", "-k", "--keepParent"]).arg(&app).arg(&path))?;
+    exec(
+        command("/usr/bin/ditto")
+            .args(["-c", "-k", "--keepParent"])
+            .arg(&app)
+            .arg(&path),
+    )?;
     Ok(path)
 }
 
@@ -300,17 +406,36 @@ fn compile_icon(source: &Path, work: &Path, resources: &Path) -> Result {
     let icon = work.join("Icon.icon");
     exec(command("cp").arg("-R").arg(source).arg(&icon))?;
     let partial = work.join("partial-info.plist");
-    exec(command("xcrun")
-        .arg("actool")
-        .arg(&icon)
-        .arg("--compile")
-        .arg(work)
-        .args(["--output-format", "human-readable-text", "--output-partial-info-plist"])
-        .arg(&partial)
-        .args(["--app-icon", "Icon", "--include-all-app-icons", "--target-device", "mac"])
-        .args(["--minimum-deployment-target", "26.0", "--platform", "macosx"]))?;
+    exec(
+        command("xcrun")
+            .arg("actool")
+            .arg(&icon)
+            .arg("--compile")
+            .arg(work)
+            .args([
+                "--output-format",
+                "human-readable-text",
+                "--output-partial-info-plist",
+            ])
+            .arg(&partial)
+            .args([
+                "--app-icon",
+                "Icon",
+                "--include-all-app-icons",
+                "--target-device",
+                "mac",
+            ])
+            .args([
+                "--minimum-deployment-target",
+                "26.0",
+                "--platform",
+                "macosx",
+            ]),
+    )?;
     let generated = read_text(&partial)?;
-    if !generated.contains("<key>CFBundleIconName</key>") || !generated.contains("<string>Icon</string>") {
+    if !generated.contains("<key>CFBundleIconName</key>")
+        || !generated.contains("<string>Icon</string>")
+    {
         return Err("actool did not compile the application icon".into());
     }
     copy(&work.join("Assets.car"), &resources.join("Assets.car"))
@@ -323,7 +448,10 @@ pub fn info_plist(channel: Channel, version: Version) -> String {
         ("CFBundleExecutable", product.to_string()),
         ("CFBundleIconFile", "icon.icns".to_string()),
         ("CFBundleIconName", "Icon".to_string()),
-        ("CFBundleIdentifier", channel.bundle_identifier().to_string()),
+        (
+            "CFBundleIdentifier",
+            channel.bundle_identifier().to_string(),
+        ),
         ("CFBundleName", product.to_string()),
         // macOS wants X.Y.Z here; a beta is told apart by its build number.
         ("CFBundleShortVersionString", version.core()),
@@ -377,7 +505,8 @@ pub fn info_plist(channel: Channel, version: Version) -> String {
 /// updater and Gatekeeper will. Needs BP_SIGNING_IDENTITY and
 /// BP_NOTARY_PROFILE (a notarytool keychain profile).
 fn sign_and_notarise(channel: Channel, app: &Path, contents: &Path, work: &Path) -> Result {
-    let identity = std::env::var("BP_SIGNING_IDENTITY").map_err(|_| "BP_SIGNING_IDENTITY is not set")?;
+    let identity =
+        std::env::var("BP_SIGNING_IDENTITY").map_err(|_| "BP_SIGNING_IDENTITY is not set")?;
     if identity != SIGNING_IDENTITY {
         return Err(format!("BP_SIGNING_IDENTITY must be {SIGNING_IDENTITY}"));
     }
@@ -385,7 +514,11 @@ fn sign_and_notarise(channel: Channel, app: &Path, contents: &Path, work: &Path)
     let identifier = channel.bundle_identifier();
     let entitlements = |name: &str, camera: bool| -> Result<PathBuf> {
         let path = work.join(format!("{name}.entitlements"));
-        let body = if camera { "\n\t<key>com.apple.security.device.camera</key>\n\t<true/>\n" } else { "" };
+        let body = if camera {
+            "\n\t<key>com.apple.security.device.camera</key>\n\t<true/>\n"
+        } else {
+            ""
+        };
         write(
             &path,
             format!(
@@ -395,16 +528,39 @@ fn sign_and_notarise(channel: Channel, app: &Path, contents: &Path, work: &Path)
         Ok(path)
     };
     let codesign = |path: &Path, id: String, entitlements: &Path| {
-        exec(command("codesign")
-            .args(["--force", "--options", "runtime", "--timestamp", "--sign", &identity, "--identifier", &id])
-            .arg("--entitlements")
-            .arg(entitlements)
-            .arg(path))
+        exec(
+            command("codesign")
+                .args([
+                    "--force",
+                    "--options",
+                    "runtime",
+                    "--timestamp",
+                    "--sign",
+                    &identity,
+                    "--identifier",
+                    &id,
+                ])
+                .arg("--entitlements")
+                .arg(entitlements)
+                .arg(path),
+        )
     };
     let plain = entitlements("plain", false)?;
-    codesign(&contents.join("Frameworks/libpdfium.dylib"), format!("{identifier}.pdfium"), &plain)?;
-    codesign(&contents.join("MacOS").join(WORKER), format!("{identifier}.pdf-worker"), &plain)?;
-    codesign(&contents.join("MacOS").join(phone::EXECUTABLE), format!("{identifier}.signature-phone"), &plain)?;
+    codesign(
+        &contents.join("Frameworks/libpdfium.dylib"),
+        format!("{identifier}.pdfium"),
+        &plain,
+    )?;
+    codesign(
+        &contents.join("MacOS").join(WORKER),
+        format!("{identifier}.pdf-worker"),
+        &plain,
+    )?;
+    codesign(
+        &contents.join("MacOS").join(phone::EXECUTABLE),
+        format!("{identifier}.signature-phone"),
+        &plain,
+    )?;
     codesign(
         &contents.join("MacOS").join(CAMERA),
         format!("{identifier}.signature-camera"),
@@ -413,15 +569,28 @@ fn sign_and_notarise(channel: Channel, app: &Path, contents: &Path, work: &Path)
     codesign(app, identifier.to_string(), &plain)?;
 
     let submission = work.join("notarisation.zip");
-    exec(command("/usr/bin/ditto").args(["-c", "-k", "--keepParent"]).arg(app).arg(&submission))?;
+    exec(
+        command("/usr/bin/ditto")
+            .args(["-c", "-k", "--keepParent"])
+            .arg(app)
+            .arg(&submission),
+    )?;
     notarise(&submission, &profile)?;
     exec(command("xcrun").args(["stapler", "staple"]).arg(app))?;
 
     let requirement = format!(
         "=identifier \"{identifier}\" and anchor apple generic and certificate leaf[subject.OU] = \"{TEAM_ID}\""
     );
-    exec(command("codesign").args(["--verify", "--deep", "--strict", "-R", &requirement]).arg(app))?;
-    exec(command("spctl").args(["--assess", "--type", "execute"]).arg(app))?;
+    exec(
+        command("codesign")
+            .args(["--verify", "--deep", "--strict", "-R", &requirement])
+            .arg(app),
+    )?;
+    exec(
+        command("spctl")
+            .args(["--assess", "--type", "execute"])
+            .arg(app),
+    )?;
     exec(command("xcrun").args(["stapler", "validate"]).arg(app))
 }
 
@@ -431,17 +600,32 @@ fn notarise(archive: &Path, profile: &str) -> Result {
     let submit = command("xcrun")
         .args(["notarytool", "submit"])
         .arg(archive)
-        .args(["--keychain-profile", profile, "--wait", "--output-format", "json"])
+        .args([
+            "--keychain-profile",
+            profile,
+            "--wait",
+            "--output-format",
+            "json",
+        ])
         .output()
         .map_err(|error| error.to_string())?;
-    let mut text = String::from_utf8_lossy(&submit.stdout).into_owned() + &String::from_utf8_lossy(&submit.stderr);
+    let mut text = String::from_utf8_lossy(&submit.stdout).into_owned()
+        + &String::from_utf8_lossy(&submit.stderr);
     if !submit.status.success() {
         let id = submission_id(&text).ok_or_else(|| format!("notarisation failed: {text}"))?;
         let mut accepted = false;
         for _ in 0..6 {
             std::thread::sleep(std::time::Duration::from_secs(30));
             let wait = command("xcrun")
-                .args(["notarytool", "wait", &id, "--keychain-profile", profile, "--output-format", "json"])
+                .args([
+                    "notarytool",
+                    "wait",
+                    &id,
+                    "--keychain-profile",
+                    profile,
+                    "--output-format",
+                    "json",
+                ])
                 .output()
                 .map_err(|error| error.to_string())?;
             text = String::from_utf8_lossy(&wait.stdout).into_owned();
@@ -454,8 +638,13 @@ fn notarise(archive: &Path, profile: &str) -> Result {
             return Err(format!("notarisation did not finish: {text}"));
         }
     }
-    let result: serde_json::Value = serde_json::from_str(text.lines().rev().find(|l| l.starts_with('{')).unwrap_or(""))
-        .map_err(|_| format!("notarytool did not return JSON: {text}"))?;
+    let result: serde_json::Value = serde_json::from_str(
+        text.lines()
+            .rev()
+            .find(|l| l.starts_with('{'))
+            .unwrap_or(""),
+    )
+    .map_err(|_| format!("notarytool did not return JSON: {text}"))?;
     if result["status"] != "Accepted" {
         return Err(format!("notarisation was not accepted: {text}"));
     }
@@ -464,7 +653,10 @@ fn notarise(archive: &Path, profile: &str) -> Result {
 
 fn submission_id(text: &str) -> Option<String> {
     let start = text.find("/notary/v2/submissions/")? + "/notary/v2/submissions/".len();
-    let id: String = text[start..].chars().take_while(|c| c.is_ascii_hexdigit() || *c == '-').collect();
+    let id: String = text[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_hexdigit() || *c == '-')
+        .collect();
     (id.len() == 36).then_some(id)
 }
 
@@ -582,7 +774,9 @@ mod tests {
     #[test]
     fn info_plist_carries_the_identity_and_both_versions() {
         let plist = info_plist(Channel::Beta, Version::parse("0.1.1-beta.2").unwrap());
-        assert!(plist.contains("<key>CFBundleExecutable</key>\n  <string>Butter Paper Beta</string>"));
+        assert!(
+            plist.contains("<key>CFBundleExecutable</key>\n  <string>Butter Paper Beta</string>")
+        );
         assert!(plist.contains("<string>com.butterpaper.desktop.beta</string>"));
         assert!(plist.contains("<key>CFBundleShortVersionString</key>\n  <string>0.1.1</string>"));
         assert!(plist.contains("<key>CFBundleVersion</key>\n  <string>100100002</string>"));
@@ -615,7 +809,10 @@ mod tests {
     #[test]
     fn notarisation_submission_ids_are_recovered_from_errors() {
         let text = "Error: https://appstoreconnect.apple.com/notary/v2/submissions/0123abcd-0123-4567-89ab-0123456789ab/status timed out";
-        assert_eq!(submission_id(text).as_deref(), Some("0123abcd-0123-4567-89ab-0123456789ab"));
+        assert_eq!(
+            submission_id(text).as_deref(),
+            Some("0123abcd-0123-4567-89ab-0123456789ab")
+        );
         assert_eq!(submission_id("no id"), None);
     }
 
@@ -632,10 +829,19 @@ mod tests {
                 let tail = &rest[start + 1..];
                 if let Some(end) = tail.find('@') {
                     let name = &tail[..end];
-                    if !name.is_empty() && name.bytes().all(|b| b.is_ascii_uppercase() || b == b'_') {
+                    if !name.is_empty() && name.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
+                    {
                         assert!(
-                            ["VERSION", "ARCH", "PAYLOAD_WORDS", "PAYLOAD_CASES", "PAYLOAD_COUNT", "PACKAGE_FILES", "MANIFEST_FILES"]
-                                .contains(&name),
+                            [
+                                "VERSION",
+                                "ARCH",
+                                "PAYLOAD_WORDS",
+                                "PAYLOAD_CASES",
+                                "PAYLOAD_COUNT",
+                                "PACKAGE_FILES",
+                                "MANIFEST_FILES"
+                            ]
+                            .contains(&name),
                             "{name}"
                         );
                     }

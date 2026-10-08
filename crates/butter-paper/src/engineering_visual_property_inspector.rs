@@ -125,14 +125,20 @@ pub struct EngineeringVisualPropertySnapshot {
 #[derive(Clone, Debug, PartialEq)]
 pub enum EngineeringVisualPropertyPatch {
     Locked(bool),
-    ColorAndOpacity { color: String, opacity: f64 },
+    ColorAndOpacity {
+        color: String,
+        opacity: f64,
+    },
     Color(String),
     WidthPt(f64),
     Opacity(f64),
     CloudIntensity(f64),
     /// A Cloud fill, as Revu allows; `None` removes it.
     FillColor(Option<String>),
-    FillColorAndOpacity { color: String, opacity: f64 },
+    FillColorAndOpacity {
+        color: String,
+        opacity: f64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -574,18 +580,22 @@ impl Render for EngineeringVisualPropertyInspector {
                         .child(
                             div()
                                 .id(ENGINEERING_VISUAL_INSPECTOR_APPLY_FILL_ID)
-                                .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_APPLY_FILL_ID.into())
+                                .debug_selector(|| {
+                                    ENGINEERING_VISUAL_INSPECTOR_APPLY_FILL_ID.into()
+                                })
                                 .child(
                                     Button::new(
                                         "engineering-visual-property-inspector-apply-fill-button",
                                     )
                                     .label("Apply fill")
                                     .disabled(disabled || !fill_preview_available)
-                                    .on_click(move |_, _, cx| {
-                                        let _ = apply_fill.update(cx, |inspector, cx| {
-                                            inspector.apply_preview_fill(cx)
-                                        });
-                                    }),
+                                    .on_click(
+                                        move |_, _, cx| {
+                                            let _ = apply_fill.update(cx, |inspector, cx| {
+                                                inspector.apply_preview_fill(cx)
+                                            });
+                                        },
+                                    ),
                                 ),
                         )
                         .child(

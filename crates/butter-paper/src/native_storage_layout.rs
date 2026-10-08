@@ -167,7 +167,9 @@ impl NativeProductionStorage {
         {
             use std::os::unix::fs::MetadataExt as _;
             if _metadata.uid() != unsafe { libc::geteuid() } {
-                return Err("the native application data root must belong to the current user".into());
+                return Err(
+                    "the native application data root must belong to the current user".into(),
+                );
             }
         }
         Ok(true)
@@ -350,8 +352,14 @@ mod tests {
             }
         }
         assert!(
-            !stable.layout().preferences_root().starts_with(stable.layout().surface_root())
-                && !stable.layout().surface_root().starts_with(stable.layout().preferences_root())
+            !stable
+                .layout()
+                .preferences_root()
+                .starts_with(stable.layout().surface_root())
+                && !stable
+                    .layout()
+                    .surface_root()
+                    .starts_with(stable.layout().preferences_root())
         );
         assert!(
             NativeProductionStorage::macos(Path::new("relative"), NativeReleaseChannel::Stable)
@@ -430,7 +438,11 @@ mod tests {
         assert!(!storage.check_durable_root().unwrap());
         assert!(!storage.layout().durable_root().exists());
         std::fs::create_dir_all(storage.layout().durable_root()).unwrap();
-        std::fs::write(storage.layout().durable_root().join("native-state"), b"native").unwrap();
+        std::fs::write(
+            storage.layout().durable_root().join("native-state"),
+            b"native",
+        )
+        .unwrap();
         assert!(storage.check_durable_root().unwrap());
         assert_eq!(
             std::fs::read(storage.layout().durable_root().join("native-state")).unwrap(),
@@ -450,15 +462,24 @@ mod tests {
         std::fs::create_dir_all(file_storage.layout().durable_root().parent().unwrap()).unwrap();
         std::fs::write(file_storage.layout().durable_root(), b"partial").unwrap();
         assert!(file_storage.check_durable_root().is_err());
-        assert_eq!(std::fs::read(file_storage.layout().durable_root()).unwrap(), b"partial");
+        assert_eq!(
+            std::fs::read(file_storage.layout().durable_root()).unwrap(),
+            b"partial"
+        );
         std::fs::remove_dir_all(file_home).unwrap();
 
         // A symlinked root, and a symlinked parent, are both refused.
         for parent in [false, true] {
             let home = root();
-            let storage = NativeProductionStorage::macos(&home, NativeReleaseChannel::Beta).unwrap();
+            let storage =
+                NativeProductionStorage::macos(&home, NativeReleaseChannel::Beta).unwrap();
             let link = if parent {
-                storage.layout().durable_root().parent().unwrap().to_path_buf()
+                storage
+                    .layout()
+                    .durable_root()
+                    .parent()
+                    .unwrap()
+                    .to_path_buf()
             } else {
                 storage.layout().durable_root().to_path_buf()
             };

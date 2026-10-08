@@ -2,9 +2,7 @@
 //! GPUI's no-op test renderer and require an explicitly selected hardware run.
 #![cfg(target_os = "macos")]
 
-use gpui::{
-    Bounds, DevicePixels, Path, ScaledPixels, Scene, point, px, size,
-};
+use gpui::{Bounds, DevicePixels, Path, ScaledPixels, Scene, point, px, size};
 
 #[test]
 #[ignore = "requires a real macOS Metal device; run explicitly with --ignored"]

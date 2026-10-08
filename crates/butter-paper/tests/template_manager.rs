@@ -8,10 +8,10 @@ use butter_paper::generated_document::{
 use butter_paper::pdf_engine::PdfPersistenceSession;
 use butter_paper::template_manager::{
     PersistentTemplateManager, TEMPLATE_MANAGER_BROWSE_PAGE_ID, TEMPLATE_MANAGER_CANCEL_ID,
-    TEMPLATE_MANAGER_COLOR_IDS, TEMPLATE_MANAGER_COLOR_INPUT_ID,
+    TEMPLATE_MANAGER_CLOSE_ID, TEMPLATE_MANAGER_COLOR_IDS, TEMPLATE_MANAGER_COLOR_INPUT_ID,
     TEMPLATE_MANAGER_CREATE_DOCUMENT_ID, TEMPLATE_MANAGER_CREATE_ID, TEMPLATE_MANAGER_DONE_ID,
     TEMPLATE_MANAGER_HEIGHT_INPUT_ID, TEMPLATE_MANAGER_ID, TEMPLATE_MANAGER_IMPORT_ID,
-    TEMPLATE_MANAGER_CLOSE_ID, TEMPLATE_MANAGER_IMPORTED_PREVIEW_ID, TEMPLATE_MANAGER_LIST_ID, TEMPLATE_MANAGER_NAME_FIELD_ID,
+    TEMPLATE_MANAGER_IMPORTED_PREVIEW_ID, TEMPLATE_MANAGER_LIST_ID, TEMPLATE_MANAGER_NAME_FIELD_ID,
     TEMPLATE_MANAGER_NAME_INPUT_ID, TEMPLATE_MANAGER_ORIENTATION_IDS, TEMPLATE_MANAGER_PAPER_IDS,
     TEMPLATE_MANAGER_PATTERN_IDS, TEMPLATE_MANAGER_PREVIEW_ID, TEMPLATE_MANAGER_PREVIEW_PAGE_ID,
     TEMPLATE_MANAGER_SAVE_ID, TEMPLATE_MANAGER_SCROLL_ID, TEMPLATE_MANAGER_SPACING_IDS,
@@ -223,12 +223,18 @@ fn rendered_browse_and_create_layouts_stay_horizontally_bounded_and_scrollable(
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let list = cx.debug_bounds(TEMPLATE_MANAGER_LIST_ID).unwrap();
     let preview = cx.debug_bounds(TEMPLATE_MANAGER_PREVIEW_ID).unwrap();
-    assert_eq!(list.size.width, preview.size.width, "side-by-side list and preview split 50/50");
+    assert_eq!(
+        list.size.width, preview.size.width,
+        "side-by-side list and preview split 50/50"
+    );
     // The stock dialog body clips its content; an outset close button lost
     // hover over its clipped half.
     let content = cx.debug_bounds(TEMPLATE_MANAGER_ID).unwrap();
     let close = cx.debug_bounds(TEMPLATE_MANAGER_CLOSE_ID).unwrap();
-    assert!(close.top() >= content.top() && close.right() <= content.right(), "close must sit wholly inside the dialog content: {close:?} in {content:?}");
+    assert!(
+        close.top() >= content.top() && close.right() <= content.right(),
+        "close must sit wholly inside the dialog content: {close:?} in {content:?}"
+    );
     cx.simulate_resize(size(px(320.), px(480.)));
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
@@ -530,8 +536,7 @@ fn persistent_manager_restarts_imports_removes_and_keeps_one_storage_authority()
     let source = root.join("Site Form.pdf");
     fs::create_dir_all(&root).unwrap();
     fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/bp-multi-page-v1.pdf"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bp-multi-page-v1.pdf"),
         &source,
     )
     .unwrap();
@@ -592,8 +597,7 @@ fn legacy_request_migrates_once_and_materialized_templates_keep_independent_sour
     let source = root.join("Imported.pdf");
     fs::create_dir_all(&root).unwrap();
     fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/bp-multi-page-v1.pdf"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bp-multi-page-v1.pdf"),
         &source,
     )
     .unwrap();
@@ -671,8 +675,7 @@ fn malformed_legacy_data_falls_back_and_snapshot_keeps_generated_before_imported
     let source = root.join("Imported.pdf");
     fs::create_dir_all(&root).unwrap();
     fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/bp-multi-page-v1.pdf"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bp-multi-page-v1.pdf"),
         &source,
     )
     .unwrap();
@@ -731,8 +734,7 @@ fn save_document_as_template_copies_only_the_authorized_source_and_recovers_from
     let authorized_source = root.join("Current Drawing.pdf");
     fs::create_dir_all(&root).unwrap();
     fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/bp-multi-page-v1.pdf"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bp-multi-page-v1.pdf"),
         &authorized_source,
     )
     .unwrap();
@@ -778,8 +780,7 @@ fn workspace_save_command_routes_once_through_the_retained_manager_and_recovers(
     let source = root.join("Current Drawing.pdf");
     fs::create_dir_all(&root).unwrap();
     fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/bp-multi-page-v1.pdf"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bp-multi-page-v1.pdf"),
         &source,
     )
     .unwrap();
@@ -838,8 +839,7 @@ fn injected_native_picker_completion_imports_persistently_and_recovers_from_fail
     let source = root.join("Site Form.pdf");
     fs::create_dir_all(&root).unwrap();
     fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/bp-multi-page-v1.pdf"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bp-multi-page-v1.pdf"),
         &source,
     )
     .unwrap();

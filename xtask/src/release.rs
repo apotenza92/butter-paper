@@ -23,15 +23,29 @@ pub fn release(args: &mut Args) -> Result {
     let version = version::current()?;
     let tag = version.tag();
     if !git(&["tag", "--list", &tag])?.is_empty() {
-        return Err(format!("{tag} already exists; releases are immutable, so bump the version"));
+        return Err(format!(
+            "{tag} already exists; releases are immutable, so bump the version"
+        ));
     }
     version::changelog_notes(version)?;
     let versions = version::recorded()?;
     if versions.iter().any(|(_, value)| *value != versions[0].1) {
-        return Err(format!("versions disagree: {versions:?} (run cargo xtask version)"));
+        return Err(format!(
+            "versions disagree: {versions:?} (run cargo xtask version)"
+        ));
     }
-    exec(command("git").args(["tag", "-a", &tag, "-m", &format!("Butter Paper {version}")]).current_dir(root()))?;
-    exec(command("git").args(["push", "origin", &tag]).current_dir(root()))?;
-    println!("Pushed {tag}. Follow it with: gh run watch $(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')");
+    exec(
+        command("git")
+            .args(["tag", "-a", &tag, "-m", &format!("Butter Paper {version}")])
+            .current_dir(root()),
+    )?;
+    exec(
+        command("git")
+            .args(["push", "origin", &tag])
+            .current_dir(root()),
+    )?;
+    println!(
+        "Pushed {tag}. Follow it with: gh run watch $(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+    );
     Ok(())
 }

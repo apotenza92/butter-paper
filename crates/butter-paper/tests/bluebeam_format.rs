@@ -532,12 +532,21 @@ fn revu_authored_markups_import_as_their_native_families() {
     assert_eq!(shapes.rectangles()[0].id.as_str(), "MSYMAPZFINTDPPUL");
 
     let measured = PdfPersistenceSession::open(fixture("revu-measure-text-media.pdf")).unwrap();
-    assert!(measured.untouched_annotations().is_empty(), "{:?}", measured.untouched_annotations());
+    assert!(
+        measured.untouched_annotations().is_empty(),
+        "{:?}",
+        measured.untouched_annotations()
+    );
     // Revu's vector Snapshot is an editable Snapshot that keeps its Form.
     assert_eq!(measured.vector_snapshot_ids(), [id("RIJSPWSIYBGOWHST")]);
     // A callout whose text was deleted in Revu is still a callout.
     assert_eq!(measured.callouts().len(), 2);
-    assert!(measured.callouts().iter().any(|callout| callout.content().is_empty()));
+    assert!(
+        measured
+            .callouts()
+            .iter()
+            .any(|callout| callout.content().is_empty())
+    );
     assert_eq!(measured.dimensions().len(), 1);
     assert_eq!(measured.lengths().len(), 2);
     assert_eq!(measured.measurement_paths().len(), 2);
@@ -895,7 +904,10 @@ fn unlabelled_dimension_and_bordered_callout_match_revu() {
     assert!(dimension.get(b"DS").is_ok());
     assert_eq!(dimension.get(b"LLE").unwrap().as_float().unwrap(), 2.);
     let content = appearance_content(&document, dimension);
-    assert!(!content.contains("BT"), "an unlabelled Dimension draws no text");
+    assert!(
+        !content.contains("BT"),
+        "an unlabelled Dimension draws no text"
+    );
     assert_eq!(content.matches(" b\n").count(), 2, "two closed arrowheads");
 
     // `W 0` is Revu's default 1 pt leader; any other width also strokes the box.
@@ -955,7 +967,11 @@ fn filled_cloud_plus_saves_and_reopens_its_fill() {
                     point(58.6721, 109.4289),
                 ],
                 2.,
-                vec![point(124.7705, 130.1), point(159.3372, 130.), point(179.1372, 130.)],
+                vec![
+                    point(124.7705, 130.1),
+                    point(159.3372, 130.),
+                    point(179.1372, 130.),
+                ],
                 rect(179.1372, 115., 310.6372, 146.),
                 "Filled",
                 CloudPlusAppearance::new(filled, line, text).unwrap(),
@@ -965,14 +981,20 @@ fn filled_cloud_plus_saves_and_reopens_its_fill() {
         .unwrap();
     save_as(&session, &source, &target);
     let reopened = PdfPersistenceSession::open(&target).unwrap();
-    assert!(reopened.untouched_annotations().is_empty(), "{:?}", reopened.untouched_annotations());
+    assert!(
+        reopened.untouched_annotations().is_empty(),
+        "{:?}",
+        reopened.untouched_annotations()
+    );
     let cloud = reopened.cloud_pluses()[0].appearance.cloud();
     assert_eq!(cloud.fill_color(), Some("#0000ff"));
     assert_eq!(cloud.fill_opacity(), 0.5);
     let (document, dictionaries) = annotation_dictionaries(&target);
     let polygon = dictionaries
         .iter()
-        .find(|dictionary| dictionary.get(b"Subtype").ok().map(name_of).as_deref() == Some("Polygon"))
+        .find(|dictionary| {
+            dictionary.get(b"Subtype").ok().map(name_of).as_deref() == Some("Polygon")
+        })
         .unwrap();
     assert!(polygon.get(b"IC").is_ok());
     assert!(appearance_content(&document, polygon).contains("h B"));
@@ -1021,7 +1043,10 @@ fn edited_revu_vector_snapshot_keeps_its_form() {
 
     let edited = lopdf::Document::load(&target).unwrap();
     let dictionary = snapshot_dictionary(&edited);
-    assert_eq!(dictionary.get(b"Rotation").unwrap().as_float().unwrap(), 30.);
+    assert_eq!(
+        dictionary.get(b"Rotation").unwrap().as_float().unwrap(),
+        30.
+    );
     let wrapper_id = dictionary
         .get(b"AP")
         .unwrap()
@@ -1124,7 +1149,12 @@ fn export_visual_review_specimen() {
             CloudPlusAnnotation::new(
                 id("REVIEWFILLEDCLOU"),
                 0,
-                vec![point(330., 470.), point(450., 470.), point(450., 380.), point(330., 380.)],
+                vec![
+                    point(330., 470.),
+                    point(450., 470.),
+                    point(450., 380.),
+                    point(330., 380.),
+                ],
                 2.,
                 vec![point(458., 425.), point(480., 425.), point(500., 425.)],
                 rect(500., 410., 570., 440.),

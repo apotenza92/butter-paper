@@ -2053,7 +2053,10 @@ pub struct TextBoxRichTextRun {
 impl TextBoxRichTextRun {
     /// The run's text and resolved style: an unset family, size or colour
     /// inherits the box's, so an explicit repeat is the same run.
-    fn effective_style<'a>(&'a self, base: &'a TextBoxStyle) -> (&'a str, &'a str, u64, &'a str, bool, bool) {
+    fn effective_style<'a>(
+        &'a self,
+        base: &'a TextBoxStyle,
+    ) -> (&'a str, &'a str, u64, &'a str, bool, bool) {
         (
             self.text.as_str(),
             self.font_family.as_deref().unwrap_or(base.font_family()),
@@ -8705,11 +8708,16 @@ impl AnnotationDocument {
             }
             if let Annotation::Rectangle(rectangle) = &annotation {
                 let local = rectangle.world_to_local(point);
-                return rectangle.rect.contains(local, margin_pt).then(|| id.clone());
+                return rectangle
+                    .rect
+                    .contains(local, margin_pt)
+                    .then(|| id.clone());
             }
-            let paths = annotation_selection_paths(&annotation, &|sample: PdfPoint| {
-                SelectionPoint { x: sample.x, y: sample.y }
-            });
+            let paths =
+                annotation_selection_paths(&annotation, &|sample: PdfPoint| SelectionPoint {
+                    x: sample.x,
+                    y: sample.y,
+                });
             let mut samples = paths.iter().flat_map(|path| path.points.iter());
             let first = samples.next()?;
             let (mut min_x, mut min_y, mut max_x, mut max_y) = (first.x, first.y, first.x, first.y);
@@ -11972,7 +11980,10 @@ fn cloud_curl_layout(perimeter: f64, nominal_spacing: f64) -> (usize, f64, f64) 
 pub fn cloud_curl_radius(control_path: &[PdfPoint], border_effect_intensity: f64) -> f64 {
     let perimeter = (0..control_path.len())
         .map(|index| {
-            point_distance(control_path[index], control_path[(index + 1) % control_path.len()])
+            point_distance(
+                control_path[index],
+                control_path[(index + 1) % control_path.len()],
+            )
         })
         .sum::<f64>();
     cloud_curl_layout(perimeter, cloud_nominal_spacing(border_effect_intensity)).2
@@ -12200,7 +12211,11 @@ fn validate_snapshot_opacity(opacity: f64) -> Result<(), AnnotationError> {
 }
 
 /// Callout, Cloud+ and Dimension text may be empty, as in Revu.
-fn validate_optional_text(value: &str, field: &str, max_bytes: usize) -> Result<(), AnnotationError> {
+fn validate_optional_text(
+    value: &str,
+    field: &str,
+    max_bytes: usize,
+) -> Result<(), AnnotationError> {
     if value.len() > max_bytes || value.contains('\0') {
         return Err(AnnotationError::InvalidGeometry(format!(
             "{field} must contain at most {max_bytes} UTF-8 bytes without NUL"
@@ -14140,7 +14155,13 @@ mod tests {
     fn selected_item_moves_from_the_band_around_its_outset_outline() {
         let mut document = AnnotationDocument::default();
         document
-            .begin_create(8, id("rect"), 0, point(10.0, 20.0), RectangleAppearance::default())
+            .begin_create(
+                8,
+                id("rect"),
+                0,
+                point(10.0, 20.0),
+                RectangleAppearance::default(),
+            )
             .unwrap();
         document.update_gesture(8, point(110.0, 70.0)).unwrap();
         document.commit_gesture(8).unwrap();
@@ -15041,8 +15062,11 @@ mod tests {
 
     #[test]
     fn rectangle_manifest_replay_rejects_command_stream_drift() {
-        let manifest = include_str!("../tests/fixtures/bp-rectangle-v1.fixture.json")
-            .replacen("rectangle:create:001", "rectangle:create:drift", 1);
+        let manifest = include_str!("../tests/fixtures/bp-rectangle-v1.fixture.json").replacen(
+            "rectangle:create:001",
+            "rectangle:create:drift",
+            1,
+        );
         let mut document = AnnotationDocument::default();
 
         assert!(matches!(
@@ -15506,10 +15530,22 @@ mod tests {
         // intensity 2): its appearance starts where the first and last curls
         // meet, and each curl runs past the next meeting point and hooks back.
         let vertices = [
-            PdfPoint { x: 288.3672, y: 670.2866 },
-            PdfPoint { x: 364.8282, y: 670.2866 },
-            PdfPoint { x: 364.8282, y: 612.8628 },
-            PdfPoint { x: 288.3672, y: 612.8628 },
+            PdfPoint {
+                x: 288.3672,
+                y: 670.2866,
+            },
+            PdfPoint {
+                x: 364.8282,
+                y: 670.2866,
+            },
+            PdfPoint {
+                x: 364.8282,
+                y: 612.8628,
+            },
+            PdfPoint {
+                x: 288.3672,
+                y: 612.8628,
+            },
         ];
         let path = sampled_cloud_scallop_path(&vertices, DEFAULT_CLOUD_SCALLOP_RADIUS_PT);
         let near = |x: f64, y: f64| {
@@ -15517,14 +15553,23 @@ mod tests {
                 .any(|point| (point.x - x).abs() < 0.01 && (point.y - y).abs() < 0.01)
         };
         assert!((path[0].x - 283.693).abs() < 0.01 && (path[0].y - 663.2401).abs() < 0.01);
-        assert!(near(296.6271, 672.0964), "overshoot past the first meeting point");
+        assert!(
+            near(296.6271, 672.0964),
+            "overshoot past the first meeting point"
+        );
         assert!(near(295.4137, 674.9608), "first meeting point");
         // The curl centred 8.1 pt below the top-right corner bulges right.
-        assert!(path.iter().any(|point| point.x > 373.2 && (point.y - 662.189).abs() < 2.));
+        assert!(
+            path.iter()
+                .any(|point| point.x > 373.2 && (point.y - 662.189).abs() < 2.)
+        );
         assert_eq!(path.first(), path.last());
         // Every curl bulges outwards: nothing falls inside the outline by
         // more than the hooks reach.
-        assert!(path.iter().all(|point| point.y > 612.8628 - 9. && point.y < 670.2866 + 9.));
+        assert!(
+            path.iter()
+                .all(|point| point.y > 612.8628 - 9. && point.y < 670.2866 + 9.)
+        );
         assert!(path.iter().any(|point| point.y > 678.));
 
         // The same outline drawn anticlockwise bulges outwards too.

@@ -52,12 +52,30 @@ impl Channel {
 }
 
 pub const ALL: [Target; 6] = [
-    Target { os: Os::Macos, arch: Arch::Arm64 },
-    Target { os: Os::Macos, arch: Arch::X64 },
-    Target { os: Os::Windows, arch: Arch::Arm64 },
-    Target { os: Os::Windows, arch: Arch::X64 },
-    Target { os: Os::Linux, arch: Arch::Arm64 },
-    Target { os: Os::Linux, arch: Arch::X64 },
+    Target {
+        os: Os::Macos,
+        arch: Arch::Arm64,
+    },
+    Target {
+        os: Os::Macos,
+        arch: Arch::X64,
+    },
+    Target {
+        os: Os::Windows,
+        arch: Arch::Arm64,
+    },
+    Target {
+        os: Os::Windows,
+        arch: Arch::X64,
+    },
+    Target {
+        os: Os::Linux,
+        arch: Arch::Arm64,
+    },
+    Target {
+        os: Os::Linux,
+        arch: Arch::X64,
+    },
 ];
 
 impl Target {
@@ -156,13 +174,25 @@ mod tests {
     #[test]
     fn asset_names_match_the_updater_and_homebrew() {
         let mac = Target::parse("aarch64-apple-darwin").unwrap();
-        assert_eq!(mac.asset_name(Channel::Stable), "Butter-Paper-macOS-arm64.zip");
-        assert_eq!(mac.asset_name(Channel::Beta), "Butter-Paper-Beta-macOS-arm64.zip");
+        assert_eq!(
+            mac.asset_name(Channel::Stable),
+            "Butter-Paper-macOS-arm64.zip"
+        );
+        assert_eq!(
+            mac.asset_name(Channel::Beta),
+            "Butter-Paper-Beta-macOS-arm64.zip"
+        );
         let linux = Target::parse("x86_64-unknown-linux-gnu").unwrap();
-        assert_eq!(linux.asset_name(Channel::Stable), "Butter-Paper-Linux-x64.tar.xz");
+        assert_eq!(
+            linux.asset_name(Channel::Stable),
+            "Butter-Paper-Linux-x64.tar.xz"
+        );
         assert_eq!(linux.package_architecture(), "x86_64");
         let windows = Target::parse("aarch64-pc-windows-msvc").unwrap();
-        assert_eq!(windows.asset_name(Channel::Stable), "Butter-Paper-Windows-arm64.zip");
+        assert_eq!(
+            windows.asset_name(Channel::Stable),
+            "Butter-Paper-Windows-arm64.zip"
+        );
         assert_eq!(windows.exe("butter-paper"), "butter-paper.exe");
         assert!(Target::parse("riscv64gc-unknown-linux-gnu").is_err());
     }

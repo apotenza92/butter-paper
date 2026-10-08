@@ -6,14 +6,13 @@ use gpui_component::{GlobalState, menu::AppMenuBar};
 use crate::{
     application_close_workspace::{RequestApplicationClose, RequestApplicationQuit},
     application_shell::{
-        CheckForUpdates, RestartToUpdate, MakeInterfaceBigger, MakeInterfaceSmaller, MinimiseWindow,
-        MoveDocumentToNewWindow, NewWindow,
-        OpenReleasePage, ZoomWindow,
-        ResetInterfaceSize, SetAsDefaultPdfApp, SetUpdateFrequencyAtStartup,
-        SetUpdateFrequencyDaily, SetUpdateFrequencyEverySixHours,
-        SetUpdateFrequencyEveryTwelveHours, SetUpdateFrequencyHourly, SetUpdateFrequencyMonthly,
-        SetUpdateFrequencyNever, SetUpdateFrequencyWeekly, ToggleApplicationFullScreen,
-        ToggleApplicationMenuBar, ToggleReverseScrollZoom,
+        CheckForUpdates, MakeInterfaceBigger, MakeInterfaceSmaller, MinimiseWindow,
+        MoveDocumentToNewWindow, NewWindow, OpenReleasePage, ResetInterfaceSize, RestartToUpdate,
+        SetAsDefaultPdfApp, SetUpdateFrequencyAtStartup, SetUpdateFrequencyDaily,
+        SetUpdateFrequencyEverySixHours, SetUpdateFrequencyEveryTwelveHours,
+        SetUpdateFrequencyHourly, SetUpdateFrequencyMonthly, SetUpdateFrequencyNever,
+        SetUpdateFrequencyWeekly, ToggleApplicationFullScreen, ToggleApplicationMenuBar,
+        ToggleReverseScrollZoom, ZoomWindow,
     },
     document_workspace::{
         ActualSize, CloseDocument, ContinuousView, DocumentOpenBatchRequest, DocumentOpenOrigin,
@@ -158,10 +157,11 @@ fn build_window_menu() -> Menu {
 
 fn build_product_menu(updates: UpdateMenuState) -> Menu {
     let check = match updates.status {
-        UpdateMenuStatus::Unavailable => {
-            MenuItem::action("Updates: download new versions from Releases", CheckForUpdates)
-                .disabled(true)
-        }
+        UpdateMenuStatus::Unavailable => MenuItem::action(
+            "Updates: download new versions from Releases",
+            CheckForUpdates,
+        )
+        .disabled(true),
         UpdateMenuStatus::Idle => MenuItem::action("Check for Updates…", CheckForUpdates),
         UpdateMenuStatus::Checking => {
             MenuItem::action("Checking for Updates…", CheckForUpdates).disabled(true)
@@ -193,17 +193,42 @@ fn update_frequency_items(
 ) -> [MenuItem; 8] {
     use crate::native_update_policy::UpdateFrequency as Frequency;
     let item = |item: MenuItem, frequency: Frequency| {
-        item.checked(current == Some(frequency)).disabled(current.is_none())
+        item.checked(current == Some(frequency))
+            .disabled(current.is_none())
     };
     [
-        item(MenuItem::action("Never", SetUpdateFrequencyNever), Frequency::Never),
-        item(MenuItem::action("At startup", SetUpdateFrequencyAtStartup), Frequency::Startup),
-        item(MenuItem::action("Hourly", SetUpdateFrequencyHourly), Frequency::Hourly),
-        item(MenuItem::action("Every 6 hours", SetUpdateFrequencyEverySixHours), Frequency::SixHours),
-        item(MenuItem::action("Every 12 hours", SetUpdateFrequencyEveryTwelveHours), Frequency::TwelveHours),
-        item(MenuItem::action("Daily", SetUpdateFrequencyDaily), Frequency::Daily),
-        item(MenuItem::action("Weekly", SetUpdateFrequencyWeekly), Frequency::Weekly),
-        item(MenuItem::action("Monthly", SetUpdateFrequencyMonthly), Frequency::Monthly),
+        item(
+            MenuItem::action("Never", SetUpdateFrequencyNever),
+            Frequency::Never,
+        ),
+        item(
+            MenuItem::action("At startup", SetUpdateFrequencyAtStartup),
+            Frequency::Startup,
+        ),
+        item(
+            MenuItem::action("Hourly", SetUpdateFrequencyHourly),
+            Frequency::Hourly,
+        ),
+        item(
+            MenuItem::action("Every 6 hours", SetUpdateFrequencyEverySixHours),
+            Frequency::SixHours,
+        ),
+        item(
+            MenuItem::action("Every 12 hours", SetUpdateFrequencyEveryTwelveHours),
+            Frequency::TwelveHours,
+        ),
+        item(
+            MenuItem::action("Daily", SetUpdateFrequencyDaily),
+            Frequency::Daily,
+        ),
+        item(
+            MenuItem::action("Weekly", SetUpdateFrequencyWeekly),
+            Frequency::Weekly,
+        ),
+        item(
+            MenuItem::action("Monthly", SetUpdateFrequencyMonthly),
+            Frequency::Monthly,
+        ),
     ]
 }
 

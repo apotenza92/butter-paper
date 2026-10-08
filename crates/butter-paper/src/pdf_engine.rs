@@ -39,18 +39,18 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
 use crate::annotation_model::{
-    built_in_scale_presets, cloud_curl_radius, measurement_line_layout, MeasurementLineLayout, LENGTH_LEADER_LENGTH_PT, DIMENSION_LEADER_EXTENSION_PT,
     Annotation, AnnotationError, ArcAnnotation, BlendMode, CalloutAnnotation, CalloutAppearance,
     CalloutDiskGeometry, CloudAnnotation, CloudAppearancePathCommand, CloudPlusAnnotation,
-    CloudPlusAppearance, DecodedRgbaAsset, DimensionAnnotation, DimensionAppearance,
-    EllipseAnnotation, ImageAnnotation, InkTool, LengthAnnotation, LengthCalibration, LineKind,
-    MarkupId, MeasurementPathAnnotation, MeasurementPathKind, PageRotation, PageScale, PdfPoint,
-    PdfRect, PenAnnotation, PenAppearance, RectangleAnnotation, RectangleAppearance,
-    RedactAnnotation, RetainedAnnotationObstacle, ScalePrecision, ScalePrecisionMode, ScaleSource,
-    ScaleUnit, SnapshotAnnotation, StraightLineAnnotation, StraightLineAppearance, StrokeStyle,
-    TextAlignment, TextBoxAnnotation, TextBoxRichTextRun, TextBoxStyle, VertexPathAnnotation,
-    VertexPathKind, ellipse_cubic_bezier_points, rectangle_world_corners,
-    sample_cloud_appearance_path,
+    CloudPlusAppearance, DIMENSION_LEADER_EXTENSION_PT, DecodedRgbaAsset, DimensionAnnotation,
+    DimensionAppearance, EllipseAnnotation, ImageAnnotation, InkTool, LENGTH_LEADER_LENGTH_PT,
+    LengthAnnotation, LengthCalibration, LineKind, MarkupId, MeasurementLineLayout,
+    MeasurementPathAnnotation, MeasurementPathKind, PageRotation, PageScale, PdfPoint, PdfRect,
+    PenAnnotation, PenAppearance, RectangleAnnotation, RectangleAppearance, RedactAnnotation,
+    RetainedAnnotationObstacle, ScalePrecision, ScalePrecisionMode, ScaleSource, ScaleUnit,
+    SnapshotAnnotation, StraightLineAnnotation, StraightLineAppearance, StrokeStyle, TextAlignment,
+    TextBoxAnnotation, TextBoxRichTextRun, TextBoxStyle, VertexPathAnnotation, VertexPathKind,
+    built_in_scale_presets, cloud_curl_radius, ellipse_cubic_bezier_points,
+    measurement_line_layout, rectangle_world_corners, sample_cloud_appearance_path,
 };
 use crate::image_asset_decode::MAX_ENCODED_IMAGE_BYTES;
 #[cfg(any(unix, windows))]
@@ -1087,7 +1087,6 @@ impl PdfPersistenceSession {
         Self::from_document(source_path, document, None)
     }
 
-
     pub fn open_for_update(
         path: impl AsRef<Path>,
         expected_sha256: [u8; 32],
@@ -1786,7 +1785,10 @@ impl PdfPersistenceSession {
 
     /// Revu vector Snapshots in the order of `vector_snapshot_layer` pages.
     pub fn vector_snapshot_ids(&self) -> Vec<MarkupId> {
-        self.vector_snapshot_sources.iter().map(|(id, _)| id.clone()).collect()
+        self.vector_snapshot_sources
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     pub fn untouched_annotations(&self) -> &[UntouchedAnnotation] {
@@ -1825,8 +1827,10 @@ impl PdfPersistenceSession {
             replacement.id.as_str(),
         )?;
         // Revu writes some entries (such as `/BS`) as indirect objects.
-        let original =
-            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
+        let original = resolved_annotation_view(
+            &self.document,
+            self.document.get_object(object_id)?.as_dict()?,
+        );
         let appearance_id = add_rectangle_appearance(&mut self.document, &replacement);
         let replacement_dictionary = rectangle_dictionary(&replacement, appearance_id, &original)?;
         self.document
@@ -1904,8 +1908,10 @@ impl PdfPersistenceSession {
             })?;
         let object_id = identity.object_id;
         // Revu writes some entries (such as `/BS`) as indirect objects.
-        let original =
-            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
+        let original = resolved_annotation_view(
+            &self.document,
+            self.document.get_object(object_id)?.as_dict()?,
+        );
         let native_name = canonical_native_annotation_name(&annotation.id);
         let dictionary = redact_dictionary(&annotation, &original, &native_name)?;
         self.document
@@ -1985,8 +1991,10 @@ impl PdfPersistenceSession {
             })?;
         let object_id = identity.object_id;
         // Revu writes some entries (such as `/BS`) as indirect objects.
-        let original =
-            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
+        let original = resolved_annotation_view(
+            &self.document,
+            self.document.get_object(object_id)?.as_dict()?,
+        );
         let old_appearance_id = normal_appearance_object_id(&original);
         let native_name = canonical_native_annotation_name(&annotation.id);
         let appearance_id = add_ellipse_appearance(&mut self.document, &annotation);
@@ -2071,8 +2079,10 @@ impl PdfPersistenceSession {
             })?;
         let object_id = identity.object_id;
         // Revu writes some entries (such as `/BS`) as indirect objects.
-        let original =
-            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
+        let original = resolved_annotation_view(
+            &self.document,
+            self.document.get_object(object_id)?.as_dict()?,
+        );
         let native_name = canonical_native_annotation_name(&annotation.id);
         let appearance_id = add_arc_appearance(&mut self.document, &annotation);
         let dictionary = arc_dictionary(&annotation, appearance_id, &original, &native_name)?;
@@ -2313,8 +2323,10 @@ impl PdfPersistenceSession {
             })?;
         let object_id = identity.object_id;
         // Revu writes some entries (such as `/BS`) as indirect objects.
-        let original =
-            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
+        let original = resolved_annotation_view(
+            &self.document,
+            self.document.get_object(object_id)?.as_dict()?,
+        );
         let old_appearance_id = normal_appearance_object_id(&original);
         let appearance_id = add_pen_appearance(&mut self.document, &annotation);
         let canonical_name = canonical_native_annotation_name(&annotation.id);
@@ -2409,8 +2421,10 @@ impl PdfPersistenceSession {
             annotation.id.as_str(),
         )?;
         // Revu writes some entries (such as `/BS`) as indirect objects.
-        let original =
-            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
+        let original = resolved_annotation_view(
+            &self.document,
+            self.document.get_object(object_id)?.as_dict()?,
+        );
         let appearance_id = add_text_appearance(&mut self.document, &annotation)?;
         let font_resources = text_appearance_font_resources(&self.document, appearance_id);
         self.document.objects.insert(
@@ -2679,8 +2693,10 @@ impl PdfPersistenceSession {
             .unwrap_or(annotation.id.as_str());
         let object_id = annotation_object_id(&self.document, annotation.page_index, native_name)?;
         // Revu writes some entries (such as `/BS`) as indirect objects.
-        let original =
-            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
+        let original = resolved_annotation_view(
+            &self.document,
+            self.document.get_object(object_id)?.as_dict()?,
+        );
         let appearance_id = add_dimension_appearance(&mut self.document, &annotation)?;
         let font_resources = text_appearance_font_resources(&self.document, appearance_id);
         self.document.objects.insert(
@@ -2813,8 +2829,10 @@ impl PdfPersistenceSession {
             )));
         }
         // Revu writes some entries (such as `/BS`) as indirect objects.
-        let original =
-            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
+        let original = resolved_annotation_view(
+            &self.document,
+            self.document.get_object(object_id)?.as_dict()?,
+        );
         let old_appearance_id = normal_appearance_object_id(&original);
         let replacement =
             straight_line_pdf::rebuild_managed(&mut self.document, &annotation, &original)?;
@@ -2909,8 +2927,10 @@ impl PdfPersistenceSession {
             })?;
         let object_id = identity.object_id;
         // Revu writes some entries (such as `/BS`) as indirect objects.
-        let original =
-            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
+        let original = resolved_annotation_view(
+            &self.document,
+            self.document.get_object(object_id)?.as_dict()?,
+        );
         let old_appearance_id = normal_appearance_object_id(&original);
         let appearance_id = add_vertex_path_appearance(&mut self.document, &annotation)?;
         let dictionary = vertex_path_dictionary(&annotation, appearance_id, &original)?;
@@ -2995,8 +3015,10 @@ impl PdfPersistenceSession {
             })?;
         let object_id = identity.object_id;
         // Revu writes some entries (such as `/BS`) as indirect objects.
-        let original =
-            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
+        let original = resolved_annotation_view(
+            &self.document,
+            self.document.get_object(object_id)?.as_dict()?,
+        );
         let old_appearance_id = normal_appearance_object_id(&original);
         let appearance_id = add_cloud_appearance(&mut self.document, &annotation)?;
         let dictionary = cloud_dictionary(&annotation, appearance_id, &original)?;
@@ -3380,8 +3402,10 @@ impl PdfPersistenceSession {
             })?;
         let object_id = identity.object_id;
         // Revu writes some entries (such as `/BS`) as indirect objects.
-        let original =
-            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
+        let original = resolved_annotation_view(
+            &self.document,
+            self.document.get_object(object_id)?.as_dict()?,
+        );
         let old_appearance_id = normal_appearance_object_id(&original);
         let appearance_id = add_callout_appearance(&mut self.document, &annotation)?;
         let font_resources = text_appearance_font_resources(&self.document, appearance_id);
@@ -3526,8 +3550,10 @@ impl PdfPersistenceSession {
             })?;
         let object_id = identity.object_id;
         // Revu writes some entries (such as `/BS`) as indirect objects.
-        let original =
-            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
+        let original = resolved_annotation_view(
+            &self.document,
+            self.document.get_object(object_id)?.as_dict()?,
+        );
         let old_appearance_id = normal_appearance_object_id(&original);
         let appearance_id = add_measurement_path_appearance(&mut self.document, &annotation)?;
         let font_resources = text_appearance_font_resources(&self.document, appearance_id);
@@ -3669,8 +3695,12 @@ impl PdfPersistenceSession {
     pub fn add_image(&mut self, annotation: ImageAnnotation) -> Result<(), PdfPersistenceError> {
         self.require_unique_name(&annotation.id)?;
         let (appearance_id, image_id) = add_image_appearance(&mut self.document, &annotation);
-        let dictionary =
-            image_dictionary(&annotation, appearance_id, Some(image_id), &Dictionary::new());
+        let dictionary = image_dictionary(
+            &annotation,
+            appearance_id,
+            Some(image_id),
+            &Dictionary::new(),
+        );
         append_markup_annotation(&mut self.document, annotation.page_index, dictionary)?;
         self.image_native_names.insert(
             annotation.id.clone(),
@@ -3698,8 +3728,10 @@ impl PdfPersistenceSession {
             .unwrap_or(annotation.id.as_str());
         let object_id = annotation_object_id(&self.document, annotation.page_index, native_name)?;
         // Revu writes some entries (such as `/BS`) as indirect objects.
-        let original =
-            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
+        let original = resolved_annotation_view(
+            &self.document,
+            self.document.get_object(object_id)?.as_dict()?,
+        );
         let old_appearance_ids = image_appearance_object_ids(&self.document, &original);
         let (appearance_id, image_id) = add_image_appearance(&mut self.document, &annotation);
         self.document.objects.insert(
@@ -3732,8 +3764,10 @@ impl PdfPersistenceSession {
             .unwrap_or(id.as_str());
         let object_id = annotation_object_id(&self.document, page_index, native_name)?;
         // Revu writes some entries (such as `/BS`) as indirect objects.
-        let original =
-            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
+        let original = resolved_annotation_view(
+            &self.document,
+            self.document.get_object(object_id)?.as_dict()?,
+        );
         let old_appearance_ids = image_appearance_object_ids(&self.document, &original);
         remove_annotation_reference(&mut self.document, page_index, object_id)?;
         self.document.objects.remove(&object_id);
@@ -3798,8 +3832,10 @@ impl PdfPersistenceSession {
             .unwrap_or(annotation.id.as_str());
         let object_id = annotation_object_id(&self.document, original_page_index, native_name)?;
         // Revu writes some entries (such as `/BS`) as indirect objects.
-        let original =
-            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
+        let original = resolved_annotation_view(
+            &self.document,
+            self.document.get_object(object_id)?.as_dict()?,
+        );
         let old_appearance_ids = image_appearance_object_ids(&self.document, &original);
         let appearance_id = if let Some(source) = vector_source {
             add_vector_snapshot_appearance(&mut self.document, &annotation, &source)
@@ -3839,8 +3875,10 @@ impl PdfPersistenceSession {
             .unwrap_or(id.as_str());
         let object_id = annotation_object_id(&self.document, page_index, native_name)?;
         // Revu writes some entries (such as `/BS`) as indirect objects.
-        let original =
-            resolved_annotation_view(&self.document, self.document.get_object(object_id)?.as_dict()?);
+        let original = resolved_annotation_view(
+            &self.document,
+            self.document.get_object(object_id)?.as_dict()?,
+        );
         let old_appearance_ids = image_appearance_object_ids(&self.document, &original);
         remove_annotation_reference(&mut self.document, page_index, object_id)?;
         self.document.objects.remove(&object_id);
@@ -3848,7 +3886,8 @@ impl PdfPersistenceSession {
             remove_object_if_unreferenced(&mut self.document, object_id);
         }
         self.snapshot_native_names.remove(id);
-        self.vector_snapshot_sources.retain(|(source_id, _)| source_id != id);
+        self.vector_snapshot_sources
+            .retain(|(source_id, _)| source_id != id);
         self.snapshots.remove(index);
         self.annotation_order.retain(|candidate| candidate != id);
         Ok(())
@@ -3882,7 +3921,6 @@ impl PdfPersistenceSession {
             Ok(())
         }
     }
-
 
     fn prepare_save_inner(
         &self,
@@ -4029,7 +4067,6 @@ impl PdfPersistenceSession {
             })
         }
     }
-
 
     pub fn prepare_save_replacing(
         &self,
@@ -4458,9 +4495,6 @@ fn annotation_object_id(
     )))
 }
 
-
-
-
 fn text_box_annotation_bounds(annotation: &TextBoxAnnotation) -> PdfRect {
     let rotation = annotation.rotation_degrees();
     if rotation == 0.0 {
@@ -4539,8 +4573,14 @@ fn rotated_box_appearance_placement(
         (bbox.x, bbox.y + bbox.height),
     ]
     .map(|(x, y)| (cosine * x + sine * y, -sine * x + cosine * y));
-    let min_x = corners.iter().map(|corner| corner.0).fold(f64::INFINITY, f64::min);
-    let min_y = corners.iter().map(|corner| corner.1).fold(f64::INFINITY, f64::min);
+    let min_x = corners
+        .iter()
+        .map(|corner| corner.0)
+        .fold(f64::INFINITY, f64::min);
+    let min_y = corners
+        .iter()
+        .map(|corner| corner.1)
+        .fold(f64::INFINITY, f64::min);
     let rect = if rotation_degrees.rem_euclid(360.) == 0. {
         bbox
     } else {
@@ -4560,10 +4600,22 @@ fn rotated_box_appearance_placement(
 
 fn rotated_rect_bounds(rect: PdfRect, rotation_degrees: f64) -> PdfRect {
     let corners = rectangle_world_corners(rect, rotation_degrees);
-    let min_x = corners.iter().map(|point| point.x).fold(f64::INFINITY, f64::min);
-    let max_x = corners.iter().map(|point| point.x).fold(f64::NEG_INFINITY, f64::max);
-    let min_y = corners.iter().map(|point| point.y).fold(f64::INFINITY, f64::min);
-    let max_y = corners.iter().map(|point| point.y).fold(f64::NEG_INFINITY, f64::max);
+    let min_x = corners
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = corners
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = corners
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::INFINITY, f64::min);
+    let max_y = corners
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::NEG_INFINITY, f64::max);
     PdfRect::new(min_x, min_y, max_x - min_x, max_y - min_y)
         .expect("a validated rotation has finite bounds")
 }
@@ -4629,7 +4681,11 @@ fn shape_paint_operations(appearance: &RectangleAppearance) -> (String, &'static
             .map_or_else(String::new, |(dash, gap)| {
                 format!("[{dash:.6} {gap:.6}] 0 d\n")
             });
-    let graphics_state = if shape_is_translucent(appearance) { "/GS0 gs\n" } else { "" };
+    let graphics_state = if shape_is_translucent(appearance) {
+        "/GS0 gs\n"
+    } else {
+        ""
+    };
     (
         format!(
             "{graphics_state}{stroke_red:.6} {stroke_green:.6} {stroke_blue:.6} RG\n{fill_operation}{dash_operation}{:.6} w\n",
@@ -4640,7 +4696,8 @@ fn shape_paint_operations(appearance: &RectangleAppearance) -> (String, &'static
 }
 
 fn shape_is_translucent(appearance: &RectangleAppearance) -> bool {
-    appearance.opacity() < 1. || (appearance.fill_color().is_some() && appearance.fill_opacity() < 1.)
+    appearance.opacity() < 1.
+        || (appearance.fill_color().is_some() && appearance.fill_opacity() < 1.)
 }
 
 /// Appearance resources as Revu writes them: `/ProcSet`, plus a graphics
@@ -4800,12 +4857,14 @@ fn redact_dictionary(
     Ok(replacement)
 }
 
-
 /// Revu strokes a Circle inside its drawn rectangle; Butter Paper strokes on
 /// the ellipse rectangle. The drawn rectangle is therefore the ellipse
 /// rectangle grown by half the stroke, and `/RD` pads it by another half.
 fn ellipse_drawn_rect(annotation: &EllipseAnnotation) -> PdfRect {
-    inflate_rect(annotation.rect, annotation.appearance.stroke_width_pt() / 2.)
+    inflate_rect(
+        annotation.rect,
+        annotation.appearance.stroke_width_pt() / 2.,
+    )
 }
 
 fn ellipse_appearance_bbox(annotation: &EllipseAnnotation) -> PdfRect {
@@ -4878,7 +4937,10 @@ fn ellipse_dictionary(
 /// ellipse rectangle is its stroke centreline.
 fn arc_appearance_bbox(annotation: &ArcAnnotation) -> PdfRect {
     let width = annotation.appearance.stroke_width_pt();
-    inflate_rect(annotation.rect(), width / 2. + shape_rect_differences(width))
+    inflate_rect(
+        annotation.rect(),
+        width / 2. + shape_rect_differences(width),
+    )
 }
 
 fn add_arc_appearance(document: &mut Document, annotation: &ArcAnnotation) -> ObjectId {
@@ -5171,7 +5233,12 @@ fn add_callout_appearance(
         }
         content.extend_from_slice(b"S\n");
     }
-    append_callout_box_border(&mut content, annotation.text_box, bounds, line.stroke_width_pt());
+    append_callout_box_border(
+        &mut content,
+        annotation.text_box,
+        bounds,
+        line.stroke_width_pt(),
+    );
     if leader.len() >= 2 {
         let tip = leader[0];
         let next = leader[1];
@@ -5276,7 +5343,12 @@ fn add_callout_appearance(
 
 /// Revu strokes the callout text box whenever the border width is not the
 /// default 1 pt leader (`BS W 0`).
-fn append_callout_box_border(content: &mut Vec<u8>, text_box: PdfRect, bounds: PdfRect, width_pt: f64) {
+fn append_callout_box_border(
+    content: &mut Vec<u8>,
+    text_box: PdfRect,
+    bounds: PdfRect,
+    width_pt: f64,
+) {
     if revu_callout_border_width(width_pt) <= 0. {
         return;
     }
@@ -5296,7 +5368,11 @@ fn append_callout_box_border(content: &mut Vec<u8>, text_box: PdfRect, bounds: P
 /// Revu's callout border width: `0` draws the default 1 pt leader with no
 /// box border; any other width is the leader and box border width.
 fn revu_callout_border_width(leader_width_pt: f64) -> f64 {
-    if leader_width_pt == 1. { 0. } else { leader_width_pt }
+    if leader_width_pt == 1. {
+        0.
+    } else {
+        leader_width_pt
+    }
 }
 
 fn import_callout_leader_width(annotation: &Dictionary) -> f64 {
@@ -6288,7 +6364,11 @@ fn unicode_font_widths(
 /// Whether a font dictionary is one of the bundled fonts embedded earlier in
 /// this document: a Type0 font with the bundled name whose descendant embeds
 /// the complete bundled font program.
-fn is_bundled_embedded_font(document: &Document, font_dictionary: &Dictionary, font: EmbeddedTextFont) -> bool {
+fn is_bundled_embedded_font(
+    document: &Document,
+    font_dictionary: &Dictionary,
+    font: EmbeddedTextFont,
+) -> bool {
     let matches = || -> Option<bool> {
         if dictionary_name(font_dictionary, b"Subtype").as_deref() != Some("Type0")
             || font_dictionary.get(b"BaseFont").ok()?.as_name().ok()? != font.pdf_name().as_bytes()
@@ -6297,7 +6377,12 @@ fn is_bundled_embedded_font(document: &Document, font_dictionary: &Dictionary, f
         }
         let descendant = resolve_object(
             document,
-            font_dictionary.get(b"DescendantFonts").ok()?.as_array().ok()?.first()?,
+            font_dictionary
+                .get(b"DescendantFonts")
+                .ok()?
+                .as_array()
+                .ok()?
+                .first()?,
         )
         .ok()?
         .as_dict()
@@ -6341,7 +6426,13 @@ fn embedded_cid_mapping_from_standard_font(
             break;
         };
         if glyph_id != 0 {
-            mapped.insert(cid, EmbeddedCidGlyph { glyph_id, unicode: None });
+            mapped.insert(
+                cid,
+                EmbeddedCidGlyph {
+                    glyph_id,
+                    unicode: None,
+                },
+            );
         }
     }
     let to_unicode = font_dictionary
@@ -6598,9 +6689,8 @@ fn add_text_appearance(
         let font = StandardTextFont::for_emphasis(text_is_bold(annotation.style()), false);
         let font_id = add_standard_font_variant(document, font);
         fonts.set(font.resource_name(), font_id);
-        content.extend_from_slice(
-            format!("/{} {font_size:.6} Tf\n", font.resource_name()).as_bytes(),
-        );
+        content
+            .extend_from_slice(format!("/{} {font_size:.6} Tf\n", font.resource_name()).as_bytes());
         for (index, line) in annotation.content().split('\n').enumerate() {
             let encoded = text_appearance_line_bytes(line);
             let width = encoded
@@ -6774,22 +6864,27 @@ fn text_box_dictionary(
 
 fn length_bounds(annotation: &LengthAnnotation) -> PdfRect {
     let layout = length_line_layout(annotation);
-    let caption = length_caption_text(annotation).map(|caption| {
-        measurement_caption_layout(
-            layout.caption_center,
-            &caption,
-            annotation.appearance.text(),
-            true,
-        )
-        .rect
-    })
-    .map(|rect| {
-        rotated_rect_bounds(
-            rect,
-            measurement_caption_angle(annotation.start, annotation.end).to_degrees(),
-        )
-    });
-    measurement_line_bounds(&layout, annotation.appearance.line().stroke_width_pt(), caption)
+    let caption = length_caption_text(annotation)
+        .map(|caption| {
+            measurement_caption_layout(
+                layout.caption_center,
+                &caption,
+                annotation.appearance.text(),
+                true,
+            )
+            .rect
+        })
+        .map(|rect| {
+            rotated_rect_bounds(
+                rect,
+                measurement_caption_angle(annotation.start, annotation.end).to_degrees(),
+            )
+        });
+    measurement_line_bounds(
+        &layout,
+        annotation.appearance.line().stroke_width_pt(),
+        caption,
+    )
 }
 
 fn vertex_path_bounds(annotation: &VertexPathAnnotation) -> PdfRect {
@@ -6843,7 +6938,11 @@ fn add_vertex_path_appearance(
                 format!("[{dash:.6} {gap:.6}] 0 d\n")
             });
     let first = annotation.points()[0];
-    let graphics_state = if shape_is_translucent(appearance) { "/GS0 gs\n" } else { "" };
+    let graphics_state = if shape_is_translucent(appearance) {
+        "/GS0 gs\n"
+    } else {
+        ""
+    };
     let mut content = format!(
         "q\n{graphics_state}1 J 1 j\n{stroke_red:.6} {stroke_green:.6} {stroke_blue:.6} RG\n{fill_operation}{dash_operation}{:.6} w\n{:.6} {:.6} m\n",
         appearance.stroke_width_pt(),
@@ -6918,7 +7017,8 @@ fn cloud_bounds(annotation: &CloudAnnotation) -> PdfRect {
     // also always holds the drawn curls and their stroke.
     let path = annotation.scallop_path();
     let padding = annotation.appearance.stroke_width_pt() / 2.0 + 1.0;
-    let revu_padding = 1.7889 * cloud_curl_radius(annotation.points(), annotation.border_effect_intensity());
+    let revu_padding =
+        1.7889 * cloud_curl_radius(annotation.points(), annotation.border_effect_intensity());
     let points = annotation.points();
     let min_x = path
         .iter()
@@ -6940,8 +7040,13 @@ fn cloud_bounds(annotation: &CloudAnnotation) -> PdfRect {
         .map(|point| point.y + padding)
         .chain(points.iter().map(|point| point.y + revu_padding))
         .fold(f64::NEG_INFINITY, f64::max);
-    PdfRect::new(min_x, min_y, (max_x - min_x).max(0.0), (max_y - min_y).max(0.0))
-        .expect("validated cloud points must have finite padded bounds")
+    PdfRect::new(
+        min_x,
+        min_y,
+        (max_x - min_x).max(0.0),
+        (max_y - min_y).max(0.0),
+    )
+    .expect("validated cloud points must have finite padded bounds")
 }
 
 fn add_cloud_appearance(
@@ -6958,7 +7063,11 @@ fn add_cloud_appearance(
             .map_or_else(String::new, |(dash, gap)| {
                 format!("[{dash:.6} {gap:.6}] 0 d\n")
             });
-    let graphics_state = if shape_is_translucent(appearance) { "/GS0 gs\n" } else { "" };
+    let graphics_state = if shape_is_translucent(appearance) {
+        "/GS0 gs\n"
+    } else {
+        ""
+    };
     let fill_operation = appearance.fill_color().map_or_else(String::new, |color| {
         let (red, green, blue) = color_components(color);
         format!("{red:.6} {green:.6} {blue:.6} rg\n")
@@ -6976,7 +7085,11 @@ fn add_cloud_appearance(
             point.y - bounds.y,
         ));
     }
-    content.push_str(if appearance.fill_color().is_some() { "h B\nQ\n" } else { "h S\nQ\n" });
+    content.push_str(if appearance.fill_color().is_some() {
+        "h B\nQ\n"
+    } else {
+        "h S\nQ\n"
+    });
     Ok(document.add_object(Stream::new(
         dictionary! {
             "Type" => "XObject",
@@ -7090,7 +7203,11 @@ fn add_cloud_plus_cloud_appearance(
             CloudAppearancePathCommand::Close => content.push_str("h\n"),
         }
     }
-    content.push_str(if appearance.fill_color().is_some() { "B\nQ\n" } else { "S\nQ\n" });
+    content.push_str(if appearance.fill_color().is_some() {
+        "B\nQ\n"
+    } else {
+        "S\nQ\n"
+    });
     Ok(document.add_object(Stream::new(
         dictionary! {
             "Type" => "XObject",
@@ -7211,7 +7328,12 @@ fn add_cloud_plus_text_appearance(
         }
         content.extend_from_slice(b"S\n");
     }
-    append_callout_box_border(&mut content, annotation.text_box, bounds, line.stroke_width_pt());
+    append_callout_box_border(
+        &mut content,
+        annotation.text_box,
+        bounds,
+        line.stroke_width_pt(),
+    );
     let line_height = text.font_size_pt() * 1.15;
     let total_height = line_height * lines.len() as f64;
     let start_y = annotation.text_box.y
@@ -7548,7 +7670,12 @@ fn paper_point_in_unit(unit: &str) -> f64 {
 }
 
 /// Revu's scale ratio string, e.g. `1 cm = 1 m`.
-fn revu_scale_ratio(paper_value: f64, paper_unit: &str, real_value: f64, real_unit: &str) -> String {
+fn revu_scale_ratio(
+    paper_value: f64,
+    paper_unit: &str,
+    real_value: f64,
+    real_unit: &str,
+) -> String {
     format!(
         "{} {paper_unit} = {} {real_unit}",
         revu_number(paper_value),
@@ -7560,7 +7687,11 @@ fn revu_scale_ratio(paper_value: f64, paper_unit: &str, real_value: f64, real_un
 /// its real length in the base unit.
 fn calibration_scale_ratio(calibration: &LengthCalibration) -> String {
     let (base_unit, display_per_base) = revu_base_unit(calibration.unit());
-    let (paper_unit, unit_points) = if base_unit == "ft" { ("in", 72.) } else { ("cm", 72. / 2.54) };
+    let (paper_unit, unit_points) = if base_unit == "ft" {
+        ("in", 72.)
+    } else {
+        ("cm", 72. / 2.54)
+    };
     revu_scale_ratio(
         1.,
         paper_unit,
@@ -7652,12 +7783,15 @@ fn set_measurement_caption(dictionary: &mut Dictionary, text: &TextBoxStyle, cap
     dictionary.set("DS", pdf_literal(&revu_default_style(text, None)));
 }
 
-
 /// A number as Revu prints it in text styles: up to four decimals, trimmed.
 fn revu_number(value: f64) -> String {
     let formatted = format!("{value:.4}");
     let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
-    if trimmed == "-0" { "0".into() } else { trimmed.into() }
+    if trimmed == "-0" {
+        "0".into()
+    } else {
+        trimmed.into()
+    }
 }
 
 fn revu_color_components(color: &str) -> String {
@@ -7684,7 +7818,11 @@ fn text_alignment_name(alignment: TextAlignment) -> &'static str {
 /// `/DS`.
 fn revu_default_appearance(color: &str, text: &TextBoxStyle) -> String {
     let resource = if text.font_family() == "Helvetica" {
-        if text_is_bold(text) { "HelvBld" } else { "Helv" }
+        if text_is_bold(text) {
+            "HelvBld"
+        } else {
+            "Helv"
+        }
     } else {
         appearance_font_resource_name(text.font_family())
     };
@@ -7712,7 +7850,10 @@ fn revu_default_style(text: &TextBoxStyle, margin_pt: Option<f64>) -> String {
         "font: {}; text-align:{}; {}line-height:{}pt; color:{}",
         revu_font_shorthand(text),
         text_alignment_name(text.alignment()),
-        margin_pt.map_or_else(String::new, |margin| format!("margin:{}pt; ", revu_number(margin))),
+        margin_pt.map_or_else(String::new, |margin| format!(
+            "margin:{}pt; ",
+            revu_number(margin)
+        )),
         revu_number(text.line_height_pt()),
         text.color().to_ascii_uppercase()
     )
@@ -7730,7 +7871,10 @@ fn revu_rich_text(
         "font:{}; text-align:{}; {}line-height:{}pt; color:{}",
         revu_font_shorthand(text),
         text_alignment_name(text.alignment()),
-        margin_pt.map_or_else(String::new, |margin| format!("margin:{}pt; ", revu_number(margin))),
+        margin_pt.map_or_else(String::new, |margin| format!(
+            "margin:{}pt; ",
+            revu_number(margin)
+        )),
         revu_number(text.line_height_pt()),
         text.color().to_ascii_uppercase()
     );
@@ -7743,7 +7887,10 @@ fn revu_rich_text(
             paragraph_style.push("font-weight:bold".to_owned());
         }
         if text.alignment() != TextAlignment::Left {
-            paragraph_style.push(format!("text-align:{}", text_alignment_name(text.alignment())));
+            paragraph_style.push(format!(
+                "text-align:{}",
+                text_alignment_name(text.alignment())
+            ));
         }
         let open = if paragraph_style.is_empty() {
             "<p>".to_owned()
@@ -7813,8 +7960,9 @@ fn parse_default_style(style: &str) -> ParsedDefaultStyle {
                     if let Some(rest) = lower.strip_prefix("bold ") {
                         parsed.bold = true;
                         family = family[family.len() - rest.len()..].trim_start();
-                    } else if let Some(rest) =
-                        lower.strip_prefix("italic ").or_else(|| lower.strip_prefix("oblique "))
+                    } else if let Some(rest) = lower
+                        .strip_prefix("italic ")
+                        .or_else(|| lower.strip_prefix("oblique "))
                     {
                         parsed.italic = true;
                         family = family[family.len() - rest.len()..].trim_start();
@@ -7839,8 +7987,7 @@ fn parse_default_style(style: &str) -> ParsedDefaultStyle {
                     || value.parse::<u16>().is_ok_and(|weight| weight >= 600);
             }
             "font-style" => {
-                parsed.italic =
-                    matches!(value.to_ascii_lowercase().as_str(), "italic" | "oblique");
+                parsed.italic = matches!(value.to_ascii_lowercase().as_str(), "italic" | "oblique");
             }
             "text-align" => {
                 parsed.alignment = match value.to_ascii_lowercase().as_str() {
@@ -7904,7 +8051,11 @@ fn import_text_style(
     let color = style
         .color
         .clone()
-        .or_else(|| text_color_from_default_appearance.then(|| appearance_color.clone()).flatten())
+        .or_else(|| {
+            text_color_from_default_appearance
+                .then(|| appearance_color.clone())
+                .flatten()
+        })
         .unwrap_or_else(|| "#000000".into());
     let bold = style.bold
         || default_appearance_font_resource(annotation).is_some_and(|resource| {
@@ -7926,7 +8077,6 @@ fn import_text_style(
     }
     Ok(text)
 }
-
 
 fn measurement_path_dictionary(
     annotation: &MeasurementPathAnnotation,
@@ -7983,7 +8133,10 @@ fn measurement_path_dictionary(
                 replacement.set("IC", color_array(fill_color));
             }
             // Revu always records an Area's fill opacity.
-            replacement.set("FillOpacity", Object::Real(appearance.fill_opacity() as f32));
+            replacement.set(
+                "FillOpacity",
+                Object::Real(appearance.fill_opacity() as f32),
+            );
             replacement.set("PitchRun", 12);
             replacement.set("SlopeType", 1);
         }
@@ -8148,7 +8301,11 @@ fn dimension_caption_text_width(annotation: &DimensionAnnotation) -> f64 {
         return 0.;
     }
     let text = annotation.appearance.text();
-    appearance_text_width_pt(annotation.content(), text.font_size_pt(), text.font_family())
+    appearance_text_width_pt(
+        annotation.content(),
+        text.font_size_pt(),
+        text.font_family(),
+    )
 }
 
 fn dimension_line_layout(annotation: &DimensionAnnotation) -> MeasurementLineLayout {
@@ -8231,22 +8388,27 @@ fn caption_rotation_operator(caption: PdfRect, bounds: PdfRect, angle: f64) -> S
 
 fn dimension_bounds(annotation: &DimensionAnnotation) -> PdfRect {
     let layout = dimension_line_layout(annotation);
-    let caption = (!annotation.content().is_empty()).then(|| {
-        measurement_caption_layout(
-            layout.caption_center,
-            annotation.content(),
-            annotation.appearance.text(),
-            true,
-        )
-        .rect
-    })
-    .map(|rect| {
-        rotated_rect_bounds(
-            rect,
-            measurement_caption_angle(annotation.start, annotation.end).to_degrees(),
-        )
-    });
-    measurement_line_bounds(&layout, annotation.appearance.line().stroke_width_pt(), caption)
+    let caption = (!annotation.content().is_empty())
+        .then(|| {
+            measurement_caption_layout(
+                layout.caption_center,
+                annotation.content(),
+                annotation.appearance.text(),
+                true,
+            )
+            .rect
+        })
+        .map(|rect| {
+            rotated_rect_bounds(
+                rect,
+                measurement_caption_angle(annotation.start, annotation.end).to_degrees(),
+            )
+        });
+    measurement_line_bounds(
+        &layout,
+        annotation.appearance.line().stroke_width_pt(),
+        caption,
+    )
 }
 
 /// Strokes the extension lines and dimension line, then fills and strokes
@@ -8304,12 +8466,8 @@ fn add_dimension_appearance(
         line.stroke_width_pt(),
     );
     append_measurement_line(&mut content, &layout, local);
-    let caption = measurement_caption_layout(
-        layout.caption_center,
-        annotation.content(),
-        text,
-        true,
-    );
+    let caption =
+        measurement_caption_layout(layout.caption_center, annotation.content(), text, true);
     let (caption_x, caption_y) = local(caption.text_origin);
     let mut content = content.into_bytes();
     if !annotation.content().is_empty() {
@@ -8420,7 +8578,6 @@ fn dimension_dictionary(
     preserve_annotation_metadata(&mut replacement, original, annotation.locked);
     Ok(replacement)
 }
-
 
 fn add_rgba_image_xobject(document: &mut Document, asset: &DecodedRgbaAsset) -> ObjectId {
     let mut rgb = Vec::with_capacity(asset.rgba().len() / 4 * 3);
@@ -8600,10 +8757,11 @@ fn canonical_native_annotation_name(id: &MarkupId) -> String {
 /// A new Cloud+ pair: the cloud carries the markup id as its `/NM` and the
 /// text member gets its own Revu-style name.
 fn new_cloud_plus_native_names(id: &MarkupId) -> (String, String) {
-    (id.as_str().to_owned(), crate::annotation_model::generate_markup_name())
+    (
+        id.as_str().to_owned(),
+        crate::annotation_model::generate_markup_name(),
+    )
 }
-
-
 
 fn require_available_native_name(
     document: &Document,
@@ -8645,16 +8803,6 @@ fn require_available_native_name(
     }
     Ok(())
 }
-
-
-
-
-
-
-
-
-
-
 
 fn image_appearance_object_ids(document: &Document, annotation: &Dictionary) -> Vec<ObjectId> {
     let Some(form_id) = normal_appearance_object_id(annotation) else {
@@ -9014,7 +9162,11 @@ fn markup_border_style(width_pt: f64, style: StrokeStyle) -> Dictionary {
 fn markup_author() -> String {
     ["USER", "USERNAME", "LOGNAME"]
         .iter()
-        .find_map(|key| std::env::var(key).ok().filter(|value| !value.trim().is_empty()))
+        .find_map(|key| {
+            std::env::var(key)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
         .unwrap_or_else(|| "Butter Paper".into())
 }
 
@@ -9059,7 +9211,11 @@ fn format_pdf_date(seconds: i64, offset_seconds: i64) -> String {
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_index = (5 * day_of_year + 2) / 153;
     let day = day_of_year - (153 * month_index + 2) / 5 + 1;
-    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
     let year = year_of_era + era * 400 + i64::from(month <= 2);
     let offset_minutes = offset_seconds.abs() / 60;
     let sign = if offset_seconds < 0 { '-' } else { '+' };
@@ -9089,7 +9245,6 @@ fn color_components(color: &str) -> (f32, f32, f32) {
     };
     (component(1..3), component(3..5), component(5..7))
 }
-
 
 /// Render preparation leaves the source document and persistence data untouched.
 #[derive(Debug)]
@@ -9716,7 +9871,12 @@ fn parse_revu_scale_ratio(ratio: &str) -> Option<(f64, ScaleUnit, f64, ScaleUnit
     let paper_unit = scale_unit_from_revu(paper.next()?)?;
     let real_value = real.next()?.parse::<f64>().ok()?;
     let real_unit = scale_unit_from_revu(real.next()?)?;
-    (paper_value > 0. && real_value > 0.).then_some((paper_value, paper_unit, real_value, real_unit))
+    (paper_value > 0. && real_value > 0.).then_some((
+        paper_value,
+        paper_unit,
+        real_value,
+        real_unit,
+    ))
 }
 
 fn first_number_format(measure: &Dictionary, key: &[u8]) -> Option<Dictionary> {
@@ -9732,7 +9892,12 @@ fn first_number_format(measure: &Dictionary, key: &[u8]) -> Option<Dictionary> {
 }
 
 fn number_format_precision(format: &Dictionary) -> Option<ScalePrecision> {
-    let denominator = format.get(b"D").ok()?.as_i64().ok().filter(|value| *value > 0)?;
+    let denominator = format
+        .get(b"D")
+        .ok()?
+        .as_i64()
+        .ok()
+        .filter(|value| *value > 0)?;
     if dictionary_name(format, b"F").as_deref() == Some("F") {
         ScalePrecision::fraction(u16::try_from(denominator).ok()?).ok()
     } else {
@@ -9740,13 +9905,20 @@ fn number_format_precision(format: &Dictionary) -> Option<ScalePrecision> {
     }
 }
 
-fn import_viewport_scale(document: &Document, page_index: u32, page: &Dictionary) -> Option<PageScale> {
+fn import_viewport_scale(
+    document: &Document,
+    page_index: u32,
+    page: &Dictionary,
+) -> Option<PageScale> {
     let viewports = resolve_optional_object(document, page.get(b"VP").ok()?)
         .ok()?
         .as_array()
         .ok()?;
     viewports.iter().find_map(|viewport| {
-        let viewport = resolve_optional_object(document, viewport).ok()?.as_dict().ok()?;
+        let viewport = resolve_optional_object(document, viewport)
+            .ok()?
+            .as_dict()
+            .ok()?;
         let measure = resolve_optional_object(document, viewport.get(b"Measure").ok()?)
             .ok()?
             .as_dict()
@@ -9763,7 +9935,11 @@ fn import_viewport_scale(document: &Document, page_index: u32, page: &Dictionary
             .unwrap_or(scale_x);
         let ratio = dictionary_string(measure, b"R").unwrap_or_default();
         let pdf_units = parse_revu_scale_ratio(&ratio).map_or(
-            if matches!(real_units, ScaleUnit::In | ScaleUnit::Ft) { ScaleUnit::In } else { ScaleUnit::Cm },
+            if matches!(real_units, ScaleUnit::In | ScaleUnit::Ft) {
+                ScaleUnit::In
+            } else {
+                ScaleUnit::Cm
+            },
             |(_, paper_unit, _, _)| paper_unit,
         );
         let precision = first_number_format(measure, b"D")
@@ -9777,7 +9953,14 @@ fn import_viewport_scale(document: &Document, page_index: u32, page: &Dictionary
         });
         let (source, name) = match preset {
             Some(preset) => (ScaleSource::Preset, preset.name),
-            None => (ScaleSource::Custom, if ratio.is_empty() { "Custom".into() } else { ratio }),
+            None => (
+                ScaleSource::Custom,
+                if ratio.is_empty() {
+                    "Custom".into()
+                } else {
+                    ratio
+                },
+            ),
         };
         PageScale::from_factors(
             page_index, source, name, pdf_units, real_units, scale_x, scale_y, precision,
@@ -9791,7 +9974,10 @@ fn import_page_scales(document: &Document) -> Vec<PageScale> {
         .get_pages()
         .into_iter()
         .filter_map(|(page_number, page_id)| {
-            let page = document.get_object(page_id).and_then(Object::as_dict).ok()?;
+            let page = document
+                .get_object(page_id)
+                .and_then(Object::as_dict)
+                .ok()?;
             import_viewport_scale(document, page_number.saturating_sub(1), page)
         })
         .collect()
@@ -9828,7 +10014,11 @@ fn write_page_scales(
         let scale = scales.iter().find(|scale| scale.page_index == page_index);
         // An unchanged page keeps its original viewports, including any this
         // reader does not understand.
-        if scale == original_scales.iter().find(|scale| scale.page_index == page_index) {
+        if scale
+            == original_scales
+                .iter()
+                .find(|scale| scale.page_index == page_index)
+        {
             continue;
         }
         let page = document.get_object_mut(page_id)?.as_dict_mut()?;
@@ -9843,12 +10033,18 @@ fn write_page_scales(
             scale.scale_x * scale.pdf_units.points(),
             real_unit,
         );
-        let mut measure = revu_measure_dictionary(&ratio, real_unit, scale.scale_x, scale.precision);
+        let mut measure =
+            revu_measure_dictionary(&ratio, real_unit, scale.scale_x, scale.precision);
         if scale.scale_y != scale.scale_x {
             let (denominator, _) = revu_precision_denominator(scale.precision);
             measure.set(
                 "Y",
-                vec![revu_number_format(real_unit.as_bytes(), scale.scale_y, denominator, false)],
+                vec![revu_number_format(
+                    real_unit.as_bytes(),
+                    scale.scale_y,
+                    denominator,
+                    false,
+                )],
             );
         }
         page.set(
@@ -10466,10 +10662,14 @@ fn import_annotations(
         for (annotation_index, annotation_object) in annotations.iter().enumerate() {
             if let Some(pair) = cloud_plus_pairs.get(&annotation_index) {
                 debug_assert_eq!(pair.first_index, annotation_index);
-                let cloud_view =
-                    resolved_annotation_view(document, document.get_object(pair.cloud.object_id)?.as_dict()?);
-                let text_view =
-                    resolved_annotation_view(document, document.get_object(pair.text.object_id)?.as_dict()?);
+                let cloud_view = resolved_annotation_view(
+                    document,
+                    document.get_object(pair.cloud.object_id)?.as_dict()?,
+                );
+                let text_view = resolved_annotation_view(
+                    document,
+                    document.get_object(pair.text.object_id)?.as_dict()?,
+                );
                 let (cloud_dictionary, text_dictionary) = (&cloud_view, &text_view);
                 if annotation_requires_opaque_import(cloud_dictionary)
                     || annotation_requires_opaque_import(text_dictionary)
@@ -10529,8 +10729,10 @@ fn import_annotations(
             if consumed_cloud_plus_indices.contains(&annotation_index) {
                 continue;
             }
-            let annotation_view =
-                resolved_annotation_view(document, resolve_object(document, annotation_object)?.as_dict()?);
+            let annotation_view = resolved_annotation_view(
+                document,
+                resolve_object(document, annotation_object)?.as_dict()?,
+            );
             let annotation = &annotation_view;
             let subtype = dictionary_name(annotation, b"Subtype").unwrap_or_default();
             let physical_name = dictionary_string(annotation, b"NM");
@@ -10574,12 +10776,18 @@ fn import_annotations(
                             .push(UntouchedAnnotation { name, subtype });
                         continue;
                     };
-                    let imported_snapshot =
-                        match import_snapshot(document, annotation, stable_name.clone(), page_index) {
-                            Ok(snapshot) => Ok((snapshot, None)),
-                            Err(_) => import_vector_snapshot(document, annotation, stable_name, page_index)
-                                .map(|(snapshot, source)| (snapshot, Some(source))),
-                        };
+                    let imported_snapshot = match import_snapshot(
+                        document,
+                        annotation,
+                        stable_name.clone(),
+                        page_index,
+                    ) {
+                        Ok(snapshot) => Ok((snapshot, None)),
+                        Err(_) => {
+                            import_vector_snapshot(document, annotation, stable_name, page_index)
+                                .map(|(snapshot, source)| (snapshot, Some(source)))
+                        }
+                    };
                     match imported_snapshot {
                         Ok((snapshot, source))
                             if !imported.snapshot_native_names.contains_key(&snapshot.id) =>
@@ -10588,7 +10796,9 @@ fn import_annotations(
                                 .snapshot_native_names
                                 .insert(snapshot.id.clone(), name);
                             if let Some(source) = source {
-                                imported.vector_snapshot_sources.push((snapshot.id.clone(), source));
+                                imported
+                                    .vector_snapshot_sources
+                                    .push((snapshot.id.clone(), source));
                             }
                             imported.annotation_order.push(snapshot.id.clone());
                             imported.snapshots.push(snapshot);
@@ -10599,16 +10809,17 @@ fn import_annotations(
                     }
                 }
                 "Square" => {
-                    let rectangle = match import_rectangle(document, annotation, name.clone(), page_index) {
-                        Ok(value) => value,
-                        // A markup this model cannot represent is kept exactly.
-                        Err(_) => {
-                            imported
-                                .untouched
-                                .push(UntouchedAnnotation { name, subtype });
-                            continue;
-                        }
-                    };
+                    let rectangle =
+                        match import_rectangle(document, annotation, name.clone(), page_index) {
+                            Ok(value) => value,
+                            // A markup this model cannot represent is kept exactly.
+                            Err(_) => {
+                                imported
+                                    .untouched
+                                    .push(UntouchedAnnotation { name, subtype });
+                                continue;
+                            }
+                        };
                     imported.annotation_order.push(rectangle.id.clone());
                     imported.rectangles.push(rectangle);
                 }
@@ -10694,16 +10905,17 @@ fn import_annotations(
                             "ambiguous Ellipse identity {stable_name}: multiple native names normalize to the same stable id"
                         )));
                     }
-                    let ellipse = match import_ellipse(document, annotation, stable_name, page_index) {
-                        Ok(value) => value,
-                        // A markup this model cannot represent is kept exactly.
-                        Err(_) => {
-                            imported
-                                .untouched
-                                .push(UntouchedAnnotation { name, subtype });
-                            continue;
-                        }
-                    };
+                    let ellipse =
+                        match import_ellipse(document, annotation, stable_name, page_index) {
+                            Ok(value) => value,
+                            // A markup this model cannot represent is kept exactly.
+                            Err(_) => {
+                                imported
+                                    .untouched
+                                    .push(UntouchedAnnotation { name, subtype });
+                                continue;
+                            }
+                        };
                     imported.ellipse_native_identities.insert(
                         ellipse.id.clone(),
                         EllipseNativeIdentity {
@@ -10767,16 +10979,17 @@ fn import_annotations(
                             "ambiguous callout identity {stable_name}: multiple native names normalize to the same stable id"
                         )));
                     }
-                    let callout = match import_callout(document, annotation, stable_name, page_index) {
-                        Ok(value) => value,
-                        // A markup this model cannot represent is kept exactly.
-                        Err(_) => {
-                            imported
-                                .untouched
-                                .push(UntouchedAnnotation { name, subtype });
-                            continue;
-                        }
-                    };
+                    let callout =
+                        match import_callout(document, annotation, stable_name, page_index) {
+                            Ok(value) => value,
+                            // A markup this model cannot represent is kept exactly.
+                            Err(_) => {
+                                imported
+                                    .untouched
+                                    .push(UntouchedAnnotation { name, subtype });
+                                continue;
+                            }
+                        };
                     imported.callout_native_identities.insert(
                         callout.id.clone(),
                         CalloutNativeIdentity {
@@ -10788,16 +11001,17 @@ fn import_annotations(
                     imported.callouts.push(callout);
                 }
                 "FreeText" => {
-                    let text_box = match import_text_box(document, annotation, name.clone(), page_index) {
-                        Ok(value) => value,
-                        // A markup this model cannot represent is kept exactly.
-                        Err(_) => {
-                            imported
-                                .untouched
-                                .push(UntouchedAnnotation { name, subtype });
-                            continue;
-                        }
-                    };
+                    let text_box =
+                        match import_text_box(document, annotation, name.clone(), page_index) {
+                            Ok(value) => value,
+                            // A markup this model cannot represent is kept exactly.
+                            Err(_) => {
+                                imported
+                                    .untouched
+                                    .push(UntouchedAnnotation { name, subtype });
+                                continue;
+                            }
+                        };
                     imported.annotation_order.push(text_box.id.clone());
                     imported.text_boxes.push(text_box);
                 }
@@ -10849,16 +11063,17 @@ fn import_annotations(
                         continue;
                     };
                     let stable_name = name.clone();
-                    let dimension = match import_dimension(document, annotation, stable_name, page_index) {
-                        Ok(value) => value,
-                        // A markup this model cannot represent is kept exactly.
-                        Err(_) => {
-                            imported
-                                .untouched
-                                .push(UntouchedAnnotation { name, subtype });
-                            continue;
-                        }
-                    };
+                    let dimension =
+                        match import_dimension(document, annotation, stable_name, page_index) {
+                            Ok(value) => value,
+                            // A markup this model cannot represent is kept exactly.
+                            Err(_) => {
+                                imported
+                                    .untouched
+                                    .push(UntouchedAnnotation { name, subtype });
+                                continue;
+                            }
+                        };
                     if imported.dimension_native_names.contains_key(&dimension.id) {
                         return Err(PdfPersistenceError::InvalidDocument(format!(
                             "ambiguous dimension identity {}",
@@ -10888,16 +11103,17 @@ fn import_annotations(
                             "ambiguous straight-line identity {stable_name}: multiple native names normalize to the same stable id"
                         )));
                     }
-                    let straight_line = match import_straight_line(annotation, stable_name, page_index) {
-                        Ok(value) => value,
-                        // A markup this model cannot represent is kept exactly.
-                        Err(_) => {
-                            imported
-                                .untouched
-                                .push(UntouchedAnnotation { name, subtype });
-                            continue;
-                        }
-                    };
+                    let straight_line =
+                        match import_straight_line(annotation, stable_name, page_index) {
+                            Ok(value) => value,
+                            // A markup this model cannot represent is kept exactly.
+                            Err(_) => {
+                                imported
+                                    .untouched
+                                    .push(UntouchedAnnotation { name, subtype });
+                                continue;
+                            }
+                        };
                     imported.straight_line_native_identities.insert(
                         straight_line.id.clone(),
                         StraightLineNativeIdentity {
@@ -11774,7 +11990,10 @@ fn import_text_box(
             .into_iter()
             .map(|span| {
                 let mut run = TextBoxRichTextRun::new(span.text)?;
-                if let Some(family) = span.font_family.filter(|family| family != base.font_family()) {
+                if let Some(family) = span
+                    .font_family
+                    .filter(|family| family != base.font_family())
+                {
                     run = run.with_font_family(family)?;
                 }
                 run = run.with_emphasis(span.bold, span.italic);
@@ -11804,7 +12023,8 @@ fn import_callout(
 ) -> Result<CalloutAnnotation, PdfPersistenceError> {
     // Read the style and text directly: a callout's text may be empty.
     let imported_style = import_text_style(document, annotation, true)?;
-    let imported_content = dictionary_text_box_contents(annotation, b"Contents")?.unwrap_or_default();
+    let imported_content =
+        dictionary_text_box_contents(annotation, b"Contents")?.unwrap_or_default();
     let outer = import_pdf_rect(annotation, b"Rect")?;
     let text_box = annotation
         .get(b"RD")
@@ -11837,11 +12057,10 @@ fn import_callout(
         })
         .collect::<Result<Vec<_>, PdfPersistenceError>>()?;
     // Revu keeps the leader colour in `/DA` and the text colour in `/DS`.
-    let stroke_color = parse_default_appearance(
-        &dictionary_string(annotation, b"DA").unwrap_or_default(),
-    )
-    .0
-    .unwrap_or_else(|| (&imported_style).color().to_owned());
+    let stroke_color =
+        parse_default_appearance(&dictionary_string(annotation, b"DA").unwrap_or_default())
+            .0
+            .unwrap_or_else(|| (&imported_style).color().to_owned());
     let width = import_callout_leader_width(annotation);
     let opacity = (&imported_style).opacity();
     let appearance = CalloutAppearance::new(
@@ -12155,11 +12374,10 @@ fn import_cloud_plus_pair(
         imported_text_style.inset_pt(),
     )?;
     // Revu keeps the leader colour in the text member's `/DA`.
-    let leader_color = parse_default_appearance(
-        &dictionary_string(text_dictionary, b"DA").unwrap_or_default(),
-    )
-    .0
-    .unwrap_or_else(|| cloud.appearance.stroke_color().to_owned());
+    let leader_color =
+        parse_default_appearance(&dictionary_string(text_dictionary, b"DA").unwrap_or_default())
+            .0
+            .unwrap_or_else(|| cloud.appearance.stroke_color().to_owned());
     let leader_width = import_callout_leader_width(text_dictionary);
     let leader_style = StrokeStyle::Solid;
     let leader_appearance = StraightLineAppearance::new(
@@ -12168,11 +12386,8 @@ fn import_cloud_plus_pair(
         cloud.appearance.opacity(),
         leader_style,
     )?;
-    let appearance = CloudPlusAppearance::new(
-        cloud.appearance.clone(),
-        leader_appearance,
-        text_style,
-    )?;
+    let appearance =
+        CloudPlusAppearance::new(cloud.appearance.clone(), leader_appearance, text_style)?;
     let cloud_appearance_path = import_cloud_plus_appearance_path(document, cloud_dictionary)?
         .filter(|path| {
             let imported = sample_cloud_appearance_path(path);
@@ -12419,13 +12634,8 @@ fn import_vertex_path(
     if kind == VertexPathKind::Polyline {
         appearance = appearance.without_fill();
     }
-    let mut imported = VertexPathAnnotation::new(
-        MarkupId::new(name)?,
-        page_index,
-        points,
-        kind,
-        appearance,
-    )?;
+    let mut imported =
+        VertexPathAnnotation::new(MarkupId::new(name)?, page_index, points, kind, appearance)?;
     imported.locked = annotation_locked(annotation);
     Ok(imported)
 }
@@ -12712,7 +12922,10 @@ struct VectorSnapshotSource {
     matrix: [f64; 6],
 }
 
-fn vector_snapshot_source(document: &Document, annotation: &Dictionary) -> Option<VectorSnapshotSource> {
+fn vector_snapshot_source(
+    document: &Document,
+    annotation: &Dictionary,
+) -> Option<VectorSnapshotSource> {
     let form_id = normal_appearance_object_id(annotation)?;
     let stream = document.get_object(form_id).ok()?.as_stream().ok()?;
     if dictionary_name(&stream.dict, b"Subtype").as_deref() != Some("Form") {
@@ -12732,8 +12945,13 @@ fn vector_snapshot_source(document: &Document, annotation: &Dictionary) -> Optio
         Err(_) => [1., 0., 0., 1., 0., 0.],
     };
     let determinant = matrix[0] * matrix[3] - matrix[1] * matrix[2];
-    (determinant.abs() > f64::EPSILON && bbox.width > 0. && bbox.height > 0.)
-        .then_some(VectorSnapshotSource { form_id, bbox, matrix })
+    (determinant.abs() > f64::EPSILON && bbox.width > 0. && bbox.height > 0.).then_some(
+        VectorSnapshotSource {
+            form_id,
+            bbox,
+            matrix,
+        },
+    )
 }
 
 /// Shown until the PDF worker has drawn the Form for the canvas.
@@ -12915,7 +13133,10 @@ fn find_image_xobject<'a>(
     if depth > 4 {
         return None;
     }
-    let resources = resolve_optional_object(document, resources).ok()?.as_dict().ok()?;
+    let resources = resolve_optional_object(document, resources)
+        .ok()?
+        .as_dict()
+        .ok()?;
     let xobjects = resolve_optional_object(document, resources.get(b"XObject").ok()?)
         .ok()?
         .as_dict()
@@ -12932,9 +13153,9 @@ fn find_image_xobject<'a>(
             _ => {}
         }
     }
-    forms.into_iter().find_map(|form| {
-        find_image_xobject(document, form.dict.get(b"Resources").ok()?, depth + 1)
-    })
+    forms
+        .into_iter()
+        .find_map(|form| find_image_xobject(document, form.dict.get(b"Resources").ok()?, depth + 1))
 }
 
 /// Decodes 8-bit DeviceRGB/DeviceGray samples (Flate or uncompressed) or a
@@ -12990,10 +13211,16 @@ fn decode_image_xobject(
         {
             Some(b"DeviceGray") => 1,
             Some(b"DeviceRGB") => 3,
-            _ => return Err(invalid("only DeviceRGB and DeviceGray images are supported")),
+            _ => {
+                return Err(invalid(
+                    "only DeviceRGB and DeviceGray images are supported",
+                ));
+            }
         };
         if samples.len() != pixel_count * components {
-            return Err(invalid("image XObject byte lengths do not match its dimensions"));
+            return Err(invalid(
+                "image XObject byte lengths do not match its dimensions",
+            ));
         }
         samples
             .chunks_exact(components)
@@ -13036,9 +13263,10 @@ fn import_media_appearance_asset(
         return decode_image_xobject(document, image);
     }
     let appearance = normal_appearance_stream(document, annotation)?;
-    let image = find_image_xobject(document, appearance.dict.get(b"Resources")?, 0).ok_or_else(
-        || PdfPersistenceError::InvalidDocument("media appearance has no image".into()),
-    )?;
+    let image =
+        find_image_xobject(document, appearance.dict.get(b"Resources")?, 0).ok_or_else(|| {
+            PdfPersistenceError::InvalidDocument("media appearance has no image".into())
+        })?;
     decode_image_xobject(document, image)
 }
 
@@ -14297,7 +14525,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn measurement_caption_geometry_uses_helvetica_metrics_and_path_distance_anchor() {
         use super::*;
@@ -14459,7 +14686,9 @@ mod tests {
         assert!(content.contains("1.000000 1.000000 m 1.000000 27.000000 l S"));
         assert!(content.contains("2.000000 25.000000 m 30.008000 25.000000 l S"));
         assert!(content.contains("71.992000 25.000000 m 100.000000 25.000000 l S"));
-        assert!(content.contains("9.800000 29.500000 m 2.000000 25.000000 l 9.800000 20.500000 l b"));
+        assert!(
+            content.contains("9.800000 29.500000 m 2.000000 25.000000 l 9.800000 20.500000 l b")
+        );
         assert!(content.contains("1 0 0 1 34.008000 18.900000 Tm (WWW) Tj"));
     }
 
@@ -14492,7 +14721,13 @@ mod tests {
         let mut document = Document::with_version("1.7");
         let appearance_id = add_dimension_appearance(&mut document, &sloped).unwrap();
         let content = String::from_utf8(
-            document.get_object(appearance_id).unwrap().as_stream().unwrap().content.clone(),
+            document
+                .get_object(appearance_id)
+                .unwrap()
+                .as_stream()
+                .unwrap()
+                .content
+                .clone(),
         )
         .unwrap();
         assert!(content.contains("q 0.707107 0.707107 -0.707107 0.707107 "));
@@ -14538,8 +14773,6 @@ mod tests {
         assert!((thin.arrowheads[0][1].x - 4.4).abs() < 0.000_001);
         assert!((thin.arrowheads[0][1].y - 12.25).abs() < 0.000_001);
     }
-
-
 
     fn retained_render_test_document() -> lopdf::Document {
         lopdf::Document::load_mem(
@@ -15343,7 +15576,11 @@ mod tests {
             session.text_boxes().len(),
             3,
             "{:?} untouched {:?}",
-            session.text_boxes().iter().map(|value| value.id.as_str()).collect::<Vec<_>>(),
+            session
+                .text_boxes()
+                .iter()
+                .map(|value| value.id.as_str())
+                .collect::<Vec<_>>(),
             session.untouched_annotations()
         );
         let rich = session
@@ -15362,8 +15599,18 @@ mod tests {
         assert_eq!(electron.rich_text_runs().len(), 3);
         // Spans that repeat the box style resolve to it rather than overriding it.
         let first = &electron.rich_text_runs()[0];
-        assert_eq!(first.font_family().unwrap_or(electron.style().font_family()), "Arimo");
-        assert_eq!(first.font_size_pt().unwrap_or(electron.style().font_size_pt()), 12.);
+        assert_eq!(
+            first
+                .font_family()
+                .unwrap_or(electron.style().font_family()),
+            "Arimo"
+        );
+        assert_eq!(
+            first
+                .font_size_pt()
+                .unwrap_or(electron.style().font_size_pt()),
+            12.
+        );
         assert_eq!(first.color().unwrap_or(electron.style().color()), "#172b4d");
         assert!(electron.rich_text_runs()[1].bold());
         assert!(electron.rich_text_runs()[2].italic());
@@ -17189,8 +17436,12 @@ mod tests {
         let export = |annotation: &ImageAnnotation| {
             let mut document = Document::with_version("1.7");
             let (appearance_id, image_id) = add_image_appearance(&mut document, annotation);
-            let dictionary =
-                image_dictionary(annotation, appearance_id, Some(image_id), &Dictionary::new());
+            let dictionary = image_dictionary(
+                annotation,
+                appearance_id,
+                Some(image_id),
+                &Dictionary::new(),
+            );
             (document, dictionary)
         };
 
@@ -17199,7 +17450,10 @@ mod tests {
         assert!(
             import_pdf_rect(&first_dictionary, b"Rect")
                 .unwrap()
-                .same_pdf_geometry_as(rotated_rect_bounds(expected.rect, expected.rotation_degrees()))
+                .same_pdf_geometry_as(rotated_rect_bounds(
+                    expected.rect,
+                    expected.rotation_degrees()
+                ))
         );
         let appearance = normal_appearance_stream(&first_document, &first_dictionary).unwrap();
         // Revu's layout: the unrotated box in page space, rotated clockwise
@@ -17285,14 +17539,6 @@ mod tests {
                 .same_pdf_geometry_as(import_pdf_rect(&first_dictionary, b"Rect").unwrap())
         );
     }
-
-
-
-
-
-
-
-
 
     #[test]
     fn rotated_text_box_appearance_roundtrips_nominal_geometry_without_aabb_growth() {
@@ -17953,9 +18199,9 @@ mod tests {
             .objects
             .values()
             .filter(|object| {
-                object
-                    .as_dict()
-                    .is_ok_and(|dictionary| dictionary_name(dictionary, b"Subtype").as_deref() == Some("Type0"))
+                object.as_dict().is_ok_and(|dictionary| {
+                    dictionary_name(dictionary, b"Subtype").as_deref() == Some("Type0")
+                })
             })
             .count();
         let mut moved = creation.text_boxes()[0].clone();
@@ -17967,9 +18213,9 @@ mod tests {
                 .objects
                 .values()
                 .filter(|object| {
-                    object
-                        .as_dict()
-                        .is_ok_and(|dictionary| dictionary_name(dictionary, b"Subtype").as_deref() == Some("Type0"))
+                    object.as_dict().is_ok_and(|dictionary| {
+                        dictionary_name(dictionary, b"Subtype").as_deref() == Some("Type0")
+                    })
                 })
                 .count(),
             embedded_before
@@ -18140,9 +18386,13 @@ mod tests {
                 .document
                 .objects
                 .values()
-                .filter(|object| object
-                    .as_dict()
-                    .is_ok_and(|dictionary| dictionary_name(dictionary, b"Subtype").as_deref() == Some("Type0")))
+                .filter(
+                    |object| object.as_dict().is_ok_and(|dictionary| dictionary_name(
+                        dictionary, b"Subtype"
+                    )
+                    .as_deref()
+                        == Some("Type0"))
+                )
                 .count(),
             3
         );
@@ -18299,7 +18549,9 @@ mod tests {
         assert_eq!(text_appearance_line_bytes("世界"), b"??");
         assert!((helvetica_text_width_pt(&[0xe9, 0x80], 12.) - 13.344).abs() < 0.000_001);
 
-        assert!((text_appearance_line_x(120., 10.656, TextAlignment::Left, 2.) - 2.).abs() < 0.000_001);
+        assert!(
+            (text_appearance_line_x(120., 10.656, TextAlignment::Left, 2.) - 2.).abs() < 0.000_001
+        );
         assert!(
             (text_appearance_line_x(120., 10.656, TextAlignment::Center, 2.) - 54.672).abs()
                 < 0.000_001
@@ -18313,9 +18565,13 @@ mod tests {
                 < 0.000_001
         );
         assert!(
-            (text_appearance_line_x(120., 45.312, TextAlignment::Right, 2.) - 72.688).abs() < 0.000_001
+            (text_appearance_line_x(120., 45.312, TextAlignment::Right, 2.) - 72.688).abs()
+                < 0.000_001
         );
-        assert_eq!(text_appearance_line_x(20., 200., TextAlignment::Right, 2.), 2.);
+        assert_eq!(
+            text_appearance_line_x(20., 200., TextAlignment::Right, 2.),
+            2.
+        );
     }
 
     #[test]

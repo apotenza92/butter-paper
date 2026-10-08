@@ -8,7 +8,12 @@ use std::{fs, path::Path};
 use serde_json::json;
 
 use crate::{
-    Args, Result, archive::{self, Entry}, read, sha256, target::Channel, version::Version, write,
+    Args, Result,
+    archive::{self, Entry},
+    read, sha256,
+    target::Channel,
+    version::Version,
+    write,
 };
 
 const REPOSITORY: &str = "apotenza92/butter-paper";
@@ -96,10 +101,16 @@ pub fn publication(
     run_attempt: &str,
     jobs: &[String],
 ) -> Result<Publication> {
-    if commit.len() != 40 || !commit.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+    if commit.len() != 40
+        || !commit
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
         return Err("commit must be a full lowercase SHA".into());
     }
-    let positive = |value: &str| !value.is_empty() && !value.starts_with('0') && value.bytes().all(|b| b.is_ascii_digit());
+    let positive = |value: &str| {
+        !value.is_empty() && !value.starts_with('0') && value.bytes().all(|b| b.is_ascii_digit())
+    };
     if !positive(run_id) || !positive(run_attempt) {
         return Err("run id and attempt must be positive integers".into());
     }
@@ -107,7 +118,11 @@ pub fn publication(
         return Err("native validation jobs are required".into());
     }
     let tag = version.tag();
-    let channels: &[Channel] = if version.is_beta() { &[Channel::Beta] } else { &[Channel::Stable, Channel::Beta] };
+    let channels: &[Channel] = if version.is_beta() {
+        &[Channel::Beta]
+    } else {
+        &[Channel::Stable, Channel::Beta]
+    };
     let mut files = Vec::new();
     let mut artifacts = Vec::new();
     let mut casks = Vec::new();
@@ -181,16 +196,28 @@ pub fn run(args: &mut Args) -> Result {
     let commit = args.required("--commit")?;
     let run_id = args.required("--run-id")?;
     let run_attempt = args.required("--run-attempt")?;
-    let jobs: Vec<String> = args.required("--jobs")?.split(',').filter(|j| !j.is_empty()).map(String::from).collect();
+    let jobs: Vec<String> = args
+        .required("--jobs")?
+        .split(',')
+        .filter(|j| !j.is_empty())
+        .map(String::from)
+        .collect();
     args.finish()?;
     let version = Version::parse(tag.strip_prefix('v').ok_or("tag must start with v")?)?;
     let publication = publication(version, &commit, &assets, &run_id, &run_attempt, &jobs)?;
     let mut entries: Vec<Entry> = publication
         .files
         .into_iter()
-        .map(|(path, bytes)| Entry { path, bytes, mode: 0o644 })
+        .map(|(path, bytes)| Entry {
+            path,
+            bytes,
+            mode: 0o644,
+        })
         .collect();
-    write(&assets.join("homebrew-publication.tar.gz"), archive::tar_gz(&mut entries)?)?;
+    write(
+        &assets.join("homebrew-publication.tar.gz"),
+        archive::tar_gz(&mut entries)?,
+    )?;
     write_checksums(&assets)?;
     println!("Casks: {}", publication.casks.join(", "));
     Ok(())
@@ -208,7 +235,10 @@ pub fn write_checksums(assets: &Path) -> Result {
     names.sort();
     let mut sums = String::new();
     for name in names {
-        sums.push_str(&format!("{}  {name}\n", sha256(&read(&assets.join(&name))?)));
+        sums.push_str(&format!(
+            "{}  {name}\n",
+            sha256(&read(&assets.join(&name))?)
+        ));
     }
     write(&assets.join("SHA256SUMS.txt"), sums)
 }
@@ -220,7 +250,11 @@ mod tests {
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
     fn assets(names: &[&str]) -> std::path::PathBuf {
-        let directory = std::env::temp_dir().join(format!("bp-homebrew-{}-{}", std::process::id(), names.len()));
+        let directory = std::env::temp_dir().join(format!(
+            "bp-homebrew-{}-{}",
+            std::process::id(),
+            names.len()
+        ));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
         for name in names {
@@ -240,10 +274,33 @@ mod tests {
     fn a_stable_release_advances_both_casks() {
         let directory = assets(&ALL);
         let jobs = vec!["package macos-arm64".to_string()];
-        let publication = publication(Version::parse("0.1.0").unwrap(), COMMIT, &directory, "7", "1", &jobs).unwrap();
-        assert_eq!(publication.casks, ["butter-paper.rb", "butter-paper@beta.rb"]);
-        let names: Vec<_> = publication.files.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, ["manifest.json", "Casks/butter-paper.rb", "Casks/butter-paper@beta.rb", "SHA256SUMS"]);
+        let publication = publication(
+            Version::parse("0.1.0").unwrap(),
+            COMMIT,
+            &directory,
+            "7",
+            "1",
+            &jobs,
+        )
+        .unwrap();
+        assert_eq!(
+            publication.casks,
+            ["butter-paper.rb", "butter-paper@beta.rb"]
+        );
+        let names: Vec<_> = publication
+            .files
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "manifest.json",
+                "Casks/butter-paper.rb",
+                "Casks/butter-paper@beta.rb",
+                "SHA256SUMS"
+            ]
+        );
         let stable = String::from_utf8(publication.files[1].1.clone()).unwrap();
         assert!(stable.contains("version \"0.1.0\""));
         assert!(stable.contains("download/v#{version}/Butter-Paper-macOS-arm64.zip"));
@@ -262,12 +319,35 @@ mod tests {
     fn a_beta_release_updates_only_the_beta_cask_and_missing_packages_fail() {
         let directory = assets(&ALL[2..]);
         let jobs = vec!["package macos-arm64".to_string()];
-        let beta = publication(Version::parse("0.1.1-beta.2").unwrap(), COMMIT, &directory, "7", "1", &jobs).unwrap();
+        let beta = publication(
+            Version::parse("0.1.1-beta.2").unwrap(),
+            COMMIT,
+            &directory,
+            "7",
+            "1",
+            &jobs,
+        )
+        .unwrap();
         assert_eq!(beta.casks, ["butter-paper@beta.rb"]);
         let manifest: serde_json::Value = serde_json::from_slice(&beta.files[0].1).unwrap();
-        assert_eq!(manifest["applications"], json!({ "beta": "Butter Paper Beta.app" }));
-        let error = publication(Version::parse("0.1.0").unwrap(), COMMIT, &directory, "7", "1", &jobs).err().unwrap();
-        assert!(error.contains("missing release asset Butter-Paper-macOS-arm64.zip"), "{error}");
+        assert_eq!(
+            manifest["applications"],
+            json!({ "beta": "Butter Paper Beta.app" })
+        );
+        let error = publication(
+            Version::parse("0.1.0").unwrap(),
+            COMMIT,
+            &directory,
+            "7",
+            "1",
+            &jobs,
+        )
+        .err()
+        .unwrap();
+        assert!(
+            error.contains("missing release asset Butter-Paper-macOS-arm64.zip"),
+            "{error}"
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 }

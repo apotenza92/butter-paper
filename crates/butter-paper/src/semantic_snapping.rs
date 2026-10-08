@@ -1050,8 +1050,12 @@ impl CandidateGrid {
     }
 
     fn build(candidates: &[Candidate]) -> Option<Self> {
-        let (mut min_x, mut min_y, mut max_x, mut max_y) =
-            (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        let (mut min_x, mut min_y, mut max_x, mut max_y) = (
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        );
         for candidate in candidates {
             let (left, bottom, right, top) = Self::bounds(candidate);
             if left.is_finite() && bottom.is_finite() && right.is_finite() && top.is_finite() {
@@ -1116,8 +1120,9 @@ impl CandidateGrid {
         let column = |x: f64| {
             (((x - self.origin_x) / self.cell).floor().max(0.) as usize).min(self.columns - 1)
         };
-        let row =
-            |y: f64| (((y - self.origin_y) / self.cell).floor().max(0.) as usize).min(self.rows - 1);
+        let row = |y: f64| {
+            (((y - self.origin_y) / self.cell).floor().max(0.) as usize).min(self.rows - 1)
+        };
         Some((column(left), row(bottom), column(right), row(top)))
     }
 
@@ -1127,8 +1132,12 @@ impl CandidateGrid {
         if !radius.is_finite() || radius < 0. {
             return None;
         }
-        let (left, bottom, right, top) =
-            (point.x - radius, point.y - radius, point.x + radius, point.y + radius);
+        let (left, bottom, right, top) = (
+            point.x - radius,
+            point.y - radius,
+            point.x + radius,
+            point.y + radius,
+        );
         let mut indices = self.overflow.clone();
         if right >= self.origin_x
             && top >= self.origin_y
@@ -2210,17 +2219,29 @@ mod tests {
         let candidates = (0..2_000)
             .map(|index| Candidate {
                 geometry: if index % 3 == 0 {
-                    CandidateGeometry::Point(PdfPoint { x: next(), y: next() })
+                    CandidateGeometry::Point(PdfPoint {
+                        x: next(),
+                        y: next(),
+                    })
                 } else if index % 97 == 0 {
                     CandidateGeometry::Segment {
                         start: PdfPoint { x: 0., y: next() },
-                        end: PdfPoint { x: 1_000., y: next() },
+                        end: PdfPoint {
+                            x: 1_000.,
+                            y: next(),
+                        },
                     }
                 } else {
-                    let start = PdfPoint { x: next(), y: next() };
+                    let start = PdfPoint {
+                        x: next(),
+                        y: next(),
+                    };
                     CandidateGeometry::Segment {
                         start,
-                        end: PdfPoint { x: start.x + next() / 20., y: start.y - next() / 20. },
+                        end: PdfPoint {
+                            x: start.x + next() / 20.,
+                            y: start.y - next() / 20.,
+                        },
                     }
                 },
                 owner_id: None,
@@ -2230,12 +2251,18 @@ mod tests {
             .collect::<Vec<_>>();
         let grid = CandidateGrid::build(&candidates).expect("finite candidates build a grid");
         for _ in 0..500 {
-            let point = PdfPoint { x: next() * 1.2 - 100., y: next() * 1.2 - 100. };
+            let point = PdfPoint {
+                x: next() * 1.2 - 100.,
+                y: next() * 1.2 - 100.,
+            };
             let radius = next() / 50.;
             let Some(found) = grid.query(point, radius) else {
                 continue;
             };
-            assert!(found.windows(2).all(|pair| pair[0] < pair[1]), "ascending and unique");
+            assert!(
+                found.windows(2).all(|pair| pair[0] < pair[1]),
+                "ascending and unique"
+            );
             for (index, candidate) in candidates.iter().enumerate() {
                 let (left, bottom, right, top) = CandidateGrid::bounds(candidate);
                 let near = right >= point.x - radius
@@ -2243,7 +2270,10 @@ mod tests {
                     && top >= point.y - radius
                     && bottom <= point.y + radius;
                 if near {
-                    assert!(found.contains(&(index as u32)), "candidate {index} near {point:?} missed");
+                    assert!(
+                        found.contains(&(index as u32)),
+                        "candidate {index} near {point:?} missed"
+                    );
                 }
             }
         }

@@ -1829,7 +1829,9 @@ fn published_durability_warning_interrupts_tab_and_application_close_without_los
         .unwrap();
     *backend.save_warning.lock().unwrap() = None;
     let warning_clearing_request = workspace
-        .update(cx, |workspace, cx| workspace.begin_save(document_ids[0], cx))
+        .update(cx, |workspace, cx| {
+            workspace.begin_save(document_ids[0], cx)
+        })
         .unwrap();
     let warning_clearing_save = backend.save(&warning_clearing_request).unwrap();
     workspace.update(cx, |workspace, cx| {
@@ -1935,7 +1937,9 @@ fn published_durability_warning_interrupts_tab_and_application_close_without_los
         "newer save was published, but its directory durability is unconfirmed".to_owned();
     *application_backend.save_warning.lock().unwrap() = Some(newer_warning.clone());
     let newer_request = application_workspace
-        .update(cx, |workspace, cx| workspace.begin_save(application_ids[0], cx))
+        .update(cx, |workspace, cx| {
+            workspace.begin_save(application_ids[0], cx)
+        })
         .unwrap();
     let newer_saved = application_backend.save(&newer_request).unwrap();
     application_workspace.update(cx, |workspace, cx| {
@@ -3427,8 +3431,7 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
     let library = std::env::var_os("BP_PDFIUM_LIBRARY")
         .map(PathBuf::from)
         .expect("BP_PDFIUM_LIBRARY names libpdfium (cargo xtask pdfium prints its path)");
-    let public_source =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let public_source = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     assert!(worker.is_file());
     assert!(library.is_file());
     assert!(public_source.is_file());
@@ -4125,8 +4128,7 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
     let library = std::env::var_os("BP_PDFIUM_LIBRARY")
         .map(PathBuf::from)
         .expect("BP_PDFIUM_LIBRARY names libpdfium (cargo xtask pdfium prints its path)");
-    let public_source =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let public_source = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     assert!(worker.is_file());
     assert!(library.is_file());
     assert!(public_source.is_file());
@@ -4653,8 +4655,8 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
     ] {
         let pixel_at = |pdf_x: f64, pdf_y: f64| {
             let x = (pdf_x / page_width * f64::from(raster.width())).round() as u32;
-            let y = ((page_height - pdf_y) / page_height * f64::from(raster.height())).round()
-                as u32;
+            let y =
+                ((page_height - pdf_y) / page_height * f64::from(raster.height())).round() as u32;
             let offset = ((y * raster.width() + x) * 4) as usize;
             raster.pixels_bgra()[offset..offset + 4].to_vec()
         };
@@ -4691,8 +4693,8 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
             .into_rgba8();
         let pixel_at = |pdf_x: f64, pdf_y: f64| {
             let x = (pdf_x / page_width * f64::from(raster.width())).round() as u32;
-            let y = ((page_height - pdf_y) / page_height * f64::from(raster.height())).round()
-                as u32;
+            let y =
+                ((page_height - pdf_y) / page_height * f64::from(raster.height())).round() as u32;
             raster.get_pixel(x, y).0
         };
         let single_path = pixel_at(300., 400.);
@@ -4848,8 +4850,7 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
     let library = std::env::var_os("BP_PDFIUM_LIBRARY")
         .map(PathBuf::from)
         .expect("BP_PDFIUM_LIBRARY names libpdfium (cargo xtask pdfium prints its path)");
-    let public_source =
-        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let public_source = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
     assert!(worker.is_file());
     assert!(library.is_file());
     assert!(public_source.is_file());
@@ -5748,10 +5749,8 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
     let library = std::env::var_os("BP_PDFIUM_LIBRARY")
         .map(PathBuf::from)
         .expect("BP_PDFIUM_LIBRARY names libpdfium (cargo xtask pdfium prints its path)");
-    let public_source =
-        manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
-    let public_image =
-        manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
+    let public_source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let public_image = manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
     assert!(worker.is_file() && library.is_file());
     let public_source_bytes = std::fs::read(&public_source).unwrap();
     let public_image_bytes = std::fs::read(&public_image).unwrap();
@@ -6632,8 +6631,18 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
             .all(|item| item.id != pasted_id)
     );
     assert_all_eight_ink_state(typed.pens(), &source_pens, &pen_id, &highlight_id);
-    assert!(typed.pens().iter().any(|item| item.same_persisted_state_as(&expected_pen)));
-    assert!(typed.pens().iter().any(|item| item.same_persisted_state_as(&expected_highlight)));
+    assert!(
+        typed
+            .pens()
+            .iter()
+            .any(|item| item.same_persisted_state_as(&expected_pen))
+    );
+    assert!(
+        typed
+            .pens()
+            .iter()
+            .any(|item| item.same_persisted_state_as(&expected_highlight))
+    );
     assert!(
         typed
             .text_boxes()
@@ -6760,8 +6769,18 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
             .all(|item| item.id != pasted_id)
     );
     assert_all_eight_ink_state(&reopened.pens, &source_pens, &pen_id, &highlight_id);
-    assert!(reopened.pens.iter().any(|item| item.same_persisted_state_as(&expected_pen)));
-    assert!(reopened.pens.iter().any(|item| item.same_persisted_state_as(&expected_highlight)));
+    assert!(
+        reopened
+            .pens
+            .iter()
+            .any(|item| item.same_persisted_state_as(&expected_pen))
+    );
+    assert!(
+        reopened
+            .pens
+            .iter()
+            .any(|item| item.same_persisted_state_as(&expected_highlight))
+    );
     assert!(
         reopened
             .text_boxes

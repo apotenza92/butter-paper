@@ -40,7 +40,11 @@ pub fn format_window_title_for_application(
     let mut title = String::new();
     let mut shown = 0;
     for name in ordered {
-        let separator = if shown == 0 { "" } else { WINDOW_TITLE_SEPARATOR };
+        let separator = if shown == 0 {
+            ""
+        } else {
+            WINDOW_TITLE_SEPARATOR
+        };
         let remaining_after = tab_names.len() - shown - 1;
         let suffix_reserve = if remaining_after > 0 { 6 } else { 0 };
         if shown > 0
@@ -88,7 +92,10 @@ pub fn uses_window_title_bar(window: &gpui::Window) -> bool {
         return false;
     }
     !cfg!(target_os = "linux")
-        || matches!(window.window_decorations(), gpui::Decorations::Client { .. })
+        || matches!(
+            window.window_decorations(),
+            gpui::Decorations::Client { .. }
+        )
 }
 
 pub fn window_title_bar(

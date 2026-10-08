@@ -2648,8 +2648,6 @@ fn write_and_sync(file: &mut File, bytes: &[u8]) -> Result<(), DocumentRecoveryS
         .map_err(|error| io_error("sync recovery file", error))
 }
 
-
-
 fn sync_directory(
     path: &Path,
     #[cfg(unix)] directory: &File,

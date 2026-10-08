@@ -107,8 +107,8 @@ use crate::{
     annotation_adapter::{
         AnnotationAdapter, AnnotationTool, CALLOUT_BODY_ID, CALLOUT_TEXT_BOX_ID, CLOUD_BODY_ID,
         DIMENSION_BODY_ID, DIMENSION_END_HANDLE_ID, DIMENSION_OFFSET_HANDLE_ID,
-        DIMENSION_START_HANDLE_ID, NATURAL_IMAGE_MAX_PAGE_FRACTION,
-        PendingImagePreview, PointerInputModifiers, PointerPhaseOutcome, StraightLinePropertyEdit,
+        DIMENSION_START_HANDLE_ID, NATURAL_IMAGE_MAX_PAGE_FRACTION, PendingImagePreview,
+        PointerInputModifiers, PointerPhaseOutcome, StraightLinePropertyEdit,
         VertexPathPropertyEdit, callout_resize_handle_id, ellipse_resize_handle_point_for_rect,
         ellipse_rotation_handle_point_for_rect, redact_resize_handle_id, snapshot_resize_handle_id,
     },
@@ -146,15 +146,15 @@ use crate::{
 };
 use gpui::{
     Anchor, App, AppContext as _, BorderStyle, Bounds, ClickEvent, ContentMask, Context,
-    CursorStyle, DispatchPhase, DragMoveEvent, Edges, Entity, EventEmitter, FocusHandle, Focusable as _,
-    FontStyle, FontWeight, InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent,
-    KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
-    MouseUpEvent, ObjectFit, ParentElement as _, PathBuilder, PathPromptOptions, Pixels, Point,
-    Render, RenderImage, Role, ScrollHandle, ScrollStrategy, ScrollWheelEvent, ShapedLine,
-    SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription,
-    Task, TextAlign, TextRun, TransformationMatrix, UniformListScrollHandle, WeakEntity, Window,
-    accesskit::Live, canvas, fill, font, img, outline, point, prelude::FluentBuilder as _, px,
-    radians, relative, size, uniform_list,
+    CursorStyle, DispatchPhase, DragMoveEvent, Edges, Entity, EventEmitter, FocusHandle,
+    Focusable as _, FontStyle, FontWeight, InteractiveElement as _, IntoElement, KeyBinding,
+    KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent,
+    MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement as _, PathBuilder, PathPromptOptions,
+    Pixels, Point, Render, RenderImage, Role, ScrollHandle, ScrollStrategy, ScrollWheelEvent,
+    ShapedLine, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
+    Subscription, Task, TextAlign, TextRun, TransformationMatrix, UniformListScrollHandle,
+    WeakEntity, Window, accesskit::Live, canvas, fill, font, img, outline, point,
+    prelude::FluentBuilder as _, px, radians, relative, size, uniform_list,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, StyledExt as _,
@@ -486,7 +486,8 @@ pub const DOCUMENT_CALLOUT_TOOL_ID: &str = "tool-callout";
 pub const DOCUMENT_REDACT_TOOL_ID: &str = "tool-redact";
 pub const DOCUMENT_REDACT_PENDING_ALERT_ID: &str = "document-workspace-redact-pending-alert";
 pub const DOCUMENT_TOOLBAR_SCROLL_ID: &str = "document-workspace-toolbar-scroll";
-pub const DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID: &str = "document-workspace-right-rail-resize-handle";
+pub const DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID: &str =
+    "document-workspace-right-rail-resize-handle";
 pub const DOCUMENT_TOOLBAR_CONTENT_ID: &str = "document-workspace-toolbar-content";
 pub const DOCUMENT_ACTIVE_INSPECTOR_SLOT_ID: &str = "document-workspace-active-inspector-slot";
 pub const DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID: &str = "document-workspace-active-inspector-close";
@@ -1762,8 +1763,7 @@ impl PdfDocumentSaver {
                 && request.annotations.page_length_calibrations.iter().all(
                     |(page_index, expected)| {
                         reopened_page_scales.iter().any(|(candidate_page, actual)| {
-                            candidate_page == page_index
-                                && actual.same_persisted_scale_as(expected)
+                            candidate_page == page_index && actual.same_persisted_scale_as(expected)
                         })
                     },
                 )
@@ -5487,7 +5487,10 @@ impl DocumentWorkspace {
     }
 
     /// Every tab's and close button's bounds, for development review tooling.
-    pub fn session_tab_debug_geometry(&self, cx: &App) -> Vec<(DocumentId, Bounds<Pixels>, Option<Bounds<Pixels>>)> {
+    pub fn session_tab_debug_geometry(
+        &self,
+        cx: &App,
+    ) -> Vec<(DocumentId, Bounds<Pixels>, Option<Bounds<Pixels>>)> {
         self.sessions
             .iter()
             .filter_map(|session| {
@@ -5495,7 +5498,9 @@ impl DocumentWorkspace {
                 Some((
                     id,
                     self.session_tab_bounds.get(&id)?.get(),
-                    self.session_tab_close_bounds.get(&id).map(|bounds| bounds.get()),
+                    self.session_tab_close_bounds
+                        .get(&id)
+                        .map(|bounds| bounds.get()),
                 ))
             })
             .collect()
@@ -5507,7 +5512,10 @@ impl DocumentWorkspace {
             .iter()
             .map(|session| {
                 let session = session.read(cx);
-                format!("{}: {:?} / {:?}", session.title, session.status, session.save_status)
+                format!(
+                    "{}: {:?} / {:?}",
+                    session.title, session.status, session.save_status
+                )
             })
             .collect()
     }
@@ -5557,7 +5565,8 @@ impl DocumentWorkspace {
     }
 
     pub fn document_title(&self, document_id: DocumentId, cx: &App) -> Option<String> {
-        self.session(document_id, cx).map(|session| session.read(cx).title.clone())
+        self.session(document_id, cx)
+            .map(|session| session.read(cx).title.clone())
     }
 
     /// Shows where a tab dragged from another window would be inserted.
@@ -5610,7 +5619,9 @@ impl DocumentWorkspace {
             self.cancel_annotation_pointer(cx);
         }
         if let Some(control) = self.page_scale_control.clone() {
-            control.update(cx, |control, cx| control.cancel_for_document(document_id, cx));
+            control.update(cx, |control, cx| {
+                control.cancel_for_document(document_id, cx)
+            });
         }
         self.viewer_session_subscriptions.remove(&document_id);
         self.viewer_quality_tasks.remove(&document_id);
@@ -5626,7 +5637,8 @@ impl DocumentWorkspace {
         }
         self.session_tab_label_offsets.remove(&document_id);
         let session = self.sessions.remove(index);
-        self.page_interactions.retain(|(owner, _), _| *owner != document_id);
+        self.page_interactions
+            .retain(|(owner, _), _| *owner != document_id);
         self.last_painted_page_evidence
             .retain(|(owner, _), _| *owner != document_id);
         self.viewport_bounds.remove(&document_id);
@@ -6418,7 +6430,9 @@ impl DocumentWorkspace {
                     fill.clone(),
                     current_appearance.opacity(),
                 )
-                .and_then(|appearance| appearance.with_fill_opacity(current_appearance.fill_opacity()))
+                .and_then(|appearance| {
+                    appearance.with_fill_opacity(current_appearance.fill_opacity())
+                })
                 .map(|appearance| appearance.with_stroke_style(current_appearance.stroke_style()))
                 .map_err(|error| error.to_string())?;
                 self.update_engineering_visual_appearance(
@@ -9024,7 +9038,9 @@ impl DocumentWorkspace {
             for path in candidates {
                 let decision = match entity.update(cx, |workspace, cx| {
                     if force_new_tabs {
-                        return OpenSelectionDecision::Begin(workspace.begin_open(path.clone(), cx));
+                        return OpenSelectionDecision::Begin(
+                            workspace.begin_open(path.clone(), cx),
+                        );
                     }
                     if let Some(existing) = workspace.document_id_for_path(&path, cx) {
                         return OpenSelectionDecision::Existing(existing);
@@ -11138,7 +11154,8 @@ impl DocumentWorkspace {
             cx.notify();
         });
         if let Some((width, height)) = session.read(cx).view_state.viewport_size() {
-            let _ = self.refresh_viewport_async(document_id, width, height, window.scale_factor(), cx);
+            let _ =
+                self.refresh_viewport_async(document_id, width, height, window.scale_factor(), cx);
         }
         cx.notify();
     }
@@ -16370,14 +16387,10 @@ impl DocumentWorkspace {
         let Some(session) = self.session(document_id, cx) else {
             return false;
         };
-        self.pan_drag = Some((
-            document_id,
-            position,
-            {
-                let (x, y) = session.read(cx).viewer.logical_scroll();
-                point(px(x), px(y))
-            },
-        ));
+        self.pan_drag = Some((document_id, position, {
+            let (x, y) = session.read(cx).viewer.logical_scroll();
+            point(px(x), px(y))
+        }));
         true
     }
 
@@ -16462,14 +16475,10 @@ impl DocumentWorkspace {
             if self.canvas_focus_claim_allowed(window, cx) {
                 self.workspace_focus.focus(window, cx);
             }
-            self.pan_drag = Some((
-                document_id,
-                position,
-                {
-                    let (x, y) = session.read(cx).viewer.logical_scroll();
-                    point(px(x), px(y))
-                },
-            ));
+            self.pan_drag = Some((document_id, position, {
+                let (x, y) = session.read(cx).viewer.logical_scroll();
+                point(px(x), px(y))
+            }));
             return true;
         }
         let Some(interaction) = self
@@ -17290,8 +17299,9 @@ impl DocumentWorkspace {
                     Some(PointerPhaseOutcome::PlacementPending)
                 ),
             });
-            self.gesture_cursor =
-                (tool == AnnotationTool::Select).then_some(pressed_gesture_cursor).flatten();
+            self.gesture_cursor = (tool == AnnotationTool::Select)
+                .then_some(pressed_gesture_cursor)
+                .flatten();
             cx.notify();
         }
         if retained_pointer.is_some()
@@ -18468,10 +18478,7 @@ fn paint_ellipse_annotations(
             if let Ok(path) = builder.build() {
                 window.paint_path(
                     path,
-                    color.opacity(
-                        annotation.appearance.fill_opacity()
-                            as f32,
-                    ),
+                    color.opacity(annotation.appearance.fill_opacity() as f32),
                 );
             }
         }
@@ -21981,7 +21988,11 @@ fn snap_section(label: &'static str, body: gpui::AnyElement, cx: &App) -> gpui::
 }
 
 fn snap_separator(cx: &App) -> gpui::AnyElement {
-    gpui::div().h_px().w_full().bg(cx.theme().border).into_any_element()
+    gpui::div()
+        .h_px()
+        .w_full()
+        .bg(cx.theme().border)
+        .into_any_element()
 }
 
 fn snap_tile_grid(tiles: Vec<gpui::AnyElement>) -> gpui::AnyElement {
@@ -22065,7 +22076,11 @@ fn snap_switch_row(
         .justify_between()
         .gap_3()
         .text_sm()
-        .child(gpui::div().when(disabled, |label| label.opacity(0.5)).child(label))
+        .child(
+            gpui::div()
+                .when(disabled, |label| label.opacity(0.5))
+                .child(label),
+        )
         .child(
             gpui::div()
                 .debug_selector(move || id.into())
@@ -22146,8 +22161,12 @@ fn rail_overflow_hint(
         .absolute()
         .left_0()
         .right_0()
-        .when(edge == RailOverflowEdge::Top, |fade| fade.top_0().items_start())
-        .when(edge == RailOverflowEdge::Bottom, |fade| fade.bottom_0().items_end())
+        .when(edge == RailOverflowEdge::Top, |fade| {
+            fade.top_0().items_start()
+        })
+        .when(edge == RailOverflowEdge::Bottom, |fade| {
+            fade.bottom_0().items_end()
+        })
         .h(px(56.))
         .flex()
         .justify_center()
@@ -22165,7 +22184,9 @@ fn rail_overflow_hint(
                 .items_center()
                 .justify_center()
                 .text_color(cx.theme().muted_foreground)
-                .tooltip(|window, cx| gpui_component::tooltip::Tooltip::new(RAIL_OVERFLOW_TOOLTIP).build(window, cx))
+                .tooltip(|window, cx| {
+                    gpui_component::tooltip::Tooltip::new(RAIL_OVERFLOW_TOOLTIP).build(window, cx)
+                })
                 .on_scroll_wheel(move |event: &ScrollWheelEvent, _, cx| {
                     let delta = event.delta.pixel_delta(px(16.));
                     let offset = scroll.offset();
@@ -22177,7 +22198,11 @@ fn rail_overflow_hint(
                     let _ = owner.update(cx, |_, cx| cx.notify());
                     cx.stop_propagation();
                 })
-                .child(gpui_component::Icon::default().path("icons/rail/ellipsis.svg").size_5()),
+                .child(
+                    gpui_component::Icon::default()
+                        .path("icons/rail/ellipsis.svg")
+                        .size_5(),
+                ),
         )
         .into_any_element()
 }
@@ -22483,7 +22508,11 @@ fn annotation_tool_group(
     let signature_danger = cx.theme().danger;
     let signature_control = Popover::new(DOCUMENT_SIGNATURE_POPOVER_ID)
         .anchor(Anchor::TopRight)
-        .open(crate::overlay_state::sync_overlay_open("signature", signature_popover_open, cx))
+        .open(crate::overlay_state::sync_overlay_open(
+            "signature",
+            signature_popover_open,
+            cx,
+        ))
         .on_open_change(move |open, window, cx| {
             let _ = signature_open_control.update(cx, |workspace, cx| {
                 if *open {
@@ -22799,7 +22828,9 @@ fn annotation_tool_group(
                     },
                 );
             let content = content
-                .when(show_camera || show_phone || show_choose, |content| content.child(sources))
+                .when(show_camera || show_phone || show_choose, |content| {
+                    content.child(sources)
+                })
                 .when(!phone_pairing, |content| {
                     content.child(
                         h_flex()
@@ -23348,7 +23379,10 @@ impl Render for DocumentWorkspace {
             .pending_text_box_editor
             .as_ref()
             .filter(|editor| {
-                matches!(&editor.target, PendingTextEditorTarget::ExistingTextBox { .. })
+                matches!(
+                    &editor.target,
+                    PendingTextEditorTarget::ExistingTextBox { .. }
+                )
             })
             .and_then(|editor| {
                 self.page_interactions
@@ -24826,8 +24860,7 @@ impl Render for DocumentWorkspace {
             .and_then(|editor| {
                 let (id, rect, style, interaction) = match &editor.target {
                     PendingTextEditorTarget::ExistingTextBox { id } => {
-                        let text_box =
-                            self.inline_existing_text_box(editor.document_id, id, cx)?;
+                        let text_box = self.inline_existing_text_box(editor.document_id, id, cx)?;
                         (
                             Some(id.clone()),
                             &text_box.layout_rect,
@@ -24884,7 +24917,11 @@ impl Render for DocumentWorkspace {
         let highlight_opacity_control = cx.entity().downgrade();
         let highlight_settings_control = Popover::new(DOCUMENT_HIGHLIGHT_SETTINGS_ID)
             .anchor(Anchor::TopRight)
-            .open(crate::overlay_state::sync_overlay_open("highlight-settings", self.annotation_highlight_settings_open, cx))
+            .open(crate::overlay_state::sync_overlay_open(
+                "highlight-settings",
+                self.annotation_highlight_settings_open,
+                cx,
+            ))
             .on_open_change(move |open, _, cx| {
                 let _ = highlight_open_control.update(cx, |workspace, cx| {
                     workspace.annotation_highlight_settings_open = *open;
@@ -25043,7 +25080,11 @@ impl Render for DocumentWorkspace {
         let snap_markup_control = cx.entity().downgrade();
         let semantic_snap_control = Popover::new("document-workspace-snap-settings-owner")
             .anchor(Anchor::TopRight)
-            .open(crate::overlay_state::sync_overlay_open("snap-settings", self.semantic_snap_settings_open, cx))
+            .open(crate::overlay_state::sync_overlay_open(
+                "snap-settings",
+                self.semantic_snap_settings_open,
+                cx,
+            ))
             .on_open_change(move |open, _, cx| {
                 let _ = snap_open_control.update(cx, |workspace, cx| {
                     workspace.semantic_snap_settings_open = *open;
@@ -25130,9 +25171,33 @@ impl Render for DocumentWorkspace {
                     .child(snap_section(
                         "Snap to",
                         snap_tile_grid(vec![
-                            snap_tile(DOCUMENT_SNAP_CONTENT_ID, "Content", None, content_enabled, false, source(SemanticSnapSource::Content), cx),
-                            snap_tile(DOCUMENT_SNAP_MARKUP_ID, "Markup", None, settings.annotations_enabled(), false, markup, cx),
-                            snap_tile(DOCUMENT_SNAP_PAGE_GRID_ID, "Page grid", None, page_grid_enabled, false, source(SemanticSnapSource::PageGrid), cx),
+                            snap_tile(
+                                DOCUMENT_SNAP_CONTENT_ID,
+                                "Content",
+                                None,
+                                content_enabled,
+                                false,
+                                source(SemanticSnapSource::Content),
+                                cx,
+                            ),
+                            snap_tile(
+                                DOCUMENT_SNAP_MARKUP_ID,
+                                "Markup",
+                                None,
+                                settings.annotations_enabled(),
+                                false,
+                                markup,
+                                cx,
+                            ),
+                            snap_tile(
+                                DOCUMENT_SNAP_PAGE_GRID_ID,
+                                "Page grid",
+                                None,
+                                page_grid_enabled,
+                                false,
+                                source(SemanticSnapSource::PageGrid),
+                                cx,
+                            ),
                         ]),
                         cx,
                     ))
@@ -25141,12 +25206,26 @@ impl Render for DocumentWorkspace {
                         "Construction grid",
                         v_flex()
                             .gap_2()
-                            .child(snap_switch_row(DOCUMENT_SNAP_CONSTRUCTION_GRID_ID, "Snap to grid", grid_enabled, false, source(SemanticSnapSource::ConstructionGrid)))
-                            .child(snap_switch_row(DOCUMENT_SNAP_CONSTRUCTION_GRID_VISIBLE_ID, "Show grid", settings.construction_grid_visible(), !grid_enabled, grid_visible))
+                            .child(snap_switch_row(
+                                DOCUMENT_SNAP_CONSTRUCTION_GRID_ID,
+                                "Snap to grid",
+                                grid_enabled,
+                                false,
+                                source(SemanticSnapSource::ConstructionGrid),
+                            ))
+                            .child(snap_switch_row(
+                                DOCUMENT_SNAP_CONSTRUCTION_GRID_VISIBLE_ID,
+                                "Show grid",
+                                settings.construction_grid_visible(),
+                                !grid_enabled,
+                                grid_visible,
+                            ))
                             .child(snap_number_row(
                                 "Spacing (mm)",
                                 DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID,
-                                NumberInput::new(&snap_grid_spacing_input).small().disabled(!grid_enabled),
+                                NumberInput::new(&snap_grid_spacing_input)
+                                    .small()
+                                    .disabled(!grid_enabled),
                             ))
                             .into_any_element(),
                         cx,
@@ -25156,7 +25235,13 @@ impl Render for DocumentWorkspace {
                         "Dimension increments",
                         v_flex()
                             .gap_2()
-                            .child(snap_switch_row(DOCUMENT_SNAP_DIMENSION_INCREMENT_ID, "Snap dimensions", settings.dimension_increment_enabled(), false, dimension))
+                            .child(snap_switch_row(
+                                DOCUMENT_SNAP_DIMENSION_INCREMENT_ID,
+                                "Snap dimensions",
+                                settings.dimension_increment_enabled(),
+                                false,
+                                dimension,
+                            ))
                             .child(snap_number_row(
                                 "Increment (mm)",
                                 DOCUMENT_SNAP_DIMENSION_INCREMENT_VALUE_ID,
@@ -25171,11 +25256,51 @@ impl Render for DocumentWorkspace {
                     .child(snap_section(
                         "Snap points",
                         snap_tile_grid(vec![
-                            snap_tile(DOCUMENT_SNAP_ENDPOINT_ID, "Ends", Some("square"), settings.is_target_selected(SemanticSnapTarget::Endpoint), !targets_enabled, target(SemanticSnapTarget::Endpoint), cx),
-                            snap_tile(DOCUMENT_SNAP_MIDPOINT_ID, "Midpoints", Some("triangle"), settings.is_target_selected(SemanticSnapTarget::Midpoint), !targets_enabled, target(SemanticSnapTarget::Midpoint), cx),
-                            snap_tile(DOCUMENT_SNAP_CENTER_ID, "Centres", Some("circle"), settings.is_target_selected(SemanticSnapTarget::Center), !targets_enabled, target(SemanticSnapTarget::Center), cx),
-                            snap_tile(DOCUMENT_SNAP_INTERSECTION_ID, "Intersections", Some("x"), settings.is_target_selected(SemanticSnapTarget::Intersection), !targets_enabled, target(SemanticSnapTarget::Intersection), cx),
-                            snap_tile(DOCUMENT_SNAP_NEAREST_ID, "Nearest", Some("diamond"), settings.is_target_selected(SemanticSnapTarget::Nearest), !targets_enabled, target(SemanticSnapTarget::Nearest), cx),
+                            snap_tile(
+                                DOCUMENT_SNAP_ENDPOINT_ID,
+                                "Ends",
+                                Some("square"),
+                                settings.is_target_selected(SemanticSnapTarget::Endpoint),
+                                !targets_enabled,
+                                target(SemanticSnapTarget::Endpoint),
+                                cx,
+                            ),
+                            snap_tile(
+                                DOCUMENT_SNAP_MIDPOINT_ID,
+                                "Midpoints",
+                                Some("triangle"),
+                                settings.is_target_selected(SemanticSnapTarget::Midpoint),
+                                !targets_enabled,
+                                target(SemanticSnapTarget::Midpoint),
+                                cx,
+                            ),
+                            snap_tile(
+                                DOCUMENT_SNAP_CENTER_ID,
+                                "Centres",
+                                Some("circle"),
+                                settings.is_target_selected(SemanticSnapTarget::Center),
+                                !targets_enabled,
+                                target(SemanticSnapTarget::Center),
+                                cx,
+                            ),
+                            snap_tile(
+                                DOCUMENT_SNAP_INTERSECTION_ID,
+                                "Intersections",
+                                Some("x"),
+                                settings.is_target_selected(SemanticSnapTarget::Intersection),
+                                !targets_enabled,
+                                target(SemanticSnapTarget::Intersection),
+                                cx,
+                            ),
+                            snap_tile(
+                                DOCUMENT_SNAP_NEAREST_ID,
+                                "Nearest",
+                                Some("diamond"),
+                                settings.is_target_selected(SemanticSnapTarget::Nearest),
+                                !targets_enabled,
+                                target(SemanticSnapTarget::Nearest),
+                                cx,
+                            ),
                         ]),
                         cx,
                     ))
@@ -25184,11 +25309,41 @@ impl Render for DocumentWorkspace {
                         "Snap guides",
                         v_flex()
                             .gap_2()
-                            .child(snap_switch_row(DOCUMENT_SNAP_GUIDES_ID, "Show snap guides", settings.guides_enabled(), false, guides))
+                            .child(snap_switch_row(
+                                DOCUMENT_SNAP_GUIDES_ID,
+                                "Show snap guides",
+                                settings.guides_enabled(),
+                                false,
+                                guides,
+                            ))
                             .child(snap_tile_grid(vec![
-                                snap_tile(DOCUMENT_SNAP_GUIDE_ALIGNMENT_ID, "Alignment", None, settings.is_guide_enabled(SemanticSnapGuideType::Alignment), !settings.guides_enabled(), guide(SemanticSnapGuideType::Alignment), cx),
-                                snap_tile(DOCUMENT_SNAP_GUIDE_EQUAL_SIZE_ID, "Equal size", None, settings.is_guide_enabled(SemanticSnapGuideType::EqualSize), !settings.guides_enabled(), guide(SemanticSnapGuideType::EqualSize), cx),
-                                snap_tile(DOCUMENT_SNAP_GUIDE_EQUAL_SPACING_ID, "Equal spacing", None, settings.is_guide_enabled(SemanticSnapGuideType::EqualSpacing), !settings.guides_enabled(), guide(SemanticSnapGuideType::EqualSpacing), cx),
+                                snap_tile(
+                                    DOCUMENT_SNAP_GUIDE_ALIGNMENT_ID,
+                                    "Alignment",
+                                    None,
+                                    settings.is_guide_enabled(SemanticSnapGuideType::Alignment),
+                                    !settings.guides_enabled(),
+                                    guide(SemanticSnapGuideType::Alignment),
+                                    cx,
+                                ),
+                                snap_tile(
+                                    DOCUMENT_SNAP_GUIDE_EQUAL_SIZE_ID,
+                                    "Equal size",
+                                    None,
+                                    settings.is_guide_enabled(SemanticSnapGuideType::EqualSize),
+                                    !settings.guides_enabled(),
+                                    guide(SemanticSnapGuideType::EqualSize),
+                                    cx,
+                                ),
+                                snap_tile(
+                                    DOCUMENT_SNAP_GUIDE_EQUAL_SPACING_ID,
+                                    "Equal spacing",
+                                    None,
+                                    settings.is_guide_enabled(SemanticSnapGuideType::EqualSpacing),
+                                    !settings.guides_enabled(),
+                                    guide(SemanticSnapGuideType::EqualSpacing),
+                                    cx,
+                                ),
                             ]))
                             .into_any_element(),
                         cx,
@@ -25276,7 +25431,11 @@ impl Render for DocumentWorkspace {
         let stroke_open_control = cx.entity().downgrade();
         let stroke_control = Popover::new("document-workspace-rectangle-stroke-popover")
             .anchor(Anchor::BottomLeft)
-            .open(crate::overlay_state::sync_overlay_open("stroke-menu", self.annotation_stroke_menu_open, cx))
+            .open(crate::overlay_state::sync_overlay_open(
+                "stroke-menu",
+                self.annotation_stroke_menu_open,
+                cx,
+            ))
             .on_open_change(move |open, _, cx| {
                 let _ = stroke_open_control.update(cx, |workspace, cx| {
                     workspace.annotation_stroke_menu_open = *open;
@@ -26198,7 +26357,11 @@ impl Render for DocumentWorkspace {
                         .update(cx, |workspace, cx| {
                             // Only a visible tab can be grabbed: tabs scrolled
                             // under the overflow control keep their bounds.
-                            if !workspace.session_tab_scroll.bounds().contains(&event.position) {
+                            if !workspace
+                                .session_tab_scroll
+                                .bounds()
+                                .contains(&event.position)
+                            {
                                 return None;
                             }
                             let document_id = workspace.sessions.iter().find_map(|session| {
@@ -26283,7 +26446,11 @@ impl Render for DocumentWorkspace {
                 // Only a window with other tabs can tear one off.
                 let outside = self.sessions.len() > 1
                     && !self.session_tab_strip_bounds.get().contains(&drag.current);
-                Some((drag.current, format_document_tab_label(&title).to_owned(), outside))
+                Some((
+                    drag.current,
+                    format_document_tab_label(&title).to_owned(),
+                    outside,
+                ))
             })
             .map(|(position, label, outside)| {
                 gpui::deferred(
@@ -26326,9 +26493,12 @@ impl Render for DocumentWorkspace {
             .border_color(cx.theme().border)
             .relative()
             .child(
-                canvas(move |bounds, _, _| strip_bounds.set(bounds), |_, _, _, _| {})
-                    .absolute()
-                    .inset_0(),
+                canvas(
+                    move |bounds, _, _| strip_bounds.set(bounds),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
             )
             .children(dragged_tab_ghost)
             .on_key_down(move |event: &KeyDownEvent, _, cx| {

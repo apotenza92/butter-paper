@@ -44,8 +44,16 @@ pub fn fetch(target: Target) -> Result<Pdfium> {
     let directory = target_dir().join("pdfium").join(target.triple());
     let library = directory.join(target.pdfium_library());
     let notices = directory.join("NOTICES.md");
-    download(&format!("{}{}", pins.release, entry.library.name), &library, &entry.library.sha256)?;
-    download(&format!("{}{}", pins.release, entry.notices.name), &notices, &entry.notices.sha256)?;
+    download(
+        &format!("{}{}", pins.release, entry.library.name),
+        &library,
+        &entry.library.sha256,
+    )?;
+    download(
+        &format!("{}{}", pins.release, entry.notices.name),
+        &notices,
+        &entry.notices.sha256,
+    )?;
     Ok(Pdfium { library, notices })
 }
 
@@ -71,7 +79,10 @@ mod tests {
         assert!(pins.release.ends_with("/releases/download/pdfium-7881/"));
         for target in crate::target::ALL {
             let entry = &pins.targets[target.triple()];
-            assert_eq!(entry.library.name, format!("{}-{}", target.triple(), target.pdfium_library()));
+            assert_eq!(
+                entry.library.name,
+                format!("{}-{}", target.triple(), target.pdfium_library())
+            );
             for digest in [&entry.library.sha256, &entry.notices.sha256] {
                 assert!(digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()));
             }

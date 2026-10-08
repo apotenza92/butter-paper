@@ -24,8 +24,8 @@ use std::time::Duration;
 
 use butter_paper::application_assets::ApplicationAssets;
 use butter_paper::document_workspace::{
-    DocumentWorkspace, DocumentWorkspaceTemplateCommand, NativeDocumentResource, OpenedNativeDocument, RasterSurface,
-    ThumbnailSurface, init_document_workspace_actions,
+    DocumentWorkspace, DocumentWorkspaceTemplateCommand, NativeDocumentResource,
+    OpenedNativeDocument, RasterSurface, ThumbnailSurface, init_document_workspace_actions,
 };
 use butter_paper::page_view_control::PageViewMode;
 use butter_paper::template_manager::{TemplateManagerView, route_workspace_template_command};
@@ -39,7 +39,12 @@ use gpui_component::Root;
 struct WhitePages(AtomicBool);
 
 fn white(width: u32, height: u32) -> RasterSurface {
-    RasterSurface::new(width, height, vec![0xff; width as usize * height as usize * 4]).unwrap()
+    RasterSurface::new(
+        width,
+        height,
+        vec![0xff; width as usize * height as usize * 4],
+    )
+    .unwrap()
 }
 
 impl NativeDocumentResource for WhitePages {
@@ -50,7 +55,10 @@ impl NativeDocumentResource for WhitePages {
         Ok(white(width.max(1), (width as f32 * 792. / 612.) as u32 + 1))
     }
     fn render_tile(&self, request: TileRequest) -> Result<RasterSurface, String> {
-        Ok(white(request.crop.width.max(1) as u32, request.crop.height.max(1) as u32))
+        Ok(white(
+            request.crop.width.max(1) as u32,
+            request.crop.height.max(1) as u32,
+        ))
     }
     fn close(&self) -> Result<(), String> {
         self.0.store(true, Ordering::Release);
@@ -65,7 +73,11 @@ impl NativeDocumentResource for WhitePages {
 struct Shell(gpui::Entity<DocumentWorkspace>);
 
 impl gpui::Render for Shell {
-    fn render(&mut self, window: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+    fn render(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
         use gpui::ParentElement as _;
         use gpui::Styled as _;
         gpui::div()
@@ -81,11 +93,21 @@ fn main() {
     let output = PathBuf::from(arguments.next().expect("output directory"));
     std::fs::create_dir_all(&output).unwrap();
 
-    let mut lines = script.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).peekable();
-    let (width, height) = match lines.peek().map(|line| line.split_whitespace().collect::<Vec<_>>()) {
+    let mut lines = script
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .peekable();
+    let (width, height) = match lines
+        .peek()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>())
+    {
         Some(words) if words.first() == Some(&"size") => {
             lines.next();
-            (words[1].parse::<f32>().unwrap(), words[2].parse::<f32>().unwrap())
+            (
+                words[1].parse::<f32>().unwrap(),
+                words[2].parse::<f32>().unwrap(),
+            )
         }
         _ => (1320., 860.),
     };
@@ -103,12 +125,18 @@ fn main() {
             move |window, cx| {
                 let workspace = cx.new(DocumentWorkspace::new);
                 slot.replace(Some(workspace.clone()));
-                let root = std::env::temp_dir().join(format!("bp-visual-review-{}", std::process::id()));
-                let manager = cx.new(|cx| TemplateManagerView::open_persistent(root, window, cx).unwrap());
+                let root =
+                    std::env::temp_dir().join(format!("bp-visual-review-{}", std::process::id()));
+                let manager =
+                    cx.new(|cx| TemplateManagerView::open_persistent(root, window, cx).unwrap());
                 window
-                    .subscribe(&workspace, cx, move |_, event: &DocumentWorkspaceTemplateCommand, window, cx| {
-                        route_workspace_template_command(&manager, event, window, cx);
-                    })
+                    .subscribe(
+                        &workspace,
+                        cx,
+                        move |_, event: &DocumentWorkspaceTemplateCommand, window, cx| {
+                            route_workspace_template_command(&manager, event, window, cx);
+                        },
+                    )
                     .detach();
                 let shell = cx.new(|_| Shell(workspace));
                 cx.new(|cx| Root::new(shell, window, cx))
@@ -138,7 +166,9 @@ fn main() {
                             "Sample.pdf",
                             vec![(612., 792.); 3],
                             white(612, 792),
-                            (0..3).map(|page| ThumbnailSurface::new(page, white(61, 79))).collect(),
+                            (0..3)
+                                .map(|page| ThumbnailSurface::new(page, white(61, 79)))
+                                .collect(),
                             Arc::new(WhitePages(AtomicBool::new(false))),
                         )
                         .unwrap();
@@ -152,16 +182,33 @@ fn main() {
                     });
                 });
             }
-            "click" => cx.simulate_click(handle, point(px(number(1)), px(number(2))), Modifiers::default()),
-            "move" => cx.simulate_mouse_move(handle, point(px(number(1)), px(number(2))), None, Modifiers::default()),
+            "click" => cx.simulate_click(
+                handle,
+                point(px(number(1)), px(number(2))),
+                Modifiers::default(),
+            ),
+            "move" => cx.simulate_mouse_move(
+                handle,
+                point(px(number(1)), px(number(2))),
+                None,
+                Modifiers::default(),
+            ),
             "drag" => {
                 let start = point(px(number(1)), px(number(2)));
                 let end = point(px(number(3)), px(number(4)));
                 cx.simulate_mouse_down(handle, start, MouseButton::Left, Modifiers::default());
                 for step in 1..=8 {
                     let t = step as f32 / 8.;
-                    let at = point(start.x + (end.x - start.x) * t, start.y + (end.y - start.y) * t);
-                    cx.simulate_mouse_move(handle, at, Some(MouseButton::Left), Modifiers::default());
+                    let at = point(
+                        start.x + (end.x - start.x) * t,
+                        start.y + (end.y - start.y) * t,
+                    );
+                    cx.simulate_mouse_move(
+                        handle,
+                        at,
+                        Some(MouseButton::Left),
+                        Modifiers::default(),
+                    );
                 }
                 cx.simulate_mouse_up(handle, end, MouseButton::Left, Modifiers::default());
             }
@@ -170,7 +217,10 @@ fn main() {
                 ScrollWheelEvent {
                     position: point(px(number(1)), px(number(2))),
                     delta: ScrollDelta::Pixels(point(px(0.), px(number(3)))),
-                    modifiers: Modifiers { control: words.get(4) == Some(&"ctrl"), ..Modifiers::default() },
+                    modifiers: Modifiers {
+                        control: words.get(4) == Some(&"ctrl"),
+                        ..Modifiers::default()
+                    },
                     ..Default::default()
                 },
             ),

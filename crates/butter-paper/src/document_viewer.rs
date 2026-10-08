@@ -870,7 +870,10 @@ impl DocumentViewerState {
             .get()
             .unwrap_or_else(|| self.scroll_handle.offset());
         let (margin_x, margin_y) = self.pan_margin();
-        (-f32::from(offset.x) - margin_x, -f32::from(offset.y) - margin_y)
+        (
+            -f32::from(offset.x) - margin_x,
+            -f32::from(offset.y) - margin_y,
+        )
     }
 
     pub fn set_scroll(&self, scroll_x: f32, scroll_y: f32) {
@@ -881,12 +884,25 @@ impl DocumentViewerState {
         let (margin_x, margin_y) = self.pan_margin();
         let finite = |value: f32| if value.is_finite() { value } else { 0. };
         let (mut scroll_x, mut scroll_y) = (finite(scroll_x), finite(scroll_y));
-        if let Some(plan) = self.plan.as_ref().filter(|plan| !plan.page_layouts.is_empty()) {
+        if let Some(plan) = self
+            .plan
+            .as_ref()
+            .filter(|plan| !plan.page_layouts.is_empty())
+        {
             // Stop while PAN_KEEP_VISIBLE_PX of the pages is still in view.
             let pages = plan.page_layouts.iter().map(|layout| layout.logical_rect);
-            let left = pages.clone().map(|rect| rect.x).fold(f32::INFINITY, f32::min);
-            let top = pages.clone().map(|rect| rect.y).fold(f32::INFINITY, f32::min);
-            let right = pages.clone().map(|rect| rect.x + rect.width).fold(0., f32::max);
+            let left = pages
+                .clone()
+                .map(|rect| rect.x)
+                .fold(f32::INFINITY, f32::min);
+            let top = pages
+                .clone()
+                .map(|rect| rect.y)
+                .fold(f32::INFINITY, f32::min);
+            let right = pages
+                .clone()
+                .map(|rect| rect.x + rect.width)
+                .fold(0., f32::max);
             let bottom = pages.map(|rect| rect.y + rect.height).fold(0., f32::max);
             let range = |value: f32, start: f32, end: f32, viewport: f32| {
                 let low = start - (viewport - PAN_KEEP_VISIBLE_PX).max(0.);

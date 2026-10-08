@@ -20,12 +20,25 @@ pub fn extract_tar_gz(bytes: &[u8], destination: &Path) -> Result {
     for entry in archive.entries().map_err(|error| error.to_string())? {
         let mut entry = entry.map_err(|error| error.to_string())?;
         let kind = entry.header().entry_type();
-        if !(kind.is_file() || kind.is_dir() || kind.is_pax_global_extensions() || kind.is_pax_local_extensions()) {
-            return Err(format!("archive member has unsupported type: {:?}", entry.path()));
+        if !(kind.is_file()
+            || kind.is_dir()
+            || kind.is_pax_global_extensions()
+            || kind.is_pax_local_extensions())
+        {
+            return Err(format!(
+                "archive member has unsupported type: {:?}",
+                entry.path()
+            ));
         }
         // `unpack_in` refuses absolute paths and `..` components.
-        if !entry.unpack_in(destination).map_err(|error| error.to_string())? {
-            return Err(format!("archive member escapes the destination: {:?}", entry.path()));
+        if !entry
+            .unpack_in(destination)
+            .map_err(|error| error.to_string())?
+        {
+            return Err(format!(
+                "archive member escapes the destination: {:?}",
+                entry.path()
+            ));
         }
     }
     Ok(())
@@ -56,8 +69,14 @@ fn tar_bytes(root: Option<&str>, entries: &mut [Entry]) -> Result<Vec<u8>> {
             Some(root) => format!("{root}/{}", entry.path),
             None => entry.path.clone(),
         };
-        let mut file = header(entry.bytes.len() as u64, entry.mode, tar::EntryType::Regular);
-        builder.append_data(&mut file, path, entry.bytes.as_slice()).map_err(|error| error.to_string())?;
+        let mut file = header(
+            entry.bytes.len() as u64,
+            entry.mode,
+            tar::EntryType::Regular,
+        );
+        builder
+            .append_data(&mut file, path, entry.bytes.as_slice())
+            .map_err(|error| error.to_string())?;
     }
     builder.into_inner().map_err(|error| error.to_string())
 }
@@ -83,8 +102,16 @@ pub fn tar_xz(root: &str, entries: &mut [Entry]) -> Result<Vec<u8>> {
     let mut stdin = child.stdin.take().unwrap();
     let writer = std::thread::spawn(move || std::io::Write::write_all(&mut stdin, &tar));
     let mut compressed = Vec::new();
-    child.stdout.take().unwrap().read_to_end(&mut compressed).map_err(|error| error.to_string())?;
-    writer.join().unwrap().map_err(|error| format!("xz: {error}"))?;
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_end(&mut compressed)
+        .map_err(|error| error.to_string())?;
+    writer
+        .join()
+        .unwrap()
+        .map_err(|error| format!("xz: {error}"))?;
     if !child.wait().map_err(|error| error.to_string())?.success() {
         return Err("xz failed".into());
     }
@@ -99,7 +126,8 @@ pub fn zip(entries: &mut [Entry]) -> Result<Vec<u8>> {
     let mut central = Vec::new();
     for entry in entries.iter() {
         let name = entry.path.as_bytes();
-        let size = u32::try_from(entry.bytes.len()).map_err(|_| format!("{} is too large for zip", entry.path))?;
+        let size = u32::try_from(entry.bytes.len())
+            .map_err(|_| format!("{} is too large for zip", entry.path))?;
         let crc = {
             let mut crc = flate2::Crc::new();
             crc.update(&entry.bytes);
@@ -153,26 +181,41 @@ mod tests {
 
     fn entries() -> Vec<Entry> {
         vec![
-            Entry { path: "b.txt".into(), bytes: b"bee\n".to_vec(), mode: 0o644 },
-            Entry { path: "a.exe".into(), bytes: b"MZ".to_vec(), mode: 0o755 },
+            Entry {
+                path: "b.txt".into(),
+                bytes: b"bee\n".to_vec(),
+                mode: 0o644,
+            },
+            Entry {
+                path: "a.exe".into(),
+                bytes: b"MZ".to_vec(),
+                mode: 0o755,
+            },
         ]
     }
 
     #[test]
     fn archives_are_reproducible_and_sorted() {
         assert_eq!(zip(&mut entries()).unwrap(), zip(&mut entries()).unwrap());
-        assert_eq!(tar_gz(&mut entries()).unwrap(), tar_gz(&mut entries()).unwrap());
+        assert_eq!(
+            tar_gz(&mut entries()).unwrap(),
+            tar_gz(&mut entries()).unwrap()
+        );
         let zip = zip(&mut entries()).unwrap();
         let a = zip.windows(5).position(|w| w == b"a.exe").unwrap();
         let b = zip.windows(5).position(|w| w == b"b.txt").unwrap();
         assert!(a < b);
-        assert_eq!(&zip[zip.len() - 22..zip.len() - 18], &0x0605_4b50u32.to_le_bytes());
+        assert_eq!(
+            &zip[zip.len() - 22..zip.len() - 18],
+            &0x0605_4b50u32.to_le_bytes()
+        );
     }
 
     #[test]
     fn tar_gz_round_trips_and_extraction_stays_inside_the_destination() {
         let bytes = tar_gz(&mut entries()).unwrap();
-        let directory = std::env::temp_dir().join(format!("bp-xtask-archive-{}", std::process::id()));
+        let directory =
+            std::env::temp_dir().join(format!("bp-xtask-archive-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).unwrap();
         extract_tar_gz(&bytes, &directory).unwrap();

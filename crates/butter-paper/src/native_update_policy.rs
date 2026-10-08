@@ -192,7 +192,11 @@ pub fn format_canonical_utc_timestamp(time: std::time::SystemTime) -> String {
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let shifted_month = (5 * day_of_year + 2) / 153;
     let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
-    let month = if shifted_month < 10 { shifted_month + 3 } else { shifted_month - 9 };
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
     let year = year_of_era + era * 400 + i64::from(month <= 2);
     format!(
         "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
@@ -307,12 +311,26 @@ mod tests {
     #[test]
     fn formatted_timestamps_are_canonical_and_round_trip() {
         use std::time::{Duration, UNIX_EPOCH};
-        let epoch = parse_canonical_utc_timestamp(&format_canonical_utc_timestamp(UNIX_EPOCH)).unwrap();
-        assert_eq!(format_canonical_utc_timestamp(UNIX_EPOCH), "1970-01-01T00:00:00.000Z");
-        for offset_ms in [1_u64, 86_399_999, 951_782_400_000, 4_102_444_800_123, 1_759_316_096_789] {
+        let epoch =
+            parse_canonical_utc_timestamp(&format_canonical_utc_timestamp(UNIX_EPOCH)).unwrap();
+        assert_eq!(
+            format_canonical_utc_timestamp(UNIX_EPOCH),
+            "1970-01-01T00:00:00.000Z"
+        );
+        for offset_ms in [
+            1_u64,
+            86_399_999,
+            951_782_400_000,
+            4_102_444_800_123,
+            1_759_316_096_789,
+        ] {
             let time = UNIX_EPOCH + Duration::from_millis(offset_ms);
             let text = format_canonical_utc_timestamp(time);
-            assert_eq!(parse_canonical_utc_timestamp(&text).unwrap() - epoch, offset_ms as i64, "{text}");
+            assert_eq!(
+                parse_canonical_utc_timestamp(&text).unwrap() - epoch,
+                offset_ms as i64,
+                "{text}"
+            );
         }
         assert_eq!(
             format_canonical_utc_timestamp(UNIX_EPOCH + Duration::from_millis(951_782_400_000)),

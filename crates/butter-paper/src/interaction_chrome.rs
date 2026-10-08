@@ -109,8 +109,7 @@ pub(super) fn chrome_style(state: ChromeState) -> ChromeStyle {
 
 /// Closed selection bounds sit this far outside the item, so the dashes and
 /// halo never cover the item's own outline.
-pub(super) const SELECTION_OUTSET_PX: f32 =
-    crate::annotation_model::SELECTION_OUTSET_CSS_PX as f32;
+pub(super) const SELECTION_OUTSET_PX: f32 = crate::annotation_model::SELECTION_OUTSET_CSS_PX as f32;
 
 /// Paint a screen-space control polygon or rectangle with the reference halo and dash roles.
 /// Closed bounds are drawn [`SELECTION_OUTSET_PX`] outside the given outline.
@@ -157,7 +156,11 @@ fn outset_polygon(points: &[Point<Pixels>], distance: f32) -> Vec<Point<Pixels>>
             return None;
         }
         let (nx, ny) = (dy / length, -dx / length);
-        Some(if signed_area > 0. { (nx, ny) } else { (-nx, -ny) })
+        Some(if signed_area > 0. {
+            (nx, ny)
+        } else {
+            (-nx, -ny)
+        })
     };
     (0..count)
         .map(|index| {
@@ -495,7 +498,11 @@ mod tests {
         reversed.reverse();
         let mut reversed_expected = expected;
         reversed_expected.reverse();
-        assert_eq!(outset_polygon(&reversed, 6.), reversed_expected, "either winding grows outward");
+        assert_eq!(
+            outset_polygon(&reversed, 6.),
+            reversed_expected,
+            "either winding grows outward"
+        );
         let diamond = [
             gpui::point(px(20.), px(0.)),
             gpui::point(px(40.), px(20.)),

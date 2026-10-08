@@ -1186,8 +1186,10 @@ mod raster_colour_tests {
         let library = std::path::PathBuf::from(
             std::env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY names libpdfium"),
         );
-        let surfaces = std::env::temp_dir()
-            .join(format!("bp-vector-snapshot-surfaces-{}", std::process::id()));
+        let surfaces = std::env::temp_dir().join(format!(
+            "bp-vector-snapshot-surfaces-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&surfaces).unwrap();
         let backend = PdfiumWorkerBackend::new(worker, library, surfaces.clone());
         let opened = backend
@@ -1206,10 +1208,17 @@ mod raster_colour_tests {
             })
             .expect("Revu's vector Snapshot imports as a Snapshot");
         let asset = snapshot.asset();
-        assert!(asset.width_px() > 100 && asset.height_px() > 100, "{asset:?}");
+        assert!(
+            asset.width_px() > 100 && asset.height_px() > 100,
+            "{asset:?}"
+        );
         let pixels = asset.rgba().chunks_exact(4).collect::<Vec<_>>();
         // Revu snapshotted a red Area markup: red strokes on a clear ground.
-        assert!(pixels.iter().any(|pixel| pixel[0] > 200 && pixel[1] < 80 && pixel[2] < 80 && pixel[3] > 200));
+        assert!(
+            pixels
+                .iter()
+                .any(|pixel| pixel[0] > 200 && pixel[1] < 80 && pixel[2] < 80 && pixel[3] > 200)
+        );
         assert!(pixels.iter().any(|pixel| pixel[3] == 0));
         opened.resource.close().unwrap();
         std::fs::remove_dir_all(&surfaces).ok();

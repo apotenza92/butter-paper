@@ -27,11 +27,16 @@ fn tabs_are_listed_without_extensions_active_first_then_in_tab_order() {
 
 #[test]
 fn long_tab_lists_end_with_the_count_left_out() {
-    let names = (0..30).map(|index| format!("Site plan {index}.pdf")).collect::<Vec<_>>();
+    let names = (0..30)
+        .map(|index| format!("Site plan {index}.pdf"))
+        .collect::<Vec<_>>();
     let names = names.iter().map(String::as_str).collect::<Vec<_>>();
     let title = format_window_title(&names, Some(0));
     assert!(title.starts_with("Site plan 0 | Site plan 1 | "));
-    assert!(title.chars().count() <= WINDOW_TITLE_MAX_CHARS + 6, "{title}");
+    assert!(
+        title.chars().count() <= WINDOW_TITLE_MAX_CHARS + 6,
+        "{title}"
+    );
     let shown = title.matches("Site plan").count();
     assert!(title.ends_with(&format!(" | +{}", 30 - shown)), "{title}");
 }

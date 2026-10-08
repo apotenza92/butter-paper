@@ -173,7 +173,9 @@ impl UpdateTarget {
         let arm = cfg!(target_arch = "aarch64");
         let x64 = cfg!(target_arch = "x86_64");
         if cfg!(target_os = "macos") {
-            return arm.then_some(Self::MacosArm64).or(x64.then_some(Self::MacosX64));
+            return arm
+                .then_some(Self::MacosArm64)
+                .or(x64.then_some(Self::MacosX64));
         }
         if cfg!(target_os = "windows") {
             return arm
@@ -181,7 +183,9 @@ impl UpdateTarget {
                 .or(x64.then_some(Self::WindowsX64));
         }
         if cfg!(target_os = "linux") {
-            return arm.then_some(Self::LinuxArm64).or(x64.then_some(Self::LinuxX64));
+            return arm
+                .then_some(Self::LinuxArm64)
+                .or(x64.then_some(Self::LinuxX64));
         }
         None
     }
@@ -336,7 +340,13 @@ fn installable(
     target: UpdateTarget,
     identity: PackageIdentity,
 ) -> Option<AvailableUpdate> {
-    let find = |name: &str| release.assets.iter().find(|asset| asset.name == name).cloned();
+    let find = |name: &str| {
+        release
+            .assets
+            .iter()
+            .find(|asset| asset.name == name)
+            .cloned()
+    };
     let package = find(&target.asset_name(identity))?;
     let checksums = find(CHECKSUMS_ASSET_NAME)?;
     let tag_prefix = format!("{RELEASE_DOWNLOAD_PREFIX}v{}/", release.version);
@@ -387,7 +397,9 @@ fn get_bounded(
         .read_to_end(&mut bytes)
         .map_err(|_| UpdateError::new("The update download was interrupted."))?;
     if bytes.len() as u64 > limit {
-        return Err(UpdateError::new("The update response was unexpectedly large."));
+        return Err(UpdateError::new(
+            "The update response was unexpectedly large.",
+        ));
     }
     Ok(bytes)
 }
@@ -459,7 +471,9 @@ pub fn write_verified(
         .map_err(|_| UpdateError::new("The update could not be saved."))?;
     let actual = hex(&hasher.finalize());
     if received != size || actual != expected_sha256.to_ascii_lowercase() {
-        return Err(UpdateError::new("The download did not match the published release."));
+        return Err(UpdateError::new(
+            "The download did not match the published release.",
+        ));
     }
     Ok(())
 }
@@ -474,7 +488,11 @@ pub enum Installation {
     /// `…/Butter Paper.app`, whose parent directory receives the new bundle.
     Macos { bundle: PathBuf },
     /// `%LOCALAPPDATA%\Programs\Butter Paper\<version>\<arch>`.
-    Windows { root: PathBuf, version: String, architecture: String },
+    Windows {
+        root: PathBuf,
+        version: String,
+        architecture: String,
+    },
     /// `$XDG_DATA_HOME/butter-paper/<version>`.
     Linux { root: PathBuf, version: String },
 }
@@ -488,7 +506,9 @@ pub fn current_installation(executable: &Path, version: ReleaseVersion) -> Optio
         let bundle = contents.parent()?;
         let is_bundle = parent.file_name()? == "MacOS"
             && contents.file_name()? == "Contents"
-            && bundle.extension().is_some_and(|extension| extension == "app");
+            && bundle
+                .extension()
+                .is_some_and(|extension| extension == "app");
         return is_bundle.then(|| Installation::Macos {
             bundle: bundle.to_path_buf(),
         });
@@ -581,7 +601,9 @@ pub fn prepare_update(
 ) -> Result<PreparedUpdate, UpdateError> {
     let handover = match installation {
         Installation::Macos { bundle } => prepare_macos(update, package, work_directory, bundle)?,
-        Installation::Windows { root, .. } => prepare_windows(update, package, work_directory, root)?,
+        Installation::Windows { root, .. } => {
+            prepare_windows(update, package, work_directory, root)?
+        }
         Installation::Linux { root, .. } => prepare_linux(update, package, work_directory, root)?,
     };
     Ok(PreparedUpdate {
@@ -601,7 +623,10 @@ fn prepare_macos(
     fs::create_dir_all(&extracted)
         .map_err(|_| UpdateError::new("The update could not be unpacked."))?;
     run(
-        Command::new("/usr/bin/ditto").args(["-x", "-k"]).arg(package).arg(&extracted),
+        Command::new("/usr/bin/ditto")
+            .args(["-x", "-k"])
+            .arg(package)
+            .arg(&extracted),
         "The update could not be unpacked.",
     )?;
     let downloaded = extracted.join(update.identity.macos_bundle_name());
@@ -630,7 +655,9 @@ fn prepare_macos(
     if plist_value("CFBundleShortVersionString") != Some(update.version.core())
         || plist_value("CFBundleVersion") != Some(update.version.build_number().to_string())
     {
-        return Err(UpdateError::new("The downloaded app is not the expected version."));
+        return Err(UpdateError::new(
+            "The downloaded app is not the expected version.",
+        ));
     }
     // Stage beside the installed app so the final swap is a same-volume rename.
     let parent = bundle
@@ -686,13 +713,21 @@ fn prepare_windows(
     if !new_root.join("butter-paper.exe").is_file() {
         run(
             Command::new("powershell.exe")
-                .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                ])
                 .arg(&install),
             "The new version could not be installed.",
         )?;
     }
     if !new_root.join("butter-paper.exe").is_file() {
-        return Err(UpdateError::new("The new version did not install where expected."));
+        return Err(UpdateError::new(
+            "The new version did not install where expected.",
+        ));
     }
     let _ = fs::remove_file(package);
     Ok(Handover::Windows {
@@ -708,7 +743,11 @@ fn prepare_linux(
     old_root: &Path,
 ) -> Result<Handover, UpdateError> {
     run(
-        Command::new("tar").arg("-xJf").arg(package).arg("-C").arg(work_directory),
+        Command::new("tar")
+            .arg("-xJf")
+            .arg(package)
+            .arg("-C")
+            .arg(work_directory),
         "The update could not be unpacked.",
     )?;
     let directory = format!(
@@ -748,13 +787,33 @@ impl PreparedUpdate {
     pub fn handover_script(&self, process_id: u32, relaunch: bool) -> String {
         let work = &self.work_directory;
         match &self.handover {
-            Handover::Macos { staged, destination, retired } => {
-                macos_script(process_id, relaunch, work, staged, destination, retired.as_deref())
+            Handover::Macos {
+                staged,
+                destination,
+                retired,
+            } => macos_script(
+                process_id,
+                relaunch,
+                work,
+                staged,
+                destination,
+                retired.as_deref(),
+            ),
+            Handover::Windows { old_root, new_root } => {
+                windows_script(process_id, relaunch, work, old_root, new_root)
             }
-            Handover::Windows { old_root, new_root } => windows_script(process_id, relaunch, work, old_root, new_root),
-            Handover::Linux { old_root, package, new_executable } => {
-                linux_script(process_id, relaunch, work, old_root, package, new_executable)
-            }
+            Handover::Linux {
+                old_root,
+                package,
+                new_executable,
+            } => linux_script(
+                process_id,
+                relaunch,
+                work,
+                old_root,
+                package,
+                new_executable,
+            ),
         }
     }
 
@@ -779,7 +838,15 @@ impl PreparedUpdate {
 fn windows_script_command(script: &Path) -> Command {
     let mut command = Command::new("powershell.exe");
     command
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File"])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-File",
+        ])
         .arg(script);
     command
 }
@@ -892,7 +959,13 @@ rm -rf "$work"
     )
 }
 
-fn windows_script(pid: u32, relaunch: bool, work: &Path, old_root: &Path, new_root: &Path) -> String {
+fn windows_script(
+    pid: u32,
+    relaunch: bool,
+    work: &Path,
+    old_root: &Path,
+    new_root: &Path,
+) -> String {
     format!(
         r#"# Completes a Butter Paper update once the running app has exited.
 $ErrorActionPreference = 'Continue'
@@ -965,8 +1038,14 @@ mod tests {
 
     #[test]
     fn versions_parse_and_order_numerically() {
-        assert_eq!(ReleaseVersion::parse("v0.0.31"), Some(ReleaseVersion::stable(0, 0, 31)));
-        assert_eq!(ReleaseVersion::parse("1.2.3"), Some(ReleaseVersion::stable(1, 2, 3)));
+        assert_eq!(
+            ReleaseVersion::parse("v0.0.31"),
+            Some(ReleaseVersion::stable(0, 0, 31))
+        );
+        assert_eq!(
+            ReleaseVersion::parse("1.2.3"),
+            Some(ReleaseVersion::stable(1, 2, 3))
+        );
         assert!(ReleaseVersion::parse("0.0.31-beta").is_none());
         assert!(ReleaseVersion::parse("0.0.31-beta.0").is_none());
         assert!(ReleaseVersion::parse("0.0.31-beta.01").is_none());
@@ -993,7 +1072,10 @@ mod tests {
         assert_eq!(beta.core(), "0.1.1");
         assert_eq!(beta.build_number(), 100_100_002);
         assert!(beta.build_number() < ReleaseVersion::stable(0, 1, 1).build_number());
-        assert_eq!(ReleaseVersion::stable(1, 2, 3).build_number(), 100_200_390_000);
+        assert_eq!(
+            ReleaseVersion::stable(1, 2, 3).build_number(),
+            100_200_390_000
+        );
     }
 
     #[test]
@@ -1006,8 +1088,14 @@ mod tests {
         ]"#;
         let releases = parse_releases(feed).unwrap();
         assert_eq!(
-            releases.iter().map(|release| (release.version, release.prerelease)).collect::<Vec<_>>(),
-            [(ReleaseVersion::stable(0, 0, 32), true), (ReleaseVersion::stable(0, 0, 31), false)]
+            releases
+                .iter()
+                .map(|release| (release.version, release.prerelease))
+                .collect::<Vec<_>>(),
+            [
+                (ReleaseVersion::stable(0, 0, 32), true),
+                (ReleaseVersion::stable(0, 0, 31), false)
+            ]
         );
         assert!(parse_releases(b"not json").is_err());
         // Beta tags as Butter Paper's other apps and the Homebrew tap name
@@ -1018,8 +1106,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            betas.iter().map(|release| (release.version, release.prerelease)).collect::<Vec<_>>(),
-            [(ReleaseVersion::beta(0, 0, 33, 1), true), (ReleaseVersion::beta(0, 0, 33, 2), true)]
+            betas
+                .iter()
+                .map(|release| (release.version, release.prerelease))
+                .collect::<Vec<_>>(),
+            [
+                (ReleaseVersion::beta(0, 0, 33, 1), true),
+                (ReleaseVersion::beta(0, 0, 33, 2), true)
+            ]
         );
     }
 
@@ -1046,7 +1140,10 @@ mod tests {
             release("v0.0.31", false, &stable),
         ];
         let update = select_update(CURRENT, UpdateChannel::Stable, &releases, MAC).unwrap();
-        assert_eq!((update.version, update.identity), (ReleaseVersion::stable(0, 0, 32), PackageIdentity::Stable));
+        assert_eq!(
+            (update.version, update.identity),
+            (ReleaseVersion::stable(0, 0, 32), PackageIdentity::Stable)
+        );
         assert!(select_update(CURRENT, UpdateChannel::Stable, &releases[3..], MAC).is_none());
     }
 
@@ -1058,26 +1155,52 @@ mod tests {
         let update = select_update(
             CURRENT,
             UpdateChannel::Beta,
-            &[release("v0.0.33", true, &beta), release("v0.0.32", false, &stable)],
+            &[
+                release("v0.0.33", true, &beta),
+                release("v0.0.32", false, &stable),
+            ],
             MAC,
         )
         .unwrap();
-        assert_eq!((update.version, update.identity), (ReleaseVersion::stable(0, 0, 33), PackageIdentity::Beta));
+        assert_eq!(
+            (update.version, update.identity),
+            (ReleaseVersion::stable(0, 0, 33), PackageIdentity::Beta)
+        );
         // A stable release newer than the betas moves the copy to stable.
         let update = select_update(
             CURRENT,
             UpdateChannel::Beta,
-            &[release("v0.0.32", true, &beta), release("v0.0.34", false, &stable)],
+            &[
+                release("v0.0.32", true, &beta),
+                release("v0.0.34", false, &stable),
+            ],
             MAC,
         )
         .unwrap();
-        assert_eq!((update.version, update.identity), (ReleaseVersion::stable(0, 0, 34), PackageIdentity::Stable));
+        assert_eq!(
+            (update.version, update.identity),
+            (ReleaseVersion::stable(0, 0, 34), PackageIdentity::Stable)
+        );
         // A stable release that also ships a beta package keeps the beta identity.
         let both = assets(MAC, &[PackageIdentity::Stable, PackageIdentity::Beta]);
-        let update = select_update(CURRENT, UpdateChannel::Beta, &[release("v0.0.34", false, &both)], MAC).unwrap();
+        let update = select_update(
+            CURRENT,
+            UpdateChannel::Beta,
+            &[release("v0.0.34", false, &both)],
+            MAC,
+        )
+        .unwrap();
         assert_eq!(update.identity, PackageIdentity::Beta);
         // A prerelease with only a stable package is not offered to anyone.
-        assert!(select_update(CURRENT, UpdateChannel::Beta, &[release("v0.0.35", true, &stable)], MAC).is_none());
+        assert!(
+            select_update(
+                CURRENT,
+                UpdateChannel::Beta,
+                &[release("v0.0.35", true, &stable)],
+                MAC
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -1093,11 +1216,29 @@ mod tests {
 
     #[test]
     fn package_names_and_signing_requirements_follow_identity() {
-        assert_eq!(UpdateTarget::LinuxX64.asset_name(PackageIdentity::Stable), "Butter-Paper-Linux-x64.tar.xz");
-        assert_eq!(UpdateTarget::WindowsArm64.asset_name(PackageIdentity::Beta), "Butter-Paper-Beta-Windows-arm64.zip");
-        assert!(PackageIdentity::Beta.macos_designated_requirement().contains("\"com.butterpaper.desktop.beta\""));
-        assert!(PackageIdentity::Stable.macos_designated_requirement().contains("\"com.butterpaper.desktop\" and"));
-        assert!(PackageIdentity::Stable.macos_designated_requirement().contains("\"27JL2VERNC\""));
+        assert_eq!(
+            UpdateTarget::LinuxX64.asset_name(PackageIdentity::Stable),
+            "Butter-Paper-Linux-x64.tar.xz"
+        );
+        assert_eq!(
+            UpdateTarget::WindowsArm64.asset_name(PackageIdentity::Beta),
+            "Butter-Paper-Beta-Windows-arm64.zip"
+        );
+        assert!(
+            PackageIdentity::Beta
+                .macos_designated_requirement()
+                .contains("\"com.butterpaper.desktop.beta\"")
+        );
+        assert!(
+            PackageIdentity::Stable
+                .macos_designated_requirement()
+                .contains("\"com.butterpaper.desktop\" and")
+        );
+        assert!(
+            PackageIdentity::Stable
+                .macos_designated_requirement()
+                .contains("\"27JL2VERNC\"")
+        );
     }
 
     #[test]
@@ -1111,7 +1252,15 @@ mod tests {
         write_verified(&bytes[..], &good, bytes.len() as u64, &hash).unwrap();
         assert_eq!(fs::read(&good).unwrap(), bytes);
         assert!(write_verified(&bytes[..], &directory.join("long"), 4, &hash).is_err());
-        assert!(write_verified(&bytes[..], &directory.join("hash"), bytes.len() as u64, &"0".repeat(64)).is_err());
+        assert!(
+            write_verified(
+                &bytes[..],
+                &directory.join("hash"),
+                bytes.len() as u64,
+                &"0".repeat(64)
+            )
+            .is_err()
+        );
         // Never overwrites an existing file.
         assert!(write_verified(&bytes[..], &good, bytes.len() as u64, &hash).is_err());
         fs::remove_dir_all(&directory).unwrap();
@@ -1134,8 +1283,12 @@ mod tests {
         assert!(script.contains("/usr/bin/open -n \"$destination\""));
         let windows = PreparedUpdate {
             handover: Handover::Windows {
-                old_root: PathBuf::from(r"C:\Users\a\AppData\Local\Programs\Butter Paper\0.0.31\arm64"),
-                new_root: PathBuf::from(r"C:\Users\a\AppData\Local\Programs\Butter Paper\0.0.32\arm64"),
+                old_root: PathBuf::from(
+                    r"C:\Users\a\AppData\Local\Programs\Butter Paper\0.0.31\arm64",
+                ),
+                new_root: PathBuf::from(
+                    r"C:\Users\a\AppData\Local\Programs\Butter Paper\0.0.32\arm64",
+                ),
             },
             ..prepared.clone()
         }
@@ -1154,7 +1307,11 @@ mod tests {
         let work = root.join("work");
         fs::create_dir_all(applications.join("Butter Paper Beta.app")).unwrap();
         fs::create_dir_all(applications.join(".Butter Paper 0.0.32 update.app")).unwrap();
-        fs::write(applications.join(".Butter Paper 0.0.32 update.app/new"), b"").unwrap();
+        fs::write(
+            applications.join(".Butter Paper 0.0.32 update.app/new"),
+            b"",
+        )
+        .unwrap();
         fs::create_dir_all(&work).unwrap();
         let prepared = PreparedUpdate {
             version: ReleaseVersion::stable(0, 0, 32),
@@ -1167,11 +1324,19 @@ mod tests {
         };
         // An already-exited process id, and no relaunch.
         let script = prepared.handover_script(999_999, false);
-        let status = Command::new("/bin/sh").arg("-c").arg(script).status().unwrap();
+        let status = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .status()
+            .unwrap();
         assert!(status.success());
         assert!(applications.join("Butter Paper.app/new").is_file());
         assert!(!applications.join("Butter Paper Beta.app").exists());
-        assert!(!applications.join(".Butter Paper 0.0.32 update.app").exists());
+        assert!(
+            !applications
+                .join(".Butter Paper 0.0.32 update.app")
+                .exists()
+        );
         assert!(!work.exists());
         fs::remove_dir_all(&root).unwrap();
     }
@@ -1189,7 +1354,10 @@ mod tests {
         let script = root.join("handover.ps1");
         fs::write(
             &script,
-            format!("Set-Content -LiteralPath {} -Value $PID", powershell_literal(&marker)),
+            format!(
+                "Set-Content -LiteralPath {} -Value $PID",
+                powershell_literal(&marker)
+            ),
         )
         .unwrap();
         spawn_outliving(&mut windows_script_command(&script)).unwrap();
@@ -1210,8 +1378,13 @@ mod tests {
     fn real_release_updates_a_stand_in_install() {
         let target = UpdateTarget::current().unwrap();
         let releases = fetch_releases(RELEASE_FEED_URL).unwrap();
-        let update = select_update(ReleaseVersion::stable(0, 0, 25), UpdateChannel::Stable, &releases, target)
-            .expect("a newer stable macOS release is published");
+        let update = select_update(
+            ReleaseVersion::stable(0, 0, 25),
+            UpdateChannel::Stable,
+            &releases,
+            target,
+        )
+        .expect("a newer stable macOS release is published");
         let root = std::env::temp_dir().join(format!("bp-real-update-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let applications = root.join("Applications");
@@ -1220,8 +1393,15 @@ mod tests {
         let work = root.join("work");
         fs::create_dir_all(&work).unwrap();
         let package = download_update(&update, &work).unwrap();
-        let prepared = prepare_update(&update, &package, &work, &Installation::Macos { bundle: bundle.clone() })
-            .unwrap();
+        let prepared = prepare_update(
+            &update,
+            &package,
+            &work,
+            &Installation::Macos {
+                bundle: bundle.clone(),
+            },
+        )
+        .unwrap();
         let status = Command::new("/bin/sh")
             .arg("-c")
             .arg(prepared.handover_script(999_999, false))
@@ -1233,7 +1413,10 @@ mod tests {
             .arg(bundle.join("Contents/Info.plist"))
             .output()
             .unwrap();
-        assert_eq!(String::from_utf8_lossy(&version.stdout).trim(), update.version.to_string());
+        assert_eq!(
+            String::from_utf8_lossy(&version.stdout).trim(),
+            update.version.to_string()
+        );
         let verified = Command::new("/usr/bin/codesign")
             .args(["--verify", "--deep", "--strict", "-R"])
             .arg(PackageIdentity::Stable.macos_designated_requirement())
@@ -1254,10 +1437,16 @@ mod tests {
     fn real_release_updates_and_rolls_back_a_stand_in_linux_install() {
         let target = UpdateTarget::current().unwrap();
         let releases = fetch_releases(RELEASE_FEED_URL).unwrap();
-        let update = select_update(ReleaseVersion::stable(0, 0, 25), UpdateChannel::Stable, &releases, target)
-            .expect("a newer stable Linux release is published");
+        let update = select_update(
+            ReleaseVersion::stable(0, 0, 25),
+            UpdateChannel::Stable,
+            &releases,
+            target,
+        )
+        .expect("a newer stable Linux release is published");
         let new = update.version.to_string();
-        let old = ReleaseVersion(update.version.0, update.version.1, update.version.2 - 1).to_string();
+        let old =
+            ReleaseVersion(update.version.0, update.version.1, update.version.2 - 1).to_string();
         let root = std::env::temp_dir().join(format!("bp-linux-update-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let home = root.join("home");
@@ -1286,7 +1475,10 @@ mod tests {
         )));
         let old_root = data.join("butter-paper").join(&old);
         assert!(old_root.join("butter-paper").is_file());
-        let installation = Installation::Linux { root: old_root.clone(), version: old.clone() };
+        let installation = Installation::Linux {
+            root: old_root.clone(),
+            version: old.clone(),
+        };
         let prepared = prepare_update(&update, &package, &work, &installation).unwrap();
         assert!(sh(&prepared.handover_script(999_999, false)));
         let new_root = data.join("butter-paper").join(&new);
@@ -1311,7 +1503,10 @@ mod tests {
             },
         };
         sh(&broken.handover_script(999_999, false));
-        assert!(new_root.join("butter-paper").is_file(), "the previous version was restored");
+        assert!(
+            new_root.join("butter-paper").is_file(),
+            "the previous version was restored"
+        );
         let launcher = fs::read_to_string(home.join(".local/bin/butter-paper")).unwrap();
         assert!(launcher.contains(&format!("/{new}/")));
         fs::remove_dir_all(&root).unwrap();

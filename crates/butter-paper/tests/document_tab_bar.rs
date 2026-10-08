@@ -373,7 +373,10 @@ fn reusable_template_split_emits_semantic_creation_without_owning_document_tabs(
     assert_eq!(primary.right(), picker.left(), "split halves must touch");
     assert_eq!(primary.top(), picker.top());
     assert_eq!(primary.size.height, picker.size.height);
-    assert!(picker.size.width >= px(24.), "retain a stock clickable caret");
+    assert!(
+        picker.size.width >= px(24.),
+        "retain a stock clickable caret"
+    );
 
     assert!(
         cx.debug_bounds(TEMPLATE_SAVE_DOCUMENT_ID).is_none(),

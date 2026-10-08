@@ -24,8 +24,12 @@ pub fn zoom_anchor_at(
     let content = (scroll.0 + viewport_point.0, scroll.1 + viewport_point.1);
     let distance = |layout: &PageLayout| {
         let rect = layout.logical_rect;
-        let dx = (rect.x - content.0).max(content.0 - (rect.x + rect.width)).max(0.);
-        let dy = (rect.y - content.1).max(content.1 - (rect.y + rect.height)).max(0.);
+        let dx = (rect.x - content.0)
+            .max(content.0 - (rect.x + rect.width))
+            .max(0.);
+        let dy = (rect.y - content.1)
+            .max(content.1 - (rect.y + rect.height))
+            .max(0.);
         dx * dx + dy * dy
     };
     let layout = layouts
@@ -54,7 +58,10 @@ pub fn anchored_scroll(
     viewport_size: (f32, f32),
     pan_margin: (f32, f32),
 ) -> Option<(f32, f32)> {
-    let rect = layouts.iter().find(|layout| layout.page == anchor.page)?.logical_rect;
+    let rect = layouts
+        .iter()
+        .find(|layout| layout.page == anchor.page)?
+        .logical_rect;
     let point = (
         rect.x + anchor.page_fraction.0 * rect.width,
         rect.y + anchor.page_fraction.1 * rect.height,
@@ -77,7 +84,12 @@ mod tests {
     fn page(page: usize, x: f32, y: f32, width: f32, height: f32) -> PageLayout {
         PageLayout {
             page,
-            logical_rect: Rect { x, y, width, height },
+            logical_rect: Rect {
+                x,
+                y,
+                width,
+                height,
+            },
             device_width: width as usize,
             device_height: height as usize,
             column_index: 0,
@@ -88,14 +100,21 @@ mod tests {
     #[test]
     fn keeps_the_pointed_page_point_under_the_pointer_across_zoom() {
         // 100% zoom: two 600x800 pages centred in a 1000px-wide canvas with a 20px gap.
-        let before = [page(0, 200., 20., 600., 800.), page(1, 200., 840., 600., 800.)];
+        let before = [
+            page(0, 200., 20., 600., 800.),
+            page(1, 200., 840., 600., 800.),
+        ];
         let anchor = zoom_anchor_at(&before, (0., 500.), (350., 450.)).unwrap();
         assert_eq!(anchor.page, 1);
         assert_eq!(anchor.page_fraction, (0.25, 0.1375));
 
         // 200%: pages double but gaps and centring do not.
-        let after = [page(0, 20., 20., 1200., 1600.), page(1, 20., 1640., 1200., 1600.)];
-        let scroll = anchored_scroll(anchor, &after, (1240., 3260.), (1000., 700.), (0., 0.)).unwrap();
+        let after = [
+            page(0, 20., 20., 1200., 1600.),
+            page(1, 20., 1640., 1200., 1600.),
+        ];
+        let scroll =
+            anchored_scroll(anchor, &after, (1240., 3260.), (1000., 700.), (0., 0.)).unwrap();
         assert_eq!(scroll, (0., 1410.));
         // The page point is back under the pointer.
         assert_eq!(scroll.1 + 450., 1640. + 0.1375 * 1600.);
@@ -107,9 +126,19 @@ mod tests {
         let anchor = zoom_anchor_at(&layouts, (0., 0.), (50., 225.)).unwrap();
         assert_eq!(anchor.page, 1);
         assert_eq!(anchor.page_fraction, (0.5, 1.05));
-        let scroll = anchored_scroll(anchor, &layouts, (100., 220.), (100., 100.), (0., 0.)).unwrap();
+        let scroll =
+            anchored_scroll(anchor, &layouts, (100., 220.), (100., 100.), (0., 0.)).unwrap();
         assert_eq!(scroll, (0., 0.));
-        assert!(anchored_scroll(ZoomAnchor { page: 9, ..anchor }, &layouts, (1., 1.), (1., 1.), (0., 0.)).is_none());
+        assert!(
+            anchored_scroll(
+                ZoomAnchor { page: 9, ..anchor },
+                &layouts,
+                (1., 1.),
+                (1., 1.),
+                (0., 0.)
+            )
+            .is_none()
+        );
         assert!(zoom_anchor_at(&[], (0., 0.), (0., 0.)).is_none());
     }
 
@@ -122,7 +151,8 @@ mod tests {
         // Doubling the page keeps the pointed blank point under the pointer,
         // which needs a scroll left of the page.
         let after = [page(0, 0., 0., 200., 200.)];
-        let scroll = anchored_scroll(anchor, &after, (200., 200.), (800., 600.), (752., 552.)).unwrap();
+        let scroll =
+            anchored_scroll(anchor, &after, (200., 200.), (800., 600.), (752., 552.)).unwrap();
         assert_eq!(scroll, (-550., 50.));
     }
 }

@@ -4,9 +4,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use butter_paper::document_workspace::{
-    DocumentOpenBatchRequest, DocumentOpenOrigin,
-};
+use butter_paper::document_workspace::{DocumentOpenBatchRequest, DocumentOpenOrigin};
 use butter_paper::native_document_view_state::RestartView;
 use butter_paper::native_launch::{
     NativeLaunchAction, NativeLaunchConfig, NativeLaunchError, NativeLaunchSessionSource,
@@ -244,7 +242,10 @@ fn session_manifest_missing_roundtrips_order_and_replaces_atomically() {
         assert_eq!(plans.len(), 1);
         assert_eq!(
             plans[0].clone().into_parts(),
-            (vec![manifest_pdf("First.pdf"), manifest_pdf("second.PDF")], Some(1))
+            (
+                vec![manifest_pdf("First.pdf"), manifest_pdf("second.PDF")],
+                Some(1)
+            )
         );
     }
 
@@ -628,7 +629,11 @@ fn session_manifest_restores_each_saved_window_with_the_active_window_first() {
         Some(0),
     ));
     combined.append(SessionSnapshot::new(Vec::new(), None));
-    assert_eq!(combined.windows().len(), 2, "duplicates and empty windows are dropped");
+    assert_eq!(
+        combined.windows().len(),
+        2,
+        "duplicates and empty windows are dropped"
+    );
     store.replace(&combined).unwrap();
 
     let plans = store.load().unwrap().split_windows();
@@ -638,7 +643,10 @@ fn session_manifest_restores_each_saved_window_with_the_active_window_first() {
             .map(|plan| plan.into_parts())
             .collect::<Vec<_>>(),
         vec![
-            (vec![manifest_pdf("front-a.pdf"), manifest_pdf("front-b.pdf")], Some(1)),
+            (
+                vec![manifest_pdf("front-a.pdf"), manifest_pdf("front-b.pdf")],
+                Some(1)
+            ),
             (vec![manifest_pdf("back.pdf")], Some(0)),
         ]
     );
@@ -648,8 +656,14 @@ fn session_manifest_restores_each_saved_window_with_the_active_window_first() {
     back_active.append(SessionSnapshot::new(vec![manifest_pdf("two.pdf")], Some(0)));
     store.replace(&back_active).unwrap();
     let plans = store.load().unwrap().split_windows();
-    assert_eq!(plans[0].clone().into_parts(), (vec![manifest_pdf("two.pdf")], Some(0)));
-    assert_eq!(plans[1].clone().into_parts(), (vec![manifest_pdf("one.pdf")], None));
+    assert_eq!(
+        plans[0].clone().into_parts(),
+        (vec![manifest_pdf("two.pdf")], Some(0))
+    );
+    assert_eq!(
+        plans[1].clone().into_parts(),
+        (vec![manifest_pdf("one.pdf")], None)
+    );
 }
 
 #[cfg(unix)]
@@ -668,7 +682,9 @@ fn session_manifest_rejects_windows_that_do_not_partition_the_documents() {
     ] {
         std::fs::write(
             root.path().join("session-manifest.json"),
-            format!(r#"{{"version":3,"documents":[{document}],"activeDocument":0,"windows":{windows}}}"#),
+            format!(
+                r#"{{"version":3,"documents":[{document}],"activeDocument":0,"windows":{windows}}}"#
+            ),
         )
         .unwrap();
         assert!(store.load().is_err(), "{windows} must be rejected");
@@ -700,7 +716,10 @@ fn session_manifest_keeps_each_window_position_and_display() {
 
     // Implausible bounds are not recorded.
     let tiny = SessionSnapshot::new(vec![manifest_pdf("a.pdf")], Some(0)).with_window_bounds(Some(
-        SessionWindowBounds { width: 10., ..bounds },
+        SessionWindowBounds {
+            width: 10.,
+            ..bounds
+        },
     ));
     assert_eq!(tiny.windows()[0].bounds(), None);
 }

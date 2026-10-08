@@ -43,7 +43,14 @@ impl CaptionLayout {
             );
             let align_width = Some((self.text_bounds.size.width - self.inset * 2.).max(px(0.)));
             let _ = if self.rotation == 0. {
-                line.paint(origin, self.line_height, self.alignment, align_width, window, cx)
+                line.paint(
+                    origin,
+                    self.line_height,
+                    self.alignment,
+                    align_width,
+                    window,
+                    cx,
+                )
             } else {
                 line.paint_transformed(
                     origin,
@@ -83,7 +90,10 @@ impl CaptionLayout {
         .map(|corner| {
             let dx = corner.x - centre.x;
             let dy = corner.y - centre.y;
-            point(centre.x + dx * cos - dy * sin, centre.y + dx * sin + dy * cos)
+            point(
+                centre.x + dx * cos - dy * sin,
+                centre.y + dx * sin + dy * cos,
+            )
         });
         let Some(pdf_corners) = corners
             .iter()
@@ -96,10 +106,22 @@ impl CaptionLayout {
         else {
             return self;
         };
-        let left = corners.iter().map(|corner| corner.x).fold(corners[0].x, Pixels::min);
-        let right = corners.iter().map(|corner| corner.x).fold(corners[0].x, Pixels::max);
-        let top = corners.iter().map(|corner| corner.y).fold(corners[0].y, Pixels::min);
-        let bottom = corners.iter().map(|corner| corner.y).fold(corners[0].y, Pixels::max);
+        let left = corners
+            .iter()
+            .map(|corner| corner.x)
+            .fold(corners[0].x, Pixels::min);
+        let right = corners
+            .iter()
+            .map(|corner| corner.x)
+            .fold(corners[0].x, Pixels::max);
+        let top = corners
+            .iter()
+            .map(|corner| corner.y)
+            .fold(corners[0].y, Pixels::min);
+        let bottom = corners
+            .iter()
+            .map(|corner| corner.y)
+            .fold(corners[0].y, Pixels::max);
         self.bounds = Bounds::new(point(left, top), size(right - left, bottom - top));
         self.pdf_corners = pdf_corners;
         self.rotation = angle as f32;
@@ -562,10 +584,26 @@ mod tests {
             length.show_caption = true;
             let visible = length_caption(&length, transform, &text_system).unwrap();
             // Centred on the dimension line 10 pt above the points, as in Revu.
-            let min_x = visible.pdf_corners.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
-            let max_x = visible.pdf_corners.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max);
-            let min_y = visible.pdf_corners.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
-            let max_y = visible.pdf_corners.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max);
+            let min_x = visible
+                .pdf_corners
+                .iter()
+                .map(|p| p.x)
+                .fold(f64::INFINITY, f64::min);
+            let max_x = visible
+                .pdf_corners
+                .iter()
+                .map(|p| p.x)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let min_y = visible
+                .pdf_corners
+                .iter()
+                .map(|p| p.y)
+                .fold(f64::INFINITY, f64::min);
+            let max_y = visible
+                .pdf_corners
+                .iter()
+                .map(|p| p.y)
+                .fold(f64::NEG_INFINITY, f64::max);
             assert!(((min_x + max_x) / 2. - 60.).abs() < 0.001);
             assert!(((min_y + max_y) / 2. - 30.).abs() < 0.001);
             assert!(

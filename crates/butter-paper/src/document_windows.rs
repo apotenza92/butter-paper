@@ -98,7 +98,10 @@ impl WindowSessionCoordinator {
         let snapshot = snapshot.with_window_bounds(state.bounds.get(&window_id).cloned());
         if state.quitting {
             state.closed_in_quit.insert(window_id);
-            let mut combined = state.pending.take().unwrap_or_else(|| SessionSnapshot::new(Vec::new(), None));
+            let mut combined = state
+                .pending
+                .take()
+                .unwrap_or_else(|| SessionSnapshot::new(Vec::new(), None));
             combined.append(snapshot);
             if state.open.is_subset(&state.closed_in_quit) {
                 Some(combined)
@@ -166,7 +169,10 @@ mod tests {
         let coordinator = WindowSessionCoordinator::default();
         coordinator.window_opened(1);
         coordinator.window_opened(2);
-        assert_eq!(coordinator.checkpoint_for_close(1, snapshot(&["/a.pdf"], Some(0))), None);
+        assert_eq!(
+            coordinator.checkpoint_for_close(1, snapshot(&["/a.pdf"], Some(0))),
+            None
+        );
         assert!(coordinator.window_closed(1));
         assert_eq!(
             coordinator.checkpoint_for_close(2, snapshot(&["/b.pdf"], Some(0))),
@@ -183,15 +189,25 @@ mod tests {
         }
         coordinator.begin_quit();
         // Window 2 publishes before window 1 has been removed.
-        assert_eq!(coordinator.checkpoint_for_close(2, snapshot(&["/b.pdf"], Some(0))), None);
-        assert_eq!(coordinator.checkpoint_for_close(1, snapshot(&["/a.pdf", "/b.pdf"], Some(1))), None);
+        assert_eq!(
+            coordinator.checkpoint_for_close(2, snapshot(&["/b.pdf"], Some(0))),
+            None
+        );
+        assert_eq!(
+            coordinator.checkpoint_for_close(1, snapshot(&["/a.pdf", "/b.pdf"], Some(1))),
+            None
+        );
         coordinator.window_closed(1);
         let combined = coordinator
             .checkpoint_for_close(3, snapshot(&["/c.pdf"], None))
             .unwrap();
         assert_eq!(
             combined.documents(),
-            &[PathBuf::from("/b.pdf"), PathBuf::from("/a.pdf"), PathBuf::from("/c.pdf")]
+            &[
+                PathBuf::from("/b.pdf"),
+                PathBuf::from("/a.pdf"),
+                PathBuf::from("/c.pdf")
+            ]
         );
         // Each window stays its own window for restore.
         assert_eq!(
@@ -210,7 +226,10 @@ mod tests {
         coordinator.window_opened(1);
         coordinator.window_opened(2);
         coordinator.begin_quit();
-        assert_eq!(coordinator.checkpoint_for_close(1, snapshot(&["/a.pdf"], None)), None);
+        assert_eq!(
+            coordinator.checkpoint_for_close(1, snapshot(&["/a.pdf"], None)),
+            None
+        );
         coordinator.window_closed(1);
         coordinator.cancel_quit();
         assert!(!coordinator.is_quitting());
@@ -235,7 +254,10 @@ mod tests {
         coordinator.set_window_bounds(1, Some(bounds(10.)));
         coordinator.set_window_bounds(2, Some(bounds(500.)));
         coordinator.begin_quit();
-        assert_eq!(coordinator.checkpoint_for_close(1, snapshot(&["/a.pdf"], Some(0))), None);
+        assert_eq!(
+            coordinator.checkpoint_for_close(1, snapshot(&["/a.pdf"], Some(0))),
+            None
+        );
         let combined = coordinator
             .checkpoint_for_close(2, snapshot(&["/b.pdf"], Some(0)))
             .unwrap();

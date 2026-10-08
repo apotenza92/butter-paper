@@ -457,15 +457,27 @@ mod tests {
     #[test]
     fn wheel_inversion_threshold_zoom_and_edges_match_the_frozen_contract() {
         let mut view = NativeDocumentViewState::default();
-        assert_eq!(view.wheel(4, 1, 0., 20., false, false), WheelOutcome::NativeScroll);
+        assert_eq!(
+            view.wheel(4, 1, 0., 20., false, false),
+            WheelOutcome::NativeScroll
+        );
         assert!(
             matches!(view.wheel(4, 1, 0., 120., true, false), WheelOutcome::Zoom(zoom) if (zoom - 121.9).abs() < 0.1)
         );
         view.set_mode(PageViewMode::SinglePage);
         view.set_wheel_behavior(PageViewMode::SinglePage, WheelBehavior::Scroll);
-        assert_eq!(view.wheel(4, 1, 0., 79., false, false), WheelOutcome::Consumed);
-        assert_eq!(view.wheel(4, 1, 0., 1., false, false), WheelOutcome::Page(2));
-        assert_eq!(view.wheel(4, 3, 0., 80., false, false), WheelOutcome::Consumed);
+        assert_eq!(
+            view.wheel(4, 1, 0., 79., false, false),
+            WheelOutcome::Consumed
+        );
+        assert_eq!(
+            view.wheel(4, 1, 0., 1., false, false),
+            WheelOutcome::Page(2)
+        );
+        assert_eq!(
+            view.wheel(4, 3, 0., 80., false, false),
+            WheelOutcome::Consumed
+        );
         assert!(matches!(
             view.wheel(4, 2, 0., 120., true, false),
             WheelOutcome::Zoom(_)
@@ -478,7 +490,10 @@ mod tests {
         assert!(
             matches!(view.wheel(4, 1, 0., 120., true, true), WheelOutcome::Zoom(zoom) if (zoom - 82.0).abs() < 0.1)
         );
-        assert_eq!(view.wheel(4, 1, 0., 20., false, true), WheelOutcome::NativeScroll);
+        assert_eq!(
+            view.wheel(4, 1, 0., 20., false, true),
+            WheelOutcome::NativeScroll
+        );
     }
 
     #[test]

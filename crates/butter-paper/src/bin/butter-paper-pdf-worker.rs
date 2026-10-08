@@ -346,10 +346,7 @@ fn map_rotation(rotation: butter_paper::page_geometry::Rotation) -> Rotation {
     }
 }
 
-fn rectangles_match(
-    pdfium: [f32; 4],
-    canonical: butter_paper::page_geometry::PdfRect,
-) -> bool {
+fn rectangles_match(pdfium: [f32; 4], canonical: butter_paper::page_geometry::PdfRect) -> bool {
     let expected = [
         canonical.x as f32,
         canonical.y as f32,

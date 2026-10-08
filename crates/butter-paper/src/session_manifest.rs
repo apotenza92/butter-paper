@@ -90,7 +90,10 @@ impl SessionWindowBounds {
             .all(|value| value.is_finite() && value.abs() <= MAX_WINDOW_COORDINATE)
             && self.width >= MIN_WINDOW_SIDE
             && self.height >= MIN_WINDOW_SIDE
-            && self.display.as_ref().is_none_or(|display| display.len() <= 256)
+            && self
+                .display
+                .as_ref()
+                .is_none_or(|display| display.len() <= 256)
     }
 }
 
@@ -149,7 +152,11 @@ impl SessionSnapshot {
             .map(|path| normalized_path_key(path))
             .collect::<HashSet<_>>();
         let mut other_active = None;
-        let mut entries = other.documents.into_iter().zip(other.restart_views).enumerate();
+        let mut entries = other
+            .documents
+            .into_iter()
+            .zip(other.restart_views)
+            .enumerate();
         for window in other.windows {
             let mut added = SessionWindow {
                 document_count: 0,
@@ -158,8 +165,7 @@ impl SessionSnapshot {
             };
             let group = entries.by_ref().take(window.document_count).enumerate();
             for (relative, (index, (path, view))) in group {
-                if self.documents.len() >= MAX_DOCUMENTS
-                    || !seen.insert(normalized_path_key(&path))
+                if self.documents.len() >= MAX_DOCUMENTS || !seen.insert(normalized_path_key(&path))
                 {
                     continue;
                 }
@@ -251,7 +257,10 @@ impl SessionRecoverySnapshot {
     pub fn merged(snapshots: impl IntoIterator<Item = SessionRecoverySnapshot>) -> Self {
         let mut seen = HashSet::new();
         let mut documents = Vec::new();
-        for document in snapshots.into_iter().flat_map(|snapshot| snapshot.documents) {
+        for document in snapshots
+            .into_iter()
+            .flat_map(|snapshot| snapshot.documents)
+        {
             if documents.len() < MAX_DOCUMENTS && seen.insert(normalized_path_key(&document.path)) {
                 documents.push(document);
             }
@@ -300,7 +309,11 @@ impl SessionRestorePlan {
             .split_windows()
             .into_iter()
             .next()
-            .and_then(|plan| plan.windows.first().and_then(|window| window.bounds.clone()))
+            .and_then(|plan| {
+                plan.windows
+                    .first()
+                    .and_then(|window| window.bounds.clone())
+            })
     }
 
     /// Where this single-window plan's window was.

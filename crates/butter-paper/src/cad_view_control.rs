@@ -335,7 +335,11 @@ impl Render for CadViewControl {
             let control_for_content = cx.entity().downgrade();
             Popover::new("viewer-cad-settings-popover")
                 .anchor(Anchor::TopLeft)
-                .open(crate::overlay_state::sync_overlay_open("cad-view-settings", settings_open, cx))
+                .open(crate::overlay_state::sync_overlay_open(
+                    "cad-view-settings",
+                    settings_open,
+                    cx,
+                ))
                 .track_focus(&popover_focus)
                 .on_open_change(move |open, window, cx| {
                     let _ = control.update(cx, |control, cx| {
