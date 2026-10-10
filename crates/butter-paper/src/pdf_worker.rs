@@ -10,10 +10,14 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+#[cfg(target_os = "macos")]
+use std::process::ExitStatus;
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(target_os = "macos")]
+use std::time::Instant;
 
 use crate::pdf_content_geometry::PageSnapGeometry;
 
@@ -26,10 +30,13 @@ const WORKER_LIFECYCLE_TOKEN_ENV: &str = "BP_PDF_WORKER_LIFECYCLE_TOKEN";
 const WORKER_LIFECYCLE_FD: i32 = 199;
 #[cfg(unix)]
 const WORKER_SOURCE_FD: i32 = 198;
+#[cfg(target_os = "macos")]
 const WORKER_LIFECYCLE_EVENT_LIMIT: usize = 8 * 1024;
+#[cfg(target_os = "macos")]
 const WORKER_LIFECYCLE_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKER_LIFECYCLE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[cfg(target_os = "macos")]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type")]
 enum WorkerLifecycleEvent {
@@ -63,6 +70,7 @@ pub struct WorkerLifecycleReceipt {
     pub exit_code: Option<i32>,
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Serialize)]
 struct PublishedWorkerLifecycleReceipt<'a> {
     schema_version: u8,
@@ -1076,6 +1084,7 @@ impl WorkerLifecycleReporter {
         Ok(())
     }
 
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     pub fn finish(mut self) -> Result<(), WorkerError> {
         #[cfg(target_os = "macos")]
         {
@@ -1100,12 +1109,14 @@ impl WorkerLifecycleReporter {
     }
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 struct PendingWorkerLifecycle {
     token: String,
     reader: File,
     writer: File,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 struct WorkerLifecycleOwner {
     token: String,
     pid: u32,
@@ -1699,6 +1710,11 @@ impl WorkerProcessClient {
         self.child.id()
     }
 
+    /// Whether the worker process has ended (crashed or was killed).
+    pub fn has_exited(&mut self) -> bool {
+        !matches!(self.child.try_wait(), Ok(None))
+    }
+
     pub fn lifecycle_measurement_requested(&self) -> bool {
         self.lifecycle.is_some()
     }
@@ -1759,16 +1775,18 @@ impl WorkerProcessClient {
         })?;
         let receipt = self.finish_lifecycle_measurement()?;
         #[cfg(target_os = "macos")]
-        publish_worker_lifecycle_receipt(&receipt, Path::new(&directory))?;
+        {
+            publish_worker_lifecycle_receipt(&receipt, Path::new(&directory))?;
+            Ok(receipt)
+        }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = directory;
-            return Err(WorkerError::with_detail(
+            let _ = (directory, receipt);
+            Err(WorkerError::with_detail(
                 WorkerErrorCode::BackendUnavailable,
                 "worker lifecycle receipt publication is implemented only on macOS",
-            ));
+            ))
         }
-        Ok(receipt)
     }
 }
 

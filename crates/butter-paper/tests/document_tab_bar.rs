@@ -14,12 +14,12 @@ use butter_paper::{
         DOCUMENT_TAB_REORDER_STATUS_ID, DirtyCloseConfirmationEvent, DirtyCloseConfirmationIntent,
         DocumentTabActivationOrigin, DocumentTabBarTemplateSeam, DocumentTabEvent,
         DocumentTabReorderEvent, DocumentTabReorderOrigin, TEMPLATE_CONTROL_GROUP_ID,
-        TEMPLATE_CREATE_ID, TEMPLATE_ITEM_IDS, TEMPLATE_MANAGE_ID, TEMPLATE_PICKER_ID,
-        TEMPLATE_PICKER_POPOVER_ID, TEMPLATE_PRIMARY_ID, TEMPLATE_SAVE_DOCUMENT_ID,
-        TemplateCatalogItem, TemplateCreationOrigin, TemplateSplitControl, TemplateSplitEvent,
-        dirty_close_title, document_tab_close_accessible_label, document_tab_close_id,
-        document_tab_hover_mask_id, document_tab_id, document_tab_label_id,
-        format_document_tab_label,
+        TEMPLATE_CREATE_ID, TEMPLATE_ITEM_IDS, TEMPLATE_MANAGE_ID, TEMPLATE_PICKER_CLOSE_ID,
+        TEMPLATE_PICKER_ID, TEMPLATE_PICKER_POPOVER_ID, TEMPLATE_PRIMARY_ID,
+        TEMPLATE_SAVE_DOCUMENT_ID, TemplateCatalogItem, TemplateCreationOrigin,
+        TemplateSplitControl, TemplateSplitEvent, dirty_close_title,
+        document_tab_close_accessible_label, document_tab_close_id, document_tab_hover_mask_id,
+        document_tab_id, document_tab_label_id, format_document_tab_label,
     },
     page_view_control::{PageViewControl, PageViewMode},
     viewer_toolbar_strip::{VIEWER_TOOLBAR_CONTENT_ID, ViewerToolbarStrip},
@@ -2208,6 +2208,22 @@ fn template_split_traces_pointer_keyboard_dismissal_disabled_and_independence(
     bounds(cx, TEMPLATE_MANAGE_ID);
     bounds(cx, TEMPLATE_CREATE_ID);
 
+    // The standard top-right X dismisses the picker; it reopens as before.
+    click_target(cx, TEMPLATE_PICKER_CLOSE_ID);
+    draw(cx);
+    assert!(
+        !entities
+            .document_tabs
+            .read_with(cx, |tabs, _| tabs.is_picker_open())
+    );
+    click_target(cx, TEMPLATE_PICKER_ID);
+    draw(cx);
+    assert!(
+        entities
+            .document_tabs
+            .read_with(cx, |tabs, _| tabs.is_picker_open())
+    );
+
     for (template, stable_id) in BUILT_IN_TEMPLATES.into_iter().zip(TEMPLATE_ITEM_IDS) {
         click_target(cx, stable_id);
         draw(cx);
@@ -2305,6 +2321,8 @@ fn template_split_traces_pointer_keyboard_dismissal_disabled_and_independence(
         .read_with(cx, |tabs, _| tabs.picker_focus_handle());
     cx.update(|window, cx| {
         picker_focus.focus(window, cx);
+        // The header's X, then the first two rows.
+        window.focus_next(cx);
         window.focus_next(cx);
         window.focus_next(cx);
     });

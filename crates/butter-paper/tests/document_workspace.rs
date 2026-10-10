@@ -2,8 +2,10 @@
 use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt as _;
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::MetadataExt as _;
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
+use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -47,6 +49,8 @@ use butter_paper::document_tab_bar::{
     TEMPLATE_CONTROL_GROUP_ID, TEMPLATE_CREATE_ID, TEMPLATE_ITEM_IDS, TEMPLATE_PICKER_ID,
     TEMPLATE_PRIMARY_ID, document_tab_drag_id, document_tab_drop_target_id,
 };
+#[cfg(unix)]
+use butter_paper::document_workspace::DOCUMENT_RECOVERY_REBASE_RETRY_ID;
 use butter_paper::document_workspace::{
     ActualSize, ApplyDisposition, CloseDocument, CloseRequestDisposition, ContinuousView,
     DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID, DOCUMENT_ACTIVE_INSPECTOR_SLOT_ID,
@@ -62,18 +66,18 @@ use butter_paper::document_workspace::{
     DOCUMENT_PUBLICATION_WARNING_CLOSE_CANCEL_ID, DOCUMENT_PUBLICATION_WARNING_CLOSE_CONTINUE_ID,
     DOCUMENT_PUBLICATION_WARNING_CLOSE_ID, DOCUMENT_RECOVERY_ALERT_ID,
     DOCUMENT_RECOVERY_PREPARATION_ALERT_ID, DOCUMENT_RECOVERY_PREPARATION_RETRY_ID,
-    DOCUMENT_RECOVERY_REBASE_RETRY_ID, DOCUMENT_RECOVERY_RETRY_ID, DOCUMENT_RECTANGLE_TOOL_ID,
-    DOCUMENT_REDACT_PENDING_ALERT_ID, DOCUMENT_REDACT_TOOL_ID,
-    DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID, DOCUMENT_SAVE_ERROR_ALERT_ID,
+    DOCUMENT_RECOVERY_RETRY_ID, DOCUMENT_RECTANGLE_TOOL_ID, DOCUMENT_REDACT_PENDING_ALERT_ID,
+    DOCUMENT_REDACT_TOOL_ID, DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID, DOCUMENT_SAVE_ERROR_ALERT_ID,
     DOCUMENT_SAVE_ERROR_DISMISS_ID, DOCUMENT_SAVE_ERROR_RETRY_ID, DOCUMENT_SAVE_ERROR_SAVE_AS_ID,
     DOCUMENT_SELECT_TOOL_ID, DOCUMENT_SESSION_TABS_ID, DOCUMENT_SIGNATURE_ADD_ID,
     DOCUMENT_SIGNATURE_CANVAS_ID, DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID, DOCUMENT_SIGNATURE_CLEAR_ID,
     DOCUMENT_SIGNATURE_ERROR_ALERT_ID, DOCUMENT_SIGNATURE_LOADING_ID,
     DOCUMENT_SIGNATURE_MODE_IMAGE_ID, DOCUMENT_SIGNATURE_MODE_TYPE_ID,
     DOCUMENT_SIGNATURE_NAME_INPUT_ID, DOCUMENT_SIGNATURE_PREVIEW_ID, DOCUMENT_SIGNATURE_TOOL_ID,
-    DOCUMENT_SNAP_CONSTRUCTION_GRID_ID, DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID,
-    DOCUMENT_SNAP_DIMENSION_INCREMENT_ID, DOCUMENT_SNAP_GUIDES_ID, DOCUMENT_SNAP_MARKUP_ID,
-    DOCUMENT_SNAP_POPOVER_ID, DOCUMENT_SNAP_SETTINGS_ID, DOCUMENT_SNAPSHOT_TOOL_ID,
+    DOCUMENT_SNAP_CLOSE_ID, DOCUMENT_SNAP_CONSTRUCTION_GRID_ID,
+    DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID, DOCUMENT_SNAP_DIMENSION_INCREMENT_ID,
+    DOCUMENT_SNAP_GUIDES_ID, DOCUMENT_SNAP_MARKUP_ID, DOCUMENT_SNAP_POPOVER_ID,
+    DOCUMENT_SNAP_SETTINGS_ID, DOCUMENT_SNAPSHOT_TOOL_ID, DOCUMENT_TEXT_BOX_EDITOR_CONTENT_ID,
     DOCUMENT_TEXT_BOX_EDITOR_ID, DOCUMENT_TEXT_BOX_TOOL_ID, DOCUMENT_THUMBNAIL_STRIP_ID,
     DOCUMENT_TOOLBAR_SCROLL_ID, DOCUMENT_VIEWER_PROGRESS_ID, DOCUMENT_VIEWER_STATUS_ID,
     DOCUMENT_VIEWPORT_ID, DOCUMENT_WORKSPACE_ID, DeferredStartupOpen, DirtyCloseResolution,
@@ -84,7 +88,7 @@ use butter_paper::document_workspace::{
     NativeDocumentSaveStatus, NativeDocumentSaver, NativeDocumentStatus, NavigateNextPage,
     NavigatePreviousPage, OpenDocumentRequest, OpenedNativeDocument, PdfDocumentSaver,
     PdfiumWorkerBackend, RAIL_OVERFLOW_TOOLTIP, RasterSurface, RotatePageRight, Save, SaveAs,
-    SaveDestination, SaveDocumentRequest, SavedNativeDocument, SinglePageView,
+    SaveDestination, SaveDocumentRequest, SavedNativeDocument, SetPageScale, SinglePageView,
     StartupRecoveryAvailability, StartupRecoveryItem, ThumbnailSurface, VIEWPORT_OPEN_DOCUMENT_ID,
     ViewerFitPreset, ViewerRenderQuality, ZoomIn, ZoomOut, annotation_resize_cursor_style,
     document_annotation_layer_id, document_session_close_id, document_session_tab_id,
@@ -139,7 +143,9 @@ use butter_paper::page_view_control::{PageViewMode, WheelBehavior};
 use butter_paper::pdf_engine::{
     InPlacePublicationCapability, PdfPersistenceSession, PdfPublicationOutcome,
 };
-use butter_paper::pdf_file_authority::{SaveAsTargetAuthority, SaveTargetErrorKind};
+use butter_paper::pdf_file_authority::SaveAsTargetAuthority;
+#[cfg(unix)]
+use butter_paper::pdf_file_authority::SaveTargetErrorKind;
 use butter_paper::rectangle_property_inspector::{
     ELLIPSE_INSPECTOR_FILL_COLOR_ID, ELLIPSE_INSPECTOR_FILL_ENABLED_ID,
     ELLIPSE_INSPECTOR_FILL_OPACITY_ID, ELLIPSE_INSPECTOR_HEIGHT_ID, ELLIPSE_INSPECTOR_LOCKED_ID,
@@ -4007,7 +4013,8 @@ fn save_as_destination(source: &Path, target: &Path) -> SaveDestination {
 fn workspace_save_target(name: &str) -> PathBuf {
     let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-scratch");
     std::fs::create_dir_all(&directory).unwrap();
-    directory.join(name)
+    // Saves record the canonical target, which on Windows is the `\\?\` form.
+    std::fs::canonicalize(&directory).unwrap().join(name)
 }
 
 fn native_open_manifest_store(label: &str) -> (PathBuf, SessionManifestStore) {
@@ -4166,7 +4173,8 @@ fn rotated_pointer_projection_places_and_hits_the_same_pdf_annotation() {
         );
         adapter.set_tool(AnnotationTool::Select).unwrap();
         adapter.clear_selection(document_id);
-        let center_pdf = PdfPoint::new(126., 198.).unwrap();
+        // On the outline: an unfilled rectangle's inside is empty.
+        let center_pdf = PdfPoint::new(126., 144.).unwrap();
         let center_local = transform.point_to_local_pixels(center_pdf);
         let projected_center = transform
             .point_from_local_pixels(center_local.x, center_local.y)
@@ -4240,6 +4248,48 @@ fn opened_restart_page_failure_document(released: Arc<AtomicBool>) -> OpenedNati
         Arc::new(FailingRestartPageResource { released }),
     )
     .expect("the restored-page failure fixture must open successfully")
+}
+
+#[gpui::test]
+fn set_page_scale_command_opens_the_dialog_for_the_current_page(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    cx.update(init_document_workspace_actions);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace =
+                cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(SuccessfulOpener), cx));
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let document_id = workspace.update(cx, |workspace, cx| {
+        workspace.open_path(PathBuf::from("set-page-scale.pdf"), cx)
+    });
+    cx.run_until_parked();
+    let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| {
+        window.activate_window();
+        workspace_focus.focus(window, cx);
+        window.draw(cx).clear(cx);
+    });
+    cx.dispatch_action(NavigateNextPage);
+    cx.run_until_parked();
+
+    // The page context menu and menu bar dispatch this inside a workspace
+    // update; the control once read the workspace back and panicked.
+    cx.dispatch_action(SetPageScale);
+    cx.run_until_parked();
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    let control = workspace
+        .read_with(cx, |workspace, _| workspace.page_scale_control())
+        .expect("the command creates the page scale control");
+    assert_eq!(
+        control.read_with(cx, |control, _| control.target()),
+        Some((document_id, 1))
+    );
 }
 
 #[gpui::test]
@@ -6074,7 +6124,7 @@ fn imported_ellipse_first_press_resizes_preview_and_commits_once_on_native_stack
         workspace.annotation_scene(request.document_id, 0, cx)
     });
     assert_eq!(
-        annotation_resize_cursor_style(&hover_scene, &ellipse.id, 3),
+        annotation_resize_cursor_style(&hover_scene, &ellipse.id, 3).map(CursorStyle::standard),
         Some(CursorStyle::ResizeLeftRight),
         "the unselected Ellipse hot handle must drive the nearest native resize cursor"
     );
@@ -7740,7 +7790,7 @@ fn contextual_actions_workspace_canvas_menu_routes_shared_select_action(cx: &mut
 fn semantic_snapping_workspace_uses_real_component_controls_and_controlled_state(
     cx: &mut TestAppContext,
 ) {
-    cx.update(|cx| gpui_component::init(cx));
+    cx.update(gpui_component::init);
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -7813,6 +7863,15 @@ fn semantic_snapping_workspace_uses_real_component_controls_and_controlled_state
         .unwrap();
     assert!(settings.is_source_enabled(SemanticSnapSource::ConstructionGrid));
     assert_eq!(settings.construction_grid_spacing_mm(), 10.);
+
+    // The popover's top-right X dismisses it like Escape or an outside press.
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let close = cx
+        .debug_bounds(DOCUMENT_SNAP_CLOSE_ID)
+        .expect("the snap settings popover has the standard X");
+    cx.simulate_click(close.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds(DOCUMENT_SNAP_POPOVER_ID).is_none());
 }
 
 #[gpui::test]
@@ -9297,6 +9356,8 @@ fn unavailable_recovery_store_rolls_back_undo_and_redo_without_changing_the_chec
     );
 }
 
+// Simulates a failed rebase with Unix directory permissions.
+#[cfg(unix)]
 #[gpui::test]
 fn successful_save_as_rebases_recovery_to_the_clean_opened_target_before_editing_resumes(
     cx: &mut TestAppContext,
@@ -9431,7 +9492,7 @@ fn successful_save_as_rebases_recovery_to_the_clean_opened_target_before_editing
         path: recovery_namespace.clone(),
         mode: recovery_mode,
     };
-    std::fs::set_permissions(&recovery_namespace, std::fs::Permissions::from_mode(0)).unwrap();
+    std::fs::set_permissions(&recovery_namespace, std::fs::Permissions::from_mode(0o0)).unwrap();
     let repaired_target_bytes = b"%PDF-1.7\nsaved recovery base revision two\n%%EOF\n";
     std::fs::write(&target, repaired_target_bytes).unwrap();
     let failed_save = workspace
@@ -9506,6 +9567,7 @@ fn successful_save_as_rebases_recovery_to_the_clean_opened_target_before_editing
     );
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    open_recovery_notifications(cx);
     assert!(
         cx.debug_bounds(DOCUMENT_RECOVERY_PREPARATION_ALERT_ID)
             .is_some()
@@ -9549,7 +9611,7 @@ fn successful_save_as_rebases_recovery_to_the_clean_opened_target_before_editing
         (3, 2)
     );
 
-    std::fs::set_permissions(&recovery_namespace, std::fs::Permissions::from_mode(0)).unwrap();
+    std::fs::set_permissions(&recovery_namespace, std::fs::Permissions::from_mode(0o0)).unwrap();
     let close_target_bytes = b"%PDF-1.7\nclean close after failed recovery rebase\n%%EOF\n";
     std::fs::write(&target, close_target_bytes).unwrap();
     let close_save = workspace
@@ -9981,6 +10043,7 @@ fn in_place_save_failure_renders_real_recovery_actions_without_losing_the_docume
     assert!(!original_released.load(Ordering::Acquire));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    open_recovery_notifications(cx);
     assert!(cx.debug_bounds(DOCUMENT_SAVE_ERROR_ALERT_ID).is_some());
     let retry = cx.debug_bounds(DOCUMENT_SAVE_ERROR_RETRY_ID).unwrap();
     assert!(cx.debug_bounds(DOCUMENT_SAVE_ERROR_SAVE_AS_ID).is_some());
@@ -10117,6 +10180,7 @@ fn recovery_preparation_failure_blocks_edits_and_retries_from_the_visible_alert_
     }));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    open_recovery_notifications(cx);
     assert!(
         cx.debug_bounds(DOCUMENT_RECOVERY_PREPARATION_ALERT_ID)
             .is_some()
@@ -10413,6 +10477,7 @@ fn real_enospc_initial_recovery_stream_blocks_edits_and_visible_retry_recovers_o
         before
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    open_recovery_notifications(cx);
     assert!(
         cx.debug_bounds(DOCUMENT_RECOVERY_PREPARATION_ALERT_ID)
             .is_some()
@@ -10599,6 +10664,7 @@ fn external_source_change_save_failure_keeps_recovery_and_offers_save_as_without
     assert_eq!(std::fs::read(&source).unwrap(), external_source_bytes);
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    open_recovery_notifications(cx);
     assert!(cx.debug_bounds(DOCUMENT_SAVE_ERROR_ALERT_ID).is_some());
     assert!(cx.debug_bounds(DOCUMENT_SAVE_ERROR_RETRY_ID).is_none());
     assert!(cx.debug_bounds(DOCUMENT_SAVE_ERROR_SAVE_AS_ID).is_some());
@@ -14425,7 +14491,8 @@ fn multi_selection_workspace_shift_click_group_move_is_ordered_lock_aware_and_on
         ..Modifiers::default()
     };
     cx.simulate_click(to_view(70., 300.), shift);
-    cx.simulate_click(to_view(372., 144.), shift);
+    // On its outline: the locked rectangle is unfilled.
+    cx.simulate_click(to_view(372., 97.), shift);
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .selected_annotation_ids(request.document_id, cx)),
@@ -16145,7 +16212,7 @@ fn unselected_vertex_path_hover_controls_start_drag_on_first_press_on_native_sta
     let request = workspace.update(cx, |workspace, cx| {
         workspace.begin_open(PathBuf::from("unselected-vertex-path-controls.pdf"), cx)
     });
-    let points = vec![
+    let points = [
         PdfPoint::new(100., 500.).unwrap(),
         PdfPoint::new(200., 520.).unwrap(),
         PdfPoint::new(160., 580.).unwrap(),
@@ -16346,7 +16413,7 @@ fn unselected_measurement_path_hover_controls_start_drag_on_first_press_on_nativ
             cx,
         )
     });
-    let points = vec![
+    let points = [
         PdfPoint::new(100., 500.).unwrap(),
         PdfPoint::new(200., 520.).unwrap(),
         PdfPoint::new(160., 580.).unwrap(),
@@ -16698,7 +16765,7 @@ fn unselected_snapshot_hover_controls_start_resize_on_first_press_on_native_stac
         workspace.annotation_scene(request.document_id, 0, cx)
     });
     assert_eq!(
-        annotation_resize_cursor_style(&hover_scene, &top_id, 4),
+        annotation_resize_cursor_style(&hover_scene, &top_id, 4).map(CursorStyle::standard),
         Some(CursorStyle::ResizeUpLeftDownRight),
         "the rotated Snapshot hot handle must drive the nearest native resize cursor"
     );
@@ -16766,7 +16833,7 @@ fn unselected_snapshot_hover_controls_start_resize_on_first_press_on_native_stac
     assert_eq!(
         previewed.feedback,
         SceneInteractionFeedback::Transform {
-            chrome_visible: false,
+            chrome_visible: true,
             active_handle: 4,
         }
     );
@@ -17380,7 +17447,7 @@ fn shape_feedback_workspace_paints_no_resize_handles_and_locked_rotation_omissio
             if let Some(rect) = rotation_rect {
                 let center = point(
                     origin.x + px((rect.x + rect.width / 2.) as f32 * scale),
-                    origin.y + px((792. - rect.y - rect.height) as f32 * scale) - px(12.),
+                    origin.y + px((792. - rect.y - rect.height) as f32 * scale) - px(20.),
                 );
                 let controls = quads
                     .iter()
@@ -19939,6 +20006,13 @@ fn text_box_click_opens_real_multiline_editor_and_blur_commits_once(cx: &mut Tes
             .abs()
             < 1.
     );
+    // The editor lays out wider than the hugging box, so the caret after the
+    // last character does not scroll the first one out of view.
+    let content_bounds = cx
+        .debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_CONTENT_ID)
+        .expect("the editor content renders inside the box");
+    assert_eq!(content_bounds.origin, live_editor_bounds.origin);
+    assert!(content_bounds.size.width >= live_editor_bounds.size.width + px(12. * scale));
     assert!(cx.update(|window, _| editor_focus.is_focused(window)));
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
@@ -20505,7 +20579,7 @@ fn unselected_text_box_and_image_hover_controls_start_resize_on_first_press_on_n
     assert_eq!(
         preview.feedback,
         SceneInteractionFeedback::Transform {
-            chrome_visible: false,
+            chrome_visible: true,
             active_handle: 3,
         }
     );
@@ -20607,7 +20681,7 @@ fn unselected_text_box_and_image_hover_controls_start_resize_on_first_press_on_n
     assert_eq!(
         image_preview.feedback,
         SceneInteractionFeedback::Transform {
-            chrome_visible: false,
+            chrome_visible: true,
             active_handle: 3,
         }
     );
@@ -20709,7 +20783,7 @@ fn existing_text_box_pointer_move_resize_enter_escape_commit_history_and_lock_us
     assert_eq!(
         move_feedback,
         SceneInteractionFeedback::Move {
-            chrome_visible: false,
+            chrome_visible: true,
         }
     );
     for (actual, expected) in [
@@ -20734,7 +20808,7 @@ fn existing_text_box_pointer_move_resize_enter_escape_commit_history_and_lock_us
                 .feedback
         }),
         SceneInteractionFeedback::Transform {
-            chrome_visible: false,
+            chrome_visible: true,
             active_handle: 3,
         }
     );
@@ -27012,6 +27086,22 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     );
     assert!(locked.snapshots[0].locked);
     let locked_snapshot = locked.snapshots[0].clone();
+    // Opening properties changes the fitted page geometry. Locked-item
+    // gestures must still land on that item, rather than the old canvas.
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds(layer_id).unwrap();
+    let render_scale =
+        (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * render_scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * render_scale) / 2.),
+    );
+    let to_view = |pdf_x: f64, pdf_y: f64| {
+        point(
+            origin.x + px(pdf_x as f32 * render_scale),
+            origin.y + px((792. - pdf_y as f32) * render_scale),
+        )
+    };
     let locked_center = to_view(center.x, center.y);
     let locked_move_end = to_view(center.x + 24., center.y + 24.);
     cx.simulate_mouse_down(locked_center, MouseButton::Left, Modifiers::default());
@@ -27043,12 +27133,15 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         Modifiers::default(),
     );
     cx.simulate_mouse_up(locked_rotate_end, MouseButton::Left, Modifiers::default());
-    assert!(
-        workspace
-            .update(cx, |workspace, cx| {
-                workspace.delete_selected_annotation(document_id, cx)
-            })
-            .is_err()
+    // Deleting a locked markup is a no-op that reports the lock.
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.delete_selected_annotation(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
+        Some("Annotation is locked".into()),
     );
     let suppressed = workspace
         .read_with(cx, |workspace, cx| {
@@ -28585,7 +28678,7 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         })
         .unwrap();
     assert!(reopened_evidence.ready && reopened_evidence.current_raster_has_spatial_variation);
-    assert_eq!(reopened_evidence.page_count as usize, source_page_count);
+    assert_eq!(reopened_evidence.page_count, source_page_count);
     let reopened_worker_pid = fresh_workspace
         .read_with(cx, |workspace, cx| {
             workspace
@@ -31704,8 +31797,7 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     assert!(close(move_point[1], 306.), "{move_point:?}");
     let last_curve = appearance_content
         .lines()
-        .filter(|line| line.ends_with(" c"))
-        .last()
+        .rfind(|line| line.ends_with(" c"))
         .unwrap()
         .split_whitespace()
         .take(6)
@@ -31887,7 +31979,14 @@ fn visible_tab_close_routes_a_dirty_document_through_confirmation(cx: &mut TestA
         workspace.read_with(cx, |workspace, _| workspace.pending_close_document_id()),
         Some(request.document_id)
     );
-    assert!(cx.debug_bounds(DOCUMENT_DIRTY_CLOSE_ID).is_some());
+    let popover = cx.debug_bounds(DOCUMENT_DIRTY_CLOSE_ID).unwrap();
+    let explanation = cx.debug_bounds("dirty-close-explanation").unwrap();
+    assert!(explanation.right() <= popover.right());
+    assert!(explanation.left() >= popover.left());
+    assert!(
+        f32::from(explanation.size.height) > 20.,
+        "the explanation must wrap onto multiple lines"
+    );
     assert!(!released.load(Ordering::Acquire));
 }
 
@@ -34226,7 +34325,7 @@ fn native_file_authority_dirty_close_picker_cancel_preserves_close_intent_and_li
 
 #[cfg(windows)]
 #[gpui::test]
-fn windows_ordinary_save_routes_to_one_new_target_picker_before_saving(cx: &mut TestAppContext) {
+fn windows_ordinary_save_targets_the_opened_pdf_without_a_picker(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -34261,46 +34360,12 @@ fn windows_ordinary_save_routes_to_one_new_target_picker_before_saving(cx: &mut 
         })
         .unwrap();
 
-    assert_eq!(
-        workspace
-            .update(cx, |workspace, cx| workspace
-                .begin_save(request.document_id, cx))
-            .unwrap_err(),
-        "document requires Save As",
-    );
+    // Windows saves in place, as macOS and Linux do.
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .document_save_route(request.document_id, cx)),
-        Some(DocumentSaveRoute::NewTargetRequired),
+        Some(DocumentSaveRoute::OpenedSource),
     );
-
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let save = cx.debug_bounds(DOCUMENT_SAVE_ID).unwrap().center();
-    cx.simulate_click(save, Modifiers::default());
-
-    assert!(cx.did_prompt_for_new_path());
-    assert_eq!(
-        workspace.read_with(cx, |workspace, _| workspace
-            .pending_save_prompt_document_id()),
-        Some(request.document_id),
-    );
-    assert_eq!(
-        workspace.read_with(cx, |workspace, cx| workspace
-            .session(request.document_id, cx)
-            .unwrap()
-            .read(cx)
-            .save_status()
-            .clone()),
-        NativeDocumentSaveStatus::Idle,
-    );
-    cx.simulate_new_path_selection(|_| None);
-    cx.run_until_parked();
-    assert!(workspace.read_with(cx, |workspace, cx| {
-        workspace
-            .annotation_snapshot(request.document_id, cx)
-            .unwrap()
-            .dirty
-    }));
 }
 
 #[cfg(unix)]
@@ -37647,6 +37712,8 @@ fn save_as_refuses_source_identity_drift_before_writing_a_target() {
         std::process::id()
     ));
     std::fs::copy(&reviewed, &source).unwrap();
+    // Documents are saved by their canonical path.
+    let source = std::fs::canonicalize(&source).unwrap();
     let persistence = PdfPersistenceSession::open(&source).unwrap();
     let expected: [u8; 32] = Sha256::digest(std::fs::read(&source).unwrap()).into();
     let mut bytes = std::fs::read(&source).unwrap();
@@ -37696,7 +37763,7 @@ fn save_as_refuses_source_identity_drift_before_writing_a_target() {
         Ok(_) => panic!("source identity drift must refuse Save As"),
         Err(error) => error,
     };
-    assert!(error.contains("source PDF changed"));
+    assert!(error.contains("source PDF changed"), "{error}");
     assert!(!target.exists());
     std::fs::remove_file(source).unwrap();
 }
@@ -37718,6 +37785,8 @@ fn in_place_save_atomically_replaces_the_regular_source_preserves_mode_and_remov
         source.file_name().unwrap().to_string_lossy()
     ));
     std::fs::copy(&reviewed, &source).unwrap();
+    // The app saves documents by their canonical path.
+    let source = std::fs::canonicalize(&source).unwrap();
     std::fs::hard_link(&source, &original_inode).unwrap();
     let unrelated_bytes = b"another application instance owns this stage-like file";
     std::fs::write(&unrelated_stage_like_file, unrelated_bytes).unwrap();
@@ -37829,6 +37898,8 @@ fn in_place_save_reports_a_durable_publication_receipt_after_parent_sync() {
         std::process::id()
     ));
     std::fs::copy(&reviewed, &source).unwrap();
+    // The app saves documents by their canonical path.
+    let source = std::fs::canonicalize(&source).unwrap();
     let _scratch_files = ScratchFiles(vec![source.clone()]);
     let expected: [u8; 32] = Sha256::digest(std::fs::read(&source).unwrap()).into();
     let persistence = PdfPersistenceSession::open_for_update(&source, expected).unwrap();
@@ -37980,6 +38051,8 @@ fn in_place_save_rejects_source_drift_after_prepare_and_removes_the_exact_stage(
         std::process::id()
     ));
     std::fs::copy(&reviewed, &source).unwrap();
+    // The app saves documents by their canonical path.
+    let source = std::fs::canonicalize(&source).unwrap();
     let _scratch_files = ScratchFiles(vec![source.clone()]);
     let expected: [u8; 32] = Sha256::digest(std::fs::read(&source).unwrap()).into();
     let persistence = PdfPersistenceSession::open_for_update(&source, expected).unwrap();
@@ -38045,6 +38118,141 @@ fn in_place_save_never_deletes_a_substituted_competitor_stage() {
         displaced_stage.exists(),
         "the externally renamed owned inode is no longer addressable by its original authority"
     );
+}
+
+#[cfg(windows)]
+fn windows_in_place_fixture(name: &str) -> (PathBuf, PathBuf, ScratchDirectories) {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest_dir
+        .join("target/test-scratch")
+        .join(format!("{name}-{}", std::process::id()));
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(&root).unwrap();
+    let source = root.join("source.pdf");
+    std::fs::copy(
+        manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf"),
+        &source,
+    )
+    .unwrap();
+    // Documents are opened, and saved, by their canonical path.
+    let root = std::fs::canonicalize(&root).unwrap();
+    let source = root.join("source.pdf");
+    (root.clone(), source, ScratchDirectories(vec![root]))
+}
+
+#[cfg(windows)]
+fn windows_stage_names(root: &Path) -> Vec<String> {
+    std::fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".tmp"))
+        .collect()
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_in_place_save_replaces_the_opened_pdf_while_the_worker_holds_it() {
+    use std::io::Read as _;
+
+    let (root, source, _scratch) = windows_in_place_fixture("windows-in-place");
+    let original = std::fs::read(&source).unwrap();
+    // The PDF worker keeps the source open, sharing read, write and delete.
+    let mut held = std::fs::File::open(&source).unwrap();
+    let expected: [u8; 32] = Sha256::digest(&original).into();
+    let mut persistence = PdfPersistenceSession::open_for_update(&source, expected).unwrap();
+    persistence
+        .set_page_rotation(0, PageRotation::Degrees90)
+        .unwrap();
+    let prepared = persistence.prepare_save_replacing(&source).unwrap();
+    let staged = std::fs::read(prepared.path()).unwrap();
+
+    assert_eq!(
+        prepared.publish_replacing().unwrap(),
+        PdfPublicationOutcome::Durable
+    );
+    assert_eq!(std::fs::read(&source).unwrap(), staged);
+    assert_eq!(
+        PdfPersistenceSession::open(&source)
+            .unwrap()
+            .page_rotation(0),
+        Some(PageRotation::Degrees90)
+    );
+    let mut still_open = Vec::new();
+    held.read_to_end(&mut still_open).unwrap();
+    assert_eq!(still_open, original, "the open handle keeps the old file");
+    assert!(windows_stage_names(&root).is_empty());
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_save_removes_stages_abandoned_by_exited_processes_only() {
+    let (root, source, _scratch) = windows_in_place_fixture("windows-abandoned-stage");
+    let mut exited = std::process::Command::new("cmd")
+        .args(["/c", "exit"])
+        .spawn()
+        .unwrap();
+    let exited_pid = exited.id();
+    exited.wait().unwrap();
+    drop(exited);
+    let mut running = std::process::Command::new("cmd")
+        .args(["/c", "pause"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let abandoned = root.join(format!(".butter-paper-{exited_pid}-1.tmp"));
+    let live = root.join(format!(".butter-paper-{}-1.tmp", running.id()));
+    std::fs::write(&abandoned, b"partial stage").unwrap();
+    std::fs::write(&live, b"stage in progress").unwrap();
+
+    let expected: [u8; 32] = Sha256::digest(std::fs::read(&source).unwrap()).into();
+    let persistence = PdfPersistenceSession::open_for_update(&source, expected).unwrap();
+    let prepared = persistence.prepare_save_replacing(&source).unwrap();
+    let live_survived = live.exists();
+    running.kill().unwrap();
+    running.wait().unwrap();
+
+    assert!(!abandoned.exists(), "an exited process's stage is removed");
+    assert!(live_survived, "a running process's stage is kept");
+    drop(prepared);
+    std::fs::remove_file(live).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_in_place_save_keeps_a_source_changed_after_staging() {
+    let (root, source, _scratch) = windows_in_place_fixture("windows-in-place-drift");
+    let expected: [u8; 32] = Sha256::digest(std::fs::read(&source).unwrap()).into();
+    let persistence = PdfPersistenceSession::open_for_update(&source, expected).unwrap();
+    let prepared = persistence.prepare_save_replacing(&source).unwrap();
+    let mut changed = std::fs::read(&source).unwrap();
+    changed.extend_from_slice(b"\n% external source change\n");
+    std::fs::write(&source, &changed).unwrap();
+
+    let error = prepared.publish_replacing().unwrap_err();
+
+    assert!(error.to_string().contains("source PDF changed"), "{error}");
+    assert_eq!(std::fs::read(&source).unwrap(), changed);
+    assert!(windows_stage_names(&root).is_empty());
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_in_place_save_keeps_a_substituted_source_with_the_same_bytes() {
+    let (root, source, _scratch) = windows_in_place_fixture("windows-in-place-substitution");
+    let original = std::fs::read(&source).unwrap();
+    let expected: [u8; 32] = Sha256::digest(&original).into();
+    let persistence = PdfPersistenceSession::open_for_update(&source, expected).unwrap();
+    let prepared = persistence.prepare_save_replacing(&source).unwrap();
+    // Another program replaces the file with an identical copy.
+    std::fs::rename(&source, root.join("moved-away.pdf")).unwrap();
+    std::fs::write(&source, &original).unwrap();
+
+    let error = prepared.publish_replacing().unwrap_err();
+
+    assert!(error.to_string().contains("was replaced"), "{error}");
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+    assert!(windows_stage_names(&root).is_empty());
 }
 
 #[test]
@@ -38126,8 +38334,9 @@ fn generated_template_requires_save_as_and_releases_its_owned_source_after_reope
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let run_key = format!("generated-workspace-{}", std::process::id());
     let store_root = manifest_dir.join("target/test-scratch").join(&run_key);
-    let saved_path = manifest_dir
-        .join("target/test-scratch")
+    std::fs::create_dir_all(manifest_dir.join("target/test-scratch")).unwrap();
+    let saved_path = std::fs::canonicalize(manifest_dir.join("target/test-scratch"))
+        .unwrap()
         .join(format!("{run_key}-saved.pdf"));
     let _ = std::fs::remove_dir_all(&store_root);
     let _ = std::fs::remove_file(&saved_path);
@@ -39391,6 +39600,11 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     let layer_bounds = cx
         .debug_bounds(layer_id)
         .expect("the Length tool must retain the annotation layer");
+    // The calibration alert is gone; derive the transform from this frame,
+    // not the smaller viewport used while picking the scale.
+    let scale = (f64::from(layer_bounds.size.width) / display_size.0)
+        .min(f64::from(layer_bounds.size.height) / display_size.1);
+    let transform = PageTransform::from_page_coordinate_space(coordinate_space, scale).unwrap();
     let page_origin = point(
         layer_bounds.origin.x
             + px(((f64::from(layer_bounds.size.width) - display_size.0 * scale) / 2.) as f32),
@@ -39439,6 +39653,9 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     let layer_bounds = cx
         .debug_bounds(layer_id)
         .expect("the Select tool must retain the annotation layer");
+    let scale = (f64::from(layer_bounds.size.width) / display_size.0)
+        .min(f64::from(layer_bounds.size.height) / display_size.1);
+    let transform = PageTransform::from_page_coordinate_space(coordinate_space, scale).unwrap();
     let page_origin = point(
         layer_bounds.origin.x
             + px(((f64::from(layer_bounds.size.width) - display_size.0 * scale) / 2.) as f32),
@@ -39574,7 +39791,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     assert_eq!(typed.page_rotation(0), Some(PageRotation::Degrees90));
     assert_eq!(typed.untouched_annotations(), source_untouched.as_slice());
     assert_eq!(typed.annotation_order(), expected_order);
-    assert_same_persisted_page_scales(typed.page_scales(), &[applied_scale.clone()]);
+    assert_same_persisted_page_scales(typed.page_scales(), std::slice::from_ref(&applied_scale));
     let typed_length = typed
         .lengths()
         .iter()
@@ -39688,7 +39905,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
         })
         .unwrap();
     assert!(reopened_evidence.ready && reopened_evidence.current_raster_has_spatial_variation);
-    assert_eq!(reopened_evidence.page_count as usize, source_page_count);
+    assert_eq!(reopened_evidence.page_count, source_page_count);
     let reopened_worker_pid = fresh_workspace
         .read_with(cx, |workspace, cx| {
             workspace
@@ -40932,7 +41149,7 @@ fn apply_real_rectangle_property_inspector_edits(
         RectanglePropertyPatch::Y(24.),
         RectanglePropertyPatch::Width(80.),
         RectanglePropertyPatch::Height(40.),
-        RectanglePropertyPatch::RotationDegrees(375.),
+        RectanglePropertyPatch::RotationDegrees(404.15369),
         RectanglePropertyPatch::Locked(true),
     ] {
         assert!(
@@ -41105,7 +41322,7 @@ fn real_rectangle_property_inspector_save_close_and_fresh_workspace_reopen(
     ] {
         assert!((actual - expected).abs() < 0.001);
     }
-    assert_eq!(edited_rectangle.rotation_degrees, 15.);
+    assert!((edited_rectangle.rotation_degrees - 44.15369).abs() < 1e-10);
     assert!(edited_rectangle.locked);
     assert_eq!(edited_rectangle.appearance.stroke_color(), "#dc2626");
     assert_eq!(edited_rectangle.appearance.stroke_width_pt(), 3.);
@@ -41684,6 +41901,8 @@ fn real_in_place_save_replaces_the_opened_pdf_and_reopens_cleanly(cx: &mut TestA
         std::process::id()
     ));
     std::fs::copy(&fixture, &source).unwrap();
+    // The app opens and saves documents by their canonical path.
+    let source = std::fs::canonicalize(&source).unwrap();
     std::fs::hard_link(&source, &original_inode).unwrap();
     #[cfg(unix)]
     std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o640)).unwrap();
@@ -42088,6 +42307,7 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(cx: &mut Tes
         session.path() == source_a.as_path() && session.worker_pid() == Some(a_worker)
     }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    open_recovery_notifications(cx);
     assert!(cx.debug_bounds(DOCUMENT_SAVE_ERROR_SAVE_AS_ID).is_some());
     assert!(workspace.read_with(cx, |workspace, cx| {
         let session = workspace.session(document_b, cx).unwrap().read(cx);
@@ -42429,6 +42649,7 @@ fn real_save_as_collision_recovers_to_fresh_target_and_reopens(cx: &mut TestAppC
     }));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    open_recovery_notifications(cx);
     assert!(cx.debug_bounds(DOCUMENT_SAVE_ERROR_RETRY_ID).is_none());
     let choose_another = cx.debug_bounds(DOCUMENT_SAVE_ERROR_SAVE_AS_ID).unwrap();
     cx.simulate_click(choose_another.center(), Modifiers::default());
@@ -42667,6 +42888,94 @@ fn real_worker_crash_recovery_preserves_dirty_document_and_releases_resources(
                 .is_none(),
         "recovery and close must release every mapped worker surface"
     );
+}
+
+#[gpui::test]
+#[ignore = "requires the checksum-pinned development PDFium library; production redistribution remains blocked"]
+fn real_worker_crash_while_viewing_offers_document_recovery(cx: &mut TestAppContext) {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let test_executable = std::env::current_exe().expect("the test executable path must exist");
+    let worker = test_executable
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("the Cargo target layout must have a debug directory")
+        .join(if cfg!(windows) {
+            "butter-paper-pdf-worker.exe"
+        } else {
+            "butter-paper-pdf-worker"
+        });
+    let library = std::env::var_os("BP_PDFIUM_LIBRARY")
+        .map(PathBuf::from)
+        .expect("BP_PDFIUM_LIBRARY names libpdfium (cargo xtask pdfium prints its path)");
+    let fixture = manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf");
+    assert!(worker.is_file() && library.is_file());
+    let surface_root = manifest_dir
+        .join("target/test-scratch/real-worker-viewing-crash-surfaces")
+        .join(std::process::id().to_string());
+    let _scratch_directories = ScratchDirectories(vec![surface_root.clone()]);
+    let backend = Arc::new(PdfiumWorkerBackend::new(worker, library, surface_root));
+
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let document_id =
+        workspace.update(cx, |workspace, cx| workspace.open_path(fixture.clone(), cx));
+    cx.run_until_parked();
+    let crashed_pid = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.evidence_snapshot(document_id, cx)
+        })
+        .unwrap()
+        .worker_pid
+        .expect("the real worker PID must be observable");
+    let kill = std::process::Command::new("kill")
+        .args(["-KILL", &crashed_pid.to_string()])
+        .status()
+        .expect("the test must be able to terminate its owned worker");
+    assert!(kill.success());
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    // Viewing renders tiles, not pages: a zoom change asks the dead worker
+    // for new tiles.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_view_configuration(document_id, PageViewMode::SinglePage, 150., cx);
+        workspace
+            .refresh_viewport_async(document_id, 900., 600., 1., cx)
+            .unwrap();
+    });
+    cx.run_until_parked();
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.evidence_snapshot(document_id, cx)
+            })
+            .unwrap()
+            .presentation_error
+            .is_some(),
+        "a stopped worker must raise the document recovery, not only page errors"
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let retry = cx
+        .debug_bounds(DOCUMENT_RECOVERY_RETRY_ID)
+        .expect("the document recovery Retry must render");
+    cx.simulate_click(retry.center(), Modifiers::default());
+    cx.run_until_parked();
+    let recovered = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.evidence_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert!(recovered.presentation_error.is_none());
+    assert_ne!(recovered.worker_pid, Some(crashed_pid));
+    assert!(recovered.worker_pid.is_some_and(worker_process_exists));
 }
 
 #[gpui::test]
@@ -43055,10 +43364,17 @@ fn recent_signature_workspace_renders_order_reuses_and_confirms_removal(cx: &mut
             .is_some()
     );
     assert_eq!(store.list().unwrap().signatures.len(), 2);
+    let cancel = cx
+        .debug_bounds(DOCUMENT_SIGNATURE_RECENT_REMOVE_CANCEL_ID)
+        .expect("the cancellation control must remain visible and reachable");
+    let confirm = cx
+        .debug_bounds(DOCUMENT_SIGNATURE_RECENT_REMOVE_CONFIRM_ID)
+        .unwrap();
+    // The stock DialogAction fills its parent; the footer keeps both buttons
+    // at their label widths, as in the application's other dialogs.
     assert!(
-        cx.debug_bounds(DOCUMENT_SIGNATURE_RECENT_REMOVE_CANCEL_ID)
-            .is_some(),
-        "the cancellation control must remain visible and reachable"
+        cancel.right() < confirm.left() && (confirm.size.width - cancel.size.width).abs() < px(24.),
+        "confirmation buttons must not stretch: {cancel:?}, {confirm:?}"
     );
     cx.simulate_keystrokes("escape");
     settle_recent_workspace(cx);
@@ -43181,9 +43497,27 @@ fn worker_process_exists(pid: u32) -> bool {
         let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
         result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         PathBuf::from(format!("/proc/{pid}")).exists()
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        // SAFETY: the handle is checked and closed; the exit code is a local.
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process.is_null() {
+                return false;
+            }
+            let mut code = 0;
+            let alive = GetExitCodeProcess(process, &mut code) != 0 && code == STILL_ACTIVE as u32;
+            CloseHandle(process);
+            alive
+        }
     }
 }
 
@@ -44706,10 +45040,12 @@ fn rectangle_resizes_live_from_any_edge_and_cursors_follow_the_pointer(cx: &mut 
     let cursor = |cx: &mut gpui::VisualTestContext| {
         workspace.read_with(cx, |workspace, _| workspace.viewport_cursor())
     };
+    // Box handles use Butter Paper's drawn cursors; compare their native
+    // fallbacks, which name the direction.
     let cursor_at = |cx: &mut gpui::VisualTestContext, position: gpui::Point<Pixels>| {
         cx.simulate_mouse_move(position, None, Modifiers::default());
         draw(cx);
-        cursor(cx)
+        cursor(cx).standard()
     };
     let rectangles = |cx: &mut gpui::VisualTestContext| {
         workspace.read_with(cx, |workspace, cx| {
@@ -44761,13 +45097,23 @@ fn rectangle_resizes_live_from_any_edge_and_cursors_follow_the_pointer(cx: &mut 
 
     assert_eq!(
         cursor_at(cx, view(mid_x, mid_y)),
+        CursorStyle::Arrow,
+        "deep inside an unfilled rectangle is empty"
+    );
+    let bottom_edge = view(mid_x, bottom);
+    assert_eq!(
+        cursor_at(cx, point(bottom_edge.x, bottom_edge.y - px(14.))),
         CursorStyle::OpenHand,
-        "selected interior moves"
+        "a band just inside the outline moves"
     );
     assert_eq!(
         cursor_at(cx, view(right, top - 15.)),
         CursorStyle::ResizeLeftRight,
         "any point on the east edge resizes"
+    );
+    assert!(
+        matches!(cursor(cx), CursorStyle::Image(_)),
+        "box edges use the drawn resize arrow"
     );
     assert_eq!(
         cursor_at(cx, view(mid_x + 30., top)),
@@ -44788,15 +45134,65 @@ fn rectangle_resizes_live_from_any_edge_and_cursors_follow_the_pointer(cx: &mut 
     );
     assert_eq!(
         cursor_at(cx, view(right + 7. / scale, mid_y + 20.)),
-        CursorStyle::OpenHand,
-        "the band along the dashed outline moves"
+        CursorStyle::ResizeLeftRight,
+        "the expanded edge zone takes priority over moving"
     );
     assert_eq!(
-        cursor_at(cx, view(mid_x, top + 12. / scale)),
+        cursor_at(cx, view(mid_x, top + 20. / scale)),
         CursorStyle::PointingHand,
         "rotation knob"
     );
     assert_eq!(cursor_at(cx, view(500., 100.)), CursorStyle::Arrow);
+
+    let id = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_snapshot(request.document_id, cx)
+            .unwrap()
+            .rectangles[0]
+            .id
+            .clone()
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.toggle_annotation_selection(request.document_id, &id, cx);
+    });
+    draw(cx);
+    assert!(!rectangles(cx)[0].selected);
+    let unselected_body = view(left + 25., top);
+    assert_eq!(cursor_at(cx, unselected_body), CursorStyle::ResizeUpDown);
+    assert!(!rectangles(cx)[0].selected, "hover must not select");
+    assert_eq!(cursor_at(cx, view(mid_x, mid_y)), CursorStyle::Arrow);
+    let outside_move = view(right + 20. / scale, mid_y + 20.);
+    assert_eq!(cursor_at(cx, outside_move), CursorStyle::OpenHand);
+    assert!(
+        !rectangles(cx)[0].selected,
+        "outer-band hover never selects"
+    );
+    assert_eq!(
+        cursor_at(cx, view(right + 31. / scale, mid_y + 20.)),
+        CursorStyle::Arrow
+    );
+    assert_eq!(
+        cursor_at(cx, point(bottom_edge.x, bottom_edge.y - px(14.))),
+        CursorStyle::OpenHand
+    );
+    cx.simulate_mouse_down(outside_move, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        point(outside_move.x + px(1.), outside_move.y),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    draw(cx);
+    assert!(rectangles(cx)[0].selected);
+    assert!(
+        (rectangles(cx)[0].rect.width - rect.width).abs() < 0.01,
+        "outer band moves without resizing"
+    );
+    assert!((rectangles(cx)[0].rect.x - rect.x - 1. / f64::from(scale)).abs() < 0.01);
+    cx.simulate_mouse_up(outside_move, MouseButton::Left, Modifiers::default());
+    draw(cx);
+    cx.simulate_click(unselected_body, Modifiers::default());
+    draw(cx);
+    assert!(rectangles(cx)[0].selected);
 
     // Resize from the east edge away from its midpoint: the outline repaints
     // on every move and the resize cursor holds for the whole drag.
@@ -44819,7 +45215,7 @@ fn rectangle_resizes_live_from_any_edge_and_cursors_follow_the_pointer(cx: &mut 
             "step {step}: the outline must follow the pointer live ({previous} -> {width})"
         );
         previous = width;
-        assert_eq!(cursor(cx), CursorStyle::ResizeLeftRight);
+        assert_eq!(cursor(cx).standard(), CursorStyle::ResizeLeftRight);
         assert!(rectangles(cx)[0].preview);
     }
     let end = point(start.x + px(80.), start.y);
@@ -44838,13 +45234,16 @@ fn rectangle_resizes_live_from_any_edge_and_cursors_follow_the_pointer(cx: &mut 
         "an east edge resize keeps the height"
     );
     assert_eq!(
-        cursor(cx),
+        cursor(cx).standard(),
         CursorStyle::ResizeLeftRight,
         "release keeps the cursor of what is under it"
     );
 
-    // Moving from the interior grabs with a closed hand.
-    let middle = view(mid_x, mid_y);
+    // Moving from the band inside the outline grabs with a closed hand.
+    let middle = {
+        let edge = view(mid_x, bottom);
+        point(edge.x, edge.y - px(14.))
+    };
     cx.simulate_mouse_move(middle, None, Modifiers::default());
     draw(cx);
     cx.simulate_mouse_down(middle, MouseButton::Left, Modifiers::default());
@@ -44865,4 +45264,334 @@ fn rectangle_resizes_live_from_any_edge_and_cursors_follow_the_pointer(cx: &mut 
         rectangles(cx)[0].rect.y < committed.y,
         "the Rectangle moved down"
     );
+
+    // Turn it a quarter by its rotation knob, then double-click the knob:
+    // the Rectangle turns back to 0°.
+    let rect = rectangles(cx)[0].rect;
+    let (mid_x, mid_y) = (
+        (rect.x + rect.width / 2.) as f32,
+        (rect.y + rect.height / 2.) as f32,
+    );
+    let top = (rect.y + rect.height) as f32;
+    let centre = view(mid_x, mid_y);
+    let knob = view(mid_x, top + 20. / scale);
+    let turned = point(centre.x + (centre.y - knob.y), centre.y);
+    cx.simulate_mouse_move(knob, None, Modifiers::default());
+    draw(cx);
+    cx.simulate_mouse_down(knob, MouseButton::Left, Modifiers::default());
+    for step in 1..=4 {
+        let progress = step as f32 / 4.;
+        cx.simulate_mouse_move(
+            point(
+                knob.x + (turned.x - knob.x) * progress,
+                knob.y + (turned.y - knob.y) * progress,
+            ),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        draw(cx);
+    }
+    cx.simulate_mouse_up(turned, MouseButton::Left, Modifiers::default());
+    draw(cx);
+    let rotation = rectangles(cx)[0].rotation_degrees;
+    assert!(
+        (rotation.rem_euclid(360.) - 90.).abs() < 5.,
+        "the knob turns the Rectangle: {rotation}"
+    );
+    cx.simulate_mouse_move(turned, None, Modifiers::default());
+    draw(cx);
+    for click_count in 1..=2 {
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: turned,
+            modifiers: Modifiers::default(),
+            click_count,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            button: MouseButton::Left,
+            position: turned,
+            modifiers: Modifiers::default(),
+            click_count,
+        });
+        draw(cx);
+    }
+    assert_eq!(
+        rectangles(cx)[0].rotation_degrees,
+        0.,
+        "a double-click on the rotation knob resets the rotation"
+    );
+    assert!(
+        cx.debug_bounds(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID)
+            .is_none()
+    );
+
+    // Hit the upright knob without first moving the pointer to refresh hover.
+    // A no-op reset still owns the double-click and leaves properties closed.
+    let upright_knob = view(mid_x, top + 20. / scale);
+    let before_reset = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_snapshot(request.document_id, cx)
+            .unwrap()
+    });
+    for click_count in 1..=2 {
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: upright_knob,
+            modifiers: Modifiers::default(),
+            click_count,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            button: MouseButton::Left,
+            position: upright_knob,
+            modifiers: Modifiers::default(),
+            click_count,
+        });
+        draw(cx);
+    }
+    let after_reset = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_snapshot(request.document_id, cx)
+            .unwrap()
+    });
+    assert_eq!(after_reset.rectangles, before_reset.rectangles);
+    assert_eq!(after_reset.undo_depth, before_reset.undo_depth);
+    assert!(
+        cx.debug_bounds(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID)
+            .is_none()
+    );
+
+    // Wherever the cursor shows a resize, a press resizes: here 7 px inside
+    // the bottom edge's midpoint, beyond the edge band but within the
+    // handle's reach.
+    let rect = rectangles(cx)[0].rect;
+    let mid_x = (rect.x + rect.width / 2.) as f32;
+    let bottom_mid = view(mid_x, rect.y as f32);
+    let near_handle = point(bottom_mid.x, bottom_mid.y - px(7.));
+    assert_eq!(
+        cursor_at(cx, near_handle),
+        CursorStyle::ResizeUpDown,
+        "near the bottom midpoint"
+    );
+    cx.simulate_mouse_down(near_handle, MouseButton::Left, Modifiers::default());
+    let dragged = point(near_handle.x, near_handle.y + px(30.));
+    cx.simulate_mouse_move(dragged, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(dragged, MouseButton::Left, Modifiers::default());
+    draw(cx);
+    let resized = rectangles(cx)[0].rect;
+    assert!(
+        resized.height > rect.height + 10.
+            && (resized.y + resized.height - (rect.y + rect.height)).abs() < 0.01,
+        "the press resized from the bottom, not moved: {rect:?} → {resized:?}"
+    );
+
+    // A fixed 20 px inward band would consume this 30 px-high rectangle.
+    // Its adaptive band moves it near the edge and leaves the middle empty.
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Rectangle, cx)
+        })
+        .unwrap();
+    cx.simulate_mouse_down(view(330., 400.), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        view(530., 400. - 30. / scale),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_up(
+        view(530., 400. - 30. / scale),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    draw(cx);
+    assert_eq!(
+        cursor_at(cx, view(380., 400. - 6. / scale)),
+        CursorStyle::OpenHand
+    );
+    assert_eq!(
+        cursor_at(cx, view(380., 400. - 9. / scale)),
+        CursorStyle::Arrow
+    );
+    assert_eq!(
+        cursor_at(cx, view(380., 400. - 15. / scale)),
+        CursorStyle::Arrow
+    );
+}
+
+fn open_recovery_notifications(cx: &mut gpui::VisualTestContext) {
+    if cx.debug_bounds("recovery-notifications-panel").is_none() {
+        let button = cx
+            .debug_bounds("recovery-notifications-button")
+            .expect("Recovery button");
+        cx.simulate_click(button.center(), Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+}
+
+#[gpui::test]
+fn recovery_notifications_are_conditional_wrapped_and_dismissible(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    cx.simulate_resize(size(px(560.), px(480.)));
+    cx.update(|window, cx| {
+        window.activate_window();
+        window.draw(cx).clear(cx);
+    });
+    assert!(cx.debug_bounds("recovery-notifications-button").is_none());
+    let snapshot = SessionRecoverySnapshot::new(vec![SessionRecoveryDocument::new(
+        workspace_save_target(
+            "An exceptionally long document name describing a complete building drawing and its previous unsaved changes.pdf",
+        ),
+        "An exceptionally long document name describing a complete building drawing and its previous unsaved changes.pdf",
+        3,
+        false,
+    )]);
+    workspace.update(cx, |workspace, cx| {
+        workspace.show_session_recovery_warning(&snapshot, cx)
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.recovery_attention_count(cx)),
+        1
+    );
+    assert!(
+        cx.debug_bounds("document-workspace-recovery-warning")
+            .is_none(),
+        "no canvas banner"
+    );
+    open_recovery_notifications(cx);
+    let panel = cx.debug_bounds("recovery-notifications-panel").unwrap();
+    let close = cx.debug_bounds("recovery-notifications-close").unwrap();
+    let review = cx
+        .debug_bounds(butter_paper::document_workspace::DOCUMENT_RECOVERY_WARNING_DISMISS_ID)
+        .unwrap();
+    let viewport = cx.update(|window, _| window.viewport_size());
+    assert!(panel.left() >= px(0.) && panel.right() <= viewport.width);
+    assert!(panel.bottom() <= viewport.height);
+    assert!(close.right() <= panel.right() && close.top() >= panel.top());
+    assert!(review.right() <= panel.right() && review.bottom() <= panel.bottom());
+    cx.simulate_click(close.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds("recovery-notifications-panel").is_none());
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.recovery_attention_count(cx)),
+        1,
+        "closing never discards recovery"
+    );
+    open_recovery_notifications(cx);
+    let review = cx
+        .debug_bounds(butter_paper::document_workspace::DOCUMENT_RECOVERY_WARNING_DISMISS_ID)
+        .unwrap();
+    cx.simulate_click(review.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds("recovery-notifications-button").is_none());
+    workspace.update(cx, |workspace, cx| {
+        workspace.show_session_recovery_warning(&snapshot, cx)
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds("recovery-notifications-button").is_some());
+    assert!(
+        cx.debug_bounds("recovery-notifications-panel").is_none(),
+        "a later notice starts closed"
+    );
+}
+
+#[gpui::test]
+fn blank_workspace_recent_files_reopen_through_the_normal_open_route(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(|cx| {
+                DocumentWorkspace::with_opener(Arc::new(ScriptedOpenBatchOpener::default()), cx)
+            });
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds("recent-documents-list").is_none());
+    let path = PathBuf::from("project/drawings/coordination.pdf");
+    workspace.update(cx, |workspace, cx| {
+        workspace.open_documents(
+            DocumentOpenBatchRequest::new(
+                DocumentOpenOrigin::Menu,
+                [path.clone(), PathBuf::from("broken.pdf")],
+            ),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let id = workspace.read_with(cx, |workspace, _| workspace.active_document_id().unwrap());
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.close_document(id, cx));
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let row_id = butter_paper::recent_documents::recent_document_id(&path);
+    assert!(cx.debug_bounds("recent-documents-list").is_some());
+    assert!(
+        cx.debug_bounds(Box::leak(
+            butter_paper::recent_documents::recent_document_id(std::path::Path::new("broken.pdf"))
+                .into_boxed_str()
+        ))
+        .is_none()
+    );
+    let folder = cx
+        .debug_bounds(Box::leak(format!("{row_id}-folder").into_boxed_str()))
+        .expect("separate folder action");
+    let row = cx
+        .debug_bounds(Box::leak(row_id.into_boxed_str()))
+        .expect("closed PDF remains in recent history");
+    assert!(
+        !row.contains(&folder.center()),
+        "folder and open targets are separate"
+    );
+    cx.simulate_click(row.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .session(workspace.active_document_id().unwrap(), cx)
+            .unwrap()
+            .read(cx)
+            .path()
+            .to_owned()),
+        path
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn cmd_w_closes_a_window_with_no_document_tabs(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let workspace = cx.new(DocumentWorkspace::new);
+        workspace.read(cx).focus_handle().focus(window, cx);
+        Root::new(workspace, window, cx)
+    });
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    visual.simulate_keystrokes("cmd-w");
+    visual.run_until_parked();
+    assert!(cx.windows().is_empty());
 }

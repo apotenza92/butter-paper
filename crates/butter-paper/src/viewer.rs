@@ -271,15 +271,20 @@ struct TileContext {
 
 #[derive(Clone, Copy)]
 struct FocusScore {
-    distance_squared: f32,
+    /// Distances from the viewport centre. Vertical comes first: a view
+    /// panned sideways over blank space is still reading the page level with
+    /// its centre.
+    distance_y: f32,
+    distance_x: f32,
     intersection_area: f32,
     source_index: usize,
 }
 
 impl FocusScore {
     fn compare(self, other: Self) -> Ordering {
-        self.distance_squared
-            .total_cmp(&other.distance_squared)
+        self.distance_y
+            .total_cmp(&other.distance_y)
+            .then_with(|| self.distance_x.total_cmp(&other.distance_x))
             .then_with(|| other.intersection_area.total_cmp(&self.intersection_area))
             .then_with(|| self.source_index.cmp(&other.source_index))
     }
@@ -360,20 +365,11 @@ impl Iterator for TileCursor {
     }
 }
 
+#[derive(Default)]
 pub struct RenderPlanner {
     generation: u64,
     policy: CachePolicy,
     last_tile_identities: Option<Vec<TileIdentity>>,
-}
-
-impl Default for RenderPlanner {
-    fn default() -> Self {
-        Self {
-            generation: 0,
-            policy: CachePolicy::default(),
-            last_tile_identities: None,
-        }
-    }
 }
 
 impl RenderPlanner {
@@ -663,7 +659,8 @@ fn focus_score(
         .map(|intersection| intersection.width * intersection.height)
         .unwrap_or(0.0);
     FocusScore {
-        distance_squared: distance_x * distance_x + distance_y * distance_y,
+        distance_y,
+        distance_x,
         intersection_area,
         source_index,
     }

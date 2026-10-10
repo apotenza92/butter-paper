@@ -320,7 +320,7 @@ pub fn select_update(
         .filter(|release| release.version > current)
         .filter(|release| channel == UpdateChannel::Beta || !release.prerelease)
         .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| right.version.cmp(&left.version));
+    candidates.sort_by_key(|release| std::cmp::Reverse(&release.version));
     candidates.into_iter().find_map(|release| {
         // Beta copies keep their identity when the release carries a beta
         // package; otherwise a stable release moves them to stable.
@@ -975,26 +975,8 @@ $oldRoot = {old_root}
 $newRoot = {new_root}
 $relaunch = ${relaunch}
 while (Get-Process -Id $processId -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 200 }}
-$oldExe = Join-Path $oldRoot 'butter-paper.exe'
-$newExe = Join-Path $newRoot 'butter-paper.exe'
-$launch = $newExe
-# A default-app choice names a ProgID. Keep the user's choice working by
-# pointing any Butter Paper ProgID that opens the old copy at the new one.
-$choice = $null
-$userChoice = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.pdf\UserChoice' -ErrorAction SilentlyContinue
-if ($null -ne $userChoice) {{ $choice = $userChoice.ProgId }}
-if ($choice -like 'ButterPaper.PDF.*') {{
-  $key = 'HKCU:\Software\Classes\' + $choice
-  $command = (Get-ItemProperty -LiteralPath ($key + '\shell\open\command') -ErrorAction SilentlyContinue).'(default)'
-  if ($command -eq ('"' + $oldExe + '" "%1"')) {{
-    Set-ItemProperty -LiteralPath ($key + '\shell\open\command') -Name '(default)' -Value ('"' + $newExe + '" "%1"')
-    Set-ItemProperty -LiteralPath ($key + '\DefaultIcon') -Name '(default)' -Value ('"' + (Join-Path $newRoot 'butter-paper.ico') + '"') -ErrorAction SilentlyContinue
-  }}
-}}
-$uninstall = Join-Path $oldRoot 'uninstall.ps1'
-if (Test-Path -LiteralPath $uninstall) {{
-  try {{ & $uninstall | Out-Null }} catch {{ }}
-}}
+{retire}
+$launch = Join-Path $newRoot 'butter-paper.exe'
 if ($relaunch) {{ Start-Process -FilePath $launch -WorkingDirectory $newRoot }}
 Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 "#,
@@ -1002,6 +984,118 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         old_root = powershell_literal(old_root),
         new_root = powershell_literal(new_root),
         relaunch = if relaunch { "true" } else { "false" },
+        retire = WINDOWS_RETIRE_OLD_ROOT,
+    )
+}
+
+/// Uninstalls the copy at `$oldRoot` in favour of the one at `$newRoot`.
+/// A default-app choice names a ProgID, so any Butter Paper ProgID that opens
+/// the old copy is first pointed at the new one; the old uninstaller then no
+/// longer owns it and keeps it.
+const WINDOWS_RETIRE_OLD_ROOT: &str = r#"$oldExe = Join-Path $oldRoot 'butter-paper.exe'
+$newExe = Join-Path $newRoot 'butter-paper.exe'
+$choice = $null
+$userChoice = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.pdf\UserChoice' -ErrorAction SilentlyContinue
+if ($null -ne $userChoice) { $choice = $userChoice.ProgId }
+if ($choice -like 'ButterPaper.PDF.*') {
+  $key = 'HKCU:\Software\Classes\' + $choice
+  $command = (Get-ItemProperty -LiteralPath ($key + '\shell\open\command') -ErrorAction SilentlyContinue).'(default)'
+  if ($command -eq ('"' + $oldExe + '" "%1"')) {
+    Set-ItemProperty -LiteralPath ($key + '\shell\open\command') -Name '(default)' -Value ('"' + $newExe + '" "%1"')
+    Set-ItemProperty -LiteralPath ($key + '\DefaultIcon') -Name '(default)' -Value ('"' + (Join-Path $newRoot 'butter-paper.ico') + '"') -ErrorAction SilentlyContinue
+  }
+}
+$uninstall = Join-Path $oldRoot 'uninstall.ps1'
+if (Test-Path -LiteralPath $uninstall) {
+  try { & $uninstall | Out-Null } catch { }
+}"#;
+
+/// Older Windows installs beside `installation`, each `<version>\<arch>`
+/// with the package's ownership marker and uninstaller. Updates to 0.1.0
+/// through 0.1.2 installed the new version without removing the old one.
+pub fn older_windows_installs(
+    installation: &Installation,
+    current: ReleaseVersion,
+) -> Vec<PathBuf> {
+    let Installation::Windows { root, .. } = installation else {
+        return Vec::new();
+    };
+    let Some(product) = root.parent().and_then(Path::parent) else {
+        return Vec::new();
+    };
+    let Ok(versions) = fs::read_dir(product) else {
+        return Vec::new();
+    };
+    let mut older = Vec::new();
+    for version in versions.flatten() {
+        let is_older = version
+            .file_name()
+            .to_str()
+            .and_then(ReleaseVersion::parse)
+            .is_some_and(|version| version < current);
+        if !is_older {
+            continue;
+        }
+        let Ok(architectures) = fs::read_dir(version.path()) else {
+            continue;
+        };
+        older.extend(
+            architectures
+                .flatten()
+                .map(|architecture| architecture.path())
+                .filter(|root| {
+                    root.join(".butter-paper-install.json").is_file()
+                        && root.join("uninstall.ps1").is_file()
+                }),
+        );
+    }
+    older.sort();
+    older
+}
+
+/// Uninstalls older Windows installs in the background, skipping any copy
+/// that is still running. Returns whether there were any to retire.
+pub fn retire_older_windows_installs(
+    installation: &Installation,
+    current: ReleaseVersion,
+) -> io::Result<bool> {
+    let Installation::Windows { root, .. } = installation else {
+        return Ok(false);
+    };
+    let older = older_windows_installs(installation, current);
+    if older.is_empty() {
+        return Ok(false);
+    }
+    let script = std::env::temp_dir().join(format!(
+        "butter-paper-retire-older-{}.ps1",
+        std::process::id()
+    ));
+    fs::write(&script, windows_retire_older_script(root, &older, &script))?;
+    spawn_outliving(&mut windows_script_command(&script))?;
+    Ok(true)
+}
+
+fn windows_retire_older_script(new_root: &Path, old_roots: &[PathBuf], script: &Path) -> String {
+    let old_roots = old_roots
+        .iter()
+        .map(|root| powershell_literal(root))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        r#"# Removes Butter Paper versions that earlier updates left installed.
+$ErrorActionPreference = 'Continue'
+$newRoot = {new_root}
+foreach ($oldRoot in @({old_roots})) {{
+  $oldPrefix = (Join-Path $oldRoot '')
+  $running = Get-Process -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -and $_.Path.StartsWith($oldPrefix, [StringComparison]::OrdinalIgnoreCase) }}
+  if ($running) {{ continue }}
+{retire}
+}}
+Remove-Item -LiteralPath {script} -Force -ErrorAction SilentlyContinue
+"#,
+        new_root = powershell_literal(new_root),
+        script = powershell_literal(script),
+        retire = WINDOWS_RETIRE_OLD_ROOT,
     )
 }
 
@@ -1344,6 +1438,46 @@ mod tests {
     /// The handover PowerShell must actually run its script. Started with
     /// DETACHED_PROCESS it exited at once without doing so, and every Windows
     /// update stopped after installing the new version beside the old one.
+    #[test]
+    fn older_windows_installs_are_owned_siblings_below_the_running_version() {
+        let product = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/test-scratch/older-windows-installs")
+            .join(std::process::id().to_string())
+            .join("Butter Paper");
+        let _ = fs::remove_dir_all(&product);
+        let install = |version: &str, architecture: &str, owned: bool| {
+            let root = product.join(version).join(architecture);
+            fs::create_dir_all(&root).unwrap();
+            if owned {
+                fs::write(root.join(".butter-paper-install.json"), "{}").unwrap();
+                fs::write(root.join("uninstall.ps1"), "").unwrap();
+            }
+            root
+        };
+        let older_x64 = install("0.1.0", "x64", true);
+        let older_arm64 = install("0.1.2", "arm64", true);
+        install("0.1.1", "x64", false);
+        let current = install("0.1.3", "x64", true);
+        install("0.1.4", "x64", true);
+        fs::create_dir_all(product.join("not-a-version").join("x64")).unwrap();
+        let installation = Installation::Windows {
+            root: current.clone(),
+            version: "0.1.3".into(),
+            architecture: "x64".into(),
+        };
+
+        let older = older_windows_installs(&installation, ReleaseVersion::stable(0, 1, 3));
+        assert_eq!(older, vec![older_x64.clone(), older_arm64.clone()]);
+        let script = windows_retire_older_script(&current, &older, Path::new("retire.ps1"));
+        assert!(script.contains(&powershell_literal(&older_x64)));
+        assert!(script.contains(&powershell_literal(&older_arm64)));
+        // A copy still running is left alone, and the default-app ProgID is
+        // moved to the running copy before the old uninstaller runs.
+        assert!(script.contains("if ($running) { continue }"));
+        assert!(script.find("Set-ItemProperty").unwrap() < script.find("& $uninstall").unwrap());
+        let _ = fs::remove_dir_all(product.parent().unwrap());
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_handover_powershell_runs_its_script() {
@@ -1445,8 +1579,8 @@ mod tests {
         )
         .expect("a newer stable Linux release is published");
         let new = update.version.to_string();
-        let old =
-            ReleaseVersion(update.version.0, update.version.1, update.version.2 - 1).to_string();
+        let old = ReleaseVersion::stable(update.version.0, update.version.1, update.version.2 - 1)
+            .to_string();
         let root = std::env::temp_dir().join(format!("bp-linux-update-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let home = root.join("home");
@@ -1494,7 +1628,11 @@ mod tests {
         fs::create_dir_all(&broken_package).unwrap();
         fs::write(broken_package.join("install-user.sh"), "exit 1\n").unwrap();
         let broken = PreparedUpdate {
-            version: ReleaseVersion(update.version.0, update.version.1, update.version.2 + 1),
+            version: ReleaseVersion::stable(
+                update.version.0,
+                update.version.1,
+                update.version.2 + 1,
+            ),
             work_directory: broken_work.clone(),
             handover: Handover::Linux {
                 old_root: new_root.clone(),

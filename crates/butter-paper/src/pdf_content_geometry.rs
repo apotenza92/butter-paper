@@ -432,16 +432,16 @@ fn apply_operation(
         }
         "h" => {
             if !inside_artifact {
-                if let (Some(current), Some(start)) = (path.current, path.start) {
-                    if !same_point(current, start) {
-                        push_primitive(
-                            state,
-                            PdfContentPrimitive::Line {
-                                start: current,
-                                end: start,
-                            },
-                        )?;
-                    }
+                if let (Some(current), Some(start)) = (path.current, path.start)
+                    && !same_point(current, start)
+                {
+                    push_primitive(
+                        state,
+                        PdfContentPrimitive::Line {
+                            start: current,
+                            end: start,
+                        },
+                    )?;
                 }
                 if path.points.len() >= 3 {
                     let primitive = rect_from_closed_path(&path.points)

@@ -1,8 +1,9 @@
-//! `cargo xtask check`: repository rules a compiler cannot see.
+//! `cargo xtask check`: repository rules a compiler cannot see, then
+//! rustfmt and clippy.
 
 use std::path::Path;
 
-use crate::{Result, command, output, root, version};
+use crate::{Result, command, exec, output, root, version};
 
 pub fn run() -> Result {
     let files = repository_files()?;
@@ -10,10 +11,10 @@ pub fn run() -> Result {
     for file in &files {
         violations.extend(check_path(file));
         let path = root().join(file);
-        if is_text(file) {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                violations.extend(check_text(file, &text));
-            }
+        if is_text(file)
+            && let Ok(text) = std::fs::read_to_string(&path)
+        {
+            violations.extend(check_text(file, &text));
         }
     }
     let versions = version::recorded()?;
@@ -29,7 +30,35 @@ pub fn run() -> Result {
         ));
     }
     println!("Repository check passed ({} files).", files.len());
+    exec(cargo().args(["fmt", "--all", "--check"]))
+        .map_err(|_| "formatting differs: run cargo fmt --all".to_string())?;
+    exec(
+        cargo()
+            .args([
+                "clippy",
+                "--quiet",
+                "--workspace",
+                "--all-targets",
+                "--locked",
+            ])
+            .args(["--", "-D", "warnings"]),
+    )?;
+    println!("Formatting and clippy passed.");
     Ok(())
+}
+
+/// Cargo for the workspace, without the package variables `cargo run` gave
+/// xtask: they change build fingerprints and would rebuild everything.
+fn cargo() -> std::process::Command {
+    let mut cargo = command("cargo");
+    for (name, _) in std::env::vars_os() {
+        let name_text = name.to_string_lossy();
+        if name_text.starts_with("CARGO_PKG_") || name_text.starts_with("CARGO_MANIFEST_") {
+            cargo.env_remove(&name);
+        }
+    }
+    cargo.current_dir(root());
+    cargo
 }
 
 fn repository_files() -> Result<Vec<String>> {

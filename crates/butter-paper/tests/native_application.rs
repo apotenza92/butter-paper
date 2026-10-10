@@ -13,8 +13,8 @@ use butter_paper::{
         RequestApplicationQuit, register_application_close_action,
     },
     application_shell::{
-        MakeInterfaceBigger, MakeInterfaceSmaller, MinimiseWindow, NewWindow, ResetInterfaceSize,
-        ToggleApplicationFullScreen, ToggleApplicationMenuBar, ZoomWindow,
+        MakeInterfaceBigger, MakeInterfaceSmaller, NewWindow, ResetInterfaceSize,
+        ToggleApplicationFullScreen, ToggleApplicationMenuBar,
     },
     document_workspace::{
         ActualSize, CloseDocument, ContinuousView, DOCUMENT_OPEN_PROGRESS_ID,
@@ -280,10 +280,14 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
     #[cfg(target_os = "macos")]
     {
         assert_action(item(window, "Minimise"), |action| {
-            action.as_any().is::<MinimiseWindow>()
+            action
+                .as_any()
+                .is::<butter_paper::application_shell::MinimiseWindow>()
         });
         assert_action(item(window, "Zoom"), |action| {
-            action.as_any().is::<ZoomWindow>()
+            action
+                .as_any()
+                .is::<butter_paper::application_shell::ZoomWindow>()
         });
     }
     assert_action(item(file, "New Window"), |action| {
@@ -420,10 +424,7 @@ fn native_application_projection_retains_document_edit_commands_and_restores_the
             .iter()
             .any(|item| matches!(item, MenuItem::Action { name, .. } if name == "Delete"))
     );
-    assert_eq!(
-        item(menu(&menus, "View"), "Show Menu Bar in App Windows").is_checked(),
-        false
-    );
+    assert!(!item(menu(&menus, "View"), "Show Menu Bar in App Windows").is_checked());
     assert_action(
         item(menu(&menus, "View"), "Show Menu Bar in App Windows"),
         |action| action.as_any().is::<ToggleApplicationMenuBar>(),

@@ -8,3 +8,6 @@ description = "Butter Paper experimental compatibility replacement for Zed's GPL
 
 [dependencies]
 tracing = { version = "0.1.41", features = ["attributes"] }
+
+[lints]
+workspace = true

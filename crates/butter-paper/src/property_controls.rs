@@ -101,10 +101,29 @@ impl RenderOnce for PropertyInspectorHeader {
             .font_semibold()
             .border_b_1()
             .border_color(cx.theme().border)
-            .child(div().w_5().flex_none())
+            // Equal lanes keep the title centred; each fits the standard X.
+            .child(div().w_6().flex_none())
             .child(div().flex_1().min_w_0().text_center().child(self.title))
-            .child(div().w_5().flex_none().children(trailing))
+            .child(div().w_6().flex_none().children(trailing))
     }
+}
+
+/// The title row of a popover panel: its title and the standard top-right X
+/// (`accessible_button::close_icon_button`) that dismisses it.
+pub fn popover_header(title: impl Into<SharedString>, close: impl IntoElement) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .font_semibold()
+                .child(title.into()),
+        )
+        .child(close)
 }
 
 /// The common selected-property panel surface and edge-owned scroll region.

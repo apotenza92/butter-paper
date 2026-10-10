@@ -85,12 +85,11 @@ impl SelectionMarquee {
     pub fn update(&mut self, current: SelectionPoint) {
         let delta_x = current.x - self.start.x;
         let delta_y = current.y - self.start.y;
-        if self.shape == SelectionShape::Lasso
-            && self.kind.is_none()
-            && delta_x.abs() > MARQUEE_THRESHOLD_CSS_PX
+        if self.shape == SelectionShape::Box
+            || (self.shape == SelectionShape::Lasso
+                && self.kind.is_none()
+                && delta_x.abs() > MARQUEE_THRESHOLD_CSS_PX)
         {
-            self.kind = Some(selection_kind(self.start, current));
-        } else if self.shape == SelectionShape::Box {
             self.kind = Some(selection_kind(self.start, current));
         }
         self.current = current;

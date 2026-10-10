@@ -151,13 +151,12 @@ fn set(version: Version) -> Result {
     while let Some(line) = lines.next() {
         updated.push_str(line);
         updated.push('\n');
-        if line.contains("<key>CFBundleShortVersionString</key>")
-            || line.contains("<key>CFBundleVersion</key>")
+        if (line.contains("<key>CFBundleShortVersionString</key>")
+            || line.contains("<key>CFBundleVersion</key>"))
+            && let Some(value) = lines.next()
         {
-            if let Some(value) = lines.next() {
-                let indent = &value[..value.len() - value.trim_start().len()];
-                updated.push_str(&format!("{indent}<string>{}</string>\n", version.core()));
-            }
+            let indent = &value[..value.len() - value.trim_start().len()];
+            updated.push_str(&format!("{indent}<string>{}</string>\n", version.core()));
         }
     }
     write(&plist_path, updated)

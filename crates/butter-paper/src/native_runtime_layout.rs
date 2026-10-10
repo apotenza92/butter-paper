@@ -340,6 +340,9 @@ fn bundled_pdfium_path(
     executable: &Path,
     executable_directory: &Path,
 ) -> Result<PathBuf, NativeRuntimeLayoutError> {
+    // Only the macOS layout reports the executable in its error.
+    #[cfg(not(any(test, target_os = "macos")))]
+    let _ = executable;
     match platform {
         #[cfg(any(test, target_os = "linux"))]
         NativePlatform::Linux => Ok(executable_directory.join(platform.pdfium_basename())),

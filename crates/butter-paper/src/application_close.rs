@@ -341,19 +341,14 @@ struct CheckpointingState {
     completion_kind: ApplicationCloseCompletionKind,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 enum CoordinatorState {
+    #[default]
     Idle,
     AwaitingDecision(CloseTransaction),
     Saving(SavingState),
     Checkpointing(CheckpointingState),
     Releasing(ReleasingState),
-}
-
-impl Default for CoordinatorState {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 /// Application-owned close transaction state. This module owns ordering,

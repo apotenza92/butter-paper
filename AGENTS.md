@@ -60,11 +60,14 @@ surface conflicts with them instead of silently overriding them.
 
 Live GUI review of the native app uses an isolated, disposable data root (`BP_NATIVE_DEVELOPMENT=1 BP_GPUI_DATA_DIR=...`) and a uniquely named review bundle; it never modifies an installed application or real profile.
 
+Before opening an updated development or review build, quit the other Butter Paper versions and stop any watcher that could respawn them. Preserve unsaved work through saving or recovery; never discard it just to clean up. Verify that only the intended testing version is running before handoff.
+
 ## Commands
 
 - Build and test: `cargo build`, `cargo test --workspace`
-- Repository checks (paths, versions, workflow pins): `cargo xtask check`
-- Run the app: `cargo xtask pdfium` prints the approved libpdfium path; then `BP_NATIVE_DEVELOPMENT=1 BP_PDFIUM_LIBRARY=<path> cargo run`. Real-PDFium tests: `BP_PDFIUM_LIBRARY=<path> cargo test -- --ignored`.
+- Repository checks (paths, versions, workflow pins), then rustfmt and clippy with warnings denied: `cargo xtask check`
+- CI (`.github/workflows/ci.yml`) runs on pushes to `main` and pull requests: `cargo xtask check`, the tests and the real-PDFium tests on macOS, clippy and the tests on Windows, and a compile of every target on Linux. Formatting-only commits are listed in `.git-blame-ignore-revs`.
+- Run the app: `cargo xtask pdfium` prints the approved libpdfium path; then `BP_NATIVE_DEVELOPMENT=1 BP_PDFIUM_LIBRARY=<path> cargo run`. `cargo xtask dev [PDF...]` does both and rebuilds and restarts the app when sources change (data in `target/dev-profile`; `--release` for an optimised build). Real-PDFium tests: `BP_PDFIUM_LIBRARY=<path> cargo test -- --ignored`.
 - Package one target: `cargo xtask package --target <triple> [--channel stable,beta] --out <dir>` (macOS signing with `--sign`, as the release workflow does).
 - Third-party notices: `cargo xtask notices --target <triple> --out <file>`.
 - Signature relay (`services/signature-relay`): `pnpm install --frozen-lockfile`, `pnpm test`, `pnpm typecheck`.

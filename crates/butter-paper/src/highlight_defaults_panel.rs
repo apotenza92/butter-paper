@@ -4,23 +4,22 @@
 //! stock control entities, disclosure state, and the intent events emitted by
 //! those controls.
 
-use crate::accessible_button::accessible_icon_button;
+use crate::accessible_button::close_icon_button;
+use crate::dialog_buttons::{dialog_action_button, dialog_close_button};
 use crate::document_workspace::{DocumentId, PenAnnotationDefaults};
-use crate::property_controls::PropertySliderInput;
+use crate::property_controls::{PropertyInspectorPanel, PropertySliderInput};
 use gpui::{
     App, AppContext as _, ClickEvent, Context, EventEmitter, Hsla, InteractiveElement as _,
     IntoElement, ParentElement as _, Render, Styled as _, Subscription, Window, div,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _, WindowExt as _,
+    Disableable as _, WindowExt as _,
     accordion::Accordion,
     button::{Button, ButtonVariants as _},
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
-    dialog::{DialogAction, DialogClose, DialogFooter},
+    dialog::DialogFooter,
     form::Field,
-    h_flex,
     input::{InputEvent, InputState},
-    scroll::ScrollableElement as _,
     slider::{SliderEvent, SliderState},
     try_parse_color, v_flex,
 };
@@ -276,12 +275,6 @@ impl HighlightDefaultsPanel {
             defaults,
         });
     }
-
-    fn emit_close(&self, cx: &mut Context<Self>) {
-        if !self.syncing && !self.disabled {
-            cx.emit(HighlightDefaultsEvent::Close);
-        }
-    }
 }
 
 impl EventEmitter<HighlightDefaultsEvent> for HighlightDefaultsPanel {}
@@ -292,20 +285,12 @@ impl Render for HighlightDefaultsPanel {
         let panel = cx.entity().downgrade();
         let accordion_panel = panel.clone();
         let reset_panel = panel.clone();
-        let close = accessible_icon_button(
-            Button::new(HIGHLIGHT_DEFAULTS_CLOSE_ID)
-                .debug_selector(|| HIGHLIGHT_DEFAULTS_CLOSE_ID.into())
-                .accessibility_id(HIGHLIGHT_DEFAULTS_CLOSE_ID)
-                .ghost()
-                .xsmall()
-                .icon(IconName::Close)
-                .tooltip("Close Highlight properties")
-                .disabled(self.disabled)
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.emit_close(cx);
-                })),
-            "Close Highlight properties",
-        );
+        // Closing only hides the panel, so it stays available while the
+        // panel's controls are inert.
+        let close = close_icon_button(HIGHLIGHT_DEFAULTS_CLOSE_ID, "Close Highlight properties")
+            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                cx.emit(HighlightDefaultsEvent::Close);
+            }));
 
         let appearance = v_flex()
             .id(HIGHLIGHT_DEFAULTS_APPEARANCE_ID)
@@ -387,54 +372,20 @@ impl Render for HighlightDefaultsPanel {
                 });
             });
 
-        v_flex()
-            .id(HIGHLIGHT_DEFAULTS_PANEL_ID)
-            .debug_selector(|| HIGHLIGHT_DEFAULTS_PANEL_ID.into())
-            .w_full()
-            .h_full()
-            .min_w_0()
-            .min_h_0()
-            .text_sm()
-            .bg(cx.theme().background)
-            .child(
-                h_flex()
-                    .id(HIGHLIGHT_DEFAULTS_HEADER_ID)
-                    .debug_selector(|| HIGHLIGHT_DEFAULTS_HEADER_ID.into())
-                    .w_full()
-                    .h_12()
-                    .flex_shrink_0()
-                    .items_center()
-                    .justify_between()
-                    .px_3()
-                    .font_semibold()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(div().w_5().flex_none())
-                    .child(div().flex_1().text_center().child("Highlight"))
-                    .child(close),
-            )
-            .child(
-                div()
-                    .id(HIGHLIGHT_DEFAULTS_SCROLL_ID)
-                    .debug_selector(|| HIGHLIGHT_DEFAULTS_SCROLL_ID.into())
-                    .w_full()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scrollbar()
-                    .child(
-                        div()
-                            .w_full()
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .child(
-                                div()
-                                    .id(HIGHLIGHT_DEFAULTS_ACCORDION_ID)
-                                    .debug_selector(|| HIGHLIGHT_DEFAULTS_ACCORDION_ID.into())
-                                    .w_full()
-                                    .child(accordion),
-                            ),
-                    ),
-            )
+        PropertyInspectorPanel::new(
+            HIGHLIGHT_DEFAULTS_PANEL_ID,
+            HIGHLIGHT_DEFAULTS_HEADER_ID,
+            HIGHLIGHT_DEFAULTS_SCROLL_ID,
+            "Highlight",
+        )
+        .header_trailing(close)
+        .child(
+            div()
+                .id(HIGHLIGHT_DEFAULTS_ACCORDION_ID)
+                .debug_selector(|| HIGHLIGHT_DEFAULTS_ACCORDION_ID.into())
+                .w_full()
+                .child(accordion),
+        )
     }
 }
 
@@ -495,24 +446,20 @@ fn open_reset_confirmation(
             .description("Reset the Highlight defaults to yellow, 12 pt and 100% opacity.")
             .footer(
                 DialogFooter::new()
-                    .child(
-                        DialogClose::new().child(
-                            Button::new(HIGHLIGHT_DEFAULTS_RESET_CANCEL_ID)
-                                .debug_selector(|| HIGHLIGHT_DEFAULTS_RESET_CANCEL_ID.into())
-                                .accessibility_id(HIGHLIGHT_DEFAULTS_RESET_CANCEL_ID)
-                                .outline()
-                                .label("Cancel"),
-                        ),
-                    )
-                    .child(
-                        DialogAction::new().child(
-                            Button::new(HIGHLIGHT_DEFAULTS_RESET_CONFIRM_ID)
-                                .debug_selector(|| HIGHLIGHT_DEFAULTS_RESET_CONFIRM_ID.into())
-                                .accessibility_id(HIGHLIGHT_DEFAULTS_RESET_CONFIRM_ID)
-                                .primary()
-                                .label("Reset"),
-                        ),
-                    ),
+                    .child(dialog_close_button(
+                        Button::new(HIGHLIGHT_DEFAULTS_RESET_CANCEL_ID)
+                            .debug_selector(|| HIGHLIGHT_DEFAULTS_RESET_CANCEL_ID.into())
+                            .accessibility_id(HIGHLIGHT_DEFAULTS_RESET_CANCEL_ID)
+                            .outline()
+                            .label("Cancel"),
+                    ))
+                    .child(dialog_action_button(
+                        Button::new(HIGHLIGHT_DEFAULTS_RESET_CONFIRM_ID)
+                            .debug_selector(|| HIGHLIGHT_DEFAULTS_RESET_CONFIRM_ID.into())
+                            .accessibility_id(HIGHLIGHT_DEFAULTS_RESET_CONFIRM_ID)
+                            .primary()
+                            .label("Reset"),
+                    )),
             )
             .on_ok(move |_, _, cx| {
                 panel

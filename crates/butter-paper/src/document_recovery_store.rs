@@ -10,7 +10,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
@@ -20,6 +20,8 @@ use std::{
     },
 };
 
+#[cfg(unix)]
+use std::ffi::OsStr;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 
@@ -514,17 +516,17 @@ impl DocumentRecoveryStore {
     ) -> Result<StoredBasePdf, DocumentRecoveryStoreError> {
         prepared.temporary.close();
         let destination = self.object_path(prepared.sha256);
-        match self.open_optional_object(prepared.sha256, "inspect staged base PDF object")? {
-            Some(_) => {
-                self.verify_existing_object(&destination, prepared.sha256, prepared.byte_len)?;
-                self.sync_objects_for_reuse(prepared.sha256)?;
-                self.remove_prepared_staging_and_sync(&mut prepared)?;
-                return Ok(StoredBasePdf {
-                    sha256: prepared.sha256,
-                    byte_len: prepared.byte_len,
-                });
-            }
-            None => {}
+        if self
+            .open_optional_object(prepared.sha256, "inspect staged base PDF object")?
+            .is_some()
+        {
+            self.verify_existing_object(&destination, prepared.sha256, prepared.byte_len)?;
+            self.sync_objects_for_reuse(prepared.sha256)?;
+            self.remove_prepared_staging_and_sync(&mut prepared)?;
+            return Ok(StoredBasePdf {
+                sha256: prepared.sha256,
+                byte_len: prepared.byte_len,
+            });
         }
         prepared.temporary.publish(
             &self.objects,
@@ -1224,13 +1226,10 @@ impl DocumentRecoveryStore {
         bytes: &[u8],
         fault_after_rename: bool,
     ) -> Result<(), DocumentRecoveryStoreError> {
-        match self.open_optional_object(hash, "inspect object")? {
-            Some(_) => {
-                let destination = self.object_path(hash);
-                self.verify_existing_object(&destination, hash, bytes.len() as u64)?;
-                return self.sync_objects_for_reuse(hash);
-            }
-            None => {}
+        if self.open_optional_object(hash, "inspect object")?.is_some() {
+            let destination = self.object_path(hash);
+            self.verify_existing_object(&destination, hash, bytes.len() as u64)?;
+            return self.sync_objects_for_reuse(hash);
         }
         let mut temporary = self.create_objects_temporary("object")?;
         write_and_sync(temporary.file_mut(), bytes)?;
@@ -1476,17 +1475,7 @@ impl DocumentRecoveryStore {
             "open recovery-store lease",
         )?;
         #[cfg(windows)]
-        let file = {
-            let mut options = OpenOptions::new();
-            options.read(true).write(true).create(true);
-            {
-                use std::os::windows::fs::OpenOptionsExt as _;
-                options.share_mode(0);
-            }
-            options
-                .open(&self.lease)
-                .map_err(|error| io_error("open recovery-store lease", error))?
-        };
+        let file = open_private_lease(&self.lease, "open recovery-store lease")?;
         validate_regular_metadata(
             &file
                 .metadata()
@@ -1495,6 +1484,10 @@ impl DocumentRecoveryStore {
         #[cfg(unix)]
         rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)
             .map_err(|error| io_error("lock recovery store", io::Error::from(error)))?;
+        // Another process waits here rather than failing to open the lease.
+        #[cfg(windows)]
+        file.lock()
+            .map_err(|error| io_error("lock recovery store", error))?;
         Ok(StoreLease {
             _file: file,
             _process_guard: process_guard,
@@ -1549,6 +1542,9 @@ impl DocumentRecoveryStore {
         #[cfg(unix)]
         rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)
             .map_err(|error| io_error("lock recovery staging", io::Error::from(error)))?;
+        #[cfg(windows)]
+        file.lock()
+            .map_err(|error| io_error("lock recovery staging", error))?;
         Ok((process_guard, file))
     }
 
@@ -1584,6 +1580,14 @@ impl DocumentRecoveryStore {
                 ));
             }
         }
+        #[cfg(windows)]
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(io_error("lock recovery staging for collection", error));
+            }
+        }
         Ok(Some((process_guard, file)))
     }
 
@@ -1610,7 +1614,7 @@ impl DocumentRecoveryStore {
                 let owned_head = name
                     .strip_suffix(".json")
                     .is_some_and(|id| decode_fixed_hex::<16>(id).is_some());
-                let owned_temp = is_owned_temporary_name(&name, "head");
+                let owned_temp = is_owned_temporary_name(name, "head");
                 (owned_head && !active_names.contains(name)) || owned_temp
             },
         )?;
@@ -2048,13 +2052,7 @@ fn create_private_directory(path: &Path) -> Result<(), DocumentRecoveryStoreErro
     match fs::symlink_metadata(path) {
         Ok(_) => validate_private_directory(path),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let mut builder = fs::DirBuilder::new();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt as _;
-                builder.mode(0o700);
-            }
-            match builder.create(path) {
+            match fs::DirBuilder::new().create(path) {
                 Ok(()) => {
                     sync_directory_path(path.parent().ok_or(
                         DocumentRecoveryStoreError::InvalidInput("directory has no parent"),
@@ -2691,20 +2689,35 @@ fn publish_replace(source: &Path, destination: &Path) -> Result<(), DocumentReco
         .encode_wide()
         .chain(Some(0))
         .collect::<Vec<_>>();
-    if unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    } == 0
-    {
-        return Err(io_error(
-            "publish recovery file",
-            io::Error::last_os_error(),
-        ));
+    // A virus scanner or indexer briefly opening the replaced file makes the
+    // move fail with access denied or a sharing violation; retry for about a
+    // second before reporting it.
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    let mut delay = std::time::Duration::from_millis(5);
+    for attempt in 0.. {
+        if unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        } != 0
+        {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        let transient = matches!(
+            error.raw_os_error(),
+            Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION)
+        );
+        if !transient || attempt == 8 {
+            return Err(io_error("publish recovery file", error));
+        }
+        std::thread::sleep(delay);
+        delay = (delay * 2).min(std::time::Duration::from_millis(250));
     }
-    Ok(())
+    unreachable!("the retry loop returns")
 }
 
 fn io_error(operation: &'static str, error: io::Error) -> DocumentRecoveryStoreError {

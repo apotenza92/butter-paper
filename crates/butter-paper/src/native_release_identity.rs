@@ -5,14 +5,16 @@
 //! the complete app bundle against Butter Paper's exact Developer ID
 //! requirement before returning a release channel.
 
+#[cfg(any(test, target_os = "macos"))]
+use std::ffi::OsStr;
 use std::{
-    ffi::OsStr,
     fmt,
     path::{Path, PathBuf},
 };
 
 use crate::native_storage_layout::NativeReleaseChannel;
 
+#[cfg(target_os = "macos")]
 const APPLE_TEAM_ID: &str = "27JL2VERNC";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,6 +43,7 @@ impl NativeReleaseIdentity {
     }
 }
 
+#[cfg(any(test, target_os = "macos"))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct BundleMetadata {
     bundle_identifier: String,
@@ -52,6 +55,7 @@ struct BundleMetadata {
     bundle_version: String,
 }
 
+#[cfg(any(test, target_os = "macos"))]
 trait PackageAttestor {
     fn attest(
         &self,
@@ -71,10 +75,12 @@ impl fmt::Display for NativeReleaseIdentityError {
 
 impl std::error::Error for NativeReleaseIdentityError {}
 
+#[cfg(any(test, target_os = "macos"))]
 fn failure(message: impl Into<String>) -> NativeReleaseIdentityError {
     NativeReleaseIdentityError(message.into())
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn release_channel(
     metadata: &BundleMetadata,
 ) -> Result<NativeReleaseChannel, NativeReleaseIdentityError> {
@@ -112,6 +118,7 @@ fn release_channel(
     Ok(channel)
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn resolve_identity(
     executable: &Path,
     metadata: BundleMetadata,

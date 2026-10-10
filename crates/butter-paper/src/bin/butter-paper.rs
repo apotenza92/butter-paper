@@ -798,7 +798,6 @@ impl ComponentStory {
                 .expect("performance runtime exists")
                 .fail("native X11 evidence requires the benchmark-evidence feature");
             cx.notify();
-            return;
         }
         #[cfg(feature = "benchmark-evidence")]
         {
@@ -1471,7 +1470,8 @@ fn register_application_shell_actions(cx: &mut App) {
                         Some(error),
                     ),
                 };
-                let _ = window.prompt(level, &message, detail.as_deref(), &["OK"], cx);
+                // The only button is OK, so the answer is not needed.
+                drop(window.prompt(level, &message, detail.as_deref(), &["OK"], cx));
             });
         })
         .detach();
@@ -1546,7 +1546,11 @@ fn register_application_shell_actions(cx: &mut App) {
     });
     on_window_action::<NewWindow>(cx, |cx| {
         if shared_application(cx).multi_window {
-            open_document_window(cx, None);
+            // Placed explicitly so it stays a separate window when macOS
+            // prefers tabs: Butter Paper draws no native window tab bar, so
+            // a window added as a tab would be hidden behind the first.
+            let bounds = next_window_bounds(cx);
+            open_document_window_with_bounds(cx, None, Some(bounds));
         }
     });
     // Quit closes every window through its own unsaved-changes transaction.
@@ -1754,7 +1758,7 @@ fn native_runtime_mode(
         Ok(NativeRuntimeMode::Bundled)
     }
     #[cfg(feature = "development-pdfium-override")]
-    match development.as_deref() {
+    match development {
         None if pdfium_library.is_none() => Ok(NativeRuntimeMode::Bundled),
         None => Err("BP_PDFIUM_LIBRARY is allowed only when BP_NATIVE_DEVELOPMENT=1".to_owned()),
         Some(value) if value == "1" => {
@@ -1943,7 +1947,7 @@ fn resolve_storage_context(
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| "the system clock must follow the Unix epoch".to_owned())?
             .as_nanos();
-        return NativeStorageLayout::development(
+        NativeStorageLayout::development(
             application_data_directory(),
             std::env::temp_dir().join(format!(
                 "butter-paper-gpui-surfaces-{}-{run_id}",
@@ -1962,7 +1966,7 @@ fn resolve_storage_context(
                 application_title: APPLICATION_TITLE,
             })
         })
-        .map_err(str::to_owned);
+        .map_err(str::to_owned)
     }
 
     #[cfg(not(feature = "development-pdfium-override"))]
@@ -2218,6 +2222,18 @@ fn main() {
                 )),
             ))
         });
+        let recent_documents = cx.new(|_| {
+            if perf.is_some() {
+                return Default::default();
+            }
+            butter_paper::recent_documents::RecentDocuments::open(
+                storage_layout.preferences_root().join("recent-documents"),
+            )
+            .unwrap_or_else(|error| {
+                eprintln!("Recent PDFs could not be loaded: {error}");
+                Default::default()
+            })
+        });
         let multi_window = perf.is_none();
         cx.set_global(DocumentWindows {
             shared: Rc::new(SharedApplication {
@@ -2235,6 +2251,7 @@ fn main() {
                 checkpoint_enabled: launch_resolution.checkpoint_enabled,
                 document_recovery_store,
                 recent_signature_store,
+                recent_documents,
                 template_manager_root: storage_layout.template_library_root(),
                 template_authority: std::cell::RefCell::new(None),
                 coordinator: Arc::new(WindowSessionCoordinator::default()),
@@ -2244,6 +2261,17 @@ fn main() {
             windows: Vec::new(),
             last_active: None,
         });
+
+        cx.on_app_quit(|cx| {
+            let history = shared_application(cx).recent_documents.clone();
+            let pending = history.update(cx, |history, _| history.take_pending_publication());
+            async move {
+                if let Some(pending) = pending {
+                    pending.await;
+                }
+            }
+        })
+        .detach();
 
         cx.on_window_closed(|cx, window_id| {
             let shared = shared_application(cx);
@@ -2345,6 +2373,7 @@ struct SharedApplication {
     checkpoint_enabled: bool,
     document_recovery_store: Option<Result<Arc<DocumentRecoveryStore>, String>>,
     recent_signature_store: Option<Arc<RecentSignatureStore>>,
+    recent_documents: Entity<butter_paper::recent_documents::RecentDocuments>,
     template_manager_root: std::path::PathBuf,
     /// One template library authority for every window, created with the first.
     template_authority:
@@ -2664,6 +2693,7 @@ fn build_document_window(
                 Err(error) => workspace.bind_document_recovery_store_error(error.clone()),
             }
         }
+        workspace.bind_recent_documents(shared.recent_documents.clone(), cx);
         if let Some(store) = &shared.recent_signature_store {
             workspace.bind_recent_signature_store(store.clone());
         }
@@ -3306,13 +3336,12 @@ fn begin_startup_launch(
                         let should_launch = items.is_empty();
                         let _ = workspace.update(cx, |workspace, cx| {
                             workspace.finish_startup_recovery_inspection(items, cx);
-                            if should_launch {
-                                if let Some(open) =
+                            if should_launch
+                                && let Some(open) =
                                     workspace.take_deferred_startup_open()
                                 {
                                     apply_deferred_startup_open(workspace, open, cx);
                                 }
-                            }
                         });
                     }
                     Err(error) => {
@@ -3371,7 +3400,7 @@ mod updates {
         native_updater::{
             AvailableUpdate, Installation, PreparedUpdate, RELEASE_FEED_URL, ReleaseVersion,
             UpdateChannel, UpdateError, UpdateTarget, current_installation, download_update,
-            fetch_releases, prepare_update, select_update,
+            fetch_releases, prepare_update, retire_older_windows_installs, select_update,
         },
     };
     use gpui::{App, Global};
@@ -3451,8 +3480,17 @@ mod updates {
         })
         .detach();
 
-        if cx.global::<UpdateService>().installation.is_none() {
+        let Some(installation) = cx.global::<UpdateService>().installation.clone() else {
             return;
+        };
+        if matches!(installation, Installation::Windows { .. }) {
+            cx.background_executor()
+                .spawn(async move {
+                    if let Err(error) = retire_older_windows_installs(&installation, current) {
+                        eprintln!("Butter Paper could not remove older versions: {error}");
+                    }
+                })
+                .detach();
         }
         // Scheduled checks: shortly after launch, then hourly re-evaluation.
         cx.spawn(async move |cx| {
@@ -3470,7 +3508,7 @@ mod updates {
                     }
                 });
                 if due {
-                    let _ = cx.update(|cx| check(cx, false));
+                    cx.update(|cx| check(cx, false));
                 }
                 startup = false;
                 cx.background_executor()
@@ -3553,7 +3591,7 @@ mod updates {
         });
         cx.spawn(async move |cx| {
             let result = task.await;
-            let _ = cx.update(|cx| finish_check(cx, manual, result));
+            cx.update(|cx| finish_check(cx, manual, result));
         })
         .detach();
     }
@@ -3625,7 +3663,7 @@ mod updates {
         });
         cx.spawn(async move |cx| {
             let result = task.await;
-            let _ = cx.update(|cx| {
+            cx.update(|cx| {
                 let service = cx.global_mut::<UpdateService>();
                 match result {
                     Ok(prepared) => {
@@ -3935,9 +3973,10 @@ mod review_driver {
                         pause(cx, 400).await;
                     }
                     "click" => {
-                        // click W X Y: a left click at window coordinates.
+                        // click W X Y [COUNT]: a left click at window coordinates.
                         let window = number(1) as usize;
                         let position = point(px(number(2)), px(number(3)));
+                        let click_count = words.get(4).map(|value| value.parse().unwrap()).unwrap_or(1);
                         dispatch(
                             cx,
                             window,
@@ -3945,7 +3984,7 @@ mod review_driver {
                                 button: MouseButton::Left,
                                 position,
                                 modifiers: Modifiers::default(),
-                                click_count: 1,
+                                click_count,
                                 first_mouse: false,
                             }),
                         );
@@ -3957,10 +3996,46 @@ mod review_driver {
                                 button: MouseButton::Left,
                                 position,
                                 modifiers: Modifiers::default(),
-                                click_count: 1,
+                                click_count,
                             }),
                         );
                         pause(cx, 400).await;
+                    }
+                    "move" => {
+                        // move W X Y: the pointer moves to window coordinates.
+                        dispatch(
+                            cx,
+                            number(1) as usize,
+                            PlatformInput::MouseMove(MouseMoveEvent {
+                                position: point(px(number(2)), px(number(3))),
+                                pressed_button: None,
+                                modifiers: Modifiers::default(),
+                            }),
+                        );
+                        pause(cx, 400).await;
+                    }
+                    "zoom" => {
+                        // zoom W X Y DY: a Ctrl+wheel of DY pixels at X Y.
+                        dispatch(
+                            cx,
+                            number(1) as usize,
+                            PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                                position: point(px(number(2)), px(number(3))),
+                                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(number(4)))),
+                                modifiers: Modifiers {
+                                    control: true,
+                                    ..Modifiers::default()
+                                },
+                                touch_phase: gpui::TouchPhase::Moved,
+                            }),
+                        );
+                        pause(cx, 600).await;
+                    }
+                    "drag" => {
+                        // drag W X1 Y1 X2 Y2 NAME: a left drag in window W.
+                        let start = point(px(number(2)), px(number(3)));
+                        let end = point(px(number(4)), px(number(5)));
+                        drag(cx, number(1) as usize, start, end, &out, words[6], &mut log).await;
                     }
                     "key" => {
                         // key W KEYSTROKE: a key press in window W, through the
@@ -3992,6 +4067,33 @@ mod review_driver {
                                 });
                             }
                         }
+                        pause(cx, 800).await;
+                    }
+                    "type" => {
+                        // type W TEXT: characters into the focused text input of
+                        // window W, through the platform input handler as typing.
+                        let window = number(1) as usize;
+                        let text = words[2..].join(" ");
+                        cx.update(|cx| {
+                            if let Some(entry) = document_window_entries(cx).get(window).cloned() {
+                                let _ = entry.handle.update(cx, |_, window, cx| {
+                                    for character in text.chars() {
+                                        window.dispatch_keystroke(
+                                            gpui::Keystroke {
+                                                modifiers: gpui::Modifiers::default(),
+                                                key: if character == ' ' {
+                                                    "space".into()
+                                                } else {
+                                                    character.to_lowercase().to_string()
+                                                },
+                                                key_char: Some(character.to_string()),
+                                            },
+                                            cx,
+                                        );
+                                    }
+                                });
+                            }
+                        });
                         pause(cx, 800).await;
                     }
                     "place" => {
@@ -4271,16 +4373,24 @@ mod review_driver {
                         (workspace.session_debug_states(cx), workspace.active_document_id())
                     })
                     .unwrap_or_default();
-                let (tool, workspace_focus) = entry
+                let (tool, workspace_focus, view) = entry
                     .workspace
                     .upgrade()
                     .map(|workspace| {
                         let workspace = workspace.read(cx);
+                        let id = workspace.active_document_id();
                         (
-                            workspace
-                                .active_document_id()
-                                .and_then(|id| workspace.annotation_tool(id, cx)),
+                            id.and_then(|id| workspace.annotation_tool(id, cx)),
                             Some(workspace.focus_handle()),
+                            id.and_then(|id| workspace.document_view_state(id, cx))
+                                .map(|view| {
+                                    (
+                                        view.mode(),
+                                        view.zoom_percent(),
+                                        view.scroll(),
+                                        workspace.viewport_cursor(),
+                                    )
+                                }),
                         )
                     })
                     .unwrap_or_default();
@@ -4306,12 +4416,13 @@ mod review_driver {
                 });
                 writeln!(
                     log,
-                    "{name} w{index} frame={:?} active_window={} tabs={:?} active_tab={:?} tool={:?} focus={:?} saved={:?}",
+                    "{name} w{index} frame={:?} active_window={} tabs={:?} active_tab={:?} tool={:?} view={:?} focus={:?} saved={:?}",
                     bounds,
                     Some(entry.handle) == active,
                     titles.0,
                     titles.1,
                     tool,
+                    view,
                     focus,
                     saved.map(|_| path.display().to_string())
                 )

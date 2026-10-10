@@ -245,8 +245,9 @@ impl PageContentGeometryRequestState {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub enum DocumentRecoveryPreparation {
+    #[default]
     Unbound,
     Pending {
         generation: u64,
@@ -277,12 +278,6 @@ pub enum DocumentRecoveryPreparation {
         saved_revision: u64,
         message: String,
     },
-}
-
-impl Default for DocumentRecoveryPreparation {
-    fn default() -> Self {
-        Self::Unbound
-    }
 }
 
 impl DocumentRecoveryPreparation {
@@ -320,6 +315,9 @@ pub struct NativeDocumentSession {
     pub(crate) requested_page: u32,
     pub(crate) pending_navigation_scroll: Option<u32>,
     pub(crate) pending_zoom_anchor: Option<crate::zoom_anchor::ZoomAnchor>,
+    /// A page to frame once the new layout is planned: centred for Fit
+    /// Page, centred across for Fit Width.
+    pub(crate) pending_page_frame: Option<(u32, crate::document_viewer::ViewerFitPreset)>,
     pub(crate) generation: u64,
     pub(crate) save_generation: u64,
     pub(crate) image_prepare_generation: u64,
@@ -377,6 +375,7 @@ impl NativeDocumentSession {
             requested_page: 0,
             pending_navigation_scroll: None,
             pending_zoom_anchor: None,
+            pending_page_frame: None,
             generation,
             save_generation: 0,
             image_prepare_generation: 0,
@@ -464,6 +463,34 @@ impl NativeDocumentSession {
         self.resource
             .as_ref()
             .and_then(|resource| resource.worker_pid())
+    }
+
+    /// The page point at the viewport centre, to hold there across a zoom or
+    /// mode change.
+    pub(crate) fn viewport_centre_anchor(&self) -> Option<crate::zoom_anchor::ZoomAnchor> {
+        let plan = self.viewer.plan_snapshot()?;
+        let (width, height) = self.viewport_size?;
+        crate::zoom_anchor::zoom_anchor_at(
+            &plan.page_layouts,
+            self.viewer.logical_scroll(),
+            (width / 2., height / 2.),
+        )
+    }
+
+    /// Before a page-mode change: keep the view centre if it is on the
+    /// current page, otherwise show the current page from its top. Before
+    /// the first layout there is no view to keep.
+    pub(crate) fn hold_current_page_across_mode_change(&mut self) {
+        if self.viewer.plan_snapshot().is_none() {
+            return;
+        }
+        match self
+            .viewport_centre_anchor()
+            .filter(|anchor| anchor.page == self.current_page as usize)
+        {
+            Some(anchor) => self.pending_zoom_anchor = Some(anchor),
+            None => self.pending_navigation_scroll = Some(self.current_page),
+        }
     }
 
     pub fn page_count(&self) -> usize {
@@ -668,7 +695,7 @@ impl NativeDocumentSession {
                 annotation_revision: snapshot.revision,
                 ..HighlightCompositeEvidence::default()
             };
-            return Ok(());
+            Ok(())
         }
         #[cfg(not(target_os = "macos"))]
         {

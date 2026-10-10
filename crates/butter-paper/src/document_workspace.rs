@@ -1,7 +1,26 @@
+#[path = "document_workspace_alerts.rs"]
+mod alerts;
 #[path = "interaction_chrome.rs"]
 mod interaction_chrome;
+#[path = "document_workspace_recovery_notifications.rs"]
+mod recovery_notifications;
 #[path = "space_pan.rs"]
 mod space_pan;
+#[path = "document_workspace_thumbnails.rs"]
+mod thumbnail_sidebar;
+#[path = "document_workspace_viewport.rs"]
+mod viewport;
+use thumbnail_sidebar::ThumbnailSidebarInputs;
+#[path = "document_workspace_empty.rs"]
+mod empty;
+#[path = "document_workspace_settings_popovers.rs"]
+mod settings_popovers;
+#[path = "document_workspace_tabs.rs"]
+mod tabs;
+#[path = "document_workspace_root.rs"]
+mod workspace_root;
+use alerts::DocumentAlerts;
+use viewport::ViewportInputs;
 
 use gpui_component::ElementExt as _;
 use gpui_component::FocusTrapElement as _;
@@ -15,6 +34,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use crate::dialog_buttons::dialog_action_button;
 pub use crate::document_resource::{
     DEFAULT_PAGE_RENDER_WIDTH, DEFAULT_THUMBNAIL_COUNT, DEFAULT_THUMBNAIL_WIDTH, DocumentId,
     DocumentRecoveryRequest, NativeDocumentOpener, NativeDocumentResource, OpenDocumentRequest,
@@ -30,7 +50,7 @@ pub use crate::document_session::{
 pub use crate::document_viewer::{DocumentViewerSnapshot, ViewerFitPreset, ViewerRenderQuality};
 use crate::viewer::CadOrganisation as PlannerCadOrganisation;
 use crate::{
-    accessible_button::{accessible_disclosure_button, accessible_icon_button},
+    accessible_button::{accessible_disclosure_button, accessible_icon_button, close_icon_button},
     adaptive_performance::{AdaptivePerformanceSnapshot, ViewerRenderDiagnostics},
     cad_view_control::CadViewOrganisation as ControlCadOrganisation,
     continuous_view_control::ContinuousViewControl,
@@ -161,11 +181,11 @@ use gpui_component::{
     WindowExt as _,
     alert::Alert,
     button::{Button, ButtonGroup, ButtonVariants as _},
-    dialog::{DialogAction, DialogFooter},
+    dialog::DialogFooter,
     h_flex,
     input::{
-        Copy, Cut, Delete, Escape, Input, InputEvent, InputState, NumberInput, Paste, Redo,
-        SelectAll, Textarea, TextareaState, Undo,
+        Copy, Cut, Delete, Escape, Input, InputEvent, InputState, Paste, Redo, SelectAll, Textarea,
+        TextareaState, Undo,
     },
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     popover::Popover,
@@ -529,6 +549,9 @@ pub const DOCUMENT_SIGNATURE_RECENT_REMOVE_CONFIRM_ID: &str =
 pub const DOCUMENT_SNAPSHOT_TOOL_ID: &str = "tool-snapshot";
 pub const DOCUMENT_SNAP_SETTINGS_ID: &str = "viewer-snap-target-menu";
 pub const DOCUMENT_SNAP_POPOVER_ID: &str = "viewer-snap-popover";
+pub const DOCUMENT_SNAP_CLOSE_ID: &str = "viewer-snap-close";
+pub const DOCUMENT_HIGHLIGHT_SETTINGS_CLOSE_ID: &str =
+    "document-workspace-highlight-defaults-close";
 pub const DOCUMENT_SNAP_MARKUP_ID: &str = "viewer-snap-markup";
 pub const DOCUMENT_SNAP_CONTENT_ID: &str = "viewer-snap-content";
 pub const DOCUMENT_SNAP_PAGE_GRID_ID: &str = "viewer-snap-page-grid";
@@ -552,6 +575,7 @@ pub const DOCUMENT_SNAP_NEAREST_ID: &str = "viewer-snap-target-nearest";
 pub const DOCUMENT_LENGTH_TOOL_ID: &str = "document-workspace-length-tool";
 pub const DOCUMENT_MEASUREMENT_PROPERTIES_ID: &str = "document-workspace-measurement-properties";
 pub const DOCUMENT_ANNOTATION_STATUS_ID: &str = "document-workspace-annotation-status";
+pub const DOCUMENT_TEXT_BOX_EDITOR_CONTENT_ID: &str = "document-text-box-editor-content";
 pub const DOCUMENT_TEXT_BOX_EDITOR_ID: &str = "document-workspace-text-box-editor";
 pub const DOCUMENT_TEXT_BOX_COMMIT_ERROR_ALERT_ID: &str =
     "document-workspace-text-box-commit-error-alert";
@@ -618,6 +642,13 @@ pub const DOCUMENT_RECOVERY_DISCARD_CONFIRM_ID: &str =
     "document-workspace-recovery-discard-confirm";
 pub const VIEWPORT_OPEN_DOCUMENT_ID: &str = "viewport-open-document";
 
+const MIDDLE_DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
+const MIDDLE_CLICK_SLOP_PX: f32 = 8.;
+
+fn middle_click_distance(a: gpui::Point<Pixels>, b: gpui::Point<Pixels>) -> f32 {
+    f32::from(a.x - b.x).hypot(f32::from(a.y - b.y))
+}
+
 /// Cursor policy for the document viewport. Calibration and marquee gestures
 /// own the crosshair even when Space-pan is armed; otherwise Pan mirrors the
 /// reference viewport's open/closed hand and annotation tools use their
@@ -647,9 +678,8 @@ pub fn document_viewport_cursor_style(
     }
 }
 
-/// GPUI cannot install Electron's arbitrary-angle SVG resize cursor. Preserve
-/// its handle-plus-annotation orientation with the nearest native macOS resize
-/// axis instead of silently presenting an unrelated arrow.
+/// The resize arrow for a box handle, along the handle's direction at the
+/// box's rotation (Butter Paper's own cursor, drawn at the exact angle).
 pub fn rectangle_resize_cursor_style(
     handle: RectangleResizeHandle,
     rotation_degrees: f64,
@@ -660,19 +690,13 @@ pub fn rectangle_resize_cursor_style(
         RectangleResizeHandle::North | RectangleResizeHandle::South => 90.,
         RectangleResizeHandle::NorthEast | RectangleResizeHandle::SouthWest => -45.,
     };
-    match (((base_degrees + rotation_degrees).rem_euclid(180.) / 45.).round() as i32).rem_euclid(4)
-    {
-        0 => CursorStyle::ResizeLeftRight,
-        1 => CursorStyle::ResizeUpLeftDownRight,
-        2 => CursorStyle::ResizeUpDown,
-        _ => CursorStyle::ResizeUpRightDownLeft,
-    }
+    crate::canvas_cursors::resize_cursor(base_degrees + rotation_degrees)
 }
 
 /// Resolves the cursor over an item's grab zone, which has no painted handle.
-/// Box edges and corners take the nearest native resize cursor; vertices,
-/// endpoints and other point controls take a crosshair. Rotation stays Arrow
-/// because GPUI has no equivalent for Electron's SVG rotate cursor.
+/// Box edges and corners take a resize arrow at the box's angle, the rotation
+/// knob the rotate arrow, and vertices, endpoints and other point controls a
+/// crosshair.
 pub fn annotation_resize_cursor_style(
     scene: &AnnotationScene,
     id: &MarkupId,
@@ -743,12 +767,11 @@ pub fn annotation_resize_cursor_style(
     } else {
         return Some(CursorStyle::Crosshair);
     };
-    // Box shapes number their rotation knob after the eight resize handles;
-    // GPUI has no rotate cursor, so it reads as a pressable control.
+    // Box shapes number their rotation knob after the eight resize handles.
     Some(
         handle
             .map(|handle| rectangle_resize_cursor_style(handle, rotation_degrees))
-            .unwrap_or(CursorStyle::PointingHand),
+            .unwrap_or_else(crate::canvas_cursors::rotate_cursor),
     )
 }
 
@@ -2469,6 +2492,8 @@ pub struct DocumentWorkspace {
     document_open_status: DocumentOpenBatchStatus,
     document_open_failures: Vec<DocumentOpenFailure>,
     session_recovery_warning: Option<String>,
+    recovery_notifications_open: bool,
+    recovery_notifications_focus: FocusHandle,
     startup_recovery_inspecting: bool,
     startup_recovery_items: Vec<StartupRecoveryItem>,
     startup_recovery_operation: Option<RecoveryDocumentId>,
@@ -2526,6 +2551,13 @@ pub struct DocumentWorkspace {
     pan_tool_active: bool,
     pan_drag: Option<(DocumentId, Point<Pixels>, Point<Pixels>)>,
     space_pan_hold: space_pan::SpacePanHold,
+    /// The middle button is held: Pan is active until it is released.
+    middle_pan_held: bool,
+    /// The last middle-button press, to recognise a double-click.
+    last_middle_press: Option<(Instant, gpui::Point<Pixels>)>,
+    /// The rotation knob the last press landed on. Hover is not refreshed
+    /// between the clicks of a double-click, so the second press finds the
+    /// knob here.
     workspace_focus: FocusHandle,
     text_box_return_focus: FocusHandle,
     pending_text_box_editor: Option<PendingTextBoxEditor>,
@@ -2551,6 +2583,8 @@ pub struct DocumentWorkspace {
     signature_operation: Option<crate::phone_signature::SignatureOperation>,
     signature_camera_available: bool,
     signature_name_input: Option<Entity<InputState>>,
+    recent_documents: Entity<crate::recent_documents::RecentDocuments>,
+    recent_documents_subscription: Option<Subscription>,
     recent_signature_store: Option<Arc<RecentSignatureStore>>,
     recent_signatures: Vec<RecentSignaturePreview>,
     recent_signatures_loading: bool,
@@ -3582,6 +3616,8 @@ fn validate_existing_text_editor_authority(
     Ok(())
 }
 
+// At most one pending target exists, so the large style variant is not boxed.
+#[allow(clippy::large_enum_variant)]
 enum PendingTextEditorTarget {
     NewTextBox {
         id: MarkupId,
@@ -3972,6 +4008,8 @@ impl DocumentWorkspace {
             document_open_status: DocumentOpenBatchStatus::Idle,
             document_open_failures: Vec::new(),
             session_recovery_warning: None,
+            recovery_notifications_open: false,
+            recovery_notifications_focus: cx.focus_handle(),
             startup_recovery_inspecting: false,
             startup_recovery_items: Vec::new(),
             startup_recovery_operation: None,
@@ -4027,6 +4065,8 @@ impl DocumentWorkspace {
             pan_tool_active: false,
             pan_drag: None,
             space_pan_hold: space_pan::SpacePanHold::default(),
+            middle_pan_held: false,
+            last_middle_press: None,
             workspace_focus: cx.focus_handle(),
             text_box_return_focus: cx.focus_handle(),
             pending_text_box_editor: None,
@@ -4046,6 +4086,8 @@ impl DocumentWorkspace {
             signature_operation: None,
             signature_camera_available: crate::camera_signature::helper_path().is_some(),
             signature_name_input: None,
+            recent_documents: cx.new(|_| crate::recent_documents::RecentDocuments::default()),
+            recent_documents_subscription: None,
             recent_signature_store: None,
             recent_signatures: Vec::new(),
             recent_signatures_loading: false,
@@ -4127,6 +4169,28 @@ impl DocumentWorkspace {
         let mut workspace = Self::with_opener(opener, cx);
         workspace.generated_document_store = Some(store);
         workspace
+    }
+
+    pub fn bind_recent_documents(
+        &mut self,
+        history: Entity<crate::recent_documents::RecentDocuments>,
+        cx: &mut Context<Self>,
+    ) {
+        self.recent_documents_subscription = Some(cx.observe(&history, |_, _, cx| cx.notify()));
+        self.recent_documents = history;
+        cx.notify();
+    }
+
+    fn remember_recent_document(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
+        let path = self.session(document_id, cx).and_then(|session| {
+            let session = session.read(cx);
+            (matches!(session.status, NativeDocumentStatus::Ready) && !session.save_as_required)
+                .then(|| session.path().to_path_buf())
+        });
+        if let Some(path) = path {
+            self.recent_documents
+                .update(cx, |history, cx| history.remember(path, cx));
+        }
     }
 
     pub fn bind_recent_signature_store(&mut self, store: Arc<RecentSignatureStore>) {
@@ -4725,7 +4789,7 @@ impl DocumentWorkspace {
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
-                            DialogAction::new().child(
+                            dialog_action_button(
                                 Button::new(DOCUMENT_RECOVERY_DISCARD_CONFIRM_ID)
                                     .debug_selector(|| {
                                         DOCUMENT_RECOVERY_DISCARD_CONFIRM_ID.into()
@@ -4800,14 +4864,10 @@ impl DocumentWorkspace {
                 let id_hex = id.to_hex();
                 let title = item.title();
                 let detail = match &item.availability {
-                    StartupRecoveryAvailability::OpenedSourceNeedsVerification => format!(
-                        "Unsaved revision {} is available. Verify the source before recovering it.",
-                        item.current_revision.unwrap_or_default()
-                    ),
-                    StartupRecoveryAvailability::GeneratedCopyRequired => format!(
-                        "Unsaved revision {} needs to be recovered as a new PDF.",
-                        item.current_revision.unwrap_or_default()
-                    ),
+                    StartupRecoveryAvailability::OpenedSourceNeedsVerification =>
+                        "Check the original PDF before recovering its unsaved changes.".to_owned(),
+                    StartupRecoveryAvailability::GeneratedCopyRequired =>
+                        "Recover these unsaved changes into a new PDF.".to_owned(),
                     StartupRecoveryAvailability::Unavailable(error) => {
                         format!("This recovery cannot be opened: {error}")
                     }
@@ -4820,8 +4880,10 @@ impl DocumentWorkspace {
                 let copy_id = format!("document-workspace-recovery-copy-{id_hex}");
                 let discard_id = format!("document-workspace-recovery-discard-{id_hex}");
                 inbox.child(
-                    h_flex()
+                    v_flex()
                         .w_full()
+                        .min_w_0()
+                        .whitespace_normal()
                         .items_start()
                         .gap_3()
                         .px_3()
@@ -4830,10 +4892,10 @@ impl DocumentWorkspace {
                                 .flex_1()
                                 .min_w_0()
                                 .gap_1()
-                                .child(gpui::div().font_semibold().child(title))
+                                .child(gpui::div().w_full().whitespace_normal().font_semibold().child(title))
                                 .child(
                                     gpui::div()
-                                        .text_sm()
+                                        .w_full().whitespace_normal().text_sm()
                                         .text_color(cx.theme().muted_foreground)
                                         .child(detail),
                                 ),
@@ -4842,6 +4904,8 @@ impl DocumentWorkspace {
                             let selector = discard_id.clone();
                             row.child(
                                 h_flex()
+                                    .w_full()
+                                    .flex_wrap()
                                     .gap_2()
                                     .when(
                                         matches!(
@@ -4853,7 +4917,7 @@ impl DocumentWorkspace {
                                             actions.child(
                                                 Button::new(recover_id)
                                                     .debug_selector(move || {
-                                                        recover_selector.clone().into()
+                                                        recover_selector.clone()
                                                     })
                                                     .small()
                                                     .disabled(operation.is_some())
@@ -4886,7 +4950,7 @@ impl DocumentWorkspace {
                                             actions.child(
                                                 Button::new(copy_id)
                                                     .debug_selector(move || {
-                                                        copy_selector.clone().into()
+                                                        copy_selector.clone()
                                                     })
                                                     .small()
                                                     .disabled(operation.is_some())
@@ -4909,7 +4973,7 @@ impl DocumentWorkspace {
                                     )
                                     .child(
                                         Button::new(discard_id)
-                                            .debug_selector(move || selector.clone().into())
+                                            .debug_selector(move || selector.clone())
                                             .small()
                                             .outline()
                                             .danger()
@@ -9277,12 +9341,12 @@ impl DocumentWorkspace {
         self.register_session_tab(document_id, cx);
         self.sessions.push(session);
         cx.notify();
-        let open_request = OpenDocumentRequest {
+
+        OpenDocumentRequest {
             document_id,
             generation,
             path,
-        };
-        open_request
+        }
     }
 
     fn prompt_to_open_documents(&mut self, cx: &mut Context<Self>) {
@@ -9534,13 +9598,13 @@ impl DocumentWorkspace {
                 } else {
                     workspace.save_as_path(authority.document_id, path, cx)
                 };
-                if let Err(error) = result {
-                    if authority.close_after_save {
-                        workspace
-                            .annotation_statuses
-                            .insert(authority.document_id, error);
-                        cx.notify();
-                    }
+                if let Err(error) = result
+                    && authority.close_after_save
+                {
+                    workspace
+                        .annotation_statuses
+                        .insert(authority.document_id, error);
+                    cx.notify();
                 }
             });
         })
@@ -9938,6 +10002,14 @@ impl DocumentWorkspace {
                     session.presentation_error = None;
                     session.current_page = 0;
                     session.requested_page = 0;
+                    // Open on the first page framed for the fit, centred even
+                    // when a wider page elsewhere widens the layout. A restored
+                    // view replaces this.
+                    session.pending_page_frame = match session.view_state.zoom_preset() {
+                        ViewerZoomPreset::Manual => None,
+                        ViewerZoomPreset::FitWidth => Some((0, ViewerFitPreset::Width)),
+                        ViewerZoomPreset::FitPage => Some((0, ViewerFitPreset::Page)),
+                    };
                     session.current_base_raster = Some(current_base_raster);
                     session.current_image = Some(page_image);
                     session.thumbnails = thumbnails;
@@ -9952,6 +10024,7 @@ impl DocumentWorkspace {
                     cx.notify();
                 });
                 self.active_document_id = Some(request.document_id);
+                self.remember_recent_document(request.document_id, cx);
                 if let Some(recovered) = startup_recovery {
                     session.update(cx, |session, cx| {
                         session.recovery_preparation_generation =
@@ -10202,14 +10275,14 @@ impl DocumentWorkspace {
         match preparation {
             DocumentRecoveryPreparation::Failed { .. } => {
                 self.begin_document_recovery_preparation(document_id, cx);
-                return Ok(());
+                Ok(())
             }
             DocumentRecoveryPreparation::Pending { .. } => {
-                return Err("Crash recovery is already preparing for this document".into());
+                Err("Crash recovery is already preparing for this document".into())
             }
-            DocumentRecoveryPreparation::Ready { .. } => return Ok(()),
+            DocumentRecoveryPreparation::Ready { .. } => Ok(()),
             DocumentRecoveryPreparation::Unbound => {
-                return Err("Crash recovery is not configured for this document".into());
+                Err("Crash recovery is not configured for this document".into())
             }
             DocumentRecoveryPreparation::Ambiguous {
                 generation,
@@ -10250,7 +10323,7 @@ impl DocumentWorkspace {
                     });
                 })
                 .detach();
-                return Ok(());
+                Ok(())
             }
             DocumentRecoveryPreparation::RebaseFailed {
                 generation,
@@ -10326,7 +10399,7 @@ impl DocumentWorkspace {
                     });
                 })
                 .detach();
-                return Ok(());
+                Ok(())
             }
         }
     }
@@ -10381,6 +10454,7 @@ impl DocumentWorkspace {
                     }
                 }
             };
+            session.pending_page_frame = None;
             session
                 .view_state
                 .apply_restart_view(view, session.page_sizes.len());
@@ -10486,9 +10560,17 @@ impl DocumentWorkspace {
             return false;
         }
         session.update(cx, |session, cx| {
+            if session.view_state.mode() != mode {
+                session.hold_current_page_across_mode_change();
+            } else {
+                // Zoom commands keep the page point at the view centre.
+                session.pending_zoom_anchor = session.viewport_centre_anchor();
+            }
             session.view_state.set_mode(mode);
             if (session.view_state.zoom_percent() - zoom_percent).abs() >= 0.001 {
                 session.view_state.set_manual_zoom(zoom_percent);
+                // A manual zoom replaces a fit still waiting to be framed.
+                session.pending_page_frame = None;
             }
             session
                 .viewer
@@ -10560,6 +10642,8 @@ impl DocumentWorkspace {
             // The closed tab's focus handle is removed with its session.
             // Keep command dispatch rooted in the workspace for repeated closes.
             self.workspace_focus.focus(window, cx);
+        } else if cfg!(target_os = "macos") && self.sessions.is_empty() {
+            window.remove_window();
         }
     }
 
@@ -10751,6 +10835,7 @@ impl DocumentWorkspace {
             return false;
         }
         session.update(cx, |session, cx| {
+            session.hold_current_page_across_mode_change();
             session.view_state.set_mode(mode);
             session
                 .viewer
@@ -10771,6 +10856,12 @@ impl DocumentWorkspace {
             return false;
         };
         session.update(cx, |session, cx| {
+            // A plan cancelled by a mode change in the same gesture has no
+            // anchor to give; keep the one that change recorded.
+            if let Some(anchor) = session.viewport_centre_anchor() {
+                session.pending_zoom_anchor = Some(anchor);
+            }
+            session.pending_page_frame = Some((session.current_page, preset));
             session.view_state.set_fit_preset(preset);
             if let Some((width, height)) = session.view_state.viewport_size()
                 && let Some(page_size) = session
@@ -10783,6 +10874,8 @@ impl DocumentWorkspace {
             session
                 .viewer
                 .configure(session.view_state.mode(), session.view_state.zoom_percent());
+            // Re-plan even when the zoom is already fitted, to frame the page.
+            session.viewer.invalidate_layout();
             cx.notify();
         });
         cx.notify();
@@ -11086,7 +11179,15 @@ impl DocumentWorkspace {
             )
         });
         match outcome {
-            WheelOutcome::NativeScroll => false,
+            WheelOutcome::NativeScroll => {
+                // Scrolled here rather than by the scroll container, which
+                // would paint a frame past the pages before being pulled back.
+                let (scroll_x, scroll_y) = session
+                    .read(cx)
+                    .viewer
+                    .wheel_scroll_target(f32::from(delta.x), f32::from(delta.y));
+                self.set_viewport_scroll(document_id, scroll_x, scroll_y, cx)
+            }
             WheelOutcome::Consumed => true,
             WheelOutcome::Page(target) => {
                 if let Ok(target) = u32::try_from(target) {
@@ -11327,34 +11428,42 @@ impl DocumentWorkspace {
                     now,
                 )?;
             }
+            if let Some((page, preset)) = session.pending_page_frame
+                && let Some(layout) = plan
+                    .page_layouts
+                    .iter()
+                    .find(|layout| layout.page == page as usize)
+            {
+                let rect = layout.logical_rect;
+                scroll_x = rect.x + rect.width / 2. - viewport_width / 2.;
+                if preset == ViewerFitPreset::Page {
+                    scroll_y = rect.y + rect.height / 2. - viewport_height / 2.;
+                }
+                session.view_state.set_scroll(scroll_x, scroll_y);
+                session.viewer.set_scroll(scroll_x, scroll_y);
+                session.pending_page_frame = None;
+                plan = session.viewer.plan_at(
+                    document_id.value(),
+                    &session.page_sizes,
+                    &rotations,
+                    page as usize,
+                    viewport_width,
+                    viewport_height,
+                    scroll_x,
+                    scroll_y,
+                    device_scale,
+                    now,
+                )?;
+            }
             if session.view_state.mode() == PageViewMode::Continuous
                 && let Some(visible_page) = plan.current_page
                 && visible_page != session.current_page as usize
             {
+                // A fit is resolved when it is chosen or the window resizes,
+                // not refitted to each page scrolled past: that would change
+                // the zoom under the reader in a file of mixed page sizes.
                 session.current_page = u32::try_from(visible_page)
                     .map_err(|_| "visible page index overflowed".to_owned())?;
-                if session.view_state.zoom_preset() != ViewerZoomPreset::Manual
-                    && let Some(page_size) = session.page_sizes.get(visible_page).copied()
-                {
-                    session
-                        .view_state
-                        .update_viewport(viewport_width, viewport_height, page_size);
-                    session
-                        .viewer
-                        .configure(session.view_state.mode(), session.view_state.zoom_percent());
-                    session.viewer.plan_at(
-                        document_id.value(),
-                        &session.page_sizes,
-                        &rotations,
-                        visible_page,
-                        viewport_width,
-                        viewport_height,
-                        scroll_x,
-                        scroll_y,
-                        device_scale,
-                        now,
-                    )?;
-                }
             }
             Ok::<(), String>(())
         })?;
@@ -11390,6 +11499,18 @@ impl DocumentWorkspace {
             session.update(cx, |session, cx| {
                 let next = Some((viewport_width, viewport_height));
                 if session.viewport_size != next {
+                    // A fit refitted to a resized window keeps the page framed;
+                    // the first size seen leaves a restored view alone.
+                    let resized = session.viewport_size.is_some();
+                    let preset = match session.view_state.zoom_preset() {
+                        ViewerZoomPreset::Manual => None,
+                        ViewerZoomPreset::FitWidth => Some(ViewerFitPreset::Width),
+                        ViewerZoomPreset::FitPage => Some(ViewerFitPreset::Page),
+                    };
+                    if resized && let Some(preset) = preset {
+                        session.pending_zoom_anchor = session.viewport_centre_anchor();
+                        session.pending_page_frame = Some((session.current_page, preset));
+                    }
                     session.viewport_size = next;
                     if let Some(page_size) = session
                         .page_sizes
@@ -11567,8 +11688,7 @@ impl DocumentWorkspace {
             return;
         };
         session.update(cx, |session, cx| {
-            let result =
-                result.map(|(image, bytes, highlight_pixels)| (image, bytes, highlight_pixels));
+            let result = result;
             let accepted = session.viewer.finish_at(
                 job,
                 result
@@ -11577,11 +11697,25 @@ impl DocumentWorkspace {
                     .map_err(Clone::clone),
                 cx.background_executor().now(),
             );
-            if accepted && let Ok((_, _, highlight_pixels)) = result {
-                session.highlight_composite.viewer_tile_pixels = session
-                    .highlight_composite
-                    .viewer_tile_pixels
-                    .saturating_add(highlight_pixels);
+            match result {
+                Ok((_, _, highlight_pixels)) if accepted => {
+                    session.highlight_composite.viewer_tile_pixels = session
+                        .highlight_composite
+                        .viewer_tile_pixels
+                        .saturating_add(highlight_pixels);
+                }
+                // A page's own Retry asks the same worker again, so a stopped
+                // worker raises the document recovery, which reopens it.
+                Err(error)
+                    if session.presentation_error.is_none()
+                        && session
+                            .resource
+                            .as_ref()
+                            .is_some_and(|resource| resource.worker_stopped()) =>
+                {
+                    session.presentation_error = Some(error);
+                }
+                _ => {}
             }
             cx.notify();
         });
@@ -12759,6 +12893,7 @@ impl DocumentWorkspace {
                         ));
                     cx.notify();
                 });
+                self.remember_recent_document(request.document_id, cx);
                 if self.close_after_save_document_id == Some(request.document_id) {
                     self.close_after_save_document_id = None;
                     self.pending_close_document_id = Some(request.document_id);
@@ -14646,13 +14781,13 @@ impl DocumentWorkspace {
                 let caption_supplement = self.annotation_caption_selection_paths_for_session(
                     document_id,
                     page_index,
-                    &session,
+                    session,
                     cx,
                 );
                 self.annotation_scene_for_session(
                     document_id,
                     page_index,
-                    &session,
+                    session,
                     &caption_supplement,
                 )
             },
@@ -14732,7 +14867,7 @@ impl DocumentWorkspace {
         self.annotation_caption_selection_paths_for_session(
             document_id,
             page_index,
-            &session.read(cx),
+            session.read(cx),
             cx,
         )
     }
@@ -14824,6 +14959,12 @@ impl DocumentWorkspace {
 
     pub fn is_pan_tool_active(&self) -> bool {
         self.pan_tool_active
+    }
+
+    /// A middle-button pan is in progress. A release outside the window
+    /// ends the drag on the next move, which ends this too.
+    fn middle_pan_active(&self) -> bool {
+        self.middle_pan_held && self.pan_drag.is_some()
     }
 
     /// Whether a canvas press may move focus to the workspace. The reference
@@ -15268,16 +15409,14 @@ impl DocumentWorkspace {
                                 .label("Cancel")
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
-                        .child(
-                            DialogAction::new().child(
-                                Button::new(DOCUMENT_SIGNATURE_RECENT_REMOVE_CONFIRM_ID)
-                                    .debug_selector(|| {
-                                        DOCUMENT_SIGNATURE_RECENT_REMOVE_CONFIRM_ID.into()
-                                    })
-                                    .danger()
-                                    .label("Delete"),
-                            ),
-                        ),
+                        .child(dialog_action_button(
+                            Button::new(DOCUMENT_SIGNATURE_RECENT_REMOVE_CONFIRM_ID)
+                                .debug_selector(|| {
+                                    DOCUMENT_SIGNATURE_RECENT_REMOVE_CONFIRM_ID.into()
+                                })
+                                .danger()
+                                .label("Delete"),
+                        )),
                 )
                 .on_ok(move |_, _, cx| {
                     owner
@@ -16184,11 +16323,11 @@ impl DocumentWorkspace {
         if window.has_focused_input(cx) {
             return;
         }
-        if let Some(document_id) = self.active_document_id {
-            if let Err(error) = self.cut_selected_annotations(document_id, cx) {
-                self.annotation_statuses.insert(document_id, error);
-                cx.notify();
-            }
+        if let Some(document_id) = self.active_document_id
+            && let Err(error) = self.cut_selected_annotations(document_id, cx)
+        {
+            self.annotation_statuses.insert(document_id, error);
+            cx.notify();
         }
     }
 
@@ -16384,17 +16523,50 @@ impl DocumentWorkspace {
         {
             return false;
         }
-        let Some(session) = self.session(document_id, cx) else {
+        let Some(session) = self.session(document_id, cx).cloned() else {
             return false;
         };
+        // A middle double-click fits the view as Revu does: the page width
+        // in Continuous, the whole page in Single Page.
+        let now = cx.background_executor().now();
+        if let Some((pressed_at, pressed_position)) = self.last_middle_press.take()
+            && now.saturating_duration_since(pressed_at) <= MIDDLE_DOUBLE_CLICK_INTERVAL
+            && middle_click_distance(pressed_position, position) <= MIDDLE_CLICK_SLOP_PX
+        {
+            let preset = match session.read(cx).view_state.mode() {
+                PageViewMode::Continuous => ViewerFitPreset::Width,
+                PageViewMode::SinglePage => ViewerFitPreset::Page,
+            };
+            self.set_fit_preset(document_id, preset, cx);
+            return true;
+        }
+        self.last_middle_press = Some((now, position));
         self.pan_drag = Some((document_id, position, {
             let (x, y) = session.read(cx).viewer.logical_scroll();
             point(px(x), px(y))
         }));
+        // Holding the middle button is a temporary Pan tool, as holding
+        // Space is.
+        self.middle_pan_held = true;
+        cx.notify();
         true
     }
 
-    fn end_middle_button_pan(&mut self) -> bool {
+    fn end_middle_button_pan(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // A drag is not the first click of a double-click.
+        if self.last_middle_press.is_some_and(|(_, pressed)| {
+            middle_click_distance(pressed, position) > MIDDLE_CLICK_SLOP_PX
+        }) {
+            self.last_middle_press = None;
+        }
+        if self.middle_pan_held {
+            self.middle_pan_held = false;
+            cx.notify();
+        }
         self.pan_drag.take().is_some()
     }
 
@@ -16728,6 +16900,64 @@ impl DocumentWorkspace {
                         .insert(interaction.document_id, error.to_string());
                 }
             }
+            cx.notify();
+            return true;
+        }
+        // A double-click on a rotation knob turns the item back to 0°.
+        if tool == AnnotationTool::Select
+            && click_count >= 2
+            && let Ok(tolerance) = interaction.transform.tolerance_points(4.)
+            && let Some(id) = {
+                let session = session.read(cx);
+                session
+                    .annotations
+                    .select_hover_hit(
+                        interaction.document_id.value(),
+                        interaction.page_index,
+                        point,
+                        tolerance,
+                    )
+                    .ok()
+                    .flatten()
+                    .and_then(|hit| match hit {
+                        HitTarget::RotationHandle(id) => Some(id),
+                        _ => None,
+                    })
+                    .or_else(|| {
+                        session
+                            .annotations
+                            .hover_transform_handle(
+                                interaction.document_id.value(),
+                                interaction.page_index,
+                                point,
+                                tolerance,
+                            )
+                            .ok()
+                            .flatten()
+                            .and_then(|(id, index)| {
+                                (index == RectangleResizeHandle::ALL.len()).then_some(id)
+                            })
+                    })
+            }
+        {
+            let reset = self.update_annotation_history_with_result(
+                interaction.document_id,
+                cx,
+                |annotations, document_id| annotations.reset_rotation(document_id, &id),
+            );
+            self.active_annotation_pointer = None;
+            self.properties_click_candidate = None;
+            match reset {
+                Ok(_) => {
+                    self.annotation_statuses.remove(&interaction.document_id);
+                }
+                Err(error) => {
+                    self.annotation_statuses
+                        .insert(interaction.document_id, error);
+                }
+            }
+            // Even an already-upright knob owns the double-click; it must
+            // never fall through to the markup's properties action.
             cx.notify();
             return true;
         }
@@ -17216,7 +17446,7 @@ impl DocumentWorkspace {
                     )
                     .ok()
                     .flatten()?;
-                (&current.0 == hot_id && current.1 == *hot_index).then(|| current.0)
+                (&current.0 == hot_id && current.1 == *hot_index).then_some(current.0)
             })
             .flatten();
         let recovery_store = self.document_recovery_store.clone();
@@ -18006,12 +18236,12 @@ impl DocumentWorkspace {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        if self.pending_text_box_editor.is_some() {
-            if let Err(error) = self.commit_pending_text_box(cx) {
-                self.text_box_commit_error = Some(error.clone());
-                cx.notify();
-                return Err(error);
-            }
+        if self.pending_text_box_editor.is_some()
+            && let Err(error) = self.commit_pending_text_box(cx)
+        {
+            self.text_box_commit_error = Some(error.clone());
+            cx.notify();
+            return Err(error);
         }
         Ok(())
     }
@@ -18171,12 +18401,12 @@ impl DocumentWorkspace {
             })
             .transpose()?;
         let images = self.sessions[index].update(cx, |session, _| session.release())?;
-        if let (Some(recovery_authority), Some(store)) = (recovery_authority, recovery_store) {
-            if let Err(error) = store.clear_authority(&recovery_authority) {
-                self.last_file_error = Some(format!(
-                    "Closed document but retained its recovery checkpoint because it could not be retired safely: {error}"
-                ));
-            }
+        if let (Some(recovery_authority), Some(store)) = (recovery_authority, recovery_store)
+            && let Err(error) = store.clear_authority(&recovery_authority)
+        {
+            self.last_file_error = Some(format!(
+                "Closed document but retained its recovery checkpoint because it could not be retired safely: {error}"
+            ));
         }
         if self
             .active_annotation_pointer
@@ -18332,15 +18562,18 @@ fn shape_feedback_geometry(
         };
         rotate(project(pdf))
     });
+    // The projected point only picks the side; the knob sits a fixed screen
+    // distance out from it, as the hit test expects.
+    let offset = crate::annotation_model::ROTATION_HANDLE_OFFSET_PT as f32;
     let raw_rotation = project(PdfPoint {
         x: rect.x + rect.width / 2.,
-        y: rect.y + rect.height + 12.,
+        y: rect.y + rect.height + f64::from(offset),
     });
     let outside = |value: Pixels, start: Pixels, end: Pixels| {
         if value < start {
-            start - px(12.)
+            start - px(offset)
         } else if value > end {
-            end + px(12.)
+            end + px(offset)
         } else {
             value
         }
@@ -18813,7 +19046,7 @@ fn paint_measurement_line(
         }
     }
     for arrowhead in &layout.arrowheads {
-        let points = arrowhead.map(|point| project(point));
+        let points = arrowhead.map(project);
         let mut fill = PathBuilder::fill();
         fill.move_to(points[0]);
         fill.line_to(points[1]);
@@ -18900,8 +19133,6 @@ fn paint_dimension_annotation(
     ) else {
         return;
     };
-    let extension_start_outer = measurement_layout.extension_lines[0].1;
-    let extension_end_outer = measurement_layout.extension_lines[1].1;
     paint_measurement_line(
         &measurement_layout,
         &project,
@@ -18923,35 +19154,18 @@ fn paint_dimension_annotation(
             false,
             annotation_candidate,
         )
+        && let Some(frame) = crate::annotation_model::measurement_selection_frame(
+            annotation.start,
+            annotation.end,
+            annotation.dimension_line_offset,
+            line.stroke_width_pt(),
+            caption_text_width_pt,
+            caption_layout
+                .as_ref()
+                .map_or(&[][..], |layout| &layout.pdf_corners),
+        )
     {
-        let mut samples = vec![
-            project(annotation.start),
-            project(annotation.end),
-            project(extension_start_outer),
-            project(extension_end_outer),
-        ];
-        if let Some(layout) = &caption_layout {
-            let bounds = Bounds::new(
-                page_bounds.origin + layout.bounds.origin,
-                layout.bounds.size,
-            );
-            samples.extend([bounds.origin, point(bounds.right(), bounds.bottom())]);
-        }
-        let min_x = samples.iter().map(|p| p.x).min().unwrap();
-        let min_y = samples.iter().map(|p| p.y).min().unwrap();
-        let max_x = samples.iter().map(|p| p.x).max().unwrap();
-        let max_y = samples.iter().map(|p| p.y).max().unwrap();
-        interaction_chrome::paint_feedback_path(
-            &[
-                point(min_x, min_y),
-                point(max_x, min_y),
-                point(max_x, max_y),
-                point(min_x, max_y),
-            ],
-            true,
-            state,
-            window,
-        );
+        interaction_chrome::paint_feedback_path(&frame.corners().map(project), true, state, window);
     }
 
     if !annotation_candidate
@@ -20161,6 +20375,63 @@ fn paint_ink_scene_path(
     }
 }
 
+fn retain_existing_path_paint_state(
+    annotation: &mut crate::annotation_model::SceneAnnotation,
+    committed_ids: &HashSet<MarkupId>,
+) {
+    use crate::annotation_model::SceneAnnotation;
+    if committed_ids.contains(annotation.id()) {
+        match annotation {
+            SceneAnnotation::Arc(path) => path.draft = false,
+            SceneAnnotation::VertexPath(path) => path.draft = false,
+            SceneAnnotation::MeasurementPath(path) => path.draft = false,
+            SceneAnnotation::Cloud(path) => path.draft = false,
+            SceneAnnotation::CloudPlus(path) => path.draft = false,
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod manipulation_paint_tests {
+    use super::*;
+    use crate::annotation_model::{
+        AnnotationCommand, AnnotationDocument, ArcAnnotation, SceneAnnotation,
+    };
+
+    #[test]
+    fn existing_arc_preview_keeps_selected_paint_but_new_arc_stays_a_draft() {
+        let id = MarkupId::new("arc:paint-preview").unwrap();
+        let point = |x, y| PdfPoint::new(x, y).unwrap();
+        let arc = ArcAnnotation::new(
+            id.clone(),
+            0,
+            point(10., 10.),
+            point(90., 10.),
+            point(50., 50.),
+            Default::default(),
+        )
+        .unwrap();
+        let mut document = AnnotationDocument::default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Arc(arc)))
+            .unwrap();
+        document.select(&id);
+        let mut preview = document
+            .document_scene(0)
+            .into_ordered_annotations()
+            .next()
+            .unwrap();
+        if let SceneAnnotation::Arc(arc) = &mut preview {
+            arc.draft = true;
+        }
+        retain_existing_path_paint_state(&mut preview, &HashSet::new());
+        assert!(matches!(&preview, SceneAnnotation::Arc(arc) if arc.draft && arc.selected));
+        retain_existing_path_paint_state(&mut preview, &HashSet::from([id]));
+        assert!(matches!(&preview, SceneAnnotation::Arc(arc) if !arc.draft && arc.selected));
+    }
+}
+
 fn annotation_layer(
     document_id: DocumentId,
     page_index: u32,
@@ -20259,7 +20530,7 @@ fn annotation_layer(
     });
     gpui::div()
         .id(stable_id)
-        .debug_selector(move || selector.clone().into())
+        .debug_selector(move || selector.clone())
         .absolute()
         .inset_0()
         .child(
@@ -20321,7 +20592,11 @@ fn annotation_layer(
                         );
                     }
                     // Each body and its own interaction chrome keep document order.
-                    for annotation in scene.into_ordered_annotations() {
+                    let committed_ids: HashSet<_> = scene.annotation_order.iter().cloned().collect();
+                    for mut annotation in scene.into_ordered_annotations() {
+                        // Existing paths keep their closed body and selection feedback while
+                        // their preview geometry changes. Only new paths are creation drafts.
+                        retain_existing_path_paint_state(&mut annotation, &committed_ids);
                         match annotation {
                         crate::annotation_model::SceneAnnotation::Redact(annotation) => paint_redact_annotations(
                             [annotation],
@@ -21397,6 +21672,17 @@ fn annotation_layer(
                                     window,
                                 );
                             }
+                            let selection_frame =
+                                crate::annotation_model::measurement_selection_frame(
+                                    annotation.start,
+                                    annotation.end,
+                                    crate::annotation_model::LENGTH_LEADER_LENGTH_PT,
+                                    line.stroke_width_pt(),
+                                    caption_text_width_pt,
+                                    caption_layout
+                                        .as_ref()
+                                        .map_or(&[][..], |layout| &layout.pdf_corners),
+                                );
                             if let Some(layout) = caption_layout {
                                 layout.paint(page_bounds.origin, window, cx);
                             }
@@ -21412,7 +21698,14 @@ fn annotation_layer(
                                     annotation_candidate,
                                 )
                             {
-                                interaction_chrome::paint_line_feedback(start, end, state, window);
+                                if let Some(frame) = selection_frame {
+                                    interaction_chrome::paint_feedback_path(
+                                        &frame.corners().map(project),
+                                        true,
+                                        state,
+                                        window,
+                                    );
+                                }
                                 if (annotation.selected || transform_hovered)
                                     && !annotation_candidate
                                     && !annotation.locked
@@ -21769,6 +22062,14 @@ fn annotation_layer(
                         .occlude()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(
+                            // The box hugs the text exactly; one em of clipped
+                            // room keeps the caret and the next character from
+                            // scrolling the single-line editor sideways.
+                            gpui::div()
+                                .debug_selector(|| DOCUMENT_TEXT_BOX_EDITOR_CONTENT_ID.into())
+                                .w(bounds.size.width.max(px(24.)) + font_size)
+                                .h_full()
+                                .child(
                             Textarea::new(&pending.input)
                                 .aria_label("Text box content")
                                 .appearance(false)
@@ -21789,6 +22090,7 @@ fn annotation_layer(
                                     bottom: vertical_inset,
                                     left: px(pending.style.inset_pt() as f32 * scale),
                                 }),
+                                ),
                         ),
                 )
             },
@@ -22005,8 +22307,8 @@ fn snap_tile_grid(tiles: Vec<gpui::AnyElement>) -> gpui::AnyElement {
         .into_any_element()
 }
 
-/// Outline toggle tile: label (with an optional snap marker glyph) and a
-/// trailing check when selected, matching the Electron snap menu.
+/// A stock checkbox for one snapping option, followed by its snap marker
+/// glyph when it has one.
 fn snap_tile(
     id: &'static str,
     label: &'static str,
@@ -22014,57 +22316,31 @@ fn snap_tile(
     selected: bool,
     disabled: bool,
     on_toggle: impl Fn(bool, &mut App) + 'static,
-    cx: &App,
 ) -> gpui::AnyElement {
-    let theme = cx.theme();
-    let hover = theme.accent.opacity(0.6);
     h_flex()
-        .id(id)
-        .debug_selector(move || id.into())
-        .role(Role::CheckBox)
-        .aria_label(label)
-        .h_9()
-        .w_full()
         .min_w_0()
-        .px_2()
         .gap_1p5()
-        .justify_between()
-        .rounded(theme.radius)
-        .border_1()
-        .border_color(theme.border)
-        .text_sm()
-        .when(selected, |tile| {
-            tile.bg(theme.accent).text_color(theme.accent_foreground)
-        })
-        .when(disabled, |tile| tile.opacity(0.5))
-        .when(!disabled, |tile| {
-            tile.cursor_pointer()
-                .hover(move |style| style.bg(hover))
-                .on_click(move |_, _, cx| on_toggle(!selected, cx))
-        })
         .child(
-            h_flex()
-                .min_w_0()
-                .gap_1p5()
-                .when_some(glyph, |row, glyph| {
-                    row.child(
-                        gpui_component::Icon::default()
-                            .path(format!("icons/snap/{glyph}.svg"))
-                            .size_3p5()
-                            .text_color(gpui::rgb(0x16a34a)),
-                    )
-                })
-                .child(gpui::div().truncate().child(label)),
+            gpui_component::checkbox::Checkbox::new(id)
+                .debug_selector(move || id.into())
+                .label(label)
+                .checked(selected)
+                .disabled(disabled)
+                .small()
+                .on_click(move |checked, _, cx| on_toggle(*checked, cx)),
         )
-        .child(
-            gpui::div()
-                .flex_none()
-                .when(!selected, |check| check.opacity(0.))
-                .child(gpui_component::Icon::new(IconName::Check).size_4()),
-        )
+        .when_some(glyph, |row, glyph| {
+            row.child(
+                gpui_component::Icon::default()
+                    .path(format!("icons/snap/{glyph}.svg"))
+                    .size_3p5()
+                    .text_color(gpui::rgb(0x16a34a)),
+            )
+        })
         .into_any_element()
 }
 
+/// A stock switch whose own label names it.
 fn snap_switch_row(
     id: &'static str,
     label: &'static str,
@@ -22072,46 +22348,26 @@ fn snap_switch_row(
     disabled: bool,
     on_toggle: impl Fn(bool, &mut App) + 'static,
 ) -> gpui::AnyElement {
-    h_flex()
-        .justify_between()
-        .gap_3()
-        .text_sm()
+    gpui::div()
+        .debug_selector(move || id.into())
         .child(
-            gpui::div()
-                .when(disabled, |label| label.opacity(0.5))
-                .child(label),
-        )
-        .child(
-            gpui::div()
-                .debug_selector(move || id.into())
-                .flex_none()
-                .child(
-                    gpui_component::switch::Switch::new(id)
-                        .checked(checked)
-                        .disabled(disabled)
-                        .on_click(move |checked, _, cx| on_toggle(*checked, cx)),
-                ),
+            gpui_component::switch::Switch::new(id)
+                .label(label)
+                .checked(checked)
+                .disabled(disabled)
+                .small()
+                .on_click(move |checked, _, cx| on_toggle(*checked, cx)),
         )
         .into_any_element()
 }
 
-fn snap_number_row(
-    label: &'static str,
-    id: &'static str,
-    input: impl IntoElement,
-) -> gpui::AnyElement {
+fn snap_number_row(label: &'static str, input: impl IntoElement) -> gpui::AnyElement {
     h_flex()
         .justify_between()
         .gap_3()
         .text_sm()
         .child(label)
-        .child(
-            gpui::div()
-                .id(id)
-                .debug_selector(move || id.into())
-                .w_24()
-                .child(input),
-        )
+        .child(gpui::div().w_24().child(input))
         .into_any_element()
 }
 
@@ -22366,7 +22622,7 @@ fn recent_signature_section(
                             .gap_1()
                             .child(accessible_icon_button(
                                 Button::new(use_id.clone())
-                                    .debug_selector(move || use_id.clone().into())
+                                    .debug_selector(move || use_id.clone())
                                     .outline()
                                     .flex_1()
                                     .min_w_0()
@@ -22425,7 +22681,7 @@ fn recent_signature_section(
                             ))
                             .child(accessible_icon_button(
                                 Button::new(remove_id.clone())
-                                    .debug_selector(move || remove_id.clone().into())
+                                    .debug_selector(move || remove_id.clone())
                                     .icon(IconName::Delete)
                                     .ghost()
                                     .danger()
@@ -22568,27 +22824,15 @@ fn annotation_tool_group(
                 .id("document-workspace-signature-scroll-content")
                 .w_full()
                 .gap_3()
-                .child(
-                    h_flex()
-                        .justify_between()
-                        .child(gpui::div().text_sm().font_semibold().child("Signature"))
-                        .child(accessible_icon_button(
-                            Button::new("document-workspace-signature-close")
-                                .icon(IconName::Close)
-                                .ghost()
-                                .tooltip("Close signature")
-                                .on_click(move |_, window, cx| {
-                                    let _ = close_control.update(cx, |workspace, cx| {
-                                        workspace.dismiss_signature_popover(
-                                            document_id,
-                                            Some(window),
-                                            cx,
-                                        );
-                                    });
-                                }),
-                            "Close signature",
-                        )),
-                )
+                .child(crate::property_controls::popover_header(
+                    "Signature",
+                    close_icon_button("document-workspace-signature-close", "Close signature")
+                        .on_click(move |_, window, cx| {
+                            let _ = close_control.update(cx, |workspace, cx| {
+                                workspace.dismiss_signature_popover(document_id, Some(window), cx);
+                            });
+                        }),
+                ))
                 .child(recent_signature_section(
                     document_id,
                     recent_signatures.clone(),
@@ -23342,7 +23586,7 @@ fn session_tab_overlay_label(
                         .when(!revealed, |this| this.text_center())
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .debug_selector(move || format!("{group}-visible-label").into())
+                        .debug_selector(move || format!("{group}-visible-label"))
                         .child(label),
                 ),
         )
@@ -23363,6 +23607,10 @@ fn session_tab_close_lane() -> gpui::Div {
 
 impl Render for DocumentWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.recovery_attention_count(cx) == 0 {
+            self.recovery_notifications_open = false;
+        }
+
         if self.session_tab_last_active != self.active_document_id {
             self.pan_tool_active = false;
             self.pan_drag = None;
@@ -23423,588 +23671,13 @@ impl Render for DocumentWorkspace {
             })
             .collect::<Vec<_>>();
         let document_opening_batch_count = self.active_document_open_batches;
+        let root = self.render_workspace_root(cx);
         let active = self
             .active_document_id
             .and_then(|id| self.session(id, cx))
             .map(|session| session.read(cx));
-        let root = v_flex()
-            .id(DOCUMENT_WORKSPACE_ID)
-            .debug_selector(|| DOCUMENT_WORKSPACE_ID.into())
-            .size_full()
-            .min_h_0()
-            .track_focus(&self.workspace_focus)
-            .key_context(DOCUMENT_WORKSPACE_CONTEXT)
-            .on_key_down(cx.listener(|workspace, event: &KeyDownEvent, window, cx| {
-                workspace.handle_space_pan_down(event, window, cx);
-            }))
-            .on_key_up(cx.listener(|workspace, event: &KeyUpEvent, window, cx| {
-                workspace.handle_space_pan_up(event, window, cx);
-            }))
-            .on_action(cx.listener(Self::open_pdf_from_action))
-            .on_action(cx.listener(|workspace, _: &NewFromTemplate, _, cx| {
-                workspace.template_manage_requests =
-                    workspace.template_manage_requests.saturating_add(1);
-                cx.emit(DocumentWorkspaceTemplateCommand::Manage);
-                cx.notify();
-            }))
-            .on_action(cx.listener(|workspace, _: &SaveDocumentAsTemplate, _, cx| {
-                workspace.handle_template_split_event(
-                    TemplateSplitEvent::SaveDocumentAsTemplateRequested,
-                    cx,
-                );
-            }))
-            .on_action(cx.listener(Self::save_from_action))
-            .on_action(cx.listener(Self::save_as_from_action))
-            .on_action(cx.listener(|workspace, _: &NavigateHome, window, cx| {
-                workspace.apply_document_navigation(DocumentNavigationAction::Home, window, cx);
-            }))
-            .on_action(cx.listener(|workspace, _: &NavigateEnd, window, cx| {
-                workspace.apply_document_navigation(DocumentNavigationAction::End, window, cx);
-            }))
-            .on_action(
-                cx.listener(|workspace, _: &NavigatePreviousPage, window, cx| {
-                    workspace.apply_document_navigation(
-                        DocumentNavigationAction::PreviousPage,
-                        window,
-                        cx,
-                    );
-                }),
-            )
-            .on_action(cx.listener(|workspace, _: &NavigateNextPage, window, cx| {
-                workspace.apply_document_navigation(DocumentNavigationAction::NextPage, window, cx);
-            }))
-            .on_action(cx.listener(|workspace, _: &NavigateUp, window, cx| {
-                workspace.apply_document_navigation(DocumentNavigationAction::ArrowUp, window, cx);
-            }))
-            .on_action(cx.listener(|workspace, _: &NavigateDown, window, cx| {
-                workspace.apply_document_navigation(
-                    DocumentNavigationAction::ArrowDown,
-                    window,
-                    cx,
-                );
-            }))
-            .on_action(cx.listener(|workspace, _: &NavigateLeft, window, cx| {
-                workspace.apply_document_navigation(
-                    DocumentNavigationAction::ArrowLeft,
-                    window,
-                    cx,
-                );
-            }))
-            .on_action(cx.listener(|workspace, _: &NavigateRight, window, cx| {
-                workspace.apply_document_navigation(
-                    DocumentNavigationAction::ArrowRight,
-                    window,
-                    cx,
-                );
-            }))
-            .on_action(cx.listener(|workspace, _: &NavigatePageUp, window, cx| {
-                workspace.apply_document_navigation(DocumentNavigationAction::PageUp, window, cx);
-            }))
-            .on_action(cx.listener(|workspace, _: &NavigatePageDown, window, cx| {
-                workspace.apply_document_navigation(DocumentNavigationAction::PageDown, window, cx);
-            }))
-            .on_action(cx.listener(Self::close_active_document_from_action))
-            .on_action(cx.listener(|workspace, _: &RotatePageLeft, _, cx| {
-                workspace.rotate_active_page_from_action(PageRotationDirection::Left, cx);
-            }))
-            .on_action(cx.listener(|workspace, _: &RotatePageRight, _, cx| {
-                workspace.rotate_active_page_from_action(PageRotationDirection::Right, cx);
-            }))
-            .on_action(cx.listener(|workspace, _: &ZoomIn, _, cx| {
-                workspace.zoom_active_document(ZOOM_STEP_FACTOR, cx);
-            }))
-            .on_action(cx.listener(|workspace, _: &ZoomOut, _, cx| {
-                workspace.zoom_active_document(1. / ZOOM_STEP_FACTOR, cx);
-            }))
-            .on_action(cx.listener(|workspace, _: &ActualSize, _, cx| {
-                workspace.set_active_manual_zoom(DEFAULT_VIEWER_ZOOM, cx);
-            }))
-            .on_action(cx.listener(|workspace, _: &FitWidth, _, cx| {
-                workspace.set_active_fit_preset(ViewerFitPreset::Width, cx);
-            }))
-            .on_action(cx.listener(|workspace, _: &FitPage, _, cx| {
-                workspace.set_active_fit_preset(ViewerFitPreset::Page, cx);
-            }))
-            .on_action(cx.listener(|workspace, _: &ContinuousView, _, cx| {
-                workspace.set_active_page_view_mode(PageViewMode::Continuous, cx);
-            }))
-            .on_action(cx.listener(|workspace, _: &SinglePageView, _, cx| {
-                workspace.set_active_page_view_mode(PageViewMode::SinglePage, cx);
-            }))
-            .on_action(cx.listener(|workspace, _: &SelectTool, window, cx| {
-                workspace.select_available_annotation_tool(AnnotationTool::Select, window, cx);
-            }))
-            .on_action(cx.listener(|workspace, _: &PanTool, window, cx| {
-                if window.has_focused_input(cx) {
-                    return;
-                }
-                workspace.select_available_annotation_tool(AnnotationTool::Select, window, cx);
-                if workspace.active_document_id.is_some() {
-                    workspace.pan_tool_active = true;
-                    cx.notify();
-                }
-            }))
-            .on_action(cx.listener(|workspace, _: &SetPageScale, window, cx| {
-                let Some(document_id) = workspace.active_document_id else {
-                    return;
-                };
-                let current_page = workspace
-                    .session(document_id, cx)
-                    .map(|session| session.read(cx).current_page)
-                    .unwrap_or_default();
-                let control = workspace.ensure_page_scale_control(window, cx);
-                control.update(cx, |control, cx| {
-                    control.open_for(document_id, current_page, window, cx);
-                });
-            }))
-            .on_action(cx.listener(Self::select_text_box_tool_from_action))
-            .on_action(cx.listener(Self::select_rectangle_tool_from_action))
-            .on_action(cx.listener(Self::select_ellipse_tool_from_action))
-            .on_action(cx.listener(Self::select_pen_tool_from_action))
-            .on_action(cx.listener(Self::select_cloud_tool_from_action))
-            .on_action(cx.listener(Self::select_callout_tool_from_action))
-            .on_action(cx.listener(Self::select_line_tool_from_action))
-            .on_action(cx.listener(Self::select_arc_tool_from_action))
-            .on_action(cx.listener(Self::select_arrow_tool_from_action))
-            .on_action(cx.listener(Self::select_polyline_tool_from_action))
-            .on_action(cx.listener(Self::select_polygon_tool_from_action))
-            .on_action(cx.listener(Self::select_polylength_tool_from_action))
-            .on_action(cx.listener(Self::select_area_tool_from_action))
-            .on_action(cx.listener(Self::select_cloud_plus_tool_from_action))
-            .on_action(cx.listener(Self::select_dimension_tool_from_action))
-            .on_action(cx.listener(Self::finish_vertex_path_from_action))
-            .on_action(cx.listener(Self::select_highlight_tool_from_action))
-            .on_action(cx.listener(Self::select_image_tool_from_action))
-            .on_action(cx.listener(Self::select_snapshot_tool_from_action))
-            .on_action(cx.listener(Self::select_length_tool_from_action))
-            .on_action(cx.listener(Self::select_all_annotations_from_action))
-            .on_action(cx.listener(Self::copy_annotations_from_action))
-            .on_action(cx.listener(Self::cut_annotations_from_action))
-            .on_action(cx.listener(Self::paste_annotations_from_action))
-            .on_action(cx.listener(Self::delete_annotations_from_action))
-            .on_action(cx.listener(Self::undo_annotations_from_action))
-            .on_action(cx.listener(Self::redo_annotations_from_action))
-            .on_action(cx.listener(|workspace, _: &Escape, window, cx| {
-                let pending_editor_focused = workspace
-                    .pending_text_box_focus(cx)
-                    .is_some_and(|focus| focus.is_focused(window));
-                if workspace.signature_popover_open
-                    || window.has_active_dialog(cx)
-                    || window.has_active_sheet(cx)
-                    || (window.has_focused_input(cx) && !pending_editor_focused)
-                {
-                    cx.propagate();
-                    return;
-                }
-                if workspace.pending_text_box_editor.is_some() {
-                    if !workspace.cancel_pending_composite_text_editor(window, cx) {
-                        let existing_text_box = workspace
-                            .pending_text_box_editor
-                            .as_ref()
-                            .is_some_and(|editor| {
-                                matches!(
-                                    editor.target,
-                                    PendingTextEditorTarget::ExistingTextBox { .. }
-                                )
-                            });
-                        match workspace.commit_pending_text_box(cx) {
-                            Ok(_) => {
-                                if existing_text_box {
-                                    workspace.workspace_focus.focus(window, cx);
-                                } else {
-                                    workspace.text_box_return_focus.focus(window, cx);
-                                }
-                            }
-                            Err(error) => {
-                                workspace.text_box_commit_error = Some(error);
-                                cx.notify();
-                            }
-                        }
-                    }
-                    return;
-                }
-                if workspace
-                    .page_scale_control
-                    .as_ref()
-                    .is_some_and(|control| {
-                        control.update(cx, |control, cx| control.cancel_pick(cx))
-                    })
-                {
-                    if let Some(document_id) = workspace.active_document_id {
-                        workspace.annotation_statuses.remove(&document_id);
-                    }
-                    cx.notify();
-                    return;
-                }
-                let Some(document_id) = workspace.active_document_id else {
-                    cx.propagate();
-                    return;
-                };
-                // Electron's capture-phase Escape finishes only cloud polygons,
-                // then resets the canvas tool and selection. Other drafts cancel.
-                if workspace.session(document_id, cx).is_some_and(|session| {
-                    let session = session.read(cx);
-                    session.annotations.cloud_pending(document_id.value())
-                        || session.annotations.cloud_plus_pending(document_id.value())
-                }) {
-                    workspace.finish_vertex_path_from_action(&FinishVertexPath, window, cx);
-                }
-                workspace.pan_tool_active = false;
-                workspace.pan_drag = None;
-                workspace.space_pan_hold.clear_stash();
-                workspace.active_annotation_pointer = None;
-                if let Some(session) = workspace.session(document_id, cx).cloned() {
-                    session.update(cx, |session, cx| {
-                        let _ = session.annotations.cancel(PointerCancelReason::ToolChanged);
-                        let _ = session.annotations.set_tool(AnnotationTool::Select);
-                        session.annotations.clear_selection(document_id.value());
-                        cx.notify();
-                    });
-                }
-                workspace.annotation_statuses.remove(&document_id);
-                cx.notify();
-            }))
-            .size_full()
-            .min_h(px(360.))
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground);
-
         let Some(session) = active else {
-            let opening_title = self.sessions.iter().find_map(|session| {
-                let session = session.read(cx);
-                matches!(session.status, NativeDocumentStatus::Opening)
-                    .then(|| session.title.clone())
-            });
-            let open_failure = self.last_document_open_failure().cloned();
-            let error = self.last_file_error.clone().or_else(|| {
-                self.sessions.iter().rev().find_map(|session| {
-                    let session = session.read(cx);
-                    if let NativeDocumentStatus::Failed(error) = &session.status {
-                        Some(error.clone())
-                    } else {
-                        None
-                    }
-                })
-            });
-            let open_document = accessible_icon_button(
-                Button::new(DOCUMENT_TAB_OPEN_ID)
-                    .debug_selector(|| DOCUMENT_TAB_OPEN_ID.into())
-                    .icon(IconName::Plus)
-                    .tooltip("Open PDF")
-                    .on_click(cx.listener(|workspace, _, _, cx| {
-                        workspace.prompt_to_open_documents(cx);
-                    })),
-                "Open PDF",
-            );
-            let document_actions = h_flex()
-                .flex_shrink_0()
-                .gap_2()
-                .child(open_document)
-                .child(self.template_control.clone());
-            let inactive_session_tabs = session_tabs
-                .iter()
-                .enumerate()
-                .map(|(ix, (document_id, title, dirty, saving))| {
-                    let tab_selector = document_session_tab_id(*document_id);
-                    let debug_selector = tab_selector.clone();
-                    let tab_focus = self
-                        .session_tab_focus_handles
-                        .get(document_id)
-                        .expect("every retained loading or failed session tab must own focus")
-                        .clone();
-                    let close_id = document_session_close_id(*document_id);
-                    let close_selector = close_id.clone();
-                    let close_accessibility_id = close_id.clone();
-                    let close_control = cx.entity().downgrade();
-                    let document_id = *document_id;
-                    let close_label = document_tab_close_accessible_label(title);
-                    let accessibility_label = if *dirty {
-                        format!("{title}, Unsaved changes")
-                    } else {
-                        title.clone()
-                    };
-                    let visual_title = format_document_tab_label(title).to_owned();
-                    let reveal_close = self.session_tab_hovered == Some(document_id)
-                        || tab_focus.contains_focused(window, cx);
-                    let close = accessible_icon_button(
-                        Button::new(close_id)
-                            .opacity(if reveal_close { 1. } else { 0. })
-                            .focus(|style| style.opacity(1.))
-                            .debug_selector(move || close_selector.clone().into())
-                            .accessibility_id(close_accessibility_id)
-                            .custom(
-                                gpui_component::button::ButtonCustomVariant::new(cx)
-                                    .color(cx.theme().transparent)
-                                    .hover(cx.theme().background)
-                                    .active(cx.theme().input)
-                                    .foreground(cx.theme().foreground),
-                            )
-                            .bg(cx.theme().transparent)
-                            .border_color(cx.theme().transparent)
-                            .small()
-                            .rounded((cx.theme().radius - px(4.)).max(px(0.)))
-                            .icon(IconName::Close)
-                            .tooltip(close_label.clone())
-                            .disabled(*saving)
-                            .on_click(move |_: &ClickEvent, _, cx| {
-                                let _ = close_control.update(cx, |workspace, cx| {
-                                    workspace.request_close_document(document_id, cx);
-                                });
-                                cx.stop_propagation();
-                            }),
-                        close_label,
-                    );
-                    Tab::new()
-                        .button_states(true)
-                        .on_hover(cx.listener(move |workspace, hovered, _, cx| {
-                            let next = if *hovered {
-                                Some(document_id)
-                            } else {
-                                workspace
-                                    .session_tab_hovered
-                                    .filter(|id| *id != document_id)
-                            };
-                            if workspace.session_tab_hovered != next {
-                                workspace.session_tab_hovered = next;
-                                cx.notify();
-                            }
-                        }))
-                        .group(tab_selector.clone())
-                        .debug_selector(move || debug_selector.clone().into())
-                        .child(session_tab_overlay_label(
-                            if *dirty {
-                                format!("* {visual_title}")
-                            } else {
-                                visual_title
-                            },
-                            tab_selector,
-                            reveal_close,
-                            self.session_tab_label_offsets
-                                .entry(document_id)
-                                .or_default()
-                                .clone(),
-                        ))
-                        .aria_label(accessibility_label)
-                        .aria_description(DOCUMENT_TAB_REORDER_DESCRIPTION)
-                        .aria_keyshortcuts(DOCUMENT_TAB_REORDER_KEYSHORTCUTS)
-                        .track_focus(&tab_focus.tab_stop(ix == 0))
-                        .child(session_tab_close_lane().child(close))
-                })
-                .collect::<Vec<_>>();
-            let inactive_tab_click_control = cx.entity().downgrade();
-            let inactive_tab_click_ids = session_tabs
-                .iter()
-                .map(|(document_id, _, _, _)| *document_id)
-                .collect::<Vec<_>>();
-            let inactive_tab_focus_handles = self.session_tab_focus_handles.clone();
-            let session_tab_strip = h_flex()
-                .id(DOCUMENT_SESSION_TABS_ID)
-                .debug_selector(|| DOCUMENT_SESSION_TABS_ID.into())
-                .w_full()
-                .px_3()
-                .items_stretch()
-                .gap_3()
-                .border_b_1()
-                .border_color(cx.theme().border)
-                .child(
-                    gpui::div()
-                        .id("document-workspace-native-session-tab-bar")
-                        .debug_selector(|| "document-workspace-native-session-tab-bar".into())
-                        .flex_1()
-                        .py_2()
-                        .pr_3()
-                        // Preserve the pinned Tab's 32px frame plus py_2 even with no tabs.
-                        .min_h(px(32.) + window.rem_size())
-                        .border_r_1()
-                        .border_color(cx.theme().border)
-                        .min_w_0()
-                        .max_w_full()
-                        .child(
-                            TabBar::new("document-workspace-session-tabs-component")
-                                .outline()
-                                .max_width(px(190.))
-                                // Use stock scrolling, not the always-visible optional tab menu.
-                                .menu(false)
-                                .children(inactive_session_tabs)
-                                .on_click(move |tab_ix, window, cx| {
-                                    let focus = inactive_tab_click_control
-                                        .update(cx, |workspace, cx| {
-                                            let Some(&document_id) =
-                                                inactive_tab_click_ids.get(*tab_ix)
-                                            else {
-                                                return None;
-                                            };
-                                            let _ = workspace.activate_document(document_id, cx);
-                                            inactive_tab_focus_handles.get(&document_id).cloned()
-                                        })
-                                        .ok()
-                                        .flatten();
-                                    if let Some(focus) = focus {
-                                        focus.focus(window, cx);
-                                    }
-                                }),
-                        ),
-                )
-                .child(document_actions);
-            return root.child(session_tab_strip).child(
-                h_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .items_stretch()
-                    .child(self.render_left_rail(false, true, cx))
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .child(self.viewer_toolbar.clone())
-                            .child(
-                                v_flex()
-                                    .id(DOCUMENT_EMPTY_ID)
-                                    .debug_selector(|| DOCUMENT_EMPTY_ID.into())
-                                    .flex_1()
-                                    .items_center()
-                                    .justify_center()
-                                    .gap_2()
-                                    .when_some(self.startup_recovery_message(), |view, message| {
-                                        view.child(
-                                            gpui::div().w(px(480.)).max_w_full().child(
-                                                self.render_startup_recovery_inbox(message, cx),
-                                            ),
-                                        )
-                                    })
-                                    .when_some(
-                                        self.session_recovery_warning.clone(),
-                                        |view, warning| {
-                                            view.child(
-                                v_flex()
-                                    .w(px(480.))
-                                    .max_w_full()
-                                    .gap_2()
-                                    .child(
-                                        gpui::div()
-                                            .id(DOCUMENT_RECOVERY_WARNING_ALERT_ID)
-                                            .debug_selector(|| {
-                                                DOCUMENT_RECOVERY_WARNING_ALERT_ID.into()
-                                            })
-                                            .child(
-                                                Alert::warning(
-                                                    "document-workspace-recovery-warning-message",
-                                                    warning,
-                                                )
-                                                .title("Previous unsaved changes"),
-                                            ),
-                                    )
-                                    .child(
-                                        Button::new(DOCUMENT_RECOVERY_WARNING_DISMISS_ID)
-                                            .debug_selector(|| {
-                                                DOCUMENT_RECOVERY_WARNING_DISMISS_ID.into()
-                                            })
-                                            .accessibility_id(
-                                                DOCUMENT_RECOVERY_WARNING_DISMISS_ID,
-                                            )
-                                            .outline()
-                                            .label("Dismiss")
-                                            .on_click(cx.listener(|workspace, _, _, cx| {
-                                                workspace.dismiss_session_recovery_warning(cx);
-                                            })),
-                                    ),
-                            )
-                                        },
-                                    )
-                                    .when_some(opening_title, |view, title| {
-                                        let status = format!("Opening {title}");
-                                        view.child(
-                                            v_flex()
-                                                .id(DOCUMENT_OPEN_STATUS_ID)
-                                                .debug_selector(|| DOCUMENT_OPEN_STATUS_ID.into())
-                                                .role(Role::Status)
-                                                .aria_label(status.clone())
-                                                .a11y_synthetic_children(|builder| {
-                                                    builder.parent_node().set_live(Live::Polite)
-                                                })
-                                                .w(px(240.))
-                                                .items_center()
-                                                .gap_2()
-                                                .child(status)
-                                                .child(
-                                                    gpui::div()
-                                                        .id(DOCUMENT_OPEN_PROGRESS_ID)
-                                                        .debug_selector(|| {
-                                                            DOCUMENT_OPEN_PROGRESS_ID.into()
-                                                        })
-                                                        .w_full()
-                                                        .child(
-                                                            Progress::new(
-                                                                "document-open-progress-component",
-                                                            )
-                                                            .loading(true),
-                                                        ),
-                                                ),
-                                        )
-                                    })
-                                    .when(
-                                        !self.sessions.iter().any(|session| {
-                                            matches!(
-                                                session.read(cx).status,
-                                                NativeDocumentStatus::Opening
-                                            )
-                                        }),
-                                        |view| view.child("Open a PDF to start"),
-                                    )
-                                    .child(
-                                        Button::new(VIEWPORT_OPEN_DOCUMENT_ID)
-                                            .debug_selector(|| VIEWPORT_OPEN_DOCUMENT_ID.into())
-                                            .label("Open")
-                                            .on_click(cx.listener(|workspace, _, _, cx| {
-                                                workspace.prompt_to_open_documents(cx);
-                                            })),
-                                    )
-                                    .when_some(open_failure, |view, failure| {
-                                        view.child(
-                                v_flex()
-                                    .w(px(520.))
-                                    .gap_2()
-                                    .child(
-                                        gpui::div()
-                                            .id(DOCUMENT_OPEN_ERROR_ALERT_ID)
-                                            .debug_selector(|| DOCUMENT_OPEN_ERROR_ALERT_ID.into())
-                                            .child(
-                                                Alert::error(
-                                                    "document-workspace-open-feedback-message",
-                                                    failure.presentation(),
-                                                )
-                                                .title("Some PDFs couldn’t be opened"),
-                                            ),
-                                    )
-                                    .child(
-                                        Button::new(DOCUMENT_OPEN_ERROR_DISMISS_ID)
-                                            .debug_selector(|| {
-                                                DOCUMENT_OPEN_ERROR_DISMISS_ID.into()
-                                            })
-                                            .accessibility_id(DOCUMENT_OPEN_ERROR_DISMISS_ID)
-                                            .outline()
-                                            .label("Dismiss")
-                                            .on_click(cx.listener(|workspace, _, _, cx| {
-                                                workspace.dismiss_document_open_failure(cx);
-                                            })),
-                                    ),
-                            )
-                                    })
-                                    .when_some(error, |view, error| {
-                                        view.child(
-                                            gpui::div()
-                                                .id(DOCUMENT_ERROR_ID)
-                                                .debug_selector(|| DOCUMENT_ERROR_ID.into())
-                                                .text_sm()
-                                                .text_color(cx.theme().danger)
-                                                .child(error),
-                                        )
-                                    }),
-                            ),
-                    ),
-            );
+            return self.render_without_document(root, session_tabs, window, cx);
         };
 
         let (
@@ -24277,13 +23950,13 @@ impl Render for DocumentWorkspace {
             let caption_supplement = self.annotation_caption_selection_paths_for_session(
                 document_id,
                 current_page,
-                &session,
+                session,
                 cx,
             );
             let annotation_scene = self.annotation_scene_for_session(
                 document_id,
                 current_page,
-                &session,
+                session,
                 &caption_supplement,
             );
             let pending_image_preview = self.pending_image_hover.as_ref().and_then(
@@ -24380,13 +24053,13 @@ impl Render for DocumentWorkspace {
                                 .annotation_caption_selection_paths_for_session(
                                     document_id,
                                     layout.page as u32,
-                                    &session,
+                                    session,
                                     cx,
                                 );
                             let scene = self.annotation_scene_for_session(
                                 document_id,
                                 layout.page as u32,
-                                &session,
+                                session,
                                 &caption_supplement,
                             );
                             let tiles = session.viewer.visible_tiles(layout.page);
@@ -24514,7 +24187,7 @@ impl Render for DocumentWorkspace {
                 annotation_resize_cursor_style(&annotation_scene, id, *index)
             })
             .or_else(|| {
-                // A selected item moves from its interior and outline band.
+                // A movable body advertises its drag before selection too.
                 let (hover_document, hover_page, id) = self.hovered_annotation.as_ref()?;
                 (*hover_document == document_id
                     && *hover_page == current_page
@@ -24522,8 +24195,7 @@ impl Render for DocumentWorkspace {
                         .session(document_id, cx)?
                         .read(cx)
                         .annotations
-                        .selected_ids(document_id.value())
-                        .contains(id))
+                        .annotation_is_movable(document_id.value(), id))
                 .then_some(CursorStyle::OpenHand)
             });
         // While dragging an item, keep the cursor the press began with.
@@ -24534,7 +24206,7 @@ impl Render for DocumentWorkspace {
             .or(select_hover_cursor);
         let viewport_cursor_style = document_viewport_cursor_style(
             annotation_tool,
-            self.pan_tool_active,
+            self.pan_tool_active || self.middle_pan_active(),
             self.pan_drag.is_some(),
             calibration_pick_active,
             active_selection_marquee.is_some(),
@@ -24911,450 +24583,20 @@ impl Render for DocumentWorkspace {
                     && !pending_editor_inline
             })
             .map(|editor| editor.input.clone());
-        let highlight_open_control = cx.entity().downgrade();
-        let highlight_color_control = cx.entity().downgrade();
-        let highlight_width_control = cx.entity().downgrade();
-        let highlight_opacity_control = cx.entity().downgrade();
-        let highlight_settings_control = Popover::new(DOCUMENT_HIGHLIGHT_SETTINGS_ID)
-            .anchor(Anchor::TopRight)
-            .open(crate::overlay_state::sync_overlay_open(
-                "highlight-settings",
-                self.annotation_highlight_settings_open,
-                cx,
-            ))
-            .on_open_change(move |open, _, cx| {
-                let _ = highlight_open_control.update(cx, |workspace, cx| {
-                    workspace.annotation_highlight_settings_open = *open;
-                    if *open {
-                        let _ = workspace.set_annotation_tool(
-                            document_id,
-                            AnnotationTool::Highlight,
-                            cx,
-                        );
-                    }
-                    cx.notify();
-                });
-            })
-            .trigger(
-                Button::new("document-workspace-highlight-defaults")
-                    .debug_selector(|| "document-workspace-highlight-defaults".into())
-                    .label("Highlight settings")
-                    .disabled(save_busy),
-            )
-            .content(move |_, _, _| {
-                let selected_color = highlight_defaults.color.clone();
-                let selected_width = highlight_defaults.width_pt;
-                let selected_opacity = highlight_defaults.opacity;
-                let color_for_width_12 = selected_color.clone();
-                let color_for_width_18 = selected_color.clone();
-                let color_for_opacity_50 = selected_color.clone();
-                let color_for_opacity_100 = selected_color.clone();
-                let yellow = highlight_color_control.clone();
-                let green = highlight_color_control.clone();
-                let width_12 = highlight_width_control.clone();
-                let width_18 = highlight_width_control.clone();
-                let opacity_50 = highlight_opacity_control.clone();
-                let opacity_100 = highlight_opacity_control.clone();
-                v_flex()
-                    .gap_2()
-                    .child(
-                        gpui::div()
-                            .text_sm()
-                            .font_semibold()
-                            .child("Highlight defaults"),
-                    )
-                    .child(
-                        ButtonGroup::new("document-workspace-highlight-colors")
-                            .child(
-                                Button::new(DOCUMENT_HIGHLIGHT_COLOR_YELLOW_ID)
-                                    .debug_selector(|| DOCUMENT_HIGHLIGHT_COLOR_YELLOW_ID.into())
-                                    .label("Yellow")
-                                    .selected(selected_color == "#ffff00")
-                                    .on_click(move |_, _, cx| {
-                                        let _ = yellow.update(cx, |workspace, cx| {
-                                            workspace.set_highlight_defaults(
-                                                document_id,
-                                                "#ffff00",
-                                                selected_width,
-                                                selected_opacity,
-                                                cx,
-                                            )
-                                        });
-                                    }),
-                            )
-                            .child(
-                                Button::new(DOCUMENT_HIGHLIGHT_COLOR_GREEN_ID)
-                                    .debug_selector(|| DOCUMENT_HIGHLIGHT_COLOR_GREEN_ID.into())
-                                    .label("Green")
-                                    .selected(selected_color == "#00ff00")
-                                    .on_click(move |_, _, cx| {
-                                        let _ = green.update(cx, |workspace, cx| {
-                                            workspace.set_highlight_defaults(
-                                                document_id,
-                                                "#00ff00",
-                                                selected_width,
-                                                selected_opacity,
-                                                cx,
-                                            )
-                                        });
-                                    }),
-                            ),
-                    )
-                    .child(
-                        ButtonGroup::new("document-workspace-highlight-widths")
-                            .child(
-                                Button::new(DOCUMENT_HIGHLIGHT_WIDTH_12_ID)
-                                    .debug_selector(|| DOCUMENT_HIGHLIGHT_WIDTH_12_ID.into())
-                                    .label("12 pt")
-                                    .selected(selected_width == 12.)
-                                    .on_click(move |_, _, cx| {
-                                        let _ = width_12.update(cx, |workspace, cx| {
-                                            workspace.set_highlight_defaults(
-                                                document_id,
-                                                &color_for_width_12,
-                                                12.,
-                                                selected_opacity,
-                                                cx,
-                                            )
-                                        });
-                                    }),
-                            )
-                            .child(
-                                Button::new(DOCUMENT_HIGHLIGHT_WIDTH_18_ID)
-                                    .debug_selector(|| DOCUMENT_HIGHLIGHT_WIDTH_18_ID.into())
-                                    .label("18 pt")
-                                    .selected(selected_width == 18.)
-                                    .on_click(move |_, _, cx| {
-                                        let _ = width_18.update(cx, |workspace, cx| {
-                                            workspace.set_highlight_defaults(
-                                                document_id,
-                                                &color_for_width_18,
-                                                18.,
-                                                selected_opacity,
-                                                cx,
-                                            )
-                                        });
-                                    }),
-                            ),
-                    )
-                    .child(
-                        ButtonGroup::new("document-workspace-highlight-opacities")
-                            .child(
-                                Button::new(DOCUMENT_HIGHLIGHT_OPACITY_50_ID)
-                                    .debug_selector(|| DOCUMENT_HIGHLIGHT_OPACITY_50_ID.into())
-                                    .label("50%")
-                                    .selected(selected_opacity == 0.5)
-                                    .on_click(move |_, _, cx| {
-                                        let _ = opacity_50.update(cx, |workspace, cx| {
-                                            workspace.set_highlight_defaults(
-                                                document_id,
-                                                &color_for_opacity_50,
-                                                selected_width,
-                                                0.5,
-                                                cx,
-                                            )
-                                        });
-                                    }),
-                            )
-                            .child(
-                                Button::new(DOCUMENT_HIGHLIGHT_OPACITY_100_ID)
-                                    .debug_selector(|| DOCUMENT_HIGHLIGHT_OPACITY_100_ID.into())
-                                    .label("100%")
-                                    .selected(selected_opacity == 1.)
-                                    .on_click(move |_, _, cx| {
-                                        let _ = opacity_100.update(cx, |workspace, cx| {
-                                            workspace.set_highlight_defaults(
-                                                document_id,
-                                                &color_for_opacity_100,
-                                                selected_width,
-                                                1.,
-                                                cx,
-                                            )
-                                        });
-                                    }),
-                            ),
-                    )
-            });
-        let semantic_settings = self.semantic_snap_settings;
-        let snap_open_control = cx.entity().downgrade();
-        let snap_markup_control = cx.entity().downgrade();
-        let semantic_snap_control = Popover::new("document-workspace-snap-settings-owner")
-            .anchor(Anchor::TopRight)
-            .open(crate::overlay_state::sync_overlay_open(
-                "snap-settings",
-                self.semantic_snap_settings_open,
-                cx,
-            ))
-            .on_open_change(move |open, _, cx| {
-                let _ = snap_open_control.update(cx, |workspace, cx| {
-                    workspace.semantic_snap_settings_open = *open;
-                    cx.notify();
-                });
-            })
-            .trigger(
-                rail_tool_button(DOCUMENT_SNAP_SETTINGS_ID, "Snap settings", "magnet")
-                    .debug_selector(|| DOCUMENT_SNAP_SETTINGS_ID.into())
-                    .tooltip("Snap settings")
-                    .disabled(save_busy),
-            )
-            .content(move |_, window, cx| {
-                let control = snap_markup_control.clone();
-                let settings = semantic_settings;
-                let grid_enabled = settings.is_source_enabled(SemanticSnapSource::ConstructionGrid);
-                let content_enabled = settings.is_source_enabled(SemanticSnapSource::Content);
-                let page_grid_enabled = settings.is_source_enabled(SemanticSnapSource::PageGrid);
-                let targets_enabled =
-                    settings.annotations_enabled() || content_enabled || page_grid_enabled;
-                let source = |source: SemanticSnapSource| {
-                    let control = control.clone();
-                    move |on: bool, cx: &mut App| {
-                        let _ = control.update(cx, |workspace, cx| {
-                            workspace.set_semantic_snap_source(source, on, cx);
-                        });
-                    }
-                };
-                let target = |target: SemanticSnapTarget| {
-                    let control = control.clone();
-                    move |on: bool, cx: &mut App| {
-                        let _ = control.update(cx, |workspace, cx| {
-                            workspace.set_semantic_snap_target(target, on, cx);
-                        });
-                    }
-                };
-                let guide = |guide: SemanticSnapGuideType| {
-                    let control = control.clone();
-                    move |on: bool, cx: &mut App| {
-                        let _ = control.update(cx, |workspace, cx| {
-                            workspace.set_semantic_snap_guide(guide, on, cx);
-                        });
-                    }
-                };
-                let markup = {
-                    let control = control.clone();
-                    move |on: bool, cx: &mut App| {
-                        let _ = control.update(cx, |workspace, cx| {
-                            workspace.set_semantic_snap_annotations_enabled(on, cx);
-                        });
-                    }
-                };
-                let grid_visible = {
-                    let control = control.clone();
-                    move |on: bool, cx: &mut App| {
-                        let _ = control.update(cx, |workspace, cx| {
-                            workspace.set_semantic_snap_grid_visible(on, cx);
-                        });
-                    }
-                };
-                let dimension = {
-                    let control = control.clone();
-                    move |on: bool, cx: &mut App| {
-                        let _ = control.update(cx, |workspace, cx| {
-                            workspace.set_semantic_snap_dimension_increment_enabled(on, cx);
-                        });
-                    }
-                };
-                let guides = {
-                    let control = control.clone();
-                    move |on: bool, cx: &mut App| {
-                        let _ = control.update(cx, |workspace, cx| {
-                            workspace.set_semantic_snap_guides_enabled(on, cx);
-                        });
-                    }
-                };
-                v_flex()
-                    .id(DOCUMENT_SNAP_POPOVER_ID)
-                    .debug_selector(|| DOCUMENT_SNAP_POPOVER_ID.into())
-                    .w_80()
-                    .max_h(window.viewport_size().height - px(32.))
-                    .overflow_y_scroll()
-                    .gap_3()
-                    .child(snap_section(
-                        "Snap to",
-                        snap_tile_grid(vec![
-                            snap_tile(
-                                DOCUMENT_SNAP_CONTENT_ID,
-                                "Content",
-                                None,
-                                content_enabled,
-                                false,
-                                source(SemanticSnapSource::Content),
-                                cx,
-                            ),
-                            snap_tile(
-                                DOCUMENT_SNAP_MARKUP_ID,
-                                "Markup",
-                                None,
-                                settings.annotations_enabled(),
-                                false,
-                                markup,
-                                cx,
-                            ),
-                            snap_tile(
-                                DOCUMENT_SNAP_PAGE_GRID_ID,
-                                "Page grid",
-                                None,
-                                page_grid_enabled,
-                                false,
-                                source(SemanticSnapSource::PageGrid),
-                                cx,
-                            ),
-                        ]),
-                        cx,
-                    ))
-                    .child(snap_separator(cx))
-                    .child(snap_section(
-                        "Construction grid",
-                        v_flex()
-                            .gap_2()
-                            .child(snap_switch_row(
-                                DOCUMENT_SNAP_CONSTRUCTION_GRID_ID,
-                                "Snap to grid",
-                                grid_enabled,
-                                false,
-                                source(SemanticSnapSource::ConstructionGrid),
-                            ))
-                            .child(snap_switch_row(
-                                DOCUMENT_SNAP_CONSTRUCTION_GRID_VISIBLE_ID,
-                                "Show grid",
-                                settings.construction_grid_visible(),
-                                !grid_enabled,
-                                grid_visible,
-                            ))
-                            .child(snap_number_row(
-                                "Spacing (mm)",
-                                DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID,
-                                NumberInput::new(&snap_grid_spacing_input)
-                                    .small()
-                                    .disabled(!grid_enabled),
-                            ))
-                            .into_any_element(),
-                        cx,
-                    ))
-                    .child(snap_separator(cx))
-                    .child(snap_section(
-                        "Dimension increments",
-                        v_flex()
-                            .gap_2()
-                            .child(snap_switch_row(
-                                DOCUMENT_SNAP_DIMENSION_INCREMENT_ID,
-                                "Snap dimensions",
-                                settings.dimension_increment_enabled(),
-                                false,
-                                dimension,
-                            ))
-                            .child(snap_number_row(
-                                "Increment (mm)",
-                                DOCUMENT_SNAP_DIMENSION_INCREMENT_VALUE_ID,
-                                NumberInput::new(&snap_dimension_increment_input)
-                                    .small()
-                                    .disabled(!settings.dimension_increment_enabled()),
-                            ))
-                            .into_any_element(),
-                        cx,
-                    ))
-                    .child(snap_separator(cx))
-                    .child(snap_section(
-                        "Snap points",
-                        snap_tile_grid(vec![
-                            snap_tile(
-                                DOCUMENT_SNAP_ENDPOINT_ID,
-                                "Ends",
-                                Some("square"),
-                                settings.is_target_selected(SemanticSnapTarget::Endpoint),
-                                !targets_enabled,
-                                target(SemanticSnapTarget::Endpoint),
-                                cx,
-                            ),
-                            snap_tile(
-                                DOCUMENT_SNAP_MIDPOINT_ID,
-                                "Midpoints",
-                                Some("triangle"),
-                                settings.is_target_selected(SemanticSnapTarget::Midpoint),
-                                !targets_enabled,
-                                target(SemanticSnapTarget::Midpoint),
-                                cx,
-                            ),
-                            snap_tile(
-                                DOCUMENT_SNAP_CENTER_ID,
-                                "Centres",
-                                Some("circle"),
-                                settings.is_target_selected(SemanticSnapTarget::Center),
-                                !targets_enabled,
-                                target(SemanticSnapTarget::Center),
-                                cx,
-                            ),
-                            snap_tile(
-                                DOCUMENT_SNAP_INTERSECTION_ID,
-                                "Intersections",
-                                Some("x"),
-                                settings.is_target_selected(SemanticSnapTarget::Intersection),
-                                !targets_enabled,
-                                target(SemanticSnapTarget::Intersection),
-                                cx,
-                            ),
-                            snap_tile(
-                                DOCUMENT_SNAP_NEAREST_ID,
-                                "Nearest",
-                                Some("diamond"),
-                                settings.is_target_selected(SemanticSnapTarget::Nearest),
-                                !targets_enabled,
-                                target(SemanticSnapTarget::Nearest),
-                                cx,
-                            ),
-                        ]),
-                        cx,
-                    ))
-                    .child(snap_separator(cx))
-                    .child(snap_section(
-                        "Snap guides",
-                        v_flex()
-                            .gap_2()
-                            .child(snap_switch_row(
-                                DOCUMENT_SNAP_GUIDES_ID,
-                                "Show snap guides",
-                                settings.guides_enabled(),
-                                false,
-                                guides,
-                            ))
-                            .child(snap_tile_grid(vec![
-                                snap_tile(
-                                    DOCUMENT_SNAP_GUIDE_ALIGNMENT_ID,
-                                    "Alignment",
-                                    None,
-                                    settings.is_guide_enabled(SemanticSnapGuideType::Alignment),
-                                    !settings.guides_enabled(),
-                                    guide(SemanticSnapGuideType::Alignment),
-                                    cx,
-                                ),
-                                snap_tile(
-                                    DOCUMENT_SNAP_GUIDE_EQUAL_SIZE_ID,
-                                    "Equal size",
-                                    None,
-                                    settings.is_guide_enabled(SemanticSnapGuideType::EqualSize),
-                                    !settings.guides_enabled(),
-                                    guide(SemanticSnapGuideType::EqualSize),
-                                    cx,
-                                ),
-                                snap_tile(
-                                    DOCUMENT_SNAP_GUIDE_EQUAL_SPACING_ID,
-                                    "Equal spacing",
-                                    None,
-                                    settings.is_guide_enabled(SemanticSnapGuideType::EqualSpacing),
-                                    !settings.guides_enabled(),
-                                    guide(SemanticSnapGuideType::EqualSpacing),
-                                    cx,
-                                ),
-                            ]))
-                            .into_any_element(),
-                        cx,
-                    ))
-            });
+        let highlight_settings_control =
+            self.render_highlight_settings_popover(document_id, highlight_defaults, save_busy, cx);
+        let semantic_snap_control = self.render_snap_settings_popover(
+            save_busy,
+            snap_grid_spacing_input,
+            snap_dimension_increment_input,
+            cx,
+        );
         let tool_group = annotation_tool_group(
             document_id,
             current_page,
             annotation_tool,
             save_busy,
-            self.pan_tool_active,
+            self.pan_tool_active || self.middle_pan_active(),
             self.right_rail_columns,
             self.signature_popover_open,
             self.signature_prepare_state.clone(),
@@ -25461,7 +24703,7 @@ impl Render for DocumentWorkspace {
                     let id = format!("document-workspace-stroke-{width}");
                     let selector = id.clone();
                     Button::new(id)
-                        .debug_selector(move || selector.clone().into())
+                        .debug_selector(move || selector.clone())
                         .label(format!("{width} pt"))
                         .selected(selected_rectangle_stroke_width == Some(width))
                         .toggled(selected_rectangle_stroke_width == Some(width))
@@ -25697,1054 +24939,8 @@ impl Render for DocumentWorkspace {
         } else {
             None
         };
-        let selected_session_ix = self.active_document_id.and_then(|active_id| {
-            session_tabs
-                .iter()
-                .position(|(document_id, _, _, _)| *document_id == active_id)
-        });
-        let session_tab_count = session_tabs.len();
-        let session_tab_ids = session_tabs
-            .iter()
-            .map(|(document_id, _, _, _)| *document_id)
-            .collect::<Vec<_>>();
-        let session_drag_active = self
-            .session_tab_pointer_drag
-            .as_ref()
-            .is_some_and(|drag| drag.activated);
-        let overflow_items = session_tabs
-            .iter()
-            .map(|(id, title, _, _)| (*id, title.clone()))
-            .collect::<Vec<_>>();
-        let rendered_session_tabs = session_tabs.into_iter().enumerate().map(
-                |(tab_ix, (tab_document_id, tab_title, dirty, saving))| {
-                    let tab_id = document_session_tab_id(tab_document_id);
-                    let tab_selector = tab_id.clone();
-                    let tab_focus = self
-                        .session_tab_focus_handles
-                        .get(&tab_document_id)
-                        .expect("every retained session tab must own a focus handle")
-                        .clone();
-                    let tab_bounds = self
-                        .session_tab_bounds
-                        .get(&tab_document_id)
-                        .expect("every retained session tab must own a bounds cell")
-                        .clone();
-                    let is_active = self.active_document_id == Some(tab_document_id);
-                    let publication_warning = self
-                        .session(tab_document_id, cx)
-                        .and_then(|session| {
-                            session
-                                .read(cx)
-                                .publication_durability_warning()
-                                .map(str::to_owned)
-                        });
-                    let is_dragged = self.session_tab_pointer_drag.as_ref().is_some_and(|drag| {
-                        drag.activated && drag.document_id == tab_document_id
-                    });
-                    let incoming_before = self.incoming_tab_drop == Some(tab_ix);
-                    let incoming_after = self.incoming_tab_drop == Some(tab_ix + 1)
-                        && tab_ix + 1 == session_tab_count;
-                    let is_drop_target = incoming_before
-                        || incoming_after
-                        || self.session_tab_pointer_drag.as_ref().is_some_and(|drag| {
-                            drag.activated && drag.document_id != tab_document_id
-                                && drag.over_document_id == tab_document_id
-                                && self.session_tab_scroll.bounds().contains(&drag.current)
-                        });
-                    let drop_after = incoming_after
-                        || (!incoming_before
-                            && self.session_tab_pointer_drag.as_ref().is_some_and(|drag| {
-                                session_tab_ids.iter().position(|id| *id == drag.document_id)
-                                    .is_some_and(|source_ix| source_ix < tab_ix)
-                            }));
-                    let accessibility_label = if publication_warning.is_some() {
-                        format!("{tab_title}, Saved with warning")
-                    } else if dirty {
-                        format!("{tab_title}, Unsaved changes")
-                    } else {
-                        tab_title.clone()
-                    };
-                    let bounds_trace = canvas(
-                        move |bounds, _, _| {
-                            if !session_drag_active {
-                                tab_bounds.set(bounds);
-                            }
-                        },
-                        |_, _, _, _| {},
-                    )
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .top_0()
-                    .bottom_0();
-                    let drag_id = document_tab_drag_id(&tab_document_id.to_string());
-                    let drag_selector = drag_id.clone();
-                    let drag_trace = is_dragged.then(|| {
-                        gpui::div()
-                            .id(drag_id)
-                            .debug_selector(move || drag_selector.clone().into())
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .top_0()
-                            .bottom_0()
-                    });
-                    let drop_id = document_tab_drop_target_id(&tab_document_id.to_string());
-                    let drop_selector = drop_id.clone();
-                    let drop_trace = is_drop_target.then(|| {
-                        gpui::div()
-                            .id(drop_id)
-                            .debug_selector(move || drop_selector.clone().into())
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .top_0()
-                            .bottom_0()
-                            .when(drop_after, |cue| cue.border_r_2())
-                            .when(!drop_after, |cue| cue.border_l_2())
-                            .border_color(cx.theme().primary)
-                    });
-                    let keyboard_control = cx.entity().downgrade();
-                    let keyboard_ids = session_tab_ids.clone();
-                    let keyboard_focus_handles = self.session_tab_focus_handles.clone();
-                    let keyboard_tab_focus = tab_focus.clone();
-                    let reveal_close = self.session_tab_hovered == Some(tab_document_id)
-                        || tab_focus.contains_focused(window, cx);
-                    let tab = Tab::new()
-                        .button_states(true)
-                        // Short titles still leave a grab area clear of the
-                        // close button, as browsers keep a minimum tab width.
-                        .min_w(px(DOCUMENT_SESSION_TAB_MIN_WIDTH))
-                        .when(is_dragged, |tab| tab.opacity(0.6))
-                        .on_hover(cx.listener(move |workspace, hovered, _, cx| {
-                            let next = if *hovered { Some(tab_document_id) } else {
-                                workspace.session_tab_hovered.filter(|id| *id != tab_document_id)
-                            };
-                            if workspace.session_tab_hovered != next {
-                                workspace.session_tab_hovered = next;
-                                cx.notify();
-                            }
-                        }))
-                        .group(tab_id.clone())
-                        .debug_selector(move || tab_selector.clone().into())
-                        .child(session_tab_overlay_label(if dirty {
-                            format!("* {}", format_document_tab_label(&tab_title))
-                        } else {
-                            format_document_tab_label(&tab_title).to_owned()
-                        }, tab_id.clone(), reveal_close, self.session_tab_label_offsets
-                            .entry(tab_document_id)
-                            .or_default()
-                            .clone()))
-                        .aria_label(accessibility_label)
-                        .aria_description(DOCUMENT_TAB_REORDER_DESCRIPTION)
-                        .aria_keyshortcuts(DOCUMENT_TAB_REORDER_KEYSHORTCUTS)
-                        .child(bounds_trace)
-                        .children(drag_trace)
-                        .children(drop_trace)
-                        .track_focus(&tab_focus.clone().tab_stop(is_active))
-                        // Workspace navigation bindings dispatch actions before raw
-                        // key handlers. Tabs must consume them at their own scope.
-                        .on_action(cx.listener(move |workspace, _: &NavigateHome, window, cx| {
-                            workspace.navigate_session_tab(tab_document_id, DocumentNavigationAction::Home, window, cx);
-                        }))
-                        .on_action(cx.listener(move |workspace, _: &NavigateEnd, window, cx| {
-                            workspace.navigate_session_tab(tab_document_id, DocumentNavigationAction::End, window, cx);
-                        }))
-                        .on_action(cx.listener(move |workspace, _: &NavigateLeft, window, cx| {
-                            workspace.navigate_session_tab(tab_document_id, DocumentNavigationAction::ArrowLeft, window, cx);
-                        }))
-                        .on_action(cx.listener(move |workspace, _: &NavigateRight, window, cx| {
-                            workspace.navigate_session_tab(tab_document_id, DocumentNavigationAction::ArrowRight, window, cx);
-                        }))
-                        .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                            let modifiers = event.keystroke.modifiers;
-                            if modifiers.alt && modifiers.shift {
-                                let direction = match event.keystroke.key.as_str() {
-                                    "left" => Some(-1),
-                                    "right" => Some(1),
-                                    _ => None,
-                                };
-                                let Some(direction) = direction else {
-                                    return;
-                                };
-                                let moved = keyboard_control
-                                    .update(cx, |workspace, cx| {
-                                        workspace.move_document_session_by_keyboard(
-                                            tab_document_id,
-                                            direction,
-                                            cx,
-                                        )
-                                    })
-                                    .unwrap_or(false);
-                                if moved {
-                                    keyboard_tab_focus.focus(window, cx);
-                                }
-                                cx.stop_propagation();
-                                return;
-                            }
-                            if modifiers.alt
-                                || modifiers.control
-                                || modifiers.platform
-                                || session_tab_count == 0
-                            {
-                                return;
-                            }
-                            let target_ix = match event.keystroke.key.as_str() {
-                                "left" => Some((tab_ix + session_tab_count - 1) % session_tab_count),
-                                "right" => Some((tab_ix + 1) % session_tab_count),
-                                "home" => Some(0),
-                                "end" => Some(session_tab_count - 1),
-                                _ => None,
-                            };
-                            let Some(target_ix) = target_ix else {
-                                return;
-                            };
-                            let target_id = keyboard_ids[target_ix];
-                            let target_focus = keyboard_focus_handles.get(&target_id).cloned();
-                            let _ = keyboard_control.update(cx, |workspace, cx| {
-                                workspace.activate_document(target_id, cx);
-                            });
-                            if let Some(target_focus) = target_focus {
-                                target_focus.focus(window, cx);
-                            }
-                            cx.stop_propagation();
-                        })
-                        ;
-                    let close_id = document_session_close_id(tab_document_id);
-                    let close_selector = close_id.clone();
-                    let close_accessibility_id = close_id.clone();
-                    let close_label = document_tab_close_accessible_label(&tab_title);
-                    let close = accessible_icon_button(
-                        Button::new(close_id)
-                            .opacity(if reveal_close { 1. } else { 0. })
-                            .focus(|style| style.opacity(1.))
-                            .debug_selector(move || close_selector.clone().into())
-                            .accessibility_id(close_accessibility_id)
-                            .custom(gpui_component::button::ButtonCustomVariant::new(cx)
-                                .color(cx.theme().transparent).hover(cx.theme().background)
-                                .active(cx.theme().input).foreground(cx.theme().foreground))
-                            .bg(cx.theme().transparent)
-                            .border_color(cx.theme().transparent)
-                            .small()
-                            .rounded((cx.theme().radius - px(4.)).max(px(0.)))
-                            .icon(IconName::Close)
-                            .tooltip(close_label.clone())
-                            .disabled(saving)
-                            .on_click(move |_: &ClickEvent, _, cx| {
-                                cx.stop_propagation();
-                            }),
-                        close_label,
-                    );
-                    let close = if let Some(publication_warning) = publication_warning {
-                        let confirmation_open =
-                            self.pending_close_document_id == Some(tab_document_id);
-                        let open_control = cx.entity().downgrade();
-                        let content_control = cx.entity().downgrade();
-                        let warning_title = tab_title.clone();
-                        Popover::new(format!(
-                            "{tab_document_id}-publication-warning-close-popover"
-                        ))
-                        .anchor(Anchor::TopRight)
-                        .open(crate::overlay_state::sync_overlay_open(format!("workspace-tab-confirmation-{tab_document_id}"), confirmation_open, cx))
-                        .overlay_closable(true)
-                        .on_open_change(move |open, _, cx| {
-                            let _ = open_control.update(cx, |workspace, cx| {
-                                if *open {
-                                    workspace.request_close_document(tab_document_id, cx);
-                                } else {
-                                    workspace.resolve_dirty_close_cancel(cx);
-                                }
-                            });
-                        })
-                        .w_80()
-                        .trigger(close)
-                        .content(move |_, _window, cx| {
-                            let popover = cx.entity();
-                            let cancel_popover = popover.clone();
-                            let cancel_control = content_control.clone();
-                            let continue_control = content_control.clone();
-                            v_flex()
-                                .id(DOCUMENT_PUBLICATION_WARNING_CLOSE_ID)
-                                .debug_selector(|| DOCUMENT_PUBLICATION_WARNING_CLOSE_ID.into())
-                                .w_full()
-                                .gap_3()
-                                .child(
-                                    v_flex()
-                                        .gap_1()
-                                        .child(gpui::div().font_semibold().child(format!(
-                                            "“{warning_title}” was saved with a warning"
-                                        )))
-                                        .child(
-                                            gpui::div()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(format!(
-                                                    "The file will not be written again. Closing would remove its crash-recovery fallback even though directory durability was not confirmed. {publication_warning}"
-                                                )),
-                                        ),
-                                )
-                                .child(
-                                    h_flex()
-                                        .justify_end()
-                                        .gap_2()
-                                        .child(
-                                            Button::new(
-                                                DOCUMENT_PUBLICATION_WARNING_CLOSE_CANCEL_ID,
-                                            )
-                                            .debug_selector(|| {
-                                                DOCUMENT_PUBLICATION_WARNING_CLOSE_CANCEL_ID.into()
-                                            })
-                                            .outline()
-                                            .label("Keep open")
-                                            .on_click(move |_: &ClickEvent, window, cx| {
-                                                let _ = cancel_control.update(
-                                                    cx,
-                                                    |workspace, cx| {
-                                                        workspace.resolve_dirty_close_cancel(cx);
-                                                    },
-                                                );
-                                                cancel_popover.update(cx, |popover, cx| {
-                                                    popover.dismiss(window, cx)
-                                                });
-                                            }),
-                                        )
-                                        .child(
-                                            Button::new(
-                                                DOCUMENT_PUBLICATION_WARNING_CLOSE_CONTINUE_ID,
-                                            )
-                                            .debug_selector(|| {
-                                                DOCUMENT_PUBLICATION_WARNING_CLOSE_CONTINUE_ID
-                                                    .into()
-                                            })
-                                            .primary()
-                                            .label("Continue closing")
-                                            .on_click(move |_: &ClickEvent, window, cx| {
-                                                let successor_focus = continue_control
-                                                    .update(cx, |workspace, cx| {
-                                                        let disposition = workspace
-                                                            .resolve_publication_warning_close(cx);
-                                                        (disposition
-                                                            == CloseRequestDisposition::Closed)
-                                                            .then(|| {
-                                                                workspace.active_document_id
-                                                                    .and_then(|document_id| {
-                                                                        workspace
-                                                                            .session_tab_focus_handles
-                                                                            .get(&document_id)
-                                                                            .cloned()
-                                                                    })
-                                                            })
-                                                            .flatten()
-                                                    })
-                                                    .ok()
-                                                    .flatten();
-                                                if let Some(successor_focus) = successor_focus {
-                                                    successor_focus.focus(window, cx);
-                                                } else {
-                                                    window.refresh();
-                                                }
-                                            }),
-                                        ),
-                                )
-                        })
-                        .into_any_element()
-                    } else if dirty {
-                        let confirmation_open =
-                            self.pending_close_document_id == Some(tab_document_id);
-                        let open_control = cx.entity().downgrade();
-                        let content_control = cx.entity().downgrade();
-                        Popover::new(format!("{tab_document_id}-dirty-close-popover"))
-                            .anchor(Anchor::TopRight)
-                            .open(crate::overlay_state::sync_overlay_open(format!("workspace-tab-dirty-close-{tab_document_id}"), confirmation_open, cx))
-                            .overlay_closable(!saving)
-                            .on_open_change(move |open, _, cx| {
-                                let _ = open_control.update(cx, |workspace, cx| {
-                                    if *open {
-                                        workspace.request_close_document(tab_document_id, cx);
-                                    } else if !saving {
-                                        workspace.resolve_dirty_close_cancel(cx);
-                                    }
-                                });
-                            })
-                            .w_80()
-                            .trigger(close)
-                            .content(move |_, _window, cx| {
-                                let popover = cx.entity();
-                                let cancel_popover = popover.clone();
-                                let discard_popover = popover.clone();
-                                let cancel_control = content_control.clone();
-                                let discard_control = content_control.clone();
-                                let save_control = content_control.clone();
-                                v_flex()
-                                    .id(DOCUMENT_DIRTY_CLOSE_ID)
-                                    .debug_selector(|| DOCUMENT_DIRTY_CLOSE_ID.into())
-                                    .w_full()
-                                    .gap_3()
-                                    .child(
-                                        v_flex()
-                                            .gap_1()
-                                            .child(
-                                                gpui::div()
-                                                    .font_semibold()
-                                                    .child(format!(
-                                                        "Save changes to {tab_title}?"
-                                                    )),
-                                            )
-                                            .child(
-                                                gpui::div()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child("Your changes will be lost if you close this tab without saving."),
-                                            ),
-                                    )
-                                    .child(
-                                        h_flex()
-                                            .justify_end()
-                                            .gap_2()
-                                            .child(
-                                                Button::new(DOCUMENT_DIRTY_CLOSE_CANCEL_ID)
-                                                    .debug_selector(|| DOCUMENT_DIRTY_CLOSE_CANCEL_ID.into())
-                                                    .outline()
-                                                    .label("Cancel")
-                                                    .disabled(saving)
-                                                    .on_click(move |_: &ClickEvent, window, cx| {
-                                                        let _ = cancel_control.update(cx, |workspace, cx| {
-                                                            workspace.resolve_dirty_close_cancel(cx);
-                                                        });
-                                                        cancel_popover.update(cx, |popover, cx| {
-                                                            popover.dismiss(window, cx)
-                                                        });
-                                                    }),
-                                            )
-                                            .child(
-                                                Button::new(DOCUMENT_DIRTY_CLOSE_DISCARD_ID)
-                                                    .debug_selector(|| DOCUMENT_DIRTY_CLOSE_DISCARD_ID.into())
-                                                    .danger()
-                                                    .label("Discard")
-                                                    .disabled(saving)
-                                                    .on_click(move |_: &ClickEvent, window, cx| {
-                                                        let (resolution, successor_focus) = discard_control
-                                                            .update(cx, |workspace, cx| {
-                                                                let resolution = workspace.resolve_dirty_close_discard(cx);
-                                                                let successor_focus = workspace
-                                                                    .active_document_id
-                                                                    .and_then(|document_id| {
-                                                                        workspace
-                                                                            .session_tab_focus_handles
-                                                                            .get(&document_id)
-                                                                            .cloned()
-                                                                    });
-                                                                (resolution, successor_focus)
-                                                            })
-                                                            .unwrap_or((
-                                                                DirtyCloseResolution::NoPendingDocument,
-                                                                None,
-                                                            ));
-                                                        if resolution == DirtyCloseResolution::Discarded {
-                                                            discard_popover.update(cx, |popover, cx| {
-                                                                popover.dismiss(window, cx)
-                                                            });
-                                                            if let Some(successor_focus) = successor_focus {
-                                                                successor_focus.focus(window, cx);
-                                                            }
-                                                        } else {
-                                                            window.refresh();
-                                                        }
-                                                    }),
-                                            )
-                                            .child(
-                                                Button::new(DOCUMENT_DIRTY_CLOSE_SAVE_ID)
-                                                    .debug_selector(|| DOCUMENT_DIRTY_CLOSE_SAVE_ID.into())
-                                                    .primary()
-                                                    .label(if saving { "Saving…" } else { "Save" })
-                                                    .disabled(saving)
-                                                    .on_click(move |_: &ClickEvent, _, cx| {
-                                                        let _ = save_control.update(cx, |workspace, cx| {
-                                                            workspace.prompt_to_save_pending_close(cx);
-                                                        });
-                                                    }),
-                                            ),
-                                    )
-                            })
-                            .into_any_element()
-                    } else {
-                        close
-                            .on_click({
-                                let control = cx.entity().downgrade();
-                                move |_: &ClickEvent, window, cx| {
-                                    let successor_focus = control
-                                        .update(cx, |workspace, cx| {
-                                            let _ = workspace
-                                                .request_close_document(tab_document_id, cx);
-                                            workspace.active_document_id.and_then(|document_id| {
-                                                workspace
-                                                    .session_tab_focus_handles
-                                                    .get(&document_id)
-                                                    .cloned()
-                                            })
-                                        })
-                                        .ok()
-                                        .flatten();
-                                    if let Some(successor_focus) = successor_focus {
-                                        successor_focus.focus(window, cx);
-                                    }
-                                    cx.stop_propagation();
-                                }
-                            })
-                            .into_any_element()
-                    };
-                    let close_bounds = self
-                        .session_tab_close_bounds
-                        .get(&tab_document_id)
-                        .expect("every retained session tab close must own a bounds cell")
-                        .clone();
-                    let close_bounds_trace = canvas(
-                        move |bounds, _, _| close_bounds.set(bounds),
-                        |_, _, _, _| {},
-                    )
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .top_0()
-                    .bottom_0();
-                    tab.child(
-                        session_tab_close_lane()
-                            .child(h_flex().relative().child(close).child(close_bounds_trace)),
-                    )
-                },
-            )
-            .collect::<Vec<_>>();
-        let open_document = accessible_icon_button(
-            Button::new(DOCUMENT_TAB_OPEN_ID)
-                .debug_selector(|| DOCUMENT_TAB_OPEN_ID.into())
-                .icon(IconName::Plus)
-                .tooltip("Open PDF")
-                .on_click(cx.listener(|workspace, _, _, cx| {
-                    workspace.prompt_to_open_documents(cx);
-                })),
-            "Open PDF",
-        );
-        let overflow_lane = self.session_tabs_overflow.then(|| {
-            let control = cx.entity().downgrade();
-            h_flex()
-                .id("document-tabs-overflow-lane")
-                .debug_selector(|| "document-tabs-overflow-lane".into())
-                .flex_shrink_0()
-                .pr_3()
-                .border_r_1()
-                .border_color(cx.theme().border)
-                .child(
-                    accessible_icon_button(
-                        Button::new("document-tabs-overflow")
-                            .debug_selector(|| "document-tabs-overflow".into())
-                            .icon(IconName::ChevronDown)
-                            .tooltip("Open documents"),
-                        "Open documents",
-                    )
-                    .dropdown_menu(move |mut menu, _, _| {
-                        menu = menu.scrollable(true);
-                        for (ix, (id, title)) in overflow_items.iter().enumerate() {
-                            let id = *id;
-                            let control = control.clone();
-                            menu = menu.item(
-                                PopupMenuItem::new(title.clone())
-                                    .checked(selected_session_ix == Some(ix))
-                                    .on_click(move |_, window, cx| {
-                                        let _ = control.update(cx, |workspace, cx| {
-                                            let _ = workspace.activate_document(id, cx);
-                                            if let Some(focus) =
-                                                workspace.session_tab_focus_handles.get(&id)
-                                            {
-                                                focus.focus(window, cx);
-                                            }
-                                            cx.notify();
-                                        });
-                                    }),
-                            );
-                        }
-                        menu
-                    }),
-                )
-        });
-        let document_actions = h_flex()
-            .flex_shrink_0()
-            .gap_2()
-            .child(open_document)
-            .child(self.template_control.clone());
-        let tab_bar_click_control = cx.entity().downgrade();
-        let tab_bar_click_ids = session_tab_ids.clone();
-        let tab_bar_focus_handles = self.session_tab_focus_handles.clone();
-        let native_session_tabs = TabBar::new("document-workspace-session-tabs-component")
-            .outline()
-            .track_scroll(&self.session_tab_scroll)
-            .max_width(px(190.))
-            // The pinned option is unconditional; the application supplies the
-            // measured overflow state rather than enabling it for every document.
-            .menu(false)
-            .children(rendered_session_tabs)
-            .on_click(move |tab_ix, window, cx| {
-                let focus = tab_bar_click_control
-                    .update(cx, |workspace, cx| {
-                        let Some(&document_id) = tab_bar_click_ids.get(*tab_ix) else {
-                            return None;
-                        };
-                        let active_drag = workspace
-                            .session_tab_pointer_drag
-                            .as_ref()
-                            .is_some_and(|drag| drag.activated && drag.document_id == document_id);
-                        if active_drag || workspace.take_suppressed_session_tab_click(document_id) {
-                            cx.stop_propagation();
-                            return None;
-                        }
-                        let _ = workspace.activate_document(document_id, cx);
-                        tab_bar_focus_handles.get(&document_id).cloned()
-                    })
-                    .ok()
-                    .flatten();
-                if let Some(focus) = focus {
-                    focus.focus(window, cx);
-                }
-            })
-            .when_some(selected_session_ix, |tabs, selected_ix| {
-                tabs.selected_index(selected_ix)
-            });
-        let reorder_announcement = self.session_tab_reorder_announcement.clone();
-        let reorder_status = gpui::div()
-            .id(DOCUMENT_TAB_REORDER_STATUS_ID)
-            .debug_selector(|| DOCUMENT_TAB_REORDER_STATUS_ID.into())
-            .accessibility_id(DOCUMENT_TAB_REORDER_STATUS_ID)
-            .role(Role::Status)
-            .aria_label(reorder_announcement)
-            .a11y_synthetic_children(|builder| builder.parent_node().set_live(Live::Polite))
-            .absolute()
-            .left_0()
-            .bottom_0()
-            .size(px(1.))
-            .overflow_hidden()
-            .opacity(0.);
-        let down_control = cx.entity().downgrade();
-        let move_control = cx.entity().downgrade();
-        let up_control = cx.entity().downgrade();
-        let wheel_scroll = self.session_tab_scroll.clone();
-        let wheel_control = cx.entity().downgrade();
-        let pointer_event_bridge = canvas(
-            |_, _, _| {},
-            move |_, _, window, _| {
-                window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Capture
-                        || !wheel_scroll.bounds().contains(&event.position)
-                    {
-                        return;
-                    }
-                    let delta = event.delta.pixel_delta(px(16.));
-                    let max = wheel_scroll.max_offset().x;
-                    if max > px(0.) {
-                        wheel_scroll.set_offset(point(
-                            session_tab_wheel_offset(wheel_scroll.offset().x, max, delta),
-                            px(0.),
-                        ));
-                        let _ = wheel_control.update(cx, |_, cx| cx.notify());
-                        window.prevent_default();
-                        cx.stop_propagation();
-                    }
-                });
-                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Capture
-                        || event.button != MouseButton::Left
-                        || crate::overlay_state::press_owned_by_overlay(window, cx)
-                    {
-                        return;
-                    }
-                    let focus = down_control
-                        .update(cx, |workspace, cx| {
-                            // Only a visible tab can be grabbed: tabs scrolled
-                            // under the overflow control keep their bounds.
-                            if !workspace
-                                .session_tab_scroll
-                                .bounds()
-                                .contains(&event.position)
-                            {
-                                return None;
-                            }
-                            let document_id = workspace.sessions.iter().find_map(|session| {
-                                let document_id = session.read(cx).id;
-                                let bounds = workspace.session_tab_bounds.get(&document_id)?.get();
-                                let close_bounds =
-                                    workspace.session_tab_close_bounds.get(&document_id)?.get();
-                                (bounds.contains(&event.position)
-                                    && !close_bounds.contains(&event.position))
-                                .then_some(document_id)
-                            })?;
-                            let focus = workspace
-                                .session_tab_focus_handles
-                                .get(&document_id)
-                                .cloned();
-                            workspace
-                                .begin_session_tab_pointer_drag(document_id, event.position, cx)
-                                .then_some(focus)
-                                .flatten()
-                        })
-                        .ok()
-                        .flatten();
-                    if let Some(focus) = focus {
-                        focus.focus(window, cx);
-                    }
-                });
-                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Capture {
-                        return;
-                    }
-                    if event.pressed_button != Some(MouseButton::Left) {
-                        let _ = move_control.update(cx, |workspace, cx| {
-                            workspace.cancel_session_tab_pointer_drag(cx);
-                        });
-                        return;
-                    }
-                    let activated = move_control
-                        .update(cx, |workspace, cx| {
-                            workspace.update_session_tab_pointer_drag(event.position, cx)
-                        })
-                        .unwrap_or(false);
-                    if activated {
-                        window.prevent_default();
-                    }
-                });
-                window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                    if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
-                        let _ = up_control.update(cx, |workspace, cx| {
-                            workspace.update_session_tab_pointer_drag(event.position, cx);
-                            workspace.finish_session_tab_pointer_drag(cx);
-                        });
-                    }
-                });
-            },
-        )
-        .absolute()
-        .left_0()
-        .bottom_0()
-        .size(px(1.));
-        let cancel_drag_control = cx.entity().downgrade();
-        let overflow_control = cx.entity().downgrade();
-        let overflow_scroll = self.session_tab_scroll.clone();
-        let overflow_bounds = self
-            .session_tab_bounds
-            .values()
-            .chain(self.session_tab_close_bounds.values())
-            .cloned()
-            .collect::<Vec<_>>();
-        let strip_bounds = self.session_tab_strip_bounds.clone();
-        // Browser-style: while a tab is dragged, a copy follows the pointer,
-        // including beyond the strip where a drop moves it to another window.
-        let dragged_tab_ghost = self
-            .session_tab_pointer_drag
-            .as_ref()
-            .filter(|drag| {
-                drag.activated
-                    && !(self.external_tab_drag_preview
-                        && !self.session_tab_strip_bounds.get().contains(&drag.current))
-            })
-            .and_then(|drag| {
-                let title = self.session(drag.document_id, cx)?.read(cx).title.clone();
-                // Only a window with other tabs can tear one off.
-                let outside = self.sessions.len() > 1
-                    && !self.session_tab_strip_bounds.get().contains(&drag.current);
-                Some((
-                    drag.current,
-                    format_document_tab_label(&title).to_owned(),
-                    outside,
-                ))
-            })
-            .map(|(position, label, outside)| {
-                gpui::deferred(
-                    gpui::anchored()
-                        .position(position - point(px(24.), px(14.)))
-                        .child(
-                            gpui::div()
-                                .id(DOCUMENT_TAB_DRAG_GHOST_ID)
-                                .debug_selector(|| DOCUMENT_TAB_DRAG_GHOST_ID.into())
-                                .px_3()
-                                .h(px(28.))
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .bg(cx.theme().background)
-                                .shadow_lg()
-                                .text_sm()
-                                .text_color(cx.theme().foreground)
-                                .opacity(0.92)
-                                .child(if outside {
-                                    format!("Open {label} in New window")
-                                } else {
-                                    label
-                                }),
-                        ),
-                )
-                .with_priority(2)
-            });
-        let session_tab_strip = h_flex()
-            .id(DOCUMENT_SESSION_TABS_ID)
-            .debug_selector(|| DOCUMENT_SESSION_TABS_ID.into())
-            .w_full()
-            .px_3()
-            .items_stretch()
-            .gap_3()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .relative()
-            .child(
-                canvas(
-                    move |bounds, _, _| strip_bounds.set(bounds),
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .inset_0(),
-            )
-            .children(dragged_tab_ghost)
-            .on_key_down(move |event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape"
-                    && cancel_drag_control
-                        .update(cx, |workspace, cx| {
-                            workspace.cancel_session_tab_pointer_drag(cx)
-                        })
-                        .unwrap_or(false)
-                {
-                    cx.stop_propagation();
-                }
-            })
-            .child(
-                gpui::div()
-                    .id("document-workspace-native-session-tab-bar")
-                    .debug_selector(|| "document-workspace-native-session-tab-bar".into())
-                    .relative()
-                    .flex_1()
-                    .min_w_0()
-                    .max_w_full()
-                    .py_2()
-                    .pr_3()
-                    .overflow_hidden()
-                    .border_r_1()
-                    .border_color(cx.theme().border)
-                    .on_prepaint(move |_, _, cx| {
-                        // Read after child prepaint has refreshed the tab bounds.
-                        let overflow_scroll = overflow_scroll.clone();
-                        cx.defer(move |cx| {
-                            let measured = overflow_bounds
-                                .iter()
-                                .map(|bounds| bounds.get())
-                                .filter(|bounds| bounds.size.width > px(0.))
-                                .collect::<Vec<_>>();
-                            let overflow = session_tab_strip_overflows(
-                                &measured,
-                                overflow_scroll.bounds().size.width,
-                            );
-                            let _ = overflow_control.update(cx, |workspace, cx| {
-                                if let Some(id) = workspace.session_tab_reveal.take() {
-                                    if let Some(tab) = workspace.session_tab_bounds.get(&id) {
-                                        let tab = tab.get();
-                                        let right = workspace
-                                            .session_tab_close_bounds
-                                            .get(&id)
-                                            .map(|bounds| bounds.get().right())
-                                            .unwrap_or(tab.right())
-                                            .max(tab.right());
-                                        let viewport = workspace.session_tab_scroll.bounds();
-                                        let correction = if tab.left() < viewport.left() {
-                                            viewport.left() - tab.left()
-                                        } else if right > viewport.right() {
-                                            viewport.right() - right
-                                        } else {
-                                            px(0.)
-                                        };
-                                        if correction != px(0.) {
-                                            let offset = workspace.session_tab_scroll.offset();
-                                            let max = workspace.session_tab_scroll.max_offset().x;
-                                            workspace.session_tab_scroll.set_offset(point(
-                                                (offset.x + correction).clamp(-max, px(0.)),
-                                                px(0.),
-                                            ));
-                                            cx.notify();
-                                        }
-                                    }
-                                }
-                                if workspace.session_tabs_overflow != overflow {
-                                    workspace.session_tabs_overflow = overflow;
-                                    cx.notify();
-                                }
-                            });
-                        });
-                    })
-                    .child(native_session_tabs),
-            )
-            .children(overflow_lane)
-            .child(document_actions)
-            .child(reorder_status)
-            .child(pointer_event_bridge);
-        let down_control = cx.entity().downgrade();
-        let move_control = cx.entity().downgrade();
-        let up_control = cx.entity().downgrade();
-        let exit_control = cx.entity().downgrade();
-        let pointer_event_bridge = canvas(
-            |_, _, _| (),
-            move |_, _, window, _| {
-                window.on_mouse_event({
-                    let middle_down_control = down_control.clone();
-                    move |event: &MouseDownEvent, phase, window, cx| {
-                        if phase != DispatchPhase::Capture
-                            || event.button != MouseButton::Middle
-                            || crate::overlay_state::press_owned_by_overlay(window, cx)
-                        {
-                            return;
-                        }
-                        let started = middle_down_control
-                            .update(cx, |workspace, cx| {
-                                workspace.begin_middle_button_pan(event.position, cx)
-                            })
-                            .unwrap_or(false);
-                        if started {
-                            window.prevent_default();
-                        }
-                    }
-                });
-                window.on_mouse_event({
-                    let middle_up_control = up_control.clone();
-                    move |event: &MouseUpEvent, phase, window, cx| {
-                        if phase != DispatchPhase::Capture || event.button != MouseButton::Middle {
-                            return;
-                        }
-                        let ended = middle_up_control
-                            .update(cx, |workspace, _| workspace.end_middle_button_pan())
-                            .unwrap_or(false);
-                        if ended {
-                            window.prevent_default();
-                        }
-                    }
-                });
-                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Capture || event.button != MouseButton::Left {
-                        return;
-                    }
-                    // A press while a popover, menu or dialog is open only
-                    // dismisses it (or acts inside it); it never also starts a
-                    // canvas selection or edit.
-                    if crate::overlay_state::press_owned_by_overlay(window, cx) {
-                        return;
-                    }
-                    let started = down_control
-                        .update(cx, |workspace, cx| {
-                            workspace.begin_annotation_pointer(
-                                event.position,
-                                event.modifiers,
-                                event.click_count,
-                                window,
-                                cx,
-                            )
-                        })
-                        .unwrap_or(false);
-                    if started {
-                        window.prevent_default();
-                    }
-                });
-                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Capture {
-                        return;
-                    }
-                    let middle_panning = event.pressed_button == Some(MouseButton::Middle)
-                        && move_control
-                            .read_with(cx, |workspace, _| workspace.pan_drag.is_some())
-                            .unwrap_or(false);
-                    if event.pressed_button != Some(MouseButton::Left) && !middle_panning {
-                        let handled = move_control
-                            .update(cx, |workspace, cx| {
-                                if workspace
-                                    .active_annotation_pointer
-                                    .is_some_and(|active| active.placement_pending)
-                                {
-                                    workspace.update_annotation_pointer(
-                                        event.position,
-                                        event.modifiers,
-                                        cx,
-                                    )
-                                } else if workspace.cancel_active_annotation_pointer(cx) {
-                                    true
-                                } else {
-                                    workspace.update_annotation_hover(
-                                        event.position,
-                                        event.modifiers,
-                                        cx,
-                                    )
-                                }
-                            })
-                            .unwrap_or(false);
-                        if handled {
-                            window.prevent_default();
-                        }
-                        return;
-                    }
-                    let updated = move_control
-                        .update(cx, |workspace, cx| {
-                            workspace.update_annotation_pointer(event.position, event.modifiers, cx)
-                        })
-                        .unwrap_or(false);
-                    if updated {
-                        window.prevent_default();
-                    }
-                });
-                window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Capture || event.button != MouseButton::Left {
-                        return;
-                    }
-                    let finished = up_control
-                        .update(cx, |workspace, cx| {
-                            let finished = workspace.finish_annotation_pointer(
-                                event.position,
-                                event.modifiers,
-                                window,
-                                cx,
-                            );
-                            // The cursor reflects what is under the pointer
-                            // now, without waiting for the next move.
-                            if finished {
-                                workspace.update_annotation_hover(
-                                    event.position,
-                                    event.modifiers,
-                                    cx,
-                                );
-                            }
-                            finished
-                        })
-                        .unwrap_or(false);
-                    if finished {
-                        window.prevent_default();
-                    }
-                });
-                window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Capture {
-                        return;
-                    }
-                    let cancelled = exit_control
-                        .update(cx, |workspace, cx| {
-                            let hover_cleared = workspace.clear_hover_candidate(cx);
-                            if workspace
-                                .active_annotation_pointer
-                                .is_some_and(|active| active.placement_pending)
-                            {
-                                hover_cleared
-                            } else {
-                                workspace.cancel_active_annotation_pointer(cx) || hover_cleared
-                            }
-                        })
-                        .unwrap_or(false);
-                    if cancelled {
-                        window.prevent_default();
-                    }
-                });
-            },
-        )
-        .absolute()
-        .left_0()
-        .bottom_0()
-        .size(px(1.));
+        let session_tab_strip = self.render_session_tab_strip(session_tabs, window, cx);
+        let pointer_event_bridge = self.canvas_pointer_event_bridge(cx);
 
         let (inspector_kind, _inspector_initial_width, _inspector_width_range) =
             match active_inspector {
@@ -26820,14 +25016,10 @@ impl Render for DocumentWorkspace {
             None => active_inspector_shell(),
         }
         .when_some(inspector_kind, |shell, kind| {
-            shell.child(accessible_icon_button(
-                Button::new(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID)
-                    .debug_selector(|| DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID.into())
-                    .accessibility_id(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID)
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Close)
-                    .tooltip("Close properties")
+            // Over the inspector's empty trailing header lane: the 48px
+            // header's 12px inset centres the standard 24px X.
+            shell.child(
+                close_icon_button(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID, "Close properties")
                     .absolute()
                     .top_3()
                     .right_3()
@@ -26867,8 +25059,7 @@ impl Render for DocumentWorkspace {
                             }
                         }
                     })),
-                "Close properties",
-            ))
+            )
         });
         let page_scale_cancel_control = page_scale_control.downgrade();
         let save_failure_title = format!("Couldn’t save “{title}”");
@@ -26889,557 +25080,316 @@ impl Render for DocumentWorkspace {
             + px(100.); // Pinned ResizablePanel's default minimum; not re-exported by the facade.
         let thumbnails_fit = window.viewport_size().width >= required_width;
         let thumbnails_visible = self.pages_panel_open && thumbnails_fit;
-        let sidebar_panel = resizable_panel()
-                        .visible(thumbnails_visible)
-                        .size(window.rem_size() * 18.75)
-                        // Preserve full stock controls when the interface scale grows.
-                        .size_range(window.rem_size() * 16. ..window.rem_size() * 24.)
-                        .flex_none()
-                        .child({
-                            let thumbnail_rows = Arc::new(thumbnails);
-                            let thumbnail_count = thumbnail_rows.len();
-                            let thumbnail_hovered = hovered_annotation.clone();
-                            let thumbnail_focused = focused_annotation_id.clone();
-                            let thumbnail_control = cx.entity().downgrade();
-                            let thumbnail_images = image_assets.clone();
-                            let thumbnail_scale_control = page_scale_control.clone();
-                            v_flex().id("document-left-sidebar")
-                                .on_prepaint(self.left_sidebar_sizing.measure())
-                                .debug_selector(|| "document-left-sidebar".into())
-                                .size_full().min_h_0()
-                                .bg(cx.theme().background)
-                                .child(h_flex()
-                                    .id("document-left-sidebar-header")
-                                    .debug_selector(|| "document-left-sidebar-header".into())
-                                    .w_full().h_12().flex_shrink_0()
-                                    .justify_center().px_2().text_xs().font_semibold()
-                                    .border_b_1().border_color(cx.theme().border)
-                                    .child("Page Thumbnails"))
-                                .child(
-                            gpui::div()
-                                .id(DOCUMENT_THUMBNAIL_STRIP_ID)
-                                .debug_selector(|| DOCUMENT_THUMBNAIL_STRIP_ID.into())
-                                .role(Role::List)
-                                .aria_label("Document pages")
-                                .relative()
-                                .w_full()
-                                .h_full()
-                                .flex_1().min_h_0()
-                                .child(
-                                    gpui::div().size_full().p_2().child(
-                                    uniform_list(
-                                        "document-workspace-thumbnail-list",
-                                        thumbnail_count,
-                                        move |range, _, cx| {
-                                            range
-                                                .map(|row_index| {
-                                                    let (
-                                                        page_index,
-                                                        page_size,
-                                                        (pdf_page_size, rotation),
-                                                        coordinate_space,
-                                                        image,
-                                                        scale_label,
-                                                        preview_error,
-                                                    ) = thumbnail_rows[row_index].clone();
-                                                    // Built only for rows the list lays out,
-                                                    // not for every page on every frame.
-                                                    let workspace = thumbnail_control.upgrade();
-                                                    let scene = workspace.as_ref().map_or_else(
-                                                        || AnnotationAdapter::default().thumbnail_scene(document_id.value(), page_index),
-                                                        |workspace| workspace.read(cx).thumbnail_annotation_scene(document_id, page_index, cx),
-                                                    );
-                                                    let highlights_precomposed = workspace
-                                                        .as_ref()
-                                                        .and_then(|workspace| workspace.read(cx).session(document_id, cx).cloned())
-                                                        .is_some_and(|session| {
-                                                            session.read(cx).highlight_composite.annotation_revision == scene.revision
-                                                        });
-                                                    let stable_id = document_thumbnail_id(
-                                                        document_id,
-                                                        page_index,
-                                                    );
-                                                    let selector = stable_id.clone();
-                                                    let click_control =
-                                                        thumbnail_control.clone();
-                                                    let page_label =
-                                                        format!("Page {}", page_index + 1);
-                                                    gpui::div().pb_2().child(v_flex()
-                                                        .id(stable_id.clone())
-                                                        .debug_selector(move || {
-                                                            selector.clone().into()
-                                                        })
-                                                        .role(Role::Group)
-                                                        .accessibility_id(stable_id)
-                                                        .aria_label(page_label.clone())
-                                                        .aria_position_in_set(row_index + 1)
-                                                        .aria_size_of_set(thumbnail_count)
-                                                        .aria_selected(page_index == current_page)
-                                                        .when(page_index == current_page, |row| {
-                                                            row.aria_active_descendant()
-                                                        })
-                                                        .w_full().h_48()
-                                                        .flex_none()
-                                                        .p_2()
-                                                        .gap_2()
-                                                        .when(image.is_none() && preview_error.is_none(), |row| {
-                                                            let owner = thumbnail_control.clone();
-                                                            row.on_prepaint(move |_, _, cx| {
-                                                                let owner = owner.clone();
-                                                                cx.defer(move |cx| {
-                                                                    let _ = owner.update(cx, |workspace, cx| workspace.request_thumbnail_preview(document_id, page_index, false, cx));
-                                                                });
-                                                            })
-                                                        })
-                                                        .rounded(cx.theme().radius)
-                                                        .border_1()
-                                                        .border_color(if page_index == current_page {
-                                                            cx.theme().primary
-                                                        } else {
-                                                            cx.theme().border
-                                                        })
-                                                        .on_click(move |_, _, cx| {
-                                                            let _ = click_control.update(
-                                                                cx,
-                                                                |workspace, cx| {
-                                                                    workspace
-                                                                        .activate_thumbnail_page(
-                                                                            document_id,
-                                                                            page_index,
-                                                                            cx,
-                                                                        );
-                                                                },
-                                                            );
-                                                        })
-                                                        .child(h_flex().w_full().gap_1()
-                                                            .child(h_flex().flex_1().min_w_0().child(accessible_icon_button(
-                                                                Button::new(format!("thumbnail-{page_index}-open"))
-                                                                    .debug_selector(move || format!("thumbnail-{page_index}-open").into())
-                                                                    .ghost().small().label(page_label.clone())
-                                                                    .toggled(page_index == current_page)
-                                                                    .on_click({
-                                                                        let owner = thumbnail_control.clone();
-                                                                        move |_, _, cx| {
-                                                                            let _ = owner.update(cx, |workspace, cx| workspace.activate_thumbnail_page(document_id, page_index, cx));
-                                                                            cx.stop_propagation();
-                                                                        }
-                                                                    }), format!("Open page {}", page_index + 1)))
-                                                                .when_some(scale_label, |header, label| header.child(
-                                                                    h_flex().flex_1().min_w_0().justify_center().child(
-                                                                        gpui::div().id(format!("thumbnail-{page_index}-scale-badge"))
-                                                                            .debug_selector(move || format!("thumbnail-{page_index}-scale-badge").into())
-                                                                            .child(gpui_component::tag::Tag::secondary().small().child(label))
-                                                                    )
-                                                                )))
-                                                            .child(accessible_icon_button(
-                                                                Button::new(format!("thumbnail-{page_index}-scale"))
-                                                                    .debug_selector(move || format!("thumbnail-{page_index}-scale").into())
-                                                                    .icon(gpui_component::Icon::default().path("icons/thumbnail-scale.svg"))
-                                                                    .ghost().disabled(ink_mutation_disabled)
-                                                                    .tooltip("Set page scale")
-                                                                    .on_click({
-                                                                        let control = thumbnail_scale_control.clone();
-                                                                        let owner = thumbnail_control.clone();
-                                                                        move |_, window, cx| {
-                                                                            let _ = owner.update(cx, |workspace, cx| workspace.activate_thumbnail_page(document_id, page_index, cx));
-                                                                            control.update(cx, |control, cx| control.open_for(document_id, page_index, window, cx));
-                                                                            cx.stop_propagation();
-                                                                        }
-                                                                    }), format!("Set scale for page {}", page_index + 1)))
-                                                            .children([PageRotationDirection::Left, PageRotationDirection::Right].into_iter().map(|direction| {
-                                                                let control = thumbnail_control.clone();
-                                                                let left = direction == PageRotationDirection::Left;
-                                                                let label = format!("Rotate page {} {}", page_index + 1, if left { "left" } else { "right" });
-                                                                accessible_icon_button(
-                                                                    Button::new(format!("thumbnail-{page_index}-rotate-{}", if left { "left" } else { "right" }))
-                                                                        .debug_selector(move || format!("thumbnail-{page_index}-rotate-{}", if left { "left" } else { "right" }).into())
-                                                                        .icon(gpui_component::Icon::default().path(if left { "icons/thumbnail-rotate-left.svg" } else { "icons/thumbnail-rotate-right.svg" }))
-                                                                        .ghost().disabled(ink_mutation_disabled).tooltip(label.clone())
-                                                                        .on_click(move |_, _, cx| {
-                                                                            let _ = control.update(cx, |workspace, cx| workspace.rotate_thumbnail_page_async(document_id, page_index, direction, cx));
-                                                                            cx.stop_propagation();
-                                                                        }), label)
-                                                            })))
-                                                        .child(
-                                                            h_flex()
-                                                                .id(format!("thumbnail-preview-{page_index}"))
-                                                                .debug_selector(move || format!("thumbnail-preview-{page_index}").into())
-                                                                .relative()
-                                                                .w_full()
-                                                                .justify_center()
-                                                                .h_32().flex_none().overflow_hidden()
-                                                                .when_some(
-                                                                    image.clone(),
-                                                                    |page, image| {
-                                                                        page.child(
-                                                                            canvas(|_, _, _| (), move |bounds, _, window, _| {
-                                                                                if let Some((page_bounds, _)) = contained_page_bounds_for_space(bounds, page_size, coordinate_space) {
-                                                                                    let _ = window.paint_image(page_bounds, page_bounds, Default::default(), image.clone(), 0, false);
-                                                                                }
-                                                                            }).size_full()
-                                                                        )
-                                                                        .child(annotation_layer(
-                                                                            document_id,
-                                                                            page_index,
-                                                                            page_size,
-                                                                            pdf_page_size,
-                                                                            rotation,
-                                                                            coordinate_space,
-                                                                            scene,
-                                                                            None,
-                                                                            None,
-                                                                            highlights_precomposed,
-                                                                            thumbnail_images.clone(),
-                                                                            selection_color,
-                                                                            thumbnail_hovered.clone().filter(|(doc, page, _)| {
-                                                                                *doc == document_id && *page == page_index
-                                                                            }).map(|(_, _, id)| id),
-                                                                            None,
-                                                                            thumbnail_focused.clone(),
-                                                                            cx.theme().border,
-                                                                            None,
-                                                                            None,
-                                                                            None,
-                                                                            Vec::new(),
-                                                                            None,
-                                                                            None,
-                                                                            None,
-                                                                        ))
-                                                                    },
-                                                                )
-                                                                .when(
-                                                                    image.is_none() && preview_error.is_none(),
-                                                                    |page| {
-                                                                        page.items_center()
-                                                                            .justify_center()
-                                                                            .bg(cx.theme().muted)
-                                                                            .text_xs()
-                                                                            .text_color(
-                                                                                cx.theme()
-                                                                                    .muted_foreground,
-                                                                            )
-                                                                            .child("Loading preview…")
-                                                                    },
-                                                                )
-                                                                .when_some(preview_error, |page, _| {
-                                                                    let owner = thumbnail_control.clone();
-                                                                    page.child(v_flex().gap_2().items_center()
-                                                                        .child("Preview unavailable")
-                                                                        .child(Button::new(format!("thumbnail-{page_index}-retry"))
-                                                                            .debug_selector(move || format!("thumbnail-{page_index}-retry").into())
-                                                                            .small().label("Retry preview").disabled(ink_mutation_disabled)
-                                                                            .on_click(move |_, _, cx| {
-                                                                                let _ = owner.update(cx, |workspace, cx| workspace.request_thumbnail_preview(document_id, page_index, true, cx));
-                                                                                cx.stop_propagation();
-                                                                            })))
-                                                                }),
-                                                        ))
-                                                })
-                                                .collect::<Vec<_>>()
-                                        },
-                                    )
-                                    .size_full()
-                                    .track_scroll(&thumbnail_scroll),
-                                    ),
-                                )
-                                .vertical_scrollbar(&thumbnail_scroll)
-                                )
-                        });
+        let sidebar_panel = self.render_thumbnail_sidebar(
+            ThumbnailSidebarInputs {
+                document_id,
+                current_page,
+                thumbnails,
+                thumbnails_visible,
+                thumbnail_scroll: thumbnail_scroll.clone(),
+                hovered_annotation: hovered_annotation.clone(),
+                focused_annotation_id: focused_annotation_id.clone(),
+                image_assets: image_assets.clone(),
+                selection_color,
+                page_scale_control: page_scale_control.clone(),
+                ink_mutation_disabled,
+            },
+            window,
+            cx,
+        );
         let supporting_actions = v_flex()
             .w_full()
             .h_full()
             .flex_none()
             .min_w_0()
-            .gap_2()
-            .px_3()
-            .py_2()
             .border_l_1()
             .border_color(cx.theme().border)
             .child(
-                h_flex()
-                    .w_full()
-                    .h_8()
-                    .flex_none()
-                    .gap_2()
-                    .child(
-                        gpui::div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_ellipsis()
-                            .font_semibold()
-                            .child(title),
-                    )
-                    .child(accessible_icon_button(
-                        Button::new("document-workspace-rail-actions-close")
-                            .debug_selector(|| "document-workspace-rail-actions-close".into())
-                            .icon(IconName::Close)
-                            .ghost()
-                            .tooltip("Close document actions")
-                            .on_click(cx.listener(|workspace, _, _, cx| {
-                                if workspace.pending_text_box_editor.is_some()
-                                    && let Err(error) = workspace.commit_pending_text_box(cx)
-                                {
-                                    workspace.text_box_commit_error = Some(error);
-                                    cx.notify();
-                                    return;
-                                }
-                                workspace.right_rail_actions_open = false;
-                                cx.notify();
-                            })),
+                crate::property_controls::PropertyInspectorHeader::new(
+                    "document-workspace-rail-actions-header",
+                    title,
+                )
+                .trailing(
+                    close_icon_button(
+                        "document-workspace-rail-actions-close",
                         "Close document actions",
-                    )),
-            )
-            .child(highlight_settings_control)
-            .child(
-                gpui::div()
-                    .ml_auto()
-                    .flex_shrink_0()
-                    .text_sm()
-                    .child(format!("Page {}", current_page + 1)),
+                    )
+                    .on_click(cx.listener(|workspace, _, _, cx| {
+                        if workspace.pending_text_box_editor.is_some()
+                            && let Err(error) = workspace.commit_pending_text_box(cx)
+                        {
+                            workspace.text_box_commit_error = Some(error);
+                            cx.notify();
+                            return;
+                        }
+                        workspace.right_rail_actions_open = false;
+                        cx.notify();
+                    })),
+                ),
             )
             .child(
                 v_flex()
-                    .id(DOCUMENT_TOOLBAR_SCROLL_ID)
-                    .debug_selector(|| DOCUMENT_TOOLBAR_SCROLL_ID.into())
                     .w_full()
                     .flex_1()
                     .min_h_0()
                     .min_w_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.toolbar_scroll)
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .child(highlight_settings_control)
+                    .child(
+                        gpui::div()
+                            .ml_auto()
+                            .flex_shrink_0()
+                            .text_sm()
+                            .child(format!("Page {}", current_page + 1)),
+                    )
                     .child(
                         v_flex()
-                            .id(DOCUMENT_TOOLBAR_CONTENT_ID)
-                            .debug_selector(|| DOCUMENT_TOOLBAR_CONTENT_ID.into())
+                            .id(DOCUMENT_TOOLBAR_SCROLL_ID)
+                            .debug_selector(|| DOCUMENT_TOOLBAR_SCROLL_ID.into())
                             .w_full()
-                            .flex_shrink_0()
-                            .gap_2()
-                            .child(v_flex().flex_shrink_0().child(history_group))
-                            .child(v_flex().flex_shrink_0().child(rectangle_properties_button))
-                            .child(v_flex().flex_shrink_0().child(ellipse_properties_button))
-                            .child(v_flex().flex_shrink_0().child(stroke_control))
-                            .when_some(straight_line_properties, |toolbar, button| {
-                                toolbar.child(v_flex().flex_shrink_0().child(button))
-                            })
-                            .when_some(vertex_path_properties, |toolbar, button| {
-                                toolbar.child(v_flex().flex_shrink_0().child(button))
-                            })
-                            .when_some(ink_properties_button, |toolbar, button| {
-                                toolbar.child(v_flex().flex_shrink_0().child(button))
-                            })
-                            .when_some(engineering_visual_properties_button, |toolbar, button| {
-                                toolbar.child(v_flex().flex_shrink_0().child(button))
-                            })
-                            .when_some(text_box_properties_button, |toolbar, button| {
-                                toolbar.child(v_flex().flex_shrink_0().child(button))
-                            })
-                            .when_some(measurement_properties_button, |toolbar, button| {
-                                toolbar.child(v_flex().flex_shrink_0().child(button))
-                            })
-                            .when_some(dimension_properties, |toolbar, properties| {
-                                toolbar.child(v_flex().flex_shrink_0().child(properties))
-                            })
-                            .when_some(
-                                self.annotation_statuses.get(&document_id).cloned(),
-                                |toolbar, status| {
-                                    toolbar.child(
-                                        gpui::div()
-                                            .id(DOCUMENT_ANNOTATION_STATUS_ID)
-                                            .debug_selector(|| DOCUMENT_ANNOTATION_STATUS_ID.into())
-                                            .text_sm()
-                                            .text_color(cx.theme().danger)
-                                            .child(status),
-                                    )
-                                },
-                            )
-                            .when_some(pending_text_box_input, |toolbar, input| {
-                                toolbar.child(
-                                    gpui::div()
-                                        .id(DOCUMENT_TEXT_BOX_EDITOR_ID)
-                                        .debug_selector(|| DOCUMENT_TEXT_BOX_EDITOR_ID.into())
-                                        .w(px(220.))
-                                        .h(px(72.))
-                                        .child(
-                                            Textarea::new(&input)
-                                                .aria_label("Text box content")
-                                                .h_full(),
-                                        ),
-                                )
-                            })
+                            .flex_1()
+                            .min_h_0()
+                            .min_w_0()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.toolbar_scroll)
                             .child(
-                                Button::new(DOCUMENT_ANNOTATION_LOCK_ID)
-                                    .debug_selector(|| DOCUMENT_ANNOTATION_LOCK_ID.into())
-                                    .small()
-                                    .label(if selected_annotation_locked {
-                                        "Unlock"
-                                    } else {
-                                        "Lock"
+                                v_flex()
+                                    .id(DOCUMENT_TOOLBAR_CONTENT_ID)
+                                    .debug_selector(|| DOCUMENT_TOOLBAR_CONTENT_ID.into())
+                                    .w_full()
+                                    .flex_shrink_0()
+                                    .gap_2()
+                                    .child(v_flex().flex_shrink_0().child(history_group))
+                                    .child(
+                                        v_flex().flex_shrink_0().child(rectangle_properties_button),
+                                    )
+                                    .child(
+                                        v_flex().flex_shrink_0().child(ellipse_properties_button),
+                                    )
+                                    .child(v_flex().flex_shrink_0().child(stroke_control))
+                                    .when_some(straight_line_properties, |toolbar, button| {
+                                        toolbar.child(v_flex().flex_shrink_0().child(button))
                                     })
-                                    .disabled(selected_annotation_id.is_none() || save_busy)
+                                    .when_some(vertex_path_properties, |toolbar, button| {
+                                        toolbar.child(v_flex().flex_shrink_0().child(button))
+                                    })
+                                    .when_some(ink_properties_button, |toolbar, button| {
+                                        toolbar.child(v_flex().flex_shrink_0().child(button))
+                                    })
+                                    .when_some(
+                                        engineering_visual_properties_button,
+                                        |toolbar, button| {
+                                            toolbar.child(v_flex().flex_shrink_0().child(button))
+                                        },
+                                    )
+                                    .when_some(text_box_properties_button, |toolbar, button| {
+                                        toolbar.child(v_flex().flex_shrink_0().child(button))
+                                    })
+                                    .when_some(measurement_properties_button, |toolbar, button| {
+                                        toolbar.child(v_flex().flex_shrink_0().child(button))
+                                    })
+                                    .when_some(dimension_properties, |toolbar, properties| {
+                                        toolbar.child(v_flex().flex_shrink_0().child(properties))
+                                    })
+                                    .when_some(
+                                        self.annotation_statuses.get(&document_id).cloned(),
+                                        |toolbar, status| {
+                                            toolbar.child(
+                                                gpui::div()
+                                                    .id(DOCUMENT_ANNOTATION_STATUS_ID)
+                                                    .debug_selector(|| {
+                                                        DOCUMENT_ANNOTATION_STATUS_ID.into()
+                                                    })
+                                                    .text_sm()
+                                                    .text_color(cx.theme().danger)
+                                                    .child(status),
+                                            )
+                                        },
+                                    )
+                                    .when_some(pending_text_box_input, |toolbar, input| {
+                                        toolbar.child(
+                                            gpui::div()
+                                                .id(DOCUMENT_TEXT_BOX_EDITOR_ID)
+                                                .debug_selector(|| {
+                                                    DOCUMENT_TEXT_BOX_EDITOR_ID.into()
+                                                })
+                                                .w(px(220.))
+                                                .h(px(72.))
+                                                .child(
+                                                    Textarea::new(&input)
+                                                        .aria_label("Text box content")
+                                                        .h_full(),
+                                                ),
+                                        )
+                                    })
+                                    .child(
+                                        Button::new(DOCUMENT_ANNOTATION_LOCK_ID)
+                                            .debug_selector(|| DOCUMENT_ANNOTATION_LOCK_ID.into())
+                                            .small()
+                                            .label(if selected_annotation_locked {
+                                                "Unlock"
+                                            } else {
+                                                "Lock"
+                                            })
+                                            .disabled(selected_annotation_id.is_none() || save_busy)
+                                            .on_click(cx.listener(move |workspace, _, _, cx| {
+                                                let _ = workspace.set_selected_annotation_locked(
+                                                    document_id,
+                                                    !selected_annotation_locked,
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new(DOCUMENT_ANNOTATION_DELETE_ID)
+                                            .debug_selector(|| DOCUMENT_ANNOTATION_DELETE_ID.into())
+                                            .small()
+                                            .danger()
+                                            .label("Delete")
+                                            .disabled(
+                                                selected_annotation_id.is_none()
+                                                    || !selected_has_unlocked_annotation
+                                                    || save_busy,
+                                            )
+                                            .on_click(cx.listener(move |workspace, _, _, cx| {
+                                                let _ = workspace
+                                                    .delete_selected_annotation(document_id, cx);
+                                            })),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_shrink_0()
+                            .gap_1()
+                            .child(
+                                Button::new(DOCUMENT_ROTATE_LEFT_ID)
+                                    .debug_selector(|| DOCUMENT_ROTATE_LEFT_ID.into())
+                                    .small()
+                                    .label("Rotate Left")
+                                    .disabled(save_busy)
                                     .on_click(cx.listener(move |workspace, _, _, cx| {
-                                        let _ = workspace.set_selected_annotation_locked(
+                                        workspace.rotate_page_async(
                                             document_id,
-                                            !selected_annotation_locked,
+                                            PageRotationDirection::Left,
                                             cx,
                                         );
                                     })),
                             )
                             .child(
-                                Button::new(DOCUMENT_ANNOTATION_DELETE_ID)
-                                    .debug_selector(|| DOCUMENT_ANNOTATION_DELETE_ID.into())
+                                Button::new(DOCUMENT_ROTATE_RIGHT_ID)
+                                    .debug_selector(|| DOCUMENT_ROTATE_RIGHT_ID.into())
                                     .small()
-                                    .danger()
-                                    .label("Delete")
-                                    .disabled(
-                                        selected_annotation_id.is_none()
-                                            || !selected_has_unlocked_annotation
-                                            || save_busy,
-                                    )
+                                    .label("Rotate Right")
+                                    .disabled(save_busy)
                                     .on_click(cx.listener(move |workspace, _, _, cx| {
-                                        let _ =
-                                            workspace.delete_selected_annotation(document_id, cx);
+                                        workspace.rotate_page_async(
+                                            document_id,
+                                            PageRotationDirection::Right,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                            .child(
+                                Button::new(DOCUMENT_SAVE_ID)
+                                    .debug_selector(|| DOCUMENT_SAVE_ID.into())
+                                    .small()
+                                    .label(if save_in_progress {
+                                        "Saving…"
+                                    } else {
+                                        "Save"
+                                    })
+                                    .disabled(save_busy)
+                                    .on_click(cx.listener(move |workspace, _, _, cx| {
+                                        workspace.save_active_document(cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new(DOCUMENT_SAVE_AS_ID)
+                                    .debug_selector(|| DOCUMENT_SAVE_AS_ID.into())
+                                    .small()
+                                    .label(save_as_command_label(save_in_progress))
+                                    .disabled(save_busy)
+                                    .on_click(cx.listener(move |workspace, _, _, cx| {
+                                        workspace.prompt_to_save_as(document_id, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new(DOCUMENT_CLOSE_ID)
+                                    .debug_selector(|| DOCUMENT_CLOSE_ID.into())
+                                    .small()
+                                    .ghost()
+                                    .label("Close")
+                                    .on_click(cx.listener(move |workspace, _, _, cx| {
+                                        workspace.request_close_document(document_id, cx);
                                     })),
                             ),
                     ),
+            );
+        let supporting_actions = if combined_measurement_properties
+            && self.pending_text_box_editor.is_none()
+        {
+            let title = match selected_measurement.as_ref().map(|selected| selected.1) {
+                Some(AnnotationKind::Area) => "Area",
+                Some(AnnotationKind::Length) => "Length",
+                _ => "Polylength",
+            };
+            let close = close_icon_button(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID, "Close properties")
+                .on_click(cx.listener(|workspace, _, _, cx| {
+                    workspace.right_rail_actions_open = false;
+                    workspace.dimension_property_inspector_open = false;
+                    workspace.measurement_property_inspector_open = false;
+                    cx.notify();
+                }));
+            crate::property_controls::PropertyInspectorPanel::new(
+                "measurement-combined-properties",
+                "measurement-combined-properties-header",
+                "measurement-combined-properties-scroll",
+                title,
             )
+            .header_trailing(close)
             .child(
                 v_flex()
-                    .flex_shrink_0()
-                    .gap_1()
+                    .w_full()
+                    .child(vertex_path_property_inspector.clone())
+                    .child(dimension_property_inspector.clone())
                     .child(
-                        Button::new(DOCUMENT_ROTATE_LEFT_ID)
-                            .debug_selector(|| DOCUMENT_ROTATE_LEFT_ID.into())
-                            .small()
-                            .label("Rotate Left")
-                            .disabled(save_busy)
-                            .on_click(cx.listener(move |workspace, _, _, cx| {
-                                workspace.rotate_page_async(
-                                    document_id,
-                                    PageRotationDirection::Left,
-                                    cx,
-                                );
-                            })),
-                    )
-                    .child(
-                        Button::new(DOCUMENT_ROTATE_RIGHT_ID)
-                            .debug_selector(|| DOCUMENT_ROTATE_RIGHT_ID.into())
-                            .small()
-                            .label("Rotate Right")
-                            .disabled(save_busy)
-                            .on_click(cx.listener(move |workspace, _, _, cx| {
-                                workspace.rotate_page_async(
-                                    document_id,
-                                    PageRotationDirection::Right,
-                                    cx,
-                                );
-                            })),
-                    )
-                    .child(
-                        Button::new(DOCUMENT_SAVE_ID)
-                            .debug_selector(|| DOCUMENT_SAVE_ID.into())
-                            .small()
-                            .label(if save_in_progress {
-                                "Saving…"
-                            } else {
-                                "Save"
-                            })
-                            .disabled(save_busy)
-                            .on_click(cx.listener(move |workspace, _, _, cx| {
-                                workspace.save_active_document(cx);
-                            })),
-                    )
-                    .child(
-                        Button::new(DOCUMENT_SAVE_AS_ID)
-                            .debug_selector(|| DOCUMENT_SAVE_AS_ID.into())
-                            .small()
-                            .label(save_as_command_label(save_in_progress))
-                            .disabled(save_busy)
-                            .on_click(cx.listener(move |workspace, _, _, cx| {
-                                workspace.prompt_to_save_as(document_id, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new(DOCUMENT_CLOSE_ID)
-                            .debug_selector(|| DOCUMENT_CLOSE_ID.into())
-                            .small()
-                            .ghost()
-                            .label("Close")
-                            .on_click(cx.listener(move |workspace, _, _, cx| {
-                                workspace.request_close_document(document_id, cx);
-                            })),
+                        gpui::div()
+                            .w_full()
+                            .border_t_1()
+                            .border_color(cx.theme().border)
+                            .child(measurement_property_inspector.clone()),
                     ),
-            );
-        let supporting_actions =
-            if combined_measurement_properties && self.pending_text_box_editor.is_none() {
-                let title = match selected_measurement.as_ref().map(|selected| selected.1) {
-                    Some(AnnotationKind::Area) => "Area",
-                    Some(AnnotationKind::Length) => "Length",
-                    _ => "Polylength",
-                };
-                let close = accessible_icon_button(
-                    Button::new(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID)
-                        .debug_selector(|| DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID.into())
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Close)
-                        .tooltip("Close properties")
-                        .on_click(cx.listener(|workspace, _, _, cx| {
-                            workspace.right_rail_actions_open = false;
-                            workspace.dimension_property_inspector_open = false;
-                            workspace.measurement_property_inspector_open = false;
-                            cx.notify();
-                        })),
-                    "Close properties",
-                );
-                crate::property_controls::PropertyInspectorPanel::new(
-                    "measurement-combined-properties",
-                    "measurement-combined-properties-header",
-                    "measurement-combined-properties-scroll",
-                    title,
-                )
-                .header_trailing(close)
-                .child(
-                    v_flex()
-                        .w_full()
-                        .child(vertex_path_property_inspector.clone())
-                        .child(dimension_property_inspector.clone())
-                        .child(
-                            gpui::div()
-                                .w_full()
-                                .border_t_1()
-                                .border_color(cx.theme().border)
-                                .child(measurement_property_inspector.clone()),
-                        ),
-                )
+            )
+            .into_any_element()
+        } else if inspector_visible && self.pending_text_box_editor.is_none() {
+            gpui::div()
+                .w_full()
+                .h_full()
+                .min_h_0()
+                .child(inspector_shell)
                 .into_any_element()
-            } else if inspector_visible && self.pending_text_box_editor.is_none() {
-                gpui::div()
-                    .w_full()
-                    .h_full()
-                    .min_h_0()
-                    .child(inspector_shell)
-                    .into_any_element()
-            } else if annotation_tool == AnnotationTool::Highlight
-                && self.pending_text_box_editor.is_none()
-            {
-                gpui::div()
-                    .w_full()
-                    .h_full()
-                    .min_h_0()
-                    .border_l_1()
-                    .border_color(cx.theme().border)
-                    .child(highlight_defaults_panel)
-                    .into_any_element()
-            } else if self.pending_text_box_editor.is_none() {
-                gpui::div()
-                    .w_full()
-                    .h_full()
-                    .min_h_0()
-                    .child(tool_defaults_panel)
-                    .into_any_element()
-            } else {
-                supporting_actions.into_any_element()
-            };
+        } else if annotation_tool == AnnotationTool::Highlight
+            && self.pending_text_box_editor.is_none()
+        {
+            gpui::div()
+                .w_full()
+                .h_full()
+                .min_h_0()
+                .child(highlight_defaults_panel)
+                .into_any_element()
+        } else if self.pending_text_box_editor.is_none() {
+            gpui::div()
+                .w_full()
+                .h_full()
+                .min_h_0()
+                .child(tool_defaults_panel)
+                .into_any_element()
+        } else {
+            supporting_actions.into_any_element()
+        };
         let supporting_actions = gpui::div()
             .on_prepaint(self.right_sidebar_sizing.measure())
             .id("document-workspace-properties-sidebar")
@@ -27472,7 +25422,7 @@ impl Render for DocumentWorkspace {
                     .top_0()
                     .bottom_0()
                     .w(px(6.))
-                    .cursor(gpui::CursorStyle::ResizeLeftRight)
+                    .cursor(gpui::CursorStyle::ResizeColumn)
                     .on_drag(RightRailResizeDrag, |_, _, _, cx| {
                         cx.new(|_| RightRailResizeDragGhost)
                     }),
@@ -27555,721 +25505,207 @@ impl Render for DocumentWorkspace {
             |_, _| ResizableState::default(),
         );
         let rail_width = right_rail_width(self.right_rail_columns, window.rem_size());
-        root.child(session_tab_strip)
-        .child(h_flex().flex_1().min_h_0().w_full().items_stretch()
-        .child(self.render_left_rail(true, thumbnails_fit, cx))
-        .child(gpui::div().flex_1().min_w_0().h_full().overflow_hidden()
-        // The tool rail sits outside the resizable panels: its own edge handle
-        // snaps its width to whole tool columns while dragging, as in Electron.
-        .child(h_flex().size_full()
+        let viewport = self.render_document_viewport(
+            ViewportInputs {
+                active_selection_marquee,
+                annotation_scene,
+                construction_grid_spacing_mm,
+                current_coordinate_space,
+                current_highlights_precomposed,
+                current_image,
+                current_page,
+                current_page_rotation,
+                current_page_size,
+                current_pdf_page_size,
+                document_id,
+                document_opening_batch_count,
+                focused_annotation_id,
+                has_viewer_pages,
+                hot_annotation_handle,
+                hovered_annotation,
+                image_assets,
+                object_snap_tracking_result,
+                pending_image_preview,
+                pending_text_box_presentation,
+                relationship_snap_guides,
+                selection_color,
+                semantic_snap_decision,
+                viewer_pages,
+                viewer_pan_margin,
+                viewer_plan,
+                viewer_scroll: viewer_scroll.clone(),
+                viewport_cursor_style,
+                viewport_observer,
+            },
+            cx,
+        );
+        // The scroll bars sit in a fixed layer over the viewport; as children
+        // of the scrolling element they would move with the content.
+        let viewer_scrollbar = self
+            .session(document_id, cx)
+            .map(|session| session.read(cx).viewer.scrollbar_handle())
+            .unwrap_or_else(|| {
+                crate::document_viewer::DocumentViewerState::default().scrollbar_handle()
+            });
+        let canvas = h_resizable("document-workspace-canvas-inspector").child(
+            resizable_panel().child(
+                gpui::div()
+                    .id(DOCUMENT_PAGE_ID)
+                    .debug_selector(|| DOCUMENT_PAGE_ID.into())
+                    .flex_1()
+                    .size_full()
+                    .p_4()
+                    .bg(cx.theme().secondary)
+                    .child(
+                        gpui::div().relative().size_full().child(viewport).child(
+                            gpui::div()
+                                .absolute()
+                                .inset_0()
+                                .debug_selector(|| DOCUMENT_VIEWPORT_SCROLLBARS_ID.into())
+                                .child(
+                                    gpui_component::scroll::Scrollbar::new(&viewer_scrollbar)
+                                        .id("document-viewport-scrollbars")
+                                        .axis(gpui_component::scroll::ScrollbarAxis::Both),
+                                ),
+                        ),
+                    ),
+            ),
+        );
+        let viewer_column = v_flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .child(
+                gpui::div()
+                    .w_full()
+                    .when(dim_inactive_window_chrome(window), |toolbar| {
+                        toolbar.opacity(0.5)
+                    })
+                    .child(self.viewer_toolbar.clone()),
+            )
+            .map(|column| {
+                self.render_document_alerts(
+                    column,
+                    DocumentAlerts {
+                        document_id,
+                        redact_pending,
+                        text_box_commit_error,
+                        save_failure,
+                        save_failure_title,
+                        recovery_preparation_issue,
+                        presentation_error,
+                        recovery_pending,
+                        page_scale_pick_instruction,
+                        page_scale_cancel_control: Some(page_scale_cancel_control),
+                    },
+                    false,
+                    cx,
+                )
+            })
+            // Without a zero minimum height the canvas grows to its scrolled
+            // content and pushes the viewport past the bottom of the window.
+            .child(gpui::div().flex_1().min_h_0().w_full().child(canvas))
+            .child(pointer_event_bridge)
+            .child(
+                gpui::div()
+                    .id(DOCUMENT_TEXT_BOX_RETURN_FOCUS_ID)
+                    .track_focus(&self.text_box_return_focus)
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .w(px(1.))
+                    .h(px(1.)),
+            );
+        let viewer_panels = self.left_sidebar_sizing.wrap(
+            h_resizable("document-workspace-viewer-panels")
+                .with_state(&self.viewer_resizable)
+                .on_resize(cx.listener(|workspace, state, window, cx| {
+                    workspace
+                        .left_sidebar_sizing
+                        .remember_drag(state, window, cx);
+                    cx.notify();
+                }))
+                .child(sidebar_panel)
+                .child(resizable_panel().child(viewer_column)),
+            &self.viewer_resizable,
+            thumbnails_visible,
+        );
         // Expanded and collapsed layouts must not share measured panel sizes:
         // the hidden properties slot has no bounds, while the canvas fills it.
-        .child(gpui::div().flex_1().min_w_0().h_full().child(self.right_sidebar_sizing.wrap(h_resizable(("document-workspace-right-properties-panels", usize::from(properties_visible)))
-        .with_state(&properties_resizable)
-        .on_resize(cx.listener(|workspace, state, window, cx| {
-            workspace.right_sidebar_sizing.remember_drag(state, window, cx);
-            workspace.sync_active_viewer_toolbar(cx);
-            cx.notify();
-        }))
-        .child(resizable_panel().child(gpui::div().flex_1().min_w_0().h_full().overflow_hidden()
-        .child(self.left_sidebar_sizing.wrap(h_resizable("document-workspace-viewer-panels")
-        .with_state(&self.viewer_resizable)
-        .on_resize(cx.listener(|workspace, state, window, cx| {
-            workspace.left_sidebar_sizing.remember_drag(state, window, cx);
-            cx.notify();
-        }))
-        .child(sidebar_panel)
-        .child(resizable_panel()
-        .child(v_flex().flex_1().min_w_0().h_full()
-        .child(
-            gpui::div()
-                .w_full()
-                .when(dim_inactive_window_chrome(window), |toolbar| toolbar.opacity(0.5))
-                .child(self.viewer_toolbar.clone()),
-        )
-        .when(redact_pending, |root| {
-            root.child(
-                gpui::div()
-                    .id(DOCUMENT_REDACT_PENDING_ALERT_ID)
-                    .debug_selector(|| DOCUMENT_REDACT_PENDING_ALERT_ID.into())
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .child(
-                        Alert::warning(
-                            "document-workspace-redact-pending-message",
-                            PENDING_REDACTION_STATUS,
-                        )
-                        .title("Pending redaction mark"),
+        let properties_panels = self.right_sidebar_sizing.wrap(
+            h_resizable((
+                "document-workspace-right-properties-panels",
+                usize::from(properties_visible),
+            ))
+            .with_state(&properties_resizable)
+            .on_resize(cx.listener(|workspace, state, window, cx| {
+                workspace
+                    .right_sidebar_sizing
+                    .remember_drag(state, window, cx);
+                workspace.sync_active_viewer_toolbar(cx);
+                cx.notify();
+            }))
+            .child(
+                resizable_panel().child(
+                    gpui::div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .overflow_hidden()
+                        .child(viewer_panels),
                 ),
             )
-        })
-        .when_some(text_box_commit_error, |root, error| {
-            root.child(
-                gpui::div()
-                    .id(DOCUMENT_TEXT_BOX_COMMIT_ERROR_ALERT_ID)
-                    .debug_selector(|| DOCUMENT_TEXT_BOX_COMMIT_ERROR_ALERT_ID.into())
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .child(
-                        Alert::error("document-workspace-text-box-commit-error-message", error)
-                            .title("Couldn’t finish editing"),
-                    ),
-            )
-        })
-        .when_some(self.startup_recovery_message(), |root, message| {
-            root.child(
-                gpui::div()
-                    .w_full()
-                    .p_2()
-                    .child(self.render_startup_recovery_inbox(message, cx)),
-            )
-        })
-        .when_some(self.session_recovery_warning.clone(), |root, warning| {
-            root.child(
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .p_2()
-                    .child(
-                        gpui::div()
-                            .id(DOCUMENT_RECOVERY_WARNING_ALERT_ID)
-                            .debug_selector(|| DOCUMENT_RECOVERY_WARNING_ALERT_ID.into())
-                            .flex_1()
-                            .child(
-                                Alert::warning(
-                                    "document-workspace-recovery-warning-message",
-                                    warning,
-                                )
-                                .title("Previous unsaved changes"),
-                            ),
+            .child(
+                resizable_panel()
+                    .visible(
+                        self.right_rail_actions_open
+                            || inspector_visible
+                            || pending_non_creation_editor,
                     )
-                    .child(
-                        Button::new(DOCUMENT_RECOVERY_WARNING_DISMISS_ID)
-                            .debug_selector(|| DOCUMENT_RECOVERY_WARNING_DISMISS_ID.into())
-                            .accessibility_id(DOCUMENT_RECOVERY_WARNING_DISMISS_ID)
-                            .outline()
-                            .label("Dismiss")
-                            .on_click(cx.listener(|workspace, _, _, cx| {
-                                workspace.dismiss_session_recovery_warning(cx);
-                            })),
-                    ),
-            )
-        })
-        .when_some(self.last_document_open_failure().cloned(), |root, failure| {
-            root.child(
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .p_2()
-                    .child(
-                        gpui::div()
-                            .id(DOCUMENT_OPEN_ERROR_ALERT_ID)
-                            .debug_selector(|| DOCUMENT_OPEN_ERROR_ALERT_ID.into())
-                            .flex_1()
-                            .child(
-                                Alert::error(
-                                    "document-workspace-open-feedback-message",
-                                    failure.presentation(),
-                                )
-                                .title("Some PDFs couldn’t be opened"),
-                            ),
-                    )
-                    .child(
-                        Button::new(DOCUMENT_OPEN_ERROR_DISMISS_ID)
-                            .debug_selector(|| DOCUMENT_OPEN_ERROR_DISMISS_ID.into())
-                            .accessibility_id(DOCUMENT_OPEN_ERROR_DISMISS_ID)
-                            .outline()
-                            .label("Dismiss")
-                            .on_click(cx.listener(|workspace, _, _, cx| {
-                                workspace.dismiss_document_open_failure(cx);
-                            })),
-                    ),
-            )
-        })
-        .when_some(save_failure, |root, failure| {
-            root.child(
-                h_flex()
-                    .debug_selector(|| DOCUMENT_SAVE_ERROR_ALERT_ID.into())
-                    .w_full()
-                    .gap_2()
-                    .p_2()
-                    .child(
-                        Alert::error(
-                            DOCUMENT_SAVE_ERROR_ALERT_ID,
-                            failure.presentation_message().to_owned(),
-                        )
-                            .title(save_failure_title)
-                            .flex_1(),
-                    )
-                    .when(
-                        failure.operation == DocumentSaveFailureOperation::InPlace
-                            && failure.can_retry(),
-                        |actions| {
-                            actions.child(
-                                Button::new(DOCUMENT_SAVE_ERROR_RETRY_ID)
-                                    .debug_selector(|| DOCUMENT_SAVE_ERROR_RETRY_ID.into())
-                                    .accessibility_id(DOCUMENT_SAVE_ERROR_RETRY_ID)
-                                    .label("Retry")
-                                    .on_click(cx.listener(move |workspace, _, _, cx| {
-                                        workspace.retry_document_save_failure(document_id, cx);
-                                    })),
-                            )
-                        },
-                    )
-                    .child(
-                        Button::new(DOCUMENT_SAVE_ERROR_SAVE_AS_ID)
-                            .debug_selector(|| DOCUMENT_SAVE_ERROR_SAVE_AS_ID.into())
-                            .accessibility_id(DOCUMENT_SAVE_ERROR_SAVE_AS_ID)
-                            .outline()
-                            .label("Save As…")
-                            .on_click(cx.listener(move |workspace, _, _, cx| {
-                                workspace.prompt_to_save_as(document_id, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new(DOCUMENT_SAVE_ERROR_DISMISS_ID)
-                            .debug_selector(|| DOCUMENT_SAVE_ERROR_DISMISS_ID.into())
-                            .accessibility_id(DOCUMENT_SAVE_ERROR_DISMISS_ID)
-                            .ghost()
-                            .label("Dismiss")
-                            .on_click(cx.listener(move |workspace, _, _, cx| {
-                                workspace.dismiss_document_save_failure(document_id, cx);
-                            })),
-                    ),
-            )
-        })
-        .when_some(
-            recovery_preparation_issue,
-            |root, (error, ambiguous, rebase_failed)| {
-                let confirmation_pending = (ambiguous || rebase_failed)
-                    && self.recovery_confirmation_pending.contains(&document_id);
-                let action_id = if ambiguous {
-                    DOCUMENT_RECOVERY_PREPARATION_CONFIRM_ID
-                } else if rebase_failed {
-                    DOCUMENT_RECOVERY_REBASE_RETRY_ID
-                } else {
-                    DOCUMENT_RECOVERY_PREPARATION_RETRY_ID
-                };
-                root.child(
-                    h_flex()
-                        .id(DOCUMENT_RECOVERY_PREPARATION_ALERT_ID)
-                        .debug_selector(|| DOCUMENT_RECOVERY_PREPARATION_ALERT_ID.into())
-                        .w_full()
-                        .gap_2()
-                        .p_2()
-                        .child(
-                            Alert::error(
-                                "document-recovery-preparation-message",
-                                format!(
-                                    "Butter Paper cannot safely accept edits until crash recovery is available: {error}"
-                                ),
-                            )
-                            .title(if ambiguous {
-                                "Crash recovery needs confirmation"
-                            } else if rebase_failed {
-                                "Crash recovery needs repair"
-                            } else {
-                                "Crash recovery unavailable"
-                            })
-                            .flex_1(),
-                        )
-                        .child(
-                            Button::new(action_id)
-                                .debug_selector(move || action_id.into())
-                                .accessibility_id(action_id)
-                                .label(if confirmation_pending {
-                                    if rebase_failed {
-                                        "Retrying…"
-                                    } else {
-                                        "Checking…"
-                                    }
-                                } else if ambiguous {
-                                    "Check again"
-                                } else if rebase_failed {
-                                    "Retry recovery"
-                                } else {
-                                    "Retry"
-                                })
-                                .disabled(confirmation_pending)
-                                .on_click(cx.listener(move |workspace, _, _, cx| {
-                                    if let Err(error) = workspace
-                                        .retry_document_recovery_preparation(document_id, cx)
-                                    {
-                                        workspace.last_file_error = Some(error);
-                                        cx.notify();
-                                    }
-                                })),
-                        ),
-                )
-            },
-        )
-        .when_some(self.last_file_error.clone(), |root, error| {
-            root.child(
-                gpui::div()
-                    .id(DOCUMENT_ERROR_ID)
-                    .debug_selector(|| DOCUMENT_ERROR_ID.into())
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .text_sm()
-                    .text_color(cx.theme().danger)
-                    .child(error),
-            )
-        })
-        .when_some(presentation_error, |root, error| {
-            root.child(
-                h_flex()
-                    .id(DOCUMENT_RECOVERY_ALERT_ID)
-                    .debug_selector(|| DOCUMENT_RECOVERY_ALERT_ID.into())
-                    .w_full()
-                    .gap_2()
-                    .p_2()
-                    .child(
-                        Alert::info("document-worker-recovery-message", error)
-                            .title("PDF rendering stopped")
-                            .w(px(520.)),
-                    )
-                    .child(
-                        Button::new(DOCUMENT_RECOVERY_RETRY_ID)
-                            .debug_selector(|| DOCUMENT_RECOVERY_RETRY_ID.into())
-                            .label(if recovery_pending { "Retrying…" } else { "Retry" })
-                            .disabled(recovery_pending)
-                            .on_click(cx.listener(move |workspace, _, _, cx| {
-                                if let Err(error) =
-                                    workspace.retry_document_recovery_async(document_id, cx)
-                                {
-                                    workspace.last_file_error = Some(error);
-                                    cx.notify();
-                                }
-                            })),
-                    ),
-            )
-        })
-        .when_some(page_scale_pick_instruction, |root, instruction| {
-            root.child(
-                h_flex()
-                    .id(PAGE_SCALE_PICK_ALERT_ID)
-                    .debug_selector(|| PAGE_SCALE_PICK_ALERT_ID.into())
-                    .w_full()
-                    .gap_2()
-                    .p_2()
-                    .child(
-                        Alert::info("page-scale-pick-instructions", instruction)
-                            .title("Set Page Scale")
-                            .flex_1(),
-                    )
-                    .child(
-                        Button::new(PAGE_SCALE_PICK_CANCEL_ID)
-                            .debug_selector(|| PAGE_SCALE_PICK_CANCEL_ID.into())
-                            .label("Cancel")
-                            .outline()
-                            .on_click(move |_, _, cx| {
-                                let _ = page_scale_cancel_control.update(cx, |control, cx| {
-                                    control.cancel_pick(cx);
-                                });
-                            }),
-                    ),
-            )
-        })
-        .child(
-            h_resizable("document-workspace-canvas-inspector")
+                    .size(window.rem_size() * 18.75)
+                    .size_range(window.rem_size() * 15.0..window.rem_size() * 26.25)
+                    .flex_none()
+                    .child(supporting_actions),
+            ),
+            &properties_resizable,
+            properties_visible,
+        );
+        root.child(session_tab_strip).child(
+            h_flex()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .items_stretch()
+                .child(self.render_left_rail(true, thumbnails_fit, cx))
                 .child(
-                    resizable_panel().child(gpui::div()
-                        .id(DOCUMENT_PAGE_ID)
-                        .debug_selector(|| DOCUMENT_PAGE_ID.into())
+                    gpui::div()
                         .flex_1()
-                        .size_full()
-                        .p_4()
-                        .bg(cx.theme().secondary)
-                        // The scroll bars sit in a fixed layer over the viewport;
-                        // as children of the scrolling element they would move
-                        // with the content.
+                        .min_w_0()
+                        .h_full()
+                        .overflow_hidden()
+                        // The tool rail sits outside the resizable panels: its
+                        // own edge handle snaps its width to whole tool columns
+                        // while dragging, as in Electron.
                         .child(
-                            gpui::div()
-                                .relative()
+                            h_flex()
                                 .size_full()
                                 .child(
-                            gpui::div()
-                                .id(DOCUMENT_VIEWPORT_ID)
-                                .debug_selector(|| DOCUMENT_VIEWPORT_ID.into())
-                                .relative()
-                                .size_full()
-                                .cursor(viewport_cursor_style)
-                                .overflow_scroll()
-                                .track_scroll(&viewer_scroll)
-                                .on_scroll_wheel(cx.listener(
-                                    move |workspace, event: &ScrollWheelEvent, window, cx| {
-                                        if workspace.handle_viewport_wheel(document_id, event, window, cx) {
-                                            window.prevent_default();
-                                        }
-                                    },
-                                ))
-                                .on_pinch(cx.listener(
-                                    move |workspace, event: &gpui::PinchEvent, window, cx| {
-                                        workspace.handle_viewport_pinch(document_id, event, window, cx);
-                                    },
-                                ))
-                                .child(viewport_observer)
-                                .when_some(viewer_plan, |viewport, plan| {
-                                    let content_width = plan
-                                        .page_layouts
-                                        .iter()
-                                        .map(|layout| {
-                                            layout.logical_rect.x
-                                                + layout.logical_rect.width
-                                                + 24.
-                                        })
-                                        .fold(1., f32::max);
-                                    // Blank space around the pages lets them be
-                                    // panned past their edges (see `pan_margin`).
-                                    viewport.child(
-                                        gpui::div()
-                                            .flex_none()
-                                            .w(px(content_width + viewer_pan_margin.0 * 2.))
-                                            .h(px(plan.total_height.max(1.) + viewer_pan_margin.1 * 2.))
-                                            .px(px(viewer_pan_margin.0))
-                                            .py(px(viewer_pan_margin.1))
-                                            .child(
-                                        gpui::div()
-                                            .relative()
-                                            .w(px(content_width))
-                                            .h(px(plan.total_height.max(1.)))
-                                            .flex_none()
-                                            .children(viewer_pages.into_iter().map(
-                                                |(layout, page_size, (pdf_page_size, rotation), coordinate_space, scene, highlights_precomposed, tiles, painted_viewer, quality, render_error)| {
-                                                    let page_id = document_viewer_page_id(
-                                                        document_id,
-                                                        layout.page,
-                                                    );
-                                                    let page_selector = page_id.clone();
-                                                    let page_index = layout.page as u32;
-                                                    let quality_marker = quality.map(|quality| {
-                                                        let quality_id = document_viewer_quality_id(
-                                                            document_id,
-                                                            layout.page,
-                                                            quality,
-                                                        );
-                                                        let quality_selector = quality_id.clone();
-                                                        gpui::div()
-                                                            .id(quality_id)
-                                                            .debug_selector(move || {
-                                                                quality_selector.clone().into()
-                                                            })
-                                                            .absolute()
-                                                            .left_0()
-                                                            .top_0()
-                                                            .size(px(1.))
-                                                    });
-                                                    let render_error_surface = render_error
-                                                        .filter(|_| quality.is_none())
-                                                        .map(|error| {
-                                                            let error_id = document_viewer_error_id(
-                                                                document_id,
-                                                                layout.page,
-                                                            );
-                                                            let error_selector = error_id.clone();
-                                                            let retry_id = document_viewer_retry_id(
-                                                                document_id,
-                                                                layout.page,
-                                                            );
-                                                            let retry_selector = retry_id.clone();
-                                                            let retry_control =
-                                                                cx.entity().downgrade();
-                                                            v_flex()
-                                                                .id(error_id)
-                                                                .debug_selector(move || {
-                                                                    error_selector.clone().into()
-                                                                })
-                                                                .absolute()
-                                                                .inset_0()
-                                                                .occlude()
-                                                                .items_start()
-                                                                .justify_start()
-                                                                .gap_2()
-                                                                .p_3()
-                                                                .child(
-                                                                    Alert::error(
-                                                                        format!(
-                                                                            "viewer-page-{}-render-error-message",
-                                                                            layout.page
-                                                                        ),
-                                                                        error,
-                                                                    )
-                                                                    .title("Unable to render page"),
-                                                                )
-                                                                .child(
-                                                                    Button::new(retry_id)
-                                                                        .debug_selector(move || {
-                                                                            retry_selector
-                                                                                .clone()
-                                                                                .into()
-                                                                        })
-                                                                        .label("Retry")
-                                                                        .on_click(move |_, _, cx| {
-                                                                            let _ = retry_control
-                                                                                .update(
-                                                                                    cx,
-                                                                                    |workspace, cx| {
-                                                                                        workspace.retry_viewer_page(
-                                                                                            document_id,
-                                                                                            layout.page,
-                                                                                            cx,
-                                                                                        );
-                                                                                    },
-                                                                                );
-                                                                        }),
-                                                                )
-                                                        });
-                                                    let page_tiles = tiles
-                                                        .into_iter()
-                                                        .enumerate()
-                                                        .map(|(tile_index, (request, image))| {
-                                                            let scale = (request
-                                                                .device_scale_millis
-                                                                as f32
-                                                                / 1_000.)
-                                                                .max(0.1);
-                                                            let tile_id = document_viewer_tile_id(
-                                                                document_id,
-                                                                plan.generation,
-                                                                layout.page,
-                                                                tile_index,
-                                                            );
-                                                            let tile_selector = tile_id.clone();
-                                                            gpui::div()
-                                                                .id(tile_id)
-                                                                .debug_selector(move || {
-                                                                    tile_selector.clone().into()
-                                                                })
-                                                                .absolute()
-                                                                .left(px(
-                                                                    request.crop.x as f32 / scale,
-                                                                ))
-                                                                .top(px(
-                                                                    request.crop.y as f32 / scale,
-                                                                ))
-                                                                .w(px(
-                                                                    request.crop.width as f32
-                                                                        / scale,
-                                                                ))
-                                                                .h(px(
-                                                                    request.crop.height as f32
-                                                                        / scale,
-                                                                ))
-                                                                .child(
-                                                                    img(image)
-                                                                        .size_full()
-                                                                        .object_fit(
-                                                                            ObjectFit::Fill,
-                                                                        ),
-                                                                )
-                                                        });
-                                                    gpui::div()
-                                                        .id(page_id)
-                                                        .debug_selector(move || {
-                                                            page_selector.clone().into()
-                                                        })
-                                                        .absolute()
-                                                        .left(px(layout.logical_rect.x))
-                                                        .top(px(layout.logical_rect.y))
-                                                        .w(px(layout.logical_rect.width))
-                                                        .h(px(layout.logical_rect.height))
-                                                        .bg(gpui::rgb(0xffffff))
-                                                        .border_1()
-                                                        .border_color(cx.theme().border)
-                                                        .when(
-                                                            page_index == current_page,
-                                                            |page| {
-                                                                page.when_some(
-                                                                    current_image.clone(),
-                                                                    |page, image| {
-                                                                        page.child(
-                                                                            img(image)
-                                                                                .size_full()
-                                                                                .object_fit(
-                                                                                    ObjectFit::Fill,
-                                                                                ),
-                                                                        )
-                                                                    },
-                                                                )
-                                                            },
-                                                        )
-                                                        .children(page_tiles)
-                                                        .children(quality_marker)
-                                                        .child(annotation_layer(
-                                                            document_id,
-                                                            page_index,
-                                                            page_size,
-                                                            pdf_page_size,
-                                                            rotation,
-                                                            coordinate_space,
-                                                            scene,
-                                                            pending_image_preview.clone().filter(|preview| preview.page_index == page_index),
-                                                            pending_text_box_presentation.clone().filter(|preview| preview.page_index == page_index),
-                                                            highlights_precomposed,
-                                                            image_assets.clone(),
-                                                            selection_color,
-                                                            hovered_annotation.clone().filter(|(doc, page, _)| {
-                                                                *doc == document_id && *page == page_index
-                                                            }).map(|(_, _, id)| id),
-                                                            hot_annotation_handle.clone().filter(|(doc, page, _, _)| {
-                                                                *doc == document_id && *page == page_index
-                                                            }).map(|(_, _, id, index)| (id, index)),
-                                                            focused_annotation_id.clone(),
-                                                            cx.theme().border,
-                                                            construction_grid_spacing_mm,
-                                                            (page_index == current_page)
-                                                                .then(|| semantic_snap_decision.clone())
-                                                                .flatten(),
-                                                            (page_index == current_page)
-                                                                .then(|| object_snap_tracking_result.clone())
-                                                                .flatten(),
-                                                            if page_index == current_page {
-                                                                relationship_snap_guides.clone()
-                                                            } else {
-                                                                Vec::new()
-                                                            },
-                                                            active_selection_marquee
-                                                                .as_ref()
-                                                                .filter(|(active_page, _)| {
-                                                                    *active_page == page_index
-                                                                })
-                                                                .map(|(_, marquee)| marquee.clone()),
-                                                            Some(cx.entity().downgrade()),
-                                                            painted_viewer,
-                                                        ))
-                                                        .children(render_error_surface)
-                                                },
-                                            )),
-                                            ),
-                                    )
-                                })
-                                .when(!has_viewer_pages, |viewport| {
-                                    viewport.when_some(current_image, |viewport, image| {
-                                        viewport.child(
-                                            gpui::div()
-                                                .relative()
-                                                .size_full()
-                                                .child(
-                                                    img(image)
-                                                        .size_full()
-                                                        .object_fit(ObjectFit::Contain),
-                                                )
-                                                .child(annotation_layer(
-                                                    document_id,
-                                                    current_page,
-                                                    current_page_size,
-                                                    current_pdf_page_size,
-                                                    current_page_rotation,
-                                                    current_coordinate_space,
-                                                    annotation_scene,
-                                                    pending_image_preview.clone().filter(|preview| preview.page_index == current_page),
-                                                    pending_text_box_presentation.clone().filter(|preview| preview.page_index == current_page),
-                                                    current_highlights_precomposed,
-                                                    image_assets,
-                                                    selection_color,
-                                                    hovered_annotation.clone().filter(|(doc, page, _)| {
-                                                        *doc == document_id && *page == current_page
-                                                    }).map(|(_, _, id)| id),
-                                                    hot_annotation_handle.clone().filter(|(doc, page, _, _)| {
-                                                        *doc == document_id && *page == current_page
-                                                    }).map(|(_, _, id, index)| (id, index)),
-                                                    focused_annotation_id.clone(),
-                                                    cx.theme().border,
-                                                    construction_grid_spacing_mm,
-                                                    semantic_snap_decision.clone(),
-                                                    object_snap_tracking_result.clone(),
-                                                    relationship_snap_guides.clone(),
-                                                    active_selection_marquee
-                                                        .as_ref()
-                                                        .filter(|(active_page, _)| {
-                                                            *active_page == current_page
-                                                        })
-                                                        .map(|(_, marquee)| marquee.clone()),
-                                                    Some(cx.entity().downgrade()),
-                                                    None,
-                                                )),
-                                        )
-                                    })
-                                })
-                                .when(document_opening_batch_count > 0, |viewport| {
-                                    let status = if document_opening_batch_count == 1 {
-                                        "Opening PDF".to_owned()
-                                    } else {
-                                        format!(
-                                            "Opening PDFs from {document_opening_batch_count} requests"
-                                        )
-                                    };
-                                    viewport.child(
-                                        v_flex()
-                                            .id(DOCUMENT_OPEN_STATUS_ID)
-                                            .debug_selector(|| DOCUMENT_OPEN_STATUS_ID.into())
-                                            .absolute()
-                                            .inset_0()
-                                            .occlude()
-                                            .items_center()
-                                            .justify_center()
-                                            .gap_3()
-                                            .bg(cx.theme().background)
-                                            .role(Role::Status)
-                                            .aria_label(status.clone())
-                                            .a11y_synthetic_children(|builder| {
-                                                builder.parent_node().set_live(Live::Polite)
-                                            })
-                                            .child(status)
-                                            .child(
-                                                gpui::div()
-                                                    .id(DOCUMENT_OPEN_PROGRESS_ID)
-                                                    .debug_selector(|| {
-                                                        DOCUMENT_OPEN_PROGRESS_ID.into()
-                                                    })
-                                                    .w(px(240.))
-                                                    .child(
-                                                        Progress::new(
-                                                            "document-active-open-progress-component",
-                                                        )
-                                                        .loading(true),
-                                                    ),
-                                            ),
-                                    )
-                                })
+                                    gpui::div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .h_full()
+                                        .child(properties_panels),
                                 )
                                 .child(
                                     gpui::div()
-                                        .absolute()
-                                        .inset_0()
-                                        .debug_selector(|| DOCUMENT_VIEWPORT_SCROLLBARS_ID.into())
-                                        .child(
-                                            gpui_component::scroll::Scrollbar::new(&viewer_scroll)
-                                                .id("document-viewport-scrollbars")
-                                                .axis(gpui_component::scroll::ScrollbarAxis::Both),
-                                        ),
+                                        .flex_none()
+                                        .h_full()
+                                        .w(rail_width)
+                                        .child(right_rail),
                                 ),
                         ),
-                ))
-                ,
+                ),
         )
-        .child(pointer_event_bridge)
-        .child(
-            gpui::div()
-                .id(DOCUMENT_TEXT_BOX_RETURN_FOCUS_ID)
-                .track_focus(&self.text_box_return_focus)
-                .absolute()
-                .left_0()
-                .top_0()
-                .w(px(1.))
-                .h(px(1.)),
-        )
-        )), &self.viewer_resizable, thumbnails_visible))))
-        .child(resizable_panel()
-            .visible(self.right_rail_actions_open || inspector_visible || pending_non_creation_editor)
-            .size(window.rem_size() * 18.75)
-            .size_range(window.rem_size() * 15.0..window.rem_size() * 26.25)
-            .flex_none().child(supporting_actions))
-        , &properties_resizable, properties_visible)))
-        .child(gpui::div().flex_none().h_full().w(rail_width).child(right_rail)))))
     }
 }
 
@@ -28585,36 +26021,49 @@ mod tests {
     }
 
     #[test]
-    fn rectangle_resize_cursor_quantises_handle_and_annotation_rotation_to_native_axes() {
+    fn rectangle_resize_cursor_follows_handle_and_rotation_with_native_fallbacks() {
         use super::{CursorStyle, RectangleResizeHandle};
 
         assert_eq!(
-            rectangle_resize_cursor_style(RectangleResizeHandle::East, 0.),
+            rectangle_resize_cursor_style(RectangleResizeHandle::East, 0.).standard(),
             CursorStyle::ResizeLeftRight,
         );
         assert_eq!(
-            rectangle_resize_cursor_style(RectangleResizeHandle::North, 0.),
+            rectangle_resize_cursor_style(RectangleResizeHandle::North, 0.).standard(),
             CursorStyle::ResizeUpDown,
         );
         assert_eq!(
-            rectangle_resize_cursor_style(RectangleResizeHandle::NorthWest, 0.),
+            rectangle_resize_cursor_style(RectangleResizeHandle::NorthWest, 0.).standard(),
             CursorStyle::ResizeUpLeftDownRight,
         );
         assert_eq!(
-            rectangle_resize_cursor_style(RectangleResizeHandle::NorthEast, 0.),
+            rectangle_resize_cursor_style(RectangleResizeHandle::NorthEast, 0.).standard(),
             CursorStyle::ResizeUpRightDownLeft,
         );
         assert_eq!(
-            rectangle_resize_cursor_style(RectangleResizeHandle::East, 90.),
+            rectangle_resize_cursor_style(RectangleResizeHandle::East, 90.).standard(),
             CursorStyle::ResizeUpDown,
         );
         assert_eq!(
-            rectangle_resize_cursor_style(RectangleResizeHandle::NorthEast, 90.),
+            rectangle_resize_cursor_style(RectangleResizeHandle::NorthEast, 90.).standard(),
             CursorStyle::ResizeUpLeftDownRight,
         );
         assert_eq!(
-            rectangle_resize_cursor_style(RectangleResizeHandle::East, 360.),
+            rectangle_resize_cursor_style(RectangleResizeHandle::East, 360.).standard(),
             CursorStyle::ResizeLeftRight,
+        );
+        // Drawn at the exact angle, not snapped to the native axes.
+        assert!(matches!(
+            rectangle_resize_cursor_style(RectangleResizeHandle::East, 30.),
+            CursorStyle::Image(_)
+        ));
+        assert_ne!(
+            rectangle_resize_cursor_style(RectangleResizeHandle::East, 30.),
+            rectangle_resize_cursor_style(RectangleResizeHandle::East, 45.),
+        );
+        assert_eq!(
+            rectangle_resize_cursor_style(RectangleResizeHandle::East, 90.),
+            rectangle_resize_cursor_style(RectangleResizeHandle::North, 0.),
         );
     }
 
@@ -28669,9 +26118,9 @@ mod tests {
                 point(px(25.), px(367.))
             ]
         );
-        assert_eq!(geometry.rotation_center, point(px(65.), px(315.)));
+        assert_eq!(geometry.rotation_center, point(px(65.), px(307.)));
         assert_eq!(geometry.connector_start, point(px(65.), px(327.)));
-        assert_eq!(geometry.connector_end, point(px(65.), px(319.)));
+        assert_eq!(geometry.connector_end, point(px(65.), px(311.)));
         let rotated = shape_feedback_geometry(rect, 90., false, &transform, origin, 4.);
         assert_eq!(
             rotated.bounds,
@@ -28682,7 +26131,7 @@ mod tests {
                 point(px(45.), px(307.))
             ]
         );
-        assert_eq!(rotated.rotation_center, point(px(97.), px(347.)));
+        assert_eq!(rotated.rotation_center, point(px(105.), px(347.)));
         let ellipse = shape_feedback_geometry(rect, 0., true, &transform, origin, 4.);
         assert_eq!(
             ellipse.bounds, geometry.bounds,
@@ -28698,11 +26147,11 @@ mod tests {
         let transform =
             PageTransform::new_rotated(100., 200., 2., PageRotation::Degrees90).unwrap();
         let sideways = shape_feedback_geometry(rect, 0., false, &transform, origin, 4.);
-        assert_eq!(sideways.rotation_center, point(px(97.), px(67.)));
+        assert_eq!(sideways.rotation_center, point(px(105.), px(67.)));
         assert_eq!(sideways.connector_start, point(px(85.), px(107.)));
         assert_eq!(
             sideways.connector_end,
-            point(px(97.), px(63.)),
+            point(px(105.), px(63.)),
             "retain the routed reference diagonal-stem projection"
         );
     }

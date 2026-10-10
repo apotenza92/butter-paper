@@ -1,6 +1,6 @@
 use gpui::{
     InteractiveElement as _, IntoElement, ParentElement as _, SharedString, Styled as _,
-    WindowOptions, div, px,
+    WindowOptions, div,
 };
 use gpui_component::{TitleBar, h_flex};
 
@@ -9,7 +9,7 @@ pub const APPLICATION_TITLE: &str = "Butter Paper";
 // The pinned TitleBar reserves this leading lane for native traffic lights but
 // does not expose a centred-title slot. Mirror that platform inset on the
 // trailing edge so child content is centred in the window, not the free lane.
-pub const MACOS_TITLE_BAR_CONTROL_INSET: gpui::Pixels = px(80.);
+pub const MACOS_TITLE_BAR_CONTROL_INSET: gpui::Pixels = gpui::px(80.);
 
 /// Formats the window title from the active document and the number of open
 /// documents. The document tab remains the owner of dirty-state presentation.
@@ -124,7 +124,10 @@ fn window_title_content(
         .w(window_width - MACOS_TITLE_BAR_CONTROL_INSET)
         .pr(MACOS_TITLE_BAR_CONTROL_INSET);
     #[cfg(not(target_os = "macos"))]
-    let content = content.w_full();
+    let content = {
+        let _ = window_width;
+        content.w_full()
+    };
     content.child(
         div()
             .id("window-title-text")

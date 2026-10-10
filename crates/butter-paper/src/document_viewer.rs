@@ -1,5 +1,7 @@
 use std::{
+    cell::Cell,
     collections::{HashMap, HashSet, VecDeque},
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -8,7 +10,8 @@ use crate::viewer::{
     CachePolicy, CadOrganisation, PageGeometry, PageLayout, Rect, RenderInput, RenderLayout,
     RenderPlanner, RenderSource, TileCache, TileRequest, ViewportGeometry,
 };
-use gpui::{RenderImage, ScrollHandle, point, px};
+use gpui::{Bounds, Pixels, Point, RenderImage, ScrollHandle, Size, point, px, size};
+use gpui_component::scroll::ScrollbarHandle;
 
 #[cfg(test)]
 use crate::adaptive_performance::{AdaptiveViewerPerformance, ViewerRenderDiagnostics};
@@ -195,10 +198,97 @@ pub(crate) struct DocumentViewerState {
     /// the handle to the content laid out so far). It is re-applied until it
     /// sticks, and is the intended scroll meanwhile.
     pending_offset: std::cell::Cell<Option<gpui::Point<gpui::Pixels>>>,
+    /// The logical scroll last placed, from which wheel scrolling is bounded.
+    placed_scroll: std::cell::Cell<Option<(f32, f32)>>,
+    scrollbar: PageScrollbarHandle,
+}
+
+/// Scroll positions that keep the view on the pages, per axis as
+/// (lowest, highest).
+type PageScrollRange = [(f32, f32); 2];
+
+/// The viewport's scrollbars. They span the pages, not the blank pan space
+/// around them, and grow to include the view while it is panned outside.
+#[derive(Clone)]
+pub struct PageScrollbarHandle {
+    handle: ScrollHandle,
+    pages: Rc<Cell<Option<PageScrollRange>>>,
+    margin: Rc<Cell<(f32, f32)>>,
+    /// The range while a thumb is dragged, so it does not shift under the
+    /// pointer as the view comes back to the pages.
+    dragging: Rc<Cell<Option<PageScrollRange>>>,
+}
+
+impl PageScrollbarHandle {
+    fn new(handle: ScrollHandle) -> Self {
+        Self {
+            handle,
+            pages: Rc::default(),
+            margin: Rc::default(),
+            dragging: Rc::default(),
+        }
+    }
+
+    fn logical(&self) -> (f32, f32) {
+        let offset = self.handle.offset();
+        let (margin_x, margin_y) = self.margin.get();
+        (
+            -f32::from(offset.x) - margin_x,
+            -f32::from(offset.y) - margin_y,
+        )
+    }
+
+    fn range(&self) -> PageScrollRange {
+        if let Some(range) = self.dragging.get() {
+            return range;
+        }
+        let (x, y) = self.logical();
+        let [(low_x, high_x), (low_y, high_y)] = self.pages.get().unwrap_or([(x, x), (y, y)]);
+        [(low_x.min(x), high_x.max(x)), (low_y.min(y), high_y.max(y))]
+    }
+}
+
+impl ScrollbarHandle for PageScrollbarHandle {
+    fn viewport_bounds(&self) -> Bounds<Pixels> {
+        self.handle.bounds()
+    }
+
+    fn offset(&self) -> Point<Pixels> {
+        let (x, y) = self.logical();
+        let [(low_x, _), (low_y, _)] = self.range();
+        point(px(low_x - x), px(low_y - y))
+    }
+
+    fn set_offset(&self, offset: Point<Pixels>) {
+        let [(low_x, high_x), (low_y, high_y)] = self.range();
+        let x = (low_x - f32::from(offset.x)).clamp(low_x, high_x);
+        let y = (low_y - f32::from(offset.y)).clamp(low_y, high_y);
+        let (margin_x, margin_y) = self.margin.get();
+        self.handle
+            .set_offset(point(px(-(x + margin_x)), px(-(y + margin_y))));
+    }
+
+    fn content_size(&self) -> Size<Pixels> {
+        let [(low_x, high_x), (low_y, high_y)] = self.range();
+        let viewport = self.handle.bounds().size;
+        size(
+            viewport.width + px(high_x - low_x),
+            viewport.height + px(high_y - low_y),
+        )
+    }
+
+    fn start_drag(&self) {
+        self.dragging.set(Some(self.range()));
+    }
+
+    fn end_drag(&self) {
+        self.dragging.set(None);
+    }
 }
 
 impl Default for DocumentViewerState {
     fn default() -> Self {
+        let scroll_handle = ScrollHandle::new();
         Self {
             mode: PageViewMode::Continuous,
             zoom_percent: 100.,
@@ -212,9 +302,11 @@ impl Default for DocumentViewerState {
             preview_cache: TileCache::new(cache_policy(PREVIEW_CACHE_BYTES)),
             cache: TileCache::new(cache_policy(FULL_CACHE_BYTES)),
             detail_cache: TileCache::new(cache_policy(DETAIL_CACHE_BYTES)),
-            scroll_handle: ScrollHandle::new(),
+            scroll_handle: scroll_handle.clone(),
             viewport_size: (0., 0.),
             pending_offset: std::cell::Cell::new(None),
+            placed_scroll: std::cell::Cell::new(None),
+            scrollbar: PageScrollbarHandle::new(scroll_handle.clone()),
             rejected_stale_tiles: 0,
             error: None,
             page_errors: HashMap::new(),
@@ -283,6 +375,12 @@ impl DocumentViewerState {
         self.pending_promotions.clear();
         self.scheduler_revision = self.scheduler_revision.saturating_add(1).max(1);
         self.viewport_key = None;
+        // Without a plan the scrolled content collapses for a frame and GPUI
+        // clamps the handle to zero, which would read as panning into the
+        // far margin. Hold the current position until the pages lay out.
+        if self.pending_offset.get().is_none() {
+            self.pending_offset.set(Some(self.scroll_handle.offset()));
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -791,9 +889,7 @@ impl DocumentViewerState {
                 if detail.raster != full.raster {
                     self.enqueue(detail, true);
                 }
-            } else if self.preview_cache.contains(preview.raster) {
-                self.enqueue(full, true);
-            } else if preview.raster == full.raster {
+            } else if self.preview_cache.contains(preview.raster) || preview.raster == full.raster {
                 self.enqueue(full, true);
             } else {
                 self.enqueue(preview, true);
@@ -889,32 +985,98 @@ impl DocumentViewerState {
             .as_ref()
             .filter(|plan| !plan.page_layouts.is_empty())
         {
-            // Stop while PAN_KEEP_VISIBLE_PX of the pages is still in view.
-            let pages = plan.page_layouts.iter().map(|layout| layout.logical_rect);
-            let left = pages
-                .clone()
-                .map(|rect| rect.x)
-                .fold(f32::INFINITY, f32::min);
-            let top = pages
-                .clone()
-                .map(|rect| rect.y)
-                .fold(f32::INFINITY, f32::min);
-            let right = pages
-                .clone()
-                .map(|rect| rect.x + rect.width)
-                .fold(0., f32::max);
-            let bottom = pages.map(|rect| rect.y + rect.height).fold(0., f32::max);
-            let range = |value: f32, start: f32, end: f32, viewport: f32| {
-                let low = start - (viewport - PAN_KEEP_VISIBLE_PX).max(0.);
-                let high = (end - PAN_KEEP_VISIBLE_PX.min(viewport)).max(low);
+            // Stop while PAN_KEEP_VISIBLE_PX of a page is still in view: of
+            // each page's allowed range, take the one nearest the request, so
+            // pages of mixed sizes cannot leave the view empty.
+            let (viewport_width, viewport_height) = self.viewport_size;
+            let range = |value: f32, start: f32, length: f32, viewport: f32| {
+                let keep = PAN_KEEP_VISIBLE_PX.min(length).min(viewport);
+                let low = start - (viewport - keep).max(0.);
+                let high = (start + length - keep).max(low);
                 value.clamp(low, high)
             };
-            scroll_x = range(scroll_x, left, right, self.viewport_size.0);
-            scroll_y = range(scroll_y, top, bottom, self.viewport_size.1);
+            let (x, y) = (scroll_x, scroll_y);
+            if let Some((nearest_x, nearest_y)) = plan
+                .page_layouts
+                .iter()
+                .map(|layout| {
+                    let rect = layout.logical_rect;
+                    (
+                        range(x, rect.x, rect.width, viewport_width),
+                        range(y, rect.y, rect.height, viewport_height),
+                    )
+                })
+                .min_by(|a, b| {
+                    let distance = |(px, py): &(f32, f32)| (px - x).powi(2) + (py - y).powi(2);
+                    distance(a).total_cmp(&distance(b))
+                })
+            {
+                scroll_x = nearest_x;
+                scroll_y = nearest_y;
+            }
         }
         let offset = point(px(-(scroll_x + margin_x)), px(-(scroll_y + margin_y)));
         self.scroll_handle.set_offset(offset);
         self.pending_offset.set(Some(offset));
+        self.placed_scroll.set(Some((scroll_x, scroll_y)));
+    }
+
+    /// Bounds wheel (and scrollbar) scrolling to the pages, as a document
+    /// scrolls, where a pan may go into the blank space around them. Content
+    /// smaller than the view stays centred. A view already panned outside
+    /// may scroll back towards the pages but no further out.
+    fn bound_wheel_scroll(
+        &self,
+        (scroll_x, scroll_y): (f32, f32),
+        (previous_x, previous_y): (f32, f32),
+    ) -> (f32, f32) {
+        let Some([(low_x, high_x), (low_y, high_y)]) = self.page_scroll_range() else {
+            return (scroll_x, scroll_y);
+        };
+        (
+            scroll_x.clamp(low_x.min(previous_x), high_x.max(previous_x)),
+            scroll_y.clamp(low_y.min(previous_y), high_y.max(previous_y)),
+        )
+    }
+
+    /// Scroll positions that keep the view on the pages and their margins.
+    /// Content smaller than the view stays centred.
+    fn page_scroll_range(&self) -> Option<PageScrollRange> {
+        let plan = self.plan.as_ref()?;
+        let range = |total: f32, viewport: f32| {
+            if total >= viewport {
+                (0., total - viewport)
+            } else {
+                let centred = (total - viewport) / 2.;
+                (centred, centred)
+            }
+        };
+        Some([
+            range(plan.total_width, self.viewport_size.0),
+            range(plan.total_height, self.viewport_size.1),
+        ])
+    }
+
+    /// The scrollbars, which span the pages rather than the pan margin.
+    pub fn scrollbar_handle(&self) -> PageScrollbarHandle {
+        self.scrollbar.pages.set(self.page_scroll_range());
+        self.scrollbar.margin.set(self.pan_margin());
+        self.scrollbar.clone()
+    }
+
+    /// Where a wheel delta scrolls to, bounded before it paints so the view
+    /// never shows the blank space it would be pulled back from. It starts
+    /// from the last placed scroll: the scroll container has already moved
+    /// the handle by the time the workspace sees the event.
+    pub fn wheel_scroll_target(&self, delta_x: f32, delta_y: f32) -> (f32, f32) {
+        let (scroll_x, scroll_y) = self
+            .placed_scroll
+            .get()
+            .unwrap_or_else(|| self.logical_scroll());
+        self.bound_wheel_scroll(
+            (scroll_x - delta_x, scroll_y - delta_y),
+            (scroll_x, scroll_y),
+        )
     }
 
     /// Called once the viewport has painted: re-applies a placed offset that
@@ -922,9 +1084,11 @@ impl DocumentViewerState {
     /// otherwise lets the handle's own (native wheel) scrolling stand.
     pub fn reconcile_scroll(&self) {
         let Some(pending) = self.pending_offset.get() else {
-            // Native wheel scrolling may reach the whole margin; keep the same
-            // sliver of the pages in view as a pan does.
+            // Native wheel scrolling may reach the whole margin, which only
+            // a pan may use.
             let (scroll_x, scroll_y) = self.logical_scroll();
+            let previous = self.placed_scroll.get().unwrap_or((scroll_x, scroll_y));
+            let (scroll_x, scroll_y) = self.bound_wheel_scroll((scroll_x, scroll_y), previous);
             let before = self.scroll_handle.offset();
             self.place_scroll(scroll_x, scroll_y);
             if self.scroll_handle.offset() == before {
@@ -1080,6 +1244,94 @@ mod tests {
         assert!(!viewer.finish(active[0], Err("old render must be ignored".into())));
         assert_eq!(viewer.snapshot().rejected_stale_tiles, 1);
         assert!(viewer.snapshot().active_tiles <= MAX_ACTIVE_TILE_JOBS);
+    }
+
+    #[test]
+    fn a_cancelled_plan_keeps_the_scroll_while_the_content_collapses() {
+        let mut viewer = DocumentViewerState::default();
+        viewer.observe_viewport_size(800., 600.);
+        viewer
+            .plan(9, &[(612., 792.)], &[0], 0, 800., 600., 0., 0., 1.)
+            .unwrap();
+        viewer.set_scroll(200., 300.);
+        // The pages lay out and hold the placed offset.
+        viewer.reconcile_scroll();
+        assert_eq!(viewer.logical_scroll(), (200., 300.));
+
+        // A zoom change (Fit Width after a side panel opens) cancels the
+        // plan. For a frame the content has no pages, so GPUI clamps the
+        // handle to zero; that must not read as panning into the far margin.
+        viewer.configure(PageViewMode::Continuous, 200.);
+        viewer.scroll_handle().set_offset(point(px(0.), px(0.)));
+        viewer.reconcile_scroll();
+        assert_eq!(viewer.logical_scroll(), (200., 300.));
+    }
+
+    #[test]
+    fn wheel_scrolling_is_bounded_from_where_the_view_was_placed() {
+        let mut viewer = DocumentViewerState::default();
+        viewer.observe_viewport_size(800., 600.);
+        viewer
+            .plan(9, &[(612., 792.); 3], &[0; 3], 0, 800., 600., 0., 0., 1.)
+            .unwrap();
+        viewer.set_scroll(0., 0.);
+        viewer.reconcile_scroll();
+        assert_eq!(viewer.logical_scroll(), (0., 0.));
+        // The scroll container moves the handle before the workspace sees the
+        // wheel event; scrolling up at the top still stays at the top.
+        let offset = viewer.scroll_handle().offset();
+        viewer
+            .scroll_handle()
+            .set_offset(point(offset.x, offset.y + px(300.)));
+        assert_eq!(viewer.wheel_scroll_target(0., 300.), (0., 0.));
+        // Scrolling down moves by the delta, and stops at the last page.
+        assert_eq!(viewer.wheel_scroll_target(0., -200.), (0., 200.));
+        let bottom = viewer.plan_snapshot().unwrap().total_height - 600.;
+        assert_eq!(viewer.wheel_scroll_target(0., -100_000.), (0., bottom));
+    }
+
+    #[test]
+    fn scrollbars_span_the_pages_and_grow_while_panned_outside() {
+        use gpui_component::scroll::ScrollbarHandle as _;
+        let mut viewer = DocumentViewerState::default();
+        viewer.observe_viewport_size(800., 600.);
+        let total_height = viewer
+            .plan(9, &[(612., 792.); 3], &[0; 3], 0, 800., 600., 0., 0., 1.)
+            .unwrap()
+            .total_height;
+        let pages_range = total_height - 600.;
+        viewer.set_scroll(0., 0.);
+        viewer.reconcile_scroll();
+        let scrollbar = viewer.scrollbar_handle();
+        // The handle has no laid-out bounds here, so the content size is the
+        // scroll range alone: the pages, not the pan margin.
+        assert_eq!(scrollbar.content_size().height, px(pages_range));
+        assert_eq!(scrollbar.content_size().width, px(0.));
+        assert_eq!(scrollbar.offset(), point(px(0.), px(0.)));
+
+        viewer.set_scroll(0., 100.);
+        viewer.reconcile_scroll();
+        assert_eq!(scrollbar.offset().y, px(-100.));
+
+        // Panned 200px above the first page: the range grows to include the
+        // view, which sits at its start.
+        viewer.set_scroll(0., -200.);
+        viewer.reconcile_scroll();
+        assert_eq!(scrollbar.content_size().height, px(pages_range + 200.));
+        assert_eq!(scrollbar.offset().y, px(0.));
+
+        // A thumb drag keeps that range until it ends, so the thumb does not
+        // shift under the pointer, and never goes further out.
+        scrollbar.start_drag();
+        scrollbar.set_offset(point(px(0.), px(-150.)));
+        assert_eq!(viewer.logical_scroll(), (0., -50.));
+        assert_eq!(scrollbar.content_size().height, px(pages_range + 200.));
+        scrollbar.set_offset(point(px(0.), px(100.)));
+        assert_eq!(viewer.logical_scroll(), (0., -200.));
+        scrollbar.set_offset(point(px(0.), px(-300.)));
+        scrollbar.end_drag();
+        assert_eq!(viewer.logical_scroll(), (0., 100.));
+        assert_eq!(scrollbar.content_size().height, px(pages_range));
     }
 
     #[test]

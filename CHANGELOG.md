@@ -4,6 +4,43 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.1.4]
+
+### Selecting and editing markups
+
+- Move and resize rectangles directly from hover, with the same hit areas as
+  selected rectangles. Wider resize zones have move zones on both sides;
+  the middle of an unfilled rectangle stays clear for selecting other items.
+- Show an open hand over movable markups before selecting them, and a closed
+  hand while moving. Selection outlines, handles and dashed rotation stems
+  stay visible during moves, resizes and rotation.
+- Double-click a rotation knob to reset the markup to zero degrees.
+- Rotated rectangles save and reopen correctly despite PDF number rounding.
+- On Windows, save changes back to the opened PDF through an atomic staged
+  replacement, checking that the file is still the one originally opened.
+
+### Tabs, panels and recovery
+
+- Use consistent controls, layouts and top-right close buttons across
+  properties, settings, templates and other transient panels.
+- Keep dialog text and actions inside the window, including long filenames
+  and unsaved-change prompts.
+- Replace sprawling recovery banners with a conditional recovery button and
+  a contained panel for reviewing, restoring or dismissing recoverable work.
+- Show recently opened files in an empty window, with their folder paths,
+  full-path tooltips and a separate button to reveal each file in its folder.
+- On macOS, Command-W closes the window when no document tabs remain.
+
+### Viewing and installation
+
+- Keep fit, zoom and page navigation consistent across viewing modes, panning
+  and window resizing.
+- Remove the inset page border that could leave doubled lines along page
+  edges.
+- Use clear application names in native menus and packages. Windows installs
+  share one owned Start menu shortcut, and updates retire the previous
+  package without breaking the PDF default-app choice.
+
 ## [0.1.3]
 
 ### Updating

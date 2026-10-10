@@ -4,7 +4,8 @@
 //! durable template library and document workspace remain the storage and
 //! document authorities.
 
-use crate::accessible_button::accessible_icon_button;
+use crate::accessible_button::close_icon_button;
+use crate::dialog_buttons::{dialog_action_button, dialog_close_button};
 use crate::generated_document::{
     GeneratedDocumentRequest, GeneratedDocumentStore, OwnedGeneratedDocument,
 };
@@ -16,13 +17,10 @@ use gpui::{
     svg,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, IconName, IndexPath, Selectable as _, Sizable as _,
-    WindowExt as _,
+    ActiveTheme as _, Disableable as _, IndexPath, Selectable as _, WindowExt as _,
     alert::Alert,
     button::{Button, ButtonGroup, ButtonVariants as _},
-    dialog::{
-        DialogAction, DialogClose, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
-    },
+    dialog::{DialogClose, DialogDescription, DialogFooter, DialogHeader, DialogTitle},
     form::Field,
     input::{Input, InputEvent, InputState},
     list::{List, ListDelegate, ListItem, ListState},
@@ -138,7 +136,7 @@ impl ListDelegate for TemplateListDelegate {
                 .records
                 .get(index.row)
                 .map(|record| record.id().to_owned());
-            let _ = owner.update(cx, |manager, cx| {
+            owner.update(cx, |manager, cx| {
                 if let Some(id) = selected_id {
                     let _ = manager.model.select(&id);
                     cx.notify();
@@ -165,14 +163,9 @@ impl ListDelegate for TemplateListDelegate {
         let group_id = format!("template-manager-row-{}", record.id());
         Some(
             ListItem::new(stable_id.clone())
-                .debug_selector(move || stable_id.clone().into())
+                .debug_selector(move || stable_id.clone())
                 .selected(selected)
                 .group(group_id.clone())
-                .rounded_md()
-                .when(selected, |row| {
-                    row.bg(cx.theme().muted)
-                        .border_color(gpui::transparent_black())
-                })
                 .child(
                     v_flex()
                         .min_w_0()
@@ -202,7 +195,7 @@ impl ListDelegate for TemplateListDelegate {
                         Button::new(button_id.clone())
                             .debug_selector({
                                 let button_id = button_id.clone();
-                                move || button_id.clone().into()
+                                move || button_id.clone()
                             })
                             .label(format!("Remove {}", record.name()))
                             .danger()
@@ -1483,24 +1476,20 @@ impl TemplateManagerView {
                 .description("This removes the template from your library. This cannot be undone.")
                 .footer(
                     DialogFooter::new()
-                        .child(
-                            DialogClose::new().child(
-                                Button::new(TEMPLATE_MANAGER_REMOVE_CANCEL_ID)
-                                    .debug_selector(|| TEMPLATE_MANAGER_REMOVE_CANCEL_ID.into())
-                                    .accessibility_id(TEMPLATE_MANAGER_REMOVE_CANCEL_ID)
-                                    .outline()
-                                    .label("Cancel"),
-                            ),
-                        )
-                        .child(
-                            DialogAction::new().child(
-                                Button::new(TEMPLATE_MANAGER_REMOVE_CONFIRM_ID)
-                                    .debug_selector(|| TEMPLATE_MANAGER_REMOVE_CONFIRM_ID.into())
-                                    .accessibility_id(TEMPLATE_MANAGER_REMOVE_CONFIRM_ID)
-                                    .danger()
-                                    .label("Remove"),
-                            ),
-                        ),
+                        .child(dialog_close_button(
+                            Button::new(TEMPLATE_MANAGER_REMOVE_CANCEL_ID)
+                                .debug_selector(|| TEMPLATE_MANAGER_REMOVE_CANCEL_ID.into())
+                                .accessibility_id(TEMPLATE_MANAGER_REMOVE_CANCEL_ID)
+                                .outline()
+                                .label("Cancel"),
+                        ))
+                        .child(dialog_action_button(
+                            Button::new(TEMPLATE_MANAGER_REMOVE_CONFIRM_ID)
+                                .debug_selector(|| TEMPLATE_MANAGER_REMOVE_CONFIRM_ID.into())
+                                .accessibility_id(TEMPLATE_MANAGER_REMOVE_CONFIRM_ID)
+                                .danger()
+                                .label("Remove"),
+                        )),
                 )
                 .on_ok(move |_, window, cx| {
                     owner
@@ -1727,22 +1716,19 @@ impl TemplateManagerView {
                         .import_pdf(&id, &name, created_at, &path)
                         .map(Some)
                 });
-            if token.load(Ordering::Acquire) != generation {
-                if result.is_ok()
-                    && let Some(id) = imported_id
-                {
-                    result = persistent
-                        .lock()
-                        .map_err(|_| {
-                            TemplateManagerError("template storage lock was poisoned".into())
-                        })
-                        .and_then(|mut persistent| {
-                            persistent
-                                .remove(&id)
-                                .and_then(|_| persistent.select(&cleanup_last_used_id))
-                                .map(|_| None)
-                        });
-                }
+            if token.load(Ordering::Acquire) != generation
+                && result.is_ok()
+                && let Some(id) = imported_id
+            {
+                result = persistent
+                    .lock()
+                    .map_err(|_| TemplateManagerError("template storage lock was poisoned".into()))
+                    .and_then(|mut persistent| {
+                        persistent
+                            .remove(&id)
+                            .and_then(|_| persistent.select(&cleanup_last_used_id))
+                            .map(|_| None)
+                    });
             }
             (generation, result)
         });
@@ -1920,28 +1906,20 @@ impl Render for TemplateManagerView {
         let draft_error_target = self.draft_error_target;
         let draft_error = error.clone().unwrap_or_default();
 
-        let header =
-            DialogHeader::new()
-                .child(DialogTitle::new().child("Template library"))
-                .child(DialogDescription::new().child(
+        let header = DialogHeader::new()
+            .child(DialogTitle::new().child("Template library"))
+            .child(
+                DialogDescription::new().child(
                     "Create reusable paper or import a PDF that you already use as a template.",
-                ))
-                .child(
-                    // Inside the dialog content: the stock body clips anything above it, which
-                    // left the top half of an outset close button unhoverable.
-                    div().absolute().top_0().right_0().child(
-                        DialogClose::new().child(accessible_icon_button(
-                            Button::new(TEMPLATE_MANAGER_CLOSE_ID)
-                                .debug_selector(|| TEMPLATE_MANAGER_CLOSE_ID.into())
-                                .accessibility_id(TEMPLATE_MANAGER_CLOSE_ID)
-                                .ghost()
-                                .small()
-                                .icon(IconName::Close)
-                                .tooltip("Close"),
-                            "Close",
-                        )),
-                    ),
-                );
+                ),
+            )
+            .child(
+                // Inside the dialog content: the stock body clips anything above it, which
+                // left the top half of an outset close button unhoverable.
+                div().absolute().top_0().right_0().child(
+                    DialogClose::new().child(close_icon_button(TEMPLATE_MANAGER_CLOSE_ID, "Close")),
+                ),
+            );
 
         let browse_page_id = if matches!(selected, TemplateManagerRecord::ImportedPdf { .. }) {
             TEMPLATE_MANAGER_IMPORTED_PREVIEW_ID
@@ -2003,23 +1981,6 @@ impl Render for TemplateManagerView {
                 let footer = DialogFooter::new()
                     .when(constrained, |footer| footer.flex_col().items_stretch())
                     .child(
-                        Button::new(TEMPLATE_MANAGER_CREATE_DOCUMENT_ID)
-                            .debug_selector(|| TEMPLATE_MANAGER_CREATE_DOCUMENT_ID.into())
-                            .label("Create document")
-                            .primary()
-                            .when(compact_browse_footer, |button| button.compact())
-                            .disabled(
-                                self.document_workspace.is_none()
-                                    || self.generated_store.is_none()
-                                    || self.storage_busy(),
-                            )
-                            .on_click(move |_, window, cx| {
-                                let _ = create_document_owner.update(cx, |manager, cx| {
-                                    manager.create_selected_document(window, cx);
-                                });
-                            }),
-                    )
-                    .child(
                         Button::new(TEMPLATE_MANAGER_CREATE_ID)
                             .debug_selector(|| TEMPLATE_MANAGER_CREATE_ID.into())
                             .label("Create paper template…")
@@ -2045,6 +2006,9 @@ impl Render for TemplateManagerView {
                                 });
                             }),
                     )
+                    // Library actions lead; the closing pair ends with the
+                    // primary action, as in the other dialogs.
+                    .when(!constrained, |footer| footer.child(div().flex_1()))
                     .child(
                         Button::new(TEMPLATE_MANAGER_DONE_ID)
                             .debug_selector(|| TEMPLATE_MANAGER_DONE_ID.into())
@@ -2052,6 +2016,23 @@ impl Render for TemplateManagerView {
                             .outline()
                             .when(compact_browse_footer, |button| button.compact())
                             .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(
+                        Button::new(TEMPLATE_MANAGER_CREATE_DOCUMENT_ID)
+                            .debug_selector(|| TEMPLATE_MANAGER_CREATE_DOCUMENT_ID.into())
+                            .label("Create document")
+                            .primary()
+                            .when(compact_browse_footer, |button| button.compact())
+                            .disabled(
+                                self.document_workspace.is_none()
+                                    || self.generated_store.is_none()
+                                    || self.storage_busy(),
+                            )
+                            .on_click(move |_, window, cx| {
+                                let _ = create_document_owner.update(cx, |manager, cx| {
+                                    manager.create_selected_document(window, cx);
+                                });
+                            }),
                     );
 
                 v_flex()

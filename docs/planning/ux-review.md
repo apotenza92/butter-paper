@@ -15,7 +15,7 @@ Repeat this pass on the exact images being handed to the user, after the last co
 - Distinguish rest, pointer hover, keyboard focus, selected and disabled. An active tab need not be hovered; keyboard focus is not evidence of pointer hover.
 - If an input tool cannot perform or reliably deliver an action, mark that check not verified. Do not relabel a focus/click capture as hover evidence.
 - If a workaround places the pointer via wheel input, record both effects and verify scrolling did not change the tested geometry. A pointer covering the close glyph or its feedback cannot establish close-only hover clarity; obtain unobscured evidence or leave that check open.
-- Capture transitions where the requirement is transitional. A screenshot of one endpoint cannot prove animation, focus restoration or absence of movement between states.
+- Capture transitions where the requirement is transitional. A screenshot of one endpoint cannot prove animation, focus restoration or absence of movement between states. For selected markups, inspect outline and rotation-knob feedback during move, rotate and resize, with snapping enabled; an existing-object preview must not inherit creation-draft suppression.
 
 ## Coupled states must agree
 
@@ -23,6 +23,7 @@ For each compound control, specify which elements should respond together. Exerc
 
 - Tab example: when its hover treatment is visible, the requested close affordance and label truncation must also be visible. When neither hover nor focus applies, restore the full label and hide close. Parent highlight with missing close/truncation is contradictory evidence requiring investigation, not a pass.
 - The close button's own hover/pressed feedback must distinguish closing from selecting the tab. Verify the pointer target, full accessible label, single correct effect and successor focus.
+- A cursor promises its action: a press must start exactly what the cursor shows (resize cursor resizes, open hand moves, arrow does nothing). Derive cursor and press from one hit test with the same tolerances and view scale, and test pressing where each cursor shows, including at the edge of its reach.
 - Menu/popover triggers must agree with open state and return to the correct state after dismissal. Disabled controls must not advertise an available action through hover feedback.
 - Do not infer a root cause solely from a screenshot: stale hover, wrong capture state and mismatched event ownership are hypotheses to test.
 
@@ -31,10 +32,12 @@ For each compound control, specify which elements should respond together. Exerc
 - Inventory reference grouping and control type, not only field names: record paired columns, full-width spans and slider/input pairs. A plain numeric field replacing a working slider, or a stacked layout replacing paired columns, is a structural gap, not density polish waived by general visual approval.
 - Inspect numeric text at the minimum paired-column width, including units. If display precision is reduced to fit, prove that unchanged focus/blur leaves the full stored value and undo history untouched; formatting is not a domain edit.
 - Inspect full hit targets and hover/focus backgrounds, not just glyphs. Check clearance from rounded corners, text/icon baselines and centring, internal leading/trailing padding, label-to-icon space, repeated button/group gaps and app/region-edge insets.
+- For Recovery, check long document names and several items at a narrow window: the header X stays visible, details wrap and the last action can be reached by scrolling. Closing the panel must retain recoverable data; ordinary new unsaved documents must not create a notification.
 - Test short, long and truncated labels plus relevant modified/loading/error states. A hidden action must follow the approved space policy: reserved space where intended, or a stable-width overlay with truncation where intended. Reveal must not unexpectedly move neighbouring tabs/actions.
 - Measure intended invariant edges and gaps. Pixel equality proves only the compared region/property. Equal control pixels cannot prove tab behaviour elsewhere; unequal pixels may reflect a state change rather than geometry drift.
 - Compare font size/weight to the reference using the closest stock typography tier. Review separator presence, ownership, thickness and continuity; check whole-group centring within the correct region and adjacency to sidebars/rails.
 - For state-colour parity, trace the final composed variant (including ButtonGroup or DropdownButton propagation), not just Button::new at a child call site. Compare rendered normal, hovered and selected fills against the actual reference control; shared resolver names alone do not prove the same variant or appearance.
+- Build dialogs from the stock slots (AlertDialog `title`/`description`/`footer`, or `DialogHeader`/`DialogFooter` inside `content`) so the stock insets and section gaps apply; a hand-built body loses them. Wrap footer buttons with `dialog_buttons` helpers: the pinned `DialogClose`/`DialogAction` fill their parent and stretch footer buttons. Compare every dialog's footer against the others: label-width buttons, right-aligned, primary last.
 - Include contextual crops around boundaries as well as native-scale details. Do not crop away a visible defect or label provisional region adjacency as integrated parity.
 - When a region is narrowly too wide, inspect intrinsic control widths, parent gaps and nested insets before changing controls. Correct the spacing owner with standard tokens; do not shrink stock hit targets or relax the minimum-width assertion to hide the failure.
 - For resizable regions, test minimum/default/maximum sizes and interface zoom after resizing. Check retained pixel sizes against rem-scaled controls, single-column wrapping, pinned controls, group centring and neighbouring boundaries; a correct default screenshot does not establish these states.
@@ -60,6 +63,10 @@ For each compound control, specify which elements should respond together. Exerc
 
 - For composed property editors, verify section bounds do not overlap and that one intended container owns scrolling. Accessibility-tree presence alone does not prove a control is visible: inspect appearance and measurement sections together, then scroll to and operate the final control.
 
+- For recent files, check identical filenames in different folders. Long paths must preserve the distinguishing folder, and their full-path tooltips must wrap within a constrained window.
+
+- Check page edges at fractional zoom: base rasters, tiles and annotation layers must share the full paper bounds without a shell border insetting the image.
+
 ## Handoff gate
 
 For relevant checks record pass, fail, blocked or not run in the handoff. Separate source/build checks, runtime interaction checks, visual checks and user acceptance. Passing one category does not imply the others.
@@ -79,6 +86,11 @@ When a demonstrated miss recurs or teaches a general review failure, update the 
 ### Native macOS launch and Signature evidence
 
 - Launch the isolated review `.app` through LaunchServices, with explicit disposable data/temporary directories and fixture arguments. A raw executable launch can differ in native input/repaint behaviour; compare launch paths before attributing delayed state to application code.
+- Background input from a GUI driver reaches buttons but not popovers, hover or GPUI text input in an inactive window. Build the review bundle with `--features review-driver` and script it with `BP_REVIEW_SCRIPT` (`click`, `move`, `drag`, `key`, `type`, `zoom`, `drag-tab`, `shot`; window content coordinates, without the native title bar). Raw `key` events do not type text; `type` does, through the focused input. `shot` logs each window's view mode, zoom and scroll: judge page position from those, since the viewport starts below its toolbar and a page cut off at the top looks like one resting there.
+- Replace review-bundle binaries with `rm` then `cp`: copying over a signed binary in place gets the relaunch killed (exit 137). A review app left at a quit prompt keeps running, and a relaunch of the same bundle only activates it; stop it first.
+- A review window behind other windows is not repainted, and the viewer re-plans on the next frame, so background `shot` captures and logs lag zoom, fit and mode changes. Check viewing behaviour with `tests/view_navigation.rs`, which re-plans each frame itself (GPUI's test platform runs no next-frame callbacks) and measures where pages paint.
+- Keep GUI review in the background: never move the real pointer or raise windows. macOS draws a cursor only under the real pointer, so check the cursor the app chose from the `shot` log (it records the viewport cursor), and Butter Paper's drawn cursors from the previews written by the ignored `write_cursor_previews_for_manual_review` test.
+- Read accessibility state (`AXEnabled`, values) with the AX API directly; the GUI driver's structured list omits non-actionable elements and System Events does not see GPUI's tree.
 - Verify the launched process command, window title and created data root before interacting. Shell-prefixed environment values are not evidence that LaunchServices delivered them; when isolation depends on environment, use a uniquely identified copied review bundle with an explicit disposable launch environment or a purpose-built harness, then confirm the owned root was populated and the ordinary development root was not selected.
 - Exercise Tab from the popover's first control through both Recent use/removal controls. Verify that focus remains inside the popover and the removal control appears while focused, even when the pointer is elsewhere.
 - Label QR, expiry, hover and keyboard screenshots with their actual state. Cancel disposable QR sessions after capturing evidence. Reopen the saved files for contradiction review; a QR picture alone cannot establish a successful physical-phone transfer.

@@ -209,7 +209,7 @@ fn toolbar_keeps_page_modes_exclusive_and_syncs_document_state(cx: &mut TestAppC
 
 #[gpui::test]
 fn cad_activation_and_retained_sync_are_disabled_safe(cx: &mut TestAppContext) {
-    let cad = cx.new(|cx| CadViewControl::new_deferred(cx));
+    let cad = cx.new(CadViewControl::new_deferred);
     let events = Rc::new(RefCell::new(Vec::new()));
     let captured_events = events.clone();
     cx.update(|app| {

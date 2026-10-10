@@ -44,9 +44,11 @@ pub(super) fn rebuild_managed(
         .map_or_else(String::new, |(dash, gap)| {
             format!("[{dash:.6} {gap:.6}] 0 d\n")
         });
-    let fill_color = (annotation.kind == LineKind::Arrow)
-        .then(|| format!("{red:.6} {green:.6} {blue:.6} rg\n"))
-        .unwrap_or_default();
+    let fill_color = if annotation.kind == LineKind::Arrow {
+        format!("{red:.6} {green:.6} {blue:.6} rg\n")
+    } else {
+        Default::default()
+    };
     let translucent = appearance.opacity() < 1.;
     let graphics_state = if translucent { "/GS0 gs\n" } else { "" };
     let mut content = format!(

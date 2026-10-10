@@ -1,0 +1,103 @@
+name: CI
+
+# Tests every push to main and every pull request. Releasing runs no tests
+# (see AGENTS.md); this is where they run. macOS runs the full suite and the
+# real-PDFium tests, Windows runs clippy and the tests, and Linux compiles
+# every target.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "services/**"
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "services/**"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - name: Install the PDF validators the tests use
+        run: brew install qpdf poppler
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Repository checks, rustfmt and clippy
+        run: cargo xtask check
+      - name: Tests
+        run: cargo test --workspace --locked
+      - name: Real-PDFium tests
+        run: |
+          set -euo pipefail
+          cargo xtask pdfium
+          export BP_PDFIUM_LIBRARY="$PWD/target/pdfium/aarch64-apple-darwin/libpdfium.dylib"
+          # Skipped: tests that need a local fixture, harness, network relay
+          # or Metal device, and timing benchmarks.
+          cargo test --workspace --locked -- --ignored \
+            --skip relay --skip bench_ --skip metal --skip highlight_cost \
+            --skip specimen --skip real_enospc \
+            --skip for_manual_review --skip external_revu_font \
+            --skip renders_public_pdf
+
+  windows:
+    runs-on: windows-2025
+    steps:
+      # Source-policy tests read the sources as text; keep them LF.
+      - name: Check out with LF line endings
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Tests
+        # Skipped: validates its output with qpdf and pdfinfo, which macOS
+        # CI installs.
+        run: >-
+          cargo test --workspace --locked --
+          --skip deleting_imported_rectangle_removes_only_its_native_pdf_annotation
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Linux build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential clang libdbus-1-dev libfontconfig-dev libvulkan-dev \
+            libx11-dev libxcb1-dev libxcb-xkb-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev pkg-config
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Compile every target
+        run: cargo check --workspace --all-targets --locked

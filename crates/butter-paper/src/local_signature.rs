@@ -261,7 +261,7 @@ fn alpha_to_asset(alpha: &[u8]) -> Result<DecodedRgbaAsset, String> {
         return Err("The signature did not produce any visible ink.".into());
     }
     let ink_extent = (right - left + 1).max(bottom - top + 1);
-    let padding = 4_u32.max((ink_extent * 4 + 99) / 100);
+    let padding = 4_u32.max((ink_extent * 4).div_ceil(100));
     left = left.saturating_sub(padding);
     top = top.saturating_sub(padding);
     right = right

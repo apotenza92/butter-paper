@@ -3,12 +3,19 @@
 //! The application root publishes only after GPUI returns normally. Abrupt
 //! termination therefore leaves no receipt and is rejected by the runner.
 
-use serde::Serialize;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write as _};
-use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
-use std::sync::{Mutex, OnceLock};
+use serde::Serialize;
+#[cfg(target_os = "macos")]
+use std::fs::{self, File, OpenOptions};
+use std::io;
+#[cfg(target_os = "macos")]
+use std::io::Write as _;
+use std::path::PathBuf;
+#[cfg(target_os = "macos")]
+use std::{
+    path::Path,
+    sync::{Mutex, OnceLock},
+};
 
 pub const APP_LIFECYCLE_TOKEN_ENV: &str = "BP_MACOS_APP_LIFECYCLE_TOKEN";
 pub const LIFECYCLE_REQUEST_ENV: &str = "BP_MACOS_WORKER_LIFECYCLE";
@@ -24,6 +31,7 @@ struct ProcessUsage {
     lifetime_max_phys_footprint_bytes: u64,
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Serialize)]
 struct PublishedAppLifecycleReceipt<'a> {
     schema_version: u8,

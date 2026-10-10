@@ -10,10 +10,10 @@ use gpui::{
     div, prelude::FluentBuilder as _,
 };
 use gpui_component::{
-    Disableable as _, Root, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Root, TITLE_BAR_HEIGHT, WindowExt as _,
     alert::Alert,
     button::{Button, ButtonVariants as _},
-    dialog::{DialogDescription, DialogFooter, DialogHeader, DialogTitle},
+    dialog::DialogFooter,
     h_flex, v_flex,
 };
 
@@ -746,15 +746,11 @@ impl ApplicationCloseWorkspace {
         let weak_owner = owner.downgrade();
         let cancel_owner = weak_owner.clone();
         let confirm_owner = weak_owner.clone();
-        window.open_alert_dialog(cx, move |alert, _, _| {
-            let content_owner = weak_owner.clone();
+        window.open_alert_dialog(cx, move |alert, _, cx| {
             let cancel_owner = cancel_owner.clone();
             let confirm_owner = confirm_owner.clone();
-            alert
+            let alert = alert
                 .close_button(false)
-                // The transaction supplies its own Cancel/Discard All/Save All
-                // footer below. Suppress AlertDialog's additional default OK.
-                .footer(gpui::Empty)
                 .on_cancel(move |_, _, cx| {
                     cancel_owner
                         .update(cx, |owner, cx| {
@@ -776,63 +772,52 @@ impl ApplicationCloseWorkspace {
                         );
                     }
                     false
-                })
-                .content(move |content, _, cx| {
-                    let Some(owner) = content_owner.upgrade() else {
-                        return content;
-                    };
-                    let Some(dialog) = owner.read(cx).dialog() else {
-                        return content;
-                    };
-                    let mut footer = DialogFooter::new();
-                    for action in dialog.actions {
-                        let action_owner = content_owner.clone();
-                        let button = Button::new(action.id)
-                            .label(action.label)
-                            .disabled(action.disabled)
-                            .on_click(move |_, window, cx| {
-                                let Some(owner) = action_owner.upgrade() else {
-                                    window.close_dialog(cx);
-                                    return;
-                                };
-                                Self::choose_and_dispatch_in_window(
-                                    &owner,
-                                    action.action,
-                                    window,
-                                    cx,
-                                );
-                                let dismiss = owner.read(cx).dialog().is_none();
-                                if dismiss {
-                                    window.close_dialog(cx);
-                                } else {
-                                    window.refresh();
-                                }
-                            });
-                        footer = footer.child(match action.role {
-                            ApplicationCloseActionRole::Outline => button.outline(),
-                            ApplicationCloseActionRole::Destructive => button.danger(),
-                            ApplicationCloseActionRole::Primary => button.primary(),
-                        });
-                    }
-                    content.child(
-                        div()
-                            .id(APPLICATION_CLOSE_DIALOG_ID)
-                            .child(
-                                DialogHeader::new()
-                                    .child(DialogTitle::new().child(
-                                        div().id(APPLICATION_CLOSE_TITLE_ID).child(dialog.title),
-                                    ))
-                                    .child(
-                                        DialogDescription::new().child(
-                                            div()
-                                                .id(APPLICATION_CLOSE_DESCRIPTION_ID)
-                                                .child(dialog.description),
-                                        ),
-                                    ),
-                            )
-                            .child(footer),
-                    )
-                })
+                });
+            // The builder runs every frame, so the stock title, description
+            // and footer slots track the transaction's live state.
+            let Some(dialog) = weak_owner
+                .upgrade()
+                .and_then(|owner| owner.read(cx).dialog())
+            else {
+                return alert;
+            };
+            let mut footer = DialogFooter::new();
+            for action in dialog.actions {
+                let action_owner = weak_owner.clone();
+                let button = Button::new(action.id)
+                    .debug_selector(move || action.id.into())
+                    .label(action.label)
+                    .disabled(action.disabled)
+                    .on_click(move |_, window, cx| {
+                        let Some(owner) = action_owner.upgrade() else {
+                            window.close_dialog(cx);
+                            return;
+                        };
+                        Self::choose_and_dispatch_in_window(&owner, action.action, window, cx);
+                        let dismiss = owner.read(cx).dialog().is_none();
+                        if dismiss {
+                            window.close_dialog(cx);
+                        } else {
+                            window.refresh();
+                        }
+                    });
+                footer = footer.child(match action.role {
+                    ApplicationCloseActionRole::Outline => button.outline(),
+                    ApplicationCloseActionRole::Destructive => button.danger(),
+                    ApplicationCloseActionRole::Primary => button.primary(),
+                });
+            }
+            alert
+                .title(div().id(APPLICATION_CLOSE_TITLE_ID).child(dialog.title))
+                .description(
+                    div()
+                        .id(APPLICATION_CLOSE_DESCRIPTION_ID)
+                        .debug_selector(|| APPLICATION_CLOSE_DESCRIPTION_ID.into())
+                        .child(dialog.description),
+                )
+                // The transaction supplies its own Cancel/Discard All/Save All
+                // footer, replacing AlertDialog's default OK.
+                .footer(div().id(APPLICATION_CLOSE_DIALOG_ID).child(footer))
         });
         owner.update(cx, |_, cx| cx.notify());
         window.refresh();
@@ -1409,7 +1394,7 @@ impl ApplicationCloseShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let paths = paths.paths().iter().cloned().collect::<Vec<_>>();
+        let paths = paths.paths().to_vec();
         if paths.is_empty() {
             return;
         }
@@ -1489,12 +1474,18 @@ impl Render for ApplicationCloseShell {
                     v_flex()
                         .id(APPLICATION_CLOSE_RECOVERY_ID)
                         .debug_selector(|| APPLICATION_CLOSE_RECOVERY_ID.into())
+                        // A sheet under the title bar, opaque over the tabs
+                        // and toolbar it covers.
                         .absolute()
-                        .top_0()
+                        .top(TITLE_BAR_HEIGHT)
                         .left_0()
                         .right_0()
                         .gap_2()
                         .p_2()
+                        .bg(cx.theme().background)
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .shadow_md()
                         .child(
                             div()
                                 .id(APPLICATION_CLOSE_RECOVERY_ALERT_ID)

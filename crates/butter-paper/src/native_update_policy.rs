@@ -4,7 +4,7 @@
 //! validates the user's check frequency and determines whether a check is due.
 
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -287,7 +287,7 @@ impl UpdateSettingsStore {
             drop(file);
             replace_file(&temporary_path, &self.path())?;
             #[cfg(unix)]
-            File::open(&self.directory)?.sync_all()?;
+            fs::File::open(&self.directory)?.sync_all()?;
             Ok(())
         })();
         if result.is_err() && temporary_created {

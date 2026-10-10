@@ -13,6 +13,24 @@ fn source(file: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
+/// The document workspace module with the render parts it keeps in sibling
+/// `document_workspace_*.rs` files, the main file first.
+fn workspace_source() -> String {
+    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut parts: Vec<_> = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("document_workspace_") && name.ends_with(".rs"))
+        .collect();
+    parts.sort();
+    let mut text = source("document_workspace.rs");
+    for part in parts {
+        text.push('\n');
+        text.push_str(&source(&part));
+    }
+    text
+}
+
 fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
     let from = source
         .find(start)
@@ -137,14 +155,29 @@ fn quit_transaction_replaces_the_stock_footer_rather_than_adding_another_ok() {
         "pub fn open_dialog(",
         "fn reconcile_dialog_window(",
     );
-    assert!(dialog.contains(".footer(gpui::Empty)"));
+    // The transaction's actions fill the stock footer slot. An empty footer
+    // plus actions in the content left a dead band below the buttons.
     assert!(dialog.contains("for action in dialog.actions"));
-    assert!(dialog.contains(".child(footer)"));
+    assert!(dialog.contains(".footer(div().id(APPLICATION_CLOSE_DIALOG_ID).child(footer))"));
+    assert!(!dialog.contains("gpui::Empty"));
     // Enter still follows the safe Save All transaction.
     assert!(matches(
         r"\.on_ok\((?s:.)*?ApplicationCloseAction::SaveAll",
         dialog
     ));
+}
+
+#[test]
+fn quit_recovery_sheet_sits_opaque_below_the_title_bar() {
+    let source = source("application_close_workspace.rs");
+    let sheet = between(
+        &source,
+        ".id(APPLICATION_CLOSE_RECOVERY_ID)",
+        ".id(APPLICATION_CLOSE_RECOVERY_ALERT_ID)",
+    );
+    assert!(sheet.contains(".top(TITLE_BAR_HEIGHT)"));
+    assert!(sheet.contains(".bg(cx.theme().background)"));
+    assert!(!sheet.contains(".top_0()"));
 }
 
 #[test]
@@ -165,7 +198,7 @@ fn quit_shortcuts_remain_platform_correct() {
 
 #[test]
 fn active_workspace_has_zoom_and_page_modes_without_cad_activation() {
-    let source = source("document_workspace.rs");
+    let source = workspace_source();
     assert!(source.contains("ViewerToolbarStrip::new_with_zoom("));
     assert!(!matches(
         r"ViewerToolbarStrip::new_with_cad_view\(|CadViewControl::|handle_cad_view_control_event",
@@ -175,7 +208,7 @@ fn active_workspace_has_zoom_and_page_modes_without_cad_activation() {
 
 #[test]
 fn both_workspace_tab_paths_use_stock_outline_without_visual_overrides() {
-    let source = source("document_workspace.rs");
+    let source = workspace_source();
     let bars: Vec<String> = Regex::new(
         r#"TabBar::new\("document-workspace-session-tabs-component"\)((?s:.)*?)\.children\("#,
     )
@@ -199,12 +232,16 @@ fn both_workspace_tab_paths_use_stock_outline_without_visual_overrides() {
             "retain document label truncation"
         );
         assert!(!matches(r"\.(pill|segmented|bg|p_0)\(", &style));
+        assert!(
+            !source.contains(".button_states("),
+            "tabs keep the stock Outline states"
+        );
     }
 }
 
 #[test]
 fn close_controls_overlay_naturally_sized_labels_without_a_reserved_suffix() {
-    let source = source("document_workspace.rs");
+    let source = workspace_source();
     assert_eq!(count(r"\.child\(\s*session_tab_close_lane\(\)", &source), 2);
     assert_eq!(count(r"\.child\(session_tab_overlay_label\(", &source), 2);
     let label = between(
@@ -225,7 +262,7 @@ fn close_controls_overlay_naturally_sized_labels_without_a_reserved_suffix() {
 
 #[test]
 fn close_affordances_reveal_on_tab_hover_and_keyboard_focus_without_removing_layout() {
-    let source = source("document_workspace.rs");
+    let source = workspace_source();
     assert_eq!(
         count(
             r"\.opacity\(if reveal_close \{ 1\. \} else \{ 0\. \}\)\s*\.focus\(\|style\| style\.opacity\(1\.\)\)",
@@ -236,20 +273,60 @@ fn close_affordances_reveal_on_tab_hover_and_keyboard_focus_without_removing_lay
 }
 
 #[test]
-fn close_fills_blend_with_their_tab_until_the_close_target_is_hovered() {
-    let source = source("document_workspace.rs");
-    let closes: Vec<String> = Regex::new(r"Button::new\(close_id\)((?s:.)*?)\.small\(\)")
-        .unwrap()
-        .captures_iter(&source)
-        .map(|capture| capture[1].to_string())
-        .collect();
-    assert_eq!(closes.len(), 2);
+fn tab_close_buttons_are_stock_ghost_icon_buttons() {
+    let source = workspace_source();
+    let closes: Vec<String> =
+        Regex::new(r"Button::new\(close_id\)((?s:.)*?)\.icon\(IconName::Close\)")
+            .unwrap()
+            .captures_iter(&source)
+            .map(|capture| capture[1].to_string())
+            .collect();
+    assert_eq!(
+        closes.len(),
+        2,
+        "cover loaded and empty/loading workspace paths"
+    );
     for style in closes {
-        assert!(matches(
-            r"\.color\(cx.theme\(\).transparent\)\s*\.hover\(cx.theme\(\).background\)",
-            &style
-        ));
-        assert!(style.contains(".bg(cx.theme().transparent)"));
-        assert!(style.contains(".border_color(cx.theme().transparent)"));
+        assert!(style.contains(".ghost()"));
+        assert!(!matches(r"\.(custom|bg|border_color|rounded)\(", &style));
     }
+}
+
+#[test]
+fn panel_popover_and_dialog_closes_share_the_standard_x() {
+    // Tab closes follow the stock tab contract above; every other X dismisses
+    // a panel, popover or dialog through `close_icon_button`, so they share
+    // one size, variant, tooltip and accessible name.
+    let tab_closes = [
+        "document_tab_bar.rs",
+        "document_workspace_tabs.rs",
+        "document_workspace_empty.rs",
+    ];
+    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut stray = Vec::new();
+    let mut pending = vec![directory.clone()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            let name = path.strip_prefix(&directory).unwrap().to_string_lossy();
+            if name == "accessible_button.rs" || tab_closes.contains(&name.as_ref()) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            if text.contains("IconName::Close") {
+                stray.push(name.into_owned());
+            }
+        }
+    }
+    assert!(
+        stray.is_empty(),
+        "build top-right X buttons with close_icon_button: {stray:?}"
+    );
+    let helper = source("accessible_button.rs");
+    let helper = between(&helper, "pub(crate) fn close_icon_button(", "\n}\n");
+    assert!(helper.contains(".ghost()") && helper.contains(".small()"));
 }

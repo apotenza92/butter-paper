@@ -273,9 +273,8 @@ fn rendered_browse_and_create_layouts_stay_horizontally_bounded_and_scrollable(
     cx.simulate_click(create.center(), Modifiers::default());
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert_eq!(
+    assert!(
         cx.debug_bounds(TEMPLATE_MANAGER_NAME_INPUT_ID).is_some(),
-        true,
         "the scrolled constrained footer action must activate create mode"
     );
 

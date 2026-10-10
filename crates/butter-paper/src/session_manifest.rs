@@ -1351,7 +1351,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(encoded: &str) -> Result<Vec<u8>, SessionManifestError> {
-    if encoded.len() % 2 != 0
+    if !encoded.len().is_multiple_of(2)
         || !encoded
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
@@ -1379,6 +1379,7 @@ fn hex_nibble(byte: u8) -> u8 {
     }
 }
 
+#[cfg(unix)]
 fn ascii_suffix_is_pdf(bytes: &[u8]) -> bool {
     bytes.len() >= 4
         && bytes[bytes.len() - 4..]

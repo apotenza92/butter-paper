@@ -65,6 +65,12 @@ pub struct MeasurementPropertyInspector {
     embedded: bool,
 }
 
+impl Default for MeasurementPropertyInspector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MeasurementPropertyInspector {
     pub fn new() -> Self {
         Self {

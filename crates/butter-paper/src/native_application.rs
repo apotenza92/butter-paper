@@ -1,4 +1,4 @@
-use std::{ffi::OsString, path::PathBuf};
+use std::path::PathBuf;
 
 use gpui::{App, Entity, Menu, MenuItem};
 use gpui_component::{GlobalState, menu::AppMenuBar};
@@ -499,7 +499,7 @@ fn hex_value(value: u8) -> Option<u8> {
 #[cfg(unix)]
 fn path_from_url_bytes(bytes: Vec<u8>) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStringExt as _;
-    Some(PathBuf::from(OsString::from_vec(bytes)))
+    Some(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
 }
 
 #[cfg(windows)]

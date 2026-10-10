@@ -2,6 +2,7 @@
 
 mod archive;
 mod check;
+mod dev;
 mod homebrew;
 mod notices;
 mod package;
@@ -26,6 +27,8 @@ pub type Result<T = ()> = std::result::Result<T, String>;
 const USAGE: &str = "usage: cargo xtask <command>
 
   check                       repository, version and workflow checks
+  dev [--release] [--data DIR] [PDF...]
+                              run the app, rebuilding and restarting it on changes
   version X.Y.Z[-beta.N]      set the app version and start its CHANGELOG section
   pdfium [--target T]         fetch the approved PDFium for T (default: host)
   phone-helper --target T --out DIR
@@ -46,6 +49,7 @@ fn main() -> ExitCode {
     }
     let result = match command.as_str() {
         "check" => args.finish().and_then(|()| check::run()),
+        "dev" => dev::run(&mut args),
         "version" => version::run(&mut args),
         "pdfium" => pdfium::run(&mut args),
         "phone-helper" => phone::run(&mut args),

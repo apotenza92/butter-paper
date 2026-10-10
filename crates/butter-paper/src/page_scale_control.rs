@@ -1,20 +1,19 @@
-use crate::accessible_button::accessible_icon_button;
+use crate::accessible_button::close_icon_button;
 use crate::annotation_model::{
     PageScale, PageScaleApplyTarget, PdfPoint, ScalePrecision, ScalePrecisionMode, ScalePreset,
     ScaleSource, ScaleUnit, built_in_scale_presets, parse_page_scale_ranges,
 };
+use crate::dialog_buttons::{dialog_action_button, dialog_close_button};
 use gpui::{
     App, AppContext as _, Context, InteractiveElement as _, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
     prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, IconName, IndexPath, Selectable as _, Sizable as _, WindowExt as _,
+    ActiveTheme as _, IndexPath, Selectable as _, WindowExt as _,
     button::{Button, ButtonGroup, ButtonVariants as _},
     checkbox::Checkbox,
-    dialog::{
-        DialogAction, DialogClose, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
-    },
+    dialog::{DialogClose, DialogDescription, DialogFooter, DialogHeader, DialogTitle},
     form::Field,
     input::{Input, InputState, NumberInput},
     select::{Select, SelectEvent, SelectState},
@@ -223,10 +222,10 @@ impl PageScaleControl {
         .detach();
         cx.subscribe_in(&pdf_units_select, window, |control, _, event, _, cx| {
             let SelectEvent::Confirm(value) = event;
-            if let Some(value) = value {
-                if let Ok(unit) = ScaleUnit::parse(value.as_ref()) {
-                    control.pdf_units = unit;
-                }
+            if let Some(value) = value
+                && let Ok(unit) = ScaleUnit::parse(value.as_ref())
+            {
+                control.pdf_units = unit;
             }
             control.error = None;
             cx.notify();
@@ -234,10 +233,10 @@ impl PageScaleControl {
         .detach();
         cx.subscribe_in(&real_units_select, window, |control, _, event, _, cx| {
             let SelectEvent::Confirm(value) = event;
-            if let Some(value) = value {
-                if let Ok(unit) = ScaleUnit::parse(value.as_ref()) {
-                    control.real_units = unit;
-                }
+            if let Some(value) = value
+                && let Ok(unit) = ScaleUnit::parse(value.as_ref())
+            {
+                control.real_units = unit;
             }
             control.error = None;
             cx.notify();
@@ -291,16 +290,14 @@ impl PageScaleControl {
         .detach();
         cx.subscribe_in(&preset_select, window, |control, _, event, _, cx| {
             let SelectEvent::Confirm(value) = event;
-            if let Some(label) = value {
-                if let Some(document_id) = control.target.map(|target| target.0) {
-                    if let Some(preset) = control
-                        .available_presets(document_id, cx)
-                        .into_iter()
-                        .find(|preset| preset_label(preset) == label.as_ref())
-                    {
-                        control.selected_preset_id = preset.id;
-                    }
-                }
+            if let Some(label) = value
+                && let Some(document_id) = control.target.map(|target| target.0)
+                && let Some(preset) = control
+                    .available_presets(document_id, cx)
+                    .into_iter()
+                    .find(|preset| preset_label(preset) == label.as_ref())
+            {
+                control.selected_preset_id = preset.id;
             }
             control.error = None;
             cx.notify();
@@ -935,10 +932,10 @@ impl PageScaleControl {
         page_index: u32,
         cx: &App,
     ) -> Result<PageScale, String> {
-        if self.scale_inputs_unchanged(cx) {
-            if let Some(scale) = &self.original_scale {
-                return Ok(scale.clone());
-            }
+        if self.scale_inputs_unchanged(cx)
+            && let Some(scale) = &self.original_scale
+        {
+            return Ok(scale.clone());
         }
         self.build_scale(document_id, page_index, cx)
     }
@@ -1114,16 +1111,8 @@ fn build_dialog_content(
                             // above it, which left the top half of an outset close
                             // button unhoverable.
                             div().absolute().top_0().right_0().child(
-                                DialogClose::new().child(accessible_icon_button(
-                                    Button::new(PAGE_SCALE_CLOSE_ID)
-                                        .debug_selector(|| PAGE_SCALE_CLOSE_ID.into())
-                                        .accessibility_id(PAGE_SCALE_CLOSE_ID)
-                                        .ghost()
-                                        .small()
-                                        .icon(IconName::Close)
-                                        .tooltip("Close"),
-                                    "Close",
-                                )),
+                                DialogClose::new()
+                                    .child(close_icon_button(PAGE_SCALE_CLOSE_ID, "Close")),
                             ),
                         ),
                 )
@@ -1141,22 +1130,18 @@ fn build_dialog_content(
         )
         .child(
             DialogFooter::new()
-                .child(
-                    DialogClose::new().child(
-                        Button::new(PAGE_SCALE_CANCEL_ID)
-                            .debug_selector(|| PAGE_SCALE_CANCEL_ID.into())
-                            .label("Cancel")
-                            .outline(),
-                    ),
-                )
-                .child(
-                    DialogAction::new().child(
-                        Button::new(PAGE_SCALE_APPLY_ID)
-                            .debug_selector(|| PAGE_SCALE_APPLY_ID.into())
-                            .label("Apply Scale")
-                            .primary(),
-                    ),
-                ),
+                .child(dialog_close_button(
+                    Button::new(PAGE_SCALE_CANCEL_ID)
+                        .debug_selector(|| PAGE_SCALE_CANCEL_ID.into())
+                        .label("Cancel")
+                        .outline(),
+                ))
+                .child(dialog_action_button(
+                    Button::new(PAGE_SCALE_APPLY_ID)
+                        .debug_selector(|| PAGE_SCALE_APPLY_ID.into())
+                        .label("Apply Scale")
+                        .primary(),
+                )),
         )
 }
 

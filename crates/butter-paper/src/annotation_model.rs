@@ -38,9 +38,18 @@ pub const MIN_RECT_SIZE_PT: f64 = 1.0;
 const MIN_SNAPSHOT_SIZE_PT: f64 = 2.0;
 pub const MIN_RECT_CREATE_SIZE_PT: f64 = 2.0;
 pub const MIN_STRAIGHT_LINE_LENGTH_PT: f64 = 2.0;
-pub const ROTATION_HANDLE_OFFSET_PT: f64 = 12.0;
+pub const ROTATION_HANDLE_OFFSET_PT: f64 = 20.0;
 /// Selection bounds are drawn this many screen pixels outside the item.
 pub const SELECTION_OUTSET_CSS_PX: f64 = 6.0;
+/// How far inside a selected item's outline a press still moves it (past
+/// the edge-resize zone of the outer few pixels). Deeper than this, only the
+/// item's fill or content does: the empty inside of an unfilled shape belongs
+/// to whatever is under it.
+pub const SELECTION_INNER_BAND_CSS_PX: f64 = 20.0;
+/// How near a box's corner or edge midpoint a press grabs that resize handle.
+pub const RESIZE_HANDLE_GRAB_CSS_PX: f64 = 9.0;
+/// Resize reach on either side of a Rectangle edge, in screen pixels.
+pub const RECTANGLE_EDGE_GRAB_CSS_PX: f64 = 10.0;
 pub const MAX_STREAMED_PATH_POINTS: usize = 100_000;
 pub const MAX_COALESCED_PEN_SAMPLES: usize = 4_096;
 pub const MAX_TEXT_BOX_BYTES: usize = 64 * 1024;
@@ -529,6 +538,112 @@ pub fn measurement_line_layout(
     })
 }
 
+/// The box a selected markup's outline traces, turned to the markup's angle:
+/// along a line for linear markups, the rotation for boxes, else the page
+/// axes. The blue outline is drawn just outside it and its band moves the
+/// markup, so painting and hit testing share this one shape.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SelectionFrame {
+    center: PdfPoint,
+    /// Unit vector along the box's width.
+    axis: (f64, f64),
+    half_width: f64,
+    half_height: f64,
+}
+
+impl SelectionFrame {
+    /// The smallest box along `axis` holding every sample.
+    pub fn enclosing(
+        samples: impl IntoIterator<Item = PdfPoint>,
+        axis: (f64, f64),
+    ) -> Option<Self> {
+        let length = axis.0.hypot(axis.1);
+        if !length.is_finite() || length <= f64::EPSILON {
+            return None;
+        }
+        let axis = (axis.0 / length, axis.1 / length);
+        let mut extent: Option<(f64, f64, f64, f64)> = None;
+        for sample in samples {
+            let along = sample.x * axis.0 + sample.y * axis.1;
+            let across = -sample.x * axis.1 + sample.y * axis.0;
+            if !along.is_finite() || !across.is_finite() {
+                return None;
+            }
+            extent = Some(match extent {
+                None => (along, along, across, across),
+                Some((min_a, max_a, min_c, max_c)) => (
+                    min_a.min(along),
+                    max_a.max(along),
+                    min_c.min(across),
+                    max_c.max(across),
+                ),
+            });
+        }
+        let (min_a, max_a, min_c, max_c) = extent?;
+        let (along, across) = ((min_a + max_a) * 0.5, (min_c + max_c) * 0.5);
+        Some(Self {
+            center: PdfPoint {
+                x: along * axis.0 - across * axis.1,
+                y: along * axis.1 + across * axis.0,
+            },
+            axis,
+            half_width: (max_a - min_a) * 0.5,
+            half_height: (max_c - min_c) * 0.5,
+        })
+    }
+
+    pub fn corners(&self) -> [PdfPoint; 4] {
+        let corner = |along: f64, across: f64| PdfPoint {
+            x: self.center.x + along * self.axis.0 - across * self.axis.1,
+            y: self.center.y + along * self.axis.1 + across * self.axis.0,
+        };
+        let (w, h) = (self.half_width, self.half_height);
+        [corner(-w, -h), corner(w, -h), corner(w, h), corner(-w, h)]
+    }
+
+    /// How far `point` lies outside the box, measured along its axes so the
+    /// outset outline is a box too; negative inside, by the depth.
+    pub fn signed_distance(&self, point: PdfPoint) -> f64 {
+        let (dx, dy) = (point.x - self.center.x, point.y - self.center.y);
+        let along = (dx * self.axis.0 + dy * self.axis.1).abs() - self.half_width;
+        let across = (-dx * self.axis.1 + dy * self.axis.0).abs() - self.half_height;
+        along.max(across)
+    }
+
+    /// Within `margin` outside the box but not deeper than `inner` inside it.
+    pub fn band_contains(&self, point: PdfPoint, margin: f64, inner: f64) -> bool {
+        let distance = self.signed_distance(point);
+        distance <= margin && distance >= -inner
+    }
+}
+
+/// The selection box of a Length or Dimension: along its measured points,
+/// around everything it draws (measured points, extension lines, dimension
+/// line, arrowheads and caption).
+pub fn measurement_selection_frame(
+    start: PdfPoint,
+    end: PdfPoint,
+    offset_pt: f64,
+    stroke_width_pt: f64,
+    caption_text_width_pt: f64,
+    caption_corners: &[PdfPoint],
+) -> Option<SelectionFrame> {
+    let layout = measurement_line_layout(
+        start,
+        end,
+        offset_pt,
+        stroke_width_pt,
+        caption_text_width_pt,
+    )?;
+    let samples = [start, end]
+        .into_iter()
+        .chain(layout.extension_lines.iter().flat_map(|(a, b)| [*a, *b]))
+        .chain(layout.dimension_segments.iter().flat_map(|(a, b)| [*a, *b]))
+        .chain(layout.arrowheads.iter().flatten().copied())
+        .chain(caption_corners.iter().copied());
+    SelectionFrame::enclosing(samples, (end.x - start.x, end.y - start.y))
+}
+
 /// Groups the integer digits of a formatted measurement with commas, as Revu
 /// captions do (`2,697.37`). Fractional parts such as `1/2` are untouched.
 pub fn group_measurement_thousands(value: &str) -> String {
@@ -788,7 +903,8 @@ impl RectangleAnnotation {
         self.id == other.id
             && self.page_index == other.page_index
             && self.rect.same_pdf_geometry_as(other.rect)
-            && self.rotation_degrees == other.rotation_degrees
+            // PDF real numbers retain single-precision rotation.
+            && (self.rotation_degrees as f32) == (other.rotation_degrees as f32)
             && self.appearance == other.appearance
             && self.locked == other.locked
     }
@@ -797,30 +913,79 @@ impl RectangleAnnotation {
         rotate_point_around_rect_center(point, self.rect, self.rotation_degrees)
     }
 
-    /// The side whose edge, away from its corners, lies within `tolerance_pt`
-    /// of `point`. With no painted handles, a selected Rectangle resizes from
-    /// anywhere along an edge.
-    pub fn edge_resize_handle(
+    /// Equal move / resize / move bands around the actual outline.
+    /// The middle band straddles the line; the inward bands shrink together
+    /// on small Rectangles, leaving the central half of the short side empty.
+    fn outline_distance(&self, point: PdfPoint) -> (PdfPoint, f64, bool) {
+        let local = self.world_to_local(point);
+        let right = self.rect.x + self.rect.width;
+        let top = self.rect.y + self.rect.height;
+        let inside = self.rect.contains(local, 0.);
+        let distance = if inside {
+            (local.x - self.rect.x)
+                .min(right - local.x)
+                .min(local.y - self.rect.y)
+                .min(top - local.y)
+        } else {
+            let dx = (self.rect.x - local.x).max(local.x - right).max(0.);
+            let dy = (self.rect.y - local.y).max(local.y - top).max(0.);
+            dx.hypot(dy)
+        };
+        (local, distance, inside)
+    }
+
+    fn inward_resize_reach(&self, reach: f64) -> f64 {
+        reach.min(self.rect.width.min(self.rect.height) / 12.)
+    }
+
+    pub fn move_zone_contains(&self, point: PdfPoint, resize_reach_pt: f64) -> bool {
+        let (_, distance, inside) = self.outline_distance(point);
+        let reach = if inside {
+            self.inward_resize_reach(resize_reach_pt)
+        } else {
+            resize_reach_pt
+        };
+        distance > reach && distance <= reach * 3.
+    }
+
+    /// The same outline geometry is used before and after selection.
+    pub fn resize_handle_at(
         &self,
         point: PdfPoint,
-        tolerance_pt: f64,
+        resize_reach_pt: f64,
     ) -> Option<RectangleResizeHandle> {
-        let local = self.world_to_local(point);
-        let rect = self.rect;
-        let (left, right) = (rect.x, rect.x + rect.width);
-        let (bottom, top) = (rect.y, rect.y + rect.height);
-        let along_x = local.x > left + tolerance_pt && local.x < right - tolerance_pt;
-        let along_y = local.y > bottom + tolerance_pt && local.y < top - tolerance_pt;
-        if along_y && (local.x - right).abs() <= tolerance_pt {
-            Some(RectangleResizeHandle::East)
-        } else if along_y && (local.x - left).abs() <= tolerance_pt {
-            Some(RectangleResizeHandle::West)
-        } else if along_x && (local.y - top).abs() <= tolerance_pt {
-            Some(RectangleResizeHandle::North)
-        } else if along_x && (local.y - bottom).abs() <= tolerance_pt {
-            Some(RectangleResizeHandle::South)
+        if self.locked {
+            return None;
+        }
+        let (local, distance, inside) = self.outline_distance(point);
+        let reach = if inside {
+            self.inward_resize_reach(resize_reach_pt)
         } else {
-            None
+            resize_reach_pt
+        };
+        if distance > reach {
+            return None;
+        }
+        let left = (local.x - self.rect.x).abs();
+        let right = (local.x - self.rect.x - self.rect.width).abs();
+        let bottom = (local.y - self.rect.y).abs();
+        let top = (local.y - self.rect.y - self.rect.height).abs();
+        if left <= reach && top <= reach {
+            Some(RectangleResizeHandle::NorthWest)
+        } else if right <= reach && top <= reach {
+            Some(RectangleResizeHandle::NorthEast)
+        } else if right <= reach && bottom <= reach {
+            Some(RectangleResizeHandle::SouthEast)
+        } else if left <= reach && bottom <= reach {
+            Some(RectangleResizeHandle::SouthWest)
+        } else if right <= left && right <= top && right <= bottom {
+            Some(RectangleResizeHandle::East)
+        } else if left <= top && left <= bottom {
+            Some(RectangleResizeHandle::West)
+        } else if top <= bottom {
+            Some(RectangleResizeHandle::North)
+        } else {
+            Some(RectangleResizeHandle::South)
         }
     }
 
@@ -5183,20 +5348,8 @@ impl SceneInteractionFeedback {
         }
     }
 
-    pub const fn handle_visible(self, handle: usize) -> bool {
-        match self {
-            Self::Normal => true,
-            Self::Transform {
-                chrome_visible: true,
-                active_handle,
-            } => active_handle == handle,
-            Self::Creation
-            | Self::Move { .. }
-            | Self::Transform {
-                chrome_visible: false,
-                ..
-            } => false,
-        }
+    pub const fn handle_visible(self, _handle: usize) -> bool {
+        self.chrome_visible()
     }
 }
 
@@ -5205,7 +5358,7 @@ mod scene_interaction_feedback_tests {
     use super::SceneInteractionFeedback;
 
     #[test]
-    fn creation_move_and_transform_filter_chrome_and_handles() {
+    fn creation_hides_chrome_but_manipulation_retains_all_selection_controls() {
         assert!(SceneInteractionFeedback::Normal.chrome_visible());
         assert!(SceneInteractionFeedback::Normal.handle_visible(0));
         assert!(!SceneInteractionFeedback::Creation.chrome_visible());
@@ -5215,14 +5368,14 @@ mod scene_interaction_feedback_tests {
             chrome_visible: true,
         };
         assert!(moving.chrome_visible());
-        assert!(!moving.handle_visible(0));
+        assert!(moving.handle_visible(0));
 
         let transforming = SceneInteractionFeedback::Transform {
             chrome_visible: true,
             active_handle: 1,
         };
         assert!(transforming.chrome_visible());
-        assert!(!transforming.handle_visible(0));
+        assert!(transforming.handle_visible(0));
         assert!(transforming.handle_visible(1));
 
         let snapped = SceneInteractionFeedback::Transform {
@@ -6875,11 +7028,11 @@ impl AnnotationDocument {
     }
 
     fn refresh_focused_id(&mut self, explicit: Option<&MarkupId>) {
-        if let Some(id) = explicit {
-            if self.selected_ids.contains(id) {
-                self.focused_id = Some(id.clone());
-                return;
-            }
+        if let Some(id) = explicit
+            && self.selected_ids.contains(id)
+        {
+            self.focused_id = Some(id.clone());
+            return;
         }
         let still_selected = self
             .focused_id
@@ -7130,12 +7283,12 @@ impl AnnotationDocument {
                 .and_then(|scale| scale.length_calibration().ok())
                 .is_some_and(|calibration| !measurement.calibration.same_scale_as(&calibration))
         });
-        if let Some(preset) = &saved_preset {
-            if preset.built_in || preset.id.is_empty() || preset.name.is_empty() {
-                return Err(AnnotationError::InvalidGeometry(
-                    "Saved scale preset is invalid.".into(),
-                ));
-            }
+        if let Some(preset) = &saved_preset
+            && (preset.built_in || preset.id.is_empty() || preset.name.is_empty())
+        {
+            return Err(AnnotationError::InvalidGeometry(
+                "Saved scale preset is invalid.".into(),
+            ));
         }
         let preset_changed = saved_preset.as_ref().is_some_and(|preset| {
             self.state.scale_presets.first() != Some(preset)
@@ -7724,7 +7877,13 @@ impl AnnotationDocument {
                         })
                     }
                     Some(HitTarget::ResizeHandle { id, handle }) => {
-                        self.begin_resize(pointer_id, page_index, point, tolerance_pt)?;
+                        self.begin_resize_with_rotation_handle_offset(
+                            pointer_id,
+                            page_index,
+                            point,
+                            tolerance_pt,
+                            rotation_handle_offset_pt,
+                        )?;
                         Ok(CommandOutcome::GestureStarted {
                             kind: GestureKind::Resize(handle),
                             id,
@@ -7739,7 +7898,13 @@ impl AnnotationDocument {
                             self.select(&id);
                             return Ok(CommandOutcome::SelectionChanged(Some(id)));
                         }
-                        self.begin_move(pointer_id, page_index, point, tolerance_pt)?;
+                        self.begin_move_with_rotation_handle_offset(
+                            pointer_id,
+                            page_index,
+                            point,
+                            tolerance_pt,
+                            rotation_handle_offset_pt,
+                        )?;
                         Ok(CommandOutcome::GestureStarted {
                             kind: GestureKind::Move,
                             id,
@@ -8595,7 +8760,7 @@ impl AnnotationDocument {
         )
     }
 
-    fn hit_test_with_rotation_handle_offset(
+    pub(crate) fn hit_test_with_rotation_handle_offset(
         &self,
         page_index: u32,
         point: PdfPoint,
@@ -8632,38 +8797,62 @@ impl AnnotationDocument {
             {
                 return Ok(Some(HitTarget::RotationHandle(selected.id.clone())));
             }
-            if let Some(handle) = RectangleResizeHandle::ALL.into_iter().find(|handle| {
-                point_distance(
-                    handle.world_point(selected.rect, selected.rotation_degrees),
-                    point,
-                ) <= tolerance_pt
-            }) {
-                return Ok(Some(HitTarget::ResizeHandle {
-                    id: selected.id.clone(),
-                    handle,
-                }));
-            }
-            if !selected.locked
-                && let Some(handle) = selected.edge_resize_handle(point, tolerance_pt)
-            {
+            if let Some(handle) = selected.resize_handle_at(
+                point,
+                RECTANGLE_EDGE_GRAB_CSS_PX * rotation_handle_offset_pt / ROTATION_HANDLE_OFFSET_PT,
+            ) {
                 return Ok(Some(HitTarget::ResizeHandle {
                     id: selected.id.clone(),
                     handle,
                 }));
             }
         }
+        let points_per_css_px = rotation_handle_offset_pt / ROTATION_HANDLE_OFFSET_PT;
+        if let Some((annotation, handle)) = self
+            .state
+            .rectangle_index
+            .candidates(
+                page_index,
+                point,
+                RECTANGLE_EDGE_GRAB_CSS_PX * points_per_css_px,
+            )
+            .into_iter()
+            .rev()
+            .map(|index| &self.state.rectangles[index])
+            .filter(|annotation| self.selected_id() != Some(&annotation.id))
+            .find_map(|annotation| {
+                annotation
+                    .resize_handle_at(point, RECTANGLE_EDGE_GRAB_CSS_PX * points_per_css_px)
+                    .map(|handle| (annotation, handle))
+            })
+        {
+            return Ok(Some(HitTarget::ResizeHandle {
+                id: annotation.id.clone(),
+                handle,
+            }));
+        }
         if let Some(hit) = self
             .state
             .rectangle_index
-            .candidates(page_index, point, tolerance_pt)
+            .candidates(
+                page_index,
+                point,
+                tolerance_pt.max(3. * RECTANGLE_EDGE_GRAB_CSS_PX * points_per_css_px),
+            )
             .into_iter()
             .rev()
             .map(|index| &self.state.rectangles[index])
             .find(|annotation| {
                 let local_point = annotation.world_to_local(point);
                 annotation.page_index == page_index
-                    && (annotation.rect.near_perimeter(local_point, tolerance_pt)
-                        || annotation.rect.contains(local_point, tolerance_pt))
+                    && (annotation
+                        .move_zone_contains(point, RECTANGLE_EDGE_GRAB_CSS_PX * points_per_css_px)
+                        || annotation.rect.near_perimeter(
+                            local_point,
+                            tolerance_pt.max(annotation.appearance.stroke_width_pt() / 2.),
+                        )
+                        || (annotation.appearance.fill_color().is_some()
+                            && annotation.rect.contains(local_point, tolerance_pt)))
             })
             .map(|annotation| HitTarget::Body(annotation.id.clone()))
         {
@@ -8683,54 +8872,48 @@ impl AnnotationDocument {
         {
             return Ok(Some(hit));
         }
-        // Both offsets are fixed screen distances expressed in page points.
-        let outset_pt =
-            rotation_handle_offset_pt * SELECTION_OUTSET_CSS_PX / ROTATION_HANDLE_OFFSET_PT;
+        // The offsets are fixed screen distances expressed in page points.
+        let points_per_css_px = rotation_handle_offset_pt / ROTATION_HANDLE_OFFSET_PT;
         Ok(self
-            .selected_outline_zone_hit(page_index, point, tolerance_pt + outset_pt)
+            .selected_outline_zone_hit(
+                page_index,
+                point,
+                tolerance_pt + SELECTION_OUTSET_CSS_PX * points_per_css_px,
+                SELECTION_INNER_BAND_CSS_PX * points_per_css_px,
+                &AnnotationSelectionSupplement::new(),
+            )
             .map(HitTarget::Body))
     }
 
-    /// The selected item whose outline zone contains `point`: its own bounds
-    /// grown by `margin_pt`, which covers the gaps inside an unfilled shape
-    /// and the band around its outset selection outline. Dragging there moves
-    /// the item.
+    /// The selected item whose outline zone contains `point`: the band from
+    /// `margin_pt` outside its [`SelectionFrame`] (its outset selection
+    /// outline) to `inner_pt` inside it. Dragging there moves the item.
+    /// Deeper inside, only the item's own fill or content takes the press.
+    /// `captions` holds caption page corners by id, as painted.
     pub fn selected_outline_zone_hit(
         &self,
         page_index: u32,
         point: PdfPoint,
         margin_pt: f64,
+        inner_pt: f64,
+        captions: &AnnotationSelectionSupplement,
     ) -> Option<MarkupId> {
         self.selected_ids.iter().rev().find_map(|id| {
             let annotation = self.annotation_owned(id)?;
             if annotation.page_index() != page_index {
                 return None;
             }
-            if let Annotation::Rectangle(rectangle) = &annotation {
-                let local = rectangle.world_to_local(point);
-                return rectangle
-                    .rect
-                    .contains(local, margin_pt)
-                    .then(|| id.clone());
-            }
-            let paths =
-                annotation_selection_paths(&annotation, &|sample: PdfPoint| SelectionPoint {
-                    x: sample.x,
-                    y: sample.y,
-                });
-            let mut samples = paths.iter().flat_map(|path| path.points.iter());
-            let first = samples.next()?;
-            let (mut min_x, mut min_y, mut max_x, mut max_y) = (first.x, first.y, first.x, first.y);
-            for sample in samples {
-                min_x = min_x.min(sample.x);
-                min_y = min_y.min(sample.y);
-                max_x = max_x.max(sample.x);
-                max_y = max_y.max(sample.y);
-            }
-            (point.x >= min_x - margin_pt
-                && point.x <= max_x + margin_pt
-                && point.y >= min_y - margin_pt
-                && point.y <= max_y + margin_pt)
+            let caption = captions.get(id).map_or(&[][..], Vec::as_slice);
+            let frame = annotation_selection_frame(&annotation, caption)?;
+            // Keep a central empty region in small unfilled Rectangles:
+            // the inward move band is at most a quarter of the short side.
+            let inner_pt = if matches!(annotation, Annotation::Rectangle(_)) {
+                inner_pt.min(frame.half_width.min(frame.half_height) * 0.5)
+            } else {
+                inner_pt
+            };
+            frame
+                .band_contains(point, margin_pt, inner_pt)
                 .then(|| id.clone())
         })
     }
@@ -8927,8 +9110,39 @@ impl AnnotationDocument {
         start: PdfPoint,
         tolerance_pt: f64,
     ) -> Result<Option<MarkupId>, AnnotationError> {
+        self.begin_move_with_rotation_handle_offset(
+            pointer_id,
+            page_index,
+            start,
+            tolerance_pt,
+            ROTATION_HANDLE_OFFSET_PT,
+        )
+    }
+
+    /// `begin_move` hit-testing at the view's scale (see
+    /// `hit_test_with_rotation_handle_offset`), so it agrees with the press
+    /// that chose to move.
+    pub fn begin_move_with_rotation_handle_offset(
+        &mut self,
+        pointer_id: u64,
+        page_index: u32,
+        start: PdfPoint,
+        tolerance_pt: f64,
+        rotation_handle_offset_pt: f64,
+    ) -> Result<Option<MarkupId>, AnnotationError> {
         self.require_no_gesture()?;
-        let Some(HitTarget::Body(id)) = self.select_at(page_index, start, tolerance_pt)? else {
+        let hit = self.hit_test_with_rotation_handle_offset(
+            page_index,
+            start,
+            tolerance_pt,
+            rotation_handle_offset_pt,
+        )?;
+        self.selected_ids = hit
+            .as_ref()
+            .map(|target| vec![target.markup_id().clone()])
+            .unwrap_or_default();
+        self.refresh_focused_id(hit.as_ref().map(|target| target.markup_id()));
+        let Some(HitTarget::Body(id)) = hit else {
             return Ok(None);
         };
         let annotation = self
@@ -8954,9 +9168,33 @@ impl AnnotationDocument {
         start: PdfPoint,
         tolerance_pt: f64,
     ) -> Result<Option<MarkupId>, AnnotationError> {
+        self.begin_resize_with_rotation_handle_offset(
+            pointer_id,
+            page_index,
+            start,
+            tolerance_pt,
+            ROTATION_HANDLE_OFFSET_PT,
+        )
+    }
+
+    /// `begin_resize` hit-testing at the view's scale, so it agrees with the
+    /// press that chose to resize.
+    pub fn begin_resize_with_rotation_handle_offset(
+        &mut self,
+        pointer_id: u64,
+        page_index: u32,
+        start: PdfPoint,
+        tolerance_pt: f64,
+        rotation_handle_offset_pt: f64,
+    ) -> Result<Option<MarkupId>, AnnotationError> {
         self.require_no_gesture()?;
-        let Some(HitTarget::ResizeHandle { id, handle }) =
-            self.hit_test(page_index, start, tolerance_pt)?
+        let Some(HitTarget::ResizeHandle { id, handle }) = self
+            .hit_test_with_rotation_handle_offset(
+                page_index,
+                start,
+                tolerance_pt,
+                rotation_handle_offset_pt,
+            )?
         else {
             return Ok(None);
         };
@@ -8967,6 +9205,7 @@ impl AnnotationDocument {
         if annotation.locked {
             return Err(AnnotationError::LockedMarkup(id));
         }
+        self.select(&id);
         self.active_gesture = Some(ActiveGesture::Resize {
             pointer_id,
             original: annotation.rect,
@@ -9672,6 +9911,46 @@ impl AnnotationDocument {
             .find(|annotation| annotation.id == *id)
     }
 
+    /// Turns a box shape back to 0°, as a double-click on its rotation knob
+    /// does. `None` when the item has no rotation knob or is locked;
+    /// otherwise whether its rotation changed.
+    pub fn reset_rotation(&mut self, id: &MarkupId) -> Result<Option<bool>, AnnotationError> {
+        if self.annotation_locked(id) != Some(false) {
+            return Ok(None);
+        }
+        let (rotation, edit) = match self.annotation_owned(id) {
+            Some(Annotation::Rectangle(annotation)) => (
+                annotation.rotation_degrees,
+                AnnotationEdit::SetRectangleRotation(0.),
+            ),
+            Some(Annotation::Ellipse(annotation)) => (
+                annotation.rotation_degrees,
+                AnnotationEdit::SetEllipseRotation(0.),
+            ),
+            Some(Annotation::TextBox(annotation)) => (
+                annotation.rotation_degrees(),
+                AnnotationEdit::SetTextBoxRotation(0.),
+            ),
+            Some(Annotation::Image(annotation)) => (
+                annotation.rotation_degrees(),
+                AnnotationEdit::SetImageRotation(0.),
+            ),
+            Some(Annotation::Snapshot(annotation)) => (
+                annotation.rotation_degrees(),
+                AnnotationEdit::SetSnapshotRotation(0.),
+            ),
+            _ => return Ok(None),
+        };
+        if rotation == 0. {
+            return Ok(Some(false));
+        }
+        self.apply_command(AnnotationCommand::EditAnnotation {
+            id: id.clone(),
+            edit,
+        })?;
+        Ok(Some(true))
+    }
+
     fn annotation_owned(&self, id: &MarkupId) -> Option<Annotation> {
         self.annotation(id)
             .cloned()
@@ -9705,7 +9984,7 @@ impl AnnotationDocument {
             })
     }
 
-    fn annotation_locked(&self, id: &MarkupId) -> Option<bool> {
+    pub(crate) fn annotation_locked(&self, id: &MarkupId) -> Option<bool> {
         self.annotation(id)
             .map(|annotation| annotation.locked)
             .or_else(|| self.redact(id).map(|annotation| annotation.locked))
@@ -11743,7 +12022,12 @@ fn annotation_selection_paths(
             .paths()
             .map(|points| path(points.to_vec(), false))
             .collect(),
-        Annotation::TextBox(annotation) => vec![rect_path(annotation.layout_rect, 0.)],
+        Annotation::TextBox(annotation) => {
+            vec![rect_path(
+                annotation.layout_rect,
+                annotation.rotation_degrees,
+            )]
+        }
         Annotation::Length(annotation) => {
             // Revu draws a Length as a dimension line `LL` above the points.
             match measurement_line_layout(
@@ -11765,11 +12049,116 @@ fn annotation_selection_paths(
                 None => vec![path(vec![annotation.start, annotation.end], false)],
             }
         }
-        Annotation::Image(annotation) => vec![rect_path(annotation.rect, 0.)],
+        Annotation::Image(annotation) => {
+            vec![rect_path(annotation.rect, annotation.rotation_degrees)]
+        }
         Annotation::Snapshot(annotation) => {
             vec![rect_path(annotation.rect, annotation.rotation_degrees)]
         }
     }
+}
+
+/// The box [`SelectionFrame`] a selected `annotation` is outlined by, given
+/// its caption's page corners when it has one.
+fn annotation_selection_frame(
+    annotation: &Annotation,
+    caption_corners: &[PdfPoint],
+) -> Option<SelectionFrame> {
+    let rotated = |rect: PdfRect, rotation_degrees: f64| {
+        let corners = [
+            PdfPoint {
+                x: rect.x,
+                y: rect.y,
+            },
+            PdfPoint {
+                x: rect.x + rect.width,
+                y: rect.y,
+            },
+            PdfPoint {
+                x: rect.x + rect.width,
+                y: rect.y + rect.height,
+            },
+            PdfPoint {
+                x: rect.x,
+                y: rect.y + rect.height,
+            },
+        ]
+        .map(|corner| rotate_point_around_rect_center(corner, rect, -rotation_degrees));
+        let radians = (-rotation_degrees).to_radians();
+        SelectionFrame::enclosing(corners, (radians.cos(), radians.sin()))
+    };
+    let along = |start: PdfPoint, end: PdfPoint| {
+        SelectionFrame::enclosing([start, end], (end.x - start.x, end.y - start.y))
+    };
+    // The caption's text width along the line, as the painter lays it out.
+    let caption_text_width = |start: PdfPoint, end: PdfPoint, inset_pt: f64| {
+        let frame = SelectionFrame::enclosing(
+            caption_corners.iter().copied(),
+            (end.x - start.x, end.y - start.y),
+        );
+        frame.map_or(0., |frame| (frame.half_width * 2. - inset_pt * 2.).max(0.))
+    };
+    let frame = match annotation {
+        Annotation::Rectangle(annotation) => rotated(annotation.rect, annotation.rotation_degrees),
+        Annotation::Ellipse(annotation) => rotated(annotation.rect, annotation.rotation_degrees),
+        Annotation::Snapshot(annotation) => rotated(annotation.rect, annotation.rotation_degrees),
+        Annotation::TextBox(annotation) => {
+            rotated(annotation.layout_rect, annotation.rotation_degrees)
+        }
+        Annotation::Image(annotation) => rotated(annotation.rect, annotation.rotation_degrees),
+        Annotation::StraightLine(annotation) => along(annotation.start, annotation.end),
+        Annotation::VertexPath(annotation) if annotation.points.len() == 2 => {
+            along(annotation.points[0], annotation.points[1])
+        }
+        Annotation::MeasurementPath(annotation) if annotation.points.len() == 2 => {
+            along(annotation.points[0], annotation.points[1])
+        }
+        Annotation::Length(annotation) => measurement_selection_frame(
+            annotation.start,
+            annotation.end,
+            LENGTH_LEADER_LENGTH_PT,
+            annotation.appearance.line().stroke_width_pt(),
+            caption_text_width(
+                annotation.start,
+                annotation.end,
+                annotation.appearance.text().inset_pt(),
+            ),
+            caption_corners,
+        ),
+        Annotation::Dimension(annotation) => measurement_selection_frame(
+            annotation.start,
+            annotation.end,
+            annotation.dimension_line_offset,
+            annotation.appearance.line().stroke_width_pt(),
+            if annotation.content.is_empty() {
+                0.
+            } else {
+                caption_text_width(
+                    annotation.start,
+                    annotation.end,
+                    annotation.appearance.text().inset_pt(),
+                )
+            },
+            caption_corners,
+        ),
+        _ => None,
+    };
+    frame.or_else(|| {
+        let paths = annotation_selection_paths(annotation, &|sample: PdfPoint| SelectionPoint {
+            x: sample.x,
+            y: sample.y,
+        });
+        SelectionFrame::enclosing(
+            paths
+                .iter()
+                .flat_map(|path| path.points.iter())
+                .map(|sample| PdfPoint {
+                    x: sample.x,
+                    y: sample.y,
+                }),
+            (1., 0.),
+        )
+    })
 }
 
 fn fixture_string<'a>(value: &'a Value, key: &str) -> Result<&'a str, AnnotationError> {
@@ -12119,10 +12508,10 @@ fn sampled_cloud_scallop_path(control_path: &[PdfPoint], nominal_spacing: f64) -
             });
         }
     }
-    if let Some(first) = outline.first().copied() {
-        if outline.last() != Some(&first) {
-            outline.push(first);
-        }
+    if let Some(first) = outline.first().copied()
+        && outline.last() != Some(&first)
+    {
+        outline.push(first);
     }
     outline
 }
@@ -13789,6 +14178,40 @@ mod tests {
     }
 
     #[test]
+    fn rotated_rectangle_accepts_pdf_number_rounding_but_rejects_real_edits() {
+        let expected = RectangleAnnotation {
+            id: id("workspace:rectangle:1"),
+            page_index: 0,
+            rect: PdfRect::new(336.864563, 388.709456, 477.030983, 243.636572).unwrap(),
+            rotation_degrees: 44.15369,
+            appearance: RectangleAppearance::default(),
+            locked: false,
+        };
+        let reopened = RectangleAnnotation {
+            rect: PdfRect::new(336.864563, 388.709442, 477.031006, 243.636566).unwrap(),
+            rotation_degrees: 44.153690338134766,
+            ..expected.clone()
+        };
+        assert_ne!(expected, reopened);
+        assert!(expected.same_persisted_state_as(&reopened));
+        let rotated = RectangleAnnotation {
+            rotation_degrees: 44.154,
+            ..reopened.clone()
+        };
+        assert!(!expected.same_persisted_state_as(&rotated));
+        let moved = RectangleAnnotation {
+            rect: PdfRect::new(336.874563, 388.709442, 477.031006, 243.636566).unwrap(),
+            ..reopened.clone()
+        };
+        assert!(!expected.same_persisted_state_as(&moved));
+        let locked = RectangleAnnotation {
+            locked: true,
+            ..reopened
+        };
+        assert!(!expected.same_persisted_state_as(&locked));
+    }
+
+    #[test]
     fn snapshot_persisted_state_accepts_pdf_rounding_but_rejects_material_rotation_changes() {
         let asset = DecodedRgbaAsset::new(1, 1, vec![10, 20, 30, 255]).unwrap();
         let expected = SnapshotAnnotation::new(
@@ -14104,15 +14527,12 @@ mod tests {
     fn hit_testing_prefers_all_selected_resize_handles_and_topmost_body() {
         let mut document = AnnotationDocument::default();
         create_rectangle(&mut document, "back");
+        document
+            .set_selected_appearance(filled_appearance())
+            .unwrap();
         document.clear_selection();
         document
-            .begin_create(
-                8,
-                id("front"),
-                0,
-                point(10.0, 20.0),
-                RectangleAppearance::default(),
-            )
+            .begin_create(8, id("front"), 0, point(10.0, 20.0), filled_appearance())
             .unwrap();
         document.update_gesture(8, point(110.0, 70.0)).unwrap();
         document.commit_gesture(8).unwrap();
@@ -14167,46 +14587,287 @@ mod tests {
         document.commit_gesture(8).unwrap();
         // 4 pt outside the left edge, between its corner and midpoint
         // controls: inside the 6 pt outline band plus a 1 pt tolerance.
-        let band = point(6.0, 30.0);
+        let band = point(6.0, 45.0);
         assert_eq!(
             document.hit_test(0, band, 1.0).unwrap(),
-            Some(HitTarget::Body(id("rect"))),
-            "a selected item moves from the band along its dashed outline"
+            Some(HitTarget::ResizeHandle {
+                id: id("rect"),
+                handle: RectangleResizeHandle::West
+            }),
+            "resize takes priority over the move band"
         );
         assert_eq!(
-            document.hit_test(0, point(2.0, 30.0), 1.0).unwrap(),
+            document.hit_test(0, point(-21.0, 45.0), 1.0).unwrap(),
             None,
             "beyond the band the press misses"
         );
         document.clear_selection();
         assert_eq!(
             document.hit_test(0, band, 1.0).unwrap(),
-            None,
-            "an unselected item has no outline band"
+            Some(HitTarget::ResizeHandle {
+                id: id("rect"),
+                handle: RectangleResizeHandle::West
+            }),
+            "unselected resize reach matches selected reach"
         );
     }
 
     #[test]
-    fn rectangle_interior_is_a_body_hit_with_or_without_fill() {
+    fn rectangle_move_resize_move_bands_are_equal_and_selection_independent() {
+        for scale in [0.5, 1., 2.] {
+            for rotation in [0., 45., 90.] {
+                for selected in [false, true] {
+                    for (offset, resize, body) in [
+                        (31., false, false),
+                        (29.8, false, true),
+                        (20., false, true),
+                        (10.2, false, true),
+                        (9.8, true, false),
+                        (0., true, false),
+                        (-9.8, true, false),
+                        (-10.2, false, true),
+                        (-20., false, true),
+                        (-29.8, false, true),
+                        (-31., false, false),
+                    ] {
+                        let mut document = AnnotationDocument::default();
+                        let rect = PdfRect::new(10., 20., 500., 400.).unwrap();
+                        document
+                            .apply_command(AnnotationCommand::CreateAnnotation(
+                                Annotation::Rectangle(RectangleAnnotation {
+                                    id: id("three-bands"),
+                                    page_index: 0,
+                                    rect,
+                                    rotation_degrees: rotation,
+                                    appearance: RectangleAppearance::default(),
+                                    locked: false,
+                                }),
+                            ))
+                            .unwrap();
+                        document.clear_selection();
+                        if selected {
+                            document.select(&id("three-bands"));
+                        }
+                        let point = rotate_point_around_rect_center(
+                            point(100., 420. + offset / scale),
+                            rect,
+                            -rotation,
+                        );
+                        let expected = if resize {
+                            Some(HitTarget::ResizeHandle {
+                                id: id("three-bands"),
+                                handle: RectangleResizeHandle::North,
+                            })
+                        } else if body {
+                            Some(HitTarget::Body(id("three-bands")))
+                        } else {
+                            None
+                        };
+                        assert_eq!(
+                            document
+                                .hit_test_with_rotation_handle_offset(
+                                    0,
+                                    point,
+                                    4. / scale,
+                                    ROTATION_HANDLE_OFFSET_PT / scale
+                                )
+                                .unwrap(),
+                            expected,
+                            "scale={scale}, rotation={rotation}, selected={selected}, offset={offset}"
+                        );
+                        if resize || body {
+                            let outcome = document
+                                .apply_command(AnnotationCommand::PointerDown {
+                                    pointer_id: 7,
+                                    page_index: 0,
+                                    point,
+                                    tolerance_pt: 4. / scale,
+                                    tool: PointerTool::Select {
+                                        rotation_handle_offset_pt: ROTATION_HANDLE_OFFSET_PT
+                                            / scale,
+                                    },
+                                })
+                                .unwrap();
+                            assert!(
+                                matches!(outcome, CommandOutcome::GestureStarted { kind, .. }
+                                if kind == if resize { GestureKind::Resize(RectangleResizeHandle::North) } else { GestureKind::Move })
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hovered_and_selected_rectangle_edges_share_expanded_resize_reach() {
+        for scale in [0.5, 1., 2.] {
+            for rotation in [0., 45., 90.] {
+                for offset in [-9., 9.] {
+                    let mut document = AnnotationDocument::default();
+                    let rect = PdfRect::new(10., 20., 400., 400.).unwrap();
+                    document
+                        .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Rectangle(
+                            RectangleAnnotation {
+                                id: id("hover-resize"),
+                                page_index: 0,
+                                rect,
+                                rotation_degrees: rotation,
+                                appearance: RectangleAppearance::default(),
+                                locked: false,
+                            },
+                        )))
+                        .unwrap();
+                    document.clear_selection();
+                    let point = rotate_point_around_rect_center(
+                        point(100., 420. + offset / scale),
+                        rect,
+                        -rotation,
+                    );
+                    let expected = Some(HitTarget::ResizeHandle {
+                        id: id("hover-resize"),
+                        handle: RectangleResizeHandle::North,
+                    });
+                    assert_eq!(
+                        document
+                            .hit_test_with_rotation_handle_offset(
+                                0,
+                                point,
+                                4. / scale,
+                                ROTATION_HANDLE_OFFSET_PT / scale
+                            )
+                            .unwrap(),
+                        expected
+                    );
+                    assert!(document.selected_id().is_none(), "hover never selects");
+                    document.select(&id("hover-resize"));
+                    assert_eq!(
+                        document
+                            .hit_test_with_rotation_handle_offset(
+                                0,
+                                point,
+                                4. / scale,
+                                ROTATION_HANDLE_OFFSET_PT / scale
+                            )
+                            .unwrap(),
+                        expected
+                    );
+                    document.clear_selection();
+                    assert_eq!(
+                        document
+                            .begin_resize_with_rotation_handle_offset(
+                                7,
+                                0,
+                                point,
+                                4. / scale,
+                                ROTATION_HANDLE_OFFSET_PT / scale
+                            )
+                            .unwrap(),
+                        Some(id("hover-resize"))
+                    );
+                    assert_eq!(
+                        document.selected_id(),
+                        Some(&id("hover-resize")),
+                        "a hover resize keeps the target selected"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_unfilled_rectangle_is_hit_on_its_outline_and_a_filled_one_inside() {
         let mut document = AnnotationDocument::default();
         create_rectangle(&mut document, "rect");
         document.clear_selection();
         assert_eq!(
-            document.hit_test(0, point(50.0, 40.0), 2.0).unwrap(),
-            Some(HitTarget::Body(id("rect")))
+            document.hit_test(0, point(60.0, 45.0), 2.0).unwrap(),
+            None,
+            "the empty inside of an unfilled rectangle belongs to what is under it"
+        );
+        assert_eq!(
+            document.hit_test(0, point(50.0, 21.0), 2.0).unwrap(),
+            Some(HitTarget::ResizeHandle {
+                id: id("rect"),
+                handle: RectangleResizeHandle::South
+            })
         );
 
         document.select(&id("rect"));
+        assert_eq!(
+            document.hit_test(0, point(50.0, 28.0), 2.0).unwrap(),
+            Some(HitTarget::Body(id("rect"))),
+            "a selected item moves from a band just inside its outline"
+        );
+        assert_eq!(
+            document.hit_test(0, point(60.0, 45.0), 2.0).unwrap(),
+            None,
+            "but not from deep inside an unfilled shape"
+        );
         document
-            .set_selected_appearance(
-                RectangleAppearance::new("#123456", 2.0, Some("#abcdef"), 0.5).unwrap(),
-            )
+            .set_selected_appearance(filled_appearance())
             .unwrap();
         document.clear_selection();
         assert_eq!(
-            document.hit_test(0, point(50.0, 40.0), 2.0).unwrap(),
+            document.hit_test(0, point(60.0, 45.0), 2.0).unwrap(),
             Some(HitTarget::Body(id("rect")))
         );
+    }
+
+    #[test]
+    fn small_rectangle_move_band_preserves_an_empty_middle_at_every_zoom() {
+        for rotation in [0., 45., 90.] {
+            let mut document = AnnotationDocument::default();
+            document
+                .begin_create(
+                    8,
+                    id("thin"),
+                    0,
+                    point(10., 20.),
+                    RectangleAppearance::default(),
+                )
+                .unwrap();
+            document.update_gesture(8, point(210., 50.)).unwrap();
+            document.commit_gesture(8).unwrap();
+            document
+                .apply_command(AnnotationCommand::EditAnnotation {
+                    id: id("thin"),
+                    edit: AnnotationEdit::SetRectangleRotation(rotation),
+                })
+                .unwrap();
+            document.select(&id("thin"));
+            let rectangle = document.rectangles()[0].clone();
+            let world =
+                |x, y| rotate_point_around_rect_center(point(x, y), rectangle.rect, -rotation);
+            for scale in [0.5, 1., 4.] {
+                let requested_inner = SELECTION_INNER_BAND_CSS_PX / scale;
+                let inner = requested_inner.min(7.5);
+                let hit = |sample| {
+                    document.selected_outline_zone_hit(
+                        0,
+                        sample,
+                        6. / scale,
+                        requested_inner,
+                        &AnnotationSelectionSupplement::new(),
+                    )
+                };
+                assert_eq!(
+                    hit(world(80., 20. + inner * 0.8)),
+                    Some(id("thin")),
+                    "rotation={rotation}, scale={scale}"
+                );
+                assert_eq!(hit(world(80., 20. + inner + 1.)), None);
+                assert_eq!(
+                    hit(world(110., 35.)),
+                    None,
+                    "rotation={rotation}, scale={scale}"
+                );
+            }
+        }
+    }
+
+    fn filled_appearance() -> RectangleAppearance {
+        RectangleAppearance::new("#123456", 2.0, Some("#abcdef"), 0.5).unwrap()
     }
 
     #[test]
@@ -14240,17 +14901,27 @@ mod tests {
             point(530.0, 620.0),
             point(600.0, 760.0),
         ] {
+            let resize = document.rectangles().iter().rev().find_map(|annotation| {
+                annotation
+                    .resize_handle_at(query, RECTANGLE_EDGE_GRAB_CSS_PX)
+                    .map(|handle| HitTarget::ResizeHandle {
+                        id: annotation.id.clone(),
+                        handle,
+                    })
+            });
             let linear = document
                 .rectangles()
                 .iter()
                 .rev()
                 .find(|annotation| {
                     annotation.page_index == 0
-                        && (annotation.rect.near_perimeter(query, 4.0)
-                            || annotation.rect.contains(query, 4.0))
+                        && (annotation.move_zone_contains(query, RECTANGLE_EDGE_GRAB_CSS_PX)
+                            || annotation.rect.near_perimeter(query, 4.0)
+                            || (annotation.appearance.fill_color().is_some()
+                                && annotation.rect.contains(query, 4.0)))
                 })
                 .map(|annotation| HitTarget::Body(annotation.id.clone()));
-            assert_eq!(document.hit_test(0, query, 4.0).unwrap(), linear);
+            assert_eq!(document.hit_test(0, query, 4.0).unwrap(), resize.or(linear));
         }
         let work = document
             .spatial_query_work(0, point(162.0, 192.0), 4.0)
@@ -14263,16 +14934,16 @@ mod tests {
     fn move_stream_previews_many_updates_but_commits_one_history_entry() {
         let mut document = AnnotationDocument::default();
         create_rectangle(&mut document, "moving");
-        document.clear_selection();
+        document.select(&id("moving"));
         let original = document.rectangles()[0].clone();
 
         assert_eq!(
-            document.begin_move(31, 0, point(10.0, 40.0), 2.0).unwrap(),
+            document.begin_move(31, 0, point(40.0, 28.0), 2.0).unwrap(),
             Some(id("moving"))
         );
         for step in 1..=360 {
             document
-                .update_gesture(31, point(10.0 + f64::from(step) / 10.0, 40.0 + 24.0))
+                .update_gesture(31, point(40.0 + f64::from(step) / 10.0, 28.0 + 24.0))
                 .unwrap();
         }
         assert_eq!(document.rectangles()[0], original);
@@ -14338,12 +15009,12 @@ mod tests {
         document.commit_gesture(42).unwrap();
 
         assert_eq!(
-            document.hit_test(0, point(60.0, 72.0), 3.0).unwrap(),
+            document.hit_test(0, point(60.0, 80.0), 3.0).unwrap(),
             Some(HitTarget::RotationHandle(id("rotating")))
         );
         assert_eq!(
             document
-                .begin_rotation(43, 0, point(60.0, 72.0), 3.0)
+                .begin_rotation(43, 0, point(60.0, 80.0), 3.0)
                 .unwrap(),
             Some(id("rotating"))
         );
@@ -14389,13 +15060,13 @@ mod tests {
                 id("rotated-hit-target"),
                 0,
                 point(10.0, 10.0),
-                RectangleAppearance::default(),
+                filled_appearance(),
             )
             .unwrap();
         document.update_gesture(45, point(110.0, 60.0)).unwrap();
         document.commit_gesture(45).unwrap();
         document
-            .begin_rotation(46, 0, point(60.0, 72.0), 3.0)
+            .begin_rotation(46, 0, point(60.0, 80.0), 3.0)
             .unwrap();
         document.update_gesture(46, point(97.0, 35.0)).unwrap();
         document.commit_gesture(46).unwrap();
@@ -14936,11 +15607,10 @@ mod tests {
                 .unwrap(),
             )])
             .unwrap();
-        let mut before = document.snapshot();
-        // Pointer-down deliberately selects the existing rectangle.
-        before.selected_id = Some(id("existing"));
-        document.begin_move(55, 0, point(10., 40.), 2.).unwrap();
-        document.update_gesture(55, point(30., 60.)).unwrap();
+        document.select(&id("existing"));
+        let before = document.snapshot();
+        document.begin_move(55, 0, point(40., 28.), 2.).unwrap();
+        document.update_gesture(55, point(60., 48.)).unwrap();
         let ordered: Vec<_> = document
             .document_scene(0)
             .into_ordered_annotations()
@@ -14990,8 +15660,8 @@ mod tests {
     fn thumbnail_scene_projects_committed_page_geometry_without_editor_chrome() {
         let mut document = AnnotationDocument::default();
         create_rectangle(&mut document, "thumbnail");
-        document.begin_move(55, 0, point(40.0, 40.0), 2.0).unwrap();
-        document.update_gesture(55, point(60.0, 60.0)).unwrap();
+        document.begin_move(55, 0, point(40.0, 28.0), 2.0).unwrap();
+        document.update_gesture(55, point(60.0, 63.0)).unwrap();
 
         assert_eq!(
             document.thumbnail_scene(0),
@@ -15158,7 +15828,7 @@ mod tests {
         window.update(SelectionPoint::new(35., 35.));
         assert_eq!(
             document.apply_marquee_selection(0, &window, identity),
-            &[rectangle_id.clone()]
+            std::slice::from_ref(&rectangle_id)
         );
 
         let mut crossing = SelectionMarquee::armed_box(
@@ -16346,11 +17016,11 @@ mod tests {
         document.commit_gesture(1).unwrap();
 
         // Pressed inside: the selected Rectangle's edges resize.
-        document.begin_move(1, 0, point(100.0, 600.0), 4.0).unwrap();
+        document.begin_move(1, 0, point(84.0, 600.0), 4.0).unwrap();
         for sample in 1..=SAMPLES {
             let progress = f64::from(sample) / f64::from(SAMPLES);
             document
-                .update_gesture(1, point(100.0 + 36.0 * progress, 600.0 - 24.0 * progress))
+                .update_gesture(1, point(84.0 + 36.0 * progress, 600.0 - 24.0 * progress))
                 .unwrap();
         }
         document.commit_gesture(1).unwrap();
@@ -16616,7 +17286,7 @@ mod tests {
         assert!(miss.is_none());
         assert_eq!(document.focused_id(), None);
 
-        let hit = document.select_at(0, point(50.0, 40.0), 1.0).unwrap();
+        let hit = document.select_at(0, point(50.0, 20.5), 1.0).unwrap();
         assert!(hit.is_some());
         assert_eq!(document.focused_id(), Some(&id("a")));
     }

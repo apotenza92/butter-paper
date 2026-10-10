@@ -2427,8 +2427,10 @@ mod tests {
         assert_eq!(high.dimension_increment_mm(), 500.);
         assert_eq!(high.validate(), Ok(()));
 
-        let mut invalid = SemanticSnapSettings::default();
-        invalid.construction_grid_spacing_mm = f64::NAN;
+        let mut invalid = SemanticSnapSettings {
+            construction_grid_spacing_mm: f64::NAN,
+            ..SemanticSnapSettings::default()
+        };
         assert_eq!(
             invalid.validate(),
             Err(SemanticSnapError::InvalidConstructionGridSpacing)

@@ -169,11 +169,9 @@ impl RasterSurface {
         for pixel in crop.pixels_bgra.chunks_exact(4) {
             let alpha = u32::from(pixel[3]);
             let unpremultiply = |component: u8| -> u8 {
-                if alpha == 0 {
-                    0
-                } else {
-                    ((u32::from(component) * 255 + alpha / 2) / alpha).min(255) as u8
-                }
+                (u32::from(component) * 255 + alpha / 2)
+                    .checked_div(alpha)
+                    .map_or(0, |value| value.min(255) as u8)
             };
             rgba.extend_from_slice(&[
                 unpremultiply(pixel[2]),
@@ -268,6 +266,11 @@ pub trait NativeDocumentResource: Send + Sync {
     fn render_tile(&self, request: TileRequest) -> Result<RasterSurface, String>;
     fn close(&self) -> Result<(), String>;
     fn is_released(&self) -> bool;
+    /// Whether the PDF worker process has stopped, so that only reopening
+    /// the document can render it again.
+    fn worker_stopped(&self) -> bool {
+        false
+    }
 }
 
 pub struct OpenedNativeDocument {
@@ -542,11 +545,7 @@ impl NativeDocumentOpener for PdfiumWorkerBackend {
             .map(|(page_index, calibration)| (*page_index, calibration.clone()))
             .collect();
         let page_scales = persistence.page_scales().to_vec();
-        let page_rotations = persistence
-            .page_rotations()
-            .iter()
-            .map(|(_, rotation)| *rotation)
-            .collect();
+        let page_rotations = persistence.page_rotations().values().copied().collect();
         let page_grid_definition = persistence.page_grid_definition();
         let resource = PdfiumWorkerResource::open(
             &self.worker_executable,
@@ -791,7 +790,7 @@ impl PdfiumWorkerResource {
         layer_page: u32,
         rect: PdfRect,
     ) -> Result<DecodedRgbaAsset, String> {
-        let scale = (2_048. / rect.width.max(rect.height)).min(4.).max(0.01);
+        let scale = (2_048. / rect.width.max(rect.height)).clamp(0.01, 4.);
         let width = ((rect.width * scale).round() as u32).clamp(1, 8_192);
         let height = ((rect.height * scale).round() as u32).clamp(1, 8_192);
         let byte_len = u64::from(width) * u64::from(height) * 4;
@@ -1099,6 +1098,13 @@ impl NativeDocumentResource for PdfiumWorkerResource {
 
     fn is_released(&self) -> bool {
         self.released.load(Ordering::Acquire)
+    }
+
+    fn worker_stopped(&self) -> bool {
+        let Ok(mut client) = self.client.lock() else {
+            return true;
+        };
+        client.as_mut().is_some_and(WorkerProcessClient::has_exited)
     }
 }
 

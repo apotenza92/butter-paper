@@ -157,21 +157,20 @@ impl TemplateLibrary {
         let previous_records = self.records.clone();
         let previous_last = self.last_template_id.clone();
         let previous_migrated = self.legacy_blank_migrated;
-        if self.records.is_empty() {
-            if let Some(request) = request {
-                if request.to_pdf_bytes().is_ok() {
-                    if let Some(id) = built_in_id_for_request(&request) {
-                        self.last_template_id = id.into();
-                    } else {
-                        let id = "custom-migrated-blank-pdf-default";
-                        self.records.push(TemplateRecord::Generated {
-                            id: id.into(),
-                            name: "Previous Blank PDF".into(),
-                            request,
-                        });
-                        self.last_template_id = id.into();
-                    }
-                }
+        if self.records.is_empty()
+            && let Some(request) = request
+            && request.to_pdf_bytes().is_ok()
+        {
+            if let Some(id) = built_in_id_for_request(&request) {
+                self.last_template_id = id.into();
+            } else {
+                let id = "custom-migrated-blank-pdf-default";
+                self.records.push(TemplateRecord::Generated {
+                    id: id.into(),
+                    name: "Previous Blank PDF".into(),
+                    request,
+                });
+                self.last_template_id = id.into();
             }
         }
         self.legacy_blank_migrated = true;
@@ -337,12 +336,10 @@ impl TemplateLibrary {
         let source = self.root.join(id);
         let tombstone = self.root.join(format!(".{id}.removing"));
         let moved_source = matches!(removed, TemplateRecord::ImportedPdf { .. }) && source.exists();
-        if moved_source {
-            if let Err(error) = fs::rename(&source, &tombstone) {
-                self.last_template_id = previous_last;
-                self.records.insert(index, removed);
-                return Err(error.into());
-            }
+        if moved_source && let Err(error) = fs::rename(&source, &tombstone) {
+            self.last_template_id = previous_last;
+            self.records.insert(index, removed);
+            return Err(error.into());
         }
         if let Err(error) = self.persist() {
             self.last_template_id = previous_last;

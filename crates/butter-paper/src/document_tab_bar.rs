@@ -17,7 +17,7 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::accessible_button::accessible_icon_button;
+use crate::accessible_button::{accessible_icon_button, close_icon_button};
 use crate::template_preview::{TemplatePreview, template_preview_card};
 
 pub const DOCUMENT_TAB_BAR_ID: &str = "document-tab-bar";
@@ -32,6 +32,7 @@ pub const TEMPLATE_PICKER_ID: &str = "document-tab-template-picker";
 pub const TEMPLATE_PICKER_POPOVER_ID: &str = "template-picker";
 pub const TEMPLATE_MANAGE_ID: &str = "template-picker-manage";
 pub const TEMPLATE_CREATE_ID: &str = "template-picker-create";
+pub const TEMPLATE_PICKER_CLOSE_ID: &str = "template-picker-close";
 pub const TEMPLATE_SAVE_DOCUMENT_ID: &str = "template-picker-save-document";
 pub const TEMPLATE_PICKER_LIST_ID: &str = "template-picker-list";
 pub const TEMPLATE_PICKER_PREVIEW_ID: &str = "template-picker-preview";
@@ -485,6 +486,7 @@ impl Render for TemplateSplitControl {
             })
             .trigger(picker)
             .content(move |_, _, cx| {
+                let close_popover = cx.entity();
                 let selected = templates
                     .iter()
                     .find(|template| template.id == selected_template_id)
@@ -503,7 +505,7 @@ impl Render for TemplateSplitControl {
                         Button::new(stable_id.clone())
                             .debug_selector({
                                 let stable_id = stable_id.clone();
-                                move || stable_id.clone().into()
+                                move || stable_id.clone()
                             })
                             .accessibility_id(stable_id)
                             .ghost()
@@ -512,9 +514,6 @@ impl Render for TemplateSplitControl {
                             .w_full()
                             .h_auto()
                             .py_1p5()
-                            .when(is_selected, |row| {
-                                row.bg(cx.theme().muted).text_color(cx.theme().foreground)
-                            })
                             .child(
                                 h_flex()
                                     .w_full()
@@ -596,7 +595,14 @@ impl Render for TemplateSplitControl {
                     .tab_group()
                     .w(px(TEMPLATE_PICKER_WIDTH))
                     .gap_3()
-                    .child(gpui::div().font_semibold().child("New from template"))
+                    .child(crate::property_controls::popover_header(
+                        "New from template",
+                        close_icon_button(TEMPLATE_PICKER_CLOSE_ID, "Close").on_click(
+                            move |_: &ClickEvent, window, cx| {
+                                close_popover.update(cx, |popover, cx| popover.dismiss(window, cx));
+                            },
+                        ),
+                    ))
                     .child(
                         h_flex()
                             .items_start()
@@ -1383,7 +1389,7 @@ impl Render for DocumentTabBarTemplateSeam {
             let close = Button::new(close_selector)
                 .small()
                 .ghost()
-                .debug_selector(move || close_debug_selector.clone().into())
+                .debug_selector(move || close_debug_selector.clone())
                 .accessibility_id(close_accessibility_id)
                 .icon(IconName::Close)
                 .tooltip(close_label.clone())
@@ -1535,14 +1541,20 @@ impl Render for DocumentTabBarTemplateSeam {
                                 this.on_action(|_: &Cancel, _, cx| cx.stop_propagation())
                             })
                             .w_full()
+                            .min_w_0()
+                            .whitespace_normal()
                             .gap_3()
                             .child(
                                 v_flex()
+                                    .w_full()
+                                    .min_w_0()
                                     .gap_1()
                                     .child(
                                         gpui::div()
                                             .id(DIRTY_CLOSE_TITLE_ID)
                                             .debug_selector(|| DIRTY_CLOSE_TITLE_ID.into())
+                                            .w_full()
+                                            .whitespace_normal()
                                             .font_semibold()
                                             .child(dirty_close_title(&document_name)),
                                     )
@@ -1550,6 +1562,8 @@ impl Render for DocumentTabBarTemplateSeam {
                                         gpui::div()
                                             .id(DIRTY_CLOSE_DESCRIPTION_ID)
                                             .debug_selector(|| DIRTY_CLOSE_DESCRIPTION_ID.into())
+                                            .w_full()
+                                            .whitespace_normal()
                                             .text_color(cx.theme().muted_foreground)
                                             .child(DIRTY_CLOSE_DESCRIPTION),
                                     ),
@@ -1670,7 +1684,7 @@ impl Render for DocumentTabBarTemplateSeam {
             // the real Tab label keeps ownership of shaping and ellipsis.
             let label_trace = gpui::div()
                 .id(label_selector)
-                .debug_selector(move || label_debug_selector.clone().into())
+                .debug_selector(move || label_debug_selector.clone())
                 .absolute()
                 .left(px(10.))
                 .right(px(10.))
@@ -1693,7 +1707,7 @@ impl Render for DocumentTabBarTemplateSeam {
             let drag_trace = is_dragged.then(|| {
                 gpui::div()
                     .id(drag_selector)
-                    .debug_selector(move || drag_debug_selector.clone().into())
+                    .debug_selector(move || drag_debug_selector.clone())
                     .absolute()
                     .left_0()
                     .right_0()
@@ -1704,7 +1718,7 @@ impl Render for DocumentTabBarTemplateSeam {
             let drop_target_trace = is_drop_target.then(|| {
                 gpui::div()
                     .id(drop_target_selector)
-                    .debug_selector(move || drop_debug_selector.clone().into())
+                    .debug_selector(move || drop_debug_selector.clone())
                     .absolute()
                     .left_0()
                     .right_0()
@@ -1723,7 +1737,7 @@ impl Render for DocumentTabBarTemplateSeam {
                     / DOCUMENT_TAB_HOVER_MASK_WIDTH;
                 gpui::div()
                     .id(hover_mask_selector)
-                    .debug_selector(move || hover_mask_debug_selector.clone().into())
+                    .debug_selector(move || hover_mask_debug_selector.clone())
                     .absolute()
                     .right_0()
                     .top_0()
@@ -1737,7 +1751,7 @@ impl Render for DocumentTabBarTemplateSeam {
             });
 
             let rendered_tab = Tab::new()
-                .debug_selector(move || tab_debug_selector.clone().into())
+                .debug_selector(move || tab_debug_selector.clone())
                 .accessibility_id(accessibility_id)
                 .aria_description(DOCUMENT_TAB_REORDER_DESCRIPTION)
                 .aria_keyshortcuts(DOCUMENT_TAB_REORDER_KEYSHORTCUTS)

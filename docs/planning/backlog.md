@@ -7,14 +7,22 @@ Open work, roughly in priority order. Remove an item when it is done.
 These pass the native harness but have not been checked by eye or by hand in
 the running app.
 
-- Selection outline without handles, edge resizing and the cursor set
-  ([interactions.md](interactions.md#selection-and-editing)).
-- Text box editing in place on the page; text centred in click-placed boxes.
-- Free panning past page edges and zooming over blank space.
-- Tab title staying put when the close button appears.
 - Phone signing with a physical phone (the relay is verified with synthetic
   transfers only), and camera signature capture: permission, capture,
   cancellation and camera release.
+
+## Interface
+
+- Stock checkboxes, switches, toggles, buttons and inputs do not expose a
+  disabled state to accessibility (the snapping "Show grid" switch and spacing
+  fields report enabled while greyed out). Deferred: the fix belongs in
+  gpui-kit's base controls, not in Butter Paper.
+- The template library offers both a top-right X and a Done button that do
+  the same thing; decide whether to drop Done (the X is the convention for
+  transient panels).
+- Quit and close recovery alerts show raw internal errors (for example
+  `Operation(Io { operation: InspectRoot, kind: NotFound })`); map them to
+  plain language.
 
 ## Editing
 
@@ -31,18 +39,22 @@ the running app.
 
 ## Platforms and release
 
+- Make updates quiet and automatic, following mulch-launcher's background
+  download and restart approach. Decide between restarting when all app
+  windows are inactive or offering a quiet restart action. Preserve windows,
+  document views and unsaved work; do not steal foreground focus on relaunch.
 - Remove the unused local phone helper (`local_phone_signature`,
   `xtask/src/phone.rs`, `crates/butter-paper/phone-helper/`, its packaging and
   notices) once relay phone signing is confirmed on a phone.
 - `release.yml`: bump `actions/create-github-app-token`, which still targets
   Node.js 20.
-- Windows: ordinary Save falls back to Save As; qualify native save and file
-  pickers.
-- Windows: 0.1.0–0.1.2 updates installed the new version beside the old one
-  and never removed it (their handover PowerShell never ran), so such
-  machines keep several versions and Start menu entries. Consider having the
-  app retire older sibling installs under `Programs\Butter Paper\<version>`
-  on startup.
+- Windows: qualify the native save and file pickers by hand.
+- Windows: the real-PDFium (`--ignored`) tests are not maintained there; many
+  build fixture paths without canonicalising them.
+- macOS native window tabs have no visible tab bar (GPUI leaves drawing it to
+  the app, and Butter Paper does not), so Window ▸ Merge All Windows hides
+  every window but one. New Window and torn-off tabs open as separate windows
+  to avoid this; either draw a window tab bar or drop the tabbing identifier.
 - Linux: qualify production graphics (OpenGL, window resize).
 - macOS 12 is unsupported (minimum 13.0); supporting it needs an older Go
   toolchain for the phone helper and a real macOS 12 run.

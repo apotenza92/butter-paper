@@ -28,7 +28,8 @@ use windows_sys::Wdk::{
     Foundation::OBJECT_ATTRIBUTES,
     Storage::FileSystem::{
         FILE_CREATE, FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION,
-        FILE_SYNCHRONOUS_IO_NONALERT, FileRenameInformation, NtCreateFile, NtOpenFile,
+        FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS, FILE_SYNCHRONOUS_IO_NONALERT,
+        FileRenameInformation, FileRenameInformationEx, NtCreateFile, NtOpenFile,
         NtSetInformationFile,
     },
 };
@@ -62,6 +63,8 @@ pub enum SaveTargetErrorKind {
     ParentChanged,
     StageChanged,
     TargetExists,
+    /// The PDF an in-place Save would replace is no longer the opened file.
+    SourceChanged,
     AlreadyConsumed,
     UnsupportedPlatform,
     Io,
@@ -394,44 +397,138 @@ impl SaveAsTargetAuthority {
             "selected parent",
         )?;
         ensure_leaf_absent_windows(self.parent_handle.as_ref(), &self.leaf, &self.target_path)?;
-        let stage_leaf = OsString::from(format!(
-            ".butter-paper-{}-{}.tmp",
-            std::process::id(),
-            NEXT_STAGE_ID.fetch_add(1, Ordering::Relaxed)
-        ));
-        let stage_handle = WindowsCreatedStage(Some(create_windows_stage(
-            self.parent_handle.as_ref(),
-            &stage_leaf,
-            &self.target_path,
-        )?));
-        ensure_windows_not_reparse(
-            stage_handle.handle(),
-            &self.target_path,
-            SaveTargetErrorKind::StageChanged,
-            "PDF stage",
-        )?;
-        let stage_identity =
-            windows_file_identity(stage_handle.handle(), &self.target_path, "PDF stage")?;
-        let stage_path = self.parent_path.join(&stage_leaf);
-        let file = stage_handle.into_file();
-        Ok(AuthorizedPdfStage {
-            target_path: self.target_path.clone(),
-            target_leaf: self.leaf.clone(),
-            parent_identity: self.parent_identity,
-            parent_handle: Arc::clone(&self.parent_handle),
-            selected_parent_path: self.selected_parent_path.clone(),
-            stage_leaf,
-            stage_identity,
-            stage_path,
-            file: Some(file),
-            published: false,
-        })
+        create_windows_authorized_stage(
+            Arc::clone(&self.parent_handle),
+            self.parent_identity,
+            &self.parent_path,
+            self.selected_parent_path.clone(),
+            self.target_path.clone(),
+            self.leaf.clone(),
+            None,
+        )
     }
 
     #[cfg(unix)]
     fn revalidate_parent(&self) -> Result<(), SaveTargetError> {
         validate_parent_path(&self.parent_path, self.parent_identity, &self.target_path)
     }
+}
+
+#[cfg(windows)]
+fn create_windows_authorized_stage(
+    parent_handle: Arc<OwnedHandle>,
+    parent_identity: WindowsFileIdentity,
+    parent_path: &Path,
+    selected_parent_path: PathBuf,
+    target_path: PathBuf,
+    target_leaf: OsString,
+    replaces: Option<WindowsFileIdentity>,
+) -> Result<AuthorizedPdfStage, SaveTargetError> {
+    remove_abandoned_windows_stages(parent_handle.as_ref(), parent_path, &target_path);
+    let stage_leaf = OsString::from(format!(
+        ".butter-paper-{}-{}.tmp",
+        std::process::id(),
+        NEXT_STAGE_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    let stage_handle = WindowsCreatedStage(Some(create_windows_stage(
+        parent_handle.as_ref(),
+        &stage_leaf,
+        &target_path,
+    )?));
+    ensure_windows_not_reparse(
+        stage_handle.handle(),
+        &target_path,
+        SaveTargetErrorKind::StageChanged,
+        "PDF stage",
+    )?;
+    let stage_identity = windows_file_identity(stage_handle.handle(), &target_path, "PDF stage")?;
+    let stage_path = parent_path.join(&stage_leaf);
+    let file = stage_handle.into_file();
+    Ok(AuthorizedPdfStage {
+        target_path,
+        target_leaf,
+        parent_identity,
+        parent_handle,
+        selected_parent_path,
+        stage_leaf,
+        stage_identity,
+        replaces,
+        stage_path,
+        file: Some(file),
+        published: false,
+    })
+}
+
+/// Stages an in-place Save of `target`, the opened PDF, beside it. Like Save
+/// As, the stage is created and published relative to the retained parent
+/// directory; publication replaces the PDF only while its name still refers
+/// to the file recorded here.
+#[cfg(windows)]
+pub(crate) fn prepare_windows_in_place_stage(
+    target: &Path,
+) -> Result<AuthorizedPdfStage, SaveTargetError> {
+    let parent = target.parent().ok_or_else(|| {
+        SaveTargetError::new(
+            SaveTargetErrorKind::MissingParent,
+            target.to_path_buf(),
+            "the opened PDF has no parent directory",
+        )
+    })?;
+    let leaf = target.file_name().ok_or_else(|| {
+        SaveTargetError::new(
+            SaveTargetErrorKind::MissingFileName,
+            target.to_path_buf(),
+            "the opened PDF has no file name",
+        )
+    })?;
+    let parent_handle = open_windows_parent(parent, target)?;
+    let parent_identity = windows_file_identity(&parent_handle, target, "source parent")?;
+    ensure_windows_not_reparse(
+        &parent_handle,
+        target,
+        SaveTargetErrorKind::UnsafeParent,
+        "source parent",
+    )?;
+    validate_windows_parent_path(
+        parent,
+        parent_identity,
+        target,
+        SaveTargetErrorKind::UnsafeParent,
+    )?;
+    let target_identity = windows_source_identity(&parent_handle, leaf, target)?;
+    create_windows_authorized_stage(
+        Arc::new(parent_handle),
+        parent_identity,
+        parent,
+        parent.to_path_buf(),
+        target.to_path_buf(),
+        leaf.to_owned(),
+        Some(target_identity),
+    )
+}
+
+/// The identity of the existing, non-reparse PDF named `leaf` in `parent`.
+#[cfg(windows)]
+fn windows_source_identity(
+    parent: &impl AsRawHandle,
+    leaf: &OsStr,
+    target_path: &Path,
+) -> Result<WindowsFileIdentity, SaveTargetError> {
+    let current = open_windows_relative(parent, leaf, target_path, "inspect opened PDF")?
+        .ok_or_else(|| {
+            SaveTargetError::new(
+                SaveTargetErrorKind::SourceChanged,
+                target_path.to_path_buf(),
+                "the opened PDF no longer exists",
+            )
+        })?;
+    ensure_windows_not_reparse(
+        &current,
+        target_path,
+        SaveTargetErrorKind::SourceChanged,
+        "opened PDF",
+    )?;
+    windows_file_identity(&current, target_path, "opened PDF")
 }
 
 #[cfg(any(unix, windows))]
@@ -455,6 +552,9 @@ pub(crate) struct AuthorizedPdfStage {
     stage_identity: (u64, u64),
     #[cfg(windows)]
     stage_identity: WindowsFileIdentity,
+    /// For an in-place Save, the identity of the file publication replaces.
+    #[cfg(windows)]
+    replaces: Option<WindowsFileIdentity>,
     stage_path: PathBuf,
     file: Option<File>,
     published: bool,
@@ -537,11 +637,27 @@ impl AuthorizedPdfStage {
             "selected parent",
         )?;
         self.revalidate_stage_windows()?;
-        ensure_leaf_absent_windows(
-            self.parent_handle.as_ref(),
-            &self.target_leaf,
-            &self.target_path,
-        )?;
+        match self.replaces {
+            None => ensure_leaf_absent_windows(
+                self.parent_handle.as_ref(),
+                &self.target_leaf,
+                &self.target_path,
+            )?,
+            Some(expected) => {
+                if windows_source_identity(
+                    self.parent_handle.as_ref(),
+                    &self.target_leaf,
+                    &self.target_path,
+                )? != expected
+                {
+                    return Err(SaveTargetError::new(
+                        SaveTargetErrorKind::SourceChanged,
+                        self.target_path.clone(),
+                        "the opened PDF was replaced before the save finished",
+                    ));
+                }
+            }
+        }
         let file = self.file.as_ref().ok_or_else(|| {
             SaveTargetError::new(
                 SaveTargetErrorKind::StageChanged,
@@ -560,6 +676,7 @@ impl AuthorizedPdfStage {
             self.parent_handle.as_ref(),
             &self.target_leaf,
             &self.target_path,
+            self.replaces.is_some(),
         )?;
         // The retained parent handle denies delete sharing for its entire
         // lifetime. A successful root-relative rename is therefore the
@@ -589,7 +706,7 @@ impl AuthorizedPdfStage {
                     .map_err(|error| target_io_error(&self.target_path, "inspect PDF stage", error))
             })?;
         let current_identity = (current.st_dev as u64, current.st_ino as u64);
-        let open_identity = (open.st_dev as u64, open.st_ino as u64);
+        let open_identity = crate::pdf_engine::stat_identity(&open);
         if current_identity != self.stage_identity || open_identity != self.stage_identity {
             return Err(SaveTargetError::new(
                 SaveTargetErrorKind::StageChanged,
@@ -659,7 +776,7 @@ impl Drop for AuthorizedPdfStage {
             let current_identity =
                 rfs::statat(&self.parent_fd, &self.stage_leaf, AtFlags::SYMLINK_NOFOLLOW)
                     .ok()
-                    .map(|stat| (stat.st_dev as u64, stat.st_ino as u64));
+                    .map(|stat| crate::pdf_engine::stat_identity(&stat));
             if current_identity == Some(self.stage_identity) {
                 let _ = rfs::unlinkat(&self.parent_fd, &self.stage_leaf, AtFlags::empty());
             }
@@ -810,6 +927,112 @@ fn mark_windows_delete_on_close(handle: &impl AsRawHandle) -> std::io::Result<()
     } else {
         Ok(())
     }
+}
+
+/// Unlike Unix, a Windows save keeps no receipt, so a crash mid-save leaves
+/// its stage beside the PDF. Stage names carry the owning process ID; remove
+/// those whose owner has exited. A stage of a running process is never
+/// touched, and a reused ID only leaves a stage for a later save.
+#[cfg(windows)]
+fn remove_abandoned_windows_stages(parent: &OwnedHandle, parent_path: &Path, target_path: &Path) {
+    let Ok(entries) = fs::read_dir(parent_path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let leaf = entry.file_name();
+        let Some(pid) = abandoned_stage_owner(&leaf) else {
+            continue;
+        };
+        if pid == std::process::id() || windows_process_may_be_running(pid) {
+            continue;
+        }
+        let result =
+            open_windows_relative_for_delete(parent, &leaf, target_path).and_then(|handle| {
+                let Some(handle) = handle else {
+                    return Ok(());
+                };
+                ensure_windows_not_reparse(
+                    &handle,
+                    target_path,
+                    SaveTargetErrorKind::StageChanged,
+                    "abandoned PDF stage",
+                )?;
+                mark_windows_delete_on_close(&handle).map_err(|error| {
+                    SaveTargetError::new(
+                        SaveTargetErrorKind::Io,
+                        target_path.to_path_buf(),
+                        error.to_string(),
+                    )
+                })
+            });
+        if let Err(error) = result {
+            windows_cleanup_diagnostic(&format!("abandoned stage cleanup failed: {error}"));
+        }
+    }
+}
+
+/// The process ID in a `.butter-paper-<pid>-<n>.tmp` stage name.
+#[cfg(windows)]
+fn abandoned_stage_owner(leaf: &OsStr) -> Option<u32> {
+    let (pid, sequence) = leaf
+        .to_str()?
+        .strip_prefix(".butter-paper-")?
+        .strip_suffix(".tmp")?
+        .split_once('-')?;
+    let digits = |value: &str| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit());
+    (digits(pid) && digits(sequence))
+        .then(|| pid.parse().ok())
+        .flatten()
+}
+
+#[cfg(windows)]
+fn windows_process_may_be_running(pid: u32) -> bool {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, STILL_ACTIVE},
+        System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    };
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        // Only a nonexistent process is known not to be running.
+        return unsafe { GetLastError() } != ERROR_INVALID_PARAMETER;
+    }
+    let mut code = 0;
+    let queried = unsafe { GetExitCodeProcess(process, &mut code) };
+    unsafe { CloseHandle(process) };
+    queried == 0 || code == STILL_ACTIVE as u32
+}
+
+#[cfg(windows)]
+fn open_windows_relative_for_delete(
+    parent: &impl AsRawHandle,
+    leaf: &OsStr,
+    target_path: &Path,
+) -> Result<Option<OwnedHandle>, SaveTargetError> {
+    let mut handle: HANDLE = std::ptr::null_mut();
+    let mut io_status = IO_STATUS_BLOCK::default();
+    let status = with_windows_relative_name(parent, leaf, target_path, |attributes| unsafe {
+        NtOpenFile(
+            &mut handle,
+            DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            attributes,
+            &mut io_status,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
+        )
+    })?;
+    if status == STATUS_OBJECT_NAME_NOT_FOUND || status == STATUS_OBJECT_PATH_NOT_FOUND {
+        return Ok(None);
+    }
+    if status < 0 {
+        return Err(windows_nt_error(
+            target_path,
+            "open abandoned PDF stage",
+            status,
+        ));
+    }
+    Ok(Some(unsafe {
+        OwnedHandle::from_raw_handle(handle as RawHandle)
+    }))
 }
 
 #[cfg(windows)]
@@ -1029,11 +1252,15 @@ fn ensure_windows_not_reparse(
 }
 
 #[cfg(windows)]
+/// Renames the open stage to `target_leaf` in `parent`. Replacing uses POSIX
+/// semantics, so the replaced PDF can stay open elsewhere (the PDF worker
+/// keeps it open, sharing delete) and keeps its contents for those handles.
 fn rename_windows_handle_relative(
     file: &File,
     parent: &impl AsRawHandle,
     target_leaf: &OsStr,
     target_path: &Path,
+    replace: bool,
 ) -> Result<(), SaveTargetError> {
     let name = target_leaf.encode_wide().collect::<Vec<_>>();
     let name_bytes = name.len().checked_mul(2).ok_or_else(|| {
@@ -1071,7 +1298,11 @@ fn rename_windows_handle_relative(
     let mut storage = vec![0usize; words];
     let rename = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
     unsafe {
-        (*rename).Anonymous.ReplaceIfExists = false;
+        if replace {
+            (*rename).Anonymous.Flags = FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS;
+        } else {
+            (*rename).Anonymous.ReplaceIfExists = false;
+        }
         (*rename).RootDirectory = windows_handle(parent);
         (*rename).FileNameLength = name_bytes_u32;
         std::ptr::copy_nonoverlapping(
@@ -1087,7 +1318,11 @@ fn rename_windows_handle_relative(
             &mut io_status,
             storage.as_ptr().cast(),
             total_bytes_u32,
-            FileRenameInformation,
+            if replace {
+                FileRenameInformationEx
+            } else {
+                FileRenameInformation
+            },
         )
     };
     if status >= 0 {
@@ -1102,7 +1337,11 @@ fn rename_windows_handle_relative(
     } else {
         Err(windows_nt_error(
             target_path,
-            "publish PDF without replacement",
+            if replace {
+                "replace the opened PDF"
+            } else {
+                "publish PDF without replacement"
+            },
             status,
         ))
     }

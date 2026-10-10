@@ -4,8 +4,9 @@
 //! stock control state, input drafts, disclosure state, and target-bound
 //! intent events.
 
+use crate::dialog_buttons::{dialog_action_button, dialog_close_button};
 use crate::{
-    accessible_button::accessible_icon_button,
+    accessible_button::close_icon_button,
     annotation_adapter::AnnotationTool,
     document_workspace::DocumentId,
     property_controls::{
@@ -20,11 +21,11 @@ use gpui::{
     Subscription, Window, div,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, IconName, IndexPath, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, IndexPath, WindowExt as _,
     accordion::Accordion,
     button::{Button, ButtonVariants as _},
     color_picker::{ColorPickerEvent, ColorPickerState},
-    dialog::{DialogAction, DialogClose, DialogFooter},
+    dialog::DialogFooter,
     form::Field,
     input::{InputEvent, InputState},
     select::{Select, SelectEvent, SelectState},
@@ -510,12 +511,6 @@ impl ToolDefaultsPanel {
         });
     }
 
-    fn emit_close(&self, cx: &mut Context<Self>) {
-        if !self.syncing && !self.disabled {
-            cx.emit(ToolDefaultsEvent::Close);
-        }
-    }
-
     fn render_colour_field(&self, disabled: bool) -> AnyElement {
         let label = match self.tool {
             Some(AnnotationTool::TextBox) => "Text colour",
@@ -757,18 +752,10 @@ impl Render for ToolDefaultsPanel {
             || "Close tool properties".to_owned(),
             |tool| format!("Close {} properties", tool.label()),
         );
-        let close = accessible_icon_button(
-            Button::new(TOOL_DEFAULTS_CLOSE_ID)
-                .debug_selector(|| TOOL_DEFAULTS_CLOSE_ID.into())
-                .accessibility_id(TOOL_DEFAULTS_CLOSE_ID)
-                .ghost()
-                .xsmall()
-                .icon(IconName::Close)
-                .tooltip(close_label.clone())
-                .disabled(self.disabled)
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.emit_close(cx))),
-            close_label,
-        );
+        // Closing only hides the panel, so it stays available while the
+        // panel's controls are inert.
+        let close = close_icon_button(TOOL_DEFAULTS_CLOSE_ID, close_label)
+            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ToolDefaultsEvent::Close)));
 
         let title = match tool {
             None | Some(AnnotationTool::Select) => "Properties",
@@ -928,24 +915,20 @@ fn open_reset_confirmation(
             ))
             .footer(
                 DialogFooter::new()
-                    .child(
-                        DialogClose::new().child(
-                            Button::new(TOOL_DEFAULTS_RESET_CANCEL_ID)
-                                .debug_selector(|| TOOL_DEFAULTS_RESET_CANCEL_ID.into())
-                                .accessibility_id(TOOL_DEFAULTS_RESET_CANCEL_ID)
-                                .outline()
-                                .label("Cancel"),
-                        ),
-                    )
-                    .child(
-                        DialogAction::new().child(
-                            Button::new(TOOL_DEFAULTS_RESET_CONFIRM_ID)
-                                .debug_selector(|| TOOL_DEFAULTS_RESET_CONFIRM_ID.into())
-                                .accessibility_id(TOOL_DEFAULTS_RESET_CONFIRM_ID)
-                                .primary()
-                                .label("Reset"),
-                        ),
-                    ),
+                    .child(dialog_close_button(
+                        Button::new(TOOL_DEFAULTS_RESET_CANCEL_ID)
+                            .debug_selector(|| TOOL_DEFAULTS_RESET_CANCEL_ID.into())
+                            .accessibility_id(TOOL_DEFAULTS_RESET_CANCEL_ID)
+                            .outline()
+                            .label("Cancel"),
+                    ))
+                    .child(dialog_action_button(
+                        Button::new(TOOL_DEFAULTS_RESET_CONFIRM_ID)
+                            .debug_selector(|| TOOL_DEFAULTS_RESET_CONFIRM_ID.into())
+                            .accessibility_id(TOOL_DEFAULTS_RESET_CONFIRM_ID)
+                            .primary()
+                            .label("Reset"),
+                    )),
             )
             .on_ok(move |_, _, cx| {
                 panel
@@ -1126,6 +1109,45 @@ fn can_apply_reset(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn close_stays_available_while_the_controls_are_inert(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let slot = slot.clone();
+            move |window, cx| {
+                let panel = cx.new(|cx| ToolDefaultsPanel::new(window, cx));
+                slot.replace(Some(panel.clone()));
+                gpui_component::Root::new(panel, window, cx)
+            }
+        });
+        let panel = slot.borrow_mut().take().unwrap();
+        let closed = std::rc::Rc::new(std::cell::Cell::new(false));
+        cx.update(|_, cx| {
+            let closed = closed.clone();
+            cx.subscribe(&panel, move |_, event: &ToolDefaultsEvent, _| {
+                if matches!(event, ToolDefaultsEvent::Close) {
+                    closed.set(true);
+                }
+            })
+            .detach();
+        });
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                let tool = AnnotationTool::Rectangle;
+                let properties = ToolProperties::for_tool(tool);
+                panel.sync(DocumentId::new(1), tool, properties, true, window, cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        // Saving makes the panel's controls inert; hiding the panel is not
+        // a document edit, so its X still works, as every other X does.
+        let close = cx.debug_bounds(TOOL_DEFAULTS_CLOSE_ID).unwrap();
+        cx.simulate_click(close.center(), gpui::Modifiers::default());
+        assert!(closed.get());
+    }
 
     #[test]
     fn numeric_values_use_model_applicability_and_ranges() {

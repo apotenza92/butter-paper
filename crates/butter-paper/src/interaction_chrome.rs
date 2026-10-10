@@ -329,6 +329,19 @@ pub(super) fn paint_rotation_feedback(
     hot: bool,
     window: &mut Window,
 ) {
+    if let Some(path) = rotation_connector_path(start, end, state) {
+        window.paint_path(path, chrome_style(state).colour);
+    }
+    if let Some(quad) = rotation_feedback_quad(center, state, hot) {
+        window.paint_quad(quad);
+    }
+}
+
+fn rotation_connector_path(
+    start: Point<Pixels>,
+    end: Point<Pixels>,
+    state: ChromeState,
+) -> Option<Path<Pixels>> {
     let style = chrome_style(state);
     // The stem leaves from the outset selection outline, not the item itself.
     let (dx, dy) = (f32::from(end.x - start.x), f32::from(end.y - start.y));
@@ -337,15 +350,16 @@ pub(super) fn paint_rotation_feedback(
         let scale = SELECTION_OUTSET_PX / length;
         let start = gpui::point(start.x + px(dx * scale), start.y + px(dy * scale));
         let mut builder = PathBuilder::stroke(px(style.width));
+        if let Some((dash, gap)) = style.dash {
+            builder = builder.dash_array(&[px(dash), px(gap)]);
+        }
         builder.move_to(start);
         builder.line_to(end);
         if let Ok(path) = builder.build() {
-            window.paint_path(path, style.colour);
+            return Some(path);
         }
     }
-    if let Some(quad) = rotation_feedback_quad(center, state, hot) {
-        window.paint_quad(quad);
-    }
+    None
 }
 
 fn marquee_style(kind: SelectionKind) -> (Hsla, f32, bool) {
@@ -477,6 +491,22 @@ mod tests {
         assert_eq!(hot.border_color, selection_colour());
         assert_eq!(hot.border_widths.top, px(2.));
         assert!(rotation_feedback_quad(center, ChromeState::Draft, false).is_none());
+    }
+
+    #[test]
+    fn rotation_connector_has_separate_dashes_and_clears_the_markup() {
+        let start = gpui::point(px(20.), px(100.));
+        let end = gpui::point(px(20.), px(0.));
+        let path = rotation_connector_path(start, end, ChromeState::Selected).unwrap();
+        assert!(
+            path.vertices.len() > 6,
+            "connector must contain multiple dash segments"
+        );
+        assert!(
+            f32::from(path.bounds.bottom()) <= 95.,
+            "stem starts outside the markup"
+        );
+        assert!(rotation_connector_path(start, start, ChromeState::Selected).is_none());
     }
 
     #[test]

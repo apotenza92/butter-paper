@@ -5,15 +5,18 @@ use std::{
 };
 
 use butter_paper::document_workspace::{DocumentOpenBatchRequest, DocumentOpenOrigin};
+#[cfg(unix)]
 use butter_paper::native_document_view_state::RestartView;
 use butter_paper::native_launch::{
     NativeLaunchAction, NativeLaunchConfig, NativeLaunchError, NativeLaunchSessionSource,
     NativeLaunchWarning,
 };
+#[cfg(unix)]
+use butter_paper::session_manifest::SessionManifestOperationError;
 use butter_paper::session_manifest::{
-    SessionManifestCorruptionError, SessionManifestError, SessionManifestOperationError,
-    SessionManifestStore, SessionManifestValidationError, SessionRecoveryDocument,
-    SessionRecoverySnapshot, SessionSnapshot,
+    SessionManifestCorruptionError, SessionManifestError, SessionManifestStore,
+    SessionManifestValidationError, SessionRecoveryDocument, SessionRecoverySnapshot,
+    SessionSnapshot,
 };
 
 static SCRATCH_SEQUENCE: AtomicU64 = AtomicU64::new(1);

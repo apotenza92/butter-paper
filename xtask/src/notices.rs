@@ -217,10 +217,11 @@ fn licence_files(package: &Package) -> Result<BTreeMap<String, String>> {
         {
             let entry = entry.map_err(|error| error.to_string())?;
             let name = entry.file_name().to_string_lossy().into_owned();
-            if phone::is_licence_name(&name) && entry.path().is_file() {
-                if let Ok(body) = fs::read_to_string(entry.path()) {
-                    files.insert(name, body);
-                }
+            if phone::is_licence_name(&name)
+                && entry.path().is_file()
+                && let Ok(body) = fs::read_to_string(entry.path())
+            {
+                files.insert(name, body);
             }
         }
         // A checkout root is .../git/checkouts/<repository>/<revision>.

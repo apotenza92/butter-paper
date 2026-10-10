@@ -73,7 +73,7 @@ pub fn write_reference(source: &Path, target: &Path) {
         .unwrap();
     // Revu "1:100" metric preset: 1 cm on paper is 1 m, reported in mm.
     let calibration = LengthCalibration::from_scale(72. / 2.54, 1000., "mm", 2, true).unwrap();
-    let asset = DecodedRgbaAsset::new(2, 2, vec![70, 130, 180, 255].repeat(4)).unwrap();
+    let asset = DecodedRgbaAsset::new(2, 2, [70, 130, 180, 255].repeat(4)).unwrap();
 
     let mut session = PdfPersistenceSession::open(source).unwrap();
     session
@@ -1036,7 +1036,10 @@ fn edited_revu_vector_snapshot_keeps_its_form() {
 
     let reopened = PdfPersistenceSession::open(&target).unwrap();
     assert!(reopened.untouched_annotations().is_empty());
-    assert_eq!(reopened.vector_snapshot_ids(), [snapshot.id.clone()]);
+    assert_eq!(
+        reopened.vector_snapshot_ids(),
+        std::slice::from_ref(&snapshot.id)
+    );
     let moved = &reopened.snapshots()[0];
     assert!((moved.rect.x - snapshot.rect.x).abs() < 0.01, "{moved:?}");
     assert!((moved.rotation_degrees() - 30.).abs() < 0.01);

@@ -21,7 +21,9 @@ use butter_paper::{
 };
 use butter_paper::{
     application_close::{
-        ApplicationCloseAction, ApplicationCloseCompletionKind, ApplicationCloseTransitionStatus,
+        APPLICATION_CLOSE_CANCEL_ID, APPLICATION_CLOSE_DESCRIPTION_ID,
+        APPLICATION_CLOSE_SAVE_ALL_ID, ApplicationCloseAction, ApplicationCloseCompletionKind,
+        ApplicationCloseTransitionStatus,
     },
     application_close_workspace::{
         APPLICATION_CLOSE_RECOVERY_ALERT_ID, APPLICATION_CLOSE_RECOVERY_CANCEL_ID,
@@ -279,7 +281,8 @@ fn owned_target(name: impl AsRef<Path>) -> PathBuf {
         .join("target/test-scratch")
         .join("owned-targets");
     std::fs::create_dir_all(&directory).unwrap();
-    directory.join(name)
+    // Saves record the canonical target, which on Windows is the `\\?\` form.
+    std::fs::canonicalize(&directory).unwrap().join(name)
 }
 
 fn worker_process_is_alive(pid: u32) -> bool {
@@ -288,9 +291,23 @@ fn worker_process_is_alive(pid: u32) -> bool {
         let result = unsafe { libc::kill(pid as i32, 0) };
         result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        Path::new(&format!("/proc/{pid}")).exists()
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        // SAFETY: the handle is checked and closed; the exit code is a local.
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process.is_null() {
+                return false;
+            }
+            let mut code = 0;
+            let alive = GetExitCodeProcess(process, &mut code) != 0 && code == STILL_ACTIVE as u32;
+            CloseHandle(process);
+            alive
+        }
     }
 }
 
@@ -3114,6 +3131,19 @@ fn real_mixed_document_application_close_saves_generated_target_and_releases_res
     cx.update(|window, cx| {
         let _ = window.draw(cx);
     });
+    // The stock alert layout separates the description from the actions;
+    // a hand-built body once left the buttons touching the description.
+    let description = cx.debug_bounds(APPLICATION_CLOSE_DESCRIPTION_ID).unwrap();
+    let cancel = cx.debug_bounds(APPLICATION_CLOSE_CANCEL_ID).unwrap();
+    let save_all = cx.debug_bounds(APPLICATION_CLOSE_SAVE_ALL_ID).unwrap();
+    assert!(
+        cancel.top() - description.bottom() >= px(12.),
+        "close actions must sit clear of the description: {description:?} above {cancel:?}"
+    );
+    assert!(
+        cancel.right() < save_all.left() && save_all.size.width < px(160.),
+        "close actions keep their label widths, ending with Save All"
+    );
     let mut observed_worker_pids = workspace.read_with(cx, |workspace, cx| {
         workspace
             .sessions()
@@ -3756,8 +3786,11 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
         .debug_bounds(DOCUMENT_SELECT_TOOL_ID)
         .expect("the real Select control must render");
     cx.simulate_click(select_tool.center(), Modifiers::default());
-    let move_start = to_view(150., 150.);
-    let move_end = to_view(168., 138.);
+    // The unfilled interior passes through; move from the selected outline's
+    // inner band, outside the narrower edge-resize zone.
+    let move_x = 100. + 10. / f64::from(render_scale);
+    let move_start = to_view(move_x, 150.);
+    let move_end = to_view(move_x + 18., 138.);
     cx.simulate_mouse_down(move_start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(move_end, Some(MouseButton::Left), Modifiers::default());
     cx.simulate_mouse_up(move_end, MouseButton::Left, Modifiers::default());
@@ -3977,6 +4010,12 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
     pixel_proof.close().unwrap();
     assert!(!worker_process_is_alive(pixel_worker_pid));
 
+    scroll_annotation_target_into_view(fresh_cx, DOCUMENT_SELECT_TOOL_ID);
+    let reopened_select = fresh_cx
+        .debug_bounds(DOCUMENT_SELECT_TOOL_ID)
+        .expect("the fresh shell must render the Select control");
+    fresh_cx.simulate_click(reopened_select.center(), Modifiers::default());
+    fresh_cx.update(|window, cx| window.draw(cx).clear(cx));
     let reopened_layer_id =
         Box::leak(document_annotation_layer_id(reopened_id, 0).into_boxed_str());
     let reopened_layer = fresh_cx
@@ -3996,12 +4035,12 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
             reopened_origin.y + px((792. - pdf_y as f32) * reopened_scale),
         )
     };
-    scroll_annotation_target_into_view(fresh_cx, DOCUMENT_SELECT_TOOL_ID);
-    let reopened_select = fresh_cx
-        .debug_bounds(DOCUMENT_SELECT_TOOL_ID)
-        .expect("the fresh shell must render the Select control");
-    fresh_cx.simulate_click(reopened_select.center(), Modifiers::default());
-    fresh_cx.simulate_click(reopened_to_view(183., 138.), Modifiers::default());
+    // Select the reopened stroke directly: its unfilled centre starts a
+    // canvas marquee instead of selecting the Rectangle.
+    fresh_cx.simulate_click(
+        reopened_to_view(expected_rect.x + expected_rect.width / 2., expected_rect.y),
+        Modifiers::default(),
+    );
     assert_eq!(
         fresh_workspace
             .read_with(fresh_cx, |workspace, cx| workspace
@@ -4092,7 +4131,7 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
                     .all(|rectangle| rectangle.id != rectangle_id)
             );
             let evidence = workspace.evidence_snapshot(second_reopened_id, cx).unwrap();
-            assert_eq!(evidence.page_count as usize, source_page_count);
+            assert_eq!(evidence.page_count, source_page_count);
             assert!(evidence.current_raster_has_spatial_variation);
             workspace
                 .session(second_reopened_id, cx)
@@ -5002,10 +5041,10 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
     assert_eq!(created_text_box.id.as_str(), "workspace:text:1");
     assert_eq!(created_text_box.page_index, 0);
     assert_eq!(created_text_box.content(), expected_content);
-    assert!((created_text_box.layout_rect.x - 66.5).abs() < 0.001);
-    assert!((created_text_box.layout_rect.y - 73.2).abs() < 0.001);
-    assert!((created_text_box.layout_rect.width - 89.2).abs() < 0.001);
-    assert!((created_text_box.layout_rect.height - 31.8).abs() < 0.001);
+    assert!((created_text_box.layout_rect.x - 68.5).abs() < 0.001);
+    assert!((created_text_box.layout_rect.y - 72.3).abs() < 0.001);
+    assert!((created_text_box.layout_rect.width - 85.2).abs() < 0.001);
+    assert!((created_text_box.layout_rect.height - 33.6).abs() < 0.001);
     assert_eq!(created_text_box.style().font_family(), "Helvetica");
     assert_eq!(created_text_box.style().font_size_pt(), 12.);
     assert_eq!(created_text_box.style().color(), "#ff0000");
@@ -5179,6 +5218,12 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
     assert!(workspace.update(cx, |workspace, cx| {
         workspace.select_annotation(document_id, &created_text_box.id, cx)
     }));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    // Selection does not open properties; the rail's properties action does.
+    let actions = cx
+        .debug_bounds("document-workspace-rail-actions")
+        .expect("the right-rail properties action must render");
+    cx.simulate_click(actions.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let inspector = workspace
         .read_with(cx, |workspace, _| workspace.text_box_property_inspector())
@@ -6107,8 +6152,17 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
     scroll_annotation_target_into_view(cx, DOCUMENT_SELECT_TOOL_ID);
     let select_tool_point = cx.debug_bounds(DOCUMENT_SELECT_TOOL_ID).unwrap().center();
     cx.simulate_click(select_tool_point, Modifiers::default());
+    // Select the stroke, then drag its inner move band. The centre of an
+    // unfilled Rectangle is empty canvas rather than a markup hit target.
+    cx.simulate_click(
+        to_view(
+            rectangle_before.rect.x,
+            rectangle_before.rect.y + rectangle_before.rect.height / 2.,
+        ),
+        Modifiers::default(),
+    );
     let rectangle_center = PdfPoint::new(
-        rectangle_before.rect.x + rectangle_before.rect.width / 2.,
+        rectangle_before.rect.x + 10. / f64::from(scale),
         rectangle_before.rect.y + rectangle_before.rect.height / 2.,
     )
     .unwrap();
@@ -6727,7 +6781,7 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
         })
         .unwrap();
     assert!(reopened_evidence.ready && reopened_evidence.current_raster_has_spatial_variation);
-    assert_eq!(reopened_evidence.page_count as usize, source_page_count);
+    assert_eq!(reopened_evidence.page_count, source_page_count);
     let reopened = fresh_workspace
         .read_with(fresh_cx, |workspace, cx| {
             workspace.annotation_snapshot(reopened_document, cx)

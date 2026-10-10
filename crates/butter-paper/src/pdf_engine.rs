@@ -210,8 +210,11 @@ fn receipt_token_from_leaf(leaf: &OsStr) -> Option<&str> {
     (token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(token)
 }
 
+/// The (device, inode) pair identifying a file.
 #[cfg(unix)]
-fn stat_identity(stat: &rfs::Stat) -> (u64, u64) {
+// `st_dev` is `u64` on Linux but `i32` on macOS.
+#[allow(clippy::unnecessary_cast)]
+pub(crate) fn stat_identity(stat: &rfs::Stat) -> (u64, u64) {
     (stat.st_dev as u64, stat.st_ino as u64)
 }
 
@@ -253,8 +256,8 @@ fn recover_abandoned_in_place_stage(
     parent_identity: (u64, u64),
     target_leaf: &OsStr,
 ) -> Result<(), PdfPersistenceError> {
-    let mut directory = rfs::Dir::read_from(parent_fd).map_err(std::io::Error::from)?;
-    while let Some(entry) = directory.next() {
+    let directory = rfs::Dir::read_from(parent_fd).map_err(std::io::Error::from)?;
+    for entry in directory {
         let entry = entry.map_err(std::io::Error::from)?;
         let receipt_leaf = OsStr::from_bytes(entry.file_name().to_bytes());
         let Some(name_token) = receipt_token_from_leaf(receipt_leaf) else {
@@ -340,10 +343,9 @@ fn recover_abandoned_in_place_stage(
                 && target_stat.as_ref().is_some_and(|stat| {
                     stat_is_regular(stat) && stat_owned_by_current_user(stat) && stat.st_nlink == 1
                 })
+                && unlink_exact_single_link(parent_fd, receipt_leaf, receipt_identity)?
             {
-                if unlink_exact_single_link(parent_fd, receipt_leaf, receipt_identity)? {
-                    rfs::fsync(parent_fd).map_err(std::io::Error::from)?;
-                }
+                rfs::fsync(parent_fd).map_err(std::io::Error::from)?;
             }
             continue;
         }
@@ -695,7 +697,31 @@ impl PreparedPdfSave {
     /// and syncs the parent directory. The temporary file remains owned by this
     /// value and is removed on every pre-publication failure.
     pub fn publish_replacing(mut self) -> Result<PdfPublicationOutcome, PdfPersistenceError> {
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let guard = self.replacement_guard.as_ref().ok_or_else(|| {
+                PdfPersistenceError::InvalidDocument(
+                    "in-place publication requires a verified source guard".into(),
+                )
+            })?;
+            if read_regular_file_snapshot(&self.target)?.sha256 != guard.sha256 {
+                return Err(PdfPersistenceError::InvalidDocument(
+                    "source PDF changed before in-place publication".into(),
+                ));
+            }
+            let warnings = self
+                .authorized_stage
+                .take()
+                .ok_or_else(|| {
+                    PdfPersistenceError::InvalidDocument(
+                        "in-place publication lost its owned staging authority".into(),
+                    )
+                })?
+                .publish()?;
+            self.published = true;
+            Ok(publication_outcome(warnings))
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             return Err(PdfPersistenceError::InvalidDocument(
                 "atomic in-place PDF publication is not yet implemented on this platform".into(),
@@ -830,13 +856,13 @@ impl SourceGuard {
                     "source PDF parent must be a directory".into(),
                 ));
             }
-            return Ok(Self {
+            Ok(Self {
                 sha256: snapshot.sha256,
                 identity: snapshot.identity,
                 mode: snapshot.mode,
                 canonical_parent,
                 parent_identity: (metadata.dev(), metadata.ino()),
-            });
+            })
         }
         #[cfg(not(unix))]
         {
@@ -1071,11 +1097,11 @@ impl PdfPersistenceError {
 
 impl PdfPersistenceSession {
     pub const fn in_place_publication_capability() -> InPlacePublicationCapability {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             InPlacePublicationCapability::VerifiedAtomicReplacement
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             InPlacePublicationCapability::NewTargetRequired
         }
@@ -3940,6 +3966,10 @@ impl PdfPersistenceSession {
         let file_name = target.file_name().ok_or_else(|| {
             PdfPersistenceError::InvalidDocument("save target must have a file name".into())
         })?;
+        #[cfg(windows)]
+        if let Some(guard) = replacement_guard {
+            return self.prepare_windows_in_place(target, guard);
+        }
         let temp_id = NEXT_TEMP_FILE_ID.fetch_add(1, Ordering::Relaxed);
         let temporary = parent.join(format!(
             ".{}.butter-paper-{}-{temp_id}.tmp",
@@ -4020,6 +4050,37 @@ impl PdfPersistenceSession {
             fs::remove_file(&temporary).ok();
         }
         result
+    }
+
+    /// Writes an in-place Save to a stage beside the opened PDF; see
+    /// [`crate::pdf_file_authority::prepare_windows_in_place_stage`].
+    #[cfg(windows)]
+    fn prepare_windows_in_place(
+        &self,
+        target: &Path,
+        guard: SourceGuard,
+    ) -> Result<PreparedPdfSave, PdfPersistenceError> {
+        let mut stage = crate::pdf_file_authority::prepare_windows_in_place_stage(target)?;
+        let output = stage.file_mut();
+        let mut document = self.document.clone();
+        write_page_scales(&mut document, &self.page_scales, &self.original_page_scales)?;
+        write_page_rotations(
+            &mut document,
+            &self.page_rotations,
+            &self.changed_page_rotations,
+        )?;
+        prune_unreachable_objects_for_save(&mut document);
+        document.save_to(&mut *output)?;
+        output.flush()?;
+        output.sync_all()?;
+        Ok(PreparedPdfSave {
+            temporary: stage.path().to_path_buf(),
+            target: target.to_path_buf(),
+            replacement_guard: Some(guard),
+            authorized_stage: Some(stage),
+            cleanup_owned_by_authority: true,
+            published: false,
+        })
     }
 
     /// Prepares a new PDF through a one-shot target authority captured at the
@@ -5459,18 +5520,13 @@ const HELVETICA_BOLD_WIN_ANSI_WIDTHS: [u16; 256] = [
     611, 611, 611, 611, 611, 584, 611, 611, 611, 611, 611, 556, 611, 556,
 ];
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Default)]
 enum StandardTextFont {
+    #[default]
     Regular,
     Bold,
     Oblique,
     BoldOblique,
-}
-
-impl Default for StandardTextFont {
-    fn default() -> Self {
-        Self::Regular
-    }
 }
 
 impl StandardTextFont {
@@ -9190,7 +9246,7 @@ fn local_utc_offset_seconds(seconds: i64) -> i64 {
         return 0;
     }
     // SAFETY: `localtime_r` succeeded and initialised `local`.
-    i64::from(unsafe { local.assume_init() }.tm_gmtoff)
+    unsafe { local.assume_init() }.tm_gmtoff
 }
 
 #[cfg(not(unix))]
@@ -12060,12 +12116,12 @@ fn import_callout(
     let stroke_color =
         parse_default_appearance(&dictionary_string(annotation, b"DA").unwrap_or_default())
             .0
-            .unwrap_or_else(|| (&imported_style).color().to_owned());
+            .unwrap_or_else(|| imported_style.color().to_owned());
     let width = import_callout_leader_width(annotation);
-    let opacity = (&imported_style).opacity();
+    let opacity = imported_style.opacity();
     let appearance = CalloutAppearance::new(
         StraightLineAppearance::new(stroke_color, width, opacity, StrokeStyle::Solid)?,
-        (&imported_style).clone(),
+        imported_style.clone(),
     )?;
     let mut imported = CalloutAnnotation::new(
         MarkupId::new(name)?,
@@ -13280,14 +13336,13 @@ fn normal_appearance_stream<'a>(
         return Ok(stream);
     }
     let states = normal.as_dict()?;
-    if let Some(state) = dictionary_name(annotation, b"AS") {
-        if let Ok(stream) = states
+    if let Some(state) = dictionary_name(annotation, b"AS")
+        && let Ok(stream) = states
             .get(state.as_bytes())
             .and_then(|object| resolve_optional_object(document, object))
             .and_then(Object::as_stream)
-        {
-            return Ok(stream);
-        }
+    {
+        return Ok(stream);
     }
     for object in states.iter().map(|(_, object)| object) {
         if let Ok(stream) = resolve_optional_object(document, object).and_then(Object::as_stream) {
@@ -17237,7 +17292,7 @@ mod tests {
         let rectangle_dictionary = dictionary! {
             "Type" => "Annot", "Subtype" => "Square", "NM" => pdf_literal("rectangle"),
             "Rect" => Object::Array(vec![
-                Object::Real(285.89746), Object::Real(157.36861),
+                Object::Real(285.89746), Object::Real(157.368_6),
                 Object::Real(514.10254), Object::Real(352.6314),
             ]),
             "Rotation" => 30,
@@ -17843,13 +17898,12 @@ mod tests {
             "AS" => "On",
             "AP" => dictionary! { "N" => Object::Reference(states) },
         };
-        assert_eq!(
+        assert!(
             normal_appearance_stream(&document, &appearance_annotation)
                 .unwrap()
                 .dict
                 .get(b"Resources")
-                .is_ok(),
-            true
+                .is_ok()
         );
         assert_eq!(
             standard_annotation_font_family(&document, &appearance_annotation).as_deref(),

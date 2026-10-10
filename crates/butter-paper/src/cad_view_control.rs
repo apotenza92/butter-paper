@@ -270,7 +270,7 @@ impl CadViewControl {
             return;
         };
         let next = self.pages_per_column.to_string();
-        if pages_input.read(cx).value().to_string() == next {
+        if pages_input.read(cx).value() == next {
             return;
         }
         pages_input.update(cx, |input, cx| {

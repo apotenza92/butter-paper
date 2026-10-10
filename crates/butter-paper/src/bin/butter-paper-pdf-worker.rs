@@ -506,7 +506,15 @@ mod tests {
     use butter_paper::pdf_worker::{
         ClipRect, JobId, RenderRequest, SessionId, SurfaceDescriptor, SurfaceFormat, SurfaceId,
     };
-    use std::os::fd::AsRawFd;
+
+    /// The inherited-source id a worker receives for `file` on this platform.
+    fn source_handle(file: &File) -> SourceHandleId {
+        #[cfg(unix)]
+        let raw = std::os::fd::AsRawFd::as_raw_fd(file) as u64;
+        #[cfg(windows)]
+        let raw = std::os::windows::io::AsRawHandle::as_raw_handle(file) as u64;
+        SourceHandleId(raw)
+    }
 
     #[test]
     fn worker_prepares_page_and_form_optional_content_before_pdfium_load() {
@@ -811,9 +819,7 @@ mod tests {
             ));
             std::fs::write(&path, retained_widget_fixture(rotation)).unwrap();
             let source = File::open(&path).unwrap();
-            let (mut document, _) = backend
-                .open(SourceHandleId(source.as_raw_fd() as u64), None)
-                .unwrap();
+            let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
             std::fs::remove_file(path).unwrap();
             let mut retained = Vec::new();
             for mode in [
@@ -883,9 +889,7 @@ mod tests {
                 ));
                 std::fs::write(&path, retained_popup_fixture(rotation, include_popup)).unwrap();
                 let source = File::open(&path).unwrap();
-                let (mut document, _) = backend
-                    .open(SourceHandleId(source.as_raw_fd() as u64), None)
-                    .unwrap();
+                let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
                 std::fs::remove_file(path).unwrap();
                 let request = retained_test_request(AnnotationRenderMode::RetainedOnly, 160);
                 let mut pixels = vec![0; request.surface.byte_len as usize];
@@ -935,9 +939,7 @@ mod tests {
             ));
             std::fs::write(&path, retained_pixel_fixture(0, managed, opaque)).unwrap();
             let source = File::open(&path).unwrap();
-            let (mut document, _) = backend
-                .open(SourceHandleId(source.as_raw_fd() as u64), None)
-                .unwrap();
+            let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
             std::fs::remove_file(path).unwrap();
             assert!(matches!(
                 document.retained,
@@ -981,9 +983,7 @@ mod tests {
         let path = env::temp_dir().join(format!("bp-retained-failure-{}.pdf", std::process::id()));
         std::fs::write(&path, bytes).unwrap();
         let source = File::open(&path).unwrap();
-        let (mut document, _) = backend
-            .open(SourceHandleId(source.as_raw_fd() as u64), None)
-            .unwrap();
+        let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
         std::fs::remove_file(path).unwrap();
         let request = retained_test_request(AnnotationRenderMode::RetainedOnly, 160);
         let mut pixels = vec![0; request.surface.byte_len as usize];
@@ -1033,9 +1033,7 @@ mod tests {
             ));
             std::fs::write(&path, retained_apless_widget_fixture(rotation)).unwrap();
             let source = File::open(&path).unwrap();
-            let (mut document, _) = backend
-                .open(SourceHandleId(source.as_raw_fd() as u64), None)
-                .unwrap();
+            let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
             std::fs::remove_file(path).unwrap();
             let geometry = backend.page_geometry(&mut document, 0).unwrap();
             for scale in [1., 2.] {
@@ -1139,9 +1137,7 @@ mod tests {
             ));
             std::fs::write(&path, retained_pixel_fixture(rotation, true, true)).unwrap();
             let source = File::open(&path).unwrap();
-            let (mut document, _) = backend
-                .open(SourceHandleId(source.as_raw_fd() as u64), None)
-                .unwrap();
+            let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
             std::fs::remove_file(path).unwrap(); // Rendering must use the authorised handle/snapshot, never reopen paths.
             assert!(matches!(
                 document.retained,
@@ -1218,9 +1214,7 @@ mod tests {
         let pdf_path = env::var_os("BP_PDFIUM_PUBLIC_TEST_PDF").expect("BP_PDFIUM_PUBLIC_TEST_PDF");
         let source = File::open(pdf_path).unwrap();
         let (_guard, mut backend) = test_backend(Path::new(&library));
-        let (mut document, info) = backend
-            .open(SourceHandleId(source.as_raw_fd() as u64), None)
-            .unwrap();
+        let (mut document, info) = backend.open(source_handle(&source), None).unwrap();
         assert!(info.page_count > 0);
         let descriptor = SurfaceDescriptor {
             surface_id: SurfaceId(1),

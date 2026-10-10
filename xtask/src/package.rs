@@ -772,6 +772,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn app_display_names_do_not_include_package_identity() {
+        for channel in [Channel::Stable, Channel::Beta] {
+            let plist = info_plist(channel, Version::parse("0.1.1-beta.2").unwrap());
+            for key in ["CFBundleName", "CFBundleDisplayName"] {
+                assert!(plist.contains(&format!(
+                    "<key>{key}</key>\n  <string>{}</string>",
+                    channel.product_name()
+                )));
+            }
+        }
+        let desktop = include_str!("../templates/linux/butter-paper.desktop");
+        assert!(desktop.lines().any(|line| line == "Name=Butter Paper"));
+        for template in [
+            include_str!("../templates/windows/install.ps1"),
+            include_str!("../templates/windows/uninstall.ps1"),
+        ] {
+            assert!(template.contains("'Butter Paper.lnk'"));
+            assert!(!template.contains("'Butter Paper @VERSION@ (@ARCH@).lnk'"));
+        }
+    }
+
+    #[test]
+    fn windows_shared_shortcut_preserves_ownership_and_rollback() {
+        let install = include_str!("../templates/windows/install.ps1");
+        let ownership_check = install
+            .find("$previousMarker.product -ne 'Butter Paper'")
+            .unwrap();
+        let backup = install
+            .find("[IO.File]::ReadAllBytes($shortcutPath)")
+            .unwrap();
+        let mutation = install.find("$shortcut.Save()").unwrap();
+        assert!(ownership_check < backup && backup < mutation);
+        assert!(install.contains("$previousProductRoot -ne $productRoot"));
+        assert!(install.contains("[IO.File]::WriteAllBytes($shortcutPath, $previousShortcut)"));
+        assert!(install.find("$createdShortcut = $true").unwrap() < mutation);
+        let uninstall = include_str!("../templates/windows/uninstall.ps1");
+        assert!(uninstall.contains(
+            "$shortcutMatches = ($shortcut.TargetPath -eq (Join-Path $expectedRoot 'butter-paper.exe'))"
+        ));
+        assert!(
+            uninstall.contains(
+                "if ($shortcutMatches) { Remove-Item -LiteralPath $shortcutPath -Force }"
+            )
+        );
+    }
+
+    #[test]
     fn info_plist_carries_the_identity_and_both_versions() {
         let plist = info_plist(Channel::Beta, Version::parse("0.1.1-beta.2").unwrap());
         assert!(

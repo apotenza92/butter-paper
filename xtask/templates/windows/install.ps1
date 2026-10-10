@@ -7,9 +7,21 @@ $source = $PSScriptRoot
 $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
 if ([string]::IsNullOrWhiteSpace($localAppData)) { throw 'LocalAppData is unavailable.' }
 $installRoot = Join-Path $localAppData ('Programs\Butter Paper\' + $version + '\' + $architecture)
-$shortcutPath = Join-Path ([Environment]::GetFolderPath('Programs')) 'Butter Paper @VERSION@ (@ARCH@).lnk'
+$shortcutPath = Join-Path ([Environment]::GetFolderPath('Programs')) 'Butter Paper.lnk'
 if (Test-Path -LiteralPath $installRoot) { throw ('Install destination already exists: ' + $installRoot) }
-if (Test-Path -LiteralPath $shortcutPath) { throw ('Shortcut already exists: ' + $shortcutPath) }
+$previousShortcut = $null
+if (Test-Path -LiteralPath $shortcutPath) {
+  $shell = New-Object -ComObject WScript.Shell
+  $previousTarget = $shell.CreateShortcut($shortcutPath).TargetPath
+  $previousRoot = Split-Path -Parent $previousTarget
+  $previousMarkerPath = Join-Path $previousRoot '.butter-paper-install.json'
+  $productRoot = [IO.Path]::GetFullPath((Join-Path $localAppData 'Programs\Butter Paper'))
+  $previousProductRoot = Split-Path -Parent (Split-Path -Parent $previousRoot)
+  if ($previousProductRoot -ne $productRoot -or (Split-Path -Leaf $previousTarget) -ne 'butter-paper.exe' -or -not (Test-Path -LiteralPath $previousMarkerPath -PathType Leaf)) { throw 'Existing Butter Paper shortcut is not owned by a package install; preserving it.' }
+  $previousMarker = Get-Content -LiteralPath $previousMarkerPath -Raw | ConvertFrom-Json
+  if ($previousMarker.product -ne 'Butter Paper' -or [IO.Path]::GetFullPath([string]$previousMarker.installPath) -ne $previousRoot -or (Split-Path -Leaf $previousRoot) -ne $previousMarker.architecture -or (Split-Path -Leaf (Split-Path -Parent $previousRoot)) -ne $previousMarker.version) { throw 'Existing Butter Paper shortcut ownership is invalid; preserving it.' }
+  $previousShortcut = [IO.File]::ReadAllBytes($shortcutPath)
+}
 $readClasses = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Classes')
 if ($null -ne $readClasses) {
   try {
@@ -72,10 +84,15 @@ try {
   $shortcut.TargetPath = $exe
   $shortcut.WorkingDirectory = $installRoot
   $shortcut.IconLocation = (Join-Path $installRoot 'butter-paper.ico')
-  $shortcut.Save()
   $createdShortcut = $true
+  $shortcut.Save()
 } catch {
-  if ($createdShortcut) { try { Remove-Item -LiteralPath $shortcutPath -Force -ErrorAction SilentlyContinue } catch {} }
+  if ($createdShortcut) {
+    try {
+      if ($null -ne $previousShortcut) { [IO.File]::WriteAllBytes($shortcutPath, $previousShortcut) }
+      else { Remove-Item -LiteralPath $shortcutPath -Force -ErrorAction SilentlyContinue }
+    } catch {}
+  }
   if ($createdOpenWithValue -or $createdProgId) {
     try {
       $rollbackClasses = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Classes', $true)
