@@ -4,6 +4,28 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.1.5]
+
+### Settings and updates
+
+- Add About Butter Paper and Settings to the application menus, with a
+  dedicated Settings window and keyboard shortcut.
+- Use a category rail, heading shortcuts and one scrollable Settings view;
+  narrow windows switch to compact navigation.
+- Show a quiet Update available button beside the template control, including
+  when the in-app menu bar is hidden. It opens Updates Settings with release
+  notes; downloads start when you choose Download update.
+- Show update check results and errors in Settings. After downloading, offer
+  Restart to update while preserving the normal unsaved-work decision flow.
+- Default automatic checks to startup for beta builds and weekly for stable
+  builds, preserving existing saved preferences.
+
+### Popup and tab styling
+
+- Give popovers, menus and selects the standard GPUI medium shadow, while
+  keeping the stronger dialog shadow.
+- Use circular hover, pressed and focus backgrounds for tab close buttons.
+
 ## [0.1.4]
 
 ### Selecting and editing markups
