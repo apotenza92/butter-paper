@@ -39430,6 +39430,14 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
         !cfg!(target_os = "macos")
     );
 
+    // The tile-evidence plan above is deliberately zoomed to 400%. Fit the
+    // rotated page before clicking its lower Snapshot region: page bounds may
+    // extend behind the shell, where a canvas gesture must not begin.
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace.set_fit_preset(document_id, ViewerFitPreset::Page, cx)
+    }));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SNAPSHOT_TOOL_ID);
     let snapshot_button = cx
         .debug_bounds(DOCUMENT_SNAPSHOT_TOOL_ID)
@@ -39462,6 +39470,11 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     };
     let snapshot_start = snapshot_to_view(PdfPoint::new(180., 60.).unwrap());
     let snapshot_end = snapshot_to_view(PdfPoint::new(252., 108.).unwrap());
+    let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    assert!(
+        viewport.contains(&snapshot_start) && viewport.contains(&snapshot_end),
+        "Snapshot endpoints {snapshot_start:?}, {snapshot_end:?} must be in the visible canvas {viewport:?}"
+    );
     cx.simulate_click(snapshot_start, Modifiers::default());
     assert!(workspace.read_with(cx, |workspace, cx| {
         workspace.snapshot_placement_pending(document_id, cx)
