@@ -15,6 +15,8 @@ Repeat this pass on the exact images being handed to the user, after the last co
 - Distinguish rest, pointer hover, keyboard focus, selected and disabled. An active tab need not be hovered; keyboard focus is not evidence of pointer hover.
 - If an input tool cannot perform or reliably deliver an action, mark that check not verified. Do not relabel a focus/click capture as hover evidence.
 - If a workaround places the pointer via wheel input, record both effects and verify scrolling did not change the tested geometry. A pointer covering the close glyph or its feedback cannot establish close-only hover clarity; obtain unobscured evidence or leave that check open.
+- For pinch and Ctrl-scroll zoom, check bursts of several input events before repaint as well as one step per frame; the page point under the pointer must stay fixed without a flash of the document top.
+- Review drawing before commit: capture intermediate drag steps and pointer movement between clicks for every tool, including the first Cloud+ segment, Cloud's rectangular drag and Arc's chord/bulge. The outline must follow each move and match its committed geometry; release-only evidence cannot establish a live preview.
 - Capture transitions where the requirement is transitional. A screenshot of one endpoint cannot prove animation, focus restoration or absence of movement between states. For selected markups, inspect outline and rotation-knob feedback during move, rotate and resize, with snapping enabled; an existing-object preview must not inherit creation-draft suppression.
 
 ## Coupled states must agree
@@ -23,6 +25,7 @@ For each compound control, specify which elements should respond together. Exerc
 
 - Tab example: when its hover treatment is visible, the requested close affordance and label truncation must also be visible. When neither hover nor focus applies, restore the full label and hide close. Parent highlight with missing close/truncation is contradictory evidence requiring investigation, not a pass.
 - The close button's own hover/pressed feedback must distinguish closing from selecting the tab. Verify the pointer target, full accessible label, single correct effect and successor focus.
+- At high zoom, scroll a page behind the toolbar and bottom bar; hover and presses on that chrome must remain outside the canvas even when the page's unclipped bounds extend underneath.
 - A cursor promises its action: a press must start exactly what the cursor shows (resize cursor resizes, open hand moves, arrow does nothing). Derive cursor and press from one hit test with the same tolerances and view scale, and test pressing where each cursor shows, including at the edge of its reach.
 - Menu/popover triggers must agree with open state and return to the correct state after dismissal. Disabled controls must not advertise an available action through hover feedback.
 - Do not infer a root cause solely from a screenshot: stale hover, wrong capture state and mismatched event ownership are hypotheses to test.

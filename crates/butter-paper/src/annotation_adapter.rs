@@ -1152,6 +1152,7 @@ pub struct AnnotationAdapter {
     active: Option<ActivePointer>,
     vertex_path_draft: Option<VertexPathDraft>,
     cloud_draft: Option<VertexPathDraft>,
+    cloud_drag_pointer: Option<u64>,
     cloud_plus_draft: Option<VertexPathDraft>,
     measurement_path_draft: Option<MeasurementPathDraft>,
     arc_draft: Option<ArcDraft>,
@@ -1307,6 +1308,7 @@ impl AnnotationAdapter {
             .is_some_and(|draft| draft.document_id == document_id)
         {
             self.cloud_draft = None;
+            self.cloud_drag_pointer = None;
         }
         if self
             .cloud_plus_draft
@@ -3871,6 +3873,8 @@ impl AnnotationAdapter {
                 ARC_MINIMUM_BULGE_CSS_PX / self.observed_pixels_per_point.0,
                 snap_quarter_turn,
             )?;
+        } else {
+            draft.mid = point;
         }
         Ok(())
     }
@@ -3929,6 +3933,7 @@ impl AnnotationAdapter {
         &mut self,
         document_id: u64,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
+        self.cloud_drag_pointer = None;
         let draft = self
             .cloud_draft
             .take()
@@ -4836,6 +4841,12 @@ impl AnnotationAdapter {
             return Some((draft.document_id, draft.page_index));
         }
         if let Some(draft) = &self.vertex_path_draft {
+            return Some((draft.document_id, draft.page_index));
+        }
+        if let Some(draft) = &self.cloud_draft {
+            return Some((draft.document_id, draft.page_index));
+        }
+        if let Some(draft) = &self.arc_draft {
             return Some((draft.document_id, draft.page_index));
         }
         if let Some(draft) = &self.cloud_plus_draft {
@@ -6718,6 +6729,7 @@ impl AnnotationAdapter {
             if let Some(draft) = self.cloud_draft.as_mut() {
                 if (draft.document_id, draft.page_index) != (document_id, page_index) {
                     self.cloud_draft = None;
+                    self.cloud_drag_pointer = None;
                     return Err(AnnotationError::NoActiveGesture);
                 }
                 let closes_cloud = draft.points.len() >= 3
@@ -6756,6 +6768,7 @@ impl AnnotationAdapter {
                     points: vec![point],
                     hover: point,
                 });
+                self.cloud_drag_pointer = Some(pointer_id);
             }
             return Ok(PointerPhaseOutcome::PlacementPending);
         }
@@ -8404,6 +8417,30 @@ impl AnnotationAdapter {
         }
     }
 
+    /// Click-built paths retain their draft between presses, rather than an
+    /// `ActivePointer`. Both pressed and unpressed moves must update that draft.
+    fn update_pending_path_preview(
+        &mut self,
+        point: PdfPoint,
+        constrain_orthogonal: bool,
+    ) -> Result<PointerPhaseOutcome, AnnotationError> {
+        if let Some(draft) = self.vertex_path_draft.as_mut() {
+            draft.hover = point;
+        } else if let Some(draft) = self.cloud_draft.as_mut() {
+            draft.hover = point;
+        } else if let Some(draft) = self.cloud_plus_draft.as_mut() {
+            draft.hover = point;
+        } else if let Some(draft) = self.measurement_path_draft.as_mut() {
+            draft.hover = point;
+        } else if let Some(draft) = self.arc_draft.as_ref() {
+            let (document_id, page_index) = (draft.document_id, draft.page_index);
+            self.update_arc_hover(document_id, page_index, point, constrain_orthogonal)?;
+        } else {
+            return Ok(PointerPhaseOutcome::Ignored);
+        }
+        Ok(PointerPhaseOutcome::PlacementPending)
+    }
+
     pub fn pointer_move(
         &mut self,
         pointer_id: u64,
@@ -8461,7 +8498,10 @@ impl AnnotationAdapter {
             return Ok(PointerPhaseOutcome::PlacementPending);
         }
         let Some(active) = self.active.as_mut() else {
-            return Ok(PointerPhaseOutcome::Ignored);
+            if let Some(active_pointer) = self.cloud_drag_pointer {
+                require_pointer(active_pointer, pointer_id)?;
+            }
+            return self.update_pending_path_preview(point, constrain_orthogonal);
         };
         match active {
             ActivePointer::Marquee {
@@ -8842,6 +8882,9 @@ impl AnnotationAdapter {
             draft.current = point;
             return Ok(PointerPhaseOutcome::PlacementPending);
         }
+        if let Some(active_pointer) = self.cloud_drag_pointer.take() {
+            require_pointer(active_pointer, pointer_id)?;
+        }
         // Dragging out the first Cloud segment draws a rectangular cloud;
         // clicking places vertices one by one.
         if self.tool == AnnotationTool::Cloud
@@ -8869,6 +8912,9 @@ impl AnnotationAdapter {
                 let document_id = draft.document_id;
                 return self.finish_cloud(document_id);
             }
+        }
+        if self.active.is_none() {
+            return self.update_pending_path_preview(point, constrain_orthogonal);
         }
         let active = self.active.take().ok_or(AnnotationError::NoActiveGesture)?;
         let outcome = match active {
@@ -10185,6 +10231,7 @@ impl AnnotationAdapter {
         }
         self.vertex_path_draft = None;
         self.cloud_draft = None;
+        self.cloud_drag_pointer = None;
         self.cloud_plus_draft = None;
         self.measurement_path_draft = None;
         self.arc_draft = None;
@@ -11558,6 +11605,29 @@ impl AnnotationAdapter {
         }
         if let Some(draft) = &self.arc_draft
             && (draft.document_id, draft.page_index) == (document_id, page_index)
+            && draft.end.is_none()
+            && draft.start != draft.mid
+        {
+            scene.straight_lines.push(SceneStraightLine {
+                id: draft.id.clone(),
+                start: draft.start,
+                end: draft.mid,
+                kind: LineKind::Line,
+                appearance: StraightLineAppearance::new(
+                    draft.appearance.stroke_color(),
+                    draft.appearance.stroke_width_pt(),
+                    draft.appearance.opacity(),
+                    draft.appearance.stroke_style(),
+                )
+                .expect("stored Arc tool properties are validated"),
+                selected: true,
+                locked: false,
+                draft: true,
+                feedback: SceneInteractionFeedback::Creation,
+            });
+        }
+        if let Some(draft) = &self.arc_draft
+            && (draft.document_id, draft.page_index) == (document_id, page_index)
             && let Some(end) = draft.end
             && let Ok(annotation) = ArcAnnotation::new(
                 draft.id.clone(),
@@ -12262,7 +12332,27 @@ impl AnnotationAdapter {
         {
             let properties = self.tool_properties(AnnotationTool::Cloud);
             let mut points = draft.points.clone();
-            if point_distance_css_px(
+            if self.cloud_drag_pointer.is_some()
+                && points.len() == 1
+                && (draft.hover.x - points[0].x).abs() * self.observed_pixels_per_point.0
+                    >= CLOUD_DRAG_MINIMUM_CSS_PX
+                && (draft.hover.y - points[0].y).abs() * self.observed_pixels_per_point.0
+                    >= CLOUD_DRAG_MINIMUM_CSS_PX
+            {
+                let start = points[0];
+                points = vec![
+                    start,
+                    PdfPoint {
+                        x: draft.hover.x,
+                        y: start.y,
+                    },
+                    draft.hover,
+                    PdfPoint {
+                        x: start.x,
+                        y: draft.hover.y,
+                    },
+                ];
+            } else if point_distance_css_px(
                 *points
                     .last()
                     .expect("a cloud draft retains its first point"),
@@ -12338,6 +12428,21 @@ impl AnnotationAdapter {
                     text_box: placement.text_box,
                     content: "Cloud+".into(),
                     appearance,
+                    selected: true,
+                    locked: false,
+                    draft: true,
+                    feedback: SceneInteractionFeedback::Creation,
+                });
+            } else if cloud_points.len() == 2 {
+                // Before a polygon exists, show its first live segment rather
+                // than leaving Cloud+ invisible until the third vertex.
+                scene.clouds.push(SceneCloud {
+                    id: draft.id.clone(),
+                    scallop_path: cloud_points.clone(),
+                    points: cloud_points,
+                    border_effect_intensity: properties.cloud_intensity,
+                    appearance: rectangle_tool_appearance(&properties, false)
+                        .expect("stored Cloud+ tool properties are validated"),
                     selected: true,
                     locked: false,
                     draft: true,
@@ -13055,15 +13160,12 @@ impl AnnotationAdapter {
         }) = &self.active
             && (*active_document_id, *active_page_index) == (document_id, page_index)
             && start != current
-            && let Some(calibration) = self
-                .document_page_length_calibration(document_id, page_index)
-                .cloned()
             && let Ok(annotation) = LengthAnnotation::new_with_appearance(
                 id.clone(),
                 page_index,
                 *start,
                 *current,
-                calibration,
+                self.measurement_calibration(document_id, page_index),
                 dimension_tool_appearance(&self.tool_properties(AnnotationTool::Length))
                     .expect("stored Length tool properties are validated"),
             )

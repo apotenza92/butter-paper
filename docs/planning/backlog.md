@@ -7,6 +7,9 @@ Open work, roughly in priority order. Remove an item when it is done.
 Remaining runtime and platform checks. Source and native harness coverage
 alone do not establish these behaviours.
 
+- Physical trackpad pinch/scroll delivery on Windows and Linux. The X11
+  GPUI backend reports both trackpads and mouse wheels as line deltas, so
+  separating their preferences there needs device-source support in the fork.
 - Installed update download/restart on macOS, Windows and Linux: preserve
   open documents, view positions and unsaved work, and check relaunch focus.
 - Phone signing with a physical phone (the relay is verified with synthetic
@@ -15,6 +18,9 @@ alone do not establish these behaviours.
 
 ## Interface
 
+- Stock popup menus initially select a heading on the first Down press, so
+  titled mouse-wheel menus need a second Down to reach Zoom. Fix initial and
+  wraparound selection to skip non-actionable rows in gpui-kit.
 - Stock checkboxes, switches, toggles, buttons and inputs do not expose a
   disabled state to accessibility (the snapping "Show grid" switch and spacing
   fields report enabled while greyed out). Deferred: the fix belongs in
@@ -40,6 +46,10 @@ alone do not establish these behaviours.
 - Pdf-format follow-ups are listed in [pdf-format.md](pdf-format.md#known-differences-follow-ups).
 
 ## Platforms and release
+
+- The macOS recovery test `recovery_after_rename_removes_only_receipt_and_never_published_target`
+  intermittently leaves its receipt during parallel workspace tests; it passes
+  alone and in the serial suite. Investigate the parallel-test interaction.
 
 - Remove the unused local phone helper (`local_phone_signature`,
   `xtask/src/phone.rs`, `crates/butter-paper/phone-helper/`, its packaging and

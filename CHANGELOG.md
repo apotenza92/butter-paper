@@ -4,6 +4,22 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.1.6]
+
+### Navigation and drawing
+
+- Keep two-finger trackpad gestures scrolling, with Ctrl-scroll for zoom;
+  preserve the document position during rapid pinch-to-zoom gestures.
+- Clarify the Mouse wheel menu with Zoom and Scroll choices and a reminder
+  that holding Ctrl performs the opposite action.
+- Add a full-width contextual help bar with drawing gestures, navigation
+  shortcuts and tooltips that fit narrow windows.
+- Keep drawing cursors visible when switching tools without moving the mouse.
+- Prevent clicks on controls over a scrolled page from starting canvas edits.
+- Show live previews for dragged Clouds, clicked paths, Cloud+'s first
+  segment, Arc construction, Length measurements and Snapshot boundaries.
+- Explain click and drag behaviour in each drawing tool's help.
+
 ## [0.1.5]
 
 ### Settings and updates

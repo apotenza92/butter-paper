@@ -4094,6 +4094,37 @@ mod review_driver {
                         );
                         pause(cx, 600).await;
                     }
+                    "scroll" => {
+                        // scroll W X Y DX DY: precise two-finger scrolling.
+                        dispatch(cx, number(1) as usize, PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                            position: point(px(number(2)), px(number(3))),
+                            delta: gpui::ScrollDelta::Pixels(point(px(number(4)), px(number(5)))),
+                            touch_phase: gpui::TouchPhase::Moved,
+                            ..Default::default()
+                        }));
+                        pause(cx, 600).await;
+                    }
+                    "pinch" => {
+                        // pinch W X Y DELTA COUNT: deliver a burst before repaint.
+                        let count = number(5) as usize;
+                        let index = number(1) as usize;
+                        let at = point(px(number(2)), px(number(3)));
+                        let delta = number(4);
+                        let _ = cx.update(|cx| {
+                            if let Some(entry) = document_window_entries(cx).get(index).cloned() {
+                                let _ = entry.handle.update(cx, |_, window, cx| {
+                                    for _ in 0..count {
+                                        window.dispatch_event(PlatformInput::Pinch(gpui::PinchEvent {
+                                            position: at, delta,
+                                            phase: gpui::TouchPhase::Moved,
+                                            ..Default::default()
+                                        }), cx);
+                                    }
+                                });
+                            }
+                        });
+                        pause(cx, 600).await;
+                    }
                     "drag" => {
                         // drag W X1 Y1 X2 Y2 NAME: a left drag in window W.
                         let start = point(px(number(2)), px(number(3)));
@@ -4496,11 +4527,12 @@ mod review_driver {
                 let mut focus = String::new();
                 let result = entry.handle.update(cx, |_, window, cx| {
                     focus = format!(
-                        "focused={} in_workspace={} context={:?}",
+                        "focused={} in_workspace={} cursor_visible={} context={:?}",
                         window.focused(cx).is_some(),
                         workspace_focus
                             .as_ref()
                             .is_some_and(|handle| handle.contains_focused(window, cx)),
+                        cx.is_cursor_visible(),
                         window.context_stack().iter().map(|context| format!("{context:?}")).collect::<Vec<_>>()
                     );
                     let image = window.render_to_image();

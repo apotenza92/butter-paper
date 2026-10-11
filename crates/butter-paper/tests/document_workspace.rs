@@ -33456,7 +33456,7 @@ fn native_view_navigation_routes_real_single_page_wheel_and_control_zoom(cx: &mu
     let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
     cx.simulate_event(ScrollWheelEvent {
         position: viewport.center(),
-        delta: ScrollDelta::Pixels(point(px(0.), px(79.))),
+        delta: ScrollDelta::Lines(point(0., 79. / 16.)),
         ..Default::default()
     });
     assert_eq!(
@@ -33471,7 +33471,7 @@ fn native_view_navigation_routes_real_single_page_wheel_and_control_zoom(cx: &mu
     );
     cx.simulate_event(ScrollWheelEvent {
         position: viewport.center(),
-        delta: ScrollDelta::Pixels(point(px(0.), px(1.))),
+        delta: ScrollDelta::Lines(point(0., 1. / 16.)),
         ..Default::default()
     });
     cx.run_until_parked();
@@ -33494,7 +33494,7 @@ fn native_view_navigation_routes_real_single_page_wheel_and_control_zoom(cx: &mu
         .zoom_percent();
     cx.simulate_event(ScrollWheelEvent {
         position: viewport.center(),
-        delta: ScrollDelta::Pixels(point(px(0.), px(-120.))),
+        delta: ScrollDelta::Lines(point(0., -120. / 16.)),
         modifiers: Modifiers {
             control: true,
             ..Default::default()
@@ -44704,6 +44704,7 @@ fn annotation_count(
 #[derive(Clone, Copy, Debug)]
 enum Gesture {
     Drag,
+    ClickTwice,
     ClicksThenDoubleClick,
     ClickTypeThenClickAway,
 }
@@ -44726,15 +44727,58 @@ fn tool_creates_with(
     match gesture {
         Gesture::Drag => {
             cx.simulate_mouse_down(at(80., 80.), MouseButton::Left, Modifiers::default());
+            let mut previous_scene = workspace.read_with(cx, |workspace, cx| {
+                workspace.annotation_scene(document_id, 0, cx)
+            });
             for step in 1..=8 {
-                let t = step as f32 / 8.;
+                // Start beyond each tool's minimum valid geometry at 400% zoom.
+                let t = (step + 2) as f32 / 10.;
                 cx.simulate_mouse_move(
                     at(80. + 120. * t, 80. + 60. * t),
                     Some(MouseButton::Left),
                     Modifiers::default(),
                 );
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                let scene = workspace.read_with(cx, |workspace, cx| {
+                    workspace.annotation_scene(document_id, 0, cx)
+                });
+                assert!(
+                    scene.clone().into_ordered_annotations().next().is_some(),
+                    "{tool:?} must show a draft before release, step {step}"
+                );
+                assert_ne!(scene, previous_scene, "{tool:?} must update each drag step");
+                if tool == AnnotationTool::Snapshot {
+                    let scale = cx.update(|window, _| window.scale_factor());
+                    let expected_width = scene.snapshots[0].rect.width as f32 * 4. * scale;
+                    assert!(
+                        cx.update(|window, _| window.painted_quads())
+                            .iter()
+                            .any(|quad| {
+                                quad.border_style == gpui::BorderStyle::Dashed
+                                    && quad.border_widths.top.0 > 0.
+                                    && (quad.bounds.size.width.0 - expected_width).abs() < 2.
+                            }),
+                        "Snapshot must paint its live capture boundary"
+                    );
+                }
+                assert_eq!(
+                    annotation_count(&workspace, document_id, cx),
+                    before,
+                    "{tool:?} preview must not commit a markup before release"
+                );
+                previous_scene = scene;
             }
             cx.simulate_mouse_up(at(200., 140.), MouseButton::Left, Modifiers::default());
+            if tool == AnnotationTool::Cloud {
+                let committed = workspace.read_with(cx, |workspace, cx| {
+                    workspace.annotation_scene(document_id, 0, cx)
+                });
+                assert_eq!(previous_scene.clouds[0].points, committed.clouds[0].points);
+                assert_eq!(
+                    previous_scene.clouds[0].scallop_path, committed.clouds[0].scallop_path,
+                    "Cloud must commit the outline shown before release"
+                );
+            }
         }
         Gesture::ClickTypeThenClickAway => {
             cx.simulate_click(at(120., 120.), Modifiers::default());
@@ -44743,25 +44787,84 @@ fn tool_creates_with(
             cx.update(|window, cx| window.draw(cx).clear(cx));
             cx.simulate_click(at(400., 400.), Modifiers::default());
         }
-        Gesture::ClicksThenDoubleClick => {
-            for (x, y) in [(80., 80.), (200., 80.), (200., 160.)] {
+        Gesture::ClickTwice | Gesture::ClicksThenDoubleClick => {
+            let points = if matches!(gesture, Gesture::ClickTwice) {
+                vec![(80., 80.), (200., 140.)]
+            } else {
+                vec![(80., 80.), (200., 80.), (200., 160.)]
+            };
+            for (index, (x, y)) in points.into_iter().enumerate() {
+                if index == 1 && matches!(gesture, Gesture::ClicksThenDoubleClick) {
+                    cx.simulate_mouse_down(at(x, y), MouseButton::Left, Modifiers::default());
+                    let mut previous_scene = None;
+                    for step in 1..=3 {
+                        cx.simulate_mouse_move(
+                            at(x + 20. * step as f32, y + 20. * step as f32),
+                            Some(MouseButton::Left),
+                            Modifiers::default(),
+                        );
+                        cx.update(|window, cx| window.draw(cx).clear(cx));
+                        let scene = workspace.read_with(cx, |workspace, cx| {
+                            workspace.annotation_scene(document_id, 0, cx)
+                        });
+                        assert!(scene.clone().into_ordered_annotations().next().is_some());
+                        if let Some(previous_scene) = previous_scene {
+                            assert_ne!(
+                                scene, previous_scene,
+                                "{tool:?} must preview a clicked path while the button is held"
+                            );
+                        }
+                        assert_eq!(annotation_count(&workspace, document_id, cx), before);
+                        previous_scene = Some(scene);
+                    }
+                    cx.simulate_mouse_up(at(x, y), MouseButton::Left, Modifiers::default());
+                    continue;
+                }
                 cx.simulate_click(at(x, y), Modifiers::default());
+                if index == 0 {
+                    let mut previous_scene = None;
+                    for step in 1..=3 {
+                        cx.simulate_mouse_move(
+                            at(x + 25. * step as f32, y + 15. * step as f32),
+                            None,
+                            Modifiers::default(),
+                        );
+                        cx.update(|window, cx| window.draw(cx).clear(cx));
+                        let scene = workspace.read_with(cx, |workspace, cx| {
+                            workspace.annotation_scene(document_id, 0, cx)
+                        });
+                        assert!(
+                            scene.clone().into_ordered_annotations().next().is_some(),
+                            "{tool:?} must preview between the first and second clicks"
+                        );
+                        if let Some(previous_scene) = previous_scene {
+                            assert_ne!(
+                                scene, previous_scene,
+                                "{tool:?} click preview must follow the pointer"
+                            );
+                        }
+                        assert_eq!(annotation_count(&workspace, document_id, cx), before);
+                        previous_scene = Some(scene);
+                    }
+                }
             }
-            let last = at(80., 160.);
-            cx.simulate_click(last, Modifiers::default());
-            cx.simulate_event(gpui::MouseDownEvent {
-                position: last,
-                button: MouseButton::Left,
-                modifiers: Modifiers::default(),
-                click_count: 2,
-                first_mouse: false,
-            });
-            cx.simulate_event(gpui::MouseUpEvent {
-                position: last,
-                button: MouseButton::Left,
-                modifiers: Modifiers::default(),
-                click_count: 2,
-            });
+            if matches!(gesture, Gesture::ClicksThenDoubleClick) {
+                let last = at(80., 160.);
+                cx.simulate_click(last, Modifiers::default());
+                cx.simulate_event(gpui::MouseDownEvent {
+                    position: last,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 2,
+                    first_mouse: false,
+                });
+                cx.simulate_event(gpui::MouseUpEvent {
+                    position: last,
+                    button: MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 2,
+                });
+            }
         }
     }
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -44777,13 +44880,20 @@ fn tool_creates_with(
 /// placement tests.)
 #[gpui::test]
 fn every_tool_creates_a_markup_with_its_real_gesture(cx: &mut TestAppContext) {
-    use Gesture::{ClickTypeThenClickAway as Type, ClicksThenDoubleClick as Clicks, Drag};
+    use Gesture::{
+        ClickTwice, ClickTypeThenClickAway as Type, ClicksThenDoubleClick as Clicks, Drag,
+    };
     let cases = [
         (AnnotationTool::Rectangle, Drag),
+        (AnnotationTool::Rectangle, ClickTwice),
         (AnnotationTool::Ellipse, Drag),
+        (AnnotationTool::Ellipse, ClickTwice),
         (AnnotationTool::Redact, Drag),
+        (AnnotationTool::Redact, ClickTwice),
         (AnnotationTool::Line, Drag),
+        (AnnotationTool::Line, ClickTwice),
         (AnnotationTool::Arrow, Drag),
+        (AnnotationTool::Arrow, ClickTwice),
         (AnnotationTool::Pen, Drag),
         (AnnotationTool::Highlight, Drag),
         (AnnotationTool::Cloud, Drag),
@@ -44791,15 +44901,16 @@ fn every_tool_creates_a_markup_with_its_real_gesture(cx: &mut TestAppContext) {
         (AnnotationTool::CloudPlus, Drag),
         (AnnotationTool::CloudPlus, Clicks),
         (AnnotationTool::Callout, Drag),
+        (AnnotationTool::Callout, ClickTwice),
         (AnnotationTool::Snapshot, Drag),
-        (AnnotationTool::Snapshot, Clicks),
+        (AnnotationTool::Snapshot, ClickTwice),
         (AnnotationTool::Arc, Clicks),
         (AnnotationTool::Polyline, Clicks),
         (AnnotationTool::Polygon, Clicks),
         (AnnotationTool::Polylength, Clicks),
         (AnnotationTool::Area, Clicks),
-        (AnnotationTool::Dimension, Clicks),
-        (AnnotationTool::Length, Clicks),
+        (AnnotationTool::Dimension, ClickTwice),
+        (AnnotationTool::Length, ClickTwice),
         (AnnotationTool::TextBox, Type),
     ];
     let failures: Vec<String> = cases

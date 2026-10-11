@@ -403,7 +403,8 @@ fn continuous_split_control_traces_primary_menu_and_selection(cx: &mut TestAppCo
         "the caret must move focus into the real menu"
     );
 
-    cx.simulate_keystrokes("down enter");
+    // The stock menu includes its non-actionable heading in initial selection.
+    cx.simulate_keystrokes("down down enter");
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_eq!(

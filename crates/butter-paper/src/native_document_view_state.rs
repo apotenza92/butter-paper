@@ -351,6 +351,26 @@ impl NativeDocumentViewState {
             };
         }
 
+        self.zoom_from_scroll(delta_y, reverse_zoom)
+    }
+
+    /// Precise scrolling (trackpads and touch mice) pans in every view mode.
+    /// Ctrl zooms regardless of the mouse-wheel preference or CAD layout.
+    pub fn precise_scroll(
+        &mut self,
+        delta_y: f32,
+        control: bool,
+        reverse_zoom: bool,
+    ) -> WheelOutcome {
+        self.single_page_wheel_delta = 0.;
+        if control {
+            self.zoom_from_scroll(delta_y, reverse_zoom)
+        } else {
+            WheelOutcome::NativeScroll
+        }
+    }
+
+    fn zoom_from_scroll(&mut self, delta_y: f32, reverse_zoom: bool) -> WheelOutcome {
         self.single_page_wheel_delta = 0.;
         // A wheel movement that would scroll up zooms in (Maps, Revu), so zoom
         // follows whatever direction LinearMouse or natural scrolling gives the
@@ -480,6 +500,35 @@ mod tests {
         );
         assert!(matches!(
             view.wheel(4, 2, 0., 120., true, false),
+            WheelOutcome::Zoom(_)
+        ));
+    }
+
+    #[test]
+    fn precise_scroll_is_independent_of_mouse_preferences_and_cad() {
+        let mut view = NativeDocumentViewState::default();
+        for mode in [PageViewMode::Continuous, PageViewMode::SinglePage] {
+            view.set_mode(mode);
+            for behavior in [WheelBehavior::Scroll, WheelBehavior::Zoom] {
+                view.set_wheel_behavior(mode, behavior);
+                let before = view.zoom_percent();
+                assert_eq!(
+                    view.precise_scroll(-120., false, false),
+                    WheelOutcome::NativeScroll
+                );
+                assert_eq!(view.zoom_percent(), before);
+                assert!(
+                    matches!(view.precise_scroll(120., true, false), WheelOutcome::Zoom(zoom) if zoom > before)
+                );
+            }
+        }
+        view.activate_cad_view();
+        assert_eq!(
+            view.precise_scroll(-120., false, false),
+            WheelOutcome::NativeScroll
+        );
+        assert!(matches!(
+            view.wheel(5, 2, 0., 120., false, false),
             WheelOutcome::Zoom(_)
         ));
     }

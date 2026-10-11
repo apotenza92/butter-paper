@@ -30,7 +30,8 @@ reference; entries marked *native* are deliberate departures from it.
 | Length, Dimension | Two clicks | Second click; Dimension then edits its text |
 | Polyline, Polygon | Click per point | Double-click or Enter; click the start marker (within 10px) to close |
 | Polylength, Area | Click per point | Double-click or Enter; Escape discards |
-| Cloud | Drag a rectangle, or click corners | Double-click or Enter |
+| Cloud | Drag a rectangle, or click corners for a polygon | Release the rectangle; double-click, Enter or click the start marker for the polygon |
+| Cloud+ | Drag a rectangle, or click corners for a polygon | Release the rectangle; double-click, Enter or click the start marker for the polygon; then type its caption |
 | Arc | Three clicks: start, end, bulge | Third click |
 | Text box | Click | Type in place; click away or Escape commits, empty text discards |
 | Pen, Highlight | Drag | Release |
@@ -40,6 +41,14 @@ reference; entries marked *native* are deliberate departures from it.
 Shift constrains while drawing (lines and points horizontal or vertical from
 the last point, ellipse to a circle) and applies mid-drag. Length, Polylength
 and Area measure at 1 in = 1 in on a page without a scale.
+
+Creation previews follow every pointer move during drags and between clicks,
+without committing history. Cloud drags preview the rectangular scalloped
+outline that will be committed; polygon drafts preview their next point.
+Cloud+ shows the first segment before its polygon and caption can be formed.
+Arc shows its start-to-end chord before the second click, then its live bulge.
+The bottom contextual help explains each tool's click and drag gestures; its
+tooltip expands the instructions when the window truncates them.
 
 ## Selection and editing
 
@@ -93,6 +102,9 @@ and Area measure at 1 in = 1 in on a page without a scale.
 | Pan tool | open hand; closed while dragging |
 | Elsewhere | arrow |
 
+Keyboard shortcuts and typing keep the cursor visible; switching tools updates
+the cursor even when the pointer is stationary.
+
 Resize and rotate arrows are drawn by Butter Paper (`canvas_cursors.rs`) and
 shown through the GPUI fork's cursor images on macOS and Windows; Linux shows
 the nearest system cursor. All other cursors are the system's, so they follow
@@ -103,8 +115,13 @@ is under the pointer.
 
 ## Viewing
 
-- Scroll pans; Ctrl+wheel and trackpad pinch zoom about the pointer. Scrolling
-  up zooms in; Reverse Scroll Zoom flips it.
+- Trackpads and other precise scroll devices always scroll with two fingers,
+  including Single Page and CAD View. Pinch and Ctrl+trackpad scroll zoom about
+  the pointer. Mouse-wheel dropdowns apply only to discrete mouse wheels;
+  Ctrl+wheel reverses their Scroll/Zoom choice. CAD View always zooms with a
+  discrete mouse wheel. Scrolling up zooms in; Reverse Scroll Zoom flips it.
+- A full-width bottom status bar explains the active tool and navigation
+  shortcuts. Narrow windows show shorter guidance; full help remains in tooltips.
 - *Native:* a pan (Pan tool, Space or middle button) goes past the pages into
   blank space until 48px of a page stays in view; zooming over blank space
   keeps the page where it is. Scrolling stops at the pages' margins, as a

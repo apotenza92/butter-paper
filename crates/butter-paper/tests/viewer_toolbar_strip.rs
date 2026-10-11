@@ -362,7 +362,7 @@ fn cad_view_traces_primary_configuration_keyboard_escape_disabled_and_reset(
     assert_eq!(CAD_VIEW_SETTINGS_LABEL, "CAD View settings");
     assert_eq!(
         CAD_VIEW_DESCRIPTION,
-        "Organise drawing sheets. Mousewheel always zooms in CAD View."
+        "Organise drawing sheets. Mouse wheel zooms; trackpad scrolls."
     );
     assert_eq!(
         CAD_ORGANISATION_COLUMNS_ID,
@@ -1086,7 +1086,7 @@ fn toolbar_traces_pointer_menu_escape_disabled_and_double_click(cx: &mut TestApp
     let menu_focus = cx.update(|window, cx| window.focused(cx));
     assert!(menu_focus.is_some());
     assert_ne!(menu_focus.as_ref(), Some(&toolbar_focus));
-    cx.simulate_keystrokes("down enter");
+    cx.simulate_keystrokes("down down enter");
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_eq!(
@@ -1169,7 +1169,7 @@ fn toolbar_traces_pointer_menu_escape_disabled_and_double_click(cx: &mut TestApp
         cx.update(|window, cx| window.focused(cx)).as_ref(),
         Some(&toolbar_focus)
     );
-    cx.simulate_keystrokes("down down enter");
+    cx.simulate_keystrokes("down down down enter");
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_eq!(

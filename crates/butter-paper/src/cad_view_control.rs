@@ -20,7 +20,7 @@ pub const CAD_VIEW_POPOVER_ID: &str = "viewer-cad-settings";
 pub const CAD_VIEW_LABEL: &str = "CAD View";
 pub const CAD_VIEW_SETTINGS_LABEL: &str = "CAD View settings";
 pub const CAD_VIEW_DESCRIPTION: &str =
-    "Organise drawing sheets. Mousewheel always zooms in CAD View.";
+    "Organise drawing sheets. Mouse wheel zooms; trackpad scrolls.";
 pub const CAD_ORGANISATION_GROUP_ID: &str = "viewer-cad-organisation";
 pub const CAD_ORGANISATION_COLUMNS_ID: &str = "viewer-cad-organisation-columns";
 pub const CAD_ORGANISATION_ROWS_ID: &str = "viewer-cad-organisation-rows";

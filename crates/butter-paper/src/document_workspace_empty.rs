@@ -420,6 +420,6 @@ impl DocumentWorkspace {
                                 }),
                         ),
                 ),
-        )
+        ).child(self.render_status_bar(window, cx))
     }
 }

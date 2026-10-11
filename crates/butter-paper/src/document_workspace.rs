@@ -15,6 +15,8 @@ use thumbnail_sidebar::ThumbnailSidebarInputs;
 mod empty;
 #[path = "document_workspace_settings_popovers.rs"]
 mod settings_popovers;
+#[path = "document_workspace_status_bar.rs"]
+mod status_bar;
 #[path = "document_workspace_tabs.rs"]
 mod tabs;
 #[path = "document_workspace_root.rs"]
@@ -256,6 +258,9 @@ const DOCUMENT_WORKSPACE_CONTEXT: &str = "DocumentWorkspace";
 const DOCUMENT_TOOL_SHORTCUT_CONTEXT: &str = "DocumentWorkspace && !Input";
 
 pub fn init_document_workspace_actions(cx: &mut App) {
+    // Tool shortcuts change the pointer's meaning even while it is stationary.
+    // GPUI's editor default hides it on typing and consumed keyboard actions.
+    cx.set_cursor_hide_mode(gpui::CursorHideMode::Never);
     // The typed-signature preview uses the same face the rasteriser embeds.
     let _ = cx.text_system().add_fonts(vec![std::borrow::Cow::Borrowed(
         include_bytes!("../assets/fonts/Allura-Regular.ttf").as_slice(),
@@ -2512,6 +2517,8 @@ pub struct DocumentWorkspace {
     viewport_bounds: HashMap<DocumentId, Bounds<Pixels>>,
     /// Scroll offset (content pixels) at the last paint of each viewport.
     viewport_painted_scroll: HashMap<DocumentId, (f32, f32)>,
+    /// Layout paired with that painted offset; pending zoom plans are not yet visible.
+    viewport_painted_layouts: HashMap<DocumentId, Vec<PageLayout>>,
     active_annotation_pointer: Option<ActiveAnnotationPointer>,
     properties_click_candidate: Option<PropertiesClickCandidate>,
     pending_close_document_id: Option<DocumentId>,
@@ -4030,6 +4037,7 @@ impl DocumentWorkspace {
             last_painted_page_evidence: HashMap::new(),
             viewport_bounds: HashMap::new(),
             viewport_painted_scroll: HashMap::new(),
+            viewport_painted_layouts: HashMap::new(),
             active_annotation_pointer: None,
             properties_click_candidate: None,
             pending_close_document_id: None,
@@ -5711,6 +5719,7 @@ impl DocumentWorkspace {
             .retain(|(owner, _), _| *owner != document_id);
         self.viewport_bounds.remove(&document_id);
         self.viewport_painted_scroll.remove(&document_id);
+        self.viewport_painted_layouts.remove(&document_id);
         self.annotation_statuses.remove(&document_id);
         if self.active_document_id == Some(document_id) {
             self.active_document_id = self
@@ -11173,6 +11182,13 @@ impl DocumentWorkspace {
             .try_global::<crate::application_shell::ReverseScrollZoom>()
             .is_some_and(|reverse| reverse.0);
         let outcome = session.update(cx, |session, _| {
+            if matches!(event.delta, gpui::ScrollDelta::Pixels(_)) {
+                return session.view_state.precise_scroll(
+                    f32::from(delta.y),
+                    event.modifiers.control,
+                    reverse_zoom,
+                );
+            }
             session.view_state.wheel(
                 session.page_sizes.len(),
                 session.current_page as usize,
@@ -11239,18 +11255,15 @@ impl DocumentWorkspace {
         // The scroll container may already have applied this wheel
         // delta; anchor to the content that was painted under the pointer.
         let painted_scroll = self.viewport_painted_scroll.get(&document_id).copied();
+        let painted_layouts = self.viewport_painted_layouts.get(&document_id);
         session.update(cx, |session, cx| {
             if let (Some(bounds), Some(old_scroll)) = (bounds, painted_scroll) {
                 let local_x = f32::from(position.x - bounds.origin.x);
                 let local_y = f32::from(position.y - bounds.origin.y);
                 // Resolved against the new layout in refresh_viewport_async,
                 // before it is drawn, so the pointed page point stays put.
-                session.pending_zoom_anchor = session.viewer.plan_snapshot().and_then(|plan| {
-                    crate::zoom_anchor::zoom_anchor_at(
-                        &plan.page_layouts,
-                        old_scroll,
-                        (local_x, local_y),
-                    )
+                session.pending_zoom_anchor = painted_layouts.and_then(|layouts| {
+                    crate::zoom_anchor::zoom_anchor_at(layouts, old_scroll, (local_x, local_y))
                 });
             }
             session
@@ -16187,12 +16200,10 @@ impl DocumentWorkspace {
         } else {
             None
         };
-        if cloud_plus_pending
-            && matches!(
-                outcome,
-                Ok(PointerPhaseOutcome::AnnotationCreated(_)) | Ok(PointerPhaseOutcome::Ignored)
-            )
-        {
+        if matches!(
+            outcome,
+            Ok(PointerPhaseOutcome::AnnotationCreated(_)) | Ok(PointerPhaseOutcome::Ignored)
+        ) {
             self.active_annotation_pointer = None;
         }
         match outcome {
@@ -16664,6 +16675,10 @@ impl DocumentWorkspace {
             .find(|interaction| {
                 Some(interaction.document_id) == self.active_document_id
                     && interaction.bounds.contains(&position)
+                    && self
+                        .viewport_bounds
+                        .get(&interaction.document_id)
+                        .is_some_and(|bounds| bounds.contains(&position))
             })
         else {
             return false;
@@ -17615,6 +17630,10 @@ impl DocumentWorkspace {
             .find(|interaction| {
                 Some(interaction.document_id) == self.active_document_id
                     && interaction.bounds.contains(&position)
+                    && self
+                        .viewport_bounds
+                        .get(&interaction.document_id)
+                        .is_some_and(|bounds| bounds.contains(&position))
             })
         else {
             return self.clear_hover_candidate(cx);
@@ -18451,6 +18470,7 @@ impl DocumentWorkspace {
             .retain(|(owner, _), _| *owner != document_id);
         self.viewport_bounds.remove(&document_id);
         self.viewport_painted_scroll.remove(&document_id);
+        self.viewport_painted_layouts.remove(&document_id);
         drop(session);
         defer_drop_images(images, cx);
         if self.active_document_id == Some(document_id) {
@@ -21747,6 +21767,14 @@ fn annotation_layer(
                                 ),
                                 size(px(local.width as f32), px(local.height as f32)),
                             );
+                            if annotation.feedback == crate::annotation_model::SceneInteractionFeedback::Creation {
+                                // The capture asset does not exist until commit. Keep
+                                // its live region visible without edit handles.
+                                window.paint_quad(
+                                    outline(image_bounds, selection_color, BorderStyle::Dashed)
+                                        .border_widths(px(1.)),
+                                );
+                            }
                             if let Some(image) = image_assets.get(&annotation_image_cache_key(
                                 annotation.asset_id.as_str(),
                                 annotation.opacity,
@@ -24482,6 +24510,7 @@ impl Render for DocumentWorkspace {
         let has_viewer_pages = !viewer_pages.is_empty();
         let viewport_control = cx.entity().downgrade();
         let viewport_observer_scroll = viewer_scroll.clone();
+        let painted_layouts = viewer_plan.as_ref().map(|plan| plan.page_layouts.clone());
         let viewport_observer = canvas(
             |_, _, _| (),
             move |bounds, _, window, cx| {
@@ -24494,6 +24523,11 @@ impl Render for DocumentWorkspace {
                 };
                 let _ = viewport_control.update(cx, |workspace, cx| {
                     workspace.viewport_bounds.insert(document_id, visible);
+                    if let Some(layouts) = &painted_layouts {
+                        workspace
+                            .viewport_painted_layouts
+                            .insert(document_id, layouts.clone());
+                    }
                     let painted_scroll = workspace
                         .session(document_id, cx)
                         .cloned()
@@ -25674,42 +25708,44 @@ impl Render for DocumentWorkspace {
             &properties_resizable,
             properties_visible,
         );
-        root.child(session_tab_strip).child(
-            h_flex()
-                .flex_1()
-                .min_h_0()
-                .w_full()
-                .items_stretch()
-                .child(self.render_left_rail(true, thumbnails_fit, cx))
-                .child(
-                    gpui::div()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .overflow_hidden()
-                        // The tool rail sits outside the resizable panels: its
-                        // own edge handle snaps its width to whole tool columns
-                        // while dragging, as in Electron.
-                        .child(
-                            h_flex()
-                                .size_full()
-                                .child(
-                                    gpui::div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .h_full()
-                                        .child(properties_panels),
-                                )
-                                .child(
-                                    gpui::div()
-                                        .flex_none()
-                                        .h_full()
-                                        .w(rail_width)
-                                        .child(right_rail),
-                                ),
-                        ),
-                ),
-        )
+        root.child(session_tab_strip)
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .items_stretch()
+                    .child(self.render_left_rail(true, thumbnails_fit, cx))
+                    .child(
+                        gpui::div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .overflow_hidden()
+                            // The tool rail sits outside the resizable panels: its
+                            // own edge handle snaps its width to whole tool columns
+                            // while dragging, as in Electron.
+                            .child(
+                                h_flex()
+                                    .size_full()
+                                    .child(
+                                        gpui::div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .h_full()
+                                            .child(properties_panels),
+                                    )
+                                    .child(
+                                        gpui::div()
+                                            .flex_none()
+                                            .h_full()
+                                            .w(rail_width)
+                                            .child(right_rail),
+                                    ),
+                            ),
+                    ),
+            )
+            .child(self.render_status_bar(window, cx))
     }
 }
 

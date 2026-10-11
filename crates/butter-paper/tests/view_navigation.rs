@@ -35,6 +35,32 @@ const KEEP: f32 = 48.;
 /// Painted geometry is compared to within a pixel or two of rounding.
 const TOLERANCE: f32 = 2.;
 
+#[gpui::test]
+fn stationary_pointer_keeps_visible_tool_cursors_after_keyboard_shortcuts(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &MIXED_PAGES);
+    let at = h.cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap().center();
+    h.cx.simulate_mouse_move(at, None, Modifiers::default());
+    for (shortcut, expected) in [
+        ("r", gpui::CursorStyle::Crosshair),
+        ("v", gpui::CursorStyle::Arrow),
+        ("e", gpui::CursorStyle::Crosshair),
+        ("v", gpui::CursorStyle::Arrow),
+    ] {
+        h.cx.simulate_keystrokes(shortcut);
+        h.settle();
+        assert_eq!(
+            h.cx.update(|_, cx| cx.cursor_hide_mode()),
+            gpui::CursorHideMode::Never
+        );
+        assert_eq!(h.cx.update(|window, _| window.mouse_position()), at);
+        assert_eq!(
+            h.workspace
+                .read_with(h.cx, |workspace, _| workspace.viewport_cursor()),
+            expected
+        );
+    }
+}
+
 /// Letter portrait, tabloid landscape, letter portrait, a small card and
 /// letter portrait: mixed sizes expose fits that follow the current page.
 const MIXED_PAGES: [(f32, f32); 5] = [
@@ -788,6 +814,99 @@ fn control_wheel_zoom_far_out_and_back_never_loses_the_pages(cx: &mut TestAppCon
             frame.zoom
         );
     }
+}
+
+#[gpui::test]
+fn rapid_pinch_events_keep_the_painted_page_point_fixed(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.set_zoom(150.);
+    h.go_to_page(2);
+    h.wheel(0., -300., false);
+    let before = h.frame();
+    let at = before.viewport.center();
+    let anchor = before.document_point(at).unwrap();
+    h.cx.simulate_mouse_move(at, None, Modifiers::default());
+    // A trackpad can deliver several magnification steps before the next frame.
+    h.cx.update(|window, cx| {
+        for _ in 0..5 {
+            window.dispatch_event(
+                gpui::PlatformInput::Pinch(gpui::PinchEvent {
+                    position: at,
+                    delta: 0.04,
+                    phase: gpui::TouchPhase::Moved,
+                    ..Default::default()
+                }),
+                cx,
+            );
+        }
+    });
+    let after = h.frame();
+    assert!(
+        distance(after.screen_point(anchor).unwrap(), at) <= 4.,
+        "pinch burst moved the painted point: {before:?} → {after:?}"
+    );
+    assert_eq!(after.current_page, 2);
+}
+
+#[gpui::test]
+fn scrolled_pages_behind_chrome_cannot_start_canvas_selection(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.set_zoom(200.);
+    h.go_to_page(2);
+    h.wheel(0., -300., false);
+    let viewport = h.frame().viewport;
+    let primary = h.cx.debug_bounds(CONTINUOUS_PRIMARY_ID).unwrap();
+    let caret = point(primary.right() + px(10.), primary.center().y);
+    h.cx.simulate_click(caret, Modifiers::default());
+    h.cx.simulate_keystrokes("escape");
+    h.cx.simulate_mouse_move(viewport.center(), None, Modifiers::default());
+    let document = h.document;
+    assert!(
+        h.workspace
+            .read_with(h.cx, |workspace, cx| workspace
+                .active_selection_marquee(document, cx))
+            .is_none()
+    );
+    let status = h.cx.debug_bounds("document-status-bar").unwrap();
+    h.cx.simulate_click(status.center(), Modifiers::default());
+    h.cx.simulate_mouse_move(viewport.center(), None, Modifiers::default());
+    assert!(
+        h.workspace
+            .read_with(h.cx, |workspace, cx| workspace
+                .active_selection_marquee(document, cx))
+            .is_none()
+    );
+}
+
+#[gpui::test]
+fn contextual_status_bar_spans_the_window_and_stays_below_the_viewport(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    for width in [1280., 800., 1600.] {
+        h.cx.simulate_resize(size(px(width), px(800.)));
+        let frame = h.frame();
+        let status = h.cx.debug_bounds("document-status-bar").unwrap();
+        assert_eq!(status.left(), px(0.));
+        assert_eq!(status.size.width, frame.window.width);
+        assert!(status.top() >= frame.viewport.bottom());
+        assert_eq!(status.bottom(), frame.window.height);
+        assert!(status.size.height < px(40.));
+    }
+}
+
+#[gpui::test]
+fn trackpad_scroll_ignores_mouse_zoom_preference_in_single_page(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(SinglePageView);
+    h.set_zoom(200.);
+    h.go_to_page(2);
+    let before = h.frame();
+    h.wheel(0., -120., false);
+    let after = h.frame();
+    assert_eq!(after.zoom, before.zoom);
+    assert_eq!(after.current_page, before.current_page);
+    assert!(after.scroll.1 > before.scroll.1);
+    h.wheel(0., 120., true);
+    assert!(h.frame().zoom > after.zoom);
 }
 
 #[gpui::test]

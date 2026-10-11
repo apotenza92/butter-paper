@@ -268,27 +268,30 @@ impl Render for PageViewControl {
                     .dropdown_menu(move |menu, _, _| {
                         let zoom_control = zoom_control.clone();
                         let scroll_control = scroll_control.clone();
-                        menu.item(
-                            PopupMenuItem::new("Mousewheel Zoom")
-                                .icon(IconName::Search)
-                                .checked(current_behavior == WheelBehavior::Zoom)
-                                .on_click(move |_, _, cx| {
-                                    zoom_control.update(cx, |control, cx| {
-                                        control.set_wheel_behavior(WheelBehavior::Zoom, cx);
-                                    });
-                                }),
-                        )
-                        .item(
-                            PopupMenuItem::new("Mousewheel Scroll")
-                                .icon(IconName::ChevronsUpDown)
-                                .checked(current_behavior == WheelBehavior::Scroll)
-                                .on_click(move |_, _, cx| {
-                                    scroll_control.update(cx, |control, cx| {
-                                        control.set_wheel_behavior(WheelBehavior::Scroll, cx);
-                                    });
-                                }),
-                        )
-                        .label("Ctrl + mousewheel does the opposite.")
+                        menu.check_side(gpui_component::Side::Right)
+                            .label("Mouse wheel")
+                            .item(
+                                PopupMenuItem::new("Zoom")
+                                    .icon(IconName::Search)
+                                    .checked(current_behavior == WheelBehavior::Zoom)
+                                    .on_click(move |_, _, cx| {
+                                        zoom_control.update(cx, |control, cx| {
+                                            control.set_wheel_behavior(WheelBehavior::Zoom, cx);
+                                        });
+                                    }),
+                            )
+                            .item(
+                                PopupMenuItem::new("Scroll")
+                                    .icon(IconName::ChevronsUpDown)
+                                    .checked(current_behavior == WheelBehavior::Scroll)
+                                    .on_click(move |_, _, cx| {
+                                        scroll_control.update(cx, |control, cx| {
+                                            control.set_wheel_behavior(WheelBehavior::Scroll, cx);
+                                        });
+                                    }),
+                            )
+                            .separator()
+                            .label("Hold Ctrl to do the opposite")
                     }),
             )
     }
