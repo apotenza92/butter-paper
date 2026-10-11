@@ -288,7 +288,8 @@ fn tab_close_buttons_are_stock_ghost_icon_buttons() {
     );
     for style in closes {
         assert!(style.contains(".ghost()"));
-        assert!(!matches(r"\.(custom|bg|border_color|rounded)\(", &style));
+        assert!(style.contains(".rounded(cx.theme().radius_full())"));
+        assert!(!matches(r"\.(custom|bg|border_color)\(", &style));
     }
 }
 

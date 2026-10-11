@@ -32,6 +32,7 @@ pub mod highlight_defaults_panel;
 pub mod property_controls;
 mod sidebar_sizing;
 pub use annotation_adapter::tool_properties;
+pub mod application_settings;
 pub mod default_pdf_app;
 pub mod image_asset_decode;
 pub mod ink_property_inspector;

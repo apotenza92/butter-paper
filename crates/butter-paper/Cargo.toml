@@ -23,8 +23,8 @@ chacha20poly1305 = { version = "0.11.0", features = ["zeroize"] }
 cosmic-text = "0.19.0"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["wayland", "x11", "windows-manifest"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["font-kit", "wayland", "x11"] }
-gpui-component = { git = "https://github.com/apotenza92/gpui-kit", rev = "e57324a9b9d255fd3b0360c5ec0914558ec941d6" }
-gpui-component-assets = { git = "https://github.com/apotenza92/gpui-kit", rev = "e57324a9b9d255fd3b0360c5ec0914558ec941d6" }
+gpui-component = { git = "https://github.com/apotenza92/gpui-kit", rev = "bb6d6c4e6b3b854894eddea3b8a5b2512ecfc531" }
+gpui-component-assets = { git = "https://github.com/apotenza92/gpui-kit", rev = "bb6d6c4e6b3b854894eddea3b8a5b2512ecfc531" }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 keyring = { version = "=3.6.3", features = ["apple-native", "crypto-rust", "sync-secret-service", "windows-native"] }
 libc = "0.2"

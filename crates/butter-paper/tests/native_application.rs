@@ -432,97 +432,42 @@ fn native_application_projection_retains_document_edit_commands_and_restores_the
 }
 
 #[test]
-fn update_menu_items_follow_the_updater_state() {
-    use butter_paper::{
-        application_shell::{CheckForUpdates, RestartToUpdate, SetUpdateFrequencyWeekly},
-        native_update_policy::UpdateFrequency,
-        native_updater::ReleaseVersion,
-    };
-    let product = |updates: UpdateMenuState| {
-        build_native_application_menus_with_shell(
-            NativeApplicationMenuState::default(),
-            ApplicationMenuShellState {
-                updates,
-                ..Default::default()
+fn about_and_settings_are_available_in_both_menu_surfaces() {
+    use butter_paper::application_shell::{AboutButterPaper, OpenSettings};
+    for status in [
+        UpdateMenuStatus::Unavailable,
+        UpdateMenuStatus::Checking,
+        UpdateMenuStatus::Available(butter_paper::native_updater::ReleaseVersion::stable(
+            1, 0, 0,
+        )),
+        UpdateMenuStatus::Ready(butter_paper::native_updater::ReleaseVersion::stable(
+            1, 0, 0,
+        )),
+    ] {
+        let shell = ApplicationMenuShellState {
+            updates: UpdateMenuState {
+                status,
+                frequency: None,
             },
-        )
-        .into_iter()
-        .find(|menu| menu.name == "Butter Paper")
-        .unwrap()
-    };
-    fn submenu(menu: &Menu) -> &Menu {
-        menu.items
-            .iter()
-            .find_map(|item| match item {
-                MenuItem::Submenu(submenu) if submenu.name == "Check Automatically" => {
-                    Some(submenu)
-                }
-                _ => None,
-            })
-            .unwrap()
-    }
-
-    // Development builds and copies outside an install cannot update.
-    let unavailable = product(UpdateMenuState::default());
-    assert!(matches!(
-        item(&unavailable, "Updates: download new versions from Releases"),
-        MenuItem::Action { disabled: true, .. }
-    ));
-    assert!(submenu(&unavailable).disabled);
-
-    let idle = product(UpdateMenuState {
-        status: UpdateMenuStatus::Idle,
-        frequency: Some(UpdateFrequency::Weekly),
-    });
-    let check = item(&idle, "Check for Updates…");
-    assert!(matches!(
-        check,
-        MenuItem::Action {
-            disabled: false,
-            ..
-        }
-    ));
-    assert_action(check, |action| action.as_any().is::<CheckForUpdates>());
-    let schedule = submenu(&idle);
-    assert!(!schedule.disabled);
-    let weekly = item(schedule, "Weekly");
-    assert!(matches!(
-        weekly,
-        MenuItem::Action {
-            checked: true,
-            disabled: false,
-            ..
-        }
-    ));
-    assert_action(weekly, |action| {
-        action.as_any().is::<SetUpdateFrequencyWeekly>()
-    });
-    assert!(matches!(
-        item(schedule, "Daily"),
-        MenuItem::Action { checked: false, .. }
-    ));
-
-    let checking = product(UpdateMenuState {
-        status: UpdateMenuStatus::Checking,
-        ..idle_state()
-    });
-    assert!(matches!(
-        item(&checking, "Checking for Updates…"),
-        MenuItem::Action { disabled: true, .. }
-    ));
-
-    let ready = product(UpdateMenuState {
-        status: UpdateMenuStatus::Ready(ReleaseVersion::stable(0, 0, 32)),
-        ..idle_state()
-    });
-    assert_action(item(&ready, "Restart to Update to 0.0.32"), |action| {
-        action.as_any().is::<RestartToUpdate>()
-    });
-
-    fn idle_state() -> UpdateMenuState {
-        UpdateMenuState {
-            status: UpdateMenuStatus::Idle,
-            frequency: Some(UpdateFrequency::Weekly),
+            ..Default::default()
+        };
+        for menus in [
+            build_native_application_menus_with_shell(Default::default(), shell),
+            build_in_window_application_menus(Default::default(), shell),
+        ] {
+            let product = menu(&menus, "Butter Paper");
+            assert_action(item(product, "About Butter Paper"), |action| {
+                action.as_any().is::<AboutButterPaper>()
+            });
+            assert_action(item(product, "Settings…"), |action| {
+                action.as_any().is::<OpenSettings>()
+            });
+            assert!(!item(product, "Settings…").is_disabled());
+            assert!(
+                !menu_item_names(product)
+                    .iter()
+                    .any(|name| name.contains("Update") || name.contains("Automatically"))
+            );
         }
     }
 }
@@ -2721,5 +2666,77 @@ fn assert_action(item: &MenuItem, matches: impl FnOnce(&dyn Action) -> bool) {
     match item {
         MenuItem::Action { action, .. } => assert!(matches(action.as_ref())),
         _ => panic!("expected an action menu item"),
+    }
+}
+
+#[gpui::test]
+fn production_update_button_is_pinned_in_empty_and_document_workspaces(cx: &mut TestAppContext) {
+    use butter_paper::{
+        application_settings::ApplicationUpdatePresentation,
+        application_shell::{DownloadUpdate, OpenUpdateSettings, RestartToUpdate},
+        document_tab_bar::TEMPLATE_PICKER_ID,
+        native_updater::ReleaseVersion,
+    };
+    use std::{cell::Cell, rc::Rc};
+    cx.update(gpui_component::init);
+    let opened = Rc::new(Cell::new(0));
+    let downloaded = Rc::new(Cell::new(0));
+    let restarted = Rc::new(Cell::new(0));
+    cx.update(|cx| {
+        let count = opened.clone();
+        cx.on_action(move |_: &OpenUpdateSettings, _| count.set(count.get() + 1));
+        let count = downloaded.clone();
+        cx.on_action(move |_: &DownloadUpdate, _| count.set(count.get() + 1));
+        let count = restarted.clone();
+        cx.on_action(move |_: &RestartToUpdate, _| count.set(count.get() + 1));
+    });
+    let workspace =
+        cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(RecordingBackend::default()), cx));
+    let (_, cx) = cx.add_window_view({
+        let workspace = workspace.clone();
+        move |window, cx| Root::new(workspace, window, cx)
+    });
+    let version = ReleaseVersion::stable(0, 1, 5);
+    for has_document in [false, true] {
+        if has_document {
+            workspace.update(cx, |workspace, cx| {
+                workspace.open_path(PathBuf::from("/tmp/update-review.pdf"), cx)
+            });
+            cx.run_until_parked();
+        }
+        for (status, increments) in [
+            (UpdateMenuStatus::Available(version), (1, 0, 0)),
+            (UpdateMenuStatus::Downloading, (0, 0, 0)),
+            (UpdateMenuStatus::Ready(version), (0, 0, 1)),
+        ] {
+            cx.update(|_, cx| {
+                cx.set_global(ApplicationUpdatePresentation {
+                    state: UpdateMenuState {
+                        status,
+                        frequency: None,
+                    },
+                    ..Default::default()
+                })
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let update = cx
+                .debug_bounds("application-update-button")
+                .expect("production update affordance");
+            let template = cx.debug_bounds(TEMPLATE_PICKER_ID).unwrap();
+            assert!(update.left() >= template.right());
+            let width = cx.update(|window, _| window.viewport_size().width);
+            assert!(update.right() <= width);
+            let before = (opened.get(), downloaded.get(), restarted.get());
+            cx.simulate_click(update.center(), gpui::Modifiers::default());
+            cx.run_until_parked();
+            assert_eq!(
+                (opened.get(), downloaded.get(), restarted.get()),
+                (
+                    before.0 + increments.0,
+                    before.1 + increments.1,
+                    before.2 + increments.2
+                )
+            );
+        }
     }
 }

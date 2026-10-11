@@ -232,6 +232,7 @@ impl DocumentWorkspace {
                             .focus(|style| style.opacity(1.))
                             .debug_selector(move || close_selector.clone())
                             .accessibility_id(close_accessibility_id)
+                            .rounded(cx.theme().radius_full())
                             .ghost()
                             .small()
                             .icon(IconName::Close)
@@ -589,7 +590,13 @@ impl DocumentWorkspace {
                 |row, button| row.child(button),
             )
             .child(open_document)
-            .child(self.template_control.clone());
+            .child(self.template_control.clone())
+            .children(
+                cx.try_global::<crate::application_settings::ApplicationUpdatePresentation>()
+                    .and_then(|presentation| {
+                        crate::application_settings::update_button(presentation.state.status)
+                    }),
+            );
         let tab_bar_click_control = cx.entity().downgrade();
         let tab_bar_click_ids = session_tab_ids.clone();
         let tab_bar_focus_handles = self.session_tab_focus_handles.clone();

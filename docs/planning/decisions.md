@@ -24,6 +24,8 @@ changes it; history is in git.
 - Use the stock gpui-component theme and standard control appearances as the
   UI baseline. Preserve the current application layout and control locations;
   review existing visual overrides rather than introducing a new theme.
+  Popovers, menus and selects share GPUI stock medium shadow elevation;
+  dialogs retain their stronger stock shadow.
 - All three platforms retain an in-app menu bar with the shared command
   subset. The native macOS menu bar additionally exposes Mac-specific
   application and window commands; the in-app menu need not mirror it.
@@ -34,7 +36,9 @@ changes it; history is in git.
   title up to 190px; the close button is hidden at rest and appears on hover
   or focus over the end of the title, which keeps its position and truncates.
   Open, New and template controls stay pinned right; an overflow menu appears
-  only when tabs overflow.
+  only when tabs overflow. Close buttons use the stock small ghost icon
+  Button with the theme full radius for circular hover, pressed and focus
+  backgrounds.
 - Recovery and save problems live in a conditional Recovery button beside
   Open/New, with a warning icon and item count. Its bounded, scrollable panel
   has a fixed top-right X; closing it never discards data. Recovery actions
@@ -43,13 +47,31 @@ changes it; history is in git.
   or notification. Reviewing a historical warning explicitly clears it.
 - New from template and Manage templates split list and preview 50/50.
 - Transient panels and dialogs close with an icon-only top-right X inside the
-  content; the word Cancel is reserved for a modal decision.
+  content; the word Cancel is reserved for a decision prompt beside a commit or
+  destructive action.
 - Sidebars: page thumbnails on the left, properties on the right, both 300px
   by default and resizable; thumbnails hide automatically when the window is
   too narrow for both and return when it widens. The right tool rail snaps to
   whole columns.
 - The viewer toolbar has zoom, fit and page-mode controls; CAD View was
   removed from it.
+
+- About Butter Paper and Settings are available in both application menus.
+  Settings is a dedicated reusable window with edge-to-edge navigation,
+  a category rail, a sidebar of heading shortcuts and one
+  scrollable content pane per category. The rail and heading sidebar follow
+  shadcn's nested-sidebar pattern, using native sidebar surfaces and
+  left-aligned, full-width navigation controls. Narrow windows replace the rail and
+  sidebar with a category row and a Jump to section menu. Settings owns update
+  checks, their visible results, the check frequency and release notes. Checks
+  discover releases without downloading them. A compact
+  button pinned beside the template control offers Update available, then
+  Downloading, then Restart to update, including with the in-app menu hidden.
+  Update available opens Settings without downloading; Download update in
+  Settings starts the download. Default automatic checks run at startup for
+  beta builds and weekly for stable builds, preserving saved user choices.
+  Interface size stays in the View menu, not Settings. Restart uses the normal
+  unsaved-work quit flow.
 
 ## Release
 

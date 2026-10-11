@@ -66,7 +66,7 @@ impl UpdateSettings {
             schema_version: UPDATE_SETTINGS_SCHEMA_VERSION,
             frequency: match channel {
                 NativeReleaseChannel::Stable => UpdateFrequency::Weekly,
-                NativeReleaseChannel::Beta => UpdateFrequency::Daily,
+                NativeReleaseChannel::Beta => UpdateFrequency::Startup,
             },
             last_successful_check_at: None,
         }
@@ -379,7 +379,7 @@ mod tests {
         );
         assert_eq!(
             UpdateSettings::defaults(NativeReleaseChannel::Beta).frequency(),
-            UpdateFrequency::Daily
+            UpdateFrequency::Startup
         );
     }
 

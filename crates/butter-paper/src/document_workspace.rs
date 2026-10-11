@@ -3996,6 +3996,10 @@ impl DocumentWorkspace {
                 },
             ),
         ];
+        cx.observe_global::<crate::application_settings::ApplicationUpdatePresentation>(|_, cx| {
+            cx.notify()
+        })
+        .detach();
         Self {
             sessions: Vec::new(),
             active_document_id: None,

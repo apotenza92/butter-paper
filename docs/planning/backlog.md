@@ -4,9 +4,11 @@ Open work, roughly in priority order. Remove an item when it is done.
 
 ## Confirm on screen
 
-These pass the native harness but have not been checked by eye or by hand in
-the running app.
+Remaining runtime and platform checks. Source and native harness coverage
+alone do not establish these behaviours.
 
+- Installed update download/restart on macOS, Windows and Linux: preserve
+  open documents, view positions and unsaved work, and check relaunch focus.
 - Phone signing with a physical phone (the relay is verified with synthetic
   transfers only), and camera signature capture: permission, capture,
   cancellation and camera release.
@@ -39,10 +41,6 @@ the running app.
 
 ## Platforms and release
 
-- Make updates quiet and automatic, following mulch-launcher's background
-  download and restart approach. Decide between restarting when all app
-  windows are inactive or offering a quiet restart action. Preserve windows,
-  document views and unsaved work; do not steal foreground focus on relaunch.
 - Remove the unused local phone helper (`local_phone_signature`,
   `xtask/src/phone.rs`, `crates/butter-paper/phone-helper/`, its packaging and
   notices) once relay phone signing is confirmed on a phone.

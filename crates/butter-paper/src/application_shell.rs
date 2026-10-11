@@ -44,6 +44,10 @@ gpui::actions!(
         ResetInterfaceSize,
         ToggleApplicationFullScreen,
         SetAsDefaultPdfApp,
+        AboutButterPaper,
+        OpenSettings,
+        OpenUpdateSettings,
+        DownloadUpdate,
         CheckForUpdates,
         RestartToUpdate,
         OpenReleasePage,
@@ -279,6 +283,27 @@ pub fn default_application_ui_font_size() -> Pixels {
 
 pub fn init_application_shell_actions(cx: &mut App) {
     cx.bind_keys([
+        KeyBinding::new(
+            "escape",
+            crate::document_workspace::CloseDocument,
+            Some("Settings"),
+        ),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new(
+            "cmd-w",
+            crate::document_workspace::CloseDocument,
+            Some("Settings"),
+        ),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new(
+            "ctrl-w",
+            crate::document_workspace::CloseDocument,
+            Some("Settings"),
+        ),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-,", OpenSettings, None),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-,", OpenSettings, None),
         #[cfg(target_os = "macos")]
         KeyBinding::new(
             "cmd-q",

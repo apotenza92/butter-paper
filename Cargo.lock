@@ -2622,7 +2622,7 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.5.2"
-source = "git+https://github.com/apotenza92/gpui-kit?rev=e57324a9b9d255fd3b0360c5ec0914558ec941d6#e57324a9b9d255fd3b0360c5ec0914558ec941d6"
+source = "git+https://github.com/apotenza92/gpui-kit?rev=bb6d6c4e6b3b854894eddea3b8a5b2512ecfc531#bb6d6c4e6b3b854894eddea3b8a5b2512ecfc531"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -2654,7 +2654,7 @@ dependencies = [
 [[package]]
 name = "gpui-component"
 version = "0.5.2"
-source = "git+https://github.com/apotenza92/gpui-kit?rev=e57324a9b9d255fd3b0360c5ec0914558ec941d6#e57324a9b9d255fd3b0360c5ec0914558ec941d6"
+source = "git+https://github.com/apotenza92/gpui-kit?rev=bb6d6c4e6b3b854894eddea3b8a5b2512ecfc531#bb6d6c4e6b3b854894eddea3b8a5b2512ecfc531"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2699,7 +2699,7 @@ dependencies = [
 [[package]]
 name = "gpui-component-assets"
 version = "0.5.1"
-source = "git+https://github.com/apotenza92/gpui-kit?rev=e57324a9b9d255fd3b0360c5ec0914558ec941d6#e57324a9b9d255fd3b0360c5ec0914558ec941d6"
+source = "git+https://github.com/apotenza92/gpui-kit?rev=bb6d6c4e6b3b854894eddea3b8a5b2512ecfc531#bb6d6c4e6b3b854894eddea3b8a5b2512ecfc531"
 dependencies = [
  "anyhow",
  "gpui",
@@ -2713,7 +2713,7 @@ dependencies = [
 [[package]]
 name = "gpui-component-macros"
 version = "0.5.1"
-source = "git+https://github.com/apotenza92/gpui-kit?rev=e57324a9b9d255fd3b0360c5ec0914558ec941d6#e57324a9b9d255fd3b0360c5ec0914558ec941d6"
+source = "git+https://github.com/apotenza92/gpui-kit?rev=bb6d6c4e6b3b854894eddea3b8a5b2512ecfc531#bb6d6c4e6b3b854894eddea3b8a5b2512ecfc531"
 dependencies = [
  "proc-macro2",
  "quote",

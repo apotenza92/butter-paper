@@ -2,6 +2,7 @@ use gpui::{AssetSource, Result, SharedString};
 use std::borrow::Cow;
 
 pub const PAGE_THUMBNAILS_ICON: &str = "icons/page-thumbnails.svg";
+pub const DOWNLOAD_ICON: &str = "icons/download.svg";
 
 /// Product icons supplement, rather than modify, the stock component assets.
 pub struct ApplicationAssets;
@@ -9,6 +10,7 @@ pub struct ApplicationAssets;
 impl AssetSource for ApplicationAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         let thumbnail: Option<&'static [u8]> = match path {
+            DOWNLOAD_ICON => Some(include_bytes!("../assets/icons/download.svg")),
             "icons/thumbnail-scale.svg" => {
                 Some(include_bytes!("../assets/icons/thumbnail-scale.svg"))
             }
@@ -98,6 +100,9 @@ impl AssetSource for ApplicationAssets {
         }
         if PAGE_THUMBNAILS_ICON.starts_with(path) {
             entries.push(PAGE_THUMBNAILS_ICON.into());
+        }
+        if DOWNLOAD_ICON.starts_with(path) {
+            entries.push(DOWNLOAD_ICON.into());
         }
         if "icons/rail/mouse-pointer-2.svg".starts_with(path) {
             entries.push("icons/rail/mouse-pointer-2.svg".into());

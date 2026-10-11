@@ -226,6 +226,7 @@ pub struct ReleaseAsset {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Release {
+    pub notes: String,
     pub version: ReleaseVersion,
     pub prerelease: bool,
     pub page_url: String,
@@ -234,6 +235,8 @@ pub struct Release {
 
 #[derive(Deserialize)]
 struct FeedRelease {
+    #[serde(default)]
+    body: Option<String>,
     tag_name: String,
     #[serde(default)]
     html_url: String,
@@ -263,6 +266,7 @@ pub fn parse_releases(bytes: &[u8]) -> Result<Vec<Release>, UpdateError> {
         .filter_map(|release| {
             let version = ReleaseVersion::parse(&release.tag_name)?;
             Some(Release {
+                notes: release.body.unwrap_or_default(),
                 version,
                 // A `-beta.N` tag is a beta even if its release is not
                 // marked as a prerelease.
@@ -297,6 +301,7 @@ pub fn parse_checksums(text: &str) -> HashMap<String, String> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AvailableUpdate {
+    pub notes: String,
     pub version: ReleaseVersion,
     pub target: UpdateTarget,
     /// The identity the package installs; a beta copy may move to stable.
@@ -354,6 +359,7 @@ fn installable(
         .iter()
         .all(|asset| asset.url == format!("{tag_prefix}{}", asset.name));
     (trusted && package.size > 0 && package.size <= MAX_PACKAGE_BYTES).then(|| AvailableUpdate {
+        notes: release.notes.clone(),
         version: release.version,
         target,
         identity,
@@ -1105,6 +1111,7 @@ mod tests {
 
     fn release(tag: &str, prerelease: bool, names: &[String]) -> Release {
         Release {
+            notes: "Release notes".into(),
             version: ReleaseVersion::parse(tag).unwrap(),
             prerelease,
             page_url: format!("https://github.com/apotenza92/butter-paper/releases/tag/{tag}"),
@@ -1209,6 +1216,17 @@ mod tests {
                 (ReleaseVersion::beta(0, 0, 33, 2), true)
             ]
         );
+    }
+
+    #[test]
+    fn release_notes_survive_feed_parsing_and_update_selection() {
+        let mut release = release("v0.1.5", false, &assets(MAC, &[PackageIdentity::Stable]));
+        let parsed = parse_releases(br###"[{"tag_name":"v0.1.5","body":"## Changes\n- Updates UI"},{"tag_name":"v0.1.4","body":null}]"###).unwrap();
+        assert_eq!(parsed[0].notes, "## Changes\n- Updates UI");
+        assert!(parsed[1].notes.is_empty());
+        release.notes = parsed[0].notes.clone();
+        let update = select_update(CURRENT, UpdateChannel::Stable, &[release], MAC).unwrap();
+        assert_eq!(update.notes, parsed[0].notes);
     }
 
     #[test]

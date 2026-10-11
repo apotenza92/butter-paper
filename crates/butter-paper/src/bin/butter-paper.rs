@@ -1446,6 +1446,25 @@ fn on_window_action<A: gpui::Action>(cx: &mut App, handler: fn(&mut App)) {
 /// Application-level shell commands, registered once and routed to the active
 /// document window.
 fn register_application_shell_actions(cx: &mut App) {
+    cx.on_action(
+        |_: &butter_paper::application_shell::AboutButterPaper, cx| {
+            defer_to_active_story(cx, |_, window, cx| {
+                butter_paper::application_settings::open_about(window, cx)
+            });
+        },
+    );
+    cx.on_action(
+        |_: &butter_paper::application_shell::OpenUpdateSettings, cx| {
+            defer_to_active_story(cx, |_, window, cx| {
+                butter_paper::application_settings::open_update_settings(window, cx)
+            });
+        },
+    );
+    cx.on_action(|_: &butter_paper::application_shell::OpenSettings, cx| {
+        defer_to_active_story(cx, |_, window, cx| {
+            butter_paper::application_settings::open_settings(window, cx)
+        });
+    });
     cx.on_action(|_: &ToggleApplicationMenuBar, cx| {
         defer_to_active_story(cx, |story, window, cx| {
             story.toggle_menu_bar(&ToggleApplicationMenuBar, window, cx)
@@ -2794,6 +2813,7 @@ fn build_document_window(
         &application_close,
         |_, _: &ApplicationCloseCancelled, cx| {
             shared_application(cx).coordinator.cancel_quit();
+            updates::cancel_restart(cx);
         },
     )
     .detach();
@@ -3404,12 +3424,12 @@ mod updates {
         },
     };
     use gpui::{App, Global};
-    use gpui_component::{WindowExt as _, button::Button, notification::Notification};
 
     enum Status {
         Idle,
         Checking,
         Downloading,
+        Available(AvailableUpdate),
         Ready(PreparedUpdate),
     }
 
@@ -3423,6 +3443,8 @@ mod updates {
         settings: UpdateSettings,
         status: Status,
         relaunch_after_quit: bool,
+        message: String,
+        notes: String,
     }
 
     impl Global for UpdateService {}
@@ -3452,10 +3474,26 @@ mod updates {
             settings,
             status: Status::Idle,
             relaunch_after_quit: false,
+            message: String::new(),
+            notes: String::new(),
         });
 
         cx.on_action(|_: &CheckForUpdates, cx| check(cx, true));
+        refresh_menus(cx);
+        cx.on_action(|_: &butter_paper::application_shell::DownloadUpdate, cx| {
+            let service = cx.global_mut::<UpdateService>();
+            if let Status::Available(update) = &service.status {
+                let update = update.clone();
+                service.status = Status::Downloading;
+                service.message.clear();
+                refresh_menus(cx);
+                download(cx, update);
+            }
+        });
         cx.on_action(|_: &RestartToUpdate, cx| {
+            if !matches!(cx.global::<UpdateService>().status, Status::Ready(_)) {
+                return;
+            }
             cx.global_mut::<UpdateService>().relaunch_after_quit = true;
             cx.dispatch_action(&RequestApplicationQuit);
         });
@@ -3519,12 +3557,16 @@ mod updates {
         .detach();
     }
 
+    pub(super) fn cancel_restart(cx: &mut App) {
+        cx.global_mut::<UpdateService>().relaunch_after_quit = false;
+    }
+
     fn set_frequency_on<A: gpui::Action>(cx: &mut App, frequency: UpdateFrequency) {
         cx.on_action(move |_: &A, cx| {
             let service = cx.global_mut::<UpdateService>();
             service.settings.set_frequency(frequency);
             if let Err(error) = service.store.save(&service.settings) {
-                eprintln!("Butter Paper could not save its update settings: {error}");
+                service.message = format!("Couldn’t save update settings: {error}");
             }
             refresh_menus(cx);
         });
@@ -3542,6 +3584,7 @@ mod updates {
                 Status::Idle => UpdateMenuStatus::Idle,
                 Status::Checking => UpdateMenuStatus::Checking,
                 Status::Downloading => UpdateMenuStatus::Downloading,
+                Status::Available(update) => UpdateMenuStatus::Available(update.version),
                 Status::Ready(prepared) => UpdateMenuStatus::Ready(prepared.version),
             },
             frequency: Some(service.settings.frequency()),
@@ -3549,16 +3592,17 @@ mod updates {
     }
 
     fn refresh_menus(cx: &mut App) {
+        let state = menu_state(cx);
+        let service = cx.global::<UpdateService>();
+        cx.set_global(
+            butter_paper::application_settings::ApplicationUpdatePresentation {
+                state,
+                message: service.message.clone(),
+                notes: service.notes.clone(),
+            },
+        );
         for story in super::document_window_stories(cx) {
             story.update(cx, |story, cx| story.sync_native_application_menu(cx));
-        }
-    }
-
-    fn notify(cx: &mut App, notification: Notification) {
-        if let Some(entry) = super::active_document_window(cx) {
-            let _ = entry.handle.update(cx, |_, window, cx| {
-                window.push_notification(notification, cx)
-            });
         }
     }
 
@@ -3572,16 +3616,13 @@ mod updates {
         }
         match &service.status {
             Status::Idle => {}
-            Status::Ready(prepared) => {
-                if manual {
-                    notify_ready(cx, prepared.version);
-                }
-                return;
-            }
+            Status::Available(_) => return,
+            Status::Ready(_) => return,
             Status::Checking | Status::Downloading => return,
         }
         let (feed, current, channel) = (service.feed_url.clone(), service.current, service.channel);
         cx.global_mut::<UpdateService>().status = Status::Checking;
+        cx.global_mut::<UpdateService>().message.clear();
         refresh_menus(cx);
         let task = cx.background_executor().spawn(async move {
             let target = UpdateTarget::current()
@@ -3591,16 +3632,12 @@ mod updates {
         });
         cx.spawn(async move |cx| {
             let result = task.await;
-            cx.update(|cx| finish_check(cx, manual, result));
+            cx.update(|cx| finish_check(cx, result));
         })
         .detach();
     }
 
-    fn finish_check(
-        cx: &mut App,
-        manual: bool,
-        result: Result<Option<AvailableUpdate>, UpdateError>,
-    ) {
+    fn finish_check(cx: &mut App, result: Result<Option<AvailableUpdate>, UpdateError>) {
         let service = cx.global_mut::<UpdateService>();
         if result.is_ok() {
             let now = format_canonical_utc_timestamp(std::time::SystemTime::now());
@@ -3610,36 +3647,23 @@ mod updates {
         }
         match result {
             Ok(Some(update)) => {
-                service.status = Status::Downloading;
-                download(cx, update, manual);
+                service.notes = update.notes.clone();
+                service.status = Status::Available(update);
             }
             Ok(None) => {
                 service.status = Status::Idle;
-                if manual {
-                    let current = cx.global::<UpdateService>().current;
-                    notify(
-                        cx,
-                        Notification::info(format!(
-                            "Butter Paper {current} is the latest version."
-                        ))
-                        .title("You’re up to date"),
-                    );
-                }
+                service.notes.clear();
+                service.message = format!("Butter Paper {} is up to date.", service.current);
             }
             Err(error) => {
                 service.status = Status::Idle;
-                if manual {
-                    notify(
-                        cx,
-                        Notification::error(error.to_string()).title("Couldn’t check for updates"),
-                    );
-                }
+                service.message = format!("Couldn’t check for updates: {error}");
             }
         }
         refresh_menus(cx);
     }
 
-    fn download(cx: &mut App, update: AvailableUpdate, manual: bool) {
+    fn download(cx: &mut App, update: AvailableUpdate) {
         let installation = cx
             .global::<UpdateService>()
             .installation
@@ -3650,6 +3674,7 @@ mod updates {
             update.version,
             std::process::id()
         ));
+        let retry_update = update.clone();
         let task = cx.background_executor().spawn(async move {
             let _ = std::fs::remove_dir_all(&work);
             std::fs::create_dir_all(&work)
@@ -3667,19 +3692,12 @@ mod updates {
                 let service = cx.global_mut::<UpdateService>();
                 match result {
                     Ok(prepared) => {
-                        let version = prepared.version;
                         service.status = Status::Ready(prepared);
-                        notify_ready(cx, version);
                     }
                     Err(error) => {
-                        service.status = Status::Idle;
-                        if manual {
-                            notify(
-                                cx,
-                                Notification::error(error.to_string())
-                                    .title("Couldn’t download the update"),
-                            );
-                        }
+                        service.status = Status::Available(retry_update);
+                        service.message =
+                            format!("Couldn’t download the update: {error}. Try again.");
                     }
                 }
                 refresh_menus(cx);
@@ -3688,19 +3706,34 @@ mod updates {
         .detach();
     }
 
-    fn notify_ready(cx: &mut App, version: ReleaseVersion) {
-        notify(
-            cx,
-            Notification::success("Restart now to finish updating, or it installs when you quit.")
-                .title(format!("Butter Paper {version} is ready"))
-                .action(|_, _, _| {
-                    Button::new("restart-to-update")
-                        .label("Restart")
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(Box::new(RestartToUpdate), cx)
-                        })
-                }),
-        );
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use butter_paper::native_updater::{PackageIdentity, ReleaseAsset};
+
+        #[gpui::test]
+        fn discovering_an_update_does_not_download_and_results_are_visible(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            cx.update(|cx| {
+                let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-scratch/update-settings");
+                init(cx, root, NativeReleaseChannel::Stable);
+                let version = ReleaseVersion::stable(0, 1, 5);
+                let asset = ReleaseAsset {name: "fixture".into(), url: "https://example.invalid/fixture".into(), size: 1};
+                let update = AvailableUpdate {version, target: UpdateTarget::MacosArm64, identity: PackageIdentity::Stable, package: asset.clone(), checksums: asset, page_url: String::new(), notes: "Release notes".into()};
+                finish_check(cx, Ok(Some(update)));
+                assert!(matches!(&cx.global::<UpdateService>().status, Status::Available(update) if update.version == version));
+                assert_eq!(cx.global::<butter_paper::application_settings::ApplicationUpdatePresentation>().notes, "Release notes");
+                finish_check(cx, Ok(None));
+                assert!(matches!(cx.global::<UpdateService>().status, Status::Idle));
+                assert!(cx.global::<butter_paper::application_settings::ApplicationUpdatePresentation>().message.contains("up to date"));
+                finish_check(cx, Err(UpdateError::new_public("Connection failed")));
+                assert!(cx.global::<butter_paper::application_settings::ApplicationUpdatePresentation>().message.contains("Connection failed"));
+                cx.global_mut::<UpdateService>().relaunch_after_quit = true;
+                cancel_restart(cx);
+                assert!(!cx.global::<UpdateService>().relaunch_after_quit);
+            });
+        }
     }
 }
 
@@ -3757,6 +3790,36 @@ mod review_driver {
                 let words = line.split_whitespace().collect::<Vec<_>>();
                 let number = |index: usize| words[index].parse::<f32>().unwrap();
                 match words[0] {
+                    "settings" => {
+                        cx.update(|cx| cx.dispatch_action(&butter_paper::application_shell::OpenSettings));
+                        pause(cx, 500).await;
+                    }
+                    "update-settings" => {
+                        cx.update(|cx| cx.dispatch_action(&butter_paper::application_shell::OpenUpdateSettings));
+                        pause(cx, 500).await;
+                    }
+                    "about" => {
+                        cx.update(|cx| cx.dispatch_action(&butter_paper::application_shell::AboutButterPaper));
+                        pause(cx, 500).await;
+                    }
+                    "update-state" => {
+                        use butter_paper::{application_settings::ApplicationUpdatePresentation, native_application::{UpdateMenuState, UpdateMenuStatus}, native_update_policy::UpdateFrequency, native_updater::ReleaseVersion};
+                        let version = ReleaseVersion::stable(0, 1, 5);
+                        let status = match words[1] {
+                            "available" | "failed" => UpdateMenuStatus::Available(version),
+                            "downloading" => UpdateMenuStatus::Downloading,
+                            "ready" => UpdateMenuStatus::Ready(version),
+                            "checking" => UpdateMenuStatus::Checking,
+                            "idle" => UpdateMenuStatus::Idle,
+                            _ => panic!("unknown review update state"),
+                        };
+                        cx.update(|cx| cx.set_global(ApplicationUpdatePresentation {
+                            state: UpdateMenuState {status, frequency: Some(UpdateFrequency::Daily)},
+                            message: if words[1] == "failed" { "Couldn’t download the update. Check your connection and try again.".into() } else { String::new() },
+                            notes: "## Butter Paper 0.1.5\n\n- Improved update controls and release notes.\n- Added About Butter Paper and Settings.\n\nKeep working while the update downloads.".into(),
+                        }));
+                        pause(cx, 500).await;
+                    }
                     "wait" => pause(cx, number(1) as u64).await,
                     "shot" => shot(cx, &out, words[1], &mut log),
                     "new-window" => {
@@ -4069,6 +4132,36 @@ mod review_driver {
                         }
                         pause(cx, 800).await;
                     }
+                    "settings-key" => {
+                        if let Ok(keystroke) = gpui::Keystroke::parse(words[1]) {
+                            cx.update(|cx| {
+                                if let Some(handle) = butter_paper::application_settings::review_window(cx) {
+                                    let _ = handle.update(cx, |_, window, cx| window.dispatch_event(PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke, is_held: false, prefer_character_input: false }), cx));
+                                }
+                            });
+                        }
+                        pause(cx, 800).await;
+                    }
+                    "settings-place" => {
+                        cx.update(|cx| {
+                            if let Some(handle) = butter_paper::application_settings::review_window(cx) {
+                                let _ = handle.update(cx, |_, window, _| {
+                                    window.resize(gpui::size(px(number(1)), px(number(2))));
+                                });
+                            }
+                        });
+                        pause(cx, 800).await;
+                    }
+                    "settings-move" => {
+                        cx.update(|cx| {
+                            if let Some(handle) = butter_paper::application_settings::review_window(cx) {
+                                let _ = handle.update(cx, |_, window, cx| window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent {
+                                    position: point(px(number(1)), px(number(2))), pressed_button: None, modifiers: Modifiers::default(),
+                                }), cx));
+                            }
+                        });
+                        pause(cx, 1000).await;
+                    }
                     "type" => {
                         // type W TEXT: characters into the focused text input of
                         // window W, through the platform input handler as typing.
@@ -4354,6 +4447,12 @@ mod review_driver {
             writeln!(log, "{name} screen capture: {status:?}").unwrap();
         }
         cx.update(|cx| {
+            if let Some(handle) = butter_paper::application_settings::review_window(cx) {
+                let path = out.join(format!("{name}-settings.png"));
+                if let Ok(image) = handle.update(cx, |_, window, _| window.render_to_image()) {
+                    writeln!(log, "{name} settings saved={:?}", image.map(|image| image.save(&path))).unwrap();
+                }
+            }
             if let Some(handle) = cx.try_global::<TabDragPreview>().map(|preview| preview.handle) {
                 let path = out.join(format!("{name}-chip.png"));
                 if let Ok((bounds, image)) = handle.update(cx, |_, window, _| {

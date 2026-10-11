@@ -1,88 +1,54 @@
 # Butter Paper repository instructions
 
-## Current architecture
+## Architecture and boundaries
 
-- Butter Paper is a native desktop application written in Rust with GPUI and GPUI Component. It renders and edits PDFs through PDFium in a separate PDF worker process.
-- The repository is a Cargo workspace: the app in `crates/butter-paper` (binaries `butter-paper` and `butter-paper-pdf-worker`), the Apache-licensed `ztracing` shim in `crates/ztracing-shim`, and build, packaging and release tasks in `xtask` (`cargo xtask`). The Cloudflare signature relay used by phone signing is a standalone TypeScript project in `services/signature-relay` with its own `package.json` and lockfile; it is the only JavaScript in the repository.
-- GPUI and GPUI Component come from Butter Paper's forks (`apotenza92/zed` and `apotenza92/gpui-kit`, branch `butter-paper`), pinned by commit in the workspace `Cargo.toml`. Change them by committing to the fork and moving the pin. Zed's GPL `ztracing` must stay replaced by the shim.
-- PDFium is the human-approved chromium/7881 build, published once as the `pdfium-7881` release and pinned by SHA-256 in `xtask/pdfium.json`; `cargo xtask pdfium` fetches it. Its build patches are kept in `docs/pdfium/`.
-- The Electron application was removed after 0.0.30, and the migration-era tooling and experiments with 0.1.0. They remain in git history (the Electron tree is tagged `electron-final`); do not revive them. By owner decision, native startup imports no Electron data (`StartupDataPolicy::NativeOnly`).
-- Application icons live in `assets/app` (generated artefacts, committed; sources in `assets/icon-source`).
+- Butter Paper is a native Rust application using GPUI and GPUI Component. PDFium renders and edits PDFs in a separate PDF worker process.
+- The Cargo workspace contains `crates/butter-paper` (app and PDF worker), the Apache-licensed `crates/ztracing-shim`, and `xtask` (`cargo xtask`). The signature relay in `services/signature-relay` is a separate TypeScript project with its own package manifest and lockfile.
+- GPUI and GPUI Component use `apotenza92/zed` and `apotenza92/gpui-kit`, branch `butter-paper`. GPUI patches are pinned in the root `Cargo.toml`; GPUI Component and its assets are pinned together in `crates/butter-paper/Cargo.toml`. Permanent fork changes require a fork commit and updated pins. Keep Zed's GPL `ztracing` replaced by the Apache shim.
+- PDFium is the approved chromium/7881 build, published as `pdfium-7881` and pinned by SHA-256 in `xtask/pdfium.json`. Fetch it with `cargo xtask pdfium`; build patches live in `docs/pdfium/`.
+- Electron and migration experiments remain in git history; `electron-final` is reference-only. Do not revive them. Native startup imports no Electron data (`StartupDataPolicy::NativeOnly`).
+- Generated application icons live in `assets/app`; their sources live in `assets/icon-source`.
 
 ## UI conventions
 
-- Compose standard controls from stock gpui-component controls. The property toolkit in the crate's `src/property_controls.rs` provides the panel, header, numeric and slider/input layouts for property families.
-- Preserve Butter Paper's custom AEC tool icons and the Fit Width/Fit Page/Continuous icons at their explicit sizes.
-- The PDF/canvas renderers, annotation layers, resize handles, virtualized thumbnails and the two-axis scroll area are domain UI rather than generic controls. Preserve their behaviour and regression coverage unless a task explicitly redesigns them.
-- Popups, menus, selects and dialogs must remain keyboard accessible, contained at constrained window sizes and compatible with the application shortcut handler. A press that opens, acts inside or dismisses a popup or dialog must never also start a canvas selection or edit (`overlay_state::press_owned_by_overlay`).
-- Use a top-right icon-only X to dismiss a transient panel or expanded subflow. Reserve the word `Cancel` for a modal decision beside a commit or destructive action. Keep destructive item controls hidden until hover or keyboard focus, but always keyboard accessible and separate from the item's primary click target.
-
-## UI lint policy
-
-- `crates/butter-paper/tests/ui_source_policy.rs` is the GPUI source-policy gate and runs with `cargo test`. It checks the stock-tab/close/menu contracts, token usage in inspector/panel/viewer-toolbar/system-theme modules, and embedded measurement scroll ownership. Its colour rule catches direct numeric `rgb`/`rgba`/`hsla` constructor calls; it is a bounded source check, not a Rust parser or complete style analysis. It does not inspect document raster colours, infer semantic roles, or certify rendered geometry/gestures. Native compiled interaction tests and visual review remain required. Extend this gate with regression tests for concrete failures; do not blanket-disable rules or broaden allowances to make a failure pass.
-- PDF canvas roles keep paper-relative colours independent of the shell theme. Dynamic annotation colours are document data.
+- Compose standard controls from stock gpui-component controls and use semantic theme tokens. For property controls, reuse `property_controls.rs` and read [the property-control guide](docs/agents/property-controls.md) before adding or changing a property family.
+- Preserve custom AEC icons and the Fit Width/Fit Page/Continuous icons at their explicit sizes.
+- Canvas renderers, annotation layers, resize handles, virtualized thumbnails and the two-axis scroll area are domain UI. Preserve their behaviour and regression coverage unless the task explicitly redesigns them.
+- Popups, menus, selects and dialogs must remain keyboard accessible, contained at constrained window sizes and compatible with application shortcuts. An overlay press must never also start a canvas selection or edit (`overlay_state::press_owned_by_overlay`).
+- Dismiss transient panels and expanded subflows with a top-right icon-only X. Reserve `Cancel` for a decision prompt beside a commit or destructive action. Hide destructive item controls until hover or keyboard focus, keeping them keyboard accessible and separate from the primary click target.
+- Keep PDF paper-relative colours independent of the shell theme; annotation colours are document data.
+- Before changing native UI or accepting its appearance, read [the UI policy](docs/agents/ui-policy.md) and [the UX review checklist](docs/planning/ux-review.md). Use the gpui-component and gpui-migration-ux-review skills. Build success is not visual acceptance.
 
 ## Sources of truth
 
-- Keep durable repository conventions in this file.
-- Keep open work, decisions and behaviour contracts in local Markdown under `docs/planning/`. Start at `docs/planning/README.md`; update existing files in place and remove finished items. Do not create duplicate GitHub plans, chronological worklogs, evidence trails or agent transcripts.
-- Keep disposable output under ignored `target/` directories (tests write scratch files to `crates/butter-paper/target/test-scratch`).
-- Do not add machine-specific absolute paths to tracked files.
+- Keep core repository conventions here and detailed procedures in the linked `docs/agents/` guides.
+- Start at [docs/planning/README.md](docs/planning/README.md). Update existing open work, decisions and behaviour contracts in place; remove finished backlog items. Do not create duplicate GitHub plans, chronological worklogs, evidence trails or agent transcripts.
+- Read [decisions.md](docs/planning/decisions.md) for product decisions, [interactions.md](docs/planning/interactions.md) when changing canvas behaviour, and [pdf-format.md](docs/planning/pdf-format.md) when changing markup storage or appearance data. Surface conflicts rather than silently overriding these contracts.
+- Adapt skill requests for issues or tickets to local Markdown using [the issue-tracker guide](docs/agents/issue-tracker.md).
+- Keep disposable output under ignored `target/` directories; tests use `crates/butter-paper/target/test-scratch`. Never add machine-specific absolute paths to tracked files.
 
-## Agent skills
+## Workflow and checks
 
-### UX review
+1. Inspect `git status` before editing; preserve unrelated user changes.
+2. Make the smallest change that satisfies the task. Avoid speculative infrastructure and archived experiments.
+3. Add or update deterministic tests for behaviour changes. Run the narrowest relevant checks while iterating.
+4. Apply the checks below before handoff, then review the final diff for generated files, stale references, secrets and unrelated changes.
 
-For native UI changes and acceptance reviews, use the gpui-migration-ux-review skill alongside gpui-component. Always read docs/planning/ux-review.md, and docs/planning/interactions.md when canvas behaviour is involved, including if skill discovery is unavailable. Perform its contradiction-seeking review on the actual final screenshots before handoff. Maintain reusable lessons in that checklist and open defects in docs/planning/backlog.md; do not treat build success as visual acceptance.
+| Change | Required checks |
+| --- | --- |
+| Rust code, Rust dependencies or build/packaging logic | `cargo test --workspace` and `cargo xtask check` (repository checks, rustfmt and clippy with warnings denied). |
+| PDF rendering, editing, storage or worker behaviour | Also run the relevant real-PDFium tests: `BP_PDFIUM_LIBRARY=<approved-library> cargo test <test-filter> -- --ignored`. Report any unavailable platform or runtime verification. |
+| Native UI | Also perform native interaction and visual review using [native-review.md](docs/agents/native-review.md) and the UX checklist. Inspect the actual final screenshots. |
+| Signature relay | In `services/signature-relay`, run `pnpm test` and `pnpm typecheck`; install with `pnpm install --frozen-lockfile` if needed. |
+| Documentation only | Check factual references, relative links and `git diff --check`; compilation and GUI review are unnecessary. |
 
-GPUI properties use the application toolkit in `crates/butter-paper/src/property_controls.rs`, composed from stock GPUI Component controls. Reuse its panel, header, stepper-free numeric and slider/input layouts for new property families. Keep applicability/ranges in `tool_properties.rs`, defaults in the session adapter and selected-object mutations in identity-checked workspace/domain paths. New controls require a real rendering/persistence path and per-family tests; adding a field or hiding a missing capability does not complete a migration.
+- Build with `cargo build`. CI is defined in `.github/workflows/ci.yml`; formatting-only commits are listed in `.git-blame-ignore-revs`.
+- Treat lost PDF content, corrupt saves, annotation round-trip failures, renderer/worker crashes, privilege expansion and platform packaging failures as high priority. Preserve import/export compatibility and verify affected platform assumptions.
+- Before launching any development or review build, read [native-review.md](docs/agents/native-review.md). Use an isolated profile and unique review bundle; preserve unsaved work and verify only the intended testing version is running.
+- Before packaging or releasing, read [releases.md](docs/agents/releases.md). Releases are immutable; never expose signing keys or certificates.
 
-### Local planning
+## Authorization
 
-Read `docs/planning/README.md` and update the relevant file. Skill requests
-to publish issues or tickets are adapted to local Markdown; see
-`docs/agents/issue-tracker.md`.
-
-### Domain docs
-
-Domain decisions live in `docs/planning/decisions.md`, canvas behaviour in
-`docs/planning/interactions.md` and the markup storage format in
-`docs/planning/pdf-format.md`. Use their terms in code, tests and docs, and
-surface conflicts with them instead of silently overriding them.
-
-## Required workflow
-
-1. Inspect `git status` before editing and preserve unrelated user changes.
-2. Make the smallest change that satisfies the task; do not revive archived experiments or add speculative infrastructure.
-3. Add or update deterministic tests for behavior changes.
-4. Run the narrowest relevant checks while iterating, then `cargo test --workspace` and `cargo xtask check` before handoff (and the relay's `pnpm test` if you changed it).
-5. Review the final diff for generated files, stale references, secrets, and unrelated changes.
-
-Live GUI review of the native app uses an isolated, disposable data root (`BP_NATIVE_DEVELOPMENT=1 BP_GPUI_DATA_DIR=...`) and a uniquely named review bundle; it never modifies an installed application or real profile.
-
-Before opening an updated development or review build, quit the other Butter Paper versions and stop any watcher that could respawn them. Preserve unsaved work through saving or recovery; never discard it just to clean up. Verify that only the intended testing version is running before handoff.
-
-## Commands
-
-- Build and test: `cargo build`, `cargo test --workspace`
-- Repository checks (paths, versions, workflow pins), then rustfmt and clippy with warnings denied: `cargo xtask check`
-- CI (`.github/workflows/ci.yml`) runs on pushes to `main` and pull requests: `cargo xtask check`, the tests and the real-PDFium tests on macOS, clippy and the tests on Windows, and a compile of every target on Linux. Formatting-only commits are listed in `.git-blame-ignore-revs`.
-- Run the app: `cargo xtask pdfium` prints the approved libpdfium path; then `BP_NATIVE_DEVELOPMENT=1 BP_PDFIUM_LIBRARY=<path> cargo run`. `cargo xtask dev [PDF...]` does both and rebuilds and restarts the app when sources change (data in `target/dev-profile`; `--release` for an optimised build). Real-PDFium tests: `BP_PDFIUM_LIBRARY=<path> cargo test -- --ignored`.
-- Package one target: `cargo xtask package --target <triple> [--channel stable,beta] --out <dir>` (macOS signing with `--sign`, as the release workflow does).
-- Third-party notices: `cargo xtask notices --target <triple> --out <file>`.
-- Signature relay (`services/signature-relay`): `pnpm install --frozen-lockfile`, `pnpm test`, `pnpm typecheck`.
-
-## Review guidelines
-
-- Treat lost PDF content, corrupt saves, annotation round-trip failures, renderer or PDF worker crashes, privilege expansion, and platform-specific packaging failures as high priority.
-- Preserve import/export compatibility when changing markup models or appearance data.
-- Verify platform assumptions against macOS, Windows, and Linux behavior.
-
-## Releases
-
-Keep the release process fast. Releasing runs no tests; test as you work (`cargo test --workspace`, `cargo xtask check`).
-
-- Release with `cargo xtask version X.Y.Z` (or `X.Y.Z-beta.N`), edit the new `CHANGELOG.md` section, commit and push to `main`, then `cargo xtask release`. That checks in a second that `main` is pushed and clean, the versions agree, the changelog has the section and the tag is new, then pushes the tag. `.github/workflows/release.yml` packages every target in `.github/release-targets.json` with `cargo xtask package` (a beta tag builds Butter Paper Beta for macOS only), publishes one complete release with `SHA256SUMS.txt` and attestations, and asks `apotenza92/homebrew-tap` to update `butter-paper` and `butter-paper@beta`. Its file name is in the tap's registry. Running the workflow by hand from `main` is an unsigned dry run that publishes nothing; use it after changing packaging. Releases are immutable: never edit one; ship a new version. macOS packages are Developer ID signed and notarised; Windows and Linux packages are unsigned.
-- Release tags must resolve to commits reachable from `main`.
-- Never log, copy into artifacts, or commit any signing key or certificate.
-- Do not stage, commit, push, open pull requests, alter remote settings, or create issues unless the user explicitly requests it.
+- Continue local edits, tests and disposable review within the requested scope without asking again for already authorized work.
+- Do not stage, commit, push, open pull requests, alter remote settings or create issues unless the user explicitly requests it. Release publication also requires an explicit release request.
+- For a pinned dependency fork, prepare and test a focused patch first. If its commit/push has not been authorized, present that concrete patch and request approval for the fork action before changing the permanent pin. Do not substitute a tracked local path override or modify Cargo's cached checkout.
