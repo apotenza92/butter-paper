@@ -6240,23 +6240,32 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
         .unwrap();
     assert_eq!(resized_rectangle.rect, resized_preview_rect);
 
-    let initial_east = ellipse_resize_handle_point_for_rect(
-        ellipse_before.rect,
-        ellipse_before.rotation_degrees,
-        RectangleResizeHandle::East,
+    // An Ellipse's edge resizes even when unselected, so select it on its
+    // outline and drag its inner move band, as for the Rectangle above.
+    cx.simulate_click(
+        to_view(
+            ellipse_before.rect.x,
+            ellipse_before.rect.y + ellipse_before.rect.height / 2.,
+        ),
+        Modifiers::default(),
     );
+    let ellipse_move_start = PdfPoint::new(
+        ellipse_before.rect.x + 10. / f64::from(scale),
+        ellipse_before.rect.y + ellipse_before.rect.height / 2.,
+    )
+    .unwrap();
     cx.simulate_mouse_down(
-        to_view(initial_east.x, initial_east.y),
+        to_view(ellipse_move_start.x, ellipse_move_start.y),
         MouseButton::Left,
         Modifiers::default(),
     );
     cx.simulate_mouse_move(
-        to_view(initial_east.x + 18., initial_east.y - 12.),
+        to_view(ellipse_move_start.x + 18., ellipse_move_start.y - 12.),
         Some(MouseButton::Left),
         Modifiers::default(),
     );
     cx.simulate_mouse_up(
-        to_view(initial_east.x + 18., initial_east.y - 12.),
+        to_view(ellipse_move_start.x + 18., ellipse_move_start.y - 12.),
         MouseButton::Left,
         Modifiers::default(),
     );
